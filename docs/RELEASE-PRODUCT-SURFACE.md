@@ -16,7 +16,48 @@ verdict.
 Precisely: the pinned Durable Streams protocol suite, the product
 conformance / dual-surface / DST / cost gates in `cargo test`, the
 field-gate corpus, and the SDK package gate all pass at the head
-commit. **Still open locally** (none of it a known-incorrect behavior,
+commit. **## Cloud field campaign (2026-08-04) — the last gate, closed
+
+Prisma Compute resumed publishing new services on 2026-08-03 after the
+five-day edge outage (`repro-edge-404/` retry log). The campaign then
+ran end to end on build `d445a06` (x86_64-musl, provenance via
+`scripts/release-provenance.sh`):
+
+| step | result |
+|---|---|
+| two-PoP deploy (fra `eu-central-1`, ewr `us-east-1`), fresh `camp75a` namespace, split knobs on | both edges healthy |
+| 20-check field gate against each REAL edge (negative auth, replay, seal/fork crash recovery, a real scaler split under WAN pacing, raw default-key isolation) | **20/20 both regions** |
+| SDK WAN smoke (`@prisma/streams` against each edge) | PASS both regions |
+| destructive-cutover wire checks on a real edge (`Stream-Encryption-Key` on the product route, `profile` in the creation document, `Stream-Key` on the raw route) | all 400, named-field refusals, never translated |
+
+The campaign found and fixed two GATE defects (not server defects) that
+only a real WAN could expose — recorded here because they were
+initially indistinguishable from data loss:
+
+1. **The gate never checked its own setup appends.** On WAN, the
+   split fires MID-SETUP (the setup rounds span multiple scaler eval
+   windows), and an early unchecked failure surfaced later as a lying
+   "raw route shows []" read failure. Setup appends now retry
+   transient refusals and fail loudly at the append step.
+2. **The gate read single-shot and asserted full history.** Both
+   surfaces page across lineage hops (one segment per response with a
+   successor cursor) — the documented contract, which the SDK follows
+   (`ReadPage.cursor`/`upToDate`). A fast local client kept every
+   record in one segment, so the multi-hop shape had never been
+   exercised. The gate now follows `Prisma-Next-Cursor` /
+   `Stream-Next-Offset`, and `FIELD_PACE_MS` simulates WAN pacing so
+   the paced (multi-hop) shape runs locally and in CI.
+
+Deploy tooling hardened by the same campaign: the artifact
+bucket/endpoint defaults in `bench/soak/deploy-region.sh` now come
+from `$SOAK_HOME` (a stale constant cost an hour chasing phantom
+egress failures), the binary downloader probes with a ranged GET so
+real S3 error codes surface (HeadObject's empty error body maps
+everything to UnknownError), and the object-store endpoint moved to
+`fly.storage.tigris.dev` (Tigris's `t3.storage.dev` apex now serves
+their website from some vantage points).
+
+Still open locally** (none of it a known-incorrect behavior,
 all tracked): the deterministic whole-system simulator and its
 remaining catalogue scenarios (SEL-022's true remote-watermark pause,
 the CRT-007 two-joiner variant), the typed incarnation-mutation

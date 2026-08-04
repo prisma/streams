@@ -210,6 +210,12 @@ const json = async (res) => {
   });
   const keys = Array.from({ length: 24 }, (_, i) => `k${i}`);
   const perKey = 12;
+  // FIELD_PACE_MS: WAN pacing simulator. Over a real WAN the setup
+  // rounds span multiple scaler eval windows, so the split fires MID
+  // SETUP and the sequences straddle parent -> child -> merged-child.
+  // A fast local client finishes setup before the first eval and never
+  // exercises that shape (2026-08-04 field finding).
+  const pace = Number(process.env.FIELD_PACE_MS ?? 0);
   // The payload under test: a fixed, verifiable sequence per key.
   for (let round = 0; round < perKey; round++) {
     await Promise.all(
@@ -221,16 +227,39 @@ const json = async (res) => {
         }),
       ),
     );
+    if (pace) await new Promise((r) => setTimeout(r, pace));
   }
-  // Default key gets its own records, through BOTH surfaces.
-  await P(`${name}/records`, {
-    method: "POST",
-    headers: headers(),
-    body: JSON.stringify({ via: "product-default" }),
-  });
+  // Default key gets its own records, through BOTH surfaces. These are
+  // the payload the raw-view checks below assert on — an unchecked
+  // failure here turns into a lying "raw route shows []" failure at
+  // the READ, which is exactly what happened on the first WAN run
+  // (2026-08-03: seg0 sealed at offset 288 = keyed records only; the
+  // two setup appends never landed and nothing said so). Check, retry
+  // transient refusals, and fail HERE if the payload never commits.
   const rawHeaders = { "stream-encryption-key": key, "content-type": "application/json" };
   if (token) rawHeaders["authorization"] = `Bearer ${token}`;
-  await R(name, { method: "POST", headers: rawHeaders, body: JSON.stringify({ via: "raw" }) });
+  const mustAppend = async (label, fn) => {
+    let last;
+    for (let i = 0; i < 8; i++) {
+      const r = await fn();
+      if (r.status < 300) return;
+      last = `${r.status} ${(await r.text().catch(() => "")).slice(0, 160)}`;
+      if (![408, 429, 500, 503].includes(r.status)) break;
+      await new Promise((res) => setTimeout(res, 500 * (i + 1)));
+    }
+    check(`setup append (${label}) committed`, false, last);
+    throw new Error(`setup append failed: ${label}: ${last}`);
+  };
+  await mustAppend("product-default", () =>
+    P(`${name}/records`, {
+      method: "POST",
+      headers: headers(),
+      body: JSON.stringify({ via: "product-default" }),
+    }),
+  );
+  await mustAppend("raw", () =>
+    R(name, { method: "POST", headers: rawHeaders, body: JSON.stringify({ via: "raw" }) }),
+  );
 
   // Now drive the collection hot until the scaler actually splits it.
   // The load rides SEPARATE keys so the sequences verified below stay
@@ -250,6 +279,7 @@ const json = async (res) => {
       ),
     );
     rounds++;
+    if (pace) await new Promise((r) => setTimeout(r, pace));
     if (rounds % 4 === 0) {
       const s = await json(
         await fetch(`${base}/v1/segments/${name}`, {
@@ -267,14 +297,50 @@ const json = async (res) => {
       `(${rounds * hot.length} records); deploy with SCALE_HOT_PCT=1 SCALE_HOT_EVALS=1 ` +
       `SCALE_EVAL_SECS=5 SCALE_RATE_WINDOW_SECS=10`,
   );
+  // Both surfaces PAGE across lineage hops (one segment per response
+  // with a successor cursor) — that is the wire contract, and the SDK
+  // follows it. A single-shot read asserting full history only ever
+  // passed because a fast local client kept everything in one segment;
+  // WAN pacing splits mid-setup and produced the first multi-hop
+  // lineage this gate had seen (2026-08-04).
+  const readAllKeyed = async (k) => {
+    const acc = [];
+    let cursor = "";
+    for (let hop = 0; hop < 12; hop++) {
+      const q = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
+      const r = await P(`${name}/records?routingKey=${k}&limit=100${q}`, { headers: headers() });
+      const page = r.status === 204 ? [] : await json(r);
+      if (Array.isArray(page)) acc.push(...page);
+      const next = r.headers.get("prisma-next-cursor") ?? "";
+      const upToDate = r.headers.get("prisma-up-to-date") === "true";
+      if (upToDate || !next || next === cursor) break;
+      cursor = next;
+    }
+    return acc;
+  };
   let intact = 0;
   for (const k of keys) {
-    const recs = await json(await P(`${name}/records?routingKey=${k}&limit=100`, { headers: headers() }));
-    if (Array.isArray(recs) && recs.length === perKey && recs.every((r) => r.k === k)) intact++;
+    const recs = await readAllKeyed(k);
+    if (recs.length === perKey && recs.every((r) => r.k === k)) intact++;
   }
   check(`every routing key reads back intact across the split`, intact === keys.length, `${intact}/${keys.length}`);
 
-  const rawText = await (await R(name, { headers: rawHeaders })).text();
+  const readAllRaw = async () => {
+    let text = "";
+    let offset = "";
+    for (let hop = 0; hop < 12; hop++) {
+      const q = offset ? `?offset=${encodeURIComponent(offset)}` : "";
+      const r = await R(`${name}${q}`, { headers: rawHeaders });
+      const t = r.status === 204 ? "" : await r.text();
+      text += t;
+      const next = r.headers.get("stream-next-offset") ?? "";
+      const upToDate = r.headers.get("stream-up-to-date") === "true";
+      if (upToDate || !next || next === offset) break;
+      offset = next;
+    }
+    return text;
+  };
+  const rawText = await readAllRaw();
   const rawHasDefault = rawText.includes("product-default") && rawText.includes('"via":"raw"');
   const rawLeaksKeyed = keys.some((k) => rawText.includes(`"k":"${k}"`));
   check("raw route shows the default key's records", rawHasDefault, rawText.slice(0, 200));

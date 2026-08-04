@@ -39,8 +39,13 @@ SOAK_PREFIX=${SOAK_PREFIX:-soak}
 # Optional DNS override written by the wrapper before exec (soak3 finding:
 # the platform forwarder mis-steers Tigris's geo-DNS). Literal \n escapes.
 RESOLV_OVERRIDE=${RESOLV_OVERRIDE:-}
-BINEP=${ARTIFACT_ENDPOINT:-https://t3.storage.dev}
-BINBKT=${ARTIFACT_BUCKET:-prisma-streams-slatedb-sin}
+# Artifact bucket/endpoint: prefer the campaign's provisioned values in
+# $SOAK_HOME (written by provisioning) over env, over the last-resort
+# constant. A stale constant here cost an hour on 2026-08-03: the
+# wrapper stat'ed the right key in the WRONG (dead) bucket and the
+# resulting AccessDenied read like an egress/DNS problem.
+BINEP=${ARTIFACT_ENDPOINT:-$( [ -s "$S/artifact-endpoint.txt" ] && cat "$S/artifact-endpoint.txt" || echo https://fly.storage.tigris.dev )}
+BINBKT=${ARTIFACT_BUCKET:-$( [ -s "$S/artifact-bucket.txt" ] && cat "$S/artifact-bucket.txt" || echo prisma-streams-slatedb-sin )}
 
 # Prefer the CLI's own stored login (it auto-refreshes). A static token
 # file is only a fallback — a copied OAuth access token expires in about
@@ -78,6 +83,14 @@ fi
 SVCARG=(); [ -f "$SVCFILE" ] && SVCARG=(--service "$(cat "$SVCFILE")")
 # Empty --env values are rejected by the CLI; only pass when set.
 RESOLVARG=(); [ -n "$RESOLV_OVERRIDE" ] && RESOLVARG=(--env "RESOLV_OVERRIDE=$RESOLV_OVERRIDE")
+# Field-gate split knobs: the 20-check corpus drives a REAL scaler split,
+# which production thresholds would take hours to trigger. Opt-in via
+# SCALE_KNOBS=1 (campaign deploys), absent otherwise.
+SCALEARG=()
+if [ "${SCALE_KNOBS:-0}" = "1" ]; then
+  SCALEARG=(--env SCALE_EVAL_SECS=5 --env SCALE_RATE_WINDOW_SECS=10 \
+            --env SCALE_HOT_PCT=1 --env SCALE_HOT_EVALS=1 --env SCALE_COOLDOWN_SECS=5)
+fi
 
 if [ "$ROLE" = server ]; then
   cd "$S/app-server-$R"
@@ -107,6 +120,7 @@ if [ "$ROLE" = server ]; then
     --env ABSORB_BYTES=4194304 --env ABSORB_AGE_SECS=60 \
     --env ABSORB_PASS_BYTES=67108864 --env TRIM_PER_OP=65536 \
     --env POOL_IDLE_SECS=4 --env KEEP_AWAKE=1 \
+    ${SCALEARG[@]+"${SCALEARG[@]}"} \
     ${RESOLVARG[@]+"${RESOLVARG[@]}"} \
     2>&1 | grep -viE 'resolving|resolved|saved')
 else

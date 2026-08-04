@@ -15,6 +15,17 @@ export async function downloadBinary(key: string, dest: string, log: (s: string)
     secretAccessKey: env.BIN_S3_SECRET_ACCESS_KEY ?? env.SLATE_S3_SECRET_ACCESS_KEY ?? env.S3_SECRET_ACCESS_KEY!,
   });
   const f = c.file(key);
+  // HeadObject's error body is empty, so bun reports every failure as
+  // UnknownError. Probe with a 16-byte ranged GET first: its XML error
+  // body carries the real code (AccessDenied vs NoSuchKey vs ...),
+  // which is the difference between diagnosing a wrong bucket and
+  // chasing phantom egress problems (2026-08-03).
+  try {
+    await f.slice(0, 16).arrayBuffer();
+  } catch (e: any) {
+    log(`probe GET failed: code=${e?.code} msg=${String(e?.message).slice(0, 200)} bucket=${env.BIN_S3_BUCKET ?? env.SLATE_S3_BUCKET} endpoint=${env.BIN_S3_ENDPOINT ?? env.SLATE_S3_ENDPOINT}`);
+    throw e;
+  }
   const total = (await f.stat()).size;
   if (!Number.isFinite(total) || total < 1_000_000) throw new Error(`bad size ${total}`);
   log(`binary ${key} size ${total}`);
