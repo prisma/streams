@@ -488,6 +488,10 @@ pub struct Registry {
     store: Arc<dyn ObjectStore>,
     cache: Mutex<HashMap<String, CachedDesc>>,
     cache_ttl: Duration,
+    /// Test-only one-shot: the NEXT `get` for a listed name returns a
+    /// store error (round-18 fail-closed refresh probe).
+    #[cfg(test)]
+    fail_next_get: Mutex<std::collections::HashSet<String>>,
 }
 
 struct CachedDesc {
@@ -558,6 +562,8 @@ impl Registry {
             store,
             cache: Mutex::new(HashMap::new()),
             cache_ttl: Duration::from_secs(5),
+            #[cfg(test)]
+            fail_next_get: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -605,6 +611,13 @@ impl Registry {
     }
 
     pub async fn get(&self, name: &str) -> Result<Option<StreamDesc>, object_store::Error> {
+        #[cfg(test)]
+        if self.fail_next_get.lock().unwrap().remove(name) {
+            return Err(object_store::Error::Generic {
+                store: "registry",
+                source: "injected registry get failure".into(),
+            });
+        }
         let revalidate = {
             let cache = self.cache.lock().unwrap();
             match cache.get(name) {
@@ -1012,6 +1025,14 @@ impl Registry {
 
     pub fn invalidate(&self, name: &str) {
         self.cache.lock().unwrap().remove(name);
+    }
+
+    /// Arm a ONE-SHOT store error for the next `get(name)` (round 18:
+    /// the deletion saga must fail CLOSED when it cannot re-read the
+    /// segment map after a sweep).
+    #[cfg(test)]
+    pub fn fail_next_get(&self, name: &str) {
+        self.fail_next_get.lock().unwrap().insert(name.to_string());
     }
 
     /// Force a cached entry past its TTL so tests can exercise the

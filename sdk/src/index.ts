@@ -237,6 +237,14 @@ export class StreamsError extends Error {
   code: string;
   retryable: boolean;
   details?: unknown;
+  /**
+   * On `consumer_deleting` conflicts: the DELETING incarnation's
+   * version token. If the process that started the deletion died
+   * without persisting it, pass this to `Consumer.delete()`'s wire
+   * equivalent (DELETE with `Prisma-Consumer-Version`) to resume and
+   * finish the saga.
+   */
+  consumerVersion?: string;
   constructor(
     status: number,
     code: string,
@@ -307,6 +315,8 @@ function encName(name: string): string {
 }
 
 async function errorFrom(res: Response): Promise<StreamsError> {
+  const consumerVersion =
+    res.headers.get("prisma-consumer-version") ?? undefined;
   let code = "http_error";
   let message = `HTTP ${res.status}`;
   let retryable = res.status === 429 || res.status === 503;
@@ -345,7 +355,9 @@ async function errorFrom(res: Response): Promise<StreamsError> {
   if (code === "producer_sequence_reused") {
     return new ProducerSequenceReusedError(res.status, message);
   }
-  return new StreamsError(res.status, code, message, retryable, details);
+  const err = new StreamsError(res.status, code, message, retryable, details);
+  if (consumerVersion !== undefined) err.consumerVersion = consumerVersion;
+  return err;
 }
 
 /** A sleep that ends when the caller aborts, not 25 seconds later. */

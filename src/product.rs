@@ -586,7 +586,7 @@ pub async fn product_entry(
                 "access-control-allow-headers",
                 "authorization, content-type, prisma-encryption-key, \
                  prisma-routing-key, producer-id, producer-epoch, producer-seq, \
-                 if-none-match",
+                 if-none-match, prisma-consumer-version",
             )
             .header("access-control-expose-headers", "*")
             .header("access-control-max-age", "600")
@@ -3760,13 +3760,28 @@ async fn product_consumer_put(
         } if existing.state == crate::queue::ConsumerLifecycle::Deleting => {
             // The name is owned by an in-flight deletion until the
             // saga settles; recreating now would race its fan-out.
-            perr(
+            // The response CARRIES the deleting incarnation's version
+            // token (round 18): if the client that started the
+            // deletion died without persisting it, this is the public
+            // way for ANY process to obtain the token and resume the
+            // saga (DELETE with it), instead of the consumer staying
+            // Deleting forever.
+            let mut r = perr(
                 StatusCode::CONFLICT,
                 "consumer_deleting",
-                "a deletion of this consumer is in progress; retry shortly",
+                "a deletion of this consumer is in progress; resume it by \
+                 retrying DELETE with the Prisma-Consumer-Version on this \
+                 response, or retry this create shortly",
                 None,
                 true,
-            )
+            );
+            if let Ok(v) = axum::http::HeaderValue::from_str(&consumer_version_token(
+                &epoch,
+                existing.generation,
+            )) {
+                r.headers_mut().insert("prisma-consumer-version", v);
+            }
+            r
         }
         crate::queue::QueueOut::Config {
             conflict: true,
@@ -3876,10 +3891,110 @@ async fn product_consumer_delete(
     cname: String,
     headers: HeaderMap,
 ) -> Response {
-    let (desc, _k, epoch) = match consumer_ctx(&state, &name, &headers).await {
-        Ok(v) => v,
-        Err(r) => return r,
+    // Entry ordering is DELIBERATE and differs from consumer_ctx
+    // (round 18): the version token's stream epoch is compared BEFORE
+    // the encryption key is validated. A client retrying a stale
+    // DELETE after the collection was deleted and recreated under a
+    // DIFFERENT key holds the OLD key — the honest answer is the
+    // no-touch 204 ("your target is gone"), not 403. Bearer
+    // authorization already ran at the route gate; the key check
+    // still guards every path that touches a LIVE target.
+    let Some(key_b64) = product_key(&headers) else {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "missing_key",
+            "Prisma-Encryption-Key required",
+            None,
+            false,
+        );
     };
+    let no_touch_204 = || {
+        Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .header(header::CACHE_CONTROL, "no-store")
+            .body(Body::empty())
+            .unwrap()
+    };
+    let Some(vtok) = headers
+        .get("prisma-consumer-version")
+        .and_then(|v| v.to_str().ok())
+    else {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "missing_consumer_version",
+            "DELETE requires Prisma-Consumer-Version (returned by consumer create/get, \
+             and by the consumer_deleting conflict); a deletion targets an incarnation, \
+             not a name",
+            None,
+            false,
+        );
+    };
+    let Some((expect_epoch, expect_gen)) = parse_consumer_version(vtok) else {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "invalid_consumer_version",
+            "Prisma-Consumer-Version is not a version token from this server",
+            None,
+            false,
+        );
+    };
+    let desc = match state.registry.get(&name).await {
+        Ok(Some(d)) if crate::http::desc_alive(&d) => {
+            if crate::http::initializing(&d) {
+                return perr(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "creating",
+                    "stream is still being created; retry",
+                    None,
+                    true,
+                );
+            }
+            d
+        }
+        Ok(_) => {
+            // The collection is gone; so is the token's target.
+            return no_touch_204();
+        }
+        Err(e) => {
+            return perr(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "unavailable",
+                &format!("registry unavailable: {e}"),
+                None,
+                true,
+            );
+        }
+    };
+    let Some(epoch) = desc.epoch_bytes() else {
+        return perr(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            "bad descriptor",
+            None,
+            true,
+        );
+    };
+    if expect_epoch != epoch {
+        // The stream incarnation the version was minted under no longer
+        // exists — the old target died with it. Idempotent success, the
+        // CURRENT stream untouched, and deliberately BEFORE the key
+        // check (the old client may hold a rotated-away key).
+        return no_touch_204();
+    }
+    // Same incarnation: from here on we may touch live state, so the
+    // key must validate.
+    if !matches!(
+        crate::http::check_key(Some(&key_b64), &desc),
+        crate::http::KeyCheck::Ok(..)
+    ) {
+        return perr(
+            StatusCode::FORBIDDEN,
+            "wrong_key",
+            "encryption key mismatch",
+            None,
+            false,
+        );
+    }
     // Collection-wide deletion as a GENERATION-FENCED SAGA (rounds
     // 16-17). Invariant: 204 means the TARGETED INCARNATION's deletion
     // is collection-wide — every segment's dead-generation rows are
@@ -3903,41 +4018,6 @@ async fn product_consumer_delete(
     //   4. Parent record: Deleting -> Deleted (a TOMBSTONE, kept so
     //      recreation allocates generation+1 and dead-generation
     //      residue stays inert forever).
-    let Some(vtok) = headers
-        .get("prisma-consumer-version")
-        .and_then(|v| v.to_str().ok())
-    else {
-        return perr(
-            StatusCode::BAD_REQUEST,
-            "missing_consumer_version",
-            "DELETE requires Prisma-Consumer-Version (returned by consumer create/get); \
-             a deletion targets an incarnation, not a name",
-            None,
-            false,
-        );
-    };
-    let Some((expect_epoch, expect_gen)) = parse_consumer_version(vtok) else {
-        return perr(
-            StatusCode::BAD_REQUEST,
-            "invalid_consumer_version",
-            "Prisma-Consumer-Version is not a version token from this server",
-            None,
-            false,
-        );
-    };
-    let no_touch_204 = || {
-        Response::builder()
-            .status(StatusCode::NO_CONTENT)
-            .header(header::CACHE_CONTROL, "no-store")
-            .body(Body::empty())
-            .unwrap()
-    };
-    if expect_epoch != epoch {
-        // The stream incarnation the version was minted under no longer
-        // exists — the old target died with it. Idempotent success,
-        // and the CURRENT stream is not touched.
-        return no_touch_204();
-    }
     let rec = match consumer_config_op(
         &state,
         &desc,
@@ -4005,7 +4085,6 @@ async fn product_consumer_delete(
     let steps_left = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(
         CONSUMER_DELETE_REQUEST_STEPS as i64,
     ));
-    let mut prev_ids: Option<Vec<u32>> = None;
     let mut cur_desc = desc.clone();
     for _round in 0..5 {
         let segs = consumer_segments(&cur_desc);
@@ -4086,11 +4165,62 @@ async fn product_consumer_delete(
                 return perr(StatusCode::SERVICE_UNAVAILABLE, code, &msg, None, true);
             }
         }
-        let ids: Vec<u32> = segs.iter().map(|(id, ..)| *id).collect();
-        if prev_ids.as_deref() == Some(&ids[..]) {
-            // Two consecutive rounds saw the same topology: every
-            // segment that can hold this consumer's rows was swept
-            // clean AFTER the fence went up everywhere.
+        let mut swept_ids: Vec<u32> = segs.iter().map(|(id, ..)| *id).collect();
+        swept_ids.sort_unstable();
+        #[cfg(test)]
+        crate::http::fork_failpoints::pause_consumer_saga_before_refresh(&name).await;
+        // FAIL-CLOSED refresh (round 18). Completion is proven by a
+        // SUCCESSFUL post-sweep read of the authoritative map: the
+        // segments swept this round must equal the segments visible
+        // AFTER the sweep, with no topology transition pending. The
+        // previous shape treated a refresh error — or a vanished
+        // descriptor — as "keep the cached map", which could let a
+        // stale pre-split map look stable for two rounds and publish
+        // a false collection-wide 204.
+        state.registry.invalidate(&name);
+        let fresh = match state.registry.get(&name).await {
+            Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+            Ok(_) => {
+                // The collection is gone mid-saga; so is the target.
+                // Nothing to finalize, nothing to touch.
+                return no_touch_204();
+            }
+            Err(e) => {
+                return perr(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "segment_map_unverified",
+                    &format!(
+                        "cannot verify the segment map after cleanup ({e}); \
+                         the deletion is incomplete — retry"
+                    ),
+                    None,
+                    true,
+                );
+            }
+        };
+        // EPOCH PIN (round-17 P0): the refresh is by NAME, and the
+        // name may now belong to a recreated stream. This saga's
+        // authority extends only to the incarnation it targeted — a
+        // changed epoch means the old stream (and with it the old
+        // consumer) is gone. Idempotent success, replacement
+        // untouched.
+        if fresh.epoch_bytes() != Some(epoch) {
+            return no_touch_204();
+        }
+        let pending = fresh
+            .segments
+            .as_ref()
+            .is_some_and(|m| m.pending.is_some());
+        let mut fresh_ids: Vec<u32> =
+            consumer_segments(&fresh).iter().map(|(id, ..)| *id).collect();
+        fresh_ids.sort_unstable();
+        if !pending && fresh_ids == swept_ids {
+            // Everything that can hold this consumer's rows was swept
+            // AFTER its fence went up, and the authoritative map —
+            // read successfully, transition-free — confirms no segment
+            // escaped the sweep. (A split landing after this read
+            // cannot mint state for a Deleting consumer: pulls consult
+            // the parent record first.)
             if let Err(r) = consumer_config_op(
                 &state,
                 &desc,
@@ -4110,28 +4240,7 @@ async fn product_consumer_delete(
                 .body(Body::empty())
                 .unwrap();
         }
-        prev_ids = Some(ids);
-        #[cfg(test)]
-        crate::http::fork_failpoints::pause_consumer_saga_before_refresh(&name).await;
-        state.registry.invalidate(&name);
-        cur_desc = match state.registry.get(&name).await {
-            Ok(Some(d)) => d,
-            _ => cur_desc,
-        };
-        // EPOCH PIN (round-17 P0): the refresh is by NAME, and the
-        // name may now belong to a recreated stream. This saga's
-        // authority extends only to the incarnation it authenticated
-        // against — a changed epoch means the old stream (and with it
-        // the old consumer) is gone. Idempotent success, replacement
-        // untouched.
-        let fresh_epoch = crate::http::check_key(product_key(&headers).as_deref(), &cur_desc);
-        let same_epoch = match &fresh_epoch {
-            crate::http::KeyCheck::Ok(_, e) => *e == epoch,
-            _ => false,
-        };
-        if !same_epoch {
-            return no_touch_204();
-        }
+        cur_desc = fresh;
     }
     perr(
         StatusCode::SERVICE_UNAVAILABLE,
