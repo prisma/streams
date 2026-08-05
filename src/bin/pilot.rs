@@ -483,20 +483,36 @@ async fn lb() {
 
 async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
     let path = req.uri().path().to_string();
-    let stream = match path
+    // BOTH surfaces route by stream name: the raw route
+    // (/v1/stream/{name}...) and the product route
+    // (/v1/streams/{name}[/...|:action]). A product name segment may
+    // carry an :action suffix (records:long-poll, :scan), so ':' also
+    // terminates the name. Registry-scoped paths (/v1/streams catalog,
+    // /v1/segments, /health) are not stream-scoped — any instance
+    // answers; pin them to the first active ordinal so sleepers sleep.
+    let stream: Option<String> = path
         .strip_prefix("/v1/stream/")
-        .and_then(|r| r.split(['/', '?']).next())
+        .or_else(|| path.strip_prefix("/v1/streams/"))
+        .and_then(|r| r.split(['/', '?', ':']).next())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    if stream.is_none()
+        && !(path == "/v1/streams"
+            || path == "/v1/segments"
+            || path == "/health"
+            || path.starts_with("/v1/debug"))
     {
-        Some(s) if !s.is_empty() => s.to_string(),
-        _ => return (StatusCode::NOT_FOUND, "lb: not a stream route").into_response(),
-    };
+        return (StatusCode::NOT_FOUND, "lb: not a stream route").into_response();
+    }
     // COMPUTE-SPEC R1: route by shard (name-hash longest-prefix against the
     // topology), rendezvous over only the active set (first `desired`
     // upstreams) — instances beyond the desired count receive nothing and
     // scale to zero.
     let (active, shard) = {
         let f = lb.fleet.lock().unwrap();
-        let shard = shard_for(&f.topology, &name_hash(&stream));
+        let shard = stream
+            .as_deref()
+            .map(|st| shard_for(&f.topology, &name_hash(st)));
         let active = if f.active.is_empty() {
             vec!["streams-1".to_string()]
         } else {
@@ -506,7 +522,11 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
     };
     // Rendezvous over instance NAMES from the live-filtered active set —
     // the identical computation the servers run for their R2 check.
-    let chosen = &active[pick(&shard, &active)];
+    // Nameless (registry-scoped) requests pin to the first active.
+    let chosen = match &shard {
+        Some(sh) => &active[pick(sh, &active)],
+        None => &active[0],
+    };
     let i = chosen
         .strip_prefix("streams-")
         .and_then(|n| n.parse::<usize>().ok())
