@@ -299,18 +299,24 @@ impl MessageId {
 pub struct LeaseToken {
     pub msg: MessageId,
     pub lease_gen: u32,
+    /// The CONSUMER generation this lease was granted under (round
+    /// 16). A settle presenting a token from a deleted generation is
+    /// counted stale, never applied — even if the consumer name has
+    /// since been recreated.
+    pub consumer_gen: u64,
     pub deadline_ms: i64,
 }
 
 impl LeaseToken {
     pub fn encode(&self, key: &StreamKey) -> String {
-        let mut p = Vec::with_capacity(1 + 16 + 16 + 4 + 8 + 4 + 8 + MAC_LEN);
+        let mut p = Vec::with_capacity(1 + 16 + 16 + 4 + 8 + 4 + 8 + 8 + MAC_LEN);
         p.push(KIND_LEASE_V1);
         p.extend_from_slice(&self.msg.epoch);
         p.extend_from_slice(&self.msg.key_hash);
         p.extend_from_slice(&self.msg.seg_id.to_le_bytes());
         p.extend_from_slice(&self.msg.offset.to_le_bytes());
         p.extend_from_slice(&self.lease_gen.to_le_bytes());
+        p.extend_from_slice(&self.consumer_gen.to_le_bytes());
         p.extend_from_slice(&self.deadline_ms.to_le_bytes());
         let mac = mac16(&mac_key(key, &self.msg.epoch), &p);
         p.extend_from_slice(&mac);
@@ -326,7 +332,7 @@ impl LeaseToken {
         if raw.first() != Some(&KIND_LEASE_V1) {
             return Err("wrong_token_kind");
         }
-        if raw.len() != 1 + 16 + 16 + 4 + 8 + 4 + 8 + MAC_LEN {
+        if raw.len() != 1 + 16 + 16 + 4 + 8 + 4 + 8 + 8 + MAC_LEN {
             return Err("invalid_lease_token");
         }
         let (payload, mac) = raw.split_at(raw.len() - MAC_LEN);
@@ -346,7 +352,8 @@ impl LeaseToken {
         let seg_id = u32::from_le_bytes(payload[33..37].try_into().unwrap());
         let offset = u64::from_le_bytes(payload[37..45].try_into().unwrap());
         let lease_gen = u32::from_le_bytes(payload[45..49].try_into().unwrap());
-        let deadline_ms = i64::from_le_bytes(payload[49..57].try_into().unwrap());
+        let consumer_gen = u64::from_le_bytes(payload[49..57].try_into().unwrap());
+        let deadline_ms = i64::from_le_bytes(payload[57..65].try_into().unwrap());
         if &epoch != expect_epoch {
             return Err("invalid_lease_token");
         }
@@ -358,6 +365,7 @@ impl LeaseToken {
                 offset,
             },
             lease_gen,
+            consumer_gen,
             deadline_ms,
         })
     }
@@ -449,6 +457,7 @@ mod tests {
         let lt = LeaseToken {
             msg: m.clone(),
             lease_gen: 7,
+            consumer_gen: 3,
             deadline_ms: 123_456,
         };
         let ls = lt.encode(&key());

@@ -33,6 +33,10 @@ pub struct Lease {
 
 #[derive(Debug, Clone, Default)]
 pub struct ConsumerState {
+    /// The consumer GENERATION these rows belong to. A recreated
+    /// consumer is a new generation; rows and ops of dead generations
+    /// are inert (round 16: deletion as a generation-fenced saga).
+    pub cgen: u64,
     pub cursor: u64,
     pub leases: BTreeMap<u64, Lease>,
     pub acked: BTreeSet<u64>,
@@ -44,30 +48,39 @@ pub struct QueueState {
     pub loaded: bool,
 }
 
-pub fn cursor_key(hash: &[u8; 16], consumer: &str) -> Vec<u8> {
-    let mut k = Vec::with_capacity(17 + consumer.len());
+/// Row keys carry the consumer GENERATION (big-endian, after the name
+/// separator) so a recreated consumer's rows can never collide with a
+/// dead generation's residue:
+///   <hash16> 'c' <consumer> 0x00 <gen BE>          cursor
+///   <hash16> 'l' <consumer> 0x00 <gen BE> <off BE> lease
+///   <hash16> 'x' <consumer> 0x00 <gen BE> <off BE> settled marker
+/// `state_prefix` (name + separator, NO generation) covers every
+/// generation — cleanup deletes a consumer's rows across all of them.
+pub fn state_prefix(hash: &[u8; 16], tag: u8, consumer: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(18 + consumer.len());
     k.extend_from_slice(hash);
-    k.push(b'c');
+    k.push(tag);
     k.extend_from_slice(consumer.as_bytes());
+    k.push(0);
     k
 }
 
-pub fn lease_key(hash: &[u8; 16], consumer: &str, off: u64) -> Vec<u8> {
-    let mut k = Vec::with_capacity(26 + consumer.len());
-    k.extend_from_slice(hash);
-    k.push(b'l');
-    k.extend_from_slice(consumer.as_bytes());
-    k.push(0);
+pub fn cursor_key(hash: &[u8; 16], consumer: &str, cgen: u64) -> Vec<u8> {
+    let mut k = state_prefix(hash, b'c', consumer);
+    k.extend_from_slice(&cgen.to_be_bytes());
+    k
+}
+
+pub fn lease_key(hash: &[u8; 16], consumer: &str, cgen: u64, off: u64) -> Vec<u8> {
+    let mut k = state_prefix(hash, b'l', consumer);
+    k.extend_from_slice(&cgen.to_be_bytes());
     k.extend_from_slice(&off.to_be_bytes());
     k
 }
 
-pub fn ack_key(hash: &[u8; 16], consumer: &str, off: u64) -> Vec<u8> {
-    let mut k = Vec::with_capacity(26 + consumer.len());
-    k.extend_from_slice(hash);
-    k.push(b'x');
-    k.extend_from_slice(consumer.as_bytes());
-    k.push(0);
+pub fn ack_key(hash: &[u8; 16], consumer: &str, cgen: u64, off: u64) -> Vec<u8> {
+    let mut k = state_prefix(hash, b'x', consumer);
+    k.extend_from_slice(&cgen.to_be_bytes());
     k.extend_from_slice(&off.to_be_bytes());
     k
 }
@@ -137,6 +150,25 @@ impl Default for ConsumerConfig {
     }
 }
 
+/// Consumer lifecycle (round 16). `Deleted` is a TOMBSTONE, kept so
+/// recreation allocates a strictly higher generation — the property
+/// that makes late old-generation writes and residual rows inert.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum ConsumerLifecycle {
+    Active,
+    Deleting,
+    Deleted,
+}
+
+/// What the parent-identity config row actually stores.
+#[derive(Debug, Clone, PartialEq, serde::Serialize, serde::Deserialize)]
+pub struct ConsumerRecord {
+    pub generation: u64,
+    pub state: ConsumerLifecycle,
+    pub config: ConsumerConfig,
+}
+
 pub fn config_key(hash: &[u8; 16], consumer: &str) -> Vec<u8> {
     let mut k = Vec::with_capacity(17 + consumer.len());
     k.extend_from_slice(hash);
@@ -154,6 +186,9 @@ pub fn parse_token(t: &str) -> Option<(u64, u32)> {
 pub enum QueueOp {
     Receive {
         consumer: String,
+        /// The consumer generation this op belongs to (from the config
+        /// record the HTTP layer loaded). Fenced generations refuse.
+        cgen: u64,
         max: usize,
         visibility_ms: u64,
         max_deliveries: u32,
@@ -174,13 +209,27 @@ pub enum QueueOp {
     ConfigGet {
         consumer: String,
     },
-    /// Delete config + every state row of this consumer under this
-    /// identity.
+    /// Parent-identity lifecycle CAS: Active -> Deleting
+    /// (`deleting: true`) or Deleting -> Deleted (`deleting: false`),
+    /// fenced to the exact generation. Both directions are idempotent
+    /// at their target state.
+    ConfigLifecycle {
+        consumer: String,
+        expect_gen: u64,
+        deleting: bool,
+    },
+    /// SEGMENT cleanup: install the generation fence (everything below
+    /// `fence_below` is dead on this segment) and transactionally
+    /// delete every state row of this consumer — durable rows across
+    /// ALL generations below the fence, plus anything staged earlier
+    /// in the same commit group.
     ConfigDelete {
         consumer: String,
+        fence_below: u64,
     },
     Settle {
         consumer: String,
+        cgen: u64,
         acks: Vec<(u64, u32)>,
         retries: Vec<(u64, u32, u64)>, // (off, gen, delay_ms)
         extends: Vec<(u64, u32, u64)>, // (off, gen, visibility_ms)
@@ -205,7 +254,7 @@ pub enum QueueOut {
     },
     /// created = true -> 201; equal existing -> 200; None + conflict.
     Config {
-        cfg: Option<ConsumerConfig>,
+        rec: Option<ConsumerRecord>,
         created: bool,
         conflict: bool,
     },

@@ -674,6 +674,15 @@ pub struct ShardEngine {
     fail_group_for: Mutex<Option<std::collections::HashSet<[u8; 16]>>>,
     #[cfg(test)]
     fail_config_scan: std::sync::atomic::AtomicBool,
+    /// Consumer-generation fences (round 16): (identity, consumer) ->
+    /// first LIVE generation. Installed by the deletion saga's segment
+    /// op BEFORE its cleanup stages, so a Receive/Settle for a dead
+    /// generation that is still in this committer's queue can never
+    /// re-stage rows the cleanup ran too early to see. Engine-resident
+    /// like the seal fences: it only has to outlive the queue that
+    /// could contain stale ops; durably, dead generations are already
+    /// harmless because generations live in the row keys.
+    consumer_fences: Mutex<HashMap<([u8; 16], String), u64>>,
     #[cfg(test)]
     fail_group_tripped: std::sync::atomic::AtomicUsize,
     /// Pump telemetry: flushes issued, requests acked at the pump's own
@@ -839,6 +848,7 @@ impl ShardEngine {
             fail_group_for: Mutex::new(None),
             #[cfg(test)]
             fail_config_scan: std::sync::atomic::AtomicBool::new(false),
+            consumer_fences: Mutex::new(HashMap::new()),
             #[cfg(test)]
             fail_group_tripped: std::sync::atomic::AtomicUsize::new(0),
             tx,
@@ -1621,10 +1631,11 @@ impl ShardEngine {
         &self,
         hash: [u8; 16],
         consumer: &str,
+        cgen: u64,
     ) -> Result<u64, slatedb::Error> {
         Ok(self
             .db
-            .get(crate::queue::cursor_key(&hash, consumer))
+            .get(crate::queue::cursor_key(&hash, consumer, cgen))
             .await?
             .map(|v| u64::from_le_bytes(v[..8].try_into().unwrap_or([0; 8])))
             .unwrap_or(0))
@@ -1978,7 +1989,7 @@ impl ShardEngine {
             /// after the group either way: on success the rows are
             /// durable, on failure they never existed.
             queue_configs:
-                std::collections::HashMap<String, Option<crate::queue::ConsumerConfig>>,
+                std::collections::HashMap<String, crate::queue::ConsumerRecord>,
             appended_bytes: u64,
             /// Frames written by this group, retained for the durable-tail
             /// ring (empty when the ring is off). Offsets are contiguous
@@ -2589,35 +2600,53 @@ impl ShardEngine {
                             loop {
                                 match iter.next().await {
                                     Ok(Some(kv)) => {
+                                        // Key layout (round 16, one
+                                        // format): name 0x00 gen[8]
+                                        // for cursors; name 0x00
+                                        // gen[8] off[8] for leases and
+                                        // ack markers. Rows of a LOWER
+                                        // generation than the state
+                                        // already loaded are a dead
+                                        // generation's residue —
+                                        // ignored, never merged; a
+                                        // HIGHER generation replaces
+                                        // the state wholesale.
                                         let rest = &kv.key[17..];
+                                        let Some(sep) = rest.iter().position(|b| *b == 0) else {
+                                            continue;
+                                        };
+                                        let consumer = String::from_utf8_lossy(&rest[..sep])
+                                            .into_owned();
+                                        let tail = &rest[sep + 1..];
+                                        if tail.len() < 8 {
+                                            continue;
+                                        }
+                                        let cgen = u64::from_be_bytes(
+                                            tail[..8].try_into().unwrap_or([0; 8]),
+                                        );
+                                        let cs = fresh.consumers.entry(consumer).or_default();
+                                        if cs.cgen > cgen {
+                                            continue;
+                                        }
+                                        if cs.cgen < cgen {
+                                            *cs = ConsumerState {
+                                                cgen,
+                                                ..Default::default()
+                                            };
+                                        }
                                         match tag {
                                             b'c' => {
-                                                let consumer =
-                                                    String::from_utf8_lossy(rest).into_owned();
-                                                let cur = u64::from_le_bytes(
+                                                cs.cursor = u64::from_le_bytes(
                                                     kv.value[..8].try_into().unwrap_or([0; 8]),
                                                 );
-                                                fresh
-                                                    .consumers
-                                                    .entry(consumer)
-                                                    .or_default()
-                                                    .cursor = cur;
                                             }
                                             _ => {
-                                                let Some(sep) = rest.iter().position(|b| *b == 0)
-                                                else {
+                                                if tail.len() < 16 {
                                                     continue;
-                                                };
-                                                let consumer =
-                                                    String::from_utf8_lossy(&rest[..sep])
-                                                        .into_owned();
+                                                }
                                                 let off = u64::from_be_bytes(
-                                                    rest[sep + 1..sep + 9]
-                                                        .try_into()
-                                                        .unwrap_or([0; 8]),
+                                                    tail[8..16].try_into().unwrap_or([0; 8]),
                                                 );
-                                                let cs =
-                                                    fresh.consumers.entry(consumer).or_default();
                                                 if tag == b'l' {
                                                     if let Some(l) = decode_lease(&kv.value) {
                                                         cs.leases.insert(off, l);
@@ -2660,42 +2689,78 @@ impl ShardEngine {
                     // state lock because they read the row directly.
                     let op = match op {
                         QueueOp::ConfigPut { consumer, cfg } => {
-                            // Existing config: the same-group OVERLAY
-                            // first (a ConfigPut/Delete earlier in this
-                            // group is invisible to the DB behind the
-                            // unwritten batch), else the durable row.
-                            let existing = match local.queue_configs.get(&consumer) {
-                                Some(staged) => staged.clone(),
-                                None => match self.db.get(&config_key(&hash, &consumer)[..]).await {
-                                    Ok(v) => {
-                                        v.and_then(|v| serde_json::from_slice::<ConsumerConfig>(&v).ok())
-                                    }
-                                    Err(e) => {
-                                        let _ = resp.send(Err(e.to_string()));
-                                        continue;
-                                    }
-                                },
-                            };
+                            // Existing RECORD: the same-group OVERLAY
+                            // first (a ConfigPut/Lifecycle earlier in
+                            // this group is invisible to the DB behind
+                            // the unwritten batch), else the durable
+                            // row. Records carry {generation, state,
+                            // config}; recreation over a Deleted
+                            // tombstone allocates generation+1, which
+                            // is what makes any dead generation's
+                            // residue inert (round 16).
+                            let existing: Option<ConsumerRecord> =
+                                match local.queue_configs.get(&consumer) {
+                                    Some(staged) => Some(staged.clone()),
+                                    None => match self
+                                        .db
+                                        .get(&config_key(&hash, &consumer)[..])
+                                        .await
+                                    {
+                                        Ok(v) => v.and_then(|v| {
+                                            serde_json::from_slice::<ConsumerRecord>(&v).ok()
+                                        }),
+                                        Err(e) => {
+                                            let _ = resp.send(Err(e.to_string()));
+                                            continue;
+                                        }
+                                    },
+                                };
                             let out = match existing {
-                                Some(old) if old == cfg => QueueOut::Config {
-                                    cfg: Some(old),
-                                    created: false,
-                                    conflict: false,
-                                },
-                                Some(old) => QueueOut::Config {
-                                    cfg: Some(old),
-                                    created: false,
-                                    conflict: true,
-                                },
-                                None => {
-                                    let enc = serde_json::to_vec(&cfg).unwrap_or_default();
+                                Some(rec) if rec.state == ConsumerLifecycle::Active
+                                    && rec.config == cfg =>
+                                {
+                                    QueueOut::Config {
+                                        rec: Some(rec),
+                                        created: false,
+                                        conflict: false,
+                                    }
+                                }
+                                Some(rec) if rec.state == ConsumerLifecycle::Active => {
+                                    QueueOut::Config {
+                                        rec: Some(rec),
+                                        created: false,
+                                        conflict: true,
+                                    }
+                                }
+                                Some(rec) if rec.state == ConsumerLifecycle::Deleting => {
+                                    // A deletion in flight owns the name
+                                    // until it settles; recreating now
+                                    // would race the saga's fan-out.
+                                    QueueOut::Config {
+                                        rec: Some(rec),
+                                        created: false,
+                                        conflict: true,
+                                    }
+                                }
+                                other => {
+                                    // Absent, or a Deleted tombstone:
+                                    // create at a strictly higher
+                                    // generation than any that ever
+                                    // lived under this name.
+                                    let cgen = other.map(|r| r.generation + 1).unwrap_or(1);
+                                    let rec = ConsumerRecord {
+                                        generation: cgen,
+                                        state: ConsumerLifecycle::Active,
+                                        config: cfg,
+                                    };
+                                    let enc = serde_json::to_vec(&rec).unwrap_or_default();
                                     wb.put(config_key(&hash, &consumer), enc);
                                     extra_writes = true;
                                     local
                                         .queue_configs
-                                        .insert(consumer.clone(), Some(cfg.clone()));
+                                        .insert(consumer.clone(), rec.clone());
                                     QueueOut::Config {
-                                        cfg: Some(cfg),
+                                        rec: Some(rec),
                                         created: true,
                                         conflict: false,
                                     }
@@ -2705,9 +2770,10 @@ impl ShardEngine {
                             continue;
                         }
                         QueueOp::ConfigGet { consumer } => {
-                            let cfg = match local.queue_configs.get(&consumer) {
-                                Some(staged) => staged.clone(),
-                                None => match self.db.get(&config_key(&hash, &consumer)[..]).await {
+                            let rec = match local.queue_configs.get(&consumer) {
+                                Some(staged) => Some(staged.clone()),
+                                None => match self.db.get(&config_key(&hash, &consumer)[..]).await
+                                {
                                     Ok(v) => v.and_then(|v| serde_json::from_slice(&v).ok()),
                                     Err(e) => {
                                         let _ = resp.send(Err(e.to_string()));
@@ -2718,21 +2784,115 @@ impl ShardEngine {
                             queue_pending.push((
                                 resp,
                                 QueueOut::Config {
-                                    cfg,
+                                    rec,
                                     created: false,
                                     conflict: false,
                                 },
                             ));
                             continue;
                         }
-                        QueueOp::ConfigDelete { consumer } => {
-                            // PHASE 1 — enumerate, fallibly. Deletion may
-                            // stage NOTHING until every source of this
-                            // consumer's rows has been read to completion:
-                            // a scan that fails half-way and "continues"
-                            // deletes the config while leaving leases or
-                            // acks durable, and the recreated consumer
-                            // inherits them (round 15 A).
+                        QueueOp::ConfigLifecycle {
+                            consumer,
+                            expect_gen,
+                            deleting,
+                        } => {
+                            let existing: Option<ConsumerRecord> =
+                                match local.queue_configs.get(&consumer) {
+                                    Some(staged) => Some(staged.clone()),
+                                    None => match self
+                                        .db
+                                        .get(&config_key(&hash, &consumer)[..])
+                                        .await
+                                    {
+                                        Ok(v) => v.and_then(|v| {
+                                            serde_json::from_slice::<ConsumerRecord>(&v).ok()
+                                        }),
+                                        Err(e) => {
+                                            let _ = resp.send(Err(e.to_string()));
+                                            continue;
+                                        }
+                                    },
+                                };
+                            let Some(rec) = existing else {
+                                let _ = resp.send(Err(
+                                    "consumer_not_found: no record for lifecycle change".into(),
+                                ));
+                                continue;
+                            };
+                            if rec.generation != expect_gen {
+                                let _ = resp.send(Err(format!(
+                                    "consumer_generation_conflict: record gen {} != expected {}",
+                                    rec.generation, expect_gen
+                                )));
+                                continue;
+                            }
+                            let target = if deleting {
+                                ConsumerLifecycle::Deleting
+                            } else {
+                                ConsumerLifecycle::Deleted
+                            };
+                            let legal = matches!(
+                                (rec.state, target),
+                                (ConsumerLifecycle::Active, ConsumerLifecycle::Deleting)
+                                    | (ConsumerLifecycle::Deleting, ConsumerLifecycle::Deleting)
+                                    | (ConsumerLifecycle::Deleting, ConsumerLifecycle::Deleted)
+                                    | (ConsumerLifecycle::Deleted, ConsumerLifecycle::Deleted)
+                            );
+                            if !legal {
+                                let _ = resp.send(Err(format!(
+                                    "consumer_lifecycle_conflict: {:?} -> {:?}",
+                                    rec.state, target
+                                )));
+                                continue;
+                            }
+                            let mut next = rec.clone();
+                            next.state = target;
+                            if next != rec {
+                                let enc = serde_json::to_vec(&next).unwrap_or_default();
+                                wb.put(config_key(&hash, &consumer), enc);
+                                extra_writes = true;
+                            }
+                            local.queue_configs.insert(consumer.clone(), next.clone());
+                            queue_pending.push((
+                                resp,
+                                QueueOut::Config {
+                                    rec: Some(next),
+                                    created: false,
+                                    conflict: false,
+                                },
+                            ));
+                            continue;
+                        }
+                        QueueOp::ConfigDelete {
+                            consumer,
+                            fence_below,
+                        } => {
+                            // SEGMENT cleanup for the deletion saga
+                            // (round 16). Order matters:
+                            //
+                            // FENCE FIRST — from this instant, any
+                            // Receive/Settle for a generation below
+                            // `fence_below` refuses, including ops
+                            // already sitting in this committer's
+                            // queue behind us. The fence only ever
+                            // ratchets up, and installing it before
+                            // the fallible scans is the conservative
+                            // direction: a failed cleanup leaves a
+                            // fence for a deletion that IS in
+                            // progress (the saga retries), never a
+                            // window where a dead generation can
+                            // write.
+                            {
+                                let mut f = self.consumer_fences.lock().unwrap();
+                                let e = f.entry((hash, consumer.clone())).or_insert(0);
+                                *e = (*e).max(fence_below);
+                            }
+                            // PHASE 1 — enumerate, fallibly. Deletion
+                            // stages NOTHING until every durable row
+                            // source has been read to completion
+                            // (round 15 A). The prefixes cover EVERY
+                            // generation: cleanup buries all residue,
+                            // not just the fenced generation's.
                             let mut dead: Vec<Vec<u8>> = Vec::new();
                             let mut scan_err: Option<String> = None;
                             #[cfg(test)]
@@ -2740,12 +2900,8 @@ impl ShardEngine {
                                 scan_err = Some("injected config-scan failure".into());
                             }
                             if scan_err.is_none() {
-                                'scans: for tag in [b'l', b'x'] {
-                                    let mut pfx = Vec::with_capacity(18 + consumer.len());
-                                    pfx.extend_from_slice(&hash);
-                                    pfx.push(tag);
-                                    pfx.extend_from_slice(consumer.as_bytes());
-                                    pfx.push(0);
+                                'scans: for tag in [b'c', b'l', b'x'] {
+                                    let pfx = state_prefix(&hash, tag, &consumer);
                                     match self.db.scan_prefix(&pfx[..], ..).await {
                                         Ok(mut iter) => loop {
                                             match iter.next().await {
@@ -2765,20 +2921,19 @@ impl ShardEngine {
                                 }
                             }
                             if let Some(e) = scan_err {
-                                // Nothing staged, nothing published: the
-                                // consumer is exactly as it was.
+                                // Nothing staged, nothing published:
+                                // this segment's rows are exactly as
+                                // they were (the fence stays — it is
+                                // conservative), and the saga reports
+                                // the failure instead of 204.
                                 let _ = resp.send(Err(format!(
                                     "consumer delete aborted: state scan failed: {e}"
                                 )));
                                 continue;
                             }
-                            // PHASE 2 — the durable scans cannot see rows
-                            // an EARLIER op in this same group staged into
-                            // the unwritten WriteBatch (Receive leases,
-                            // Settle acks/cursor). Enumerate the group-
-                            // local view and delete those too; these
-                            // deletes land AFTER the puts in the batch,
-                            // so they win for this consumer (round 15 B).
+                            // PHASE 2 — rows an EARLIER op in this
+                            // same group staged into the unwritten
+                            // WriteBatch (round 15 B).
                             if local.queue.is_none() {
                                 local.queue =
                                     Some(local.handle.state.lock().unwrap().queue.clone());
@@ -2787,26 +2942,29 @@ impl ShardEngine {
                                 local.queue.as_ref().unwrap().consumers.get(&consumer)
                             {
                                 for off in cs.leases.keys() {
-                                    dead.push(lease_key(&hash, &consumer, *off));
+                                    dead.push(lease_key(&hash, &consumer, cs.cgen, *off));
                                 }
                                 for off in cs.acked.iter() {
-                                    dead.push(ack_key(&hash, &consumer, *off));
+                                    dead.push(ack_key(&hash, &consumer, cs.cgen, *off));
                                 }
+                                dead.push(cursor_key(&hash, &consumer, cs.cgen));
                             }
-                            // PHASE 3 — stage everything.
-                            wb.delete(config_key(&hash, &consumer));
-                            dead.push(cursor_key(&hash, &consumer));
-                            for k in dead {
-                                wb.delete(k);
+                            // PHASE 3 — stage everything. (The parent
+                            // config RECORD is not this op's business:
+                            // the saga tombstones it via
+                            // ConfigLifecycle only after every
+                            // segment's cleanup has settled.) A
+                            // cleanup that found NOTHING stages
+                            // nothing — an empty WriteBatch is a
+                            // store error, and a repeat fan-out round
+                            // over already-clean segments is the
+                            // saga's normal stabilization path.
+                            if !dead.is_empty() {
+                                for k in dead {
+                                    wb.delete(k);
+                                }
+                                extra_writes = true;
                             }
-                            extra_writes = true;
-                            // Stage the deletion into the SAME batch-local
-                            // model every other op sees. Mutating the
-                            // shared handle here published a delete a
-                            // failed write never made durable — and a
-                            // Receive earlier in the group could copy the
-                            // consumer straight back on the success path.
-                            local.queue_configs.insert(consumer.clone(), None);
                             local
                                 .queue
                                 .as_mut()
@@ -2816,7 +2974,7 @@ impl ShardEngine {
                             queue_pending.push((
                                 resp,
                                 QueueOut::Config {
-                                    cfg: None,
+                                    rec: None,
                                     created: false,
                                     conflict: false,
                                 },
@@ -2826,23 +2984,47 @@ impl ShardEngine {
                         other => other,
                     };
                     let now = now_ms();
-                    // A consumer deleted EARLIER IN THIS GROUP does not
-                    // exist for any later op in the group. Without this
-                    // check, a Receive ordered after the ConfigDelete
-                    // quietly re-stages lease rows (and Settle re-stages
-                    // ack/cursor rows) for the dead consumer — rows the
-                    // delete's scans ran too early to see (round 15).
-                    if let Some(cname) = match &op {
-                        QueueOp::Receive { consumer, .. }
-                        | QueueOp::Settle { consumer, .. } => Some(consumer.clone()),
+                    // Generation discipline for delivery-state ops
+                    // (round 16). Two independent gates:
+                    //   1. The engine-resident fence — a segment
+                    //      cleanup earlier in this group (or any time
+                    //      since this engine opened) killed
+                    //      generations below it; ops for those
+                    //      generations refuse, closing the in-flight
+                    //      window the durable scans cannot see.
+                    //   2. The group-local config overlay — a
+                    //      lifecycle change staged earlier in this
+                    //      group (Deleting/Deleted, or a different
+                    //      generation) refuses the op before anything
+                    //      is staged.
+                    if let Some((cname, op_gen)) = match &op {
+                        QueueOp::Receive { consumer, cgen, .. }
+                        | QueueOp::Settle { consumer, cgen, .. } => {
+                            Some((consumer.clone(), *cgen))
+                        }
                         _ => None,
                     } {
-                        if matches!(local.queue_configs.get(&cname), Some(None)) {
-                            let _ = resp.send(Err(
-                                "consumer_not_found: deleted earlier in this commit group"
-                                    .into(),
-                            ));
+                        let fenced = {
+                            let f = self.consumer_fences.lock().unwrap();
+                            f.get(&(hash, cname.clone()))
+                                .is_some_and(|min_live| op_gen < *min_live)
+                        };
+                        if fenced {
+                            let _ = resp.send(Err(format!(
+                                "consumer_generation_fenced: generation {op_gen} was deleted"
+                            )));
                             continue;
+                        }
+                        if let Some(staged) = local.queue_configs.get(&cname) {
+                            if staged.state != ConsumerLifecycle::Active
+                                || staged.generation != op_gen
+                            {
+                                let _ = resp.send(Err(format!(
+                                    "consumer_not_found: generation {op_gen} is not the \
+                                     active record in this commit group"
+                                )));
+                                continue;
+                            }
                         }
                     }
                     if local.queue.is_none() {
@@ -2854,6 +3036,7 @@ impl ShardEngine {
                         match op {
                             QueueOp::Receive {
                                 consumer,
+                                cgen,
                                 max,
                                 visibility_ms,
                                 max_deliveries,
@@ -2861,6 +3044,29 @@ impl ShardEngine {
                                 covered_to,
                             } => {
                                 let cs = st_queue.consumers.entry(consumer.clone()).or_default();
+                                // Generation binding: fresh state binds
+                                // to the op's generation; state from a
+                                // NEWER generation makes this op stale
+                                // (refuse); state from an OLDER one is
+                                // pre-cleanup residue in memory only —
+                                // replace it (its durable rows are the
+                                // cleanup's job, and its generation is
+                                // fenced anyway).
+                                if cs.cgen == 0 {
+                                    cs.cgen = cgen;
+                                } else if cs.cgen > cgen {
+                                    let _ = resp.send(Err(format!(
+                                        "consumer_generation_fenced: generation {cgen} \
+                                         superseded by {}",
+                                        cs.cgen
+                                    )));
+                                    continue;
+                                } else if cs.cgen < cgen {
+                                    *cs = ConsumerState {
+                                        cgen,
+                                        ..Default::default()
+                                    };
+                                }
                                 let mut leased = Vec::new();
                                 let mut poisoned: Vec<(u64, u32, u32, [u8; 16])> = Vec::new();
                                 // Per-key FIFO (spec Stage 2 §2.3): a key
@@ -2922,7 +3128,10 @@ impl ShardEngine {
                                         lease_gen: prev.map(|l| l.lease_gen).unwrap_or(0) + 1,
                                         key_hash: kh,
                                     };
-                                    wb.put(lease_key(&hash, &consumer, off), encode_lease(&lease));
+                                    wb.put(
+                                        lease_key(&hash, &consumer, cgen, off),
+                                        encode_lease(&lease),
+                                    );
                                     extra_writes = true;
                                     cs.leases.insert(off, lease);
                                     blocked.insert(kh);
@@ -2931,12 +3140,12 @@ impl ShardEngine {
                                 }
                                 // Advance cursor over settled prefix.
                                 while cs.acked.remove(&cs.cursor) {
-                                    wb.delete(ack_key(&hash, &consumer, cs.cursor));
+                                    wb.delete(ack_key(&hash, &consumer, cgen, cs.cursor));
                                     cs.cursor += 1;
                                     extra_writes = true;
                                 }
                                 wb.put(
-                                    cursor_key(&hash, &consumer),
+                                    cursor_key(&hash, &consumer, cgen),
                                     cs.cursor.to_le_bytes().to_vec(),
                                 );
                                 let backlog = (local.fields.next - cs.cursor)
@@ -2949,21 +3158,37 @@ impl ShardEngine {
                             }
                             QueueOp::Settle {
                                 consumer,
+                                cgen,
                                 acks,
                                 retries,
                                 extends,
                                 max_deliveries,
                             } => {
                                 let cs = st_queue.consumers.entry(consumer.clone()).or_default();
+                                if cs.cgen == 0 {
+                                    cs.cgen = cgen;
+                                } else if cs.cgen > cgen {
+                                    let _ = resp.send(Err(format!(
+                                        "consumer_generation_fenced: generation {cgen} \
+                                         superseded by {}",
+                                        cs.cgen
+                                    )));
+                                    continue;
+                                } else if cs.cgen < cgen {
+                                    *cs = ConsumerState {
+                                        cgen,
+                                        ..Default::default()
+                                    };
+                                }
                                 let (mut a, mut r, mut e2, mut dq, mut stale) =
                                     (0usize, 0usize, 0usize, 0usize, 0usize);
                                 let mut poisoned: Vec<(u64, u32, u32, [u8; 16])> = Vec::new();
                                 for (off, tok_gen) in acks {
                                     if cs.leases.get(&off).map(|l| l.lease_gen) == Some(tok_gen) {
                                         cs.leases.remove(&off);
-                                        wb.delete(lease_key(&hash, &consumer, off));
+                                        wb.delete(lease_key(&hash, &consumer, cgen, off));
                                         cs.acked.insert(off);
-                                        wb.put(ack_key(&hash, &consumer, off), b"");
+                                        wb.put(ack_key(&hash, &consumer, cgen, off), b"");
                                         extra_writes = true;
                                         a += 1;
                                     } else {
@@ -3000,7 +3225,7 @@ impl ShardEngine {
                                             };
                                             cs.leases.insert(off, nl);
                                             wb.put(
-                                                lease_key(&hash, &consumer, off),
+                                                lease_key(&hash, &consumer, cgen, off),
                                                 encode_lease(&nl),
                                             );
                                             r += 1;
@@ -3019,7 +3244,7 @@ impl ShardEngine {
                                             };
                                             cs.leases.insert(off, nl);
                                             wb.put(
-                                                lease_key(&hash, &consumer, off),
+                                                lease_key(&hash, &consumer, cgen, off),
                                                 encode_lease(&nl),
                                             );
                                             extra_writes = true;
@@ -3032,12 +3257,12 @@ impl ShardEngine {
                                     }
                                 }
                                 while cs.acked.remove(&cs.cursor) {
-                                    wb.delete(ack_key(&hash, &consumer, cs.cursor));
+                                    wb.delete(ack_key(&hash, &consumer, cgen, cs.cursor));
                                     cs.cursor += 1;
                                     extra_writes = true;
                                 }
                                 wb.put(
-                                    cursor_key(&hash, &consumer),
+                                    cursor_key(&hash, &consumer, cgen),
                                     cs.cursor.to_le_bytes().to_vec(),
                                 );
                                 let backlog = (local.fields.next - cs.cursor)
@@ -3054,6 +3279,7 @@ impl ShardEngine {
                             }
                             QueueOp::ConfigPut { .. }
                             | QueueOp::ConfigGet { .. }
+                            | QueueOp::ConfigLifecycle { .. }
                             | QueueOp::ConfigDelete { .. } => {
                                 unreachable!("config ops handled before the state lock")
                             }
@@ -3414,6 +3640,37 @@ impl ShardEngine {
     pub fn appends_enqueued(&self) -> u64 {
         self.appends_enqueued
             .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Test-only ground truth for deletion tests: the number of
+    /// DURABLE state rows (cursor/lease/ack, every generation) this
+    /// consumer still has under this identity. The generation model
+    /// makes leaked residue invisible to behavioral asserts — a
+    /// recreated consumer ignores dead generations by design — so
+    /// burial is proven by counting rows, not by pulling.
+    #[cfg(test)]
+    pub async fn count_consumer_state_rows(
+        &self,
+        hash: [u8; 16],
+        consumer: &str,
+    ) -> Result<usize, String> {
+        let mut n = 0usize;
+        for tag in [b'c', b'l', b'x'] {
+            let pfx = crate::queue::state_prefix(&hash, tag, consumer);
+            let mut iter = self
+                .db
+                .scan_prefix(&pfx[..], ..)
+                .await
+                .map_err(|e| e.to_string())?;
+            loop {
+                match iter.next().await {
+                    Ok(Some(_)) => n += 1,
+                    Ok(None) => break,
+                    Err(e) => return Err(e.to_string()),
+                }
+            }
+        }
+        Ok(n)
     }
 
     /// One-shot: the next ConfigDelete's state-row scan reports a

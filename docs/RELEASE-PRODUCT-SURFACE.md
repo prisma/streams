@@ -128,30 +128,47 @@ what passed on the WAN. The retained services now run the frozen
 binary; their recorded expiry (2026-08-19) and ownership are renewed
 unchanged.
 
-## Consumer deletion is disabled for the preview (round 16)
+## Consumer deletion is a generation-fenced saga (round 16)
 
-The final review found the one remaining server-code issue: the
-collection-level consumer DELETE deleted the parent config, then
-best-effort looped segment owners and returned 204 unconditionally —
-after a split, a failed or unavailable segment left lease/cursor/ack
-rows a RECREATED consumer would inherit, and a pull admitted just
-before deletion could re-lease after that segment's cleanup on another
-owner, outside any commit group the overlay can see.
+The final review's one remaining server-code issue — collection-level
+consumer deletion was not atomic across a split collection's segments
+(parent config deleted first, per-segment cleanup best-effort with
+errors ignored, 204 unconditional; plus a cross-owner pull race no
+commit-group overlay can see) — is now fixed with the reviewer's full
+design, not the interim 501:
 
-Preview posture (the reviewer's fast alternative, chosen over another
-state-machine change at freeze): `DELETE
-/v1/streams/{name}/consumers/{consumer}` now answers **501
-`consumer_delete_disabled`** after auth, changing nothing; the SDK's
-`Consumer.delete()` is removed. Consumers are cheap — create a new
-name. The committer-level `ConfigDelete` (per-segment, transactional
-within its segment as of round 15) remains, as internal machinery and
-under test.
+- **Every consumer incarnation has a generation.** The parent config
+  row stores `{generation, state: active|deleting|deleted, config}`;
+  the generation lives in every cursor/lease/ack ROW KEY, in every
+  lease TOKEN, and in every Receive/Settle operation. `deleted` is a
+  tombstone, kept so recreation allocates generation+1 — which is
+  what makes late old-generation writes and residual rows inert.
+- **Deletion is a resumable saga**: Active → Deleting (generation-
+  fenced CAS; new pull/settle refuse from that instant and recreation
+  409s) → per-segment fence + transactional row cleanup over every
+  current AND predecessor segment (the pull lineage) → repeat until
+  the segment map is stable across a full round (a racing split gets
+  its children swept) → Deleting → Deleted. **Any segment failure
+  propagates as a retryable 5xx — 204 is only ever collection-wide.**
+  The retry resumes from Deleting.
+- **The per-segment generation fence is engine-resident** (like the
+  sealing fence): installed BEFORE the cleanup's scans, it refuses
+  any Receive/Settle for a dead generation still sitting in that
+  committer's queue — the in-flight window durable scans cannot see.
+  It only ratchets up; a failed cleanup leaves a fence for a deletion
+  that is genuinely in progress.
+- **Settle filters dead-generation lease tokens as stale** even if
+  the name was recreated meanwhile.
 
-Collection-wide deletion returns as a **generation-fenced saga**
-(tracked #118): consumer generations in row keys and lease tokens, an
-`Active -> Deleting` lifecycle on the parent config, ordered
-delete/fence per current AND predecessor segment, failures propagated
-(never 204 over partial state), recreation under a fresh generation.
+Deterministic tests (each red-verified against its exact mechanism):
+a split collection with leases on BOTH children where one segment's
+cleanup fails — DELETE refuses, the retry completes, recreation
+inherits nothing (row-level proof on both segments); a pull parked
+between config load and its segment Receive across a completed
+deletion — the old-generation Receive refuses and no dead-generation
+row lands; the round-15 same-group compositions re-proven at the row
+level (the generation model makes leaked residue invisible to
+behavioral asserts by design, so burial is proven by counting rows).
 
 ## Multi-instance fleet posture
 

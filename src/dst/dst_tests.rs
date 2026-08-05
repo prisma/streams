@@ -7786,11 +7786,10 @@ async fn product_consumer_config_lifecycle() {
     )
     .await;
     assert_eq!(st, 404);
-    // Preview contract (round 16): collection-level consumer deletion
-    // is DISABLED — 501 consumer_delete_disabled, and the consumer
-    // remains fully functional. Collection-wide deletion returns as
-    // the generation-fenced saga (#118).
-    let (st, _, _) = preq(
+    // Round 16: deletion is the generation-fenced saga — 204 means
+    // collection-wide, GET 404s afterwards, and a retried DELETE is
+    // an idempotent 204 on the tombstone.
+    let (st, _, b) = preq(
         addr,
         "DELETE",
         "/v1/streams/cc/consumers/work",
@@ -7798,7 +7797,7 @@ async fn product_consumer_config_lifecycle() {
         b"",
     )
     .await;
-    assert_eq!(st, 501);
+    assert_eq!(st, 204, "{}", String::from_utf8_lossy(&b));
     let (st, _, _) = preq(
         addr,
         "GET",
@@ -7807,7 +7806,16 @@ async fn product_consumer_config_lifecycle() {
         b"",
     )
     .await;
-    assert_eq!(st, 200, "a refused delete must leave the consumer intact");
+    assert_eq!(st, 404, "a deleted consumer must be gone");
+    let (st, _, _) = preq(
+        addr,
+        "DELETE",
+        "/v1/streams/cc/consumers/work",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 204, "delete retry is idempotent on the tombstone");
     engine_shutdown(&state).await;
 }
 
@@ -13644,6 +13652,7 @@ async fn queue_config_delete_is_group_local() {
             identity,
             crate::queue::QueueOp::ConfigDelete {
                 consumer: "c1".into(),
+                fence_below: 2,
             },
         )
         .await;
@@ -13652,10 +13661,34 @@ async fn queue_config_delete_is_group_local() {
         del.is_err(),
         "a config delete outlived its failed group: {del:?}"
     );
-
-    // The consumer survives with its leases: a fresh pull leases
-    // NOTHING new (both records still held), which is only true if the
-    // delete published nothing to the handle.
+    // The failed group published NOTHING durable: the config record is
+    // untouched, and the durable lease rows survive (the fence is up —
+    // conservative — but conservativeness never fakes a deletion).
+    let rows = engine
+        .count_consumer_state_rows(identity, "c1")
+        .await
+        .unwrap();
+    assert!(rows > 0, "a failed delete erased durable rows");
+    let (st, _, _) = preq(addr, "GET", "/v1/streams/qc14/consumers/c1", &key, b"").await;
+    assert_eq!(st, 200, "a failed delete removed the config record");
+    // The SAGA retry finishes the job end to end.
+    let (st, _, _) = preq(addr, "DELETE", "/v1/streams/qc14/consumers/c1", &key, b"").await;
+    assert_eq!(st, 204, "the delete retry must complete the saga");
+    let rows = engine
+        .count_consumer_state_rows(identity, "c1")
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "the completed saga left durable rows behind");
+    // And recreation starts a NEW generation with a clean world.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc14/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "recreation after the saga");
     let (st, _, b) = preq(
         addr,
         "POST",
@@ -13664,12 +13697,12 @@ async fn queue_config_delete_is_group_local() {
         br#"{"max": 2}"#,
     )
     .await;
-    assert_eq!(st, 200, "the consumer was destroyed by a failed delete");
-    let leased_now = serde_json::from_slice::<serde_json::Value>(&b).unwrap()["messages"]
+    assert_eq!(st, 200);
+    let got = serde_json::from_slice::<serde_json::Value>(&b).unwrap()["messages"]
         .as_array()
         .map(|a| a.len())
-        .unwrap_or(99);
-    assert_eq!(leased_now, 0, "a failed delete dropped the consumer's leases");
+        .unwrap_or(0);
+    assert_eq!(got, 2, "the recreated generation inherited state");
     engine_shutdown(&state).await;
 }
 
@@ -13738,6 +13771,7 @@ async fn receive_then_delete_in_one_group_leaves_no_stale_lease() {
             identity,
             crate::queue::QueueOp::Receive {
                 consumer: "c1".into(),
+                cgen: 1,
                 max: 2,
                 visibility_ms: 30_000,
                 max_deliveries: 3,
@@ -13756,6 +13790,7 @@ async fn receive_then_delete_in_one_group_leaves_no_stale_lease() {
             identity,
             crate::queue::QueueOp::ConfigDelete {
                 consumer: "c1".into(),
+                fence_below: 2,
             },
         )
         .await
@@ -13773,43 +13808,16 @@ async fn receive_then_delete_in_one_group_leaves_no_stale_lease() {
     }
     del.await.unwrap().expect("delete");
 
-    // Force the durable rows to be the only truth. (idle=1ms evicts
-    // every unreferenced handle once 1ms has passed; ZERO would skip
-    // the branch entirely and silently test nothing.)
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    let evicted = engine.evict_idle_handles(std::time::Duration::from_millis(1), 0);
-    assert!(evicted >= 1, "handle eviction was a no-op; the reload leg is untested");
-
-    // A recreated consumer must see a completely fresh world: both
-    // records deliverable at once. A stale lease row from the deleted
-    // incarnation would hide one behind an active visibility window.
-    let (st, _, _) = preq(
-        addr,
-        "PUT",
-        "/v1/streams/qc15a/consumers/c1",
-        &key,
-        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
-    )
-    .await;
-    assert_eq!(st, 201, "recreate after delete");
-    let (st, _, b) = preq(
-        addr,
-        "POST",
-        "/v1/streams/qc15a/consumers/c1:pull",
-        &key,
-        br#"{"max": 2}"#,
-    )
-    .await;
-    assert_eq!(st, 200);
-    let got = serde_json::from_slice::<serde_json::Value>(&b).unwrap()["messages"]
-        .as_array()
-        .map(|a| a.len())
-        .unwrap_or(0);
+    // Ground truth: with generations, leaked residue is INVISIBLE to a
+    // recreated consumer by design — so burial is proven by counting
+    // durable rows, not by pulling. Zero rows, all generations.
+    let rows = engine
+        .count_consumer_state_rows(identity, "c1")
+        .await
+        .unwrap();
     assert_eq!(
-        got,
-        2,
-        "a lease staged in the SAME group as the delete survived it: {}",
-        String::from_utf8_lossy(&b)
+        rows, 0,
+        "a lease staged in the SAME group as the delete survived it durably"
     );
     engine_shutdown(&state).await;
 }
@@ -13872,6 +13880,7 @@ async fn settle_then_delete_in_one_group_leaves_no_stale_rows() {
             identity,
             crate::queue::QueueOp::Receive {
                 consumer: "c1".into(),
+                cgen: 1,
                 max: 2,
                 visibility_ms: 30_000,
                 max_deliveries: 3,
@@ -13902,6 +13911,7 @@ async fn settle_then_delete_in_one_group_leaves_no_stale_rows() {
             identity,
             crate::queue::QueueOp::Settle {
                 consumer: "c1".into(),
+                cgen: 1,
                 acks: vec![(off0, gen0)],
                 retries: Vec::new(),
                 extends: Vec::new(),
@@ -13919,6 +13929,7 @@ async fn settle_then_delete_in_one_group_leaves_no_stale_rows() {
             identity,
             crate::queue::QueueOp::ConfigDelete {
                 consumer: "c1".into(),
+                fence_below: 2,
             },
         )
         .await
@@ -13930,39 +13941,13 @@ async fn settle_then_delete_in_one_group_leaves_no_stale_rows() {
     settle.await.unwrap().expect("settle");
     del.await.unwrap().expect("delete");
 
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    let evicted = engine.evict_idle_handles(std::time::Duration::from_millis(1), 0);
-    assert!(evicted >= 1, "handle eviction was a no-op; the reload leg is untested");
-
-    let (st, _, _) = preq(
-        addr,
-        "PUT",
-        "/v1/streams/qc15b/consumers/c1",
-        &key,
-        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
-    )
-    .await;
-    assert_eq!(st, 201, "recreate after delete");
-    // A stale cursor/ack row would make the fresh consumer skip
-    // offset 0. It must see BOTH records.
-    let (st, _, b) = preq(
-        addr,
-        "POST",
-        "/v1/streams/qc15b/consumers/c1:pull",
-        &key,
-        br#"{"max": 2}"#,
-    )
-    .await;
-    assert_eq!(st, 200);
-    let got = serde_json::from_slice::<serde_json::Value>(&b).unwrap()["messages"]
-        .as_array()
-        .map(|a| a.len())
-        .unwrap_or(0);
+    let rows = engine
+        .count_consumer_state_rows(identity, "c1")
+        .await
+        .unwrap();
     assert_eq!(
-        got,
-        2,
-        "ack/cursor rows staged in the SAME group as the delete survived it: {}",
-        String::from_utf8_lossy(&b)
+        rows, 0,
+        "ack/cursor rows staged in the SAME group as the delete survived it durably"
     );
     engine_shutdown(&state).await;
 }
@@ -14027,6 +14012,7 @@ async fn a_receive_after_delete_in_the_same_group_is_refused() {
             identity,
             crate::queue::QueueOp::ConfigDelete {
                 consumer: "c1".into(),
+                fence_below: 2,
             },
         )
         .await
@@ -14041,6 +14027,7 @@ async fn a_receive_after_delete_in_the_same_group_is_refused() {
             identity,
             crate::queue::QueueOp::Receive {
                 consumer: "c1".into(),
+                cgen: 1,
                 max: 2,
                 visibility_ms: 30_000,
                 max_deliveries: 3,
@@ -14058,17 +14045,23 @@ async fn a_receive_after_delete_in_the_same_group_is_refused() {
     let r = recv.await.unwrap();
     match r {
         Err(m) => assert!(
-            m.starts_with("consumer_not_found"),
+            m.starts_with("consumer_generation_fenced")
+                || m.starts_with("consumer_not_found"),
             "wrong refusal: {m}"
         ),
         Ok(o) => panic!("a Receive after an in-group delete succeeded: {o:?}"),
     }
 
-    // And nothing of the refused Receive survives: a recreated
-    // consumer sees both records.
-    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    let evicted = engine.evict_idle_handles(std::time::Duration::from_millis(1), 0);
-    assert!(evicted >= 1, "handle eviction was a no-op; the reload leg is untested");
+    // And nothing of the refused Receive survives durably.
+    let rows = engine
+        .count_consumer_state_rows(identity, "c1")
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "the refused Receive leaked durable rows");
+    // Finish the saga over the wire, recreate at generation 2, and the
+    // new consumer's world is clean.
+    let (st, _, _) = preq(addr, "DELETE", "/v1/streams/qc15d/consumers/c1", &key, b"").await;
+    assert_eq!(st, 204, "saga completes");
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -14077,7 +14070,7 @@ async fn a_receive_after_delete_in_the_same_group_is_refused() {
         br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
     )
     .await;
-    assert_eq!(st, 201);
+    assert_eq!(st, 201, "recreation allocates a new generation");
     let (st, _, b) = preq(
         addr,
         "POST",
@@ -14095,52 +14088,286 @@ async fn a_receive_after_delete_in_the_same_group_is_refused() {
     engine_shutdown(&state).await;
 }
 
-/// Round 16: collection-level consumer deletion is DISABLED for the
-/// preview — it is not yet atomic across a split collection's
-/// segments, and a 204 that is not collection-wide is a lie. The
-/// endpoint refuses AFTER auth (the security matrix separately proves
-/// tokenless is 401), names the reason, and changes nothing.
+/// Round 16, the reviewer's first required scenario: a SPLIT
+/// collection with leases on BOTH physical segments; one segment's
+/// cleanup FAILS mid-saga. The DELETE must not return 204; the retry
+/// finishes the cleanup; recreation inherits nothing — proven at the
+/// row level on both segments.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn product_consumer_delete_is_disabled_and_changes_nothing() {
+async fn a_split_consumers_deletion_fails_one_segment_then_retries_clean() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     let (st, _, _) = preq(
         addr,
         "PUT",
-        "/v1/streams/qc16",
+        "/v1/streams/qc16s",
         &key,
         br#"{"format":{"kind":"json"}}"#,
     )
     .await;
     assert_eq!(st, 201);
+    // Find two routing keys that land on OPPOSITE halves of the
+    // keyspace, then split at the midpoint so each key has its own
+    // physical segment.
+    let mid = 0x8000_0000_0000_0000u64;
+    let mut lo_key = None;
+    let mut hi_key = None;
+    for i in 0..64 {
+        let k = format!("rk{i}");
+        let point = crate::registry::StreamDesc::key_point(&k);
+        if point < mid && lo_key.is_none() {
+            lo_key = Some(k);
+        } else if point >= mid && hi_key.is_none() {
+            hi_key = Some(k);
+        }
+        if lo_key.is_some() && hi_key.is_some() {
+            break;
+        }
+    }
+    let (lo_key, hi_key) = (lo_key.unwrap(), hi_key.unwrap());
+    // Split FIRST, append after: post-split records land in the child
+    // segments, so the consumer's leases live one per child (a
+    // pre-split append would put both leases in the sealed parent).
+    assert!(
+        crate::scaler3::execute_split(&state, "qc16s", 0, mid).await,
+        "split"
+    );
+    for k in [&lo_key, &hi_key] {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/qc16s/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", k),
+            ],
+            br#"{"n":1}"#,
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
     let (st, _, _) = preq(
         addr,
         "PUT",
-        "/v1/streams/qc16/consumers/c1",
+        "/v1/streams/qc16s/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    // Lease on BOTH segments. One pull serves one segment (the same
+    // per-segment pagination discipline as reads), so pull twice.
+    let mut total = 0usize;
+    for _ in 0..2 {
+        let (st, _, b) = preq(
+            addr,
+            "POST",
+            "/v1/streams/qc16s/consumers/c1:pull",
+            &key,
+            br#"{"max": 4}"#,
+        )
+        .await;
+        assert_eq!(st, 200);
+        total += serde_json::from_slice::<serde_json::Value>(&b).unwrap()["messages"]
+            .as_array()
+            .map(|a| a.len())
+            .unwrap_or(0);
+    }
+    assert_eq!(total, 2, "one lease per segment across two pulls");
+
+    // The two CHILD segments' engines + identities.
+    state.registry.invalidate("qc16s");
+    let desc = state.registry.get("qc16s").await.unwrap().unwrap();
+    let children: Vec<_> = desc
+        .segments
+        .as_ref()
+        .unwrap()
+        .segments
+        .iter()
+        .filter(|sg| sg.is_live())
+        .map(|sg| (desc.dynamic_segment_identity(sg.seg_id), desc.segment_route(sg)))
+        .collect();
+    assert_eq!(children.len(), 2);
+    let mut engines = Vec::new();
+    for (id, route) in &children {
+        let e = state.engine_for(route).await.unwrap();
+        let rows = e.count_consumer_state_rows(*id, "c1").await.unwrap();
+        assert!(rows > 0, "each child holds this consumer's rows before deletion");
+        engines.push((e, *id));
+    }
+
+    // Fail ONE child's cleanup scan: the saga must NOT answer 204.
+    engines[1].0.fail_next_config_scan();
+    let (st, _, b) = preq(addr, "DELETE", "/v1/streams/qc16s/consumers/c1", &key, b"").await;
+    assert!(
+        st >= 500,
+        "a partial deletion answered {st}: {}",
+        String::from_utf8_lossy(&b)
+    );
+    // The consumer is now Deleting: pulls refuse, recreation refuses.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/qc16s/consumers/c1:pull",
+        &key,
+        br#"{"max": 1}"#,
+    )
+    .await;
+    assert_eq!(st, 409, "a Deleting consumer must refuse pulls");
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc16s/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 409, "recreation must wait for the saga to settle");
+
+    // The retry resumes from Deleting and completes.
+    let (st, _, b) = preq(addr, "DELETE", "/v1/streams/qc16s/consumers/c1", &key, b"").await;
+    assert_eq!(st, 204, "{}", String::from_utf8_lossy(&b));
+    for (e, id) in &engines {
+        let rows = e.count_consumer_state_rows(*id, "c1").await.unwrap();
+        assert_eq!(rows, 0, "a segment kept rows after the completed saga");
+    }
+    // Recreation allocates a new generation and starts from scratch.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc16s/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let mut got = 0usize;
+    for _ in 0..2 {
+        let (st, _, b) = preq(
+            addr,
+            "POST",
+            "/v1/streams/qc16s/consumers/c1:pull",
+            &key,
+            br#"{"max": 4}"#,
+        )
+        .await;
+        assert_eq!(st, 200);
+        got += serde_json::from_slice::<serde_json::Value>(&b).unwrap()["messages"]
+            .as_array()
+            .map(|a| a.len())
+            .unwrap_or(0);
+    }
+    assert_eq!(got, 2, "the recreated generation inherited state");
+    engine_shutdown(&state).await;
+}
+
+/// Round 16, the reviewer's second required scenario: a pull loads the
+/// config (generation N), parks BEFORE its segment Receive enqueues;
+/// the DELETE completes collection-wide meanwhile. The released pull's
+/// old-generation Receive must be REJECTED — no lease row of a deleted
+/// generation may land after its deletion finished — and a recreated
+/// consumer starts clean.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_parked_pull_cannot_lease_after_its_generation_was_deleted() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc16p",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for i in 0..2 {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/qc16p/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", &format!("k{i}")),
+            ],
+            format!("{{\"n\":{i}}}").as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc16p/consumers/c1",
         &key,
         br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
     )
     .await;
     assert_eq!(st, 201);
 
-    let (st, _, b) = preq(addr, "DELETE", "/v1/streams/qc16/consumers/c1", &key, b"").await;
-    assert_eq!(st, 501, "{}", String::from_utf8_lossy(&b));
-    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
-    assert_eq!(v["error"]["code"], "consumer_delete_disabled");
+    // Park the pull between its config load and its Receive enqueue.
+    crate::http::fork_failpoints::park_pull_before_receive("qc16p");
+    let before = crate::http::fork_failpoints::parked_pull_count();
+    let a1 = addr;
+    let pull = tokio::spawn(async move {
+        preq(
+            a1,
+            "POST",
+            "/v1/streams/qc16p/consumers/c1:pull",
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            br#"{"max": 2}"#,
+        )
+        .await
+    });
+    while crate::http::fork_failpoints::parked_pull_count() == before {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
 
-    // Nothing changed: the consumer is still there and still works.
-    let (st, _, _) = preq(addr, "GET", "/v1/streams/qc16/consumers/c1", &key, b"").await;
-    assert_eq!(st, 200, "the refused delete removed the consumer");
+    // The deletion completes collection-wide while the pull is parked.
+    let (st, _, b) = preq(addr, "DELETE", "/v1/streams/qc16p/consumers/c1", &key, b"").await;
+    assert_eq!(st, 204, "{}", String::from_utf8_lossy(&b));
+
+    // Release: the old-generation Receive must refuse.
+    crate::http::fork_failpoints::release_pull_before_receive("qc16p");
+    let (st, _, b) = pull.await.unwrap();
+    assert_eq!(
+        st, 409,
+        "an old-generation pull leased after deletion: {}",
+        String::from_utf8_lossy(&b)
+    );
+    // No row of the dead generation landed.
+    state.registry.invalidate("qc16p");
+    let desc = state.registry.get("qc16p").await.unwrap().unwrap();
+    let ro = desc.resolve_segment("");
+    let engine = state.engine_for(&ro.shard_route).await.unwrap();
+    let rows = engine.count_consumer_state_rows(ro.identity, "c1").await.unwrap();
+    assert_eq!(rows, 0, "the parked pull's lease landed after deletion");
+
+    // Recreation starts a clean generation.
     let (st, _, _) = preq(
         addr,
-        "POST",
-        "/v1/streams/qc16/consumers/c1:pull",
+        "PUT",
+        "/v1/streams/qc16p/consumers/c1",
         &key,
-        br#"{"max": 1}"#,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
     )
     .await;
-    assert_eq!(st, 200, "the consumer no longer serves pulls");
+    assert_eq!(st, 201);
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/qc16p/consumers/c1:pull",
+        &key,
+        br#"{"max": 2}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let got = serde_json::from_slice::<serde_json::Value>(&b).unwrap()["messages"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert_eq!(got, 2, "the recreated generation inherited state");
     engine_shutdown(&state).await;
 }
 
@@ -14210,6 +14437,7 @@ async fn a_failed_config_scan_aborts_the_delete_untouched() {
             seg.identity,
             crate::queue::QueueOp::ConfigDelete {
                 consumer: "c1".into(),
+                fence_below: 2,
             },
         )
         .await;
@@ -14217,25 +14445,32 @@ async fn a_failed_config_scan_aborts_the_delete_untouched() {
         Err(m) => assert!(m.contains("state scan failed"), "wrong abort reason: {m}"),
         Ok(o) => panic!("a delete over a failed scan must FAIL, got {o:?}"),
     }
-
-    // The consumer is exactly as it was: config present, both leases
-    // still held (an immediate re-pull finds nothing deliverable).
+    // The aborted cleanup staged NOTHING: config record intact, every
+    // durable row intact. (The generation fence IS up — that is the
+    // conservative direction; the saga's retry finishes the job.)
     let (st, _, _) = preq(addr, "GET", "/v1/streams/qc15c/consumers/c1", &key, b"").await;
     assert_eq!(st, 200, "the aborted delete removed the consumer config");
-    let (st, _, b) = preq(
-        addr,
-        "POST",
-        "/v1/streams/qc15c/consumers/c1:pull",
-        &key,
-        br#"{"max": 2}"#,
-    )
-    .await;
-    assert_eq!(st, 200);
-    let leased_now = serde_json::from_slice::<serde_json::Value>(&b).unwrap()["messages"]
-        .as_array()
-        .map(|a| a.len())
-        .unwrap_or(99);
-    assert_eq!(leased_now, 0, "the aborted delete dropped the consumer's leases");
+    let rows = engine
+        .count_consumer_state_rows(seg.identity, "c1")
+        .await
+        .unwrap();
+    assert!(rows > 0, "the aborted delete erased durable rows");
+    // Retry (failpoint is one-shot): the cleanup completes.
+    engine
+        .submit_queue(
+            seg.identity,
+            crate::queue::QueueOp::ConfigDelete {
+                consumer: "c1".into(),
+                fence_below: 2,
+            },
+        )
+        .await
+        .expect("retry cleanup");
+    let rows = engine
+        .count_consumer_state_rows(seg.identity, "c1")
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "the retried cleanup left rows behind");
     engine_shutdown(&state).await;
 }
 

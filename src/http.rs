@@ -2821,7 +2821,8 @@ pub(crate) mod fork_failpoints {
     // the window it was supposed to be parked in. Arming and releasing
     // are per name, so a parallel suite composes.
     fn armed(which: usize) -> &'static Mutex<Option<HashSet<String>>> {
-        static M: [Mutex<Option<HashSet<String>>>; 15] = [
+        static M: [Mutex<Option<HashSet<String>>>; 16] = [
+            Mutex::new(None),
             Mutex::new(None),
             Mutex::new(None),
             Mutex::new(None),
@@ -2855,6 +2856,7 @@ pub(crate) mod fork_failpoints {
     const INIT_SEED: usize = 12;
     const FORK_REF_POST: usize = 13;
     const RELEASE_EPOCH: usize = 14;
+    const PULL_RECV: usize = 15;
 
     // Arming and releasing are BOTH per name, and there is deliberately
     // no "release everything": that is what let one test disarm
@@ -3197,6 +3199,28 @@ pub(crate) mod fork_failpoints {
 
     pub(super) async fn pause_release_after_epoch_check(name: &str) {
         park(RELEASE_EPOCH, name, &PARKED_RELEASE_EPOCH).await;
+    }
+
+    /// Park a product pull AFTER it loaded the consumer record (so it
+    /// holds a generation) and BEFORE its segment Receive is enqueued
+    /// — the reviewer's exact race window: a DELETE that completes
+    /// inside this window must make the parked pull's old-generation
+    /// Receive refuse (round 16).
+    pub fn park_pull_before_receive(name: &str) {
+        set(PULL_RECV, name);
+    }
+
+    pub fn release_pull_before_receive(name: &str) {
+        release(PULL_RECV, name);
+    }
+
+    pub fn parked_pull_count() -> usize {
+        PARKED_PULL_RECV.load(Ordering::SeqCst)
+    }
+    static PARKED_PULL_RECV: AtomicUsize = AtomicUsize::new(0);
+
+    pub(crate) async fn pause_pull_before_receive(name: &str) {
+        park(PULL_RECV, name, &PARKED_PULL_RECV).await;
     }
 
     /// Park a delete just before it decides soft-versus-hard, so a

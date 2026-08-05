@@ -3638,14 +3638,29 @@ async fn product_consumer_put(
     match out {
         crate::queue::QueueOut::Config {
             conflict: true,
-            cfg: Some(existing),
+            rec: Some(existing),
+            ..
+        } if existing.state == crate::queue::ConsumerLifecycle::Deleting => {
+            // The name is owned by an in-flight deletion until the
+            // saga settles; recreating now would race its fan-out.
+            perr(
+                StatusCode::CONFLICT,
+                "consumer_deleting",
+                "a deletion of this consumer is in progress; retry shortly",
+                None,
+                true,
+            )
+        }
+        crate::queue::QueueOut::Config {
+            conflict: true,
+            rec: Some(existing),
             ..
         } => {
             let mut r = perr(
                 StatusCode::CONFLICT,
                 "consumer_config_conflict",
                 "consumer exists with different configuration",
-                serde_json::from_str(&consumer_cfg_json(&cname, &existing)).ok(),
+                serde_json::from_str(&consumer_cfg_json(&cname, &existing.config)).ok(),
                 false,
             );
             r.headers_mut().insert(
@@ -3655,7 +3670,7 @@ async fn product_consumer_put(
             r
         }
         crate::queue::QueueOut::Config {
-            cfg: Some(c),
+            rec: Some(c),
             created,
             ..
         } => Response::builder()
@@ -3666,7 +3681,7 @@ async fn product_consumer_put(
             })
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::CACHE_CONTROL, "no-store")
-            .body(Body::from(consumer_cfg_json(&cname, &c)))
+            .body(Body::from(consumer_cfg_json(&cname, &c.config)))
             .unwrap(),
         _ => perr(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -3697,12 +3712,16 @@ async fn product_consumer_get(
     )
     .await
     {
-        Ok(crate::queue::QueueOut::Config { cfg: Some(c), .. }) => Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::CACHE_CONTROL, "no-store")
-            .body(Body::from(consumer_cfg_json(&cname, &c)))
-            .unwrap(),
+        Ok(crate::queue::QueueOut::Config { rec: Some(c), .. })
+            if c.state == crate::queue::ConsumerLifecycle::Active =>
+        {
+            Response::builder()
+                .status(StatusCode::OK)
+                .header(header::CONTENT_TYPE, "application/json")
+                .header(header::CACHE_CONTROL, "no-store")
+                .body(Body::from(consumer_cfg_json(&cname, &c.config)))
+                .unwrap()
+        }
         Ok(_) => perr(
             StatusCode::NOT_FOUND,
             "unknown_consumer",
@@ -3720,46 +3739,155 @@ async fn product_consumer_delete(
     cname: String,
     headers: HeaderMap,
 ) -> Response {
-    // Auth and key discipline first — the refusal below is a property
-    // of the authenticated surface, never a way around 401/403.
-    let (_desc, _k, _e) = match consumer_ctx(&state, &name, &headers).await {
+    let (desc, _k, _e) = match consumer_ctx(&state, &name, &headers).await {
         Ok(v) => v,
         Err(r) => return r,
     };
-    let _ = cname;
-    // DISABLED for the preview (round 16). Collection-level consumer
-    // deletion is not yet transactional ACROSS SEGMENTS: the previous
-    // implementation deleted the parent config, then best-effort
-    // looped segment owners and returned 204 unconditionally — a
-    // failed or unavailable segment left lease/cursor/ack rows a
-    // RECREATED consumer would inherit; and a pull admitted just
-    // before deletion could re-lease after that segment's cleanup on
-    // another owner, outside any commit group the overlay can see.
-    // Collection-wide deletion returns as a generation-fenced saga
-    // (consumer generations in row keys and lease tokens, Deleting
-    // lifecycle state, per-segment fences, 204 only after every
-    // segment settles). Until then: refusing loudly is strictly
-    // better than a 204 that is not collection-wide. Consumers are
-    // cheap — create a new NAME instead.
+    // Collection-wide deletion as a GENERATION-FENCED SAGA (round 16;
+    // replaces the preview 501). Invariant: 204 means the deletion is
+    // collection-wide — every segment's rows are gone and no write of
+    // this generation can land afterwards. Any failure propagates; the
+    // retry (this same endpoint) resumes from the Deleting state.
+    //
+    //   1. Parent record: Active -> Deleting, fenced to the exact
+    //      generation. New pull/settle refuse from this instant.
+    //   2. Every segment (current AND predecessor — the pull lineage):
+    //      install the generation fence, then transactionally delete
+    //      every state row. Any engine/submit failure -> 503, no 204.
+    //   3. Re-read the segment map and repeat until it is stable
+    //      across a fan-out round (a split racing the saga gets its
+    //      new children swept too).
+    //   4. Parent record: Deleting -> Deleted (a TOMBSTONE, kept so
+    //      recreation allocates generation+1 and dead-generation
+    //      residue stays inert forever).
+    let rec = match consumer_config_op(
+        &state,
+        &desc,
+        crate::queue::QueueOp::ConfigGet {
+            consumer: cname.clone(),
+        },
+    )
+    .await
+    {
+        Ok(crate::queue::QueueOut::Config { rec, .. }) => rec,
+        Ok(_) => unreachable!("ConfigGet answers Config"),
+        Err(r) => return r,
+    };
+    let rec = match rec {
+        None
+        | Some(crate::queue::ConsumerRecord {
+            state: crate::queue::ConsumerLifecycle::Deleted,
+            ..
+        }) => {
+            // Never existed, or a prior deletion fully settled:
+            // idempotent success.
+            return Response::builder()
+                .status(StatusCode::NO_CONTENT)
+                .header(header::CACHE_CONTROL, "no-store")
+                .body(Body::empty())
+                .unwrap();
+        }
+        Some(r) => r,
+    };
+    let cgen = rec.generation;
+    if rec.state == crate::queue::ConsumerLifecycle::Active {
+        if let Err(r) = consumer_config_op(
+            &state,
+            &desc,
+            crate::queue::QueueOp::ConfigLifecycle {
+                consumer: cname.clone(),
+                expect_gen: cgen,
+                deleting: true,
+            },
+        )
+        .await
+        {
+            return r;
+        }
+    }
+    // Fan out until the segment set is stable across a full round.
+    let mut prev_ids: Option<Vec<u32>> = None;
+    let mut cur_desc = desc.clone();
+    for _round in 0..5 {
+        let segs = consumer_segments(&cur_desc);
+        for (seg_id, identity, route, _sealed) in segs.iter().copied() {
+            let engine = match state.engine_for(&route).await {
+                Ok(e) => e,
+                Err(_) => {
+                    return perr(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "segment_unavailable",
+                        &format!(
+                            "segment {seg_id}'s owner is unavailable; the deletion is \
+                             incomplete — retry"
+                        ),
+                        None,
+                        true,
+                    );
+                }
+            };
+            if let Err(m) = engine
+                .submit_queue(
+                    identity,
+                    crate::queue::QueueOp::ConfigDelete {
+                        consumer: cname.clone(),
+                        fence_below: cgen + 1,
+                    },
+                )
+                .await
+            {
+                return perr(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "segment_cleanup_failed",
+                    &format!(
+                        "segment {seg_id} cleanup failed ({m}); the deletion is \
+                         incomplete — retry"
+                    ),
+                    None,
+                    true,
+                );
+            }
+        }
+        let ids: Vec<u32> = segs.iter().map(|(id, ..)| *id).collect();
+        if prev_ids.as_deref() == Some(&ids[..]) {
+            // Two consecutive rounds saw the same topology: every
+            // segment that can hold this consumer's rows was swept
+            // AFTER the fence went up everywhere.
+            if let Err(r) = consumer_config_op(
+                &state,
+                &desc,
+                crate::queue::QueueOp::ConfigLifecycle {
+                    consumer: cname.clone(),
+                    expect_gen: cgen,
+                    deleting: false,
+                },
+            )
+            .await
+            {
+                return r;
+            }
+            return Response::builder()
+                .status(StatusCode::NO_CONTENT)
+                .header(header::CACHE_CONTROL, "no-store")
+                .body(Body::empty())
+                .unwrap();
+        }
+        prev_ids = Some(ids);
+        state.registry.invalidate(&name);
+        cur_desc = match state.registry.get(&name).await {
+            Ok(Some(d)) => d,
+            _ => cur_desc,
+        };
+    }
     perr(
-        StatusCode::NOT_IMPLEMENTED,
-        "consumer_delete_disabled",
-        "consumer deletion is disabled in this preview: it is not yet \
-         atomic across a split collection's segments. Create a new \
-         consumer name instead; deletion returns as a generation-fenced \
-         operation",
+        StatusCode::SERVICE_UNAVAILABLE,
+        "segment_map_unstable",
+        "the collection kept splitting during deletion; retry",
         None,
-        false,
+        true,
     )
 }
 
-/// Consumer delivery order across segment lineage (spec §2.9): every
-/// segment oldest-first, each (seg_id, identity, route, sealed_end).
-/// A sealed predecessor is fully settled before any successor delivers
-/// — whole-segment draining, which implies the spec's per-key rule
-/// conservatively (successors never deliver a key whose predecessor
-/// backlog is unsettled, because they deliver nothing until the
-/// predecessor is empty).
 fn consumer_segments(desc: &StreamDesc) -> Vec<(u32, [u8; 16], [u8; 16], Option<u64>)> {
     match &desc.segments {
         Some(map) if !map.segments.is_empty() => {
@@ -3783,11 +3911,11 @@ fn consumer_segments(desc: &StreamDesc) -> Vec<(u32, [u8; 16], [u8; 16], Option<
     }
 }
 
-async fn load_consumer_cfg(
+async fn load_consumer_record(
     state: &Arc<AppState>,
     desc: &StreamDesc,
     cname: &str,
-) -> Result<crate::queue::ConsumerConfig, Response> {
+) -> Result<crate::queue::ConsumerRecord, Response> {
     match consumer_config_op(
         state,
         desc,
@@ -3797,7 +3925,22 @@ async fn load_consumer_cfg(
     )
     .await?
     {
-        crate::queue::QueueOut::Config { cfg: Some(c), .. } => Ok(c),
+        crate::queue::QueueOut::Config { rec: Some(r), .. }
+            if r.state == crate::queue::ConsumerLifecycle::Active =>
+        {
+            Ok(r)
+        }
+        crate::queue::QueueOut::Config { rec: Some(r), .. }
+            if r.state == crate::queue::ConsumerLifecycle::Deleting =>
+        {
+            Err(perr(
+                StatusCode::CONFLICT,
+                "consumer_deleting",
+                "this consumer is being deleted",
+                None,
+                false,
+            ))
+        }
         _ => Err(perr(
             StatusCode::NOT_FOUND,
             "unknown_consumer",
@@ -3818,6 +3961,7 @@ async fn dlq_and_settle(
     state: &Arc<AppState>,
     desc: &StreamDesc,
     cfg: &crate::queue::ConsumerConfig,
+    cgen: u64,
     cname: &str,
     key_b64: &str,
     skey: &crate::crypto::StreamKey,
@@ -3922,6 +4066,7 @@ async fn dlq_and_settle(
                 identity,
                 crate::queue::QueueOp::Settle {
                     consumer: cname.to_string(),
+                    cgen,
                     acks: vec![(*off, *lgen)],
                     retries: Vec::new(),
                     extends: Vec::new(),
@@ -3949,10 +4094,12 @@ async fn product_consumer_pull(
         Ok(v) => v,
         Err(r) => return r,
     };
-    let cfg = match load_consumer_cfg(&state, &desc, &cname).await {
+    let rec = match load_consumer_record(&state, &desc, &cname).await {
         Ok(c) => c,
         Err(r) => return r,
     };
+    let cgen = rec.generation;
+    let cfg = rec.config;
     #[derive(serde::Deserialize, Default)]
     #[serde(deny_unknown_fields, rename_all = "camelCase")]
     struct PullDoc {
@@ -4003,7 +4150,7 @@ async fn product_consumer_pull(
                 Err(r) => return translate_read_error(r),
             };
             if let Some(end) = sealed_end {
-                let cursor = engine.queue_cursor(identity, &cname).await.unwrap_or(0);
+                let cursor = engine.queue_cursor(identity, &cname, cgen).await.unwrap_or(0);
                 if cursor >= end {
                     continue; // drained predecessor
                 }
@@ -4021,7 +4168,7 @@ async fn product_consumer_pull(
                 }
             };
             state.keys.put(identity, skey.clone(), epoch);
-            let cursor = engine.queue_cursor(identity, &cname).await.unwrap_or(0);
+            let cursor = engine.queue_cursor(identity, &cname, cgen).await.unwrap_or(0);
             let out = match crate::http::read_merged(
                 &skey,
                 &epoch,
@@ -4052,11 +4199,14 @@ async fn product_consumer_pull(
                 by_off.insert(r.off, (r.rkey.clone(), r.payload.clone()));
                 covered_to = covered_to.max(r.off + 1);
             }
+            #[cfg(test)]
+            crate::http::fork_failpoints::pause_pull_before_receive(&desc.name).await;
             let qout = engine
                 .submit_queue(
                     identity,
                     crate::queue::QueueOp::Receive {
                         consumer: cname.clone(),
+                        cgen,
                         max,
                         visibility_ms: visibility,
                         max_deliveries: cfg.max_attempts,
@@ -4075,6 +4225,9 @@ async fn product_consumer_pull(
                 Err(m) if m.starts_with("consumer_not_found") => {
                     return perr(StatusCode::NOT_FOUND, "consumer_not_found", &m, None, false);
                 }
+                Err(m) if m.starts_with("consumer_generation_fenced") => {
+                    return perr(StatusCode::CONFLICT, "consumer_deleted", &m, None, false);
+                }
                 Err(m) => {
                     return perr(
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -4087,8 +4240,8 @@ async fn product_consumer_pull(
             };
             if !poisoned.is_empty() {
                 let _ = dlq_and_settle(
-                    &state, &desc, &cfg, &cname, &key_b64, &skey, &epoch, identity, route, seg_id,
-                    &poisoned, &by_off,
+                    &state, &desc, &cfg, cgen, &cname, &key_b64, &skey, &epoch, identity, route,
+                    seg_id, &poisoned, &by_off,
                 )
                 .await;
                 // Settling poison may have drained this segment or
@@ -4111,6 +4264,7 @@ async fn product_consumer_pull(
                     let lease = crate::product_cursor::LeaseToken {
                         msg: msg.clone(),
                         lease_gen: *lease_gen,
+                        consumer_gen: cgen,
                         deadline_ms: now + visibility as i64,
                     };
                     let value: serde_json::Value = if desc.is_json() {
@@ -4173,10 +4327,12 @@ async fn product_consumer_settle(
         Ok(v) => v,
         Err(r) => return r,
     };
-    let cfg = match load_consumer_cfg(&state, &desc, &cname).await {
+    let rec = match load_consumer_record(&state, &desc, &cname).await {
         Ok(c) => c,
         Err(r) => return r,
     };
+    let cgen = rec.generation;
+    let cfg = rec.config;
     #[derive(serde::Deserialize, Default)]
     #[serde(deny_unknown_fields, rename_all = "camelCase")]
     struct Item {
@@ -4217,7 +4373,13 @@ async fn product_consumer_settle(
     let mut per_seg: std::collections::HashMap<u32, SegOps> = Default::default();
     let mut tok = |t: &str| -> Option<(u32, u64, u32)> {
         match crate::product_cursor::LeaseToken::decode(t, &skey, &epoch) {
-            Ok(lt) if lineage.iter().any(|(sid, ..)| *sid == lt.msg.seg_id) => {
+            // A token from a DELETED consumer generation is stale by
+            // definition — even if the name has since been recreated,
+            // this lease belongs to a dead incarnation (round 16).
+            Ok(lt)
+                if lt.consumer_gen == cgen
+                    && lineage.iter().any(|(sid, ..)| *sid == lt.msg.seg_id) =>
+            {
                 Some((lt.msg.seg_id, lt.msg.offset, lt.lease_gen))
             }
             _ => {
@@ -4266,6 +4428,7 @@ async fn product_consumer_settle(
                 identity,
                 crate::queue::QueueOp::Settle {
                     consumer: cname.clone(),
+                    cgen,
                     acks,
                     retries,
                     extends,
@@ -4286,6 +4449,9 @@ async fn product_consumer_settle(
             Ok(_) => unreachable!("settle answers Settled"),
             Err(m) if m.starts_with("consumer_not_found") => {
                 return perr(StatusCode::NOT_FOUND, "consumer_not_found", &m, None, false);
+            }
+            Err(m) if m.starts_with("consumer_generation_fenced") => {
+                return perr(StatusCode::CONFLICT, "consumer_deleted", &m, None, false);
             }
             Err(m) => {
                 return perr(
@@ -4328,8 +4494,8 @@ async fn product_consumer_settle(
                 }
             }
             let (d, b) = dlq_and_settle(
-                &state, &desc, &cfg, &cname, &key_b64, &skey, &epoch, identity, route, seg_id,
-                &poisoned, &by_off,
+                &state, &desc, &cfg, cgen, &cname, &key_b64, &skey, &epoch, identity, route,
+                seg_id, &poisoned, &by_off,
             )
             .await;
             dlq += d;

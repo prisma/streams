@@ -1036,11 +1036,14 @@ export class Consumer<T> {
     return (await res.json()) as ConsumerConfig & { name: string };
   }
 
-  // Consumer deletion is intentionally absent in this preview: the
-  // server refuses it (501 consumer_delete_disabled) because deletion
-  // is not yet atomic across a split collection's segments. Create a
-  // new consumer name instead. It returns as a generation-fenced
-  // operation.
+  /** Delete this consumer collection-wide. The server runs a
+   * generation-fenced saga: 204 means every segment's delivery state
+   * is gone and recreating the name starts from scratch; a 5xx means
+   * the deletion is incomplete — retry this call to resume it. */
+  async delete(): Promise<void> {
+    const res = await req(this.ctx, "DELETE", this.base(), this.stream._kh());
+    if (!res.ok && res.status !== 204) throw await errorFrom(res);
+  }
 }
 
 // ---------------------------------------------------------------------
