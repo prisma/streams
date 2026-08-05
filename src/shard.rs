@@ -215,6 +215,19 @@ pub struct TailFields {
     pub unabsorbed_bytes: u64,
 }
 
+/// Read visibility level. `Durable` (the pinned default everywhere)
+/// serves only storage-durable records. `Applied` additionally serves
+/// the live tail's applied-but-not-yet-durable suffix — the product
+/// surface's opt-in low-latency subscribe mode. Applied is a READ-SIDE
+/// clamp only: acks, consumers, watches, absorption and trim stay
+/// durable-gated exactly as before.
+#[derive(Clone, Copy, PartialEq, Eq, Debug, Default)]
+pub enum Deliver {
+    #[default]
+    Durable,
+    Applied,
+}
+
 /// `durable` is what readers see; `applied` is what's in the memtable.
 pub struct StreamState {
     pub durable: TailFields,
@@ -241,6 +254,12 @@ pub struct StreamHandle {
     pub hash: [u8; 16],
     pub state: Mutex<StreamState>,
     pub notify: Notify,
+    /// Fired by the committer at write success (apply), before the
+    /// durability barrier — the wake for `Deliver::Applied` waiters.
+    /// Durable waiters keep `notify` (fired only at durable dispatch);
+    /// the separate wake keeps the pinned durable read path free of
+    /// spurious wakeups.
+    pub applied_notify: Notify,
     /// Durable-tail ring: recently-durable frames, published by
     /// dispatch_durable BEFORE acks go out, so a reader woken by an ack
     /// (or by tail notify) finds the record here without a DB scan.
@@ -1581,7 +1600,12 @@ impl ShardEngine {
     /// at dispatch, which can lag durability arbitrarily under load
     /// (2026-07-27 boundary-race DST failure). Readers revalidating a tail
     /// scan against concurrent absorption must consult this.
-    pub async fn durable_absorbed(&self, hash: &[u8; 16]) -> Result<u64, slatedb::Error> {
+    /// Remotely-durable `(absorbed, history_v2)` from the stored tail
+    /// row. Returned TOGETHER because they must be read consistently: a
+    /// reader that adopts a remote boundary while keeping a stale
+    /// in-memory layout flag would refuse a v2 history range as v1
+    /// (observed in the first-absorption flush-to-dispatch window).
+    pub async fn durable_absorbed(&self, hash: &[u8; 16]) -> Result<(u64, bool), slatedb::Error> {
         let v = self
             .db
             .get_with_options(
@@ -1592,7 +1616,8 @@ impl ShardEngine {
                 },
             )
             .await?;
-        Ok(v.and_then(|b| decode_tail(&b)).map_or(0, |t| t.absorbed))
+        Ok(v.and_then(|b| decode_tail(&b))
+            .map_or((0, false), |t| (t.absorbed, t.history_v2)))
     }
 
     /// Durable consumer-cursor hint for the pull pre-read window. A
@@ -1685,6 +1710,7 @@ impl ShardEngine {
                 queue: crate::queue::QueueState::default(),
             }),
             notify: Notify::new(),
+            applied_notify: Notify::new(),
             ring: Mutex::new(TailRing::default()),
             last_touch_ms: std::sync::atomic::AtomicU64::new(now_ms() as u64),
         });
@@ -3450,6 +3476,11 @@ impl ShardEngine {
                         st.queue = (*q).clone();
                     }
                 }
+                // Wake Applied-mode readers now that the state above is
+                // published; durable waiters are woken only at dispatch.
+                for (_, local) in &locals {
+                    local.handle.applied_notify.notify_waiters();
+                }
                 // Trim-debt bookkeeping: streams whose safe target still
                 // leads their trim cursor stay in (or enter) the
                 // maintenance set; caught-up streams leave it. Advisory
@@ -3901,10 +3932,18 @@ pub async fn read_frames(
     scan_from: u64,
     key_filter: Option<&str>,
     max_bytes: usize,
+    deliver: Deliver,
 ) -> Result<FrameReadResult, slatedb::Error> {
     let (hash, end) = {
         let st = handle.state.lock().unwrap();
-        (handle.hash, st.durable.next)
+        let end = match deliver {
+            Deliver::Durable => st.durable.next,
+            // max() is defensive: `applied` loads equal to `durable`
+            // and only the committer advances it, but a floor here
+            // means Applied can never see LESS than a durable reader.
+            Deliver::Applied => st.applied.next.max(st.durable.next),
+        };
+        (handle.hash, end)
     };
     let mut out = FrameReadResult {
         frames: Vec::new(),
@@ -3915,9 +3954,11 @@ pub async fn read_frames(
         return Ok(out);
     }
     // Durable-tail fast path (see read_frames_range). Only for unfiltered
-    // reads: a key_filter changes which frames belong in the result, and
-    // the DB path applies it during the scan.
-    if key_filter.is_none() {
+    // DURABLE reads: a key_filter changes which frames belong in the
+    // result, and the ring holds only durable frames — an Applied read
+    // chasing the just-applied suffix must scan (the suffix is
+    // memtable-resident, so the scan costs no store round-trip).
+    if key_filter.is_none() && deliver == Deliver::Durable {
         if let Some(hit) = engine.ring_read(handle, scan_from, end, max_bytes) {
             return Ok(hit);
         }
@@ -3928,7 +3969,10 @@ pub async fn read_frames(
         .scan_with_options(
             range,
             &ScanOptions {
-                durability_filter: DurabilityLevel::Remote,
+                durability_filter: match deliver {
+                    Deliver::Durable => DurabilityLevel::Remote,
+                    Deliver::Applied => DurabilityLevel::Memory,
+                },
                 read_ahead_bytes: 2 * 1024 * 1024,
                 max_fetch_tasks: 4,
                 ..Default::default()

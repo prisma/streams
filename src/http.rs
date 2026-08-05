@@ -994,6 +994,11 @@ pub struct ReadParams {
     /// serde so the raw query string can never set it.
     #[serde(skip)]
     pub(crate) max_bytes: Option<usize>,
+    /// Read visibility (product `deliver=` param). Skipped by serde so
+    /// the raw query string can never set it — the pinned raw surface
+    /// is always durable; only product_read installs Applied.
+    #[serde(skip)]
+    pub(crate) deliver: crate::shard::Deliver,
 }
 
 /// Reserved Durable Streams control namespace (appendix §2.6): matched
@@ -1444,7 +1449,17 @@ pub(crate) async fn read_stitched(
         // written keyed records to replayed all of them through the
         // standards route — the one surface whose contract is that it
         // IS the default-key stream.
-        let part = read_merged(key, epoch, &handle, &engine, cursor, Some(""), budget).await?;
+        let part = read_merged(
+            key,
+            epoch,
+            &handle,
+            &engine,
+            cursor,
+            Some(""),
+            budget,
+            crate::shard::Deliver::Durable,
+        )
+        .await?;
         let mut advanced = false;
         for r in part.recs {
             if r.off >= cap {
@@ -4711,8 +4726,12 @@ async fn read_records(
     scan_from: u64,
     key_filter: Option<&str>,
     max_bytes: usize,
+    deliver: crate::shard::Deliver,
 ) -> Result<ReadOut, String> {
-    read_merged(key, epoch, handle, engine, scan_from, key_filter, max_bytes).await
+    read_merged(
+        key, epoch, handle, engine, scan_from, key_filter, max_bytes, deliver,
+    )
+    .await
 }
 
 /// Decode raw stream-key-encrypted frames (v2 history or shard tail —
@@ -4770,16 +4789,24 @@ pub(crate) async fn read_merged(
     scan_from: u64,
     key_filter: Option<&str>,
     max_bytes: usize,
+    deliver: crate::shard::Deliver,
 ) -> Result<ReadOut, String> {
     // The sub-stream identity (AAD + history-DB path): for total-order
     // streams this is the incarnation hash; for per-key streams, the
     // segment hash. Either way it's the handle's identity.
     let hash = handle.hash;
-    let (absorbed, end, hist_v2, route) = {
+    let (absorbed, end, mut hist_v2, route) = {
         let st = handle.state.lock().unwrap();
+        let end = match deliver {
+            crate::shard::Deliver::Durable => st.durable.next,
+            // Applied extends visibility to the applied watermark; the
+            // history boundary below stays durable-sourced (absorption
+            // only ever operates on durable data, so boundary <= end).
+            crate::shard::Deliver::Applied => st.applied.next.max(st.durable.next),
+        };
         (
             st.durable.absorbed,
-            st.durable.next,
+            end,
             st.durable.history_v2,
             st.durable.route,
         )
@@ -4892,7 +4919,7 @@ pub(crate) async fn read_merged(
         if budget == 0 || cursor >= end {
             break;
         }
-        let part = read_frames(engine, handle, cursor, key_filter, budget)
+        let part = read_frames(engine, handle, cursor, key_filter, budget, deliver)
             .await
             .map_err(|e| e.to_string())?;
         // Revalidate the scan against concurrent absorption before
@@ -4919,15 +4946,21 @@ pub(crate) async fn read_merged(
         } else {
             // A filtered scan cannot distinguish "trimmed" from "did not
             // match", so always ask the remotely-durable tracker.
-            let durable = engine
+            let (durable, remote_v2) = engine
                 .durable_absorbed(&hash)
                 .await
                 .map_err(|e| e.to_string())?;
-            (durable > cursor).then_some(durable)
+            (durable > cursor).then_some((durable, remote_v2))
         };
-        if let Some(durable) = raced_boundary {
+        if let Some((durable, remote_v2)) = raced_boundary {
             if durable > boundary {
+                // Adopt the remote LAYOUT FLAG with the remote boundary:
+                // in the first absorption's flush-to-dispatch window the
+                // in-memory snapshot still says v1 while the row that
+                // moved the boundary already says v2 — mixing the two
+                // refused a perfectly readable v2 range as v1.
                 boundary = durable;
+                hist_v2 = hist_v2 || remote_v2;
                 continue; // the gap is in history now; re-serve from there
             }
             // A hole the boundary does not explain: never emit it as
@@ -5295,9 +5328,19 @@ pub(crate) async fn read_inner(
             );
         }
     };
-    let (mut end, mut closed) = {
+    let deliver = params.deliver;
+    // In Applied mode `end` is the applied watermark (what this mode
+    // makes visible); `durable_floor` tracks the durable frontier for
+    // cursor clamping — a resume cursor handed to a client must never
+    // point past what a crash-restart is guaranteed to still have.
+    let (mut end, mut closed, mut durable_floor) = {
         let st = handle.state.lock().unwrap();
-        (st.durable.next, st.durable.closed)
+        let dur = st.durable.next;
+        let end = match deliver {
+            crate::shard::Deliver::Durable => dur,
+            crate::shard::Deliver::Applied => st.applied.next.max(dur),
+        };
+        (end, st.durable.closed, dur)
     };
 
     if head_only {
@@ -5406,6 +5449,18 @@ pub(crate) async fn read_inner(
         }
         StartPos::At(p) => p,
     };
+    if deliver == crate::shard::Deliver::Applied && scan_from > end {
+        // An Applied-mode cursor can outlive the pre-durability suffix
+        // it was minted in (crash + WAL replay): offsets past the tail
+        // may be REUSED with different content. Refuse instead of
+        // parking at a position that would silently skip the rewritten
+        // range; the client resumes from its durable cursor.
+        return err_resp(
+            StatusCode::CONFLICT,
+            "cursor_beyond_tail",
+            "cursor is ahead of the stream tail; resume from the durable cursor",
+        );
+    }
 
     let is_long_poll = live == Some("long-poll");
     let mut live_wake = false;
@@ -5422,20 +5477,38 @@ pub(crate) async fn read_inner(
             let deadline = tokio::time::Instant::now() + wait;
             loop {
                 let notified = handle.notify.notified();
-                let (e2, c2) = {
+                let applied_notified = handle.applied_notify.notified();
+                let (e2, c2, d2) = {
                     let st = handle.state.lock().unwrap();
-                    (st.durable.next, st.durable.closed)
+                    let dur = st.durable.next;
+                    let e = match deliver {
+                        crate::shard::Deliver::Durable => dur,
+                        crate::shard::Deliver::Applied => st.applied.next.max(dur),
+                    };
+                    (e, st.durable.closed, dur)
                 };
                 end = e2;
                 closed = c2;
+                durable_floor = d2;
                 if end > scan_from || closed {
                     live_wake = end > scan_from;
                     wake_us = t_arm.elapsed().as_micros() as u64;
                     break;
                 }
-                tokio::select! {
-                    _ = notified => {}
-                    _ = tokio::time::sleep_until(deadline) => break,
+                if deliver == crate::shard::Deliver::Applied {
+                    // Applied waiters ALSO watch the durable notify: a
+                    // seal or close publishes there, and applied wakes
+                    // fire only for data.
+                    tokio::select! {
+                        _ = notified => {}
+                        _ = applied_notified => {}
+                        _ = tokio::time::sleep_until(deadline) => break,
+                    }
+                } else {
+                    tokio::select! {
+                        _ = notified => {}
+                        _ = tokio::time::sleep_until(deadline) => break,
+                    }
                 }
             }
         }
@@ -5456,6 +5529,9 @@ pub(crate) async fn read_inner(
                 .header("Stream-Up-To-Date", "true")
                 .header("Stream-Cursor", interval_cursor(params.cursor.as_deref()))
                 .header(header::CACHE_CONTROL, "no-store");
+            if deliver == crate::shard::Deliver::Applied {
+                r = r.header("Stream-Durable-Offset", tail_token(durable_floor.min(end)));
+            }
             if closed {
                 r = r.header("Stream-Closed", "true");
             }
@@ -5481,6 +5557,7 @@ pub(crate) async fn read_inner(
         } else {
             MAX_READ_BYTES
         }),
+        deliver,
     )
     .await
     {
@@ -5579,6 +5656,22 @@ pub(crate) async fn read_inner(
         .header("Stream-Next-Offset", next_token)
         .header("ETag", etag)
         .header("Cross-Origin-Resource-Policy", "cross-origin");
+    if deliver == crate::shard::Deliver::Applied {
+        // Fresh durable floor at response time: the least-stale clamp
+        // for the resume cursor, and the marker for which served
+        // records are still provisional. Staleness is one-sided — a
+        // record marked pending may already be durable, never the
+        // reverse.
+        let floor_now = handle.state.lock().unwrap().durable.next;
+        let next_pos = out.last.map(|o| o + 1).unwrap_or(scan_from);
+        r = r.header(
+            "Stream-Durable-Offset",
+            tail_token(floor_now.min(next_pos)),
+        );
+        if let Some(i) = out.recs.iter().position(|rec| rec.off >= floor_now) {
+            r = r.header("Stream-Pending-From", i.to_string());
+        }
+    }
     if up_to_date {
         r = r.header("Stream-Up-To-Date", "true");
         if closed {
@@ -5735,6 +5828,10 @@ pub(crate) fn sse_lineage_response(
                         scan_from,
                         Some(&rk),
                         MAX_READ_BYTES,
+                        // SSE is durable-only: Applied would need
+                        // session-position machinery this streamer does
+                        // not have; product_read rejects the combination.
+                        crate::shard::Deliver::Durable,
                     )
                     .await
                     {
@@ -5951,6 +6048,8 @@ async fn sse_response(
                         pos,
                         key_filter.as_deref(),
                         MAX_READ_BYTES,
+                        // SSE is durable-only (see sse_lineage_response).
+                        crate::shard::Deliver::Durable,
                     )
                     .await
                 };
@@ -6276,9 +6375,14 @@ async fn read_v3_lineage_inner(
             }
         };
         state.keys.put(identity, key.clone(), epoch);
-        let (durable_next, closed) = {
+        let deliver = params.deliver;
+        let (durable_next, closed, applied_next) = {
             let st = handle.state.lock().unwrap();
-            (st.durable.next, st.durable.closed)
+            (
+                st.durable.next,
+                st.durable.closed,
+                st.applied.next.max(st.durable.next),
+            )
         };
         let live_and_last = sg.sealed_next_offset.is_none() && pos + 1 >= lineage.len();
         if closed && live_and_last && may_refresh {
@@ -6317,9 +6421,23 @@ async fn read_v3_lineage_inner(
                 .pending
                 .as_ref()
                 .is_some_and(|p| p.segs.contains(&sg.seg_id));
-        let seg_end = sg.sealed_next_offset.unwrap_or(durable_next);
+        let seg_end = sg.sealed_next_offset.unwrap_or(match deliver {
+            crate::shard::Deliver::Durable => durable_next,
+            crate::shard::Deliver::Applied => applied_next,
+        });
         if scan_from == u64::MAX {
             scan_from = seg_end; // offset=now on the live segment
+        }
+        if deliver == crate::shard::Deliver::Applied && scan_from > seg_end {
+            // A stale Applied cursor (minted past a suffix a crash
+            // discarded — sealed segments included, since a seal can
+            // land below a lost applied tail). See the single-segment
+            // guard: refuse rather than skip rewritten offsets.
+            return err_resp(
+                StatusCode::CONFLICT,
+                "cursor_beyond_tail",
+                "cursor is ahead of the stream tail; resume from the durable cursor",
+            );
         }
         let is_last = pos + 1 >= lineage.len();
         if scan_from >= seg_end && !is_last {
@@ -6342,18 +6460,33 @@ async fn read_v3_lineage_inner(
             let deadline = tokio::time::Instant::now() + wait;
             loop {
                 let notified = handle.notify.notified();
+                let applied_notified = handle.applied_notify.notified();
                 let (e2, c2) = {
                     let st = handle.state.lock().unwrap();
-                    (st.durable.next, st.durable.closed)
+                    let e = match deliver {
+                        crate::shard::Deliver::Durable => st.durable.next,
+                        crate::shard::Deliver::Applied => {
+                            st.applied.next.max(st.durable.next)
+                        }
+                    };
+                    (e, st.durable.closed)
                 };
                 end = e2;
                 if end > scan_from || c2 {
                     live_wake = end > scan_from;
                     break;
                 }
-                tokio::select! {
-                    _ = notified => {}
-                    _ = tokio::time::sleep_until(deadline) => break,
+                if deliver == crate::shard::Deliver::Applied {
+                    tokio::select! {
+                        _ = notified => {}
+                        _ = applied_notified => {}
+                        _ = tokio::time::sleep_until(deadline) => break,
+                    }
+                } else {
+                    tokio::select! {
+                        _ = notified => {}
+                        _ = tokio::time::sleep_until(deadline) => break,
+                    }
                 }
             }
             if end <= scan_from {
@@ -6367,6 +6500,13 @@ async fn read_v3_lineage_inner(
                         seg_tok(sg.seg_id, scan_from.checked_sub(1)),
                     )
                     .header(header::CACHE_CONTROL, "no-store");
+                if deliver == crate::shard::Deliver::Applied {
+                    let floor_now = handle.state.lock().unwrap().durable.next;
+                    r = r.header(
+                        "Stream-Durable-Offset",
+                        seg_tok(sg.seg_id, floor_now.min(scan_from).checked_sub(1)),
+                    );
+                }
                 if closed && !seal_gap {
                     r = r.header("Stream-Closed", "true");
                 }
@@ -6400,6 +6540,7 @@ async fn read_v3_lineage_inner(
             } else {
                 MAX_READ_BYTES
             }),
+            deliver,
         )
         .await
         {
@@ -6450,6 +6591,22 @@ async fn read_v3_lineage_inner(
             .header("Stream-Next-Offset", next_token)
             .header(header::CACHE_CONTROL, "no-store")
             .header("Cross-Origin-Resource-Policy", "cross-origin");
+        if deliver == crate::shard::Deliver::Applied {
+            // Fresh durable floor at response time (one-sided staleness:
+            // a record marked pending may already be durable, never the
+            // reverse). A drained sealed hop is all-durable by
+            // construction, so its durable cursor IS the next token.
+            let floor_now = handle.state.lock().unwrap().durable.next;
+            let durable_tok = if drained && sealed_mid {
+                seg_tok(lineage[pos + 1].seg_id, None)
+            } else {
+                seg_tok(sg.seg_id, consumed_to.min(floor_now).checked_sub(1))
+            };
+            r = r.header("Stream-Durable-Offset", durable_tok);
+            if let Some(i) = out.recs.iter().position(|rec| rec.off >= floor_now) {
+                r = r.header("Stream-Pending-From", i.to_string());
+            }
+        }
         if up_to_date && !seal_gap {
             r = r.header("Stream-Up-To-Date", "true");
         }

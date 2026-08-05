@@ -1158,6 +1158,7 @@ pub async fn drain_observed(
             from,
             None,
             8 * 1024 * 1024,
+            crate::shard::Deliver::Durable,
         )
         .await
         {

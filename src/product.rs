@@ -2844,6 +2844,14 @@ fn translate_read_error(raw: Response) -> Response {
         410 => ("gone", "stream expired or deleted", false),
         429 => ("rate_limited", "admission or rate limit", true),
         400 => ("invalid_cursor", "invalid cursor or read position", false),
+        // deliver=applied only: a session cursor minted past a
+        // pre-durability suffix a crash discarded. Not retryable with
+        // the SAME cursor — the client resumes from its durable cursor.
+        409 => (
+            "cursor_beyond_tail",
+            "cursor is ahead of the stream tail; resume from the durable cursor",
+            false,
+        ),
         503 => ("temporarily_unavailable", "retry shortly", true),
         _ => ("read_failed", "read failed", true),
     };
@@ -2887,6 +2895,32 @@ async fn product_read(
             false,
         );
     }
+    // Opt-in low-latency visibility (spec: subscribe deliver mode):
+    // `applied` serves the live tail before storage durability. The
+    // records arrive marked (Prisma-Pending-From) and the resume cursor
+    // (Prisma-Durable-Cursor) stays clamped to the durable frontier.
+    let deliver = match q.get("deliver").map(String::as_str) {
+        None | Some("durable") => crate::shard::Deliver::Durable,
+        Some("applied") => crate::shard::Deliver::Applied,
+        Some(_) => {
+            return perr(
+                StatusCode::BAD_REQUEST,
+                "invalid_deliver",
+                "deliver must be \"durable\" or \"applied\"",
+                None,
+                false,
+            );
+        }
+    };
+    if deliver == crate::shard::Deliver::Applied && live == Some("sse") {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "deliver_sse_unsupported",
+            "deliver=applied works with reads and long-poll subscribe, not SSE",
+            None,
+            false,
+        );
+    }
     let desc = match state.registry.get(&name).await {
         Ok(Some(d)) if crate::http::desc_alive(&d) => {
             if crate::http::initializing(&d) {
@@ -2919,6 +2953,18 @@ async fn product_read(
             );
         }
     };
+    if deliver == crate::shard::Deliver::Applied && desc.forked_from.is_some() {
+        // The fork read path has its own serving machine; bounded scope
+        // for the mode's first release. Explicit refusal beats a silent
+        // durable downgrade.
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "deliver_unsupported_fork",
+            "deliver=applied is not supported on forked streams",
+            None,
+            false,
+        );
+    }
     let (skey, epoch) = match crate::http::check_key(Some(&key_b64), &desc) {
         crate::http::KeyCheck::Ok(k, e) => (k, e),
         crate::http::KeyCheck::Wrong => {
@@ -2994,6 +3040,7 @@ async fn product_read(
         cursor: None,
         sig: None,
         max_bytes,
+        deliver,
     };
     let mut ih = HeaderMap::new();
     if let Ok(v) = axum::http::HeaderValue::from_str(&key_b64) {
@@ -3041,12 +3088,40 @@ async fn product_read(
         offset: next,
     }
     .encode(&skey);
+    // deliver=applied: restate the durable-clamped resume position as a
+    // signed product cursor, and pass the provisional-suffix marker
+    // through. Absent in durable mode (the raw machine only emits these
+    // headers when Applied was requested).
+    let durable_tok = raw
+        .headers()
+        .get("stream-durable-offset")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
+    let pending_from = raw
+        .headers()
+        .get("stream-pending-from")
+        .and_then(|v| v.to_str().ok())
+        .map(str::to_string);
     let (parts, body) = raw.into_parts();
     let mut r = Response::builder()
         .status(parts.status)
         .header(header::CONTENT_TYPE, content_type)
         .header(header::CACHE_CONTROL, "no-store")
         .header("Prisma-Next-Cursor", cursor_out);
+    if let Some(dt) = durable_tok {
+        let (dseg, dnext) = raw_token_to_pos(&desc, &rk, &dt);
+        let dcur = crate::product_cursor::KeyCursor {
+            epoch,
+            key_hash: kh,
+            seg_id: dseg,
+            offset: dnext,
+        }
+        .encode(&skey);
+        r = r.header("Prisma-Durable-Cursor", dcur);
+    }
+    if let Some(pf) = pending_from {
+        r = r.header("Prisma-Pending-From", pf);
+    }
     if up_to_date {
         r = r.header("Prisma-Up-To-Date", "true");
     }
@@ -3304,9 +3379,17 @@ async fn product_scan(
             }
         };
         state.keys.put(identity, skey.clone(), epoch);
-        let out =
-            match crate::http::read_merged(&skey, &epoch, &handle, &engine, off, None, max - spent)
-                .await
+        let out = match crate::http::read_merged(
+            &skey,
+            &epoch,
+            &handle,
+            &engine,
+            off,
+            None,
+            max - spent,
+            crate::shard::Deliver::Durable,
+        )
+        .await
             {
                 Ok(o) => o,
                 Err(m) => {
@@ -4177,6 +4260,7 @@ async fn product_consumer_pull(
                 cursor,
                 None,
                 4 << 20,
+                crate::shard::Deliver::Durable,
             )
             .await
             {
@@ -4486,8 +4570,17 @@ async fn product_consumer_settle(
             state.keys.put(identity, skey.clone(), epoch);
             let lo = poisoned.iter().map(|(o, ..)| *o).min().unwrap_or(0);
             let mut by_off: std::collections::HashMap<u64, (String, Bytes)> = Default::default();
-            if let Ok(out) =
-                crate::http::read_merged(&skey, &epoch, &handle, &engine, lo, None, 4 << 20).await
+            if let Ok(out) = crate::http::read_merged(
+                &skey,
+                &epoch,
+                &handle,
+                &engine,
+                lo,
+                None,
+                4 << 20,
+                crate::shard::Deliver::Durable,
+            )
+            .await
             {
                 for r in &out.recs {
                     by_off.insert(r.off, (r.rkey.clone(), r.payload.clone()));

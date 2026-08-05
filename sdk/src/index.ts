@@ -73,6 +73,18 @@ export interface ReadOptions {
   routingKey?: string;
   from?: "beginning" | "now" | string;
   maxBytes?: number;
+  /**
+   * Read visibility. `"durable"` (the default) serves only records that
+   * are durable in object storage. `"applied"` additionally serves the
+   * live tail's applied-but-not-yet-durable suffix — records arrive one
+   * storage round-trip earlier (typically tens of milliseconds), with a
+   * documented crash window: if the server crashes before the suffix is
+   * flushed, those records are gone (their producers were never acked
+   * and will retry), and re-used offsets may carry different content.
+   * Use for low-latency fan-out (dashboards, presence, progress); keep
+   * the default for anything transactional.
+   */
+  deliver?: "durable" | "applied";
 }
 
 export interface ReadPage<T> {
@@ -80,6 +92,19 @@ export interface ReadPage<T> {
   cursor: string;
   upToDate: boolean;
   sealed: boolean;
+  /**
+   * deliver:"applied" only — a resume position clamped to the durable
+   * frontier. Persist THIS one; `cursor` may point into the provisional
+   * suffix and is only good for the next poll against the same live
+   * server.
+   */
+  durableCursor?: string;
+  /**
+   * deliver:"applied" only — index into `records` from which the
+   * records were not yet durable when served. Absent when every record
+   * in the page was durable.
+   */
+  pendingFrom?: number;
 }
 
 export interface SubscribeOptions extends ReadOptions {
@@ -561,6 +586,7 @@ export class Stream<T = unknown> {
     if (options?.routingKey) q.set("routingKey", options.routingKey);
     if (options?.from) q.set("cursor", options.from);
     if (options?.maxBytes) q.set("maxBytes", String(options.maxBytes));
+    if (options?.deliver === "applied") q.set("deliver", "applied");
     const res = await req(
       this.ctx,
       "GET",
@@ -570,12 +596,17 @@ export class Stream<T = unknown> {
     if (!res.ok) throw await errorFrom(res);
     const records =
       res.status === 204 ? [] : ((await res.json()) as T[]) ?? [];
-    return {
+    const page: ReadPage<T> = {
       records,
       cursor: res.headers.get("prisma-next-cursor") ?? "",
       upToDate: res.headers.get("prisma-up-to-date") === "true",
       sealed: res.headers.get("prisma-sealed") === "true",
     };
+    const durable = res.headers.get("prisma-durable-cursor");
+    if (durable !== null) page.durableCursor = durable;
+    const pending = res.headers.get("prisma-pending-from");
+    if (pending !== null) page.pendingFrom = Number(pending);
+    return page;
   }
 
   async *subscribe(options?: SubscribeOptions): AsyncIterable<T> {
@@ -584,12 +615,23 @@ export class Stream<T = unknown> {
     // fully yielded (spec §4.3).
     let cursor = options?.from ?? "beginning";
     let live = false;
+    const applied = options?.deliver === "applied";
+    // deliver:"applied" — the session cursor can point into the
+    // provisional (not-yet-durable) suffix, which does not survive a
+    // server crash. Track the durable-clamped cursor from every
+    // response; any reconnect resumes from THERE, accepting the
+    // documented re-delivery in exchange for never stalling on (or
+    // silently skipping past) offsets that were rewritten after a
+    // crash. The server refuses stale session cursors with 409
+    // cursor_beyond_tail as a backstop.
+    let durableCursor: string | undefined;
     for (;;) {
       if (options?.signal?.aborted) return;
       const q = new URLSearchParams();
       if (options?.routingKey) q.set("routingKey", options.routingKey);
       q.set("cursor", cursor);
       if (options?.maxBytes) q.set("maxBytes", String(options.maxBytes));
+      if (applied) q.set("deliver", "applied");
       if (live) q.set("waitMs", "25000");
       const path = this.path(
         live ? `/records:long-poll?${q}` : `/records?${q}`,
@@ -608,6 +650,7 @@ export class Stream<T = unknown> {
         );
       } catch (e) {
         if (options?.signal?.aborted) return;
+        if (applied && durableCursor !== undefined) cursor = durableCursor;
         await sleep(1000, options?.signal);
         continue;
       }
@@ -616,11 +659,24 @@ export class Stream<T = unknown> {
         if (options?.signal?.aborted) return;
         continue;
       }
-      if (!res.ok && res.status !== 204) throw await errorFrom(res);
+      if (!res.ok && res.status !== 204) {
+        const err = await errorFrom(res);
+        if (
+          applied &&
+          err.code === "cursor_beyond_tail" &&
+          durableCursor !== undefined
+        ) {
+          cursor = durableCursor;
+          continue;
+        }
+        throw err;
+      }
       const records =
         res.status === 204 ? [] : ((await res.json()) as T[]) ?? [];
       for (const r of records) yield r;
       cursor = res.headers.get("prisma-next-cursor") ?? cursor;
+      const d = res.headers.get("prisma-durable-cursor");
+      if (d !== null) durableCursor = d;
       const sealed = res.headers.get("prisma-sealed") === "true";
       const upToDate = res.headers.get("prisma-up-to-date") === "true";
       if (sealed && upToDate) return;
