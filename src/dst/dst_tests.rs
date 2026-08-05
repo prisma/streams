@@ -1578,7 +1578,7 @@ async fn the_gather_window_waits_for_ack_dispatch() {
 
     // Hold dispatch, then fire an append. Its flush may complete, but its
     // ack CANNOT be dispatched and no gather may begin.
-    let guard = engine.test_hold_dispatch();
+    let guard = engine.test_hold_dispatch().await;
     let e2 = engine.clone();
     let k2 = key.clone();
     let c2 = cov.clone();
@@ -1718,7 +1718,7 @@ async fn a_busy_next_generation_skips_the_gather_window() {
 
         // Hold dispatch; batch A (4 appends) commits and flushes but its
         // acks are stuck; batch B (8 appends) commits BEHIND it.
-        let guard = engine.test_hold_dispatch();
+        let guard = engine.test_hold_dispatch().await;
         let mut all = Vec::new();
         for i in 0..12u64 {
             let e = engine.clone();
@@ -11933,7 +11933,7 @@ async fn a_fence_waits_for_durability_before_reporting_closed() {
     // Hold durability dispatch, then send A's final-bearing close: its
     // intent lands (registry path), its write commits, but nothing is
     // released as durable.
-    let guard = engine.test_hold_dispatch();
+    let guard = engine.test_hold_dispatch().await;
     let a = tokio::spawn(async move {
         hreq(
             addr,
@@ -12462,7 +12462,7 @@ async fn idempotent_successes_wait_for_durability() {
 
     // Hold durability dispatch; the ORIGINAL producer write commits
     // (applied) but is never released as durable.
-    let guard = engine.test_hold_dispatch();
+    let guard = engine.test_hold_dispatch().await;
     let ph = [
         ("content-type", "application/json"),
         ("producer-id", "p"),
@@ -12516,7 +12516,7 @@ async fn idempotent_successes_wait_for_durability() {
     // window. The ORIGINAL close is applied but held pre-durability;
     // its exact retry reads closed=true from applied state and must
     // stay pending behind the original's barrier.
-    let guard = engine.test_hold_dispatch();
+    let guard = engine.test_hold_dispatch().await;
     let close1 = tokio::spawn(async move {
         hreq(
             addr,
@@ -12588,7 +12588,7 @@ async fn state_dependent_conflicts_wait_for_durability() {
     let engine = state.engine_for(&route).await.unwrap();
 
     // Original held pre-durability.
-    let guard = engine.test_hold_dispatch();
+    let guard = engine.test_hold_dispatch().await;
     let ph = [
         ("prisma-encryption-key", PRISMA_KEY),
         ("producer-id", "p"),
@@ -12836,7 +12836,7 @@ async fn a_failed_group_write_fails_its_duplicate_too() {
 
     // Compose the group deterministically: hold the committer, land
     // both requests in the queue (counter-proof), arm, release.
-    let hold = engine.test_hold_commit();
+    let hold = engine.test_hold_commit().await;
     let base = engine.appends_enqueued();
     let ph = [
         ("content-type", "application/json"),
@@ -12930,7 +12930,7 @@ async fn a_reuse_verdict_dies_with_its_failed_group() {
     let identity = desc.dynamic_segment_identity(seg.seg_id);
     let engine = state.engine_for(&route).await.unwrap();
 
-    let hold = engine.test_hold_commit();
+    let hold = engine.test_hold_commit().await;
     let base = engine.appends_enqueued();
     let a = tokio::spawn(async move {
         preq(
@@ -13031,7 +13031,7 @@ async fn a_failed_group_fails_the_close_and_its_retry_together() {
     let identity = desc.dynamic_segment_identity(seg.seg_id);
     let engine = state.engine_for(&route).await.unwrap();
 
-    let hold = engine.test_hold_commit();
+    let hold = engine.test_hold_commit().await;
     let base = engine.appends_enqueued();
     let c1 = tokio::spawn(async move {
         hreq(
@@ -13182,7 +13182,7 @@ async fn a_fence_in_a_failed_group_reports_failure_not_closed() {
     // the queue, land the fence behind it, arm, release. The fence and
     // the close now share one commit group by construction — the
     // co-residency SEL-021 demands.
-    let hold = engine.test_hold_commit();
+    let hold = engine.test_hold_commit().await;
     let base = engine.appends_enqueued();
     crate::http::fork_failpoints::release_close_before_enqueue("sel021");
     while engine.appends_enqueued() < base + 1 {
@@ -14305,7 +14305,7 @@ async fn receive_then_delete_in_one_group_leaves_no_stale_lease() {
     keys_map.insert(0, crate::crypto::stream_hash("k0"));
     keys_map.insert(1, crate::crypto::stream_hash("k1"));
 
-    let hold = engine.test_hold_commit();
+    let hold = engine.test_hold_commit().await;
     let base = engine.appends_enqueued();
     let e1 = engine.clone();
     let km = keys_map.clone();
@@ -14448,7 +14448,7 @@ async fn settle_then_delete_in_one_group_leaves_no_stale_rows() {
     let (off0, gen0) = (leased[1].0, leased[1].1);
 
     // ONE group: [Settle(ack off1), ConfigDelete].
-    let hold = engine.test_hold_commit();
+    let hold = engine.test_hold_commit().await;
     let base = engine.appends_enqueued();
     let e1 = engine.clone();
     let settle = tokio::spawn(async move {
@@ -14551,7 +14551,7 @@ async fn a_receive_after_delete_in_the_same_group_is_refused() {
     keys_map.insert(0, crate::crypto::stream_hash("k0"));
     keys_map.insert(1, crate::crypto::stream_hash("k1"));
 
-    let hold = engine.test_hold_commit();
+    let hold = engine.test_hold_commit().await;
     let base = engine.appends_enqueued();
     let e1 = engine.clone();
     let del = tokio::spawn(async move {
@@ -15111,7 +15111,7 @@ async fn same_group_config_puts_see_each_other() {
     let engine = state.engine_for(&route).await.unwrap();
 
     let cfg = br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#;
-    let hold = engine.test_hold_commit();
+    let hold = engine.test_hold_commit().await;
     let base = engine.appends_enqueued();
     let a = tokio::spawn(async move {
         preq(addr, "PUT", "/v1/streams/qc14b/consumers/dup", &key, cfg).await
@@ -16810,7 +16810,7 @@ async fn a_applied_read_and_long_poll_serve_the_tail_before_durability() {
     assert_eq!(handle.state.lock().unwrap().durable.next, 1);
 
     // Freeze durable state; r2 applies but never dispatches.
-    let guard = engine.test_hold_dispatch();
+    let guard = engine.test_hold_dispatch().await;
     let r2 = tokio::spawn(async move {
         preq(
             addr,
@@ -17154,7 +17154,7 @@ async fn a_stale_applied_cursor_is_refused_after_crash_restart() {
     let route = desc.segment_route_by_id(seg.seg_id);
     let engine = state2.engine_for(&route).await.unwrap();
     let handle = engine.stream_handle(seg.identity).await.unwrap();
-    let guard = engine.test_hold_dispatch();
+    let guard = engine.test_hold_dispatch().await;
     let r2 = tokio::spawn(async move {
         preq(
             addr2,

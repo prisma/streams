@@ -684,9 +684,16 @@ pub struct ShardEngine {
     /// and the acker (failsafe + fencing path). Group drains are already
     /// exclusive via the in_flight lock; this additionally keeps tail
     /// state updates applying in seq order across the two callers.
-    dispatch_gate: Mutex<()>,
+    dispatch_gate: tokio::sync::Mutex<()>,
     #[cfg(test)]
-    commit_gate: Mutex<()>,
+    // tokio (not std) DELIBERATELY: both gates are held across awaits
+    // by tests, and their non-test acquirers run as tasks on the shared
+    // runtime. A std lock() there blocks the WORKER THREAD; the #115
+    // hunt caught that in the act — the blocked worker stranded the
+    // timer driver, the gate-holding test's own sleep/watchdog timers
+    // died, and the release never came (deadlock, all threads parked).
+    // An async lock parks the TASK and the runtime keeps breathing.
+    commit_gate: tokio::sync::Mutex<()>,
     #[cfg(test)]
     appends_enqueued: std::sync::atomic::AtomicU64,
     #[cfg(test)]
@@ -860,7 +867,7 @@ impl ShardEngine {
             streams: Mutex::new(HashMap::new()),
             seal_fences: Mutex::new(HashMap::new()),
             #[cfg(test)]
-            commit_gate: Mutex::new(()),
+            commit_gate: tokio::sync::Mutex::new(()),
             #[cfg(test)]
             appends_enqueued: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
@@ -872,7 +879,7 @@ impl ShardEngine {
             fail_group_tripped: std::sync::atomic::AtomicUsize::new(0),
             tx,
             in_flight: Mutex::new(Vec::new()),
-            dispatch_gate: Mutex::new(()),
+            dispatch_gate: tokio::sync::Mutex::new(()),
             pump_flushes: AtomicU64::new(0),
             pump_barrier_acked: AtomicU64::new(0),
             pump_gathers: AtomicU64::new(0),
@@ -1071,7 +1078,7 @@ impl ShardEngine {
                             // dispatch has finished sending. Either way,
                             // when this returns, every ack this flush
                             // unblocked is on the wire.
-                            let acked = pump.dispatch_durable(durable_seq);
+                            let acked = pump.dispatch_durable(durable_seq).await;
                             pump.pump_barrier_acked
                                 .fetch_add(acked as u64, Ordering::Relaxed);
                             // Arm the ack->next-enqueue probe: the next
@@ -1844,7 +1851,7 @@ impl ShardEngine {
             // the primitive every same-group scenario needs.
             #[cfg(test)]
             {
-                let _hold = self.commit_gate.lock().unwrap();
+                let _hold = self.commit_gate.lock().await;
             }
             let mut ops = vec![first];
             let mut bytes = match &ops[0] {
@@ -3724,8 +3731,8 @@ impl ShardEngine {
     /// commit group. The companion to `fail_next_group_for` for
     /// deterministic same-group scenarios.
     #[cfg(test)]
-    pub fn test_hold_commit(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.commit_gate.lock().unwrap()
+    pub async fn test_hold_commit(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.commit_gate.lock().await
     }
 
     /// Entered-proof for group-composition tests: client ops — appends,
@@ -3854,8 +3861,8 @@ impl ShardEngine {
     /// nor the pump can dispatch acks — the deterministic stand-in for
     /// "the acker is paused after durability, before response dispatch".
     #[cfg(test)]
-    pub fn test_hold_dispatch(&self) -> std::sync::MutexGuard<'_, ()> {
-        self.dispatch_gate.lock().unwrap()
+    pub async fn test_hold_dispatch(&self) -> tokio::sync::MutexGuard<'_, ()> {
+        self.dispatch_gate.lock().await
     }
 
     /// Release everything the durable watermark now covers: record
@@ -3866,8 +3873,8 @@ impl ShardEngine {
     /// dispatched. Called from the acker (watch-driven failsafe + the
     /// only path when the pump is off) and from the pump (explicit
     /// barrier right after its flush returns).
-    fn dispatch_durable(&self, durable_seq: u64) -> u32 {
-        let _order = self.dispatch_gate.lock().unwrap();
+    async fn dispatch_durable(&self, durable_seq: u64) -> u32 {
+        let _order = self.dispatch_gate.lock().await;
         let ready: Vec<InFlightGroup> = {
             let mut q = self.in_flight.lock().unwrap();
             let split = q.partition_point(|g| g.seq <= durable_seq);
@@ -3957,7 +3964,7 @@ impl ShardEngine {
                 }
                 status.durable_seq
             };
-            self.dispatch_durable(durable_seq);
+            self.dispatch_durable(durable_seq).await;
             tokio::select! {
                 changed = status_rx.changed() => {
                     if changed.is_err() {
