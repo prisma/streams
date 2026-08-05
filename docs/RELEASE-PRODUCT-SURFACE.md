@@ -729,3 +729,108 @@ ds_conformance:     332 passed / 0 failed / 6 skipped
 field_gate:         PASS local (unpaced + paced) and WAN (both regions, both modes)
 sdk_smoke:          PASS local (fresh tarball) and WAN (both regions)
 ```
+
+## Round 17 (2026-08-05): deletion names an incarnation, never a name
+
+The final consumer-saga review found three P0s, all in consumer
+deletion, all instances of one violated invariant — cleanup belonging
+to one incarnation must never mutate another. Fixed in `c1d2aedb`,
+tagged `v0.2.0-preview.3`:
+
+1. **Generation-filtered cleanup.** The segment cleanup used to scan
+   the all-generations prefix and delete every row of the name; a
+   stale deletion replaying after a recreation erased the NEW
+   generation's rows. Cleanup now decodes each row's generation and
+   deletes only `row_generation < fence_below`; group-local queue
+   state is removed only when its generation is below the fence.
+2. **Versioned DELETE + epoch-pinned saga.** Consumer create/get
+   return an opaque incarnation token (`Prisma-Consumer-Version` =
+   {stream epoch, consumer generation}); DELETE requires it. A stale
+   retry whose target is gone — newer consumer generation, or a
+   recreated stream (different epoch) — is an idempotent 204 that
+   touches nothing; a token newer than the record is a 409. Every
+   in-saga descriptor refresh re-checks the stream epoch and
+   terminates (204) if the name now belongs to another incarnation.
+   The SDK `Consumer` carries the token and sends it.
+3. **Bounded, resumable, parallel cleanup.** `ConfigDeleteStep{
+   max_rows, max_bytes}` replaces the unbounded `ConfigDelete`: fence
+   first, budget-bounded generation-filtered scan, bounded durable
+   batch, `complete=false` when rows remain. The saga steps each
+   segment to completion under a per-request step budget (503
+   `segment_cleanup_incomplete` on exhaustion, with durable progress),
+   sweeping physically-independent segments with bounded concurrency
+   (8). A million-row residue drains monotonically across retries
+   instead of building one unbounded Vec/WriteBatch/commit group.
+
+Four deterministic tests pin the fixes (stale-replay leaves a
+recreated generation intact; stale DELETE retry 204s without touching
+the replacement, forged-newer 409s, missing token 400s; a parked saga
+resumed across a stream delete+recreate leaves the replacement
+untouched — new failpoint slot 16; a 500-row dead-generation residue
+drains in ≤64-row steps, every step progressing, live generation
+byte-count intact).
+
+Release hygiene from the same review: package versions aligned
+(`Cargo.toml` + `sdk/package.json` = `0.2.0-preview.3`);
+`consumer_fence_entries` / `consumer_fence_max_generation` surfaced in
+`/v1/debug/load` cardinality (the map is unbounded BY DESIGN — any
+future cleanup must be proved by committer-queue progress, like seal
+fences; never wall-clock); every test arming a global failpoint
+registry or reading a global parked-counter now serializes on one
+lock, closing the solo-pass/parallel-flake family.
+
+Also in this tag (post-preview.2, before this round):
+`deliver=applied` — the opt-in pre-durability low-latency read/
+subscribe mode on the product surface (provisional records marked,
+resume cursors durable-clamped, stale session cursors refused with
+409 `cursor_beyond_tail`) plus a latent boundary/layout-flag read
+race it exposed, fixed for the durable path too; the Composer
+deployment guide (`docs/GUIDE-COMPOSER.md`); poll-stretch idle-probe
+economics.
+
+### Round-17 battery (all on `c1d2aedb`)
+
+| gate | result |
+|---|---|
+| full Rust suite | **267 passed / 0 failed** (176 DST scenarios), parallel, serialized failpoint tests |
+| pinned DS conformance (0.3.6) | **332 / 0 / 6** |
+| field gate, local unpaced | **PASS** |
+| field gate, local `FIELD_PACE_MS=1200` | **PASS** |
+| installed-tarball SDK smoke (`prisma-streams-0.2.0-preview.3.tgz`) | **PASS** — product ops, `deliver=applied` read, consumer pull/settle, versioned delete, token re-mint on recreation |
+| WAN consumer-saga smoke, fra (`scripts/consumer-saga-smoke.sh`) | **PASS** on the redeployed retained service (artifact `bin/streams-freeze3-x64` = `c1d2aedb`, e_machine `3e00` verified) — unversioned 400, delete 204, tombstone retry 204, recreation re-mints, STALE retry 204 with replacement intact |
+
+Scope note: per the review's close-out list, the field gate ran
+LOCALLY this round (the WAN check is the saga smoke); the fra retained
+service now runs `freeze3`. `deliver=applied` is covered by the local
+battery and ships in this artifact; it has not had a dedicated WAN
+latency campaign.
+
+## Provenance (v0.2.0-preview.3)
+
+```
+code_commit:        c1d2aedb…   (round 17; the freeze3 WAN artifact)
+report_commit:      the commit tagged v0.2.0-preview.3 (docs-only stamp on code_commit)
+cloud_build:        c1d2aedb…   (fra 2026-08-05, WAN consumer-saga smoke PASS)
+prior_cloud_builds: 67c551a4 (preview.2), 981e2e68 (preview.1), d445a06 (2026-08-04 full campaign)
+
+server_commit:      c1d2aedb3da0a7516a737defae57279025553288
+server_dirty:       no
+slatedb_pin:         0717cc1e4e9bad10a4773760f66bac4264ecf05e
+layout_version:     3
+conformance_pin:    0.3.6
+sdk_tarball_sha256: c7ec1f4cda2439be2245875e624ae2b86ba95e00b3af89e0516bf4308931deae
+dst_scenario_tests: 176
+rust_suite:         267 passed / 0 failed
+ds_conformance:     332 passed / 0 failed / 6 skipped
+field_gate:         PASS local (unpaced + paced)
+sdk_smoke:          PASS local (fresh 0.2.0-preview.3 tarball)
+wan_saga_smoke:     PASS fra (freeze3 artifact = code_commit)
+```
+
+With this, the consumer-deletion surface follows the same rules as
+every other incarnation-mutating path — operation identity, incarnation
+fencing, durable response barriers, crash-persistent bounded cleanup —
+and the broad audit loop STOPS here, per the review. Remaining tracked
+work (deferred, non-gating): the deterministic simulator (#108),
+multi-instance fleet validation (#113), ops/release program (#114), and
+the close-group liveness investigation (#115).
