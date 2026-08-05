@@ -13656,6 +13656,521 @@ async fn queue_config_delete_is_group_local() {
     engine_shutdown(&state).await;
 }
 
+/// Round 15 B, case 1: `Receive -> ConfigDelete` composed into ONE
+/// commit group, and the group SUCCEEDS. The Receive stages a lease
+/// put into the group's WriteBatch; the durable scan inside
+/// ConfigDelete cannot see it. Deletion must also delete the
+/// group-LOCAL rows, or the lease outlives the consumer and a
+/// recreated consumer inherits it after handle eviction. Composed by
+/// DIRECT committer submits — the HTTP handlers interleave their own
+/// preliminary ops, which is a different scenario.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn receive_then_delete_in_one_group_leaves_no_stale_lease() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc15a",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for i in 0..2 {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/qc15a/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", &format!("k{i}")),
+            ],
+            format!("{{\"n\":{i}}}").as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc15a/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+
+    state.registry.invalidate("qc15a");
+    let desc = state.registry.get("qc15a").await.unwrap().unwrap();
+    let ro = desc.resolve_segment("");
+    let engine = state.engine_for(&ro.shard_route).await.unwrap();
+    let identity = ro.identity;
+
+    let mut keys_map: std::collections::HashMap<u64, [u8; 16]> = Default::default();
+    keys_map.insert(0, crate::crypto::stream_hash("k0"));
+    keys_map.insert(1, crate::crypto::stream_hash("k1"));
+
+    let hold = engine.test_hold_commit();
+    let base = engine.appends_enqueued();
+    let e1 = engine.clone();
+    let km = keys_map.clone();
+    let recv = tokio::spawn(async move {
+        e1.submit_queue(
+            identity,
+            crate::queue::QueueOp::Receive {
+                consumer: "c1".into(),
+                max: 2,
+                visibility_ms: 30_000,
+                max_deliveries: 3,
+                keys: km,
+                covered_to: 2,
+            },
+        )
+        .await
+    });
+    while engine.appends_enqueued() < base + 1 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    let e2 = engine.clone();
+    let del = tokio::spawn(async move {
+        e2.submit_queue(
+            identity,
+            crate::queue::QueueOp::ConfigDelete {
+                consumer: "c1".into(),
+            },
+        )
+        .await
+    });
+    while engine.appends_enqueued() < base + 2 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    drop(hold);
+    let r = recv.await.unwrap().expect("receive");
+    match r {
+        crate::queue::QueueOut::Received { leased, .. } => {
+            assert_eq!(leased.len(), 2, "the Receive leased both records in-group");
+        }
+        other => panic!("expected Received, got {other:?}"),
+    }
+    del.await.unwrap().expect("delete");
+
+    // Force the durable rows to be the only truth. (idle=1ms evicts
+    // every unreferenced handle once 1ms has passed; ZERO would skip
+    // the branch entirely and silently test nothing.)
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    let evicted = engine.evict_idle_handles(std::time::Duration::from_millis(1), 0);
+    assert!(evicted >= 1, "handle eviction was a no-op; the reload leg is untested");
+
+    // A recreated consumer must see a completely fresh world: both
+    // records deliverable at once. A stale lease row from the deleted
+    // incarnation would hide one behind an active visibility window.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc15a/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "recreate after delete");
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/qc15a/consumers/c1:pull",
+        &key,
+        br#"{"max": 2}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let got = serde_json::from_slice::<serde_json::Value>(&b).unwrap()["messages"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert_eq!(
+        got,
+        2,
+        "a lease staged in the SAME group as the delete survived it: {}",
+        String::from_utf8_lossy(&b)
+    );
+    engine_shutdown(&state).await;
+}
+
+/// Round 15 B, case 2: `Settle -> ConfigDelete` in ONE group. The
+/// settle stages ack/cursor mutations into the WriteBatch; the delete
+/// must bury those too. A recreated consumer starts from scratch —
+/// no inherited cursor, no inherited acks.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn settle_then_delete_in_one_group_leaves_no_stale_rows() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc15b",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for i in 0..2 {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/qc15b/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", &format!("k{i}")),
+            ],
+            format!("{{\"n\":{i}}}").as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc15b/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+
+    state.registry.invalidate("qc15b");
+    let desc = state.registry.get("qc15b").await.unwrap().unwrap();
+    let ro = desc.resolve_segment("");
+    let engine = state.engine_for(&ro.shard_route).await.unwrap();
+    let identity = ro.identity;
+
+    // Lease both records through a NORMAL committed group, keeping the
+    // lease generations for the settle.
+    let mut keys_map: std::collections::HashMap<u64, [u8; 16]> = Default::default();
+    keys_map.insert(0, crate::crypto::stream_hash("k0"));
+    keys_map.insert(1, crate::crypto::stream_hash("k1"));
+    let leased = match engine
+        .submit_queue(
+            identity,
+            crate::queue::QueueOp::Receive {
+                consumer: "c1".into(),
+                max: 2,
+                visibility_ms: 30_000,
+                max_deliveries: 3,
+                keys: keys_map,
+                covered_to: 2,
+            },
+        )
+        .await
+        .expect("seed receive")
+    {
+        crate::queue::QueueOut::Received { leased, .. } => leased,
+        other => panic!("expected Received, got {other:?}"),
+    };
+    assert_eq!(leased.len(), 2);
+    // Ack the SECOND record while the first stays leased: an
+    // OUT-OF-ORDER ack stages a persistent ack ROW (an in-order ack
+    // only advances the cursor, which the delete already buries
+    // unconditionally) — the row the group-local enumeration exists
+    // to find.
+    let (off0, gen0) = (leased[1].0, leased[1].1);
+
+    // ONE group: [Settle(ack off1), ConfigDelete].
+    let hold = engine.test_hold_commit();
+    let base = engine.appends_enqueued();
+    let e1 = engine.clone();
+    let settle = tokio::spawn(async move {
+        e1.submit_queue(
+            identity,
+            crate::queue::QueueOp::Settle {
+                consumer: "c1".into(),
+                acks: vec![(off0, gen0)],
+                retries: Vec::new(),
+                extends: Vec::new(),
+                max_deliveries: 3,
+            },
+        )
+        .await
+    });
+    while engine.appends_enqueued() < base + 1 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    let e2 = engine.clone();
+    let del = tokio::spawn(async move {
+        e2.submit_queue(
+            identity,
+            crate::queue::QueueOp::ConfigDelete {
+                consumer: "c1".into(),
+            },
+        )
+        .await
+    });
+    while engine.appends_enqueued() < base + 2 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    drop(hold);
+    settle.await.unwrap().expect("settle");
+    del.await.unwrap().expect("delete");
+
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    let evicted = engine.evict_idle_handles(std::time::Duration::from_millis(1), 0);
+    assert!(evicted >= 1, "handle eviction was a no-op; the reload leg is untested");
+
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc15b/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "recreate after delete");
+    // A stale cursor/ack row would make the fresh consumer skip
+    // offset 0. It must see BOTH records.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/qc15b/consumers/c1:pull",
+        &key,
+        br#"{"max": 2}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let got = serde_json::from_slice::<serde_json::Value>(&b).unwrap()["messages"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert_eq!(
+        got,
+        2,
+        "ack/cursor rows staged in the SAME group as the delete survived it: {}",
+        String::from_utf8_lossy(&b)
+    );
+    engine_shutdown(&state).await;
+}
+
+/// Round 15, the REVERSE order: a Receive that lands in the same group
+/// AFTER the ConfigDelete must be refused — the consumer no longer
+/// exists for later ops in the group. Without the overlay check it
+/// silently re-staged lease rows for the dead consumer (this exact
+/// composition found the hole).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_receive_after_delete_in_the_same_group_is_refused() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc15d",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for i in 0..2 {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/qc15d/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", &format!("k{i}")),
+            ],
+            format!("{{\"n\":{i}}}").as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc15d/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+
+    state.registry.invalidate("qc15d");
+    let desc = state.registry.get("qc15d").await.unwrap().unwrap();
+    let ro = desc.resolve_segment("");
+    let engine = state.engine_for(&ro.shard_route).await.unwrap();
+    let identity = ro.identity;
+    let mut keys_map: std::collections::HashMap<u64, [u8; 16]> = Default::default();
+    keys_map.insert(0, crate::crypto::stream_hash("k0"));
+    keys_map.insert(1, crate::crypto::stream_hash("k1"));
+
+    let hold = engine.test_hold_commit();
+    let base = engine.appends_enqueued();
+    let e1 = engine.clone();
+    let del = tokio::spawn(async move {
+        e1.submit_queue(
+            identity,
+            crate::queue::QueueOp::ConfigDelete {
+                consumer: "c1".into(),
+            },
+        )
+        .await
+    });
+    while engine.appends_enqueued() < base + 1 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    let e2 = engine.clone();
+    let km = keys_map.clone();
+    let recv = tokio::spawn(async move {
+        e2.submit_queue(
+            identity,
+            crate::queue::QueueOp::Receive {
+                consumer: "c1".into(),
+                max: 2,
+                visibility_ms: 30_000,
+                max_deliveries: 3,
+                keys: km,
+                covered_to: 2,
+            },
+        )
+        .await
+    });
+    while engine.appends_enqueued() < base + 2 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    drop(hold);
+    del.await.unwrap().expect("delete");
+    let r = recv.await.unwrap();
+    match r {
+        Err(m) => assert!(
+            m.starts_with("consumer_not_found"),
+            "wrong refusal: {m}"
+        ),
+        Ok(o) => panic!("a Receive after an in-group delete succeeded: {o:?}"),
+    }
+
+    // And nothing of the refused Receive survives: a recreated
+    // consumer sees both records.
+    tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    let evicted = engine.evict_idle_handles(std::time::Duration::from_millis(1), 0);
+    assert!(evicted >= 1, "handle eviction was a no-op; the reload leg is untested");
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc15d/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/qc15d/consumers/c1:pull",
+        &key,
+        br#"{"max": 2}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let got = serde_json::from_slice::<serde_json::Value>(&b).unwrap()["messages"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(0);
+    assert_eq!(got, 2, "the refused Receive leaked state: {}", String::from_utf8_lossy(&b));
+    engine_shutdown(&state).await;
+}
+
+/// Round 15 A: a ConfigDelete whose state-row scan FAILS must change
+/// nothing — no error may be swallowed into a partial deletion that
+/// reports success. The failure is injected at the scan boundary (the
+/// deterministic stand-in for a store error mid-enumeration).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_failed_config_scan_aborts_the_delete_untouched() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc15c",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for i in 0..2 {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/qc15c/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", &format!("k{i}")),
+            ],
+            format!("{{\"n\":{i}}}").as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc15c/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/qc15c/consumers/c1:pull",
+        &key,
+        br#"{"max": 2}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+
+    state.registry.invalidate("qc15c");
+    let desc = state.registry.get("qc15c").await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let route = desc.segment_route_by_id(seg.seg_id);
+    let engine = state.engine_for(&route).await.unwrap();
+    engine.fail_next_config_scan();
+
+    let (st, _, b) = preq(
+        addr,
+        "DELETE",
+        "/v1/streams/qc15c/consumers/c1",
+        &key,
+        b"",
+    )
+    .await;
+    assert!(
+        st >= 500,
+        "a delete over a failed scan must FAIL, got {st}: {}",
+        String::from_utf8_lossy(&b)
+    );
+
+    // The consumer is exactly as it was: config present, both leases
+    // still held (an immediate re-pull finds nothing deliverable).
+    let (st, _, _) = preq(addr, "GET", "/v1/streams/qc15c/consumers/c1", &key, b"").await;
+    assert_eq!(st, 200, "the aborted delete removed the consumer config");
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/qc15c/consumers/c1:pull",
+        &key,
+        br#"{"max": 2}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let leased_now = serde_json::from_slice::<serde_json::Value>(&b).unwrap()["messages"]
+        .as_array()
+        .map(|a| a.len())
+        .unwrap_or(99);
+    assert_eq!(leased_now, 0, "the aborted delete dropped the consumer's leases");
+    engine_shutdown(&state).await;
+}
+
 /// Two ConfigPut for the same consumer in ONE group: the second must
 /// see the first's staged config (overlay), so exactly one reports
 /// created and an equal repeat is idempotent — the DB behind an
@@ -13781,6 +14296,103 @@ async fn a_stale_fork_release_does_not_touch_a_recreated_source() {
         "a stale release mutated the replacement's children"
     );
     assert_eq!(d.stream_epoch, fresh.stream_epoch);
+    engine_shutdown(&state).await;
+}
+
+/// Round 15: the ABA window INSIDE release_fork_ref. The release
+/// validates epoch A, then parks (the failpoint models a slow
+/// cleanup); meanwhile A is hard-deleted and the name recreated as B,
+/// conditioned so an unfenced mutation would visibly change it (same
+/// fork id among its children, soft-deleted, childless-after-removal
+/// => tombstone). The resumed release must carry its SNAPSHOT's epoch
+/// into the mutation — B stays byte-for-byte untouched, and the stale
+/// release reports CONCLUSIVE so the debt converges.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_release_parked_across_recreation_cannot_touch_the_replacement() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [
+        ("prisma-encryption-key", PRISMA_KEY),
+        ("content-type", "application/json"),
+    ];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/frk15src",
+        &ct,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    state.registry.invalidate("frk15src");
+    let epoch_a = state
+        .registry
+        .get("frk15src")
+        .await
+        .unwrap()
+        .unwrap()
+        .stream_epoch;
+
+    // The in-flight release, parked between its snapshot (epoch A
+    // validated) and its mutation.
+    crate::http::fork_failpoints::park_release_after_epoch_check("frk15src");
+    let before_parked = crate::http::fork_failpoints::parked_release_epoch_count();
+    let st2 = state.clone();
+    let ea = epoch_a.clone();
+    let rel = tokio::spawn(async move {
+        crate::http::release_fork_ref_for_test(&st2, "frk15src", "frk15-ghost-fork", &ea).await
+    });
+    while crate::http::fork_failpoints::parked_release_epoch_count() == before_parked {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+
+    // A dies; the name is reborn as B...
+    let (st, _, _) = preq(addr, "DELETE", "/v1/streams/frk15src", &ct, b"").await;
+    assert!(st == 200 || st == 204, "delete A: {st}");
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/frk15src",
+        &ct,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "recreate as B");
+    state.registry.invalidate("frk15src");
+    let fresh = state.registry.get("frk15src").await.unwrap().unwrap();
+    assert_ne!(fresh.stream_epoch, epoch_a);
+
+    // ...conditioned so an UNFENCED release would visibly mutate it:
+    // it holds the very fork id the stale release carries, and is
+    // soft-deleted, so removing that child would tombstone it.
+    state
+        .registry
+        .cas_update("frk15src", |d| {
+            d.soft_deleted = true;
+            d.fork_children = vec!["frk15-ghost-fork".into()];
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate("frk15src");
+    let b_before = state.registry.get("frk15src").await.unwrap().unwrap();
+    let b_bytes_before = serde_json::to_vec(&b_before).unwrap();
+
+    // Resume the stale release.
+    crate::http::fork_failpoints::release_release_after_epoch_check("frk15src");
+    let conclusive = rel.await.unwrap().expect("release must not error");
+    assert!(
+        conclusive,
+        "a release for a dead incarnation must be conclusive so its debt converges"
+    );
+
+    state.registry.invalidate("frk15src");
+    let b_after = state.registry.get("frk15src").await.unwrap().unwrap();
+    let b_bytes_after = serde_json::to_vec(&b_after).unwrap();
+    assert_eq!(
+        b_bytes_before, b_bytes_after,
+        "the parked release mutated the replacement incarnation"
+    );
     engine_shutdown(&state).await;
 }
 

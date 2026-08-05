@@ -215,16 +215,34 @@ const json = async (res) => {
   // SETUP and the sequences straddle parent -> child -> merged-child.
   // A fast local client finishes setup before the first eval and never
   // exercises that shape (2026-08-04 field finding).
+  const mustAppend = async (label, fn) => {
+    let last;
+    for (let i = 0; i < 8; i++) {
+      const r = await fn();
+      if (r.status < 300) return;
+      last = `${r.status} ${(await r.text().catch(() => "")).slice(0, 160)}`;
+      if (![408, 429, 500, 503].includes(r.status)) break;
+      await new Promise((res) => setTimeout(res, 500 * (i + 1)));
+    }
+    check(`setup append (${label}) committed`, false, last);
+    throw new Error(`setup append failed: ${label}: ${last}`);
+  };
   const pace = Number(process.env.FIELD_PACE_MS ?? 0);
   // The payload under test: a fixed, verifiable sequence per key.
+  // Same discipline as the default-key setup appends: every write is
+  // status-checked and transient-retried, so a failed setup write
+  // fails HERE as a setup failure — not later as a phantom
+  // read/history failure (round 15).
   for (let round = 0; round < perKey; round++) {
     await Promise.all(
       keys.map((k) =>
-        P(`${name}/records`, {
-          method: "POST",
-          headers: headers({ "prisma-routing-key": k }),
-          body: JSON.stringify({ k, round }),
-        }),
+        mustAppend(`k=${k} round=${round}`, () =>
+          P(`${name}/records`, {
+            method: "POST",
+            headers: headers({ "prisma-routing-key": k }),
+            body: JSON.stringify({ k, round }),
+          }),
+        ),
       ),
     );
     if (pace) await new Promise((r) => setTimeout(r, pace));
@@ -238,18 +256,6 @@ const json = async (res) => {
   // transient refusals, and fail HERE if the payload never commits.
   const rawHeaders = { "stream-encryption-key": key, "content-type": "application/json" };
   if (token) rawHeaders["authorization"] = `Bearer ${token}`;
-  const mustAppend = async (label, fn) => {
-    let last;
-    for (let i = 0; i < 8; i++) {
-      const r = await fn();
-      if (r.status < 300) return;
-      last = `${r.status} ${(await r.text().catch(() => "")).slice(0, 160)}`;
-      if (![408, 429, 500, 503].includes(r.status)) break;
-      await new Promise((res) => setTimeout(res, 500 * (i + 1)));
-    }
-    check(`setup append (${label}) committed`, false, last);
-    throw new Error(`setup append failed: ${label}: ${last}`);
-  };
   await mustAppend("product-default", () =>
     P(`${name}/records`, {
       method: "POST",

@@ -6,17 +6,53 @@ Date: 2026-07-31 · Branch: `slate` · Spec:
 
 ## Verdict
 
-**The product-surface, protocol-conformance, cost, and primary
-lifecycle gates pass. Some local work remains open, and one gate is
-externally blocked.** Fourteen audit rounds have been answered in full;
-each is summarized below, and each is a reason to read an earlier
-round's "pass" claims as of that date rather than as a standing
-verdict.
+**PASS — the appendix-§13 battery is closed.** Every local gate passes
+at the final head; the cloud field campaign passed against two real
+Compute edges on build `d445a06`; the destructive-cutover refusals were
+verified on the wire. Fifteen audit rounds have been answered in full;
+each round's summary below is a statement about its own date, and this
+verdict is the standing one.
 
-Precisely: the pinned Durable Streams protocol suite, the product
-conformance / dual-surface / DST / cost gates in `cargo test`, the
-field-gate corpus, and the SDK package gate all pass at the head
-commit. **## Cloud field campaign (2026-08-04) — the last gate, closed
+The final state, in the reviewer's shape:
+
+- **Local gates:** pass (suite, pinned DS conformance, field-gate
+  corpus paced AND unpaced, SDK package gate), with the carried
+  postures listed in the gate table.
+- **Cloud campaign:** passed 2026-08-04 on build `d445a06` (fra +
+  ewr; 20/20 field gate each; SDK WAN smoke; wire cutover refusals).
+- **Final repository head:** the commit this file ships in (see the
+  provenance block below — `server_commit` binds it exactly).
+- **Post-campaign changes** (the campaign was NOT re-run on the WAN
+  after these; each was re-gated by the full local battery, including
+  the paced WAN-shape field gate):
+  1. SlateDB dependency moved from our fork to pinned upstream main
+     (`0717cc1e…`) — a real server change; suite, conformance, both
+     field-gate modes, SDK smoke, and a GC LIST A/B were re-run green
+     (see `docs/COST-CAMPAIGN-2.md` addendum).
+  2. Round-15 fixes: transactional consumer deletion (fallible scans,
+     same-group staged-row burial, in-group deleted-consumer refusal)
+     and single-snapshot incarnation pinning through the fork-release
+     path with fenced debt clearing — six new red-verified DST tests.
+  3. Harness/report-only changes (field-gate pagination + pacing +
+     setup-append checking, this report).
+- **Services intentionally retained:** see "Retained field
+  deployment" below (owner, purpose, expiry, credentials).
+
+Three words are used deliberately and never interchangeably:
+
+- **pass** — the gate ran and met its criteria, at a stated time.
+- **posture** — the spec item does not apply to this deliverable, with
+  the reason recorded and the condition that would re-open it.
+- **outstanding** — the gate has not been met yet. Not a pass.
+
+## Provenance
+
+`scripts/release-provenance.sh` output for the exact artifact this
+report describes is pasted at the end of this file and regenerated on
+every report edit; if the pasted `server_commit` and `git rev-parse
+HEAD` disagree, the report is stale and the script is right.
+
+## Cloud field campaign (2026-08-04) — the last gate, closed
 
 Prisma Compute resumed publishing new services on 2026-08-03 after the
 five-day edge outage (`repro-edge-404/` retry log). The campaign then
@@ -26,7 +62,7 @@ ran end to end on build `d445a06` (x86_64-musl, provenance via
 | step | result |
 |---|---|
 | two-PoP deploy (fra `eu-central-1`, ewr `us-east-1`), fresh `camp75a` namespace, split knobs on | both edges healthy |
-| 20-check field gate against each REAL edge (negative auth, replay, seal/fork crash recovery, a real scaler split under WAN pacing, raw default-key isolation) | **20/20 both regions** |
+| 20-check field gate against each REAL edge (negative auth, create replay, seal/fork replay-resume and coexistence, a real scaler split under WAN pacing, raw default-key isolation) | **20/20 both regions** — the gate exercises replay/resume against a LIVE server; process-crash recovery is DST's job, not this script's |
 | SDK WAN smoke (`@prisma/streams` against each edge) | PASS both regions |
 | destructive-cutover wire checks on a real edge (`Stream-Encryption-Key` on the product route, `profile` in the creation document, `Stream-Key` on the raw route) | all 400, named-field refusals, never translated |
 
@@ -57,21 +93,81 @@ everything to UnknownError), and the object-store endpoint moved to
 `fly.storage.tigris.dev` (Tigris's `t3.storage.dev` apex now serves
 their website from some vantage points).
 
-Still open locally** (none of it a known-incorrect behavior,
-all tracked): the deterministic whole-system simulator and its
-remaining catalogue scenarios (SEL-022's true remote-watermark pause,
-the CRT-007 two-joiner variant), the typed incarnation-mutation
-registry API, and the fork-install generation model that would let a
-crashed-before-install creator's tombstone debt converge without a
-DELETE retry. **Externally blocked:** the real-platform cloud campaign,
-on Compute edge publication. Until that campaign lands, this release is
-not fully gated, and the report says so rather than rounding up.
+**Deferred to post-freeze arcs** (none of it a known-incorrect
+behavior, all tracked, per the round-15 review's explicit deferral
+list): the deterministic whole-system simulator and its remaining
+catalogue scenarios (SEL-022's true remote-watermark pause, the
+CRT-007 two-joiner variant), the fork-install cancellation generation
+model for a creator that died before EVER installing a reference (the
+crashed-AFTER-install case converges today via the DELETE retry), the
+Compute-independent multi-instance VM campaign, warm-history block
+refetch, and browser-support verification. The typed
+incarnation-mutation registry API is DONE and every fork-lifecycle
+mutation now rides it.
 
-Run `scripts/release-provenance.sh` to bind these claims to the exact
-artifact (server commit, SlateDB pin, SDK tarball SHA, layout version,
-conformance pin, DST scenario count) — the round-14 review caught the
-report naming one commit while the reviewed archive was another, and
-this removes that drift.
+## Multi-instance fleet posture
+
+The cloud campaign validated one service instance per region against
+two real edges. It did NOT validate a coordinated multi-instance fleet
+with live ownership movement on Compute (that ran earlier on the
+pre-cutover build in the soak campaigns, not on the product surface).
+A controlled preview with one instance per region is what this report
+gates; nothing in the README or SLO may claim field-validated
+multi-instance fleet operation until the fleet campaign (#113) runs.
+
+## The close-group liveness observation (#115) — classification
+
+A test-only wedge was observed twice in ~8 full-suite runs on
+2026-08-03: `a_failed_group_fails_the_close_and_its_retry_together`
+hung with the commit pipeline asleep and both close acks outstanding.
+It reproduces only under the cfg(test)-ONLY composition machinery
+(`commit_gate` hold + one-shot injected group failure — neither exists
+in a release binary), passes solo in 0.02 s, and has not recurred in
+any full run since; the test now carries a 90 s watchdog that turns
+any recurrence into a red panic with counters.
+
+Classification against the launch criteria, if the underlying
+mechanism were ever reachable in production (not demonstrated):
+
+- **No promised record can be lost.** Acks ride the durability
+  barrier; a group that never dispatches never acks — clients see
+  timeouts, and the ambiguity contract (§soak7) already governs
+  timed-out appends.
+- **Bounded, retryable errors — not silence.** `wedge_ms()`
+  (commit-blocked OR oldest-in-flight age) feeds admission shed and
+  the fleet load vector; a wedged shard sheds 429/Retry-After within
+  the field-validated threshold (wedge-liveness gate, soaks 4/7).
+- **No indefinite Sealing.** A seal claim is a 15 s fence lease; any
+  retry takes over through the committer fence. No operator repair
+  path exists because none is needed — descriptor and segment state
+  cannot diverge across the barrier.
+- **Recovery is platform-automatic, not operator-manual.** A
+  permanently wedged committer in a live process is recovered by
+  instance replacement (health-based recycle), through the same
+  OpenGate/deadline/reaper reopen machinery the reopen-storm fix
+  field-validated. In-process committer self-restart is deliberately
+  NOT implemented.
+
+Verdict: **acceptable for preview, tracked as #115** — the hunt
+continues, but by the stated criteria it is not a launch blocker.
+
+## Retained field deployment
+
+The two campaign services are intentionally retained:
+
+| | |
+|---|---|
+| services | `soak-server-eu-central-1` (fra), `soak-server-us-east-1` (ewr), projects `streams-camp75-eu` / `streams-camp75-use` |
+| owner | sorenbs |
+| purpose | post-campaign probes and preview follow-up on the exact gated build (`d445a06`) |
+| cost envelope | 2 × 1-CPU/1-GB always-on (KEEP_AWAKE) + 3 Tigris buckets with camp75a test data |
+| expiry | **2026-08-19** — tear down via `bench/soak/teardown.sh` (campaign stamp `camp75a-08032240`) or redeploy the frozen build, whichever comes first |
+| credentials | per-project Tigris bucket keys minted 2026-08-03 (`$SOAK_HOME/bkey-*.json`); they die with the buckets at teardown; the workspace management token is not stored in the repo |
+
+## Provenance output (regenerated with this report)
+
+See the fenced block at the end of this file — `server_commit` there
+must equal the commit this file ships in.
 
 Three words are used deliberately and never interchangeably:
 
@@ -107,7 +203,7 @@ Recorded in `src/protocol_pin.rs` and `conformance/package.json`
 | Consumer/watch cost invariants | **pass** | consumer/watch state rides the shard commit path; zero new DBs, manifests, namespaces or LIST loops |
 | Wide-cardinality memory | **posture: carried** | handle/counter/sketch caps unchanged since the w100k campaigns; the usage map's past-cap fail-open re-verified by the isolated cap test |
 | Real Compute + Tigris field campaign (pre-audit build) | **pass, teardown verified** | 2026-07-31, `51969ad` — see below |
-| Cloud gate re-run on the post-audit build | **OUTSTANDING — blocked** | four deployments, two projects, two PoPs: all boot and listen, none routable. See below. |
+| Cloud gate re-run on the post-audit build | **pass** — 2026-08-04, build `d445a06`, fra + ewr, 20/20 each + SDK WAN smoke + wire cutover refusals | the campaign section above; the 2026-07-31 blockage documented below is HISTORY of the platform outage, kept for the record |
 
 ## Cloud gate
 
@@ -127,7 +223,11 @@ spot-check PUT answered 200 over an empty stream. That was a real
 non-atomic create, it is fixed (durable create initialization), and it
 is pinned by `create_replay_never_loses_the_initial_body`.
 
-### What the audit asked for next, and why it has not run
+### History: the 2026-07-31 platform outage that delayed the re-run
+
+(The re-run has since PASSED — 2026-08-04, above. This section is the
+contemporaneous record of the five-day Compute edge-publication outage
+and is retained as history.)
 
 The audit requires re-running the cloud gate on the post-audit build
 with negative auth, create replay, seal crash, fork crash, and split
@@ -137,8 +237,9 @@ checks — and it passes end to end against a local deployment,
 routing key still reads back its own sequence while the raw route shows
 the default key's records and nothing else.
 
-It has not run against Compute. Four deployments were made today
-(2026-07-31, 11:51–13:15 UTC) and none became reachable:
+At the time of writing (2026-07-31) it had not run against Compute.
+Four deployments were made that day (11:51–13:15 UTC) and none became
+reachable:
 
 | # | project | region/PoP | version status | domain |
 |---|---|---|---|---|

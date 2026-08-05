@@ -673,6 +673,8 @@ pub struct ShardEngine {
     #[cfg(test)]
     fail_group_for: Mutex<Option<std::collections::HashSet<[u8; 16]>>>,
     #[cfg(test)]
+    fail_config_scan: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
     fail_group_tripped: std::sync::atomic::AtomicUsize,
     /// Pump telemetry: flushes issued, requests acked at the pump's own
     /// barrier, gather windows taken. acked/flushes is the requests-per-
@@ -835,6 +837,8 @@ impl ShardEngine {
             appends_enqueued: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             fail_group_for: Mutex::new(None),
+            #[cfg(test)]
+            fail_config_scan: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             fail_group_tripped: std::sync::atomic::AtomicUsize::new(0),
             tx,
@@ -2722,22 +2726,75 @@ impl ShardEngine {
                             continue;
                         }
                         QueueOp::ConfigDelete { consumer } => {
-                            wb.delete(config_key(&hash, &consumer));
-                            // Every state row of this consumer under
-                            // this identity (bounded by ITS rows).
+                            // PHASE 1 — enumerate, fallibly. Deletion may
+                            // stage NOTHING until every source of this
+                            // consumer's rows has been read to completion:
+                            // a scan that fails half-way and "continues"
+                            // deletes the config while leaving leases or
+                            // acks durable, and the recreated consumer
+                            // inherits them (round 15 A).
                             let mut dead: Vec<Vec<u8>> = Vec::new();
-                            for tag in [b'l', b'x'] {
-                                let mut pfx = Vec::with_capacity(18 + consumer.len());
-                                pfx.extend_from_slice(&hash);
-                                pfx.push(tag);
-                                pfx.extend_from_slice(consumer.as_bytes());
-                                pfx.push(0);
-                                if let Ok(mut iter) = self.db.scan_prefix(&pfx[..], ..).await {
-                                    while let Ok(Some(kv)) = iter.next().await {
-                                        dead.push(kv.key.to_vec());
+                            let mut scan_err: Option<String> = None;
+                            #[cfg(test)]
+                            if self.take_config_scan_failure() {
+                                scan_err = Some("injected config-scan failure".into());
+                            }
+                            if scan_err.is_none() {
+                                'scans: for tag in [b'l', b'x'] {
+                                    let mut pfx = Vec::with_capacity(18 + consumer.len());
+                                    pfx.extend_from_slice(&hash);
+                                    pfx.push(tag);
+                                    pfx.extend_from_slice(consumer.as_bytes());
+                                    pfx.push(0);
+                                    match self.db.scan_prefix(&pfx[..], ..).await {
+                                        Ok(mut iter) => loop {
+                                            match iter.next().await {
+                                                Ok(Some(kv)) => dead.push(kv.key.to_vec()),
+                                                Ok(None) => break,
+                                                Err(e) => {
+                                                    scan_err = Some(e.to_string());
+                                                    break 'scans;
+                                                }
+                                            }
+                                        },
+                                        Err(e) => {
+                                            scan_err = Some(e.to_string());
+                                            break 'scans;
+                                        }
                                     }
                                 }
                             }
+                            if let Some(e) = scan_err {
+                                // Nothing staged, nothing published: the
+                                // consumer is exactly as it was.
+                                let _ = resp.send(Err(format!(
+                                    "consumer delete aborted: state scan failed: {e}"
+                                )));
+                                continue;
+                            }
+                            // PHASE 2 — the durable scans cannot see rows
+                            // an EARLIER op in this same group staged into
+                            // the unwritten WriteBatch (Receive leases,
+                            // Settle acks/cursor). Enumerate the group-
+                            // local view and delete those too; these
+                            // deletes land AFTER the puts in the batch,
+                            // so they win for this consumer (round 15 B).
+                            if local.queue.is_none() {
+                                local.queue =
+                                    Some(local.handle.state.lock().unwrap().queue.clone());
+                            }
+                            if let Some(cs) =
+                                local.queue.as_ref().unwrap().consumers.get(&consumer)
+                            {
+                                for off in cs.leases.keys() {
+                                    dead.push(lease_key(&hash, &consumer, *off));
+                                }
+                                for off in cs.acked.iter() {
+                                    dead.push(ack_key(&hash, &consumer, *off));
+                                }
+                            }
+                            // PHASE 3 — stage everything.
+                            wb.delete(config_key(&hash, &consumer));
                             dead.push(cursor_key(&hash, &consumer));
                             for k in dead {
                                 wb.delete(k);
@@ -2750,10 +2807,6 @@ impl ShardEngine {
                             // Receive earlier in the group could copy the
                             // consumer straight back on the success path.
                             local.queue_configs.insert(consumer.clone(), None);
-                            if local.queue.is_none() {
-                                local.queue =
-                                    Some(local.handle.state.lock().unwrap().queue.clone());
-                            }
                             local
                                 .queue
                                 .as_mut()
@@ -2773,6 +2826,25 @@ impl ShardEngine {
                         other => other,
                     };
                     let now = now_ms();
+                    // A consumer deleted EARLIER IN THIS GROUP does not
+                    // exist for any later op in the group. Without this
+                    // check, a Receive ordered after the ConfigDelete
+                    // quietly re-stages lease rows (and Settle re-stages
+                    // ack/cursor rows) for the dead consumer — rows the
+                    // delete's scans ran too early to see (round 15).
+                    if let Some(cname) = match &op {
+                        QueueOp::Receive { consumer, .. }
+                        | QueueOp::Settle { consumer, .. } => Some(consumer.clone()),
+                        _ => None,
+                    } {
+                        if matches!(local.queue_configs.get(&cname), Some(None)) {
+                            let _ = resp.send(Err(
+                                "consumer_not_found: deleted earlier in this commit group"
+                                    .into(),
+                            ));
+                            continue;
+                        }
+                    }
                     if local.queue.is_none() {
                         local.queue =
                             Some(local.handle.state.lock().unwrap().queue.clone());
@@ -3342,6 +3414,22 @@ impl ShardEngine {
     pub fn appends_enqueued(&self) -> u64 {
         self.appends_enqueued
             .load(std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// One-shot: the next ConfigDelete's state-row scan reports a
+    /// failure at the scan boundary — the deterministic stand-in for a
+    /// store error mid-enumeration. The contract under test: a failed
+    /// scan stages NOTHING and the consumer is untouched.
+    #[cfg(test)]
+    pub fn fail_next_config_scan(&self) {
+        self.fail_config_scan
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    fn take_config_scan_failure(&self) -> bool {
+        self.fail_config_scan
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
     }
 
     #[cfg(test)]

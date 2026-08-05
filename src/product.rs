@@ -4078,6 +4078,9 @@ async fn product_consumer_pull(
                     poisoned,
                 }) => (leased, backlog, poisoned),
                 Ok(_) => unreachable!("receive answers Received"),
+                Err(m) if m.starts_with("consumer_not_found") => {
+                    return perr(StatusCode::NOT_FOUND, "consumer_not_found", &m, None, false);
+                }
                 Err(m) => {
                     return perr(
                         StatusCode::INTERNAL_SERVER_ERROR,
@@ -4287,6 +4290,9 @@ async fn product_consumer_settle(
                 poisoned,
             }) => (acked, retried, extended, dlq, backlog, stale, poisoned),
             Ok(_) => unreachable!("settle answers Settled"),
+            Err(m) if m.starts_with("consumer_not_found") => {
+                return perr(StatusCode::NOT_FOUND, "consumer_not_found", &m, None, false);
+            }
             Err(m) => {
                 return perr(
                     StatusCode::INTERNAL_SERVER_ERROR,
