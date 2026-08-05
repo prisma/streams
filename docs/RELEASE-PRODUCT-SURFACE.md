@@ -105,6 +105,29 @@ refetch, and browser-support verification. The typed
 incarnation-mutation registry API is DONE and every fork-lifecycle
 mutation now rides it.
 
+## Cloud gate on the FROZEN binary (2026-08-05)
+
+The round-16 review's final release action: the WAN campaign of
+2026-08-04 ran on `d445a06`, but the frozen source contains two real
+server changes made after it (the SlateDB upstream re-pin and rounds
+15–16). The frozen binary itself — commit `981e2e68`, x86_64-musl,
+artifact `bin/streams-freeze1-x64` — was therefore redeployed to the
+retained fra + ewr services (namespace `freeze1`) and the
+artifact-identical smoke gate run against both real edges:
+
+| check | fra | ewr |
+|---|---|---|
+| field gate, unpaced | **PASS** (one transient WAN fetch crashed the script once; clean pass on immediate rerun) | **PASS** |
+| field gate, `FIELD_PACE_MS=1200` (WAN multi-hop shape) | **PASS** | **PASS** |
+| installed-tarball SDK smoke | **PASS** | **PASS** |
+| destructive-cutover wire checks (`Stream-Encryption-Key` / `profile` / `Stream-Key`) | 400 / 400 / 400 | — |
+| consumer DELETE disabled | **501 `consumer_delete_disabled`** on the wire | — |
+
+With this, `cloud_build == code_commit`: the exact frozen artifact is
+what passed on the WAN. The retained services now run the frozen
+binary; their recorded expiry (2026-08-19) and ownership are renewed
+unchanged.
+
 ## Consumer deletion is disabled for the preview (round 16)
 
 The final review found the one remaining server-code issue: the
@@ -650,21 +673,31 @@ tested by the pinned suite; the plural route is a separate product API.
 
 ---
 
-## Provenance (regenerated at report freeze)
+## Provenance (final, three-commit form)
+
+Per the round-16 review, the commit roles are explicit — the archive
+commit and the code commit are different objects and both are named:
 
 ```
-server_commit:      515a64f0b7076a4c80d7ae730103a3f7f7624722
+code_commit:        981e2e68bf782ed17ddd83be298f9217962a5e0c   (last server-code change; the FROZEN build)
+report_commit:      the commit tagged v0.2.0-preview.1 (docs-only stamp on code_commit; a commit cannot embed its own hash)
+cloud_build:        981e2e68bf782ed17ddd83be298f9217962a5e0c   (deployed to fra+ewr 2026-08-05; artifact-identical WAN gate PASS)
+prior_cloud_build:  d445a06                                     (the 2026-08-04 full campaign)
+
+server_commit:      981e2e68bf782ed17ddd83be298f9217962a5e0c
 server_dirty:       no
-slatedb_pin:         0717cc1e4e9bad10a4773760f66bac4264ecf05e
+slatedb_pin:        0717cc1e4e9bad10a4773760f66bac4264ecf05e
 layout_version:     3
 conformance_pin:    0.3.6
-sdk_tarball_sha256: cb578dff7ff2eeeba63759898f44735f7de81b5fa07d8a4f3a6769b853cc2d31
-dst_scenario_tests: 166
-rust_suite_passed:  273   (RUN_SUITE=1 on the same tree, pre-stamp:
-rust_suite_failed:  0      273 passed / 0 failed; 166 DST scenarios)
+sdk_tarball_sha256: ea99ee6cda70fc6e3d247fb61fa15e1a056c2b32c3f1e230e6636002c71cdc88
+dst_scenario_tests: 167
+rust_suite:         258 passed / 0 failed   (RUN_SUITE-equivalent full run at code_commit)
+ds_conformance:     332 passed / 0 failed / 6 skipped
+field_gate:         PASS local (unpaced + paced) and WAN (both regions, both modes, frozen binary)
+sdk_smoke:          PASS local (fresh tarball) and WAN (both regions)
 ```
 
-The `server_commit` above is the round-15 code commit; this stamp
-commit adds only this block. Local gates at that commit: suite 273/0,
-pinned DS conformance 332/0/6, field gate PASS (unpaced and
-FIELD_PACE_MS=1200 WAN shape), installed-package SDK smoke PASS.
+The `sdk_tarball_sha256` changed at round 16 because `Consumer.delete()`
+was removed from the SDK; the provenance script now packs into an
+isolated directory and fails loudly instead of ever hashing a stale
+tarball from shared /tmp.
