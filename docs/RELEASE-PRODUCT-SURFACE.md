@@ -887,15 +887,18 @@ replacement untouched and live-target wrong-key still 403.
 ```
 validated now:
   single-instance service per region
-  real Compute/Tigris edges (fra retained on freeze4)
-  consumer deletion saga (rounds 16-18)
+  real Compute/Tigris edges (fra + ewr retained, both on freeze4)
+  consumer deletion saga (rounds 16-18; saga smoke also PASS through the fleet LB)
   protocol conformance (pinned 0.3.6)
   SDK package (zero-dependency, tarball-verified)
+  multi-instance fleet ownership (2026-08-05 Compute campaign: 4 instances,
+  desired 1->2->3->4 under ramp, zero-loss accounting through repeated
+  ownership transitions -- docs/FLEET-CAMPAIGN.md)
 
 still to validate (#113):
-  multi-instance fleet ownership
   cross-owner segment fan-out (the saga's engine_for() is local-owner
-  today; the fleet campaign proves or implements cross-owner execution)
+  today; no splits were provoked on the fleet campaign, so cross-owner
+  execution remains unproven)
 ```
 
 ## Provenance (v0.2.0-preview.4)
