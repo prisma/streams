@@ -45,6 +45,15 @@ use crate::http::AppState;
 use crate::registry::{Registry, load_or_init_topology};
 use crate::shard::{ShardConfig, ShardEngine};
 
+/// Default metadata-poll cadences, shared with the DST idle-cost pin
+/// (`idle_engine_store_traffic_is_bounded_by_the_poll_cadence`). Every
+/// manifest/compactions poll is a live probe-GET against Tigris — a 404
+/// that costs ~200-240 ms of Tigris-internal work (docs/TIGRIS-404-COST.md)
+/// — so these cadences are a cost posture, not just a freshness knob.
+/// Deploy scripts intentionally do NOT override them.
+pub const DEFAULT_MANIFEST_POLL_MS: u64 = 2000;
+pub const DEFAULT_COMPACTOR_POLL_MS: u64 = 2500;
+
 #[derive(Parser, Debug)]
 #[command(name = "streams-slate", about = "Durable Streams server on SlateDB")]
 struct Args {
@@ -158,10 +167,16 @@ struct Args {
     /// per shard for GC to list and delete while sharing the same object
     /// store path as the ack-critical WAL PUTs. Tighter reaping keeps the
     /// WAL prefix small.
-    /// Compactor scheduling poll (ms). Upstream default is 5000 — at
-    /// double-digit MB/s a 5 s scheduling gap lets L0 pile toward the
-    /// dispatch gate; 500-1000 keeps the drain continuous.
-    #[arg(long, env = "COMPACTOR_POLL_MS", default_value_t = 5000)]
+    /// Compactor scheduling poll (ms). Each tick probes the compactions
+    /// log — a live Tigris 404 at ~200-240 ms internal (docs/
+    /// TIGRIS-404-COST.md), so this is the largest idle-probe class:
+    /// 500 ms across 4 shard DBs was 8 probes/s forever. Upstream default
+    /// is 5000; the old deploy pin of 500 dated from double-digit-MB/s
+    /// single-stream pushes, pre-limiter. At the enforced 5 MB/s/shard a
+    /// 2.5 s scheduling gap bounds L0 accumulation to ~12.5 MB (~3 L0
+    /// SSTs against L0_MAX 64) — drain continuity comes from concurrent
+    /// compactions, not scheduling latency. Field-validated in soak10.
+    #[arg(long, env = "COMPACTOR_POLL_MS", default_value_t = crate::DEFAULT_COMPACTOR_POLL_MS)]
     compactor_poll_ms: u64,
 
     /// Concurrent compactions (upstream default 4). Merges are object-I/O
@@ -214,9 +229,11 @@ struct Args {
     /// learns that compaction freed L0 slots: with a long poll, dispatch
     /// stays gated on a stale L0 view for the whole interval while imm
     /// memtables pile into backpressure (bench finding 2026-07-14: 60 s
-    /// poll → 14 s flush stalls). Idle-shard poll cost is ~1 GET per
-    /// interval; loaded shards need this at 1-2 s.
-    #[arg(long, env = "MANIFEST_POLL_MS", default_value_t = 2000)]
+    /// poll → 14 s flush stalls). Idle-shard poll cost is ~1 probe-GET
+    /// (a Tigris 404, ~200-240 ms internal) per interval; loaded shards
+    /// need this at 1-2 s, which is why the idle-cost stretch stops at
+    /// 2 s here instead of going longer (docs/TIGRIS-404-COST.md).
+    #[arg(long, env = "MANIFEST_POLL_MS", default_value_t = crate::DEFAULT_MANIFEST_POLL_MS)]
     manifest_poll_ms: u64,
 
     /// Hot-log records deleted per stream per commit group. Trim must

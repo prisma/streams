@@ -94,6 +94,10 @@ fi
 
 if [ "$ROLE" = server ]; then
   cd "$S/app-server-$R"
+  # MANIFEST_POLL_MS / COMPACTOR_POLL_MS are deliberately NOT set: the
+  # binary defaults (2000/2500) ARE the field idle-cost posture
+  # (docs/TIGRIS-404-COST.md); overriding them here re-arms the idle
+  # 404-probe tax the stretch removed.
   OUT=$(bunx --bun @prisma/compute-cli deploy --project "$P" ${SVCARG[@]+"${SVCARG[@]}"} \
     --region "$R" --path . --http-port 8080 --service-name "soak-server-$R" \
     --env SERVER_BINARY_S3_KEY="bin/streams-$BIN_TAG-x64" \
@@ -112,8 +116,7 @@ if [ "$ROLE" = server ]; then
     --env STREAMS_DEBUG_TIMING="${STREAMS_DEBUG_TIMING:-0}" \
     --env FRAME_COMPRESS=1 \
     --env L0_SST_SIZE_BYTES=16777216 --env MAX_UNFLUSHED_BYTES=33554432 \
-    --env L0_MAX_SSTS=64 --env MANIFEST_POLL_MS=1000 \
-    --env COMPACTOR_POLL_MS=500 --env COMPACTOR_MAX_CONCURRENT=2 \
+    --env L0_MAX_SSTS=64 --env COMPACTOR_MAX_CONCURRENT=2 \
     --env SHARED_CACHE_BYTES=67108864 --env SLATEDB_RT_THREADS=2 \
     --env ADMIT_MAX_INFLIGHT=512 --env ADMIT_MAX_INFLIGHT_PER_STREAM=256 \
     --env ADMIT_RSS_SHED_MB=600 \

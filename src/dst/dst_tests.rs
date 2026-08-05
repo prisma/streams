@@ -2572,6 +2572,146 @@ async fn open_gate_survives_impatient_clients_without_a_storm() {
     assert_eq!(log.total_acked(), 1, "append through the opened engine");
 }
 
+/// The idle-cost pin behind docs/TIGRIS-404-COST.md: an open-but-idle
+/// engine's only store traffic is the manifest/compactions poll cadence.
+/// Every such poll is a live probe-GET that MISSES — the 404 Tigris
+/// measures at ~200-240 ms of internal work and bills as Class B — so
+/// the production default cadences, asserted here against the very
+/// constants the binary ships (`crate::DEFAULT_*_POLL_MS`), are a cost
+/// posture. This fails if the cadence tightens back toward the old
+/// 1000/500 deploy pins (~3× the ceiling), if a background task starts
+/// chattering at idle, if idle flushes begin minting WAL objects, or if
+/// per-poll directory LISTs return (the Class-A regression cost
+/// campaign 2 removed). Faults off, realistic store latency on: latency
+/// shapes timer interleaving but cannot suppress or add a poll.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn idle_engine_store_traffic_is_bounded_by_the_poll_cadence() {
+    // The posture VALUES are part of the pin — the budget below scales
+    // with the constants, so without this a reverted default would
+    // silently re-price every idle instance and still pass. The dollar
+    // math in docs/TIGRIS-404-COST.md was accepted against exactly
+    // these; redo it there before changing either number.
+    assert_eq!(crate::DEFAULT_MANIFEST_POLL_MS, 2000);
+    assert_eq!(crate::DEFAULT_COMPACTOR_POLL_MS, 2500);
+
+    let inner = mem();
+    let store = FaultStore::uniform(inner, 11, FaultPlan::new(0, 0, 100));
+    let db = slatedb::Db::builder("dst-idlepoll", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            // Production shape: pump on ⇒ SlateDB's own flush timer is a
+            // 1 s failsafe (same stretch open_engine_cfg mirrors).
+            flush_interval: Some(std::time::Duration::from_secs(1)),
+            manifest_poll_interval: std::time::Duration::from_millis(
+                crate::DEFAULT_MANIFEST_POLL_MS,
+            ),
+            compactor_options: {
+                let mut co = slatedb::config::CompactorOptions::default();
+                co.poll_interval =
+                    std::time::Duration::from_millis(crate::DEFAULT_COMPACTOR_POLL_MS);
+                Some(co)
+            },
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open idle db");
+    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-idlepoll".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig {
+            wal_group_commit: true,
+            ..Default::default()
+        },
+        absorb_tx,
+        None,
+    );
+
+    // One acked append makes this a real, used instance (not a fresh-open
+    // special case), then a long settle clears open probes, the first
+    // flush, and every first-fire timer before the measured window.
+    let cov = store.coverage();
+    let mut log = OpLog::default();
+    let mut w = Workload::new(cov.clone());
+    w.append(&engine, [4u8; 16], &skey(), "warm", false, &mut log)
+        .await;
+    assert_eq!(log.total_acked(), 1, "warm-up append must ack");
+    tokio::time::sleep(std::time::Duration::from_secs(15)).await;
+
+    let gets = |st: &Arc<FaultStore>| -> (u64, u64, u64) {
+        let total: u64 = [
+            ObjClass::Wal,
+            ObjClass::Manifest,
+            ObjClass::Sst,
+            ObjClass::Fleet,
+            ObjClass::Other,
+        ]
+        .into_iter()
+        .map(|c| st.count(StoreOp::Get, c))
+        .sum();
+        (
+            total,
+            st.count(StoreOp::Get, ObjClass::Manifest),
+            st.count(StoreOp::Get, ObjClass::Wal),
+        )
+    };
+    let lists = |st: &Arc<FaultStore>| -> u64 {
+        [
+            ObjClass::Wal,
+            ObjClass::Manifest,
+            ObjClass::Sst,
+            ObjClass::Fleet,
+            ObjClass::Other,
+        ]
+        .into_iter()
+        .map(|c| st.count(StoreOp::List, c))
+        .sum()
+    };
+    let puts_wal = |st: &Arc<FaultStore>| st.count(StoreOp::Put, ObjClass::Wal);
+
+    let (g0, gm0, gw0) = gets(&store);
+    let l0 = lists(&store);
+    let pw0 = puts_wal(&store);
+
+    const WINDOW_SECS: u64 = 120;
+    tokio::time::sleep(std::time::Duration::from_secs(WINDOW_SECS)).await;
+
+    let (g1, gm1, gw1) = gets(&store);
+    let l1 = lists(&store);
+    let pw1 = puts_wal(&store);
+    let (dg, dgm, dgw, dl, dpw) = (g1 - g0, gm1 - gm0, gw1 - gw0, l1 - l0, pw1 - pw0);
+
+    let manifest_polls = WINDOW_SECS * 1000 / crate::DEFAULT_MANIFEST_POLL_MS;
+    let compactor_polls = WINDOW_SECS * 1000 / crate::DEFAULT_COMPACTOR_POLL_MS;
+    // Per tick the writer's manifest poll costs 2 GETs (miss-probe +
+    // anchor revalidation) and the compactor's costs ~5 (compactions
+    // probe + revalidate, plus its own manifest reads) — measured 363
+    // total here at the shipped defaults. Budget 3/manifest + 6/compactor
+    // tick; the old 1000/500 deploy posture measures ~3× this ceiling.
+    let ceiling = manifest_polls * 3 + compactor_polls * 6;
+    assert!(
+        dg <= ceiling,
+        "idle store GETs {dg} exceed the poll-cadence budget {ceiling} \
+         ({manifest_polls} manifest + {compactor_polls} compactions polls / {WINDOW_SECS}s)"
+    );
+    assert!(
+        dgm >= manifest_polls / 2,
+        "manifest polling looks stopped ({dgm} probe-GETs in {WINDOW_SECS}s; \
+         expected ≈{manifest_polls}) — the budget assertion above is vacuous"
+    );
+    assert_eq!(dgw, 0, "an idle engine has no business reading the WAL");
+    assert_eq!(dpw, 0, "an idle pump must not mint WAL objects");
+    assert!(
+        dl <= 2,
+        "idle LISTs returned ({dl} in {WINDOW_SECS}s) — the per-poll \
+         directory-LIST regression cost campaign 2 removed"
+    );
+    if let Err(e) = cov.require(&[mech::STORE_LATENCY]) {
+        panic!("{e}");
+    }
+}
+
 /// An engine that keeps dying young must meet an escalating holdoff, not
 /// an eager reopen: rapid open→die cycles against a sick store ARE the
 /// storm, whatever kills the engine.
