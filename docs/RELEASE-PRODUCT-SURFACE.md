@@ -622,3 +622,24 @@ tested by the pinned suite; the plural route is a separate product API.
   abandoned claim is taken over through a committer fence, so a
   takeover can never race the dead operation's own late write. There
   is no operator intervention and no repair tool, by design.
+
+---
+
+## Provenance (regenerated at report freeze)
+
+```
+server_commit:      515a64f0b7076a4c80d7ae730103a3f7f7624722
+server_dirty:       no
+slatedb_pin:         0717cc1e4e9bad10a4773760f66bac4264ecf05e
+layout_version:     3
+conformance_pin:    0.3.6
+sdk_tarball_sha256: cb578dff7ff2eeeba63759898f44735f7de81b5fa07d8a4f3a6769b853cc2d31
+dst_scenario_tests: 166
+rust_suite_passed:  273   (RUN_SUITE=1 on the same tree, pre-stamp:
+rust_suite_failed:  0      273 passed / 0 failed; 166 DST scenarios)
+```
+
+The `server_commit` above is the round-15 code commit; this stamp
+commit adds only this block. Local gates at that commit: suite 273/0,
+pinned DS conformance 332/0/6, field gate PASS (unpaced and
+FIELD_PACE_MS=1200 WAN shape), installed-package SDK smoke PASS.
