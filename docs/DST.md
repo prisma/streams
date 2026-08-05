@@ -667,3 +667,26 @@ is an independent execution with an independent fault schedule.
 When a seed fails, the **fault schedule** replays exactly. The task
 interleaving does not — see §2, and do not claim otherwise in a commit
 message.
+
+## Semantic failpoint registry (#108, increment 1 — 2026-08-05)
+
+`http::fork_failpoints` is now a TYPED registry: every failpoint is an
+`Fp` variant carrying its site contract (`Fp::site()`), backed by one
+state machine keyed by `(Fp, stream name)` with per-(failpoint, name)
+arrival counters — a test observes ITS request in the window by ITS
+stream name, so parallel tests cannot wake on each other's parks (the
+former per-failpoint global counters were exactly the reported
+solo-pass/parallel-flake family). `Fp::ALL` + the pinned enumerability
+test (`failpoint_registry_is_enumerable_and_described`) make silent
+drift a red test. Site checks are compiled into every request on test
+builds, so the unarmed path is one relaxed atomic load (per-Fp ACTIVE
+counters) — no lock, no allocation; the suite's throughput gate is the
+regression test for that property.
+
+Still open under #108 (increment 2): the simulator substrate —
+virtual-time scenario driving end to end (our engine layer runs under
+paused tokio time today; the boundary is slatedb's own runtime +
+SystemClock, which needs upstream clock injection to make full-process
+scenarios deterministic) — and migrating `scaler3::failpoints` (the
+publish-path points, currently name-less and therefore still
+serialized via the test lock) into the same registry.

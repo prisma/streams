@@ -10647,10 +10647,10 @@ async fn fork_creation_and_source_deletion_serialize() {
 
     // Park the delete before its decision, then start it — and PROVE
     // it parked instead of assuming 80 ms was enough.
-    let dbefore = crate::http::fork_failpoints::parked_delete_count();
+    let dbefore = crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::DeleteBeforeDecision, "rsrc");
     crate::http::fork_failpoints::park_delete_before_decision("rsrc");
     let del = tokio::spawn(async move { hreq(addr, "DELETE", "/v1/stream/rsrc", &[], b"").await });
-    while crate::http::fork_failpoints::parked_delete_count() <= dbefore {
+    while crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::DeleteBeforeDecision, "rsrc") <= dbefore {
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
 
@@ -11223,7 +11223,7 @@ async fn a_transient_producer_gap_does_not_lose_the_promised_record() {
 
     // The predecessor: admitted against an OPEN descriptor, then parked
     // before it reaches the queue.
-    let before = crate::http::fork_failpoints::parked_append_count();
+    let before = crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::AppendBeforeEnqueue, "gapwin");
     crate::http::fork_failpoints::park_append_before_enqueue("gapwin");
     let pre = tokio::spawn(async move {
         hreq(
@@ -11242,7 +11242,7 @@ async fn a_transient_producer_gap_does_not_lose_the_promised_record() {
     });
     let mut parked = false;
     for _ in 0..300 {
-        if crate::http::fork_failpoints::parked_append_count() > before {
+        if crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::AppendBeforeEnqueue, "gapwin") > before {
             parked = true;
             break;
         }
@@ -11342,7 +11342,7 @@ async fn a_superseded_close_cannot_write_or_close() {
     assert!(st == 200 || st == 201);
 
     // A: final-bearing close, parked after its intent, before enqueue.
-    let before = crate::http::fork_failpoints::parked_close_count();
+    let before = crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::CloseBeforeEnqueue, "lease1");
     crate::http::fork_failpoints::park_close_before_enqueue("lease1");
     let a = tokio::spawn(async move {
         hreq(
@@ -11359,7 +11359,7 @@ async fn a_superseded_close_cannot_write_or_close() {
     });
     let mut parked = false;
     for _ in 0..300 {
-        if crate::http::fork_failpoints::parked_close_count() > before {
+        if crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::CloseBeforeEnqueue, "lease1") > before {
             parked = true;
             break;
         }
@@ -11606,7 +11606,7 @@ async fn a_resumed_mark_never_seals_a_later_incarnation() {
 
     // A: close with content, parked BETWEEN its acknowledged write and
     // the mark.
-    let before = crate::http::fork_failpoints::parked_mark_count();
+    let before = crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::CloseBeforeMark, "markaba");
     crate::http::fork_failpoints::park_close_before_mark("markaba");
     let a = tokio::spawn(async move {
         hreq(
@@ -11623,7 +11623,7 @@ async fn a_resumed_mark_never_seals_a_later_incarnation() {
     });
     let mut parked = false;
     for _ in 0..300 {
-        if crate::http::fork_failpoints::parked_mark_count() > before {
+        if crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::CloseBeforeMark, "markaba") > before {
             parked = true;
             break;
         }
@@ -11679,7 +11679,7 @@ async fn a_wrong_content_type_close_cannot_join_the_valid_intent() {
     assert!(st == 200 || st == 201);
 
     // A: valid close, parked pre-enqueue with a live intent.
-    let before = crate::http::fork_failpoints::parked_close_count();
+    let before = crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::CloseBeforeEnqueue, "ctid");
     crate::http::fork_failpoints::park_close_before_enqueue("ctid");
     let body = br#"[{"fin":1}]"#;
     let a = tokio::spawn(async move {
@@ -11700,7 +11700,7 @@ async fn a_wrong_content_type_close_cannot_join_the_valid_intent() {
     });
     let mut parked = false;
     for _ in 0..300 {
-        if crate::http::fork_failpoints::parked_close_count() > before {
+        if crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::CloseBeforeEnqueue, "ctid") > before {
             parked = true;
             break;
         }
@@ -12242,7 +12242,7 @@ async fn a_product_seal_never_binds_to_a_recreated_incarnation() {
     .await;
     assert_eq!(st, 201);
 
-    let before = crate::http::fork_failpoints::parked_product_seal_count();
+    let before = crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::ProductSealBeforeClaim, "sealaba");
     crate::http::fork_failpoints::park_product_seal_before_claim("sealaba");
     let sealer = tokio::spawn(async move {
         preq(
@@ -12256,7 +12256,7 @@ async fn a_product_seal_never_binds_to_a_recreated_incarnation() {
     });
     let mut parked = false;
     for _ in 0..300 {
-        if crate::http::fork_failpoints::parked_product_seal_count() > before {
+        if crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::ProductSealBeforeClaim, "sealaba") > before {
             parked = true;
             break;
         }
@@ -12726,7 +12726,7 @@ async fn a_product_final_never_writes_into_a_recreated_incarnation() {
     assert_eq!(st, 201);
 
     // Park the sealer AFTER its claim, BEFORE its final append.
-    let before = crate::http::fork_failpoints::parked_product_final_count();
+    let before = crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::ProductFinalBeforeAppend, "finaba");
     crate::http::fork_failpoints::park_product_final_before_append("finaba");
     let sealer = tokio::spawn(async move {
         preq(
@@ -12740,7 +12740,7 @@ async fn a_product_final_never_writes_into_a_recreated_incarnation() {
     });
     let mut parked = false;
     for _ in 0..300 {
-        if crate::http::fork_failpoints::parked_product_final_count() > before {
+        if crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::ProductFinalBeforeAppend, "finaba") > before {
             parked = true;
             break;
         }
@@ -13144,7 +13144,7 @@ async fn a_fence_in_a_failed_group_reports_failure_not_closed() {
     // Deterministic order: park the close after its intent, arm the
     // failure, fence AT THE CLAIM'S OWN GENERATION (raising the fence
     // without superseding the close), then release.
-    let before = crate::http::fork_failpoints::parked_close_count();
+    let before = crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::CloseBeforeEnqueue, "sel021");
     crate::http::fork_failpoints::park_close_before_enqueue("sel021");
     let body = br#"[{"fin":1}]"#;
     let close = tokio::spawn(async move {
@@ -13162,7 +13162,7 @@ async fn a_fence_in_a_failed_group_reports_failure_not_closed() {
     });
     let mut parked = false;
     for _ in 0..300 {
-        if crate::http::fork_failpoints::parked_close_count() > before {
+        if crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::CloseBeforeEnqueue, "sel021") > before {
             parked = true;
             break;
         }
@@ -13333,14 +13333,14 @@ async fn create_replay_recovers_from_a_failed_initial_write() {
 
     // Park the initial-content append pre-enqueue so the failpoint can
     // be armed with the descriptor's real identity, deterministically.
-    let before = crate::http::fork_failpoints::parked_init_seed_count();
+    let before = crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::InitBeforeSeed, "crt007");
     crate::http::fork_failpoints::park_init_before_seed("crt007");
     let body = br#"[{"seed":1},{"seed":2}]"#;
     let creator =
         tokio::spawn(async move { hreq(addr, "PUT", "/v1/stream/crt007", &ct, body).await });
     let mut parked = false;
     for _ in 0..300 {
-        if crate::http::fork_failpoints::parked_init_seed_count() > before {
+        if crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::InitBeforeSeed, "crt007") > before {
             parked = true;
             break;
         }
@@ -13519,7 +13519,7 @@ async fn concurrent_finals_with_different_coordination_do_not_share_a_claim() {
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/sel027", &ct, br#"[{"n":0}]"#).await;
     assert!(st == 200 || st == 201);
 
-    let before = crate::http::fork_failpoints::parked_close_count();
+    let before = crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::CloseBeforeEnqueue, "sel027");
     crate::http::fork_failpoints::park_close_before_enqueue("sel027");
     let body = br#"[{"fin":1}]"#;
     let a = tokio::spawn(async move {
@@ -13540,7 +13540,7 @@ async fn concurrent_finals_with_different_coordination_do_not_share_a_claim() {
     });
     let mut parked = false;
     for _ in 0..300 {
-        if crate::http::fork_failpoints::parked_close_count() > before {
+        if crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::CloseBeforeEnqueue, "sel027") > before {
             parked = true;
             break;
         }
@@ -13617,7 +13617,7 @@ async fn a_child_deleted_before_the_source_ref_cannot_pin_the_source() {
     let (_, h, _) = hreq(addr, "GET", "/v1/stream/frk13src", &[], b"").await;
     let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
 
-    let before = crate::http::fork_failpoints::parked_fork_ref_count();
+    let before = crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::ForkBeforeSourceRef, "frk13child");
     crate::http::fork_failpoints::park_fork_before_source_ref("frk13child");
     let b2 = boundary.clone();
     let creator = tokio::spawn(async move {
@@ -13636,7 +13636,7 @@ async fn a_child_deleted_before_the_source_ref_cannot_pin_the_source() {
     });
     let mut parked = false;
     for _ in 0..300 {
-        if crate::http::fork_failpoints::parked_fork_ref_count() > before {
+        if crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::ForkBeforeSourceRef, "frk13child") > before {
             parked = true;
             break;
         }
@@ -13923,8 +13923,8 @@ async fn a_crashed_creators_late_reference_is_repaired_by_delete_retry() {
     // Park the creator BEFORE the install (child pre-check passed),
     // delete the child, then let the install land and park the creator
     // AFTER it — the simulated crash point.
-    let pre = crate::http::fork_failpoints::parked_fork_ref_count();
-    let post = crate::http::fork_failpoints::parked_fork_ref_post_count();
+    let pre = crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::ForkBeforeSourceRef, "frk13kid");
+    let post = crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::ForkAfterSourceRef, "frk13kid");
     crate::http::fork_failpoints::park_fork_before_source_ref("frk13kid");
     crate::http::fork_failpoints::park_fork_after_source_ref("frk13kid");
     let b2 = boundary.clone();
@@ -13942,7 +13942,7 @@ async fn a_crashed_creators_late_reference_is_repaired_by_delete_retry() {
         )
         .await
     });
-    while crate::http::fork_failpoints::parked_fork_ref_count() <= pre {
+    while crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::ForkBeforeSourceRef, "frk13kid") <= pre {
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
     // Child dies in the stamp-to-install window; its tombstone keeps
@@ -13960,7 +13960,7 @@ async fn a_crashed_creators_late_reference_is_repaired_by_delete_retry() {
 
     // The install lands; the creator "crashes" (stays parked forever).
     crate::http::fork_failpoints::release_fork_before_source_ref("frk13kid");
-    while crate::http::fork_failpoints::parked_fork_ref_post_count() <= post {
+    while crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::ForkAfterSourceRef, "frk13kid") <= post {
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
     state.registry.invalidate("frk13c");
@@ -14902,7 +14902,7 @@ async fn a_parked_pull_cannot_lease_after_its_generation_was_deleted() {
 
     // Park the pull between its config load and its Receive enqueue.
     crate::http::fork_failpoints::park_pull_before_receive("qc16p");
-    let before = crate::http::fork_failpoints::parked_pull_count();
+    let before = crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::PullBeforeReceive, "qc16p");
     let a1 = addr;
     let pull = tokio::spawn(async move {
         preq(
@@ -14914,7 +14914,7 @@ async fn a_parked_pull_cannot_lease_after_its_generation_was_deleted() {
         )
         .await
     });
-    while crate::http::fork_failpoints::parked_pull_count() == before {
+    while crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::PullBeforeReceive, "qc16p") == before {
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
 
@@ -15254,13 +15254,13 @@ async fn a_release_parked_across_recreation_cannot_touch_the_replacement() {
     // The in-flight release, parked between its snapshot (epoch A
     // validated) and its mutation.
     crate::http::fork_failpoints::park_release_after_epoch_check("frk15src");
-    let before_parked = crate::http::fork_failpoints::parked_release_epoch_count();
+    let before_parked = crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::ReleaseAfterEpochCheck, "frk15src");
     let st2 = state.clone();
     let ea = epoch_a.clone();
     let rel = tokio::spawn(async move {
         crate::http::release_fork_ref_for_test(&st2, "frk15src", "frk15-ghost-fork", &ea).await
     });
-    while crate::http::fork_failpoints::parked_release_epoch_count() == before_parked {
+    while crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::ReleaseAfterEpochCheck, "frk15src") == before_parked {
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
 
@@ -15341,14 +15341,14 @@ async fn a_parked_create_never_publishes_readiness_for_a_later_incarnation() {
     let ct = [("content-type", "application/json")];
     let body = br#"[{"n":1}]"#;
 
-    let before = crate::http::fork_failpoints::parked_create_count();
+    let before = crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::CreateBeforeReady, "abacreate");
     crate::http::fork_failpoints::park_create_before_ready("abacreate");
     let stale =
         tokio::spawn(async move { hreq(addr, "PUT", "/v1/stream/abacreate", &ct, body).await });
     let mut first_epoch = String::new();
     for _ in 0..300 {
         state.registry.invalidate("abacreate");
-        if crate::http::fork_failpoints::parked_create_count() > before {
+        if crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::CreateBeforeReady, "abacreate") > before {
             if let Ok(Some(d)) = state.registry.get("abacreate").await {
                 first_epoch = d.stream_epoch.clone();
             }
@@ -15373,7 +15373,7 @@ async fn a_parked_create_never_publishes_readiness_for_a_later_incarnation() {
         tokio::spawn(async move { hreq(addr, "PUT", "/v1/stream/abacreate", &ct, body).await });
     let mut second_epoch = String::new();
     for _ in 0..300 {
-        if crate::http::fork_failpoints::parked_create_count() > before + 1 {
+        if crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::CreateBeforeReady, "abacreate") > before + 1 {
             state.registry.invalidate("abacreate");
             if let Ok(Some(d)) = state.registry.get("abacreate").await {
                 second_epoch = d.stream_epoch.clone();
@@ -15549,11 +15549,11 @@ async fn a_parked_delete_never_removes_a_later_incarnation() {
         .stream_epoch;
 
     // Park a delete just before it decides.
-    let dbefore = crate::http::fork_failpoints::parked_delete_count();
+    let dbefore = crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::DeleteBeforeDecision, "abadel");
     crate::http::fork_failpoints::park_delete_before_decision("abadel");
     let deleter =
         tokio::spawn(async move { hreq(addr, "DELETE", "/v1/stream/abadel", &[], b"").await });
-    while crate::http::fork_failpoints::parked_delete_count() <= dbefore {
+    while crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::DeleteBeforeDecision, "abadel") <= dbefore {
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
 
@@ -17582,7 +17582,7 @@ async fn a_parked_saga_never_touches_a_recreated_stream() {
     let ver1 = consumer_version(addr, "qc17c", "c1").await;
 
     crate::http::fork_failpoints::park_consumer_saga_before_refresh("qc17c");
-    let before = crate::http::fork_failpoints::parked_consumer_saga_count();
+    let before = crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::ConsumerSagaBeforeRefresh, "qc17c");
     let a1 = addr;
     let v1 = ver1.clone();
     let del = tokio::spawn(async move {
@@ -17598,7 +17598,7 @@ async fn a_parked_saga_never_touches_a_recreated_stream() {
         )
         .await
     });
-    while crate::http::fork_failpoints::parked_consumer_saga_count() == before {
+    while crate::http::fork_failpoints::parked(crate::http::fork_failpoints::Fp::ConsumerSagaBeforeRefresh, "qc17c") == before {
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
 
@@ -17868,4 +17868,27 @@ async fn a_bounded_cleanup_drains_residue_without_touching_the_live_generation()
     .await;
     assert_eq!(st, 201, "recreation after the drain");
     engine_shutdown(&state).await;
+}
+
+/// #108: the failpoint registry is ENUMERABLE — every variant carries
+/// its site contract, and the count is pinned so adding a failpoint
+/// without registering it (or registering without describing it) is a
+/// red test, not a silent drift.
+#[test]
+fn failpoint_registry_is_enumerable_and_described() {
+    use crate::http::fork_failpoints::Fp;
+    assert_eq!(Fp::ALL.len(), 16);
+    for fp in Fp::ALL {
+        assert!(
+            !fp.site().is_empty(),
+            "{fp:?} has no site contract"
+        );
+    }
+    // Per-name isolation: arrivals for one name are invisible to
+    // another — the property whose absence was the parallel-flake
+    // family.
+    assert_eq!(crate::http::fork_failpoints::parked(Fp::PullBeforeReceive, "fp-enum-a"), 0);
+    crate::http::fork_failpoints::arm(Fp::PullBeforeReceive, "fp-enum-a");
+    assert_eq!(crate::http::fork_failpoints::parked(Fp::PullBeforeReceive, "fp-enum-b"), 0);
+    crate::http::fork_failpoints::release(Fp::PullBeforeReceive, "fp-enum-a");
 }

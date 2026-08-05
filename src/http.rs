@@ -2821,83 +2821,179 @@ async fn delete_stream(state: Arc<AppState>, name: String) -> Response {
 /// reconstruct the intended post-crash state by hand.
 #[cfg(test)]
 pub(crate) mod fork_failpoints {
-    use std::collections::HashSet;
+    //! The SEMANTIC failpoint registry (#108, first increment). Every
+    //! failpoint is a typed `Fp` variant — enumerable, describable —
+    //! backed by ONE state machine keyed by `(Fp, stream name)`:
+    //!
+    //!   armed    set by a test; a request reaching the site parks (or,
+    //!            for flags, acts) while armed FOR ITS NAME.
+    //!   held     the one-shot composite (`pause_oneshot`): arrival
+    //!            consumes the arm and holds until released, so exactly
+    //!            one request enters the window and later arms for the
+    //!            same name cannot leak into it.
+    //!   arrivals per-(Fp, name) — a test observes ITS request in the
+    //!            window by ITS stream name. The old per-failpoint
+    //!            global counters were the parallel-flake family: two
+    //!            tests watching one counter woke on each other's
+    //!            parks.
+    //!
+    //! Arming and releasing are BOTH per name, and there is
+    //! deliberately no "release everything": that is what once let one
+    //! test disarm another's failpoint. The narrative helpers below are
+    //! one-line sugar over the typed core and double as the site
+    //! contract documentation; new failpoints add a variant + a helper
+    //! pair and NOTHING else.
+    use std::collections::HashMap;
     use std::sync::Mutex;
-    use std::sync::atomic::{AtomicUsize, Ordering};
 
-    // Every failpoint holds a SET of stream names, never a single slot.
-    // Two things went wrong with one slot: a global flag tripped
-    // unrelated tests (an ordinary close-with-content walking into
-    // another test's armed abort), and then — once they were scoped by
-    // name — a second test arming the SAME failpoint for a DIFFERENT
-    // stream silently disarmed the first, so its request sailed through
-    // the window it was supposed to be parked in. Arming and releasing
-    // are per name, so a parallel suite composes.
-    fn armed(which: usize) -> &'static Mutex<Option<HashSet<String>>> {
-        static M: [Mutex<Option<HashSet<String>>>; 17] = [
-            Mutex::new(None),
-            Mutex::new(None),
-            Mutex::new(None),
-            Mutex::new(None),
-            Mutex::new(None),
-            Mutex::new(None),
-            Mutex::new(None),
-            Mutex::new(None),
-            Mutex::new(None),
-            Mutex::new(None),
-            Mutex::new(None),
-            Mutex::new(None),
-            Mutex::new(None),
-            Mutex::new(None),
-            Mutex::new(None),
-            Mutex::new(None),
-            Mutex::new(None),
+    #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
+    pub enum Fp {
+        // Flags (the site checks and acts; nothing parks).
+        StopAfterTombstone,
+        StopBeforeMarkCommitted,
+        StopAfterSealIntent,
+        // Parks (the site awaits release).
+        CreateBeforeReady,
+        AppendBeforeEnqueue,
+        CloseBeforeEnqueue, // one-shot composite: consume arm, hold
+        CloseBeforeMark,
+        ProductSealBeforeClaim,
+        ProductFinalBeforeAppend,
+        ForkBeforeSourceRef,
+        InitBeforeSeed,
+        ForkAfterSourceRef,
+        ReleaseAfterEpochCheck,
+        PullBeforeReceive,
+        ConsumerSagaBeforeRefresh,
+        DeleteBeforeDecision,
+    }
+
+    impl Fp {
+        pub const ALL: [Fp; 16] = [
+            Fp::StopAfterTombstone,
+            Fp::StopBeforeMarkCommitted,
+            Fp::StopAfterSealIntent,
+            Fp::CreateBeforeReady,
+            Fp::AppendBeforeEnqueue,
+            Fp::CloseBeforeEnqueue,
+            Fp::CloseBeforeMark,
+            Fp::ProductSealBeforeClaim,
+            Fp::ProductFinalBeforeAppend,
+            Fp::ForkBeforeSourceRef,
+            Fp::InitBeforeSeed,
+            Fp::ForkAfterSourceRef,
+            Fp::ReleaseAfterEpochCheck,
+            Fp::PullBeforeReceive,
+            Fp::ConsumerSagaBeforeRefresh,
+            Fp::DeleteBeforeDecision,
         ];
-        &M[which]
-    }
-    const TOMBSTONE: usize = 0;
-    const MARK: usize = 1;
-    const READY: usize = 2;
-    const APPEND: usize = 3;
-    const DELETE: usize = 4;
-    const SEAL_INTENT: usize = 5;
-    const CLOSE_ENQ: usize = 6;
-    const CLOSE_MARK: usize = 7;
-    const CLOSE_HELD: usize = 8;
-    const PROD_SEAL: usize = 9;
-    const PROD_FINAL: usize = 10;
-    const FORK_REF: usize = 11;
-    const INIT_SEED: usize = 12;
-    const FORK_REF_POST: usize = 13;
-    const RELEASE_EPOCH: usize = 14;
-    const PULL_RECV: usize = 15;
-    const CONSUMER_REFRESH: usize = 16;
 
-    // Arming and releasing are BOTH per name, and there is deliberately
-    // no "release everything": that is what let one test disarm
-    // another's failpoint, and the request it was supposed to park
-    // sailed straight through the window.
-    fn set(which: usize, name: &str) {
-        armed(which)
-            .lock()
-            .unwrap()
-            .get_or_insert_with(HashSet::new)
-            .insert(name.to_string());
-    }
-
-    fn release(which: usize, name: &str) {
-        if let Some(s) = armed(which).lock().unwrap().as_mut() {
-            s.remove(name);
+        /// The site contract: WHERE the point fires, stated as the
+        /// window it opens. This is the enumerable registry the DST
+        /// program audits against.
+        pub fn site(self) -> &'static str {
+            match self {
+                Fp::StopAfterTombstone => {
+                    "delete cascade: after the named generation is tombstoned \
+                     and its debt recorded, before the parent ref releases"
+                }
+                Fp::StopBeforeMarkCommitted => {
+                    "close: after the final append is durable, before \
+                     mark_final_committed"
+                }
+                Fp::StopAfterSealIntent => {
+                    "seal: after the seal intent publishes, before the \
+                     committer sees it"
+                }
+                Fp::CreateBeforeReady => {
+                    "create: after the fork reference installs, before \
+                     readiness publishes"
+                }
+                Fp::AppendBeforeEnqueue => "append: before the committer enqueue",
+                Fp::CloseBeforeEnqueue => {
+                    "close: before its enqueue; ONE-SHOT — first arrival \
+                     consumes the arm and holds until release"
+                }
+                Fp::CloseBeforeMark => {
+                    "close: between the acknowledged final append and \
+                     mark_final_committed"
+                }
+                Fp::ProductSealBeforeClaim => "product seal: before the claim CAS",
+                Fp::ProductFinalBeforeAppend => {
+                    "product seal: before the final-bearing append submits"
+                }
+                Fp::ForkBeforeSourceRef => {
+                    "fork create: before the source reference installs"
+                }
+                Fp::InitBeforeSeed => "create: before the tail row seeds",
+                Fp::ForkAfterSourceRef => {
+                    "fork create: after the source reference installs"
+                }
+                Fp::ReleaseAfterEpochCheck => {
+                    "fork-ref release: after the incarnation epoch check, \
+                     before the release write"
+                }
+                Fp::PullBeforeReceive => {
+                    "consumer pull: after config load, before the Receive \
+                     submits"
+                }
+                Fp::ConsumerSagaBeforeRefresh => {
+                    "consumer deletion saga: before a fan-out round's \
+                     descriptor refresh"
+                }
+                Fp::DeleteBeforeDecision => {
+                    "stream delete: before the soft-versus-hard decision"
+                }
+            }
         }
-        gate().notify_waiters();
     }
 
-    fn is_armed(which: usize, name: &str) -> bool {
-        armed(which)
-            .lock()
-            .unwrap()
-            .as_ref()
-            .is_some_and(|s| s.contains(name))
+    #[derive(Default)]
+    struct FpState {
+        armed: bool,
+        held: bool,
+        arrivals: usize,
+    }
+
+    impl Fp {
+        fn idx(self) -> usize {
+            Fp::ALL.iter().position(|f| *f == self).expect("in ALL")
+        }
+    }
+
+    /// Per-failpoint count of ARMED-or-HELD entries across all names —
+    /// the lock-free fast path. Site checks (`hit`/`pause`) run on
+    /// EVERY request in test builds; with nothing armed for a
+    /// failpoint they must cost one relaxed load, not a global lock
+    /// plus a key allocation (a throughput-gate test caught the
+    /// difference within the suite).
+    static ACTIVE: [std::sync::atomic::AtomicUsize; 16] = [
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+        std::sync::atomic::AtomicUsize::new(0),
+    ];
+
+    fn active(fp: Fp) -> bool {
+        ACTIVE[fp.idx()].load(std::sync::atomic::Ordering::Acquire) > 0
+    }
+
+    fn reg() -> &'static Mutex<HashMap<(Fp, String), FpState>> {
+        static M: std::sync::OnceLock<Mutex<HashMap<(Fp, String), FpState>>> =
+            std::sync::OnceLock::new();
+        M.get_or_init(|| Mutex::new(HashMap::new()))
     }
 
     fn gate() -> &'static tokio::sync::Notify {
@@ -2905,378 +3001,281 @@ pub(crate) mod fork_failpoints {
         N.get_or_init(tokio::sync::Notify::new)
     }
 
-    /// Wait until this failpoint is released for `name`, counting the
-    /// arrival exactly once so a test can OBSERVE that the request
-    /// really is in the window instead of sleeping and hoping.
-    async fn park(which: usize, name: &str, counter: &'static AtomicUsize) {
-        let mut counted = false;
-        loop {
-            if !is_armed(which, name) {
-                return;
-            }
-            if !counted {
-                counted = true;
-                counter.fetch_add(1, Ordering::SeqCst);
-            }
-            let n = gate().notified();
-            if !is_armed(which, name) {
-                return;
-            }
-            n.await;
+    pub fn arm(fp: Fp, name: &str) {
+        let mut g = reg().lock().unwrap();
+        let st = g.entry((fp, name.to_string())).or_default();
+        if !st.armed && !st.held {
+            ACTIVE[fp.idx()].fetch_add(1, std::sync::atomic::Ordering::Release);
         }
+        st.armed = true;
     }
 
-    static PARKED_APPEND: AtomicUsize = AtomicUsize::new(0);
-    static PARKED_CREATE: AtomicUsize = AtomicUsize::new(0);
-    static PARKED_DELETE: AtomicUsize = AtomicUsize::new(0);
-
-    /// Abort the cascade right after the named generation is tombstoned
-    /// and its debt recorded, before the parent reference is released.
-    pub fn stop_after_tombstone(name: &str) {
-        set(TOMBSTONE, name);
-    }
-
-    /// Drop a raw close on the named stream AFTER its records are
-    /// durable and the segment is closed, but before the transition is
-    /// marked committed.
-    pub fn stop_before_mark_committed(name: &str) {
-        set(MARK, name);
-    }
-
-    /// Drop a raw close right after its Sealing intent is durable and
-    /// BEFORE the records are appended — the crash boundary an ordinary
-    /// retry has to recover from.
-    pub fn stop_after_seal_intent(name: &str) {
-        set(SEAL_INTENT, name);
-    }
-
-    pub(super) fn should_stop_after_seal_intent(name: &str) -> bool {
-        is_armed(SEAL_INTENT, name)
-    }
-
-    pub fn stop_after_tombstone_off(name: &str) {
-        release(TOMBSTONE, name);
-    }
-
-    pub fn stop_before_mark_committed_off(name: &str) {
-        release(MARK, name);
-    }
-
-    pub fn stop_after_seal_intent_off(name: &str) {
-        release(SEAL_INTENT, name);
-    }
-
-    pub(super) fn should_stop_after_tombstone(name: &str) -> bool {
-        is_armed(TOMBSTONE, name)
-    }
-
-    pub(super) fn should_stop_before_mark_committed(name: &str) -> bool {
-        is_armed(MARK, name)
-    }
-
-    /// Park a creation just before it publishes readiness — after its
-    /// fork reference is installed — so a delete can be made to win
-    /// that window deterministically.
-    pub fn park_create_before_ready(name: &str) {
-        set(READY, name);
-    }
-
-    /// Release the creation park for ONE name, leaving other tests'
-    /// arms intact.
-    pub fn release_create_before_ready(name: &str) {
-        release(READY, name);
-    }
-
-    pub fn parked_create_count() -> usize {
-        PARKED_CREATE.load(Ordering::SeqCst)
-    }
-
-    pub(super) async fn pause_create_before_ready(name: &str) {
-        park(READY, name, &PARKED_CREATE).await;
-    }
-
-    /// Park an ordinary append AFTER admission — its lifecycle verdict
-    /// already decided against an OPEN descriptor — and before it is
-    /// enqueued. That is the window in which a concurrent close can
-    /// publish its seal intent and reach the committer first, so its
-    /// producer sequence observes a gap the parked predecessor is about
-    /// to fill.
-    pub fn park_append_before_enqueue(name: &str) {
-        set(APPEND, name);
-    }
-
-    pub fn release_append_before_enqueue(name: &str) {
-        release(APPEND, name);
-    }
-
-    pub fn parked_append_count() -> usize {
-        PARKED_APPEND.load(Ordering::SeqCst)
-    }
-
-    pub(super) async fn pause_append_before_enqueue(name: &str) {
-        park(APPEND, name, &PARKED_APPEND).await;
-    }
-
-    /// Park a CLOSE after its seal intent is durable and before it is
-    /// enqueued — the window in which another operation can take over
-    /// an aged claim while this close's write has not yet entered the
-    /// committer's queue.
-    ///
-    /// ONE-SHOT, deliberately: it catches exactly the FIRST close to
-    /// arrive for the name and lets every later one pass. The tests
-    /// that use it park one victim and then drive a SECOND close on
-    /// the same collection; a per-name latch caught that second close
-    /// too and the test deadlocked on its own instrument.
-    pub fn park_close_before_enqueue(name: &str) {
-        set(CLOSE_ENQ, name);
-    }
-
-    /// Release the ONE close currently held for `name`.
-    pub fn release_close_before_enqueue(name: &str) {
-        if let Some(s) = armed(CLOSE_HELD).lock().unwrap().as_mut() {
-            s.remove(name);
+    pub fn release(fp: Fp, name: &str) {
+        if let Some(st) = reg().lock().unwrap().get_mut(&(fp, name.to_string())) {
+            if st.armed || st.held {
+                ACTIVE[fp.idx()].fetch_sub(1, std::sync::atomic::Ordering::Release);
+            }
+            st.armed = false;
+            st.held = false;
         }
         gate().notify_waiters();
     }
 
-    pub fn parked_close_count() -> usize {
-        PARKED_CLOSE.load(Ordering::SeqCst)
+    /// Requests of `name` that have ARRIVED at this failpoint since the
+    /// process started (monotone; per name, so parallel tests compose
+    /// without watching each other's parks).
+    pub fn parked(fp: Fp, name: &str) -> usize {
+        reg()
+            .lock()
+            .unwrap()
+            .get(&(fp, name.to_string()))
+            .map_or(0, |st| st.arrivals)
     }
-    static PARKED_CLOSE: AtomicUsize = AtomicUsize::new(0);
 
-    pub(super) async fn pause_close_before_enqueue(name: &str) {
-        // Consume the arm (one-shot) and hold until released.
-        {
-            let mut g = armed(CLOSE_ENQ).lock().unwrap();
-            let consumed = g.as_mut().is_some_and(|s| s.remove(name));
-            if !consumed {
-                return;
-            }
-            armed(CLOSE_HELD)
-                .lock()
-                .unwrap()
-                .get_or_insert_with(HashSet::new)
-                .insert(name.to_string());
+    fn is_armed(fp: Fp, name: &str) -> bool {
+        reg()
+            .lock()
+            .unwrap()
+            .get(&(fp, name.to_string()))
+            .is_some_and(|st| st.armed)
+    }
+
+    fn is_held(fp: Fp, name: &str) -> bool {
+        reg()
+            .lock()
+            .unwrap()
+            .get(&(fp, name.to_string()))
+            .is_some_and(|st| st.held)
+    }
+
+    /// Flag check: consume-free "is this site sabotaged for name".
+    pub(crate) fn hit(fp: Fp, name: &str) -> bool {
+        if !active(fp) {
+            return false;
         }
-        PARKED_CLOSE.fetch_add(1, Ordering::SeqCst);
+        is_armed(fp, name)
+    }
+
+    /// Wait until this failpoint is released for `name`, counting the
+    /// arrival exactly once so a test can OBSERVE that its request
+    /// really is in the window instead of sleeping and hoping.
+    pub(crate) async fn pause(fp: Fp, name: &str) {
+        if !active(fp) {
+            return;
+        }
+        let mut counted = false;
         loop {
-            if !is_armed(CLOSE_HELD, name) {
-                return;
+            {
+                let mut g = reg().lock().unwrap();
+                let Some(st) = g.get_mut(&(fp, name.to_string())) else {
+                    return;
+                };
+                if !st.armed {
+                    return;
+                }
+                if !counted {
+                    counted = true;
+                    st.arrivals += 1;
+                }
             }
             let n = gate().notified();
-            if !is_armed(CLOSE_HELD, name) {
+            if !is_armed(fp, name) {
                 return;
             }
             n.await;
         }
     }
 
-    /// Park a close BETWEEN its acknowledged append (records durable,
-    /// segment closed) and mark_final_committed — the window in which
-    /// the whole incarnation can be deleted and recreated underneath a
-    /// still-running handler.
+    /// One-shot park: the FIRST arrival consumes the arm and holds
+    /// until released; later requests for the same name sail through.
+    pub(crate) async fn pause_oneshot(fp: Fp, name: &str) {
+        if !active(fp) {
+            return;
+        }
+        {
+            let mut g = reg().lock().unwrap();
+            let Some(st) = g.get_mut(&(fp, name.to_string())) else {
+                return;
+            };
+            if !st.armed {
+                return;
+            }
+            // Armed -> Held is not a deactivation: ACTIVE keeps its
+            // count until release() clears the hold.
+            st.armed = false;
+            st.held = true;
+            st.arrivals += 1;
+        }
+        loop {
+            if !is_held(fp, name) {
+                return;
+            }
+            let n = gate().notified();
+            if !is_held(fp, name) {
+                return;
+            }
+            n.await;
+        }
+    }
+
+    // ---- narrative sugar (the site contract, one line each) ----------
+
+    pub fn stop_after_tombstone(name: &str) {
+        arm(Fp::StopAfterTombstone, name);
+    }
+    pub fn stop_after_tombstone_off(name: &str) {
+        release(Fp::StopAfterTombstone, name);
+    }
+    pub(super) fn should_stop_after_tombstone(name: &str) -> bool {
+        hit(Fp::StopAfterTombstone, name)
+    }
+    pub fn stop_before_mark_committed(name: &str) {
+        arm(Fp::StopBeforeMarkCommitted, name);
+    }
+    pub fn stop_before_mark_committed_off(name: &str) {
+        release(Fp::StopBeforeMarkCommitted, name);
+    }
+    pub(super) fn should_stop_before_mark_committed(name: &str) -> bool {
+        hit(Fp::StopBeforeMarkCommitted, name)
+    }
+    pub fn stop_after_seal_intent(name: &str) {
+        arm(Fp::StopAfterSealIntent, name);
+    }
+    pub fn stop_after_seal_intent_off(name: &str) {
+        release(Fp::StopAfterSealIntent, name);
+    }
+    pub(super) fn should_stop_after_seal_intent(name: &str) -> bool {
+        hit(Fp::StopAfterSealIntent, name)
+    }
+
+    pub fn park_create_before_ready(name: &str) {
+        arm(Fp::CreateBeforeReady, name);
+    }
+    pub fn release_create_before_ready(name: &str) {
+        release(Fp::CreateBeforeReady, name);
+    }
+    pub(super) async fn pause_create_before_ready(name: &str) {
+        pause(Fp::CreateBeforeReady, name).await;
+    }
+
+    pub fn park_append_before_enqueue(name: &str) {
+        arm(Fp::AppendBeforeEnqueue, name);
+    }
+    pub fn release_append_before_enqueue(name: &str) {
+        release(Fp::AppendBeforeEnqueue, name);
+    }
+    pub(super) async fn pause_append_before_enqueue(name: &str) {
+        pause(Fp::AppendBeforeEnqueue, name).await;
+    }
+
+    pub fn park_close_before_enqueue(name: &str) {
+        arm(Fp::CloseBeforeEnqueue, name);
+    }
+    pub fn release_close_before_enqueue(name: &str) {
+        release(Fp::CloseBeforeEnqueue, name);
+    }
+    pub(super) async fn pause_close_before_enqueue(name: &str) {
+        pause_oneshot(Fp::CloseBeforeEnqueue, name).await;
+    }
+
     pub fn park_close_before_mark(name: &str) {
-        set(CLOSE_MARK, name);
+        arm(Fp::CloseBeforeMark, name);
     }
-
     pub fn release_close_before_mark(name: &str) {
-        release(CLOSE_MARK, name);
+        release(Fp::CloseBeforeMark, name);
     }
-
-    pub fn parked_mark_count() -> usize {
-        PARKED_MARK.load(Ordering::SeqCst)
-    }
-    static PARKED_MARK: AtomicUsize = AtomicUsize::new(0);
-
     pub(super) async fn pause_close_before_mark(name: &str) {
-        park(CLOSE_MARK, name, &PARKED_MARK).await;
+        pause(Fp::CloseBeforeMark, name).await;
     }
 
-    /// Park a product seal AFTER its key validation and BEFORE its
-    /// claim CAS — the validation-to-claim gap in which the whole
-    /// incarnation can be deleted and recreated under the same key.
     pub fn park_product_seal_before_claim(name: &str) {
-        set(PROD_SEAL, name);
+        arm(Fp::ProductSealBeforeClaim, name);
     }
-
     pub fn release_product_seal_before_claim(name: &str) {
-        release(PROD_SEAL, name);
+        release(Fp::ProductSealBeforeClaim, name);
     }
-
-    pub fn parked_product_seal_count() -> usize {
-        PARKED_PROD_SEAL.load(Ordering::SeqCst)
-    }
-    static PARKED_PROD_SEAL: AtomicUsize = AtomicUsize::new(0);
-
     pub async fn pause_product_seal_before_claim(name: &str) {
-        park(PROD_SEAL, name, &PARKED_PROD_SEAL).await;
+        pause(Fp::ProductSealBeforeClaim, name).await;
     }
 
-    /// Park a product seal AFTER its claim is installed and BEFORE its
-    /// final append — the claim-to-append gap in which the whole
-    /// incarnation can be replaced under the same key.
     pub fn park_product_final_before_append(name: &str) {
-        set(PROD_FINAL, name);
+        arm(Fp::ProductFinalBeforeAppend, name);
     }
-
     pub fn release_product_final_before_append(name: &str) {
-        release(PROD_FINAL, name);
+        release(Fp::ProductFinalBeforeAppend, name);
     }
-
-    pub fn parked_product_final_count() -> usize {
-        PARKED_PROD_FINAL.load(Ordering::SeqCst)
-    }
-    static PARKED_PROD_FINAL: AtomicUsize = AtomicUsize::new(0);
-
     pub async fn pause_product_final_before_append(name: &str) {
-        park(PROD_FINAL, name, &PARKED_PROD_FINAL).await;
+        pause(Fp::ProductFinalBeforeAppend, name).await;
     }
 
-    /// Park a fork creation AFTER the child's fork-id stamp and
-    /// BEFORE the source reference installs — the window in which the
-    /// half-made child can be deleted, leaving an install that runs
-    /// for a child that no longer exists.
     pub fn park_fork_before_source_ref(name: &str) {
-        set(FORK_REF, name);
+        arm(Fp::ForkBeforeSourceRef, name);
     }
-
     pub fn release_fork_before_source_ref(name: &str) {
-        release(FORK_REF, name);
+        release(Fp::ForkBeforeSourceRef, name);
     }
-
-    pub fn parked_fork_ref_count() -> usize {
-        PARKED_FORK_REF.load(Ordering::SeqCst)
-    }
-    static PARKED_FORK_REF: AtomicUsize = AtomicUsize::new(0);
-
     pub(super) async fn pause_fork_before_source_ref(name: &str) {
-        park(FORK_REF, name, &PARKED_FORK_REF).await;
+        pause(Fp::ForkBeforeSourceRef, name).await;
     }
 
-    /// Park a creation's INITIAL-CONTENT append before it enqueues —
-    /// the window in which a test arms the group-write failure with
-    /// the descriptor's real identity, deterministically.
     pub fn park_init_before_seed(name: &str) {
-        set(INIT_SEED, name);
+        arm(Fp::InitBeforeSeed, name);
     }
-
     pub fn release_init_before_seed(name: &str) {
-        release(INIT_SEED, name);
+        release(Fp::InitBeforeSeed, name);
     }
-
-    pub fn parked_init_seed_count() -> usize {
-        PARKED_INIT_SEED.load(Ordering::SeqCst)
-    }
-    static PARKED_INIT_SEED: AtomicUsize = AtomicUsize::new(0);
-
     pub(super) async fn pause_init_before_seed(name: &str) {
-        park(INIT_SEED, name, &PARKED_INIT_SEED).await;
+        pause(Fp::InitBeforeSeed, name).await;
     }
 
-    /// Park a fork creation AFTER its source reference installed and
-    /// BEFORE the child liveness re-check — the exact residual crash
-    /// window of FRK-013. A test that leaves this parked simulates the
-    /// creator process dying with the reference freshly installed.
     pub fn park_fork_after_source_ref(name: &str) {
-        set(FORK_REF_POST, name);
+        arm(Fp::ForkAfterSourceRef, name);
     }
-
     pub fn release_fork_after_source_ref(name: &str) {
-        release(FORK_REF_POST, name);
+        release(Fp::ForkAfterSourceRef, name);
     }
-
-    pub fn parked_fork_ref_post_count() -> usize {
-        PARKED_FORK_REF_POST.load(Ordering::SeqCst)
-    }
-    static PARKED_FORK_REF_POST: AtomicUsize = AtomicUsize::new(0);
-
     pub(super) async fn pause_fork_after_source_ref(name: &str) {
-        park(FORK_REF_POST, name, &PARKED_FORK_REF_POST).await;
+        pause(Fp::ForkAfterSourceRef, name).await;
     }
 
-    /// Park release_fork_ref AFTER it has taken its single descriptor
-    /// snapshot (and validated the expected epoch against it) and
-    /// BEFORE its mutation — the exact window in which the source can
-    /// be deleted and recreated. The mutation that follows must carry
-    /// the SNAPSHOT's epoch, so the replacement is untouchable.
     pub fn park_release_after_epoch_check(name: &str) {
-        set(RELEASE_EPOCH, name);
+        arm(Fp::ReleaseAfterEpochCheck, name);
     }
-
     pub fn release_release_after_epoch_check(name: &str) {
-        release(RELEASE_EPOCH, name);
+        release(Fp::ReleaseAfterEpochCheck, name);
     }
-
-    pub fn parked_release_epoch_count() -> usize {
-        PARKED_RELEASE_EPOCH.load(Ordering::SeqCst)
-    }
-    static PARKED_RELEASE_EPOCH: AtomicUsize = AtomicUsize::new(0);
-
     pub(super) async fn pause_release_after_epoch_check(name: &str) {
-        park(RELEASE_EPOCH, name, &PARKED_RELEASE_EPOCH).await;
+        pause(Fp::ReleaseAfterEpochCheck, name).await;
     }
 
-    /// Park a product pull AFTER it loaded the consumer record (so it
-    /// holds a generation) and BEFORE its segment Receive is enqueued
-    /// — the reviewer's exact race window: a DELETE that completes
-    /// inside this window must make the parked pull's old-generation
-    /// Receive refuse (round 16).
     pub fn park_pull_before_receive(name: &str) {
-        set(PULL_RECV, name);
+        arm(Fp::PullBeforeReceive, name);
     }
-
     pub fn release_pull_before_receive(name: &str) {
-        release(PULL_RECV, name);
+        release(Fp::PullBeforeReceive, name);
     }
-
-    pub fn parked_pull_count() -> usize {
-        PARKED_PULL_RECV.load(Ordering::SeqCst)
-    }
-    static PARKED_PULL_RECV: AtomicUsize = AtomicUsize::new(0);
-
     pub(crate) async fn pause_pull_before_receive(name: &str) {
-        park(PULL_RECV, name, &PARKED_PULL_RECV).await;
+        pause(Fp::PullBeforeReceive, name).await;
     }
 
-    /// Park a consumer-deletion saga just before it refreshes the
-    /// stream descriptor for a fan-out round, so a stream delete +
-    /// recreate can be made to win that window deterministically
-    /// (round-17 ABA probe: the resumed saga must observe the epoch
-    /// change and terminate without touching the replacement).
     pub fn park_consumer_saga_before_refresh(name: &str) {
-        set(CONSUMER_REFRESH, name);
+        arm(Fp::ConsumerSagaBeforeRefresh, name);
     }
-
     pub fn release_consumer_saga_before_refresh(name: &str) {
-        release(CONSUMER_REFRESH, name);
+        release(Fp::ConsumerSagaBeforeRefresh, name);
     }
-
-    pub fn parked_consumer_saga_count() -> usize {
-        PARKED_CONSUMER_REFRESH.load(Ordering::SeqCst)
-    }
-    static PARKED_CONSUMER_REFRESH: AtomicUsize = AtomicUsize::new(0);
-
     pub(crate) async fn pause_consumer_saga_before_refresh(name: &str) {
-        park(CONSUMER_REFRESH, name, &PARKED_CONSUMER_REFRESH).await;
+        pause(Fp::ConsumerSagaBeforeRefresh, name).await;
     }
 
-    /// Park a delete just before it decides soft-versus-hard, so a
-    /// concurrent fork installation can be made to win DETERMINISTICALLY
-    /// rather than by racing timers.
     pub fn park_delete_before_decision(name: &str) {
-        set(DELETE, name);
+        arm(Fp::DeleteBeforeDecision, name);
     }
-
     pub fn release_delete_before_decision(name: &str) {
-        release(DELETE, name);
+        release(Fp::DeleteBeforeDecision, name);
     }
-
-    pub fn parked_delete_count() -> usize {
-        PARKED_DELETE.load(Ordering::SeqCst)
-    }
-
     pub(super) async fn pause_delete_before_decision(name: &str) {
-        park(DELETE, name, &PARKED_DELETE).await;
+        pause(Fp::DeleteBeforeDecision, name).await;
     }
 }
 
