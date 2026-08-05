@@ -457,9 +457,18 @@ async fn producer_state_survives_a_handoff_and_suppresses_duplicates() {
         let ds: Arc<dyn ObjectStore> = store.clone();
         let handle = b.stream_handle(hash).await.expect("handle");
         let before_next = handle.state.lock().unwrap().durable.next;
-        let res = crate::http::read_merged(&key, &hash, &handle, &b, 0, None, 8 * 1024 * 1024, crate::shard::Deliver::Durable)
-            .await
-            .expect("read back");
+        let res = crate::http::read_merged(
+            &key,
+            &hash,
+            &handle,
+            &b,
+            0,
+            None,
+            8 * 1024 * 1024,
+            crate::shard::Deliver::Durable,
+        )
+        .await
+        .expect("read back");
         let copies = res
             .recs
             .iter()
@@ -611,9 +620,18 @@ async fn ambiguous_commit_survives_handoff_and_dedupes() {
     // exists across both owners' tenures.
     let ds: Arc<dyn ObjectStore> = store.clone();
     let handle = b.stream_handle(hash).await.expect("handle");
-    let res = crate::http::read_merged(&key, &hash, &handle, &b, 0, None, 8 * 1024 * 1024, crate::shard::Deliver::Durable)
-        .await
-        .expect("read back");
+    let res = crate::http::read_merged(
+        &key,
+        &hash,
+        &handle,
+        &b,
+        0,
+        None,
+        8 * 1024 * 1024,
+        crate::shard::Deliver::Durable,
+    )
+    .await
+    .expect("read back");
     let copies: Vec<u64> = res
         .recs
         .iter()
@@ -723,9 +741,18 @@ async fn storage_latency_creates_client_ambiguity_resolved_by_idempotence() {
 
     let ds: Arc<dyn ObjectStore> = store.clone();
     let handle = engine.stream_handle(hash).await.expect("handle");
-    let res = crate::http::read_merged(&key, &hash, &handle, &engine, 0, None, 1 << 20, crate::shard::Deliver::Durable)
-        .await
-        .expect("read back");
+    let res = crate::http::read_merged(
+        &key,
+        &hash,
+        &handle,
+        &engine,
+        0,
+        None,
+        1 << 20,
+        crate::shard::Deliver::Durable,
+    )
+    .await
+    .expect("read back");
     let copies = res
         .recs
         .iter()
@@ -4330,8 +4357,8 @@ async fn corrupt_postings_fall_back_to_the_envelope() {
     let mut wb = slatedb::WriteBatch::new();
     wb.put(&pk, b"garbage-not-a-page");
     part.write_with_options(wb, &slatedb::config::WriteOptions::default())
-    .await
-    .expect("corrupt");
+        .await
+        .expect("corrupt");
     part.flush().await.expect("flush corruption");
 
     let before = crate::history::POSTINGS_CORRUPT.load(Ordering::Relaxed);
@@ -4982,6 +5009,13 @@ async fn drain_no_closure(
     panic!("drain did not settle");
 }
 
+/// ONE serialization lock for every test that arms a GLOBAL failpoint
+/// registry or reads a global parked-counter (fork_failpoints,
+/// scaler3::failpoints). The registries are keyed per stream name, but
+/// the parked COUNTERS are process-global: two parallel tests waiting
+/// on "count changed" can wake on each other's parks (the reported
+/// solo-pass/parallel-flake family). Serializing the armers makes the
+/// suite parallel-green without weakening any assertion.
 fn gap_lock() -> &'static tokio::sync::Mutex<()> {
     static L: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
     L.get_or_init(|| tokio::sync::Mutex::new(()))
@@ -5393,9 +5427,18 @@ async fn drain_keyed_paged(
     loop {
         pages += 1;
         assert!(pages <= 128, "drain did not settle");
-        let res = crate::http::read_merged(key, &hash, &handle, engine, from, Some(rk), page_bytes, crate::shard::Deliver::Durable)
-            .await
-            .expect("keyed read");
+        let res = crate::http::read_merged(
+            key,
+            &hash,
+            &handle,
+            engine,
+            from,
+            Some(rk),
+            page_bytes,
+            crate::shard::Deliver::Durable,
+        )
+        .await
+        .expect("keyed read");
         for rec in &res.recs {
             offs.push(rec.off);
             sizes.push(rec.payload.len());
@@ -6379,6 +6422,24 @@ async fn sse_follows_lineage_across_split() {
 // ---- product-surface foundation (spec Stages 7/8 core + clean switch) --
 
 const PRISMA_KEY: &str = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=";
+
+/// The consumer's incarnation token from GET (round 17: DELETE names
+/// an incarnation, never a name). Callers on a Deleting/Deleted record
+/// must capture the token BEFORE deletion begins.
+async fn consumer_version(addr: std::net::SocketAddr, stream: &str, cname: &str) -> String {
+    let (st, h, _) = preq(
+        addr,
+        "GET",
+        &format!("/v1/streams/{stream}/consumers/{cname}"),
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200, "consumer_version: GET {stream}/{cname} -> {st}");
+    h.get("prisma-consumer-version")
+        .expect("prisma-consumer-version header")
+        .clone()
+}
 
 async fn preq(
     addr: std::net::SocketAddr,
@@ -7930,12 +7991,18 @@ async fn product_consumer_config_lifecycle() {
     assert_eq!(st, 404);
     // Round 16: deletion is the generation-fenced saga — 204 means
     // collection-wide, GET 404s afterwards, and a retried DELETE is
-    // an idempotent 204 on the tombstone.
+    // an idempotent 204 on the tombstone. Round 17: the request names
+    // the INCARNATION via its version token; the retry reuses the same
+    // token against the tombstone.
+    let ver = consumer_version(addr, "cc", "work").await;
     let (st, _, b) = preq(
         addr,
         "DELETE",
         "/v1/streams/cc/consumers/work",
-        &[("prisma-encryption-key", PRISMA_KEY)],
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-consumer-version", ver.as_str()),
+        ],
         b"",
     )
     .await;
@@ -7953,7 +8020,10 @@ async fn product_consumer_config_lifecycle() {
         addr,
         "DELETE",
         "/v1/streams/cc/consumers/work",
-        &[("prisma-encryption-key", PRISMA_KEY)],
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-consumer-version", ver.as_str()),
+        ],
         b"",
     )
     .await;
@@ -8923,12 +8993,21 @@ async fn watch_urls_verify_on_a_process_that_never_saw_the_key() {
     // A second server over the same store: never saw the key, never
     // absorbed a record, never issued this URL.
     let (state2, addr2) = http_rig(store).await;
-    let path = format!("/v1/streams/wsig/watches/by-customer/keys/{khex}?cursor=now&timeoutMs=150&sig={sig}");
+    let path = format!(
+        "/v1/streams/wsig/watches/by-customer/keys/{khex}?cursor=now&timeoutMs=150&sig={sig}"
+    );
     let (st, _, b) = preq(addr2, "GET", &path, &[], b"").await;
-    assert_eq!(st, 200, "cold process must verify: {}", String::from_utf8_lossy(&b));
+    assert_eq!(
+        st,
+        200,
+        "cold process must verify: {}",
+        String::from_utf8_lossy(&b)
+    );
 
     // A forged signature is refused, on both.
-    let bad = format!("/v1/streams/wsig/watches/by-customer/keys/{khex}?cursor=now&timeoutMs=150&sig=0000000000000000");
+    let bad = format!(
+        "/v1/streams/wsig/watches/by-customer/keys/{khex}?cursor=now&timeoutMs=150&sig=0000000000000000"
+    );
     let (st, _, _) = preq(addr2, "GET", &bad, &[], b"").await;
     assert_eq!(st, 403);
     let (st, _, _) = preq(addr, "GET", &bad, &[], b"").await;
@@ -9197,7 +9276,8 @@ async fn only_the_exact_signed_watch_route_skips_the_token() {
     ] {
         let (st, _, b) = preq(addr, "GET", &path, &key_only, b"").await;
         assert_eq!(
-            st, 401,
+            st,
+            401,
             "token bypass via {path}: {}",
             String::from_utf8_lossy(&b)
         );
@@ -9266,16 +9346,28 @@ async fn product_responses_carry_cors_not_just_preflights() {
     )
     .await;
     assert_eq!(st, 201);
-    assert_eq!(h.get("access-control-allow-origin").map(String::as_str), Some("*"));
+    assert_eq!(
+        h.get("access-control-allow-origin").map(String::as_str),
+        Some("*")
+    );
     let expose = |h: &std::collections::HashMap<String, String>| {
-        h.get("access-control-expose-headers").cloned().unwrap_or_default()
+        h.get("access-control-expose-headers")
+            .cloned()
+            .unwrap_or_default()
     };
-    assert!(expose(&h).contains("prisma-next-cursor"), "{:?}", expose(&h));
+    assert!(
+        expose(&h).contains("prisma-next-cursor"),
+        "{:?}",
+        expose(&h)
+    );
 
     // an actual GET…
     let (st, h, _) = preq(addr, "GET", "/v1/streams/cors/records", &key, b"").await;
     assert_eq!(st, 200);
-    assert_eq!(h.get("access-control-allow-origin").map(String::as_str), Some("*"));
+    assert_eq!(
+        h.get("access-control-allow-origin").map(String::as_str),
+        Some("*")
+    );
     assert!(expose(&h).contains("prisma-sealed"));
     // …a POST…
     let (st, h, _) = preq(
@@ -9287,11 +9379,17 @@ async fn product_responses_carry_cors_not_just_preflights() {
     )
     .await;
     assert_eq!(st, 200);
-    assert_eq!(h.get("access-control-allow-origin").map(String::as_str), Some("*"));
+    assert_eq!(
+        h.get("access-control-allow-origin").map(String::as_str),
+        Some("*")
+    );
     // …and an ERROR, which a browser must be able to read to retry.
     let (st, h, _) = preq(addr, "GET", "/v1/streams/nope-missing", &key, b"").await;
     assert_eq!(st, 404);
-    assert_eq!(h.get("access-control-allow-origin").map(String::as_str), Some("*"));
+    assert_eq!(
+        h.get("access-control-allow-origin").map(String::as_str),
+        Some("*")
+    );
     assert!(expose(&h).contains("retry-after"));
     engine_shutdown(&state).await;
 }
@@ -9346,7 +9444,10 @@ async fn a_stale_initialization_never_becomes_visible() {
         .iter()
         .filter_map(|s| s["name"].as_str())
         .collect();
-    assert!(!names.contains(&"stale1"), "half-built stream in catalog: {names:?}");
+    assert!(
+        !names.contains(&"stale1"),
+        "half-built stream in catalog: {names:?}"
+    );
     engine_shutdown(&state).await;
 }
 
@@ -9535,11 +9636,17 @@ async fn a_plain_seal_cannot_finish_someone_elses_final() {
         addr,
         "POST",
         "/v1/stream/sealint",
-        &[("content-type", "application/json"), ("stream-closed", "true")],
+        &[
+            ("content-type", "application/json"),
+            ("stream-closed", "true"),
+        ],
         b"",
     )
     .await;
-    assert!(st == 409 || st == 503, "raw close during a final seal: {st}");
+    assert!(
+        st == 409 || st == 503,
+        "raw close during a final seal: {st}"
+    );
     let d = state.registry.get("sealint").await.unwrap().unwrap();
     assert!(!d.sealed);
 
@@ -9575,7 +9682,10 @@ async fn producers_cannot_write_new_records_while_sealing() {
             ("content-type", "application/json"),
             ("producer-id", "p1"),
             ("producer-epoch", "1"),
-            ("producer-seq", Box::leak(seq.to_string().into_boxed_str()) as &str),
+            (
+                "producer-seq",
+                Box::leak(seq.to_string().into_boxed_str()) as &str,
+            ),
         ]
     };
     let (st, _, _) = hreq(addr, "POST", "/v1/stream/prodseal", &ph(0), br#"[{"n":0}]"#).await;
@@ -9599,7 +9709,10 @@ async fn producers_cannot_write_new_records_while_sealing() {
 
     // The RETRY of seq 0 still dedups to success…
     let (st, _, _) = hreq(addr, "POST", "/v1/stream/prodseal", &ph(0), br#"[{"n":0}]"#).await;
-    assert!(st == 200 || st == 204, "a duplicate must still answer: {st}");
+    assert!(
+        st == 200 || st == 204,
+        "a duplicate must still answer: {st}"
+    );
     // …but a NEW sequence is refused.
     let (st, _, b) = hreq(addr, "POST", "/v1/stream/prodseal", &ph(1), br#"[{"n":1}]"#).await;
     assert_eq!(
@@ -9918,7 +10031,10 @@ async fn a_parked_split_cannot_publish_under_a_sealed_collection() {
     } else {
         // The seal declined because the transition was in flight: that
         // is the other legal outcome, and it must say so.
-        assert!(seal_result.is_err(), "unsealed but the seal reported success");
+        assert!(
+            seal_result.is_err(),
+            "unsealed but the seal reported success"
+        );
     }
     engine_shutdown(&state).await;
 }
@@ -10048,6 +10164,7 @@ async fn a_fork_initialization_is_bound_to_its_source_incarnation() {
 /// and a retried delete of C reported success having released nothing.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_crashed_fork_cascade_can_be_resumed() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
@@ -10174,7 +10291,10 @@ async fn seal_requests_are_identified_and_validated_exactly() {
     let p2 = crate::product::seal_op_id_full(&serde_json::json!(1), "k", Some(("p", "1", "5")));
     let none = crate::product::seal_op_id_full(&serde_json::json!(1), "k", None);
     assert_ne!(p1, p2, "producer sequence is not part of the seal identity");
-    assert_ne!(p1, none, "producer presence is not part of the seal identity");
+    assert_ne!(
+        p1, none,
+        "producer presence is not part of the seal identity"
+    );
 
     // 3. A wrong key must not move the lifecycle at all.
     mk("sealkey").await;
@@ -10255,7 +10375,10 @@ async fn a_raw_close_with_content_owes_its_records() {
         addr,
         "POST",
         "/v1/stream/rawfin",
-        &[("content-type", "application/json"), ("stream-closed", "true")],
+        &[
+            ("content-type", "application/json"),
+            ("stream-closed", "true"),
+        ],
         br#"[{"n":1},{"n":2}]"#,
     )
     .await;
@@ -10285,6 +10408,7 @@ async fn a_raw_close_with_content_owes_its_records() {
 /// collection.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_crashed_raw_final_close_is_resumed_by_an_ordinary_retry() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
@@ -10303,7 +10427,10 @@ async fn a_crashed_raw_final_close_is_resumed_by_an_ordinary_retry() {
         addr,
         "POST",
         "/v1/stream/rawcrash",
-        &[("content-type", "application/json"), ("stream-closed", "true")],
+        &[
+            ("content-type", "application/json"),
+            ("stream-closed", "true"),
+        ],
         body,
     )
     .await;
@@ -10312,7 +10439,11 @@ async fn a_crashed_raw_final_close_is_resumed_by_an_ordinary_retry() {
     state.registry.invalidate("rawcrash");
     let d = state.registry.get("rawcrash").await.unwrap().unwrap();
     let sl = d.sealing.clone().expect("no intent survived the crash");
-    assert!(sl.owes_final(), "the crash left no owed final: {:?}", sl.intent);
+    assert!(
+        sl.owes_final(),
+        "the crash left no owed final: {:?}",
+        sl.intent
+    );
     let op = sl.operation_id.clone();
     assert!(!d.sealed, "the collection sealed without its record");
 
@@ -10347,7 +10478,10 @@ async fn a_crashed_raw_final_close_is_resumed_by_an_ordinary_retry() {
         addr,
         "POST",
         "/v1/stream/rawcrash",
-        &[("content-type", "application/json"), ("stream-closed", "true")],
+        &[
+            ("content-type", "application/json"),
+            ("stream-closed", "true"),
+        ],
         body,
     )
     .await;
@@ -10446,7 +10580,11 @@ async fn a_seal_never_installs_over_a_pending_transition() {
     state.registry.invalidate("deadl");
     if let Ok(Some(d)) = state.registry.get("deadl").await {
         let both = d.sealing.is_some() && d.segments.as_ref().is_some_and(|m| m.pending.is_some());
-        assert!(!both, "deadlock state: sealing over pending {:?}", d.segments);
+        assert!(
+            !both,
+            "deadlock state: sealing over pending {:?}",
+            d.segments
+        );
     }
     crate::scaler3::failpoints::release_before_publish();
     let _ = split.await;
@@ -10498,6 +10636,7 @@ async fn a_seal_never_installs_over_a_pending_transition() {
 /// hard-deleted parent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn fork_creation_and_source_deletion_serialize() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
@@ -10585,13 +10724,27 @@ async fn an_impossible_final_never_publishes_an_intent() {
     // Routing key past the limit.
     let long = "k".repeat(2000);
     let body = format!(r#"{{"final":{{"x":1}},"routingKey":"{long}"}}"#);
-    let (st, _, _) = preq(addr, "POST", "/v1/streams/impossible:seal", &key, body.as_bytes()).await;
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/impossible:seal",
+        &key,
+        body.as_bytes(),
+    )
+    .await;
     assert_eq!(st, 400, "oversized routing key accepted");
     untouched("an oversized routing key").await;
 
     // Routing key that cannot travel as a header value.
     let body = "{\"final\":{\"x\":1},\"routingKey\":\"bad\\u0001key\"}";
-    let (st, _, _) = preq(addr, "POST", "/v1/streams/impossible:seal", &key, body.as_bytes()).await;
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/impossible:seal",
+        &key,
+        body.as_bytes(),
+    )
+    .await;
     assert_eq!(st, 400, "control character in the routing key accepted");
     untouched("an untransmittable routing key").await;
 
@@ -10600,10 +10753,7 @@ async fn an_impossible_final_never_publishes_an_intent() {
         addr,
         "POST",
         "/v1/streams/impossible:seal",
-        &[
-            ("prisma-encryption-key", PRISMA_KEY),
-            ("producer-id", "p"),
-        ],
+        &[("prisma-encryption-key", PRISMA_KEY), ("producer-id", "p")],
         br#"{"final":{"x":1}}"#,
     )
     .await;
@@ -10632,6 +10782,7 @@ async fn an_impossible_final_never_publishes_an_intent() {
 /// over records it already held.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_raw_final_close_resumes_after_its_records_are_durable() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
@@ -10640,7 +10791,10 @@ async fn a_raw_final_close_resumes_after_its_records_are_durable() {
 
     // Real close, real records, real segment close — stopped just before
     // the transition is marked committed.
-    let closing = [("content-type", "application/json"), ("stream-closed", "true")];
+    let closing = [
+        ("content-type", "application/json"),
+        ("stream-closed", "true"),
+    ];
     let body = br#"[{"n":1},{"n":2}]"#;
     crate::http::fork_failpoints::stop_before_mark_committed("rawmark");
     let (st, _, _) = hreq(addr, "POST", "/v1/stream/rawmark", &closing, body).await;
@@ -10666,7 +10820,11 @@ async fn a_raw_final_close_resumes_after_its_records_are_durable() {
     );
     state.registry.invalidate("rawmark");
     let d = state.registry.get("rawmark").await.unwrap().unwrap();
-    assert!(d.sealed && d.sealing.is_none(), "not terminal: {:?}", d.sealing);
+    assert!(
+        d.sealed && d.sealing.is_none(),
+        "not terminal: {:?}",
+        d.sealing
+    );
 
     // And the records landed EXACTLY once.
     let (_, _, b) = hreq(addr, "GET", "/v1/stream/rawmark", &[], b"").await;
@@ -10936,7 +11094,14 @@ async fn internal_producer_identities_are_unreachable_from_the_wire() {
         ("producer-epoch", "1"),
         ("producer-seq", "0"),
     ];
-    let (st, _, _) = preq(addr, "POST", "/v1/streams/nsguard/records", &ph, br#"{"n":1}"#).await;
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/nsguard/records",
+        &ph,
+        br#"{"n":1}"#,
+    )
+    .await;
     assert_eq!(st, 200);
     let (st, _, b) = preq(
         addr,
@@ -10955,7 +11120,11 @@ async fn internal_producer_identities_are_unreachable_from_the_wire() {
     state.registry.invalidate("nsguard");
     let d = state.registry.get("nsguard").await.unwrap().unwrap();
     assert!(!d.sealed, "the collection sealed without its final record");
-    assert!(d.sealing.is_none(), "a refused attempt left its intent: {:?}", d.sealing);
+    assert!(
+        d.sealing.is_none(),
+        "a refused attempt left its intent: {:?}",
+        d.sealing
+    );
     engine_shutdown(&state).await;
 }
 
@@ -11000,7 +11169,10 @@ async fn a_refused_raw_close_does_not_strand_the_collection() {
     );
     // The stream still works.
     let (st, _, _) = hreq(addr, "POST", "/v1/stream/rawrefuse", &ct, br#"[{"n":2}]"#).await;
-    assert!(st == 200 || st == 204, "ordinary appends were bricked: {st}");
+    assert!(
+        st == 200 || st == 204,
+        "ordinary appends were bricked: {st}"
+    );
 
     // An ordering verdict behaves the other way: sequence 5 from a
     // brand-new producer is a gap, and the intent stays for the retry.
@@ -11042,6 +11214,7 @@ async fn a_refused_raw_close_does_not_strand_the_collection() {
 /// gap and the predecessor genuinely lands afterwards.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_transient_producer_gap_does_not_lose_the_promised_record() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
@@ -11086,7 +11259,14 @@ async fn a_transient_producer_gap_does_not_lose_the_promised_record() {
         ("producer-epoch", "1"),
         ("producer-seq", "1"),
     ];
-    let (st, _, _) = hreq(addr, "POST", "/v1/stream/gapwin", &close_hdrs, br#"[{"fin":1}]"#).await;
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/gapwin",
+        &close_hdrs,
+        br#"[{"fin":1}]"#,
+    )
+    .await;
     assert_eq!(st, 409, "the close should have seen the gap: {st}");
     state.registry.invalidate("gapwin");
     let d = state.registry.get("gapwin").await.unwrap().unwrap();
@@ -11108,7 +11288,14 @@ async fn a_transient_producer_gap_does_not_lose_the_promised_record() {
 
     // Now the exact retry — same bytes, same producer coordination —
     // recognises its own intent and finishes the transition.
-    let (st, _, b) = hreq(addr, "POST", "/v1/stream/gapwin", &close_hdrs, br#"[{"fin":1}]"#).await;
+    let (st, _, b) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/gapwin",
+        &close_hdrs,
+        br#"[{"fin":1}]"#,
+    )
+    .await;
     assert!(
         st == 200 || st == 204,
         "the exact retry could not resume: {st} {}",
@@ -11122,7 +11309,10 @@ async fn a_transient_producer_gap_does_not_lose_the_promised_record() {
     let (_, _, b) = hreq(addr, "GET", "/v1/stream/gapwin", &[], b"").await;
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
     let finals = recs.iter().filter(|r| r.get("fin").is_some()).count();
-    assert_eq!(finals, 1, "the promised record is not present exactly once: {recs:?}");
+    assert_eq!(
+        finals, 1,
+        "the promised record is not present exactly once: {recs:?}"
+    );
     assert_eq!(recs.len(), 3, "records lost or duplicated: {recs:?}");
     engine_shutdown(&state).await;
 }
@@ -11144,6 +11334,7 @@ async fn a_transient_producer_gap_does_not_lose_the_promised_record() {
 /// descriptor that says somebody else's seal is still working.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_superseded_close_cannot_write_or_close() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
@@ -11158,7 +11349,10 @@ async fn a_superseded_close_cannot_write_or_close() {
             addr,
             "POST",
             "/v1/stream/lease1",
-            &[("content-type", "application/json"), ("stream-closed", "true")],
+            &[
+                ("content-type", "application/json"),
+                ("stream-closed", "true"),
+            ],
             br#"[{"fin":"a"}]"#,
         )
         .await
@@ -11247,6 +11441,7 @@ async fn a_superseded_close_cannot_write_or_close() {
 /// stranded behind an unmarked intent.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_takeover_completes_an_old_close_that_won() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
@@ -11259,7 +11454,10 @@ async fn a_takeover_completes_an_old_close_that_won() {
         addr,
         "POST",
         "/v1/stream/lease2",
-        &[("content-type", "application/json"), ("stream-closed", "true")],
+        &[
+            ("content-type", "application/json"),
+            ("stream-closed", "true"),
+        ],
         br#"[{"fin":"a"}]"#,
     )
     .await;
@@ -11286,7 +11484,10 @@ async fn a_takeover_completes_an_old_close_that_won() {
         addr,
         "POST",
         "/v1/stream/lease2",
-        &[("content-type", "application/json"), ("stream-closed", "true")],
+        &[
+            ("content-type", "application/json"),
+            ("stream-closed", "true"),
+        ],
         br#"[{"fin":"b"}]"#,
     )
     .await;
@@ -11295,13 +11496,27 @@ async fn a_takeover_completes_an_old_close_that_won() {
     state.registry.invalidate("lease2");
     let d = state.registry.get("lease2").await.unwrap().unwrap();
     assert!(d.sealed, "the takeover did not complete A's transition");
-    assert_eq!(d.seal_op.as_deref(), Some(a_op.as_str()), "sealed under the wrong operation");
+    assert_eq!(
+        d.seal_op.as_deref(),
+        Some(a_op.as_str()),
+        "sealed under the wrong operation"
+    );
     assert!(d.sealing.is_none());
     let (_, _, body) = hreq(addr, "GET", "/v1/stream/lease2", &[], b"").await;
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
-    let a_fin = recs.iter().filter(|r| r.get("fin") == Some(&serde_json::json!("a"))).count();
-    let b_fin = recs.iter().filter(|r| r.get("fin") == Some(&serde_json::json!("b"))).count();
-    assert_eq!((a_fin, b_fin), (1, 0), "wrong final record survived: {recs:?}");
+    let a_fin = recs
+        .iter()
+        .filter(|r| r.get("fin") == Some(&serde_json::json!("a")))
+        .count();
+    let b_fin = recs
+        .iter()
+        .filter(|r| r.get("fin") == Some(&serde_json::json!("b")))
+        .count();
+    assert_eq!(
+        (a_fin, b_fin),
+        (1, 0),
+        "wrong final record survived: {recs:?}"
+    );
     engine_shutdown(&state).await;
 }
 
@@ -11316,7 +11531,13 @@ async fn an_exact_retry_renews_its_lease() {
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/renew", &ct, br#"[{"n":0}]"#).await;
     assert!(st == 200 || st == 201);
     state.registry.invalidate("renew");
-    let epoch = state.registry.get("renew").await.unwrap().unwrap().stream_epoch;
+    let epoch = state
+        .registry
+        .get("renew")
+        .await
+        .unwrap()
+        .unwrap()
+        .stream_epoch;
 
     let intent = crate::registry::SealIntent::Final {
         routing_key: String::new(),
@@ -11376,6 +11597,7 @@ async fn an_exact_retry_renews_its_lease() {
 /// because they stopped at claim installation.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_resumed_mark_never_seals_a_later_incarnation() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
@@ -11391,7 +11613,10 @@ async fn a_resumed_mark_never_seals_a_later_incarnation() {
             addr,
             "POST",
             "/v1/stream/markaba",
-            &[("content-type", "application/json"), ("stream-closed", "true")],
+            &[
+                ("content-type", "application/json"),
+                ("stream-closed", "true"),
+            ],
             br#"[{"fin":1}]"#,
         )
         .await
@@ -11424,10 +11649,18 @@ async fn a_resumed_mark_never_seals_a_later_incarnation() {
     state.registry.invalidate("markaba");
     let d = state.registry.get("markaba").await.unwrap().unwrap();
     assert!(!d.sealed, "the resumed close sealed the replacement");
-    assert!(d.sealing.is_none(), "the resumed close claimed the replacement: {:?}", d.sealing);
+    assert!(
+        d.sealing.is_none(),
+        "the resumed close claimed the replacement: {:?}",
+        d.sealing
+    );
     let (_, _, body) = hreq(addr, "GET", "/v1/stream/markaba", &[], b"").await;
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&body).unwrap();
-    assert_eq!(recs, vec![serde_json::json!({"n": 9})], "replacement content: {recs:?}");
+    assert_eq!(
+        recs,
+        vec![serde_json::json!({"n": 9})],
+        "replacement content: {recs:?}"
+    );
     engine_shutdown(&state).await;
 }
 
@@ -11438,6 +11671,7 @@ async fn a_resumed_mark_never_seals_a_later_incarnation() {
 /// it never owned.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_wrong_content_type_close_cannot_join_the_valid_intent() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
@@ -11534,6 +11768,7 @@ async fn a_wrong_content_type_close_cannot_join_the_valid_intent() {
 /// finds the collection sealed by someone else — never resurrected.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn seal_only_takes_over_an_abandoned_final_claim() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
@@ -11546,7 +11781,10 @@ async fn seal_only_takes_over_an_abandoned_final_claim() {
         addr,
         "POST",
         "/v1/stream/rescue",
-        &[("content-type", "application/json"), ("stream-closed", "true")],
+        &[
+            ("content-type", "application/json"),
+            ("stream-closed", "true"),
+        ],
         body,
     )
     .await;
@@ -11587,7 +11825,10 @@ async fn seal_only_takes_over_an_abandoned_final_claim() {
         addr,
         "POST",
         "/v1/stream/rescue",
-        &[("content-type", "application/json"), ("stream-closed", "true")],
+        &[
+            ("content-type", "application/json"),
+            ("stream-closed", "true"),
+        ],
         body,
     )
     .await;
@@ -11698,7 +11939,10 @@ async fn a_fence_waits_for_durability_before_reporting_closed() {
             addr,
             "POST",
             "/v1/stream/dur9",
-            &[("content-type", "application/json"), ("stream-closed", "true")],
+            &[
+                ("content-type", "application/json"),
+                ("stream-closed", "true"),
+            ],
             br#"[{"fin":"a"}]"#,
         )
         .await
@@ -11750,7 +11994,10 @@ async fn a_fence_waits_for_durability_before_reporting_closed() {
     let d = state.registry.get("dur9").await.unwrap().unwrap();
     assert!(!d.sealed, "sealed before the record was durable");
     let sl = d.sealing.clone().expect("the claim vanished mid-takeover");
-    assert_eq!(sl.operation_id, a_claim.operation_id, "the claim moved before durability");
+    assert_eq!(
+        sl.operation_id, a_claim.operation_id,
+        "the claim moved before durability"
+    );
     assert!(
         sl.owes_final(),
         "the final was marked committed before it was durable: {:?}",
@@ -11761,7 +12008,11 @@ async fn a_fence_waits_for_durability_before_reporting_closed() {
     // fence then reports closed=true and B completes/joins A's seal.
     drop(guard);
     let (st, _, body) = a.await.unwrap();
-    assert!(st == 200 || st == 204, "A: {st} {}", String::from_utf8_lossy(&body));
+    assert!(
+        st == 200 || st == 204,
+        "A: {st} {}",
+        String::from_utf8_lossy(&body)
+    );
     let b_out = b.await.unwrap().unwrap();
     assert!(
         matches!(
@@ -11785,6 +12036,7 @@ async fn a_fence_waits_for_durability_before_reporting_closed() {
 /// claim's generation would sit below the higher fence.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_lower_takeover_reservation_cannot_install() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
@@ -11796,7 +12048,10 @@ async fn a_lower_takeover_reservation_cannot_install() {
         addr,
         "POST",
         "/v1/stream/race9",
-        &[("content-type", "application/json"), ("stream-closed", "true")],
+        &[
+            ("content-type", "application/json"),
+            ("stream-closed", "true"),
+        ],
         br#"[{"fin":1}]"#,
     )
     .await;
@@ -11868,7 +12123,10 @@ async fn a_lower_takeover_reservation_cannot_install() {
     )
     .await
     .unwrap();
-    assert!(!installed_a, "a lower reservation installed below a higher fence");
+    assert!(
+        !installed_a,
+        "a lower reservation installed below a higher fence"
+    );
     state.registry.invalidate("race9");
     let d = state.registry.get("race9").await.unwrap().unwrap();
     assert_eq!(
@@ -11953,7 +12211,10 @@ async fn a_fence_survives_handle_eviction() {
             Err(e) => (409u16, format!("{e:?}")),
         }
     };
-    assert!(b.is_empty() || b.contains("SealSuperseded"), "unexpected refusal: {b}");
+    assert!(
+        b.is_empty() || b.contains("SealSuperseded"),
+        "unexpected refusal: {b}"
+    );
     assert_eq!(st, 409, "a stale close committed after handle eviction");
     let (_, _, bd) = hreq(addr, "GET", "/v1/stream/evict9", &[], b"").await;
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&bd).unwrap();
@@ -11967,6 +12228,7 @@ async fn a_fence_survives_handle_eviction() {
 /// replacement.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_product_seal_never_binds_to_a_recreated_incarnation() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let key = [("prisma-encryption-key", PRISMA_KEY)];
@@ -12000,7 +12262,10 @@ async fn a_product_seal_never_binds_to_a_recreated_incarnation() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert!(parked, "the sealer never reached the validation-to-claim gap");
+    assert!(
+        parked,
+        "the sealer never reached the validation-to-claim gap"
+    );
 
     // Replace the collection under the SAME key.
     let (st, _, _) = preq(addr, "DELETE", "/v1/streams/sealaba", &key, b"").await;
@@ -12025,7 +12290,11 @@ async fn a_product_seal_never_binds_to_a_recreated_incarnation() {
     state.registry.invalidate("sealaba");
     let d = state.registry.get("sealaba").await.unwrap().unwrap();
     assert!(!d.sealed, "the replacement was sealed");
-    assert!(d.sealing.is_none(), "the replacement was claimed: {:?}", d.sealing);
+    assert!(
+        d.sealing.is_none(),
+        "the replacement was claimed: {:?}",
+        d.sealing
+    );
     engine_shutdown(&state).await;
 }
 
@@ -12140,7 +12409,10 @@ async fn scaler_heat_and_terminal_proof_are_incarnation_scoped() {
         addr,
         "POST",
         "/v1/stream/heat9",
-        &[("content-type", "application/json"), ("stream-closed", "true")],
+        &[
+            ("content-type", "application/json"),
+            ("stream-closed", "true"),
+        ],
         b"",
     )
     .await;
@@ -12197,11 +12469,15 @@ async fn idempotent_successes_wait_for_durability() {
         ("producer-epoch", "1"),
         ("producer-seq", "0"),
     ];
-    let orig = tokio::spawn(async move {
-        hreq(addr, "POST", "/v1/stream/dur10", &ph, br#"[{"n":1}]"#).await
-    });
+    let orig =
+        tokio::spawn(
+            async move { hreq(addr, "POST", "/v1/stream/dur10", &ph, br#"[{"n":1}]"#).await },
+        );
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-    assert!(!orig.is_finished(), "the original was released while dispatch held");
+    assert!(
+        !orig.is_finished(),
+        "the original was released while dispatch held"
+    );
 
     // The exact duplicate arrives. It must ALSO stay pending: its
     // truth is the original's durability.
@@ -12246,19 +12522,28 @@ async fn idempotent_successes_wait_for_durability() {
             addr,
             "POST",
             "/v1/stream/dur10",
-            &[("content-type", "application/json"), ("stream-closed", "true")],
+            &[
+                ("content-type", "application/json"),
+                ("stream-closed", "true"),
+            ],
             b"",
         )
         .await
     });
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
-    assert!(!close1.is_finished(), "the close released while dispatch held");
+    assert!(
+        !close1.is_finished(),
+        "the close released while dispatch held"
+    );
     let close2 = tokio::spawn(async move {
         hreq(
             addr,
             "POST",
             "/v1/stream/dur10",
-            &[("content-type", "application/json"), ("stream-closed", "true")],
+            &[
+                ("content-type", "application/json"),
+                ("stream-closed", "true"),
+            ],
             b"",
         )
         .await
@@ -12311,7 +12596,14 @@ async fn state_dependent_conflicts_wait_for_durability() {
         ("producer-seq", "0"),
     ];
     let orig = tokio::spawn(async move {
-        preq(addr, "POST", "/v1/streams/conf11/records", &ph, br#"{"x":1}"#).await
+        preq(
+            addr,
+            "POST",
+            "/v1/streams/conf11/records",
+            &ph,
+            br#"{"x":1}"#,
+        )
+        .await
     });
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     assert!(!orig.is_finished());
@@ -12403,12 +12695,13 @@ async fn a_fence_outlives_the_maintenance_sweep() {
         resp: tx,
     };
     assert!(engine.try_enqueue(req).is_ok());
-    let refused = matches!(rx.await.unwrap(), Err(crate::shard::AppendErr::SealSuperseded));
+    let refused = matches!(
+        rx.await.unwrap(),
+        Err(crate::shard::AppendErr::SealSuperseded)
+    );
     assert!(refused, "the sweep weakened the fence");
     engine_shutdown(&state).await;
 }
-
-
 
 /// The product final append proves its WHOLE execution token —
 /// incarnation, operation, generation — against the current
@@ -12418,6 +12711,7 @@ async fn a_fence_outlives_the_maintenance_sweep() {
 /// leaving the replacement unwritable; only the mark failed.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_product_final_never_writes_into_a_recreated_incarnation() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let key = [("prisma-encryption-key", PRISMA_KEY)];
@@ -12481,7 +12775,11 @@ async fn a_product_final_never_writes_into_a_recreated_incarnation() {
     state.registry.invalidate("finaba");
     let d = state.registry.get("finaba").await.unwrap().unwrap();
     assert!(!d.sealed, "the replacement was sealed");
-    assert!(d.sealing.is_none(), "the replacement was claimed: {:?}", d.sealing);
+    assert!(
+        d.sealing.is_none(),
+        "the replacement was claimed: {:?}",
+        d.sealing
+    );
     // No final record, and — the decisive assertion — the replacement's
     // segment is still OPEN: ordinary product appends succeed.
     let (_, _, bd) = preq(
@@ -12546,9 +12844,10 @@ async fn a_failed_group_write_fails_its_duplicate_too() {
         ("producer-epoch", "1"),
         ("producer-seq", "0"),
     ];
-    let r1 = tokio::spawn(async move {
-        hreq(addr, "POST", "/v1/stream/dur002", &ph, br#"[{"a":1}]"#).await
-    });
+    let r1 =
+        tokio::spawn(
+            async move { hreq(addr, "POST", "/v1/stream/dur002", &ph, br#"[{"a":1}]"#).await },
+        );
     while engine.appends_enqueued() < base + 1 {
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
@@ -12575,7 +12874,11 @@ async fn a_failed_group_write_fails_its_duplicate_too() {
 
     let (s1, _, _) = r1.await.unwrap();
     let (s2, _, _) = r2.await.unwrap();
-    assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
+    assert_eq!(
+        engine.group_failures_tripped(),
+        1,
+        "the failpoint never fired"
+    );
     assert!(
         s1 >= 500 && s2 >= 500,
         "a promise outlived its failed group: {s1} {s2}"
@@ -12669,7 +12972,11 @@ async fn a_reuse_verdict_dies_with_its_failed_group() {
     drop(hold);
     let (s1, _, _) = a.await.unwrap();
     let (s2, _, _) = b.await.unwrap();
-    assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
+    assert_eq!(
+        engine.group_failures_tripped(),
+        1,
+        "the failpoint never fired"
+    );
     assert!(
         s1 >= 500 && s2 >= 500,
         "a reuse verdict (or its original) outlived the failed group: {s1} {s2}"
@@ -12731,7 +13038,10 @@ async fn a_failed_group_fails_the_close_and_its_retry_together() {
             addr,
             "POST",
             "/v1/stream/dur004",
-            &[("content-type", "application/json"), ("stream-closed", "true")],
+            &[
+                ("content-type", "application/json"),
+                ("stream-closed", "true"),
+            ],
             b"",
         )
         .await
@@ -12744,7 +13054,10 @@ async fn a_failed_group_fails_the_close_and_its_retry_together() {
             addr,
             "POST",
             "/v1/stream/dur004",
-            &[("content-type", "application/json"), ("stream-closed", "true")],
+            &[
+                ("content-type", "application/json"),
+                ("stream-closed", "true"),
+            ],
             b"",
         )
         .await
@@ -12772,7 +13085,11 @@ async fn a_failed_group_fails_the_close_and_its_retry_together() {
     });
     let (s1, _, _) = r1;
     let (s2, _, _) = r2;
-    assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
+    assert_eq!(
+        engine.group_failures_tripped(),
+        1,
+        "the failpoint never fired"
+    );
     assert!(
         s1 >= 400 && s2 >= 400,
         "a close (or its idempotent echo) outlived the failed group: {s1} {s2}"
@@ -12787,7 +13104,10 @@ async fn a_failed_group_fails_the_close_and_its_retry_together() {
             addr,
             "POST",
             "/v1/stream/dur004",
-            &[("content-type", "application/json"), ("stream-closed", "true")],
+            &[
+                ("content-type", "application/json"),
+                ("stream-closed", "true"),
+            ],
             b"",
         ),
     )
@@ -12807,6 +13127,7 @@ async fn a_failed_group_fails_the_close_and_its_retry_together() {
 /// is ambiguous), and the exact retry recovers the seal.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_fence_in_a_failed_group_reports_failure_not_closed() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
@@ -12831,7 +13152,10 @@ async fn a_fence_in_a_failed_group_reports_failure_not_closed() {
             addr,
             "POST",
             "/v1/stream/sel021",
-            &[("content-type", "application/json"), ("stream-closed", "true")],
+            &[
+                ("content-type", "application/json"),
+                ("stream-closed", "true"),
+            ],
             body,
         )
         .await
@@ -12884,8 +13208,15 @@ async fn a_fence_in_a_failed_group_reports_failure_not_closed() {
         Err(_) => {} // failed with its group: equally honest
     }
     let (cs, _, _) = close.await.unwrap();
-    assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
-    assert!(cs >= 400, "the close reported success for a failed write: {cs}");
+    assert_eq!(
+        engine.group_failures_tripped(),
+        1,
+        "the failpoint never fired"
+    );
+    assert!(
+        cs >= 400,
+        "the close reported success for a failed write: {cs}"
+    );
     // A write failure is AMBIGUOUS: the intent stays for the retry.
     state.registry.invalidate("sel021");
     let d = state.registry.get("sel021").await.unwrap().unwrap();
@@ -12901,7 +13232,10 @@ async fn a_fence_in_a_failed_group_reports_failure_not_closed() {
         addr,
         "POST",
         "/v1/stream/sel021",
-        &[("content-type", "application/json"), ("stream-closed", "true")],
+        &[
+            ("content-type", "application/json"),
+            ("stream-closed", "true"),
+        ],
         body,
     )
     .await;
@@ -12916,7 +13250,10 @@ async fn a_fence_in_a_failed_group_reports_failure_not_closed() {
     let (_, _, bd) = hreq(addr, "GET", "/v1/stream/sel021", &[], b"").await;
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&bd).unwrap();
     let fins = recs.iter().filter(|r| r.get("fin").is_some()).count();
-    assert_eq!(fins, 1, "exactly one final after the failed write: {recs:?}");
+    assert_eq!(
+        fins, 1,
+        "exactly one final after the failed write: {recs:?}"
+    );
     engine_shutdown(&state).await;
 }
 
@@ -12928,11 +13265,15 @@ async fn a_fence_in_a_failed_group_reports_failure_not_closed() {
 async fn a_stream_seq_verdict_is_grounded_in_durable_state() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    let ct = [
-        ("content-type", "application/json"),
-        ("stream-seq", "s1"),
-    ];
-    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/dur008", &[("content-type", "application/json")], br#"[{"n":0}]"#).await;
+    let ct = [("content-type", "application/json"), ("stream-seq", "s1")];
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/dur008",
+        &[("content-type", "application/json")],
+        br#"[{"n":0}]"#,
+    )
+    .await;
     assert!(st == 200 || st == 201);
     state.registry.invalidate("dur008");
     let desc = state.registry.get("dur008").await.unwrap().unwrap();
@@ -12954,8 +13295,15 @@ async fn a_stream_seq_verdict_is_grounded_in_durable_state() {
     });
     let (s2, _, _) = hreq(addr, "POST", "/v1/stream/dur008", &ct, br#"[{"b":1}]"#).await;
     let (s1, _, _) = w1.await.unwrap();
-    assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
-    assert!(s1 >= 500 || s2 >= 500, "nobody saw the failed write: {s1} {s2}");
+    assert_eq!(
+        engine.group_failures_tripped(),
+        1,
+        "the failpoint never fired"
+    );
+    assert!(
+        s1 >= 500 || s2 >= 500,
+        "nobody saw the failed write: {s1} {s2}"
+    );
     // If either got the CONFLICT verdict, the sequence it was judged
     // against must actually be durable: an exact probe must still
     // conflict. A conflict with no durable ground is the bug.
@@ -12978,6 +13326,7 @@ async fn a_stream_seq_verdict_is_grounded_in_durable_state() {
 /// initialization and delivers the content exactly once.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn create_replay_recovers_from_a_failed_initial_write() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
@@ -13009,10 +13358,17 @@ async fn create_replay_recovers_from_a_failed_initial_write() {
     crate::http::fork_failpoints::release_init_before_seed("crt007");
 
     let (cs, _, _) = creator.await.unwrap();
-    assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
+    assert_eq!(
+        engine.group_failures_tripped(),
+        1,
+        "the failpoint never fired"
+    );
     // 408 (outcome unknown) and 5xx are both honest here — anything
     // but success.
-    assert!(cs >= 400, "create reported success over a failed seed write: {cs}");
+    assert!(
+        cs >= 400,
+        "create reported success over a failed seed write: {cs}"
+    );
     state.registry.invalidate("crt007");
     let d = state.registry.get("crt007").await.unwrap().unwrap();
     assert!(
@@ -13089,9 +13445,7 @@ async fn merge_phase_b_declines_under_sealing() {
     crate::scaler3::failpoints::arm_before_publish();
     let (st2, a, b) = (state.clone(), live[0], live[1]);
     let merge =
-        tokio::spawn(
-            async move { crate::scaler3::execute_merge(&st2, "sel019", a, b).await },
-        );
+        tokio::spawn(async move { crate::scaler3::execute_merge(&st2, "sel019", a, b).await });
     // Entered-proof: the merge REACHED phase B (parents sealed, parked
     // before publication) before the seal claim is planted.
     while crate::scaler3::failpoints::publish_parked_count() <= pbefore {
@@ -13132,7 +13486,10 @@ async fn merge_phase_b_declines_under_sealing() {
         .await
         .unwrap();
     state.registry.invalidate("sel019");
-    assert!(crate::scaler3::resume(&state, "sel019").await, "resume failed");
+    assert!(
+        crate::scaler3::resume(&state, "sel019").await,
+        "resume failed"
+    );
     state.registry.invalidate("sel019");
     let d = state.registry.get("sel019").await.unwrap().unwrap();
     let live_after = d
@@ -13143,7 +13500,10 @@ async fn merge_phase_b_declines_under_sealing() {
         .iter()
         .filter(|s| s.is_live())
         .count();
-    assert_eq!(live_after, 1, "merge did not complete after the seal cleared");
+    assert_eq!(
+        live_after, 1,
+        "merge did not complete after the seal cleared"
+    );
     engine_shutdown(&state).await;
 }
 
@@ -13152,6 +13512,7 @@ async fn merge_phase_b_declines_under_sealing() {
 /// the first's claim, and its refusal must not tear that claim down.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn concurrent_finals_with_different_coordination_do_not_share_a_claim() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
@@ -13226,7 +13587,11 @@ async fn concurrent_finals_with_different_coordination_do_not_share_a_claim() {
 
     crate::http::fork_failpoints::release_close_before_enqueue("sel027");
     let (st, _, b) = a.await.unwrap();
-    assert!(st == 200 || st == 204, "A: {st} {}", String::from_utf8_lossy(&b));
+    assert!(
+        st == 200 || st == 204,
+        "A: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
     state.registry.invalidate("sel027");
     let d = state.registry.get("sel027").await.unwrap().unwrap();
     assert!(d.sealed);
@@ -13243,6 +13608,7 @@ async fn concurrent_finals_with_different_coordination_do_not_share_a_claim() {
 /// and the source hard-deletes cleanly.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_child_deleted_before_the_source_ref_cannot_pin_the_source() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
@@ -13280,7 +13646,10 @@ async fn a_child_deleted_before_the_source_ref_cannot_pin_the_source() {
 
     // Delete the half-made child while the reference is uninstalled.
     let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/frk13child", &[], b"").await;
-    assert!(st == 204 || st == 200 || st == 404 || st == 410, "delete: {st}");
+    assert!(
+        st == 204 || st == 200 || st == 404 || st == 410,
+        "delete: {st}"
+    );
 
     crate::http::fork_failpoints::release_fork_before_source_ref("frk13child");
     let (cs, _, cb) = creator.await.unwrap();
@@ -13365,7 +13734,10 @@ async fn a_stale_epoch_final_releases_its_intent_on_both_surfaces() {
         br#"{"final":{"x":1}}"#,
     )
     .await;
-    assert!(st == 403 || st == 409, "stale epoch should be refused: {st}");
+    assert!(
+        st == 403 || st == 409,
+        "stale epoch should be refused: {st}"
+    );
     state.registry.invalidate("stale12p");
     let d = state.registry.get("stale12p").await.unwrap().unwrap();
     assert!(
@@ -13491,7 +13863,11 @@ async fn a_failed_queue_write_leaves_no_phantom_leases() {
     .await;
     // The selector covers queue operations (round 13), so the pull's
     // group deterministically trips the arm.
-    assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
+    assert_eq!(
+        engine.group_failures_tripped(),
+        1,
+        "the failpoint never fired"
+    );
     assert!(st >= 500, "a pull outlived its failed group: {st}");
     let first_failed = true;
     let _ = b;
@@ -13535,6 +13911,7 @@ async fn a_failed_queue_write_leaves_no_phantom_leases() {
 /// no repair tool: the retry the client already owns is the repair.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_crashed_creators_late_reference_is_repaired_by_delete_retry() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
@@ -13597,7 +13974,10 @@ async fn a_crashed_creators_late_reference_is_repaired_by_delete_retry() {
     // THE REPAIR: the ordinary retry of the child DELETE. Its retained
     // debt retries the release, finds the late reference, removes it.
     let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/frk13kid", &[], b"").await;
-    assert!(st == 204 || st == 200 || st == 404 || st == 410, "retry delete: {st}");
+    assert!(
+        st == 204 || st == 200 || st == 404 || st == 410,
+        "retry delete: {st}"
+    );
     state.registry.invalidate("frk13c");
     let src = state.registry.get("frk13c").await.unwrap().unwrap();
     assert!(
@@ -13693,7 +14073,11 @@ async fn a_failed_settle_leaves_no_phantom_acks() {
         settle_body.as_bytes(),
     )
     .await;
-    assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
+    assert_eq!(
+        engine.group_failures_tripped(),
+        1,
+        "the failpoint never fired"
+    );
     assert!(st >= 500, "a settlement outlived its failed group: {st}");
 
     // No phantom acks: the SAME tokens settle successfully on retry.
@@ -13792,13 +14176,19 @@ async fn queue_config_delete_is_group_local() {
     let del = engine
         .submit_queue(
             identity,
-            crate::queue::QueueOp::ConfigDelete {
+            crate::queue::QueueOp::ConfigDeleteStep {
                 consumer: "c1".into(),
                 fence_below: 2,
+                max_rows: 4096,
+                max_bytes: 1 << 20,
             },
         )
         .await;
-    assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
+    assert_eq!(
+        engine.group_failures_tripped(),
+        1,
+        "the failpoint never fired"
+    );
     assert!(
         del.is_err(),
         "a config delete outlived its failed group: {del:?}"
@@ -13814,7 +14204,18 @@ async fn queue_config_delete_is_group_local() {
     let (st, _, _) = preq(addr, "GET", "/v1/streams/qc14/consumers/c1", &key, b"").await;
     assert_eq!(st, 200, "a failed delete removed the config record");
     // The SAGA retry finishes the job end to end.
-    let (st, _, _) = preq(addr, "DELETE", "/v1/streams/qc14/consumers/c1", &key, b"").await;
+    let ver = consumer_version(addr, "qc14", "c1").await;
+    let (st, _, _) = preq(
+        addr,
+        "DELETE",
+        "/v1/streams/qc14/consumers/c1",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-consumer-version", ver.as_str()),
+        ],
+        b"",
+    )
+    .await;
     assert_eq!(st, 204, "the delete retry must complete the saga");
     let rows = engine
         .count_consumer_state_rows(identity, "c1")
@@ -13930,9 +14331,11 @@ async fn receive_then_delete_in_one_group_leaves_no_stale_lease() {
     let del = tokio::spawn(async move {
         e2.submit_queue(
             identity,
-            crate::queue::QueueOp::ConfigDelete {
+            crate::queue::QueueOp::ConfigDeleteStep {
                 consumer: "c1".into(),
                 fence_below: 2,
+                max_rows: 4096,
+                max_bytes: 1 << 20,
             },
         )
         .await
@@ -14069,9 +14472,11 @@ async fn settle_then_delete_in_one_group_leaves_no_stale_rows() {
     let del = tokio::spawn(async move {
         e2.submit_queue(
             identity,
-            crate::queue::QueueOp::ConfigDelete {
+            crate::queue::QueueOp::ConfigDeleteStep {
                 consumer: "c1".into(),
                 fence_below: 2,
+                max_rows: 4096,
+                max_bytes: 1 << 20,
             },
         )
         .await
@@ -14152,9 +14557,11 @@ async fn a_receive_after_delete_in_the_same_group_is_refused() {
     let del = tokio::spawn(async move {
         e1.submit_queue(
             identity,
-            crate::queue::QueueOp::ConfigDelete {
+            crate::queue::QueueOp::ConfigDeleteStep {
                 consumer: "c1".into(),
                 fence_below: 2,
+                max_rows: 4096,
+                max_bytes: 1 << 20,
             },
         )
         .await
@@ -14187,8 +14594,7 @@ async fn a_receive_after_delete_in_the_same_group_is_refused() {
     let r = recv.await.unwrap();
     match r {
         Err(m) => assert!(
-            m.starts_with("consumer_generation_fenced")
-                || m.starts_with("consumer_not_found"),
+            m.starts_with("consumer_generation_fenced") || m.starts_with("consumer_not_found"),
             "wrong refusal: {m}"
         ),
         Ok(o) => panic!("a Receive after an in-group delete succeeded: {o:?}"),
@@ -14202,7 +14608,18 @@ async fn a_receive_after_delete_in_the_same_group_is_refused() {
     assert_eq!(rows, 0, "the refused Receive leaked durable rows");
     // Finish the saga over the wire, recreate at generation 2, and the
     // new consumer's world is clean.
-    let (st, _, _) = preq(addr, "DELETE", "/v1/streams/qc15d/consumers/c1", &key, b"").await;
+    let ver = consumer_version(addr, "qc15d", "c1").await;
+    let (st, _, _) = preq(
+        addr,
+        "DELETE",
+        "/v1/streams/qc15d/consumers/c1",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-consumer-version", ver.as_str()),
+        ],
+        b"",
+    )
+    .await;
     assert_eq!(st, 204, "saga completes");
     let (st, _, _) = preq(
         addr,
@@ -14226,7 +14643,12 @@ async fn a_receive_after_delete_in_the_same_group_is_refused() {
         .as_array()
         .map(|a| a.len())
         .unwrap_or(0);
-    assert_eq!(got, 2, "the refused Receive leaked state: {}", String::from_utf8_lossy(&b));
+    assert_eq!(
+        got,
+        2,
+        "the refused Receive leaked state: {}",
+        String::from_utf8_lossy(&b)
+    );
     engine_shutdown(&state).await;
 }
 
@@ -14328,20 +14750,39 @@ async fn a_split_consumers_deletion_fails_one_segment_then_retries_clean() {
         .segments
         .iter()
         .filter(|sg| sg.is_live())
-        .map(|sg| (desc.dynamic_segment_identity(sg.seg_id), desc.segment_route(sg)))
+        .map(|sg| {
+            (
+                desc.dynamic_segment_identity(sg.seg_id),
+                desc.segment_route(sg),
+            )
+        })
         .collect();
     assert_eq!(children.len(), 2);
     let mut engines = Vec::new();
     for (id, route) in &children {
         let e = state.engine_for(route).await.unwrap();
         let rows = e.count_consumer_state_rows(*id, "c1").await.unwrap();
-        assert!(rows > 0, "each child holds this consumer's rows before deletion");
+        assert!(
+            rows > 0,
+            "each child holds this consumer's rows before deletion"
+        );
         engines.push((e, *id));
     }
 
     // Fail ONE child's cleanup scan: the saga must NOT answer 204.
+    let ver = consumer_version(addr, "qc16s", "c1").await;
     engines[1].0.fail_next_config_scan();
-    let (st, _, b) = preq(addr, "DELETE", "/v1/streams/qc16s/consumers/c1", &key, b"").await;
+    let (st, _, b) = preq(
+        addr,
+        "DELETE",
+        "/v1/streams/qc16s/consumers/c1",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-consumer-version", ver.as_str()),
+        ],
+        b"",
+    )
+    .await;
     assert!(
         st >= 500,
         "a partial deletion answered {st}: {}",
@@ -14367,8 +14808,18 @@ async fn a_split_consumers_deletion_fails_one_segment_then_retries_clean() {
     .await;
     assert_eq!(st, 409, "recreation must wait for the saga to settle");
 
-    // The retry resumes from Deleting and completes.
-    let (st, _, b) = preq(addr, "DELETE", "/v1/streams/qc16s/consumers/c1", &key, b"").await;
+    // The retry resumes from Deleting and completes — same token.
+    let (st, _, b) = preq(
+        addr,
+        "DELETE",
+        "/v1/streams/qc16s/consumers/c1",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-consumer-version", ver.as_str()),
+        ],
+        b"",
+    )
+    .await;
     assert_eq!(st, 204, "{}", String::from_utf8_lossy(&b));
     for (e, id) in &engines {
         let rows = e.count_consumer_state_rows(*id, "c1").await.unwrap();
@@ -14412,6 +14863,7 @@ async fn a_split_consumers_deletion_fails_one_segment_then_retries_clean() {
 /// consumer starts clean.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_parked_pull_cannot_lease_after_its_generation_was_deleted() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let key = [("prisma-encryption-key", PRISMA_KEY)];
@@ -14467,14 +14919,26 @@ async fn a_parked_pull_cannot_lease_after_its_generation_was_deleted() {
     }
 
     // The deletion completes collection-wide while the pull is parked.
-    let (st, _, b) = preq(addr, "DELETE", "/v1/streams/qc16p/consumers/c1", &key, b"").await;
+    let ver = consumer_version(addr, "qc16p", "c1").await;
+    let (st, _, b) = preq(
+        addr,
+        "DELETE",
+        "/v1/streams/qc16p/consumers/c1",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-consumer-version", ver.as_str()),
+        ],
+        b"",
+    )
+    .await;
     assert_eq!(st, 204, "{}", String::from_utf8_lossy(&b));
 
     // Release: the old-generation Receive must refuse.
     crate::http::fork_failpoints::release_pull_before_receive("qc16p");
     let (st, _, b) = pull.await.unwrap();
     assert_eq!(
-        st, 409,
+        st,
+        409,
         "an old-generation pull leased after deletion: {}",
         String::from_utf8_lossy(&b)
     );
@@ -14483,7 +14947,10 @@ async fn a_parked_pull_cannot_lease_after_its_generation_was_deleted() {
     let desc = state.registry.get("qc16p").await.unwrap().unwrap();
     let ro = desc.resolve_segment("");
     let engine = state.engine_for(&ro.shard_route).await.unwrap();
-    let rows = engine.count_consumer_state_rows(ro.identity, "c1").await.unwrap();
+    let rows = engine
+        .count_consumer_state_rows(ro.identity, "c1")
+        .await
+        .unwrap();
     assert_eq!(rows, 0, "the parked pull's lease landed after deletion");
 
     // Recreation starts a clean generation.
@@ -14577,9 +15044,11 @@ async fn a_failed_config_scan_aborts_the_delete_untouched() {
     let del = engine
         .submit_queue(
             seg.identity,
-            crate::queue::QueueOp::ConfigDelete {
+            crate::queue::QueueOp::ConfigDeleteStep {
                 consumer: "c1".into(),
                 fence_below: 2,
+                max_rows: 4096,
+                max_bytes: 1 << 20,
             },
         )
         .await;
@@ -14601,9 +15070,11 @@ async fn a_failed_config_scan_aborts_the_delete_untouched() {
     engine
         .submit_queue(
             seg.identity,
-            crate::queue::QueueOp::ConfigDelete {
+            crate::queue::QueueOp::ConfigDeleteStep {
                 consumer: "c1".into(),
                 fence_below: 2,
+                max_rows: 4096,
+                max_bytes: 1 << 20,
             },
         )
         .await
@@ -14728,9 +15199,10 @@ async fn a_stale_fork_release_does_not_touch_a_recreated_source() {
 
     // A release carrying the OLD source epoch is conclusive and leaves
     // the replacement untouched — not soft-deleted, not tombstoned.
-    let conclusive = crate::http::release_fork_ref_for_test(&state, "frk14src", "ghost", &old_epoch)
-        .await
-        .unwrap();
+    let conclusive =
+        crate::http::release_fork_ref_for_test(&state, "frk14src", "ghost", &old_epoch)
+            .await
+            .unwrap();
     assert!(conclusive, "a stale release should be conclusive");
     state.registry.invalidate("frk14src");
     let d = state.registry.get("frk14src").await.unwrap().unwrap();
@@ -14754,6 +15226,7 @@ async fn a_stale_fork_release_does_not_touch_a_recreated_source() {
 /// release reports CONCLUSIVE so the debt converges.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_release_parked_across_recreation_cannot_touch_the_replacement() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [
@@ -14862,6 +15335,7 @@ async fn a_release_parked_across_recreation_cannot_touch_the_replacement() {
 /// and leaving its rightful creator to fail.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_parked_create_never_publishes_readiness_for_a_later_incarnation() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
@@ -14882,13 +15356,19 @@ async fn a_parked_create_never_publishes_readiness_for_a_later_incarnation() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert!(!first_epoch.is_empty(), "the first creator never reached its window");
+    assert!(
+        !first_epoch.is_empty(),
+        "the first creator never reached its window"
+    );
 
     // Delete it out from under that creator, then create the same name
     // again from the same bytes. The replacement parks in the same
     // window, so both are in flight at once.
     let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/abacreate", &[], b"").await;
-    assert!(st == 204 || st == 200 || st == 404 || st == 410, "delete: {st}");
+    assert!(
+        st == 204 || st == 200 || st == 404 || st == 410,
+        "delete: {st}"
+    );
     let live =
         tokio::spawn(async move { hreq(addr, "PUT", "/v1/stream/abacreate", &ct, body).await });
     let mut second_epoch = String::new();
@@ -14902,7 +15382,10 @@ async fn a_parked_create_never_publishes_readiness_for_a_later_incarnation() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert!(!second_epoch.is_empty(), "the replacement never reached the window");
+    assert!(
+        !second_epoch.is_empty(),
+        "the replacement never reached the window"
+    );
     assert_ne!(second_epoch, first_epoch, "the incarnation never changed");
 
     // Release both.
@@ -14922,11 +15405,18 @@ async fn a_parked_create_never_publishes_readiness_for_a_later_incarnation() {
 
     state.registry.invalidate("abacreate");
     let d = state.registry.get("abacreate").await.unwrap().unwrap();
-    assert_eq!(d.stream_epoch, second_epoch, "the surviving incarnation is not the live one");
+    assert_eq!(
+        d.stream_epoch, second_epoch,
+        "the surviving incarnation is not the live one"
+    );
     assert!(d.init.is_none(), "the replacement was left initializing");
     let (_, _, b) = hreq(addr, "GET", "/v1/stream/abacreate", &[], b"").await;
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
-    assert_eq!(recs, vec![serde_json::json!({"n": 1})], "the replacement lost its content: {recs:?}");
+    assert_eq!(
+        recs,
+        vec![serde_json::json!({"n": 1})],
+        "the replacement lost its content: {recs:?}"
+    );
     engine_shutdown(&state).await;
 }
 
@@ -14935,6 +15425,7 @@ async fn a_parked_create_never_publishes_readiness_for_a_later_incarnation() {
 /// collection nobody asked to close.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_seal_in_flight_never_closes_a_later_incarnation() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
@@ -14949,7 +15440,10 @@ async fn a_seal_in_flight_never_closes_a_later_incarnation() {
         addr,
         "POST",
         "/v1/stream/abaseal",
-        &[("content-type", "application/json"), ("stream-closed", "true")],
+        &[
+            ("content-type", "application/json"),
+            ("stream-closed", "true"),
+        ],
         body,
     )
     .await;
@@ -14967,8 +15461,14 @@ async fn a_seal_in_flight_never_closes_a_later_incarnation() {
     assert!(st == 200 || st == 201, "recreate: {st}");
     state.registry.invalidate("abaseal");
     let fresh = state.registry.get("abaseal").await.unwrap().unwrap();
-    assert_ne!(fresh.stream_epoch, old.stream_epoch, "the incarnation never changed");
-    assert!(fresh.sealing.is_none(), "the replacement inherited a seal claim");
+    assert_ne!(
+        fresh.stream_epoch, old.stream_epoch,
+        "the incarnation never changed"
+    );
+    assert!(
+        fresh.sealing.is_none(),
+        "the replacement inherited a seal claim"
+    );
     assert!(!fresh.sealed, "the replacement was born sealed");
 
     // A seal request that resolved its descriptor BEFORE the delete now
@@ -14991,23 +15491,40 @@ async fn a_seal_in_flight_never_closes_a_later_incarnation() {
     );
     state.registry.invalidate("abaseal");
     let d = state.registry.get("abaseal").await.unwrap().unwrap();
-    assert!(d.sealing.is_none(), "a stale seal installed its intent: {:?}", d.sealing);
+    assert!(
+        d.sealing.is_none(),
+        "a stale seal installed its intent: {:?}",
+        d.sealing
+    );
     assert!(!d.sealed, "a stale seal closed the replacement");
-    assert_eq!(d.stream_epoch, fresh.stream_epoch, "the incarnation changed again");
+    assert_eq!(
+        d.stream_epoch, fresh.stream_epoch,
+        "the incarnation changed again"
+    );
 
     // The replacement's own seal still works.
     let (st, _, _) = hreq(
         addr,
         "POST",
         "/v1/stream/abaseal",
-        &[("content-type", "application/json"), ("stream-closed", "true")],
+        &[
+            ("content-type", "application/json"),
+            ("stream-closed", "true"),
+        ],
         b"",
     )
     .await;
-    assert!(st == 200 || st == 204, "the replacement could not be sealed: {st}");
+    assert!(
+        st == 200 || st == 204,
+        "the replacement could not be sealed: {st}"
+    );
     let (_, _, b) = hreq(addr, "GET", "/v1/stream/abaseal", &[], b"").await;
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
-    assert_eq!(recs[0], serde_json::json!({"n": 9}), "content crossed incarnations: {recs:?}");
+    assert_eq!(
+        recs[0],
+        serde_json::json!({"n": 9}),
+        "content crossed incarnations: {recs:?}"
+    );
     engine_shutdown(&state).await;
 }
 
@@ -15016,13 +15533,20 @@ async fn a_seal_in_flight_never_closes_a_later_incarnation() {
 /// asked, and a name is not an identity.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn a_parked_delete_never_removes_a_later_incarnation() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/abadel", &ct, br#"[{"n":0}]"#).await;
     assert!(st == 200 || st == 201);
     state.registry.invalidate("abadel");
-    let first = state.registry.get("abadel").await.unwrap().unwrap().stream_epoch;
+    let first = state
+        .registry
+        .get("abadel")
+        .await
+        .unwrap()
+        .unwrap()
+        .stream_epoch;
 
     // Park a delete just before it decides.
     let dbefore = crate::http::fork_failpoints::parked_delete_count();
@@ -15044,7 +15568,10 @@ async fn a_parked_delete_never_removes_a_later_incarnation() {
     state.registry.invalidate("abadel");
     let second = state.registry.get("abadel").await.unwrap().unwrap();
     assert_ne!(second.stream_epoch, first, "the incarnation never changed");
-    assert!(!second.deleted && !second.soft_deleted, "the replacement was born deleted");
+    assert!(
+        !second.deleted && !second.soft_deleted,
+        "the replacement was born deleted"
+    );
 
     // A delete decision issued against the FIRST incarnation is exactly
     // what the fence has to decline. Drive it directly: the request
@@ -15064,11 +15591,18 @@ async fn a_parked_delete_never_removes_a_later_incarnation() {
     );
     state.registry.invalidate("abadel");
     let d = state.registry.get("abadel").await.unwrap().unwrap();
-    assert!(!d.deleted, "the replacement was deleted by a stale decision");
+    assert!(
+        !d.deleted,
+        "the replacement was deleted by a stale decision"
+    );
     let (st, _, b) = hreq(addr, "GET", "/v1/stream/abadel", &[], b"").await;
     assert_eq!(st, 200, "the replacement is gone");
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
-    assert_eq!(recs, vec![serde_json::json!({"n": 1})], "content crossed incarnations: {recs:?}");
+    assert_eq!(
+        recs,
+        vec![serde_json::json!({"n": 1})],
+        "content crossed incarnations: {recs:?}"
+    );
     engine_shutdown(&state).await;
 }
 
@@ -15111,8 +15645,14 @@ async fn a_fork_stamp_never_lands_on_a_later_incarnation() {
     assert!(st == 200 || st == 201, "recreate: {st}");
     state.registry.invalidate("abachild");
     let fresh = state.registry.get("abachild").await.unwrap().unwrap();
-    assert_ne!(fresh.stream_epoch, stale_epoch, "the incarnation never changed");
-    assert!(fresh.forked_from.is_none(), "the replacement inherited parentage");
+    assert_ne!(
+        fresh.stream_epoch, stale_epoch,
+        "the incarnation never changed"
+    );
+    assert!(
+        fresh.forked_from.is_none(),
+        "the replacement inherited parentage"
+    );
 
     // The in-flight stamp from the deleted fork, replayed. It carries
     // the epoch it was issued against, so the fence declines it.
@@ -15136,7 +15676,10 @@ async fn a_fork_stamp_never_lands_on_a_later_incarnation() {
     );
     state.registry.invalidate("abachild");
     let d = state.registry.get("abachild").await.unwrap().unwrap();
-    assert!(d.forked_from.is_none(), "the replacement was pinned to a stranger");
+    assert!(
+        d.forked_from.is_none(),
+        "the replacement was pinned to a stranger"
+    );
     engine_shutdown(&state).await;
 }
 
@@ -15149,6 +15692,7 @@ async fn a_fork_stamp_never_lands_on_a_later_incarnation() {
 /// before readiness.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn creation_does_not_report_success_after_a_concurrent_delete() {
+    let _serial = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
@@ -15193,7 +15737,10 @@ async fn creation_does_not_report_success_after_a_concurrent_delete() {
 
     // Delete the child out from under it.
     let (dst, _, _) = hreq(addr, "DELETE", "/v1/stream/racechild", &[], b"").await;
-    assert!(dst == 204 || dst == 200 || dst == 404 || dst == 410, "delete: {dst}");
+    assert!(
+        dst == 204 || dst == 200 || dst == 404 || dst == 410,
+        "delete: {dst}"
+    );
 
     crate::http::fork_failpoints::release_create_before_ready("racechild");
     let (st, _, b) = creator.await.unwrap();
@@ -16322,7 +16869,11 @@ async fn a_applied_read_and_long_poll_serve_the_tail_before_durability() {
     .await;
     assert_eq!(st, 200);
     let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
-    assert_eq!(v.as_array().unwrap().len(), 1, "durable read is blind to r2");
+    assert_eq!(
+        v.as_array().unwrap().len(),
+        1,
+        "durable read is blind to r2"
+    );
     assert!(h.get("prisma-pending-from").is_none());
     assert!(h.get("prisma-durable-cursor").is_none());
 
@@ -16511,13 +17062,31 @@ async fn a_lost_applied_suffix_rewinds_to_the_durable_frontier() {
         assert!(std::time::Instant::now() < deadline, "r2 never applied");
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
-    let durable = crate::shard::read_frames(&e2, &handle, 0, None, 1 << 20, crate::shard::Deliver::Durable)
-        .await
-        .expect("durable read");
-    assert_eq!(durable.frames.len(), 1, "durable reads never see the suffix");
-    let applied = crate::shard::read_frames(&e2, &handle, 0, None, 1 << 20, crate::shard::Deliver::Applied)
-        .await
-        .expect("applied read");
+    let durable = crate::shard::read_frames(
+        &e2,
+        &handle,
+        0,
+        None,
+        1 << 20,
+        crate::shard::Deliver::Durable,
+    )
+    .await
+    .expect("durable read");
+    assert_eq!(
+        durable.frames.len(),
+        1,
+        "durable reads never see the suffix"
+    );
+    let applied = crate::shard::read_frames(
+        &e2,
+        &handle,
+        0,
+        None,
+        1 << 20,
+        crate::shard::Deliver::Applied,
+    )
+    .await
+    .expect("applied read");
     assert_eq!(applied.frames.len(), 2, "applied reads serve the suffix");
 
     // Crash: no close, no flush. The reopen fences e2; its memtable —
@@ -16529,9 +17098,10 @@ async fn a_lost_applied_suffix_rewinds_to_the_durable_frontier() {
         assert_eq!(st.durable.next, 1, "recovery is the durable frontier");
         assert_eq!(st.applied.next, 1, "applied rewinds with it");
     }
-    let after = crate::shard::read_frames(&e3, &h3, 0, None, 1 << 20, crate::shard::Deliver::Applied)
-        .await
-        .expect("post-crash applied read");
+    let after =
+        crate::shard::read_frames(&e3, &h3, 0, None, 1 << 20, crate::shard::Deliver::Applied)
+            .await
+            .expect("post-crash applied read");
     assert_eq!(after.frames.len(), 1, "the provisional record is lost");
     e3.begin_close();
     e3.await_terminated(std::time::Duration::from_secs(30))
@@ -16653,4 +17223,649 @@ async fn a_stale_applied_cursor_is_refused_after_crash_restart() {
     .await;
     assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
     engine_shutdown(&state3).await;
+}
+
+// ---- round 17: deletion names an incarnation, never a name ------------
+
+/// **A stale segment cleanup can no longer erase a recreated
+/// generation.** D1 deletes generation 1 fully; the consumer is
+/// recreated at generation 2 with live leases; then D2's stale
+/// cleanup (fence_below = 2) replays against the segment. Generation-2
+/// rows must remain intact — the cleanup deletes generations the fence
+/// declared dead, never every generation sharing the name.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stale_cleanup_replay_never_touches_a_recreated_generation() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc17a",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for i in 0..2 {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/qc17a/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", &format!("k{i}")),
+            ],
+            format!("{{\"n\":{i}}}").as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc17a/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/qc17a/consumers/c1:pull",
+        &key,
+        br#"{"max": 2}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "generation-1 leases exist");
+
+    // D1 completes: generation 1 -> Deleted.
+    let ver1 = consumer_version(addr, "qc17a", "c1").await;
+    let (st, _, b) = preq(
+        addr,
+        "DELETE",
+        "/v1/streams/qc17a/consumers/c1",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-consumer-version", ver1.as_str()),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 204, "{}", String::from_utf8_lossy(&b));
+
+    // Recreation: generation 2, with its own live leases.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc17a/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "recreation after the tombstone");
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/qc17a/consumers/c1:pull",
+        &key,
+        br#"{"max": 2}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let leased: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(
+        leased["messages"].as_array().unwrap().len(),
+        2,
+        "generation 2 leased both records"
+    );
+    let ver2 = consumer_version(addr, "qc17a", "c1").await;
+
+    state.registry.invalidate("qc17a");
+    let desc = state.registry.get("qc17a").await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let engine = state.engine_for(&seg.shard_route).await.unwrap();
+    let rows_before = engine
+        .count_consumer_state_rows(seg.identity, "c1")
+        .await
+        .unwrap();
+    assert!(rows_before > 0, "generation-2 rows exist before the replay");
+
+    // D2's STALE cleanup resumes: fence_below = 2 (the generation-1
+    // deletion's fence). It must find nothing left to delete and must
+    // not touch generation 2.
+    let out = engine
+        .submit_queue(
+            seg.identity,
+            crate::queue::QueueOp::ConfigDeleteStep {
+                consumer: "c1".into(),
+                fence_below: 2,
+                max_rows: 4096,
+                max_bytes: 1 << 20,
+            },
+        )
+        .await
+        .expect("stale replay submits cleanly");
+    match out {
+        crate::queue::QueueOut::DeleteStep {
+            complete,
+            deleted_rows,
+        } => {
+            assert!(complete, "nothing below the fence remains");
+            assert_eq!(deleted_rows, 0, "the stale replay deleted rows");
+        }
+        other => panic!("expected DeleteStep, got {other:?}"),
+    }
+    let rows_after = engine
+        .count_consumer_state_rows(seg.identity, "c1")
+        .await
+        .unwrap();
+    assert_eq!(
+        rows_after, rows_before,
+        "the stale replay changed generation-2 rows"
+    );
+    // The live generation still works end to end: settle its leases.
+    let acks: Vec<String> = leased["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["leaseToken"].as_str().unwrap().to_string())
+        .collect();
+    let settle_body = serde_json::json!({
+        "acks": acks.iter().map(|t| serde_json::json!({"leaseToken": t})).collect::<Vec<_>>()
+    })
+    .to_string();
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/qc17a/consumers/c1:settle",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("content-type", "application/json"),
+        ],
+        settle_body.as_bytes(),
+    )
+    .await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["acked"], 2, "generation-2 settle survived the replay");
+    let ver2_after = consumer_version(addr, "qc17a", "c1").await;
+    assert_eq!(ver2, ver2_after, "the incarnation token changed");
+    engine_shutdown(&state).await;
+}
+
+/// **A stale DELETE retry cannot delete the replacement consumer.**
+/// The version token pins the incarnation: retrying generation 1's
+/// DELETE after a recreation is an idempotent 204 that leaves
+/// generation 2 Active and its rows untouched; a forged newer-than-
+/// record version is a 409; a missing version is a 400.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_stale_delete_retry_cannot_delete_the_replacement_consumer() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc17b",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, h, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc17b/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let ver1 = h
+        .get("prisma-consumer-version")
+        .expect("create returns the version")
+        .clone();
+
+    // Missing version: refused before anything happens.
+    let (st, _, b) = preq(addr, "DELETE", "/v1/streams/qc17b/consumers/c1", &key, b"").await;
+    assert_eq!(st, 400, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "missing_consumer_version");
+
+    // Generation 1 deleted; its 204 "lost"; the name recreated.
+    let (st, _, _) = preq(
+        addr,
+        "DELETE",
+        "/v1/streams/qc17b/consumers/c1",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-consumer-version", ver1.as_str()),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 204);
+    let (st, h, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc17b/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "replacement consumer");
+    let ver2 = h.get("prisma-consumer-version").unwrap().clone();
+    assert_ne!(ver1, ver2, "recreation minted a new incarnation");
+    for i in 0..2 {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/qc17b/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", &format!("k{i}")),
+            ],
+            format!("{{\"n\":{i}}}").as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/qc17b/consumers/c1:pull",
+        &key,
+        br#"{"max": 2}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "replacement leases records");
+    state.registry.invalidate("qc17b");
+    let desc = state.registry.get("qc17b").await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let engine = state.engine_for(&seg.shard_route).await.unwrap();
+    let rows_before = engine
+        .count_consumer_state_rows(seg.identity, "c1")
+        .await
+        .unwrap();
+    assert!(rows_before > 0);
+
+    // The original client's retry arrives with the OLD version.
+    let (st, _, b) = preq(
+        addr,
+        "DELETE",
+        "/v1/streams/qc17b/consumers/c1",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-consumer-version", ver1.as_str()),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(
+        st,
+        204,
+        "a stale retry is idempotent success: {}",
+        String::from_utf8_lossy(&b)
+    );
+    let (st, h, _) = preq(addr, "GET", "/v1/streams/qc17b/consumers/c1", &key, b"").await;
+    assert_eq!(st, 200, "the replacement survived the stale retry");
+    assert_eq!(
+        h.get("prisma-consumer-version").unwrap(),
+        &ver2,
+        "the replacement's incarnation changed"
+    );
+    let rows_after = engine
+        .count_consumer_state_rows(seg.identity, "c1")
+        .await
+        .unwrap();
+    assert_eq!(rows_after, rows_before, "the stale retry deleted rows");
+
+    // A version NEWER than the record is impossible from an honest
+    // client: conflict, no mutation.
+    let epoch = {
+        match crate::http::check_key(Some(PRISMA_KEY), &desc) {
+            crate::http::KeyCheck::Ok(_, e) => e,
+            _ => panic!("key check failed"),
+        }
+    };
+    let forged = crate::product::consumer_version_token(&epoch, 99);
+    let (st, _, b) = preq(
+        addr,
+        "DELETE",
+        "/v1/streams/qc17b/consumers/c1",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-consumer-version", forged.as_str()),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 409, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "consumer_version_conflict");
+    let (st, _, _) = preq(addr, "GET", "/v1/streams/qc17b/consumers/c1", &key, b"").await;
+    assert_eq!(st, 200, "the conflict mutated nothing");
+    engine_shutdown(&state).await;
+}
+
+/// **A parked deletion saga never rebinds to a recreated stream.** The
+/// saga parks before its descriptor refresh; the collection is deleted
+/// and recreated under the same name and key (new epoch) with its own
+/// consumer and leases; the resumed saga must observe the epoch change
+/// and answer 204 without touching the replacement.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_parked_saga_never_touches_a_recreated_stream() {
+    let _serial = gap_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc17c",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc17c/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let ver1 = consumer_version(addr, "qc17c", "c1").await;
+
+    crate::http::fork_failpoints::park_consumer_saga_before_refresh("qc17c");
+    let before = crate::http::fork_failpoints::parked_consumer_saga_count();
+    let a1 = addr;
+    let v1 = ver1.clone();
+    let del = tokio::spawn(async move {
+        preq(
+            a1,
+            "DELETE",
+            "/v1/streams/qc17c/consumers/c1",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-consumer-version", v1.as_str()),
+            ],
+            b"",
+        )
+        .await
+    });
+    while crate::http::fork_failpoints::parked_consumer_saga_count() == before {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+
+    // While the saga is parked: the stream dies and is reborn under
+    // the same name and key — a NEW incarnation, with its own consumer
+    // and leases.
+    let (st, _, _) = preq(addr, "DELETE", "/v1/streams/qc17c", &key, b"").await;
+    assert!(st == 200 || st == 202 || st == 204, "stream delete: {st}");
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc17c",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "recreation under the same name");
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/qc17c/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", "k0"),
+        ],
+        br#"{"n":0}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc17c/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "replacement stream's consumer");
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/qc17c/consumers/c1:pull",
+        &key,
+        br#"{"max": 1}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "replacement consumer leases");
+    let ver_b = consumer_version(addr, "qc17c", "c1").await;
+    assert_ne!(ver1, ver_b, "the replacement is a different incarnation");
+    state.registry.invalidate("qc17c");
+    let desc_b = state.registry.get("qc17c").await.unwrap().unwrap();
+    let seg_b = desc_b.resolve_segment("");
+    let engine_b = state.engine_for(&seg_b.shard_route).await.unwrap();
+    let rows_before = engine_b
+        .count_consumer_state_rows(seg_b.identity, "c1")
+        .await
+        .unwrap();
+    assert!(rows_before > 0);
+
+    // Resume the old saga: it must observe the epoch change and stop.
+    crate::http::fork_failpoints::release_consumer_saga_before_refresh("qc17c");
+    let (st, _, b) = del.await.unwrap();
+    assert_eq!(
+        st,
+        204,
+        "the resumed saga's old target is gone — idempotent success: {}",
+        String::from_utf8_lossy(&b)
+    );
+    let rows_after = engine_b
+        .count_consumer_state_rows(seg_b.identity, "c1")
+        .await
+        .unwrap();
+    assert_eq!(
+        rows_after, rows_before,
+        "the resumed saga touched the replacement stream"
+    );
+    let (st, h, _) = preq(addr, "GET", "/v1/streams/qc17c/consumers/c1", &key, b"").await;
+    assert_eq!(st, 200, "the replacement consumer survived");
+    assert_eq!(h.get("prisma-consumer-version").unwrap(), &ver_b);
+    engine_shutdown(&state).await;
+}
+
+/// **Cleanup is bounded and resumable under residue at scale.** 500
+/// dead-generation rows plus a live generation's leases and ack
+/// markers: every step's batch stays within its row budget, every step
+/// makes progress, the dead rows drain to zero across many steps, and
+/// the LIVE generation's rows survive byte-count-identically. Then the
+/// real DELETE completes and recreation starts clean.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_bounded_cleanup_drains_residue_without_touching_the_live_generation() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc17d",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for i in 0..8 {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/qc17d/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", &format!("k{i}")),
+            ],
+            format!("{{\"n\":{i}}}").as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc17d/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    // Live generation (1): leases on all eight keys, half acked (ack
+    // markers accumulate for offsets settled out of order).
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/qc17d/consumers/c1:pull",
+        &key,
+        br#"{"max": 8}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let leased: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    let toks: Vec<String> = leased["messages"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .map(|m| m["leaseToken"].as_str().unwrap().to_string())
+        .collect();
+    assert_eq!(toks.len(), 8);
+    let settle_body = serde_json::json!({
+        "acks": toks[4..].iter().map(|t| serde_json::json!({"leaseToken": t})).collect::<Vec<_>>()
+    })
+    .to_string();
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/qc17d/consumers/c1:settle",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("content-type", "application/json"),
+        ],
+        settle_body.as_bytes(),
+    )
+    .await;
+    assert_eq!(st, 200);
+
+    state.registry.invalidate("qc17d");
+    let desc = state.registry.get("qc17d").await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let engine = state.engine_for(&seg.shard_route).await.unwrap();
+    let live_rows = engine
+        .count_consumer_state_rows(seg.identity, "c1")
+        .await
+        .unwrap();
+    assert!(live_rows > 0, "live generation has rows");
+
+    // Dead residue: 500 generation-0 lease rows (a prior incarnation's
+    // wreckage).
+    engine
+        .seed_consumer_residue_rows(seg.identity, "c1", 0, 500)
+        .await
+        .unwrap();
+    let total = engine
+        .count_consumer_state_rows(seg.identity, "c1")
+        .await
+        .unwrap();
+    assert_eq!(total, live_rows + 500);
+
+    // Drain the residue with TINY steps (fence_below = 1: only
+    // generation 0 is dead). Every step: batch <= budget, progress > 0,
+    // and the live generation untouched throughout.
+    let budget = 64usize;
+    let mut steps = 0u32;
+    let mut remaining = total;
+    loop {
+        let out = engine
+            .submit_queue(
+                seg.identity,
+                crate::queue::QueueOp::ConfigDeleteStep {
+                    consumer: "c1".into(),
+                    fence_below: 1,
+                    max_rows: budget,
+                    max_bytes: 1 << 20,
+                },
+            )
+            .await
+            .expect("step");
+        steps += 1;
+        assert!(steps <= 64, "the bounded drain never converged");
+        let (complete, deleted) = match out {
+            crate::queue::QueueOut::DeleteStep {
+                complete,
+                deleted_rows,
+            } => (complete, deleted_rows),
+            other => panic!("expected DeleteStep, got {other:?}"),
+        };
+        assert!(
+            deleted as usize <= budget,
+            "a step staged {deleted} rows over its {budget} budget"
+        );
+        let now = engine
+            .count_consumer_state_rows(seg.identity, "c1")
+            .await
+            .unwrap();
+        assert_eq!(
+            now,
+            remaining - deleted as usize,
+            "durable rows and reported deletions disagree"
+        );
+        remaining = now;
+        if complete {
+            break;
+        }
+        assert!(deleted > 0, "an incomplete step made no progress");
+    }
+    assert!(
+        steps >= (500 / budget) as u32,
+        "500 rows cannot drain in {steps} steps of {budget}"
+    );
+    assert_eq!(
+        remaining, live_rows,
+        "the drain touched the live generation"
+    );
+
+    // The real DELETE (fence 2) then completes collection-wide, and
+    // recreation starts clean.
+    let ver = consumer_version(addr, "qc17d", "c1").await;
+    let (st, _, b) = preq(
+        addr,
+        "DELETE",
+        "/v1/streams/qc17d/consumers/c1",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-consumer-version", ver.as_str()),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 204, "{}", String::from_utf8_lossy(&b));
+    let rows = engine
+        .count_consumer_state_rows(seg.identity, "c1")
+        .await
+        .unwrap();
+    assert_eq!(rows, 0, "the completed deletion left rows");
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc17d/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "recreation after the drain");
+    engine_shutdown(&state).await;
 }

@@ -717,7 +717,11 @@ export class Stream<T = unknown> {
       JSON.stringify(config ?? {}),
     );
     if (!res.ok) throw await errorFrom(res);
-    return new Consumer<T>(this.ctx, this, name);
+    // The consumer's incarnation token ({stream epoch, generation},
+    // opaque). delete() sends it so a stale retry can never delete a
+    // RECREATED consumer of the same name.
+    const version = res.headers.get("prisma-consumer-version") ?? "";
+    return new Consumer<T>(this.ctx, this, name, version);
   }
 
   /** @internal */
@@ -1022,11 +1026,19 @@ export class Consumer<T> {
   private ctx: Ctx;
   private stream: Stream<T>;
   readonly name: string;
+  /**
+   * Opaque incarnation token ({stream epoch, consumer generation})
+   * from create/get. DELETE requires it: a deletion targets this exact
+   * incarnation, so a stale retry after a recreation gets an
+   * idempotent 204 instead of deleting the replacement.
+   */
+  readonly version: string;
 
-  constructor(ctx: Ctx, stream: Stream<T>, name: string) {
+  constructor(ctx: Ctx, stream: Stream<T>, name: string, version: string) {
     this.ctx = ctx;
     this.stream = stream;
     this.name = name;
+    this.version = version;
   }
 
   private base(): string {
@@ -1093,11 +1105,18 @@ export class Consumer<T> {
   }
 
   /** Delete this consumer collection-wide. The server runs a
-   * generation-fenced saga: 204 means every segment's delivery state
-   * is gone and recreating the name starts from scratch; a 5xx means
-   * the deletion is incomplete — retry this call to resume it. */
+   * generation-fenced saga against THIS incarnation (the request
+   * carries this object's version token): 204 means the targeted
+   * incarnation's delivery state is gone on every segment — including
+   * the case where someone else already deleted it, or deleted and
+   * recreated the name (the replacement is never touched). A 5xx means
+   * the deletion is incomplete — retry this call to resume it;
+   * progress is durable, so every retry advances. */
   async delete(): Promise<void> {
-    const res = await req(this.ctx, "DELETE", this.base(), this.stream._kh());
+    const res = await req(this.ctx, "DELETE", this.base(), {
+      ...this.stream._kh(),
+      "prisma-consumer-version": this.version,
+    });
     if (!res.ok && res.status !== 204) throw await errorFrom(res);
   }
 }

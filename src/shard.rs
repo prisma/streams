@@ -2014,8 +2014,7 @@ impl ShardEngine {
             /// group; absent key = untouched (read the DB). Discarded
             /// after the group either way: on success the rows are
             /// durable, on failure they never existed.
-            queue_configs:
-                std::collections::HashMap<String, crate::queue::ConsumerRecord>,
+            queue_configs: std::collections::HashMap<String, crate::queue::ConsumerRecord>,
             appended_bytes: u64,
             /// Frames written by this group, retained for the durable-tail
             /// ring (empty when the ring is off). Offsets are contiguous
@@ -2641,8 +2640,8 @@ impl ShardEngine {
                                         let Some(sep) = rest.iter().position(|b| *b == 0) else {
                                             continue;
                                         };
-                                        let consumer = String::from_utf8_lossy(&rest[..sep])
-                                            .into_owned();
+                                        let consumer =
+                                            String::from_utf8_lossy(&rest[..sep]).into_owned();
                                         let tail = &rest[sep + 1..];
                                         if tail.len() < 8 {
                                             continue;
@@ -2727,23 +2726,22 @@ impl ShardEngine {
                             let existing: Option<ConsumerRecord> =
                                 match local.queue_configs.get(&consumer) {
                                     Some(staged) => Some(staged.clone()),
-                                    None => match self
-                                        .db
-                                        .get(&config_key(&hash, &consumer)[..])
-                                        .await
-                                    {
-                                        Ok(v) => v.and_then(|v| {
-                                            serde_json::from_slice::<ConsumerRecord>(&v).ok()
-                                        }),
-                                        Err(e) => {
-                                            let _ = resp.send(Err(e.to_string()));
-                                            continue;
+                                    None => {
+                                        match self.db.get(&config_key(&hash, &consumer)[..]).await {
+                                            Ok(v) => v.and_then(|v| {
+                                                serde_json::from_slice::<ConsumerRecord>(&v).ok()
+                                            }),
+                                            Err(e) => {
+                                                let _ = resp.send(Err(e.to_string()));
+                                                continue;
+                                            }
                                         }
-                                    },
+                                    }
                                 };
                             let out = match existing {
-                                Some(rec) if rec.state == ConsumerLifecycle::Active
-                                    && rec.config == cfg =>
+                                Some(rec)
+                                    if rec.state == ConsumerLifecycle::Active
+                                        && rec.config == cfg =>
                                 {
                                     QueueOut::Config {
                                         rec: Some(rec),
@@ -2782,9 +2780,7 @@ impl ShardEngine {
                                     let enc = serde_json::to_vec(&rec).unwrap_or_default();
                                     wb.put(config_key(&hash, &consumer), enc);
                                     extra_writes = true;
-                                    local
-                                        .queue_configs
-                                        .insert(consumer.clone(), rec.clone());
+                                    local.queue_configs.insert(consumer.clone(), rec.clone());
                                     QueueOut::Config {
                                         rec: Some(rec),
                                         created: true,
@@ -2798,14 +2794,15 @@ impl ShardEngine {
                         QueueOp::ConfigGet { consumer } => {
                             let rec = match local.queue_configs.get(&consumer) {
                                 Some(staged) => Some(staged.clone()),
-                                None => match self.db.get(&config_key(&hash, &consumer)[..]).await
-                                {
-                                    Ok(v) => v.and_then(|v| serde_json::from_slice(&v).ok()),
-                                    Err(e) => {
-                                        let _ = resp.send(Err(e.to_string()));
-                                        continue;
+                                None => {
+                                    match self.db.get(&config_key(&hash, &consumer)[..]).await {
+                                        Ok(v) => v.and_then(|v| serde_json::from_slice(&v).ok()),
+                                        Err(e) => {
+                                            let _ = resp.send(Err(e.to_string()));
+                                            continue;
+                                        }
                                     }
-                                },
+                                }
                             };
                             queue_pending.push((
                                 resp,
@@ -2825,19 +2822,17 @@ impl ShardEngine {
                             let existing: Option<ConsumerRecord> =
                                 match local.queue_configs.get(&consumer) {
                                     Some(staged) => Some(staged.clone()),
-                                    None => match self
-                                        .db
-                                        .get(&config_key(&hash, &consumer)[..])
-                                        .await
-                                    {
-                                        Ok(v) => v.and_then(|v| {
-                                            serde_json::from_slice::<ConsumerRecord>(&v).ok()
-                                        }),
-                                        Err(e) => {
-                                            let _ = resp.send(Err(e.to_string()));
-                                            continue;
+                                    None => {
+                                        match self.db.get(&config_key(&hash, &consumer)[..]).await {
+                                            Ok(v) => v.and_then(|v| {
+                                                serde_json::from_slice::<ConsumerRecord>(&v).ok()
+                                            }),
+                                            Err(e) => {
+                                                let _ = resp.send(Err(e.to_string()));
+                                                continue;
+                                            }
                                         }
-                                    },
+                                    }
                                 };
                             let Some(rec) = existing else {
                                 let _ = resp.send(Err(
@@ -2889,12 +2884,15 @@ impl ShardEngine {
                             ));
                             continue;
                         }
-                        QueueOp::ConfigDelete {
+                        QueueOp::ConfigDeleteStep {
                             consumer,
                             fence_below,
+                            max_rows,
+                            max_bytes,
                         } => {
-                            // SEGMENT cleanup for the deletion saga
-                            // (round 16). Order matters:
+                            // One BOUNDED segment-cleanup step for the
+                            // deletion saga (rounds 16-17). Order
+                            // matters:
                             //
                             // FENCE FIRST — from this instant, any
                             // Receive/Settle for a generation below
@@ -2913,13 +2911,38 @@ impl ShardEngine {
                                 let e = f.entry((hash, consumer.clone())).or_insert(0);
                                 *e = (*e).max(fence_below);
                             }
-                            // PHASE 1 — enumerate, fallibly. Deletion
-                            // stages NOTHING until every durable row
-                            // source has been read to completion
-                            // (round 15 A). The prefixes cover EVERY
-                            // generation: cleanup buries all residue,
-                            // not just the fenced generation's.
+                            // PHASE 1 — enumerate, fallibly and
+                            // BOUNDEDLY. Deletion stages nothing until
+                            // the scans it ran succeeded (round 15 A),
+                            // and it stages ONLY rows whose decoded
+                            // generation is strictly below the fence:
+                            // the prefix spans every generation of the
+                            // name, but a name is not an identity — a
+                            // recreated generation's rows are another
+                            // incarnation's property (round-17 P0; the
+                            // old code deleted them). Budgets bound
+                            // both the staged batch (max_rows /
+                            // max_bytes) and the scan itself, so a
+                            // million-row residue can never build one
+                            // unbounded Vec or WriteBatch — the step
+                            // reports `more` and the saga steps again
+                            // from the durably reduced row set.
+                            let pfx_gen = |key: &[u8], pfx_len: usize| -> u64 {
+                                key.get(pfx_len..pfx_len + 8)
+                                    .and_then(|b| b.try_into().ok())
+                                    .map(u64::from_be_bytes)
+                                    // A row too short to carry a
+                                    // generation cannot belong to a
+                                    // LIVE one (live writers always
+                                    // encode it): treat as gen 0,
+                                    // i.e. dead residue.
+                                    .unwrap_or(0)
+                            };
+                            let scan_cap = max_rows.saturating_mul(4).max(1024);
                             let mut dead: Vec<Vec<u8>> = Vec::new();
+                            let mut dead_bytes = 0usize;
+                            let mut scanned = 0usize;
+                            let mut more = false;
                             let mut scan_err: Option<String> = None;
                             #[cfg(test)]
                             if self.take_config_scan_failure() {
@@ -2930,8 +2953,21 @@ impl ShardEngine {
                                     let pfx = state_prefix(&hash, tag, &consumer);
                                     match self.db.scan_prefix(&pfx[..], ..).await {
                                         Ok(mut iter) => loop {
+                                            if dead.len() >= max_rows
+                                                || dead_bytes >= max_bytes
+                                                || scanned >= scan_cap
+                                            {
+                                                more = true;
+                                                break 'scans;
+                                            }
                                             match iter.next().await {
-                                                Ok(Some(kv)) => dead.push(kv.key.to_vec()),
+                                                Ok(Some(kv)) => {
+                                                    scanned += 1;
+                                                    if pfx_gen(&kv.key, pfx.len()) < fence_below {
+                                                        dead_bytes += kv.key.len();
+                                                        dead.push(kv.key.to_vec());
+                                                    }
+                                                }
                                                 Ok(None) => break,
                                                 Err(e) => {
                                                     scan_err = Some(e.to_string());
@@ -2959,50 +2995,85 @@ impl ShardEngine {
                             }
                             // PHASE 2 — rows an EARLIER op in this
                             // same group staged into the unwritten
-                            // WriteBatch (round 15 B).
+                            // WriteBatch (round 15 B) — but ONLY when
+                            // the in-memory state belongs to a fenced
+                            // (dead) generation. A recreated
+                            // generation's live state is untouchable
+                            // (round-17 P0). Budget-truncation here is
+                            // safe: unstaged rows become durable with
+                            // this group and the NEXT step's scan
+                            // finds them — they are inert behind the
+                            // fence meanwhile.
                             if local.queue.is_none() {
                                 local.queue =
                                     Some(local.handle.state.lock().unwrap().queue.clone());
                             }
-                            if let Some(cs) =
-                                local.queue.as_ref().unwrap().consumers.get(&consumer)
-                            {
+                            let local_dead = matches!(
+                                local.queue.as_ref().unwrap().consumers.get(&consumer),
+                                Some(cs) if cs.cgen < fence_below
+                            );
+                            if local_dead {
+                                let cs = local
+                                    .queue
+                                    .as_ref()
+                                    .unwrap()
+                                    .consumers
+                                    .get(&consumer)
+                                    .expect("checked above");
                                 for off in cs.leases.keys() {
-                                    dead.push(lease_key(&hash, &consumer, cs.cgen, *off));
+                                    if dead.len() >= max_rows || dead_bytes >= max_bytes {
+                                        more = true;
+                                        break;
+                                    }
+                                    let k = lease_key(&hash, &consumer, cs.cgen, *off);
+                                    dead_bytes += k.len();
+                                    dead.push(k);
                                 }
                                 for off in cs.acked.iter() {
-                                    dead.push(ack_key(&hash, &consumer, cs.cgen, *off));
+                                    if dead.len() >= max_rows || dead_bytes >= max_bytes {
+                                        more = true;
+                                        break;
+                                    }
+                                    let k = ack_key(&hash, &consumer, cs.cgen, *off);
+                                    dead_bytes += k.len();
+                                    dead.push(k);
                                 }
-                                dead.push(cursor_key(&hash, &consumer, cs.cgen));
+                                if dead.len() < max_rows && dead_bytes < max_bytes {
+                                    let k = cursor_key(&hash, &consumer, cs.cgen);
+                                    dead_bytes += k.len();
+                                    dead.push(k);
+                                } else {
+                                    more = true;
+                                }
+                                // The dead generation leaves memory
+                                // NOW even if its rows were budget-
+                                // truncated: the fence makes it inert,
+                                // and its durable rows remain
+                                // discoverable by the next step.
+                                local.queue.as_mut().unwrap().consumers.remove(&consumer);
                             }
-                            // PHASE 3 — stage everything. (The parent
-                            // config RECORD is not this op's business:
-                            // the saga tombstones it via
+                            // PHASE 3 — stage the bounded batch. (The
+                            // parent config RECORD is not this op's
+                            // business: the saga tombstones it via
                             // ConfigLifecycle only after every
-                            // segment's cleanup has settled.) A
-                            // cleanup that found NOTHING stages
-                            // nothing — an empty WriteBatch is a
-                            // store error, and a repeat fan-out round
-                            // over already-clean segments is the
-                            // saga's normal stabilization path.
+                            // segment's cleanup reports complete.) A
+                            // step that found NOTHING stages nothing —
+                            // an empty WriteBatch is a store error,
+                            // and `complete=true` over an already-
+                            // clean segment is the saga's normal
+                            // stabilization path.
+                            let deleted_rows = dead.len() as u64;
                             if !dead.is_empty() {
                                 for k in dead {
                                     wb.delete(k);
                                 }
                                 extra_writes = true;
                             }
-                            local
-                                .queue
-                                .as_mut()
-                                .unwrap()
-                                .consumers
-                                .remove(&consumer);
                             queue_pending.push((
                                 resp,
-                                QueueOut::Config {
-                                    rec: None,
-                                    created: false,
-                                    conflict: false,
+                                QueueOut::DeleteStep {
+                                    complete: !more,
+                                    deleted_rows,
                                 },
                             ));
                             continue;
@@ -3025,9 +3096,7 @@ impl ShardEngine {
                     //      is staged.
                     if let Some((cname, op_gen)) = match &op {
                         QueueOp::Receive { consumer, cgen, .. }
-                        | QueueOp::Settle { consumer, cgen, .. } => {
-                            Some((consumer.clone(), *cgen))
-                        }
+                        | QueueOp::Settle { consumer, cgen, .. } => Some((consumer.clone(), *cgen)),
                         _ => None,
                     } {
                         let fenced = {
@@ -3054,8 +3123,7 @@ impl ShardEngine {
                         }
                     }
                     if local.queue.is_none() {
-                        local.queue =
-                            Some(local.handle.state.lock().unwrap().queue.clone());
+                        local.queue = Some(local.handle.state.lock().unwrap().queue.clone());
                     }
                     let out = {
                         let st_queue = local.queue.as_mut().unwrap();
@@ -3306,7 +3374,7 @@ impl ShardEngine {
                             QueueOp::ConfigPut { .. }
                             | QueueOp::ConfigGet { .. }
                             | QueueOp::ConfigLifecycle { .. }
-                            | QueueOp::ConfigDelete { .. } => {
+                            | QueueOp::ConfigDeleteStep { .. } => {
                                 unreachable!("config ops handled before the state lock")
                             }
                         }
@@ -3439,11 +3507,7 @@ impl ShardEngine {
                 // uses: a future change to the production failure path
                 // is exercised by every DST scenario, not silently
                 // diverged from.
-                Self::send_group_failure(
-                    "failpoint: group write failed",
-                    pending,
-                    queue_pending,
-                );
+                Self::send_group_failure("failpoint: group write failed", pending, queue_pending);
                 return;
             }
         }
@@ -3680,6 +3744,36 @@ impl ShardEngine {
     /// recreated consumer ignores dead generations by design — so
     /// burial is proven by counting rows, not by pulling.
     #[cfg(test)]
+    /// Test-only residue factory: durable lease rows under an OLD
+    /// consumer generation, modeling the multi-generation residue a
+    /// crashed/raced deletion leaves behind (round-17 stress gate).
+    #[cfg(test)]
+    pub async fn seed_consumer_residue_rows(
+        &self,
+        hash: [u8; 16],
+        consumer: &str,
+        cgen: u64,
+        n: u64,
+    ) -> Result<(), String> {
+        let mut wb = WriteBatch::new();
+        for off in 0..n {
+            wb.put(
+                crate::queue::lease_key(&hash, consumer, cgen, off),
+                crate::queue::encode_lease(&crate::queue::Lease {
+                    deadline_ms: 0,
+                    delivery_count: 1,
+                    lease_gen: 1,
+                    key_hash: [0u8; 16],
+                }),
+            );
+        }
+        self.db
+            .write_with_options(wb, &slatedb::config::WriteOptions::default())
+            .await
+            .map(|_| ())
+            .map_err(|e| e.to_string())
+    }
+
     pub async fn count_consumer_state_rows(
         &self,
         hash: [u8; 16],
@@ -3735,6 +3829,17 @@ impl ShardEngine {
     /// visible before it could ever become material.
     pub fn seal_fence_stats(&self) -> (usize, u64) {
         let f = self.seal_fences.lock().unwrap();
+        let max = f.values().copied().max().unwrap_or(0);
+        (f.len(), max)
+    }
+
+    /// Consumer-fence cardinality (round 17): one non-expiring entry
+    /// per (segment identity, deleted consumer name) — correct for
+    /// safety, so its growth is surfaced instead of hidden. Any future
+    /// cleanup must be proved by committer-queue progress, exactly like
+    /// the seal fences; never wall-clock expiry.
+    pub fn consumer_fence_stats(&self) -> (usize, u64) {
+        let f = self.consumer_fences.lock().unwrap();
         let max = f.values().copied().max().unwrap_or(0);
         (f.len(), max)
     }

@@ -735,8 +735,7 @@ pub(crate) mod failpoints {
     pub fn publish_parked_count() -> usize {
         PUBLISH_PARKED.load(Ordering::SeqCst)
     }
-    static PUBLISH_PARKED: std::sync::atomic::AtomicUsize =
-        std::sync::atomic::AtomicUsize::new(0);
+    static PUBLISH_PARKED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
 
     pub(super) async fn pause_before_publish() {
         let mut counted = false;
@@ -848,8 +847,8 @@ mod tests {
             segments: None,
             sealed: false,
             watch_definitions: Vec::new(),
-        watch_sig_key: None,
-        parent_ref_pending: false,
+            watch_sig_key: None,
+            parent_ref_pending: false,
             soft_deleted: false,
             forked_from: None,
             fork_children: Vec::new(),

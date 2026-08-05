@@ -326,13 +326,8 @@ async fn waloff(args: &Args) -> anyhow::Result<()> {
 
     // Non-durable write should be fast; durable write must wait for L0 flush.
     let t = Instant::now();
-    db.put_with_options(
-        b"fast",
-        b"v",
-        &Default::default(),
-        &WriteOptions::default(),
-    )
-    .await?;
+    db.put_with_options(b"fast", b"v", &Default::default(), &WriteOptions::default())
+        .await?;
     println!(
         "wal-off non-durable put: {:.1}ms",
         t.elapsed().as_secs_f64() * 1000.0

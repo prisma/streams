@@ -218,14 +218,20 @@ pub enum QueueOp {
         expect_gen: u64,
         deleting: bool,
     },
-    /// SEGMENT cleanup: install the generation fence (everything below
-    /// `fence_below` is dead on this segment) and transactionally
-    /// delete every state row of this consumer — durable rows across
-    /// ALL generations below the fence, plus anything staged earlier
-    /// in the same commit group.
-    ConfigDelete {
+    /// One BOUNDED segment-cleanup step for the deletion saga: install
+    /// the generation fence (everything below `fence_below` is dead on
+    /// this segment), then delete AT MOST `max_rows`/`max_bytes` worth
+    /// of this consumer's state rows whose generation is strictly below
+    /// the fence — durable rows plus anything a dead generation staged
+    /// earlier in the same commit group. Rows at or above the fence are
+    /// NEVER touched: a name is not an identity, and a stale deletion
+    /// must not erase a recreated generation. The reply says whether
+    /// more dead rows remain; the saga keeps stepping until none do.
+    ConfigDeleteStep {
         consumer: String,
         fence_below: u64,
+        max_rows: usize,
+        max_bytes: usize,
     },
     Settle {
         consumer: String,
@@ -267,4 +273,8 @@ pub enum QueueOut {
         stale: usize,
         poisoned: Vec<(u64, u32, u32, [u8; 16])>,
     },
+    /// Answer to `ConfigDeleteStep`: `complete` means no dead-generation
+    /// rows remain on this segment (the fence is installed either way);
+    /// `deleted_rows` is what THIS step staged for deletion.
+    DeleteStep { complete: bool, deleted_rows: u64 },
 }

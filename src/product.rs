@@ -415,7 +415,13 @@ pub(crate) enum ProductRoute {
 /// count — a colon is legal inside a collection name.
 pub(crate) fn strip_verb(path: &str) -> (&str, Option<&str>) {
     const VERBS: [&str; 7] = [
-        "batch", "long-poll", "sse", "pull", "settle", "seal", "scan",
+        "batch",
+        "long-poll",
+        "sse",
+        "pull",
+        "settle",
+        "seal",
+        "scan",
     ];
     match path.rsplit_once(':') {
         Some((p, v)) if !v.contains('/') && VERBS.contains(&v) => (p, Some(v)),
@@ -456,11 +462,7 @@ pub(crate) fn classify_route(path: &str) -> Result<ProductRoute, Response> {
         // it is exact: the watch name is one segment, the key is one
         // segment, and nothing may follow.
         if let Some((watch, key)) = wrest.split_once("/keys/") {
-            if !watch.is_empty()
-                && !watch.contains('/')
-                && !key.is_empty()
-                && !key.contains('/')
-            {
+            if !watch.is_empty() && !watch.contains('/') && !key.is_empty() && !key.contains('/') {
                 return Ok(ProductRoute::WatchWait {
                     name,
                     watch: watch.to_string(),
@@ -548,12 +550,12 @@ pub(crate) fn with_product_cors(mut resp: Response) -> Response {
         HeaderValue::from_static(
             "content-type, retry-after, prisma-next-cursor, prisma-up-to-date, \
              prisma-sealed, prisma-next-scan-cursor, prisma-scan-complete, \
-             prisma-routing-key, prisma-durable-cursor, prisma-pending-from",
+             prisma-routing-key, prisma-durable-cursor, prisma-pending-from, \
+             prisma-consumer-version",
         ),
     );
     resp
 }
-
 
 /// Everything under `/v1/streams/{*path}`: subresource suffixes are
 /// parsed here because stream names are hierarchical (spec Stage 8:
@@ -737,11 +739,11 @@ fn split_subresource(path: &str) -> Option<(&str, &str)> {
     let n = seg.len();
     // (segments consumed from the end, the shape's leading keyword)
     let shapes: [(usize, &str); 5] = [
-        (4, "watches"), // watches/{watch}/keys/{key}
-        (2, "watches"), // watches/{watch}
+        (4, "watches"),   // watches/{watch}/keys/{key}
+        (2, "watches"),   // watches/{watch}
         (2, "consumers"), // consumers/{consumer}
-        (1, "watches"), // watches
-        (1, "records"), // records
+        (1, "watches"),   // watches
+        (1, "records"),   // records
     ];
     for (take, head) in shapes {
         if n <= take || seg[n - take] != head {
@@ -1194,7 +1196,13 @@ async fn product_seal(
             // here, so nothing can land between the final record and the
             // segment closes, and the operation id makes the final
             // append itself idempotent under retry.
-            let hv = |h: &str| headers.get(h).and_then(|v| v.to_str().ok()).unwrap_or("").to_string();
+            let hv = |h: &str| {
+                headers
+                    .get(h)
+                    .and_then(|v| v.to_str().ok())
+                    .unwrap_or("")
+                    .to_string()
+            };
             let (pid, pep, pseq) = (hv("producer-id"), hv("producer-epoch"), hv("producer-seq"));
             let op_id = seal_op_id_full(
                 &fin,
@@ -1208,8 +1216,8 @@ async fn product_seal(
             };
             #[cfg(test)]
             crate::http::fork_failpoints::pause_product_seal_before_claim(&name).await;
-            let ticket =
-                match enter_sealing(&state, &name, &op_id, intent, &validated_epoch).await {
+            let ticket = match enter_sealing(&state, &name, &op_id, intent, &validated_epoch).await
+            {
                 Ok(t) => t,
                 // Empty message = this exact seal already completed.
                 Err(m) if m.is_empty() => {
@@ -1269,14 +1277,9 @@ async fn product_seal(
                 let definitive = crate::http::final_code_disposition(st, code.as_deref())
                     == crate::http::FinalDisposition::DefinitivelyRejected;
                 if definitive {
-                    if let Err(e) = abandon_seal_intent(
-                        &state,
-                        &name,
-                        &op_id,
-                        &ticket.epoch,
-                        ticket.generation,
-                    )
-                    .await
+                    if let Err(e) =
+                        abandon_seal_intent(&state, &name, &op_id, &ticket.epoch, ticket.generation)
+                            .await
                     {
                         tracing::error!(stream = %name, "abandoning a refused seal intent: {e}");
                     }
@@ -1313,15 +1316,20 @@ async fn product_seal(
             // closes, so the transition can be finished by anyone from
             // here on and by nobody else before.
             if let Err(e) =
-                mark_final_committed(&state, &name, &op_id, &ticket.epoch, ticket.generation)
-                    .await
+                mark_final_committed(&state, &name, &op_id, &ticket.epoch, ticket.generation).await
             {
                 // The record is durable but the transition could not be
                 // recorded as owning it — a takeover or a recreation
                 // moved the state. NEVER proceed to run_seal from here:
                 // sealing under a claim this operation no longer holds
                 // is exactly the ABA the fence exists to stop.
-                return perr(StatusCode::SERVICE_UNAVAILABLE, "seal_incomplete", &e, None, true);
+                return perr(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "seal_incomplete",
+                    &e,
+                    None,
+                    true,
+                );
             }
             return match run_seal(
                 &state,
@@ -1365,10 +1373,14 @@ pub(crate) enum EnterSeal {
     /// same-operation re-entry RE-allocates it (renewal): the claim is
     /// a lease, and an actively retrying owner must always hold a
     /// generation no fence can be above.
-    Installed { generation: u64 },
+    Installed {
+        generation: u64,
+    },
     /// This exact operation already owns the IN-FLIGHT transition. The
     /// re-entry renewed the claim (fresh timestamp, fresh generation).
-    AlreadyOurs { generation: u64 },
+    AlreadyOurs {
+        generation: u64,
+    },
     /// This exact operation already finished: answer idempotent success.
     AlreadyCompleted,
     /// Somebody else's seal is already terminal.
@@ -1770,7 +1782,6 @@ pub(crate) fn seal_op_id_full(
     crate::crypto::hex(&h.finalize()[..16])
 }
 
-
 /// Identity of a raw close that carries content. The raw surface has
 /// no typed final record, so the identity is the create-request hash
 /// plus EVERY coordination input the committer can rule on: producer
@@ -1808,16 +1819,8 @@ async fn take_error_code(resp: Response) -> (Response, Option<String>) {
     };
     let code = serde_json::from_slice::<serde_json::Value>(&bytes)
         .ok()
-        .and_then(|v| {
-            v.get("error")?
-                .get("code")?
-                .as_str()
-                .map(|s| s.to_string())
-        });
-    (
-        Response::from_parts(parts, Body::from(bytes)),
-        code,
-    )
+        .and_then(|v| v.get("error")?.get("code")?.as_str().map(|s| s.to_string()));
+    (Response::from_parts(parts, Body::from(bytes)), code)
 }
 
 /// Publish the Sealing intent for a RAW close, before the physical
@@ -1845,13 +1848,10 @@ pub(crate) async fn begin_sealing_for_close(
         EnterSeal::AlreadySealed => Ok(None), // already terminal; the close is a no-op
         EnterSeal::Missing => Ok(None),
         EnterSeal::Conflicting(m) => Err(m),
-        EnterSeal::PendingTopology => {
-            Err("a split or merge is in flight; retry the close".into())
-        }
+        EnterSeal::PendingTopology => Err("a split or merge is in flight; retry the close".into()),
         EnterSeal::AbandonedClaim { .. } => unreachable!("claim_seal resolves abandoned claims"),
     }
 }
-
 
 /// Renew an owed-final claim for its OWN exact retry: fresh lease,
 /// fresh generation. Returns the new generation, or None when the
@@ -1951,16 +1951,16 @@ pub(crate) async fn mark_final_committed(
         .cas_update_incarnation(name, expect_epoch, |d| match &mut d.sealing {
             Some(sl) if sl.operation_id == op_id && sl.claim_generation == expect_gen => {
                 match &mut sl.intent {
-                crate::registry::SealIntent::Final {
-                    final_committed, ..
-                } if !*final_committed => {
-                    *final_committed = true;
-                    true
-                }
-                _ => {
-                    already = true; // ours, already marked
-                    false
-                }
+                    crate::registry::SealIntent::Final {
+                        final_committed, ..
+                    } if !*final_committed => {
+                        *final_committed = true;
+                        true
+                    }
+                    _ => {
+                        already = true; // ours, already marked
+                        false
+                    }
                 }
             }
             _ => false,
@@ -2143,7 +2143,12 @@ pub(crate) async fn run_seal(
             }
         }
     }
-    if desc.sealing.is_none() || desc.sealing.as_ref().is_some_and(|s| s.operation_id != op_id) {
+    if desc.sealing.is_none()
+        || desc
+            .sealing
+            .as_ref()
+            .is_some_and(|s| s.operation_id != op_id)
+    {
         match claim_seal(
             state,
             name,
@@ -3390,18 +3395,18 @@ async fn product_scan(
             crate::shard::Deliver::Durable,
         )
         .await
-            {
-                Ok(o) => o,
-                Err(m) => {
-                    return perr(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal",
-                        &m,
-                        None,
-                        true,
-                    );
-                }
-            };
+        {
+            Ok(o) => o,
+            Err(m) => {
+                return perr(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    &m,
+                    None,
+                    true,
+                );
+            }
+        };
         let mut progressed = false;
         for r in &out.recs {
             if r.off >= snap_end {
@@ -3584,6 +3589,35 @@ fn consumer_cfg_json(cname: &str, cfg: &crate::queue::ConsumerConfig) -> String 
     .to_string()
 }
 
+/// Opaque consumer version: `{stream_epoch, consumer_generation}`,
+/// base64url-encoded. Returned from consumer PUT/GET as
+/// `Prisma-Consumer-Version` and REQUIRED on DELETE — a deletion names
+/// an incarnation, never a name (round-17 P0: a stale retry by name
+/// deleted the replacement consumer; an unpinned saga could rebind to
+/// a recreated stream). Not signed: possessing delete authorization is
+/// the capability, the token only pins WHICH incarnation it targets.
+pub(crate) fn consumer_version_token(epoch: &[u8; 16], generation: u64) -> String {
+    use base64::Engine;
+    let mut v = [0u8; 24];
+    v[..16].copy_from_slice(epoch);
+    v[16..].copy_from_slice(&generation.to_be_bytes());
+    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v)
+}
+
+fn parse_consumer_version(tok: &str) -> Option<([u8; 16], u64)> {
+    use base64::Engine;
+    let v = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(tok.as_bytes())
+        .ok()?;
+    if v.len() != 24 {
+        return None;
+    }
+    let mut epoch = [0u8; 16];
+    epoch.copy_from_slice(&v[..16]);
+    let generation = u64::from_be_bytes(v[16..].try_into().ok()?);
+    Some((epoch, generation))
+}
+
 async fn product_consumer_put(
     state: Arc<AppState>,
     name: String,
@@ -3591,7 +3625,7 @@ async fn product_consumer_put(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    let (desc, _k, _e) = match consumer_ctx(&state, &name, &headers).await {
+    let (desc, _k, epoch) = match consumer_ctx(&state, &name, &headers).await {
         Ok(v) => v,
         Err(r) => return r,
     };
@@ -3764,6 +3798,10 @@ async fn product_consumer_put(
             })
             .header(header::CONTENT_TYPE, "application/json")
             .header(header::CACHE_CONTROL, "no-store")
+            .header(
+                "Prisma-Consumer-Version",
+                consumer_version_token(&epoch, c.generation),
+            )
             .body(Body::from(consumer_cfg_json(&cname, &c.config)))
             .unwrap(),
         _ => perr(
@@ -3782,7 +3820,7 @@ async fn product_consumer_get(
     cname: String,
     headers: HeaderMap,
 ) -> Response {
-    let (desc, _k, _e) = match consumer_ctx(&state, &name, &headers).await {
+    let (desc, _k, epoch) = match consumer_ctx(&state, &name, &headers).await {
         Ok(v) => v,
         Err(r) => return r,
     };
@@ -3802,6 +3840,10 @@ async fn product_consumer_get(
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, "application/json")
                 .header(header::CACHE_CONTROL, "no-store")
+                .header(
+                    "Prisma-Consumer-Version",
+                    consumer_version_token(&epoch, c.generation),
+                )
                 .body(Body::from(consumer_cfg_json(&cname, &c.config)))
                 .unwrap()
         }
@@ -3816,33 +3858,86 @@ async fn product_consumer_get(
     }
 }
 
+/// Per-step cleanup budgets (rows staged per committer submit) and the
+/// per-REQUEST step budget. A million-row residue is deleted across
+/// many bounded, durably-committed steps — each retryable request makes
+/// monotone progress against the reduced durable row set instead of
+/// rebuilding one unbounded batch (round-17 P0).
+const CONSUMER_DELETE_STEP_ROWS: usize = 4096;
+const CONSUMER_DELETE_STEP_BYTES: usize = 1 << 20;
+const CONSUMER_DELETE_REQUEST_STEPS: u32 = 512;
+/// Segments are physically independent (own engines, own rows): sweep
+/// them concurrently, boundedly.
+const CONSUMER_DELETE_SEGMENT_CONCURRENCY: usize = 8;
+
 async fn product_consumer_delete(
     state: Arc<AppState>,
     name: String,
     cname: String,
     headers: HeaderMap,
 ) -> Response {
-    let (desc, _k, _e) = match consumer_ctx(&state, &name, &headers).await {
+    let (desc, _k, epoch) = match consumer_ctx(&state, &name, &headers).await {
         Ok(v) => v,
         Err(r) => return r,
     };
-    // Collection-wide deletion as a GENERATION-FENCED SAGA (round 16;
-    // replaces the preview 501). Invariant: 204 means the deletion is
-    // collection-wide — every segment's rows are gone and no write of
-    // this generation can land afterwards. Any failure propagates; the
-    // retry (this same endpoint) resumes from the Deleting state.
+    // Collection-wide deletion as a GENERATION-FENCED SAGA (rounds
+    // 16-17). Invariant: 204 means the TARGETED INCARNATION's deletion
+    // is collection-wide — every segment's dead-generation rows are
+    // gone and no write of that generation can land afterwards. Any
+    // failure propagates; the retry (same endpoint, same version)
+    // resumes from the Deleting state and the durably reduced row set.
     //
+    //   0. The request names an INCARNATION, not a name: the required
+    //      Prisma-Consumer-Version pins {stream epoch, consumer
+    //      generation}. A stale retry whose target no longer exists
+    //      gets an idempotent 204 and touches NOTHING (round-17 ABA).
     //   1. Parent record: Active -> Deleting, fenced to the exact
     //      generation. New pull/settle refuse from this instant.
     //   2. Every segment (current AND predecessor — the pull lineage):
-    //      install the generation fence, then transactionally delete
-    //      every state row. Any engine/submit failure -> 503, no 204.
-    //   3. Re-read the segment map and repeat until it is stable
-    //      across a fan-out round (a split racing the saga gets its
-    //      new children swept too).
+    //      install the generation fence, then delete the dead
+    //      generations' rows in bounded steps, segments swept
+    //      concurrently. Any engine/submit failure -> 503, no 204.
+    //   3. Re-read the segment map — REFUSING a changed stream epoch —
+    //      and repeat until stable across a fan-out round (a split
+    //      racing the saga gets its new children swept too).
     //   4. Parent record: Deleting -> Deleted (a TOMBSTONE, kept so
     //      recreation allocates generation+1 and dead-generation
     //      residue stays inert forever).
+    let Some(vtok) = headers
+        .get("prisma-consumer-version")
+        .and_then(|v| v.to_str().ok())
+    else {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "missing_consumer_version",
+            "DELETE requires Prisma-Consumer-Version (returned by consumer create/get); \
+             a deletion targets an incarnation, not a name",
+            None,
+            false,
+        );
+    };
+    let Some((expect_epoch, expect_gen)) = parse_consumer_version(vtok) else {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "invalid_consumer_version",
+            "Prisma-Consumer-Version is not a version token from this server",
+            None,
+            false,
+        );
+    };
+    let no_touch_204 = || {
+        Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .header(header::CACHE_CONTROL, "no-store")
+            .body(Body::empty())
+            .unwrap()
+    };
+    if expect_epoch != epoch {
+        // The stream incarnation the version was minted under no longer
+        // exists — the old target died with it. Idempotent success,
+        // and the CURRENT stream is not touched.
+        return no_touch_204();
+    }
     let rec = match consumer_config_op(
         &state,
         &desc,
@@ -3857,21 +3952,37 @@ async fn product_consumer_delete(
         Err(r) => return r,
     };
     let rec = match rec {
-        None
-        | Some(crate::queue::ConsumerRecord {
-            state: crate::queue::ConsumerLifecycle::Deleted,
-            ..
-        }) => {
-            // Never existed, or a prior deletion fully settled:
-            // idempotent success.
-            return Response::builder()
-                .status(StatusCode::NO_CONTENT)
-                .header(header::CACHE_CONTROL, "no-store")
-                .body(Body::empty())
-                .unwrap();
+        None => {
+            // The version claims a generation this server never made
+            // (or whose tombstone is gone — impossible pre-GC). With
+            // no record at all there is nothing to protect and nothing
+            // to do.
+            return no_touch_204();
         }
         Some(r) => r,
     };
+    if rec.generation > expect_gen {
+        // The named generation is already dead and buried (the record
+        // has moved on — tombstone or a recreated consumer). The old
+        // target is gone; the CURRENT generation is another
+        // incarnation's property. Idempotent success, no mutation.
+        return no_touch_204();
+    }
+    if rec.generation < expect_gen {
+        // A version newer than the record is impossible from an honest
+        // client: refuse without mutating anything.
+        return perr(
+            StatusCode::CONFLICT,
+            "consumer_version_conflict",
+            "the presented consumer version is newer than the server's record",
+            None,
+            false,
+        );
+    }
+    if rec.state == crate::queue::ConsumerLifecycle::Deleted {
+        // Exactly the targeted generation, already fully deleted.
+        return no_touch_204();
+    }
     let cgen = rec.generation;
     if rec.state == crate::queue::ConsumerLifecycle::Active {
         if let Err(r) = consumer_config_op(
@@ -3889,53 +4000,97 @@ async fn product_consumer_delete(
         }
     }
     // Fan out until the segment set is stable across a full round.
+    // Segments are swept CONCURRENTLY (bounded) and each segment is
+    // stepped to completion within this request's step budget.
+    let steps_left = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(
+        CONSUMER_DELETE_REQUEST_STEPS as i64,
+    ));
     let mut prev_ids: Option<Vec<u32>> = None;
     let mut cur_desc = desc.clone();
     for _round in 0..5 {
         let segs = consumer_segments(&cur_desc);
-        for (seg_id, identity, route, _sealed) in segs.iter().copied() {
-            let engine = match state.engine_for(&route).await {
-                Ok(e) => e,
-                Err(_) => {
-                    return perr(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "segment_unavailable",
-                        &format!(
-                            "segment {seg_id}'s owner is unavailable; the deletion is \
-                             incomplete — retry"
-                        ),
-                        None,
-                        true,
-                    );
+        let sweeps = segs.iter().copied().map(|(seg_id, identity, route, _)| {
+            let state = state.clone();
+            let cname = cname.clone();
+            let steps_left = steps_left.clone();
+            async move {
+                let engine = match state.engine_for(&route).await {
+                    Ok(e) => e,
+                    Err(_) => {
+                        return Err((
+                            "segment_unavailable",
+                            format!(
+                                "segment {seg_id}'s owner is unavailable; the deletion \
+                                 is incomplete — retry"
+                            ),
+                        ));
+                    }
+                };
+                loop {
+                    if steps_left.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) <= 0 {
+                        return Err((
+                            "segment_cleanup_incomplete",
+                            format!(
+                                "segment {seg_id} still has rows after this request's \
+                                 cleanup budget; progress is durable — retry to resume"
+                            ),
+                        ));
+                    }
+                    match engine
+                        .submit_queue(
+                            identity,
+                            crate::queue::QueueOp::ConfigDeleteStep {
+                                consumer: cname.clone(),
+                                fence_below: cgen + 1,
+                                max_rows: CONSUMER_DELETE_STEP_ROWS,
+                                max_bytes: CONSUMER_DELETE_STEP_BYTES,
+                            },
+                        )
+                        .await
+                    {
+                        Ok(crate::queue::QueueOut::DeleteStep { complete: true, .. }) => {
+                            return Ok(());
+                        }
+                        Ok(crate::queue::QueueOut::DeleteStep {
+                            complete: false, ..
+                        }) => continue,
+                        Ok(_) => {
+                            return Err((
+                                "segment_cleanup_failed",
+                                format!(
+                                    "segment {seg_id} cleanup answered an unexpected \
+                                     outcome; the deletion is incomplete — retry"
+                                ),
+                            ));
+                        }
+                        Err(m) => {
+                            return Err((
+                                "segment_cleanup_failed",
+                                format!(
+                                    "segment {seg_id} cleanup failed ({m}); the \
+                                     deletion is incomplete — retry"
+                                ),
+                            ));
+                        }
+                    }
                 }
-            };
-            if let Err(m) = engine
-                .submit_queue(
-                    identity,
-                    crate::queue::QueueOp::ConfigDelete {
-                        consumer: cname.clone(),
-                        fence_below: cgen + 1,
-                    },
-                )
-                .await
-            {
-                return perr(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "segment_cleanup_failed",
-                    &format!(
-                        "segment {seg_id} cleanup failed ({m}); the deletion is \
-                         incomplete — retry"
-                    ),
-                    None,
-                    true,
-                );
+            }
+        });
+        use futures_util::StreamExt as _;
+        let results: Vec<Result<(), (&'static str, String)>> = futures_util::stream::iter(sweeps)
+            .buffer_unordered(CONSUMER_DELETE_SEGMENT_CONCURRENCY)
+            .collect::<Vec<_>>()
+            .await;
+        for r in results {
+            if let Err((code, msg)) = r {
+                return perr(StatusCode::SERVICE_UNAVAILABLE, code, &msg, None, true);
             }
         }
         let ids: Vec<u32> = segs.iter().map(|(id, ..)| *id).collect();
         if prev_ids.as_deref() == Some(&ids[..]) {
             // Two consecutive rounds saw the same topology: every
             // segment that can hold this consumer's rows was swept
-            // AFTER the fence went up everywhere.
+            // clean AFTER the fence went up everywhere.
             if let Err(r) = consumer_config_op(
                 &state,
                 &desc,
@@ -3956,11 +4111,27 @@ async fn product_consumer_delete(
                 .unwrap();
         }
         prev_ids = Some(ids);
+        #[cfg(test)]
+        crate::http::fork_failpoints::pause_consumer_saga_before_refresh(&name).await;
         state.registry.invalidate(&name);
         cur_desc = match state.registry.get(&name).await {
             Ok(Some(d)) => d,
             _ => cur_desc,
         };
+        // EPOCH PIN (round-17 P0): the refresh is by NAME, and the
+        // name may now belong to a recreated stream. This saga's
+        // authority extends only to the incarnation it authenticated
+        // against — a changed epoch means the old stream (and with it
+        // the old consumer) is gone. Idempotent success, replacement
+        // untouched.
+        let fresh_epoch = crate::http::check_key(product_key(&headers).as_deref(), &cur_desc);
+        let same_epoch = match &fresh_epoch {
+            crate::http::KeyCheck::Ok(_, e) => *e == epoch,
+            _ => false,
+        };
+        if !same_epoch {
+            return no_touch_204();
+        }
     }
     perr(
         StatusCode::SERVICE_UNAVAILABLE,
@@ -4233,7 +4404,10 @@ async fn product_consumer_pull(
                 Err(r) => return translate_read_error(r),
             };
             if let Some(end) = sealed_end {
-                let cursor = engine.queue_cursor(identity, &cname, cgen).await.unwrap_or(0);
+                let cursor = engine
+                    .queue_cursor(identity, &cname, cgen)
+                    .await
+                    .unwrap_or(0);
                 if cursor >= end {
                     continue; // drained predecessor
                 }
@@ -4251,7 +4425,10 @@ async fn product_consumer_pull(
                 }
             };
             state.keys.put(identity, skey.clone(), epoch);
-            let cursor = engine.queue_cursor(identity, &cname, cgen).await.unwrap_or(0);
+            let cursor = engine
+                .queue_cursor(identity, &cname, cgen)
+                .await
+                .unwrap_or(0);
             let out = match crate::http::read_merged(
                 &skey,
                 &epoch,

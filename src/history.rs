@@ -977,7 +977,8 @@ impl Absorber {
         if out.advanced.is_empty() {
             return Ok(out);
         }
-        part.write_with_options(wb, &WriteOptions::default()).await?;
+        part.write_with_options(wb, &WriteOptions::default())
+            .await?;
         part.flush().await?; // wal off => memtable -> L0, manifest published
         // The pages are durable: warm the slice cache with the runs we
         // just wrote. Readers clip to their own durable boundary, so an

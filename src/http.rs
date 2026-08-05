@@ -517,6 +517,15 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
         .values()
         .map(|e| e.seal_fence_stats())
         .fold((0usize, 0u64), |a, v| (a.0 + v.0, a.1.max(v.1)));
+    // Consumer-fence rollup (round 17): same unbounded-by-design map,
+    // same visibility rule.
+    let (cfence_entries, cfence_max_gen) = state
+        .shards
+        .read()
+        .unwrap()
+        .values()
+        .map(|e| e.consumer_fence_stats())
+        .fold((0usize, 0u64), |a, v| (a.0 + v.0, a.1.max(v.1)));
     axum::Json(serde_json::json!({
         "inflight_now": now,
         "inflight_peak": peak,
@@ -534,6 +543,8 @@ async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
             "metrics": state.metrics.len(),
             "seal_fence_entries": fence_entries,
             "seal_fence_max_generation": fence_max_gen,
+            "consumer_fence_entries": cfence_entries,
+            "consumer_fence_max_generation": cfence_max_gen,
         },
         "trim": {
             "debt_streams": trim_debt,
@@ -1057,9 +1068,7 @@ async fn product_entry_axum(
     // Authorize BEFORE buffering. Reading up to MAX_BODY_BYTES first
     // let an unauthenticated caller make the server allocate 32 MiB per
     // request; the gate needs only the path, method, query and headers.
-    if let Some(r) =
-        crate::product::product_auth_gate(&state, &name, &method, &query, &headers)
-    {
+    if let Some(r) = crate::product::product_auth_gate(&state, &name, &method, &query, &headers) {
         return crate::product::with_product_cors(r);
     }
     let body = match axum::body::to_bytes(req.into_body(), MAX_BODY_BYTES).await {
@@ -1946,8 +1955,7 @@ async fn create_stream(
             Ok(Some(d))
                 if !d.deleted
                     && resuming_child.as_ref().is_some_and(|f| {
-                        f.source_epoch == d.stream_epoch
-                            && d.fork_children.contains(&f.fork_id)
+                        f.source_epoch == d.stream_epoch && d.fork_children.contains(&f.fork_id)
                     }) =>
             {
                 d
@@ -2226,18 +2234,12 @@ async fn create_stream(
                 match check_key(raw_key(&headers, &state), d) {
                     KeyCheck::Ok(..) => {}
                     _ => {
-                        return err_resp(
-                            StatusCode::FORBIDDEN,
-                            "wrong_key",
-                            "key mismatch",
-                        );
+                        return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch");
                     }
                 }
                 // Belt and braces: the initialization identity itself
                 // records which key it was claimed for.
-                if !init.key_fingerprint.is_empty()
-                    && init.key_fingerprint != d.key_fingerprint
-                {
+                if !init.key_fingerprint.is_empty() && init.key_fingerprint != d.key_fingerprint {
                     return err_resp(
                         StatusCode::FORBIDDEN,
                         "wrong_key",
@@ -2433,19 +2435,18 @@ async fn create_stream(
                 let mut already = false;
                 let stamped = match state
                     .registry
-                    .cas_update_incarnation(&name, &desc.stream_epoch, |d| match d
-                        .forked_from
-                        .as_mut()
-                    {
-                        Some(f) if f.fork_id.is_empty() => {
-                            f.fork_id = fid.clone();
-                            true
+                    .cas_update_incarnation(&name, &desc.stream_epoch, |d| {
+                        match d.forked_from.as_mut() {
+                            Some(f) if f.fork_id.is_empty() => {
+                                f.fork_id = fid.clone();
+                                true
+                            }
+                            Some(f) => {
+                                already = f.fork_id == fid;
+                                false
+                            }
+                            None => false,
                         }
-                        Some(f) => {
-                            already = f.fork_id == fid;
-                            false
-                        }
-                        None => false,
                     })
                     .await
                 {
@@ -2521,7 +2522,8 @@ async fn create_stream(
                         || d.stream_epoch != fc.source_desc.stream_epoch
                         || d.sealing.is_some()
                         || d.segments.as_ref().is_some_and(|m| {
-                            m.pending.is_some() || m.segments.iter().filter(|s| s.is_live()).count() > 1
+                            m.pending.is_some()
+                                || m.segments.iter().filter(|s| s.is_live()).count() > 1
                         })
                     {
                         return false;
@@ -2564,13 +2566,9 @@ async fn create_stream(
             match state.registry.get(&name).await {
                 Ok(Some(c)) if desc_alive(&c) && c.stream_epoch == desc.stream_epoch => {}
                 _ => {
-                    if let Err(m) = release_fork_ref(
-                        &state,
-                        &fc.source,
-                        &fork_id,
-                        &fc.source_desc.stream_epoch,
-                    )
-                    .await
+                    if let Err(m) =
+                        release_fork_ref(&state, &fc.source, &fork_id, &fc.source_desc.stream_epoch)
+                            .await
                     {
                         tracing::error!(stream = %name, "releasing a dead child's fresh reference: {m}");
                     }
@@ -2746,9 +2744,9 @@ async fn create_stream(
         // stayed pinned by a child that was never published.
         if !published {
             let now = state.registry.get(&name).await.ok().flatten();
-            let live_and_ready = now
-                .as_ref()
-                .is_some_and(|d| desc_alive(d) && d.init.is_none() && d.stream_epoch == desc.stream_epoch);
+            let live_and_ready = now.as_ref().is_some_and(|d| {
+                desc_alive(d) && d.init.is_none() && d.stream_epoch == desc.stream_epoch
+            });
             if !live_and_ready {
                 // Compensate: give back the source reference this
                 // initialization installed, so the parent is not held by
@@ -2836,7 +2834,8 @@ pub(crate) mod fork_failpoints {
     // the window it was supposed to be parked in. Arming and releasing
     // are per name, so a parallel suite composes.
     fn armed(which: usize) -> &'static Mutex<Option<HashSet<String>>> {
-        static M: [Mutex<Option<HashSet<String>>>; 16] = [
+        static M: [Mutex<Option<HashSet<String>>>; 17] = [
+            Mutex::new(None),
             Mutex::new(None),
             Mutex::new(None),
             Mutex::new(None),
@@ -2872,6 +2871,7 @@ pub(crate) mod fork_failpoints {
     const FORK_REF_POST: usize = 13;
     const RELEASE_EPOCH: usize = 14;
     const PULL_RECV: usize = 15;
+    const CONSUMER_REFRESH: usize = 16;
 
     // Arming and releasing are BOTH per name, and there is deliberately
     // no "release everything": that is what let one test disarm
@@ -3238,6 +3238,28 @@ pub(crate) mod fork_failpoints {
         park(PULL_RECV, name, &PARKED_PULL_RECV).await;
     }
 
+    /// Park a consumer-deletion saga just before it refreshes the
+    /// stream descriptor for a fan-out round, so a stream delete +
+    /// recreate can be made to win that window deterministically
+    /// (round-17 ABA probe: the resumed saga must observe the epoch
+    /// change and terminate without touching the replacement).
+    pub fn park_consumer_saga_before_refresh(name: &str) {
+        set(CONSUMER_REFRESH, name);
+    }
+
+    pub fn release_consumer_saga_before_refresh(name: &str) {
+        release(CONSUMER_REFRESH, name);
+    }
+
+    pub fn parked_consumer_saga_count() -> usize {
+        PARKED_CONSUMER_REFRESH.load(Ordering::SeqCst)
+    }
+    static PARKED_CONSUMER_REFRESH: AtomicUsize = AtomicUsize::new(0);
+
+    pub(crate) async fn pause_consumer_saga_before_refresh(name: &str) {
+        park(CONSUMER_REFRESH, name, &PARKED_CONSUMER_REFRESH).await;
+    }
+
     /// Park a delete just before it decides soft-versus-hard, so a
     /// concurrent fork installation can be made to win DETERMINISTICALLY
     /// rather than by racing timers.
@@ -3473,7 +3495,11 @@ fn delete_lifecycle(
             let mut next = d.forked_from.clone();
             for _ in 0..64 {
                 let Some(f) = next else { break };
-                let Some(anc) = state.registry.get(&f.source).await.map_err(|e| e.to_string())?
+                let Some(anc) = state
+                    .registry
+                    .get(&f.source)
+                    .await
+                    .map_err(|e| e.to_string())?
                 else {
                     break;
                 };
@@ -3596,7 +3622,16 @@ pub(crate) async fn append(
             .is_some_and(|m| m.segments.len() > 1 || m.pending.is_some())
     );
     if !wrapped {
-        return append_core(state, name, headers, body, product_hash, product_key, seal_auth).await;
+        return append_core(
+            state,
+            name,
+            headers,
+            body,
+            product_hash,
+            product_key,
+            seal_auth,
+        )
+        .await;
     }
     let body_bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
         Ok(b) => b,
@@ -3687,10 +3722,7 @@ pub(crate) fn final_err_disposition(e: &crate::shard::AppendErr) -> FinalDisposi
 /// the product handler holds a translated Response, not the AppendErr.
 /// The names here are the translator's OUTPUT names, asserted by the
 /// stale-epoch regression on both surfaces.
-pub(crate) fn final_code_disposition(
-    status: StatusCode,
-    code: Option<&str>,
-) -> FinalDisposition {
+pub(crate) fn final_code_disposition(status: StatusCode, code: Option<&str>) -> FinalDisposition {
     if !status.is_client_error()
         || status == StatusCode::TOO_MANY_REQUESTS
         || status == StatusCode::REQUEST_TIMEOUT
@@ -3915,8 +3947,7 @@ async fn append_core(
     let is_owed_final = desc.sealing.as_ref().is_some_and(|sl| {
         sl.owes_final()
             && (sl.operation_id == this_close_op
-                || Some(sl.operation_id.as_str())
-                    == seal_auth.as_ref().map(|a| a.op_id.as_str()))
+                || Some(sl.operation_id.as_str()) == seal_auth.as_ref().map(|a| a.op_id.as_str()))
     });
     // The generation this request's claim-authorized writes will carry.
     // Filled by whichever path holds the claim: the trusted internal
@@ -3958,7 +3989,10 @@ async fn append_core(
     let synthetic_producer = close && !body.is_empty() && producer.is_none();
     if synthetic_producer {
         producer = Some(crate::shard::ProducerReq {
-            id: format!("{}rawseal.{this_close_op}", crate::shard::INTERNAL_PRODUCER_PREFIX),
+            id: format!(
+                "{}rawseal.{this_close_op}",
+                crate::shard::INTERNAL_PRODUCER_PREFIX
+            ),
             epoch: 1,
             seq: 0,
             request_hash: None,
@@ -3994,18 +4028,16 @@ async fn append_core(
             "x-seal-final is not a request header",
         );
     }
-    let sealed_reject_new = if (desc.sealed || desc.sealing.is_some())
-        && !close_only
-        && !is_owed_final
-    {
-        Some(if desc.sealed {
-            crate::shard::SealedReject::Sealed
+    let sealed_reject_new =
+        if (desc.sealed || desc.sealing.is_some()) && !close_only && !is_owed_final {
+            Some(if desc.sealed {
+                crate::shard::SealedReject::Sealed
+            } else {
+                crate::shard::SealedReject::Sealing
+            })
         } else {
-            crate::shard::SealedReject::Sealing
-        })
-    } else {
-        None
-    };
+            None
+        };
     if sealed_reject_new.is_some() && producer.is_none() {
         // The pinned closure contract requires Stream-Next-Offset on
         // the 409, so read the sealed tail before answering.
@@ -4454,8 +4486,7 @@ async fn append_core(
         // and let the client retry exactly; only verdicts about the
         // REQUEST ITSELF — a malformed body, the wrong content type, a
         // sequence reused with different content — are terminal.
-        let definitive =
-            final_err_disposition(e) == FinalDisposition::DefinitivelyRejected;
+        let definitive = final_err_disposition(e) == FinalDisposition::DefinitivelyRejected;
         if close && close_carries_content && definitive {
             if let Some(g) = raw_seal_gen {
                 if let Err(m) = crate::product::abandon_seal_intent(
@@ -4567,7 +4598,9 @@ async fn append_core(
                         return err_resp(
                             StatusCode::SERVICE_UNAVAILABLE,
                             "seal_incomplete",
-                            &format!("the final record is durable but the seal could not be recorded: {e}; retry the close"),
+                            &format!(
+                                "the final record is durable but the seal could not be recorded: {e}; retry the close"
+                            ),
                         );
                     }
                 }
@@ -4581,8 +4614,7 @@ async fn append_core(
                 // against a sibling's renewal.
                 let run_gen = if owns_final { raw_seal_gen } else { None };
                 if let Err(e) =
-                    crate::product::run_seal(&state, &name, op, &desc.stream_epoch, run_gen)
-                        .await
+                    crate::product::run_seal(&state, &name, op, &desc.stream_epoch, run_gen).await
                 {
                     // The segment is closed but the collection is not
                     // sealed. Answering success is how the two surfaces
@@ -5664,10 +5696,7 @@ pub(crate) async fn read_inner(
         // reverse.
         let floor_now = handle.state.lock().unwrap().durable.next;
         let next_pos = out.last.map(|o| o + 1).unwrap_or(scan_from);
-        r = r.header(
-            "Stream-Durable-Offset",
-            tail_token(floor_now.min(next_pos)),
-        );
+        r = r.header("Stream-Durable-Offset", tail_token(floor_now.min(next_pos)));
         if let Some(i) = out.recs.iter().position(|rec| rec.off >= floor_now) {
             r = r.header("Stream-Pending-From", i.to_string());
         }
@@ -6465,9 +6494,7 @@ async fn read_v3_lineage_inner(
                     let st = handle.state.lock().unwrap();
                     let e = match deliver {
                         crate::shard::Deliver::Durable => st.durable.next,
-                        crate::shard::Deliver::Applied => {
-                            st.applied.next.max(st.durable.next)
-                        }
+                        crate::shard::Deliver::Applied => st.applied.next.max(st.durable.next),
                     };
                     (e, st.durable.closed)
                 };

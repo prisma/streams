@@ -250,7 +250,6 @@ pub enum MutationResult<T> {
     Missing,
 }
 
-
 /// Fork parentage (pinned DS protocol fork contract).
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 pub struct ForkRef {
@@ -1024,7 +1023,7 @@ impl Registry {
         }
     }
 
-/// Paginated catalog (audit P0): ONE listing continued at the
+    /// Paginated catalog (audit P0): ONE listing continued at the
     /// provider, and a GET only for the descriptors on THIS page.
     /// Streams outside any fixed prefix window are reachable, and a
     /// page costs O(limit) Class B requests instead of O(all streams).
@@ -1075,8 +1074,7 @@ impl Registry {
             };
             let d = decode_desc(&raw).map_err(|e| object_store::Error::Generic {
                 store: "registry",
-                source: format!("catalog: undecodable descriptor at {}: {e}", meta.location)
-                    .into(),
+                source: format!("catalog: undecodable descriptor at {}: {e}", meta.location).into(),
             })?;
             let expired = d.expires_at_ms.is_some_and(|e| now >= e);
             if !d.deleted && !d.soft_deleted && !expired && d.init.is_none() {
@@ -1224,8 +1222,8 @@ mod tests {
             segments: None,
             sealed: false,
             watch_definitions: Vec::new(),
-        watch_sig_key: None,
-        parent_ref_pending: false,
+            watch_sig_key: None,
+            parent_ref_pending: false,
             soft_deleted: false,
             forked_from: None,
             fork_children: Vec::new(),
@@ -1384,7 +1382,9 @@ mod tests {
         installed.soft_deleted = true;
         installed.fork_children = vec!["C".into(), "D".into()];
         *conflict.inject.lock().unwrap() = Some(serde_json::to_vec(&installed).unwrap());
-        conflict.armed.store(true, std::sync::atomic::Ordering::SeqCst);
+        conflict
+            .armed
+            .store(true, std::sync::atomic::Ordering::SeqCst);
 
         let outcome = reg
             .mutate_incarnation("src", "e1", |x| {
@@ -1414,7 +1414,10 @@ mod tests {
             other => panic!("expected Applied, got {other:?}"),
         }
         let after = reg.get("src").await.unwrap().unwrap();
-        assert!(!after.deleted, "the source was tombstoned while D still forks it");
+        assert!(
+            !after.deleted,
+            "the source was tombstoned while D still forks it"
+        );
         assert_eq!(after.fork_children, vec!["D".to_string()]);
     }
 
