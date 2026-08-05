@@ -834,3 +834,94 @@ and the broad audit loop STOPS here, per the review. Remaining tracked
 work (deferred, non-gating): the deterministic simulator (#108),
 multi-instance fleet validation (#113), ops/release program (#114), and
 the close-group liveness investigation (#115).
+
+## Round 18 (2026-08-05): the saga proves completion — APPROVED FREEZE
+
+The round-17 review approved the architecture with one required
+change and two non-gating follow-ups; all three are implemented in
+`c26c2bd4`, tagged `v0.2.0-preview.4`:
+
+1. **Fail-closed refresh (required).** The deletion saga's post-sweep
+   registry refresh no longer treats an error or a vanished
+   descriptor as "keep the cached map": collection gone → idempotent
+   204; refresh error → retryable 503 `segment_map_unverified`.
+   Finalization is restructured from two-round stability to PROOF —
+   the swept segment set must equal a SUCCESSFULLY re-read
+   authoritative map with no pending transition. A stale pre-split
+   map can no longer masquerade as stable topology into a false
+   collection-wide 204, and a mid-split deletion refuses finalization
+   every round until the successors publish.
+2. **Deleting is publicly recoverable (non-gating 1, implemented).**
+   The `consumer_deleting` conflict carries the deleting
+   incarnation's `Prisma-Consumer-Version`; SDK: 
+   `StreamsError.consumerVersion`. A process that inherits a
+   half-deleted consumer recovers the token from a plain create
+   attempt and resumes with DELETE.
+3. **Cross-key stale retry is the documented 204 (non-gating 2,
+   implemented rather than documented).** DELETE compares the token's
+   stream epoch BEFORE key validation (bearer still gates at the
+   route): a stale retry against a collection recreated under a
+   different key gets no-touch 204; same-epoch wrong-key remains 403.
+4. `prisma-consumer-version` added to `Access-Control-Allow-Headers`.
+
+Four new deterministic tests (180 DST scenarios total): injected
+one-shot registry failure at the parked refresh → 503, token
+recovered from the PUT conflict, resumed to 204; vanished collection
+mid-saga → 204; deletion inside the parked seal-gap → refuses
+finalization every round, completes across parent AND children after
+the gap releases, same token; cross-key stale retry → 204 with the
+replacement untouched and live-target wrong-key still 403.
+
+### Round-18 battery (all on `c26c2bd4`)
+
+| gate | result |
+|---|---|
+| full Rust suite | **272 / 0** (180 DST scenarios) |
+| pinned DS conformance (0.3.6) | **332 / 0 / 6** |
+| field gate, local unpaced / paced | **PASS / PASS** |
+| installed-tarball SDK smoke (0.2.0-preview.4) | **PASS** |
+| WAN consumer-saga smoke, fra (`freeze4` = `c26c2bd4`, e_machine `3e00`) | **PASS** — fra retained service now RUNS the approved binary |
+
+### Launch posture (explicit, per the review)
+
+```
+validated now:
+  single-instance service per region
+  real Compute/Tigris edges (fra retained on freeze4)
+  consumer deletion saga (rounds 16-18)
+  protocol conformance (pinned 0.3.6)
+  SDK package (zero-dependency, tarball-verified)
+
+still to validate (#113):
+  multi-instance fleet ownership
+  cross-owner segment fan-out (the saga's engine_for() is local-owner
+  today; the fleet campaign proves or implements cross-owner execution)
+```
+
+## Provenance (v0.2.0-preview.4)
+
+```
+code_commit:        c26c2bd4…   (round 18; the freeze4 WAN artifact)
+report_commit:      the commit tagged v0.2.0-preview.4 (docs-only stamp on code_commit)
+cloud_build:        c26c2bd4…   (fra 2026-08-05, WAN consumer-saga smoke PASS)
+prior_cloud_builds: c1d2aedb (preview.3), 67c551a4 (preview.2), 981e2e68 (preview.1), d445a06
+
+server_commit:      c26c2bd4945fb2cceba5fa3a0b6aa82d44d3f23d
+server_dirty:       no
+slatedb_pin:         0717cc1e4e9bad10a4773760f66bac4264ecf05e
+layout_version:     3
+conformance_pin:    0.3.6
+sdk_tarball_sha256: 27bf77fd79b185cd3b28abf7e7acb3ea4a0a2deba824f53d6e1340ba7ce2ad96
+dst_scenario_tests: 180
+rust_suite:         272 passed / 0 failed
+ds_conformance:     332 passed / 0 failed / 6 skipped
+field_gate:         PASS local (unpaced + paced)
+sdk_smoke:          PASS local (fresh 0.2.0-preview.4 tarball)
+wan_saga_smoke:     PASS fra (freeze4 artifact = code_commit; service retained on it)
+```
+
+Per the round-18 review: this surface is FROZEN. The audit loop is
+closed; open work proceeds on the simulator (#108), fleet validation
+(#113), operations (#114 follow-ons), with the close-group liveness
+question RESOLVED (root-caused and fixed, see the #115 section of the
+ops notes).
