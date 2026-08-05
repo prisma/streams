@@ -192,6 +192,20 @@ down and verified (0 projects remaining).
 
 - **Tigris local-bucket 404 latency** (§2, owner: Søren) — reported as
   a bug 2026-08-05; the region-bound existence check should be local.
+  Tigris's initial explanation (a fallback to a sibling metadata
+  cluster, kept "to support the use case that the bucket may have been
+  global before being changed to SRC") is **narrower than the measured
+  behavior**: a 2026-08-05 four-way probe matrix (same client, same
+  minutes, Server-Timing internal) showed two BORN-single-region
+  buckets — console-created that day and platform-created 08-03,
+  neither ever global — both pay the full ~240 ms miss internally
+  (238-246 ms across 10 probes), indistinguishable from the global
+  control (~243-321 + one 1.2 s outlier). Whatever consults the
+  sibling cluster fires regardless of bucket history. Bonus datapoint:
+  unauthorized requests to an SRC bucket burn the same ~240 ms before
+  their 403 — the consultation appears to run ahead of/alongside
+  authorization. Evidence: SRC-404-VERIFICATION.md in the campaign
+  workspace (with per-request x-amz-request-id for Tigris tracing).
 - Tigris served-from header value bug (reported earlier).
 - SIN backend degradation episode 2026-08-02..03 (idle GETs 473 ms,
   writes 240 ms internal; recovered next day) — context for why SIN
