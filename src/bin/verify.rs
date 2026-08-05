@@ -330,10 +330,7 @@ async fn waloff(args: &Args) -> anyhow::Result<()> {
         b"fast",
         b"v",
         &Default::default(),
-        &WriteOptions {
-            await_durable: false,
-            ..Default::default()
-        },
+        &WriteOptions::default(),
     )
     .await?;
     println!(
@@ -348,10 +345,7 @@ async fn waloff(args: &Args) -> anyhow::Result<()> {
         b"durable",
         b"v",
         &Default::default(),
-        &WriteOptions {
-            await_durable: false,
-            ..Default::default()
-        },
+        &WriteOptions::default(),
     )
     .await?;
     let t = Instant::now();

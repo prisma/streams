@@ -71,10 +71,13 @@ path = "src/bin/cryptobench.rs"
 
 
 [patch.crates-io]
-# upstream main (0.15.0, includes slatedb#1968 probe-cached latest reads
-# and #1894 concurrent GC deletes) + our not-yet-upstreamed patches on the
-# gc-adaptive-backoff branch: #1964 yield points, adaptive GC cadence
-# (max_interval), and GC listing reuse (list_cache_ttl). Old 0.14-based
-# pin preserved as tag pin-014-final. Drop patches here as upstream PRs
-# merge and release.
-slatedb = { git = "https://github.com/sorenbs/slatedb.git", rev = "323bc1b957f9c4aabd1d711912d123a3407e5c31" }
+# UPSTREAM main, pinned by rev — the fork is retired (2026-08-05).
+# Contains everything we carried: #1964 yield points (merged), #1993
+# 10-minute default GC interval (upstream chose this over our #1991
+# adaptive backoff), #1968 probe-cached latest reads, #1894 concurrent
+# GC deletes. Our GC listing-reuse/inventory patches are dropped in
+# favor of tuned static intervals (see main.rs GC block + the A/B in
+# docs/COST-CAMPAIGN-2.md addendum). Move to a crates.io version when
+# a release after v0.15.0 ships. Fork history preserved at
+# sorenbs/slatedb (tags pin-014-final, and the final pin rev 323bc1b).
+slatedb = { git = "https://github.com/slatedb/slatedb.git", rev = "0717cc1e4e9bad10a4773760f66bac4264ecf05e" }

@@ -128,29 +128,22 @@ fn history_settings() -> Settings {
     let compactor_off = std::env::var("HISTORY_COMPACTOR")
         .map(|v| v == "off")
         .unwrap_or(false);
-    // Quiet-backoff ceiling for every GC directory sweep: history DBs
-    // (per-stream v1 AND the shared v2 partitions) are quiet most of the
-    // time, and their fixed-cadence LISTs were 79% of v2's residual
-    // request cost (docs/HISTORY-V2.md scorecard). Any sweep that finds
-    // work snaps back to the base interval. HISTORY_GC_MAX_INTERVAL_SECS
-    // (0 = fixed cadence).
-    let gc_max = {
-        let secs: u64 = std::env::var("HISTORY_GC_MAX_INTERVAL_SECS")
+    // History DBs (per-stream v1 AND the shared v2 partitions) are
+    // quiet most of the time, and their fixed-cadence LISTs were 79% of
+    // v2's residual request cost (docs/HISTORY-V2.md scorecard). The
+    // fork answered that with quiet-backoff + listing reuse; upstream
+    // declined that design (slatedb#1991 -> #1993), so on upstream the
+    // same economics come from a LONG STATIC sweep interval — the old
+    // backoff CEILING becomes the cadence. The cost of the trade is
+    // reclamation latency on a busy history DB (bounded, storage-cheap),
+    // not steady-state requests. HISTORY_GC_INTERVAL_SECS (default 600;
+    // HISTORY_GC_MAX_INTERVAL_SECS accepted as a legacy alias).
+    let gc_interval = {
+        let secs: u64 = std::env::var("HISTORY_GC_INTERVAL_SECS")
             .ok()
+            .or_else(|| std::env::var("HISTORY_GC_MAX_INTERVAL_SECS").ok())
             .and_then(|v| v.parse().ok())
             .unwrap_or(600);
-        (secs > 0).then(|| Duration::from_secs(secs))
-    };
-    // Busy directories never reach the backoff ceiling, so they'd still
-    // pay a LIST per sweep — reuse one listing as the candidate inventory
-    // for this long instead (anchors are re-read fresh every sweep; only
-    // NEW garbage waits, up to the TTL). HISTORY_GC_LIST_TTL_SECS
-    // (0 = list every sweep).
-    let gc_ttl = {
-        let secs: u64 = std::env::var("HISTORY_GC_LIST_TTL_SECS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(3600);
         (secs > 0).then(|| Duration::from_secs(secs))
     };
     let mut gc = Settings::default()
@@ -163,8 +156,7 @@ fn history_settings() -> Settings {
         &mut gc.compactions_options,
     ] {
         *slot = Some(slatedb::config::GarbageCollectorDirectoryOptions {
-            max_interval: gc_max,
-            list_cache_ttl: gc_ttl,
+            interval: gc_interval,
             ..slot.unwrap_or_default()
         });
     }
@@ -985,14 +977,7 @@ impl Absorber {
         if out.advanced.is_empty() {
             return Ok(out);
         }
-        part.write_with_options(
-            wb,
-            &WriteOptions {
-                await_durable: false,
-                ..Default::default()
-            },
-        )
-        .await?;
+        part.write_with_options(wb, &WriteOptions::default()).await?;
         part.flush().await?; // wal off => memtable -> L0, manifest published
         // The pages are durable: warm the slice cache with the runs we
         // just wrote. Readers clip to their own durable boundary, so an
