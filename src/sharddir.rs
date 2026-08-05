@@ -125,6 +125,20 @@ struct GateInner {
     st: Mutex<HashMap<String, PrefixGate>>,
     /// Ceiling on one open attempt (see OPEN_DEADLINE_DEFAULT).
     open_deadline: Duration,
+    /// Per-INSTANCE mirrors of the global counters, for tests. The
+    /// statics feed process metrics and are shared with every other
+    /// OpenGate in the binary — a paused-clock gate test asserting on
+    /// them raced ordinary http_rig tests opening engines concurrently
+    /// (completed bled to 1 in one full-suite run per ~8). Tests
+    /// assert on THEIR gate's counters instead.
+    #[cfg(test)]
+    c_started: AtomicU64,
+    #[cfg(test)]
+    c_completed: AtomicU64,
+    #[cfg(test)]
+    c_failed: AtomicU64,
+    #[cfg(test)]
+    c_coalesced: AtomicU64,
 }
 
 /// What a caller gets back. `Wait` is always retryable and never means the
@@ -166,6 +180,14 @@ impl OpenGate {
                 opener,
                 st: Mutex::new(HashMap::new()),
                 open_deadline,
+                #[cfg(test)]
+                c_started: AtomicU64::new(0),
+                #[cfg(test)]
+                c_completed: AtomicU64::new(0),
+                #[cfg(test)]
+                c_failed: AtomicU64::new(0),
+                #[cfg(test)]
+                c_coalesced: AtomicU64::new(0),
             }),
         }
     }
@@ -189,6 +211,8 @@ impl OpenGate {
 
             if let Some(rx) = &g.inflight {
                 OPENS_COALESCED.fetch_add(1, Ordering::Relaxed);
+                #[cfg(test)]
+                self.inner.c_coalesced.fetch_add(1, Ordering::Relaxed);
                 rx.clone()
             } else {
                 if let Some(until) = g.holdoff_until {
@@ -209,6 +233,8 @@ impl OpenGate {
                 g.inflight = Some(rx.clone());
                 OPENS_STARTED.fetch_add(1, Ordering::Relaxed);
                 OPENS_IN_FLIGHT.fetch_add(1, Ordering::Relaxed);
+                #[cfg(test)]
+                self.inner.c_started.fetch_add(1, Ordering::Relaxed);
 
                 // The open task OWNS the outcome: it inserts into the
                 // serving map and updates gate state no matter what happens
@@ -230,6 +256,8 @@ impl OpenGate {
                     let out: OpenResult = match res {
                         Ok(Ok(engine)) => {
                             OPENS_COMPLETED.fetch_add(1, Ordering::Relaxed);
+                            #[cfg(test)]
+                            inner.c_completed.fetch_add(1, Ordering::Relaxed);
                             inner
                                 .shards
                                 .write()
@@ -244,6 +272,8 @@ impl OpenGate {
                         }
                         Ok(Err(e)) => {
                             OPENS_FAILED.fetch_add(1, Ordering::Relaxed);
+                            #[cfg(test)]
+                            inner.c_failed.fetch_add(1, Ordering::Relaxed);
                             let msg = format!("{e:#}");
                             tracing::warn!(prefix = %p, "shard open failed: {msg}");
                             let mut st = inner.st.lock().unwrap();
@@ -256,6 +286,8 @@ impl OpenGate {
                         Err(_deadline) => {
                             OPENS_DEADLINED.fetch_add(1, Ordering::Relaxed);
                             OPENS_FAILED.fetch_add(1, Ordering::Relaxed);
+                            #[cfg(test)]
+                            inner.c_failed.fetch_add(1, Ordering::Relaxed);
                             tracing::warn!(
                                 prefix = %p,
                                 "shard open exceeded its deadline ({:?}); \
@@ -356,6 +388,17 @@ impl OpenGate {
         OPENS_FAILED.store(0, Ordering::Relaxed);
         OPENS_COALESCED.store(0, Ordering::Relaxed);
         OPENS_IN_FLIGHT.store(0, Ordering::Relaxed);
+    }
+
+    /// This gate's OWN counters — immune to other tests' engine opens.
+    #[cfg(test)]
+    pub fn instance_counters(&self) -> (u64, u64, u64, u64) {
+        (
+            self.inner.c_started.load(Ordering::Relaxed),
+            self.inner.c_completed.load(Ordering::Relaxed),
+            self.inner.c_failed.load(Ordering::Relaxed),
+            self.inner.c_coalesced.load(Ordering::Relaxed),
+        )
     }
 
     #[cfg(test)]

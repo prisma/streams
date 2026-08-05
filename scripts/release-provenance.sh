@@ -10,7 +10,7 @@ cd "$(git rev-parse --show-toplevel)"
 
 echo "server_commit:      $(git rev-parse HEAD)"
 echo "server_dirty:       $([ -z "$(git status --porcelain)" ] && echo no || echo YES)"
-echo "slatedb_fork_pin:   $(grep -oE 'rev = \"[0-9a-f]{40}\"' Cargo.toml | head -1 | grep -oE '[0-9a-f]{40}' || echo unknown)"
+echo "slatedb_pin:         $(grep -oE 'rev = \"[0-9a-f]{40}\"' Cargo.toml | head -1 | grep -oE '[0-9a-f]{40}' || echo unknown)"
 echo "layout_version:     $(grep -oE 'LAYOUT_VERSION: u32 = [0-9]+' src/registry.rs | grep -oE '[0-9]+$' | head -1 || echo unknown)"
 echo "conformance_pin:    $(grep -oE '@durable-streams/server-conformance-tests[\"@: ]+[0-9.]+' conformance/package.json | grep -oE '[0-9.]+$' | head -1 || echo unknown)"
 

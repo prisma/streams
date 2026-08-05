@@ -511,3 +511,30 @@ held silently through 1.59 M wide-run deletes (max batch 49,670 ≤
 3's runs were quietly paying per-stream v1-DB costs for streams the
 racy pre-seal classification misrouted — the layout fix is also a
 cost fix.
+
+## Addendum (2026-08-05): fork retirement A/B
+
+The SlateDB fork is retired — streams now pins upstream main
+(`0717cc1e`). Upstream merged our #1964 (yield points) and answered
+#1991 (adaptive GC cadence) with #1993 (10-minute default interval)
+instead; the fork's remaining delta was the GC listing-reuse/backoff
+cluster. On upstream, the same posture is expressed as STATIC long
+sweep intervals (`GC_QUIET_INTERVAL_SECS`, `HISTORY_GC_INTERVAL_SECS`,
+both default 600 — the old backoff ceiling becomes the cadence).
+
+Measured (20 streams, 4 shards, absorbed history partitions, s3lite,
+12-minute true-idle window, `/v1/debug/store` op counts):
+
+| arm | LISTs / 12 min idle | other ops |
+|---|---|---|
+| fork (backoff + listing reuse) | **16** | get=2,799 |
+| upstream main + static 600 s | **80** | get=2,880 |
+
+The 5× idle-LIST regression ≈ 64 LISTs/12 min ≈ $1.15 per
+instance-month at S3 Class-A pricing — two orders of magnitude below
+the residual GET traffic both arms share, and immaterial against the
+campaign's headline (total requests −98.8% vs v1). Verdict: the
+carrying cost of a fork is not worth $1.15/instance-month. If fleet
+idle-LIST spend ever matters again, the lever is raising the quiet
+interval (reclamation latency is the only trade), or re-proposing
+listing reuse upstream with this data.

@@ -2322,13 +2322,13 @@ async fn seed_untrimmed_wal(store: Arc<dyn ObjectStore>, prefix: &str, records: 
             format!("k{i:06}").as_bytes(),
             vec![7u8; 256].as_slice(),
             &slatedb::config::PutOptions::default(),
-            &slatedb::config::WriteOptions {
-                await_durable: true,
-                ..Default::default()
-            },
+            &slatedb::config::WriteOptions::default(),
         )
         .await
-        .expect("seed put");
+        .expect("seed put")
+        .await_durable()
+        .await
+        .expect("seed durable");
     }
     // Drop WITHOUT close: close() would flush the memtable to L0 and
     // advance the replay boundary, which is exactly what must not happen.
@@ -2530,7 +2530,7 @@ async fn open_gate_survives_impatient_clients_without_a_storm() {
         "the open never completed into the serving map"
     );
 
-    let (started, completed, failed, coalesced) = OpenGate::counters_for_tests();
+    let (started, completed, failed, coalesced) = gate.instance_counters();
     assert_eq!(started, 1, "exactly one open may start (got {started})");
     assert_eq!(completed, 1);
     assert_eq!(failed, 0);
@@ -2692,7 +2692,7 @@ async fn a_hung_open_is_deadlined_and_its_late_engine_reaped() {
     // Let the 30 s deadline pass. The open task must fail the attempt and
     // arm the holdoff without any help from callers.
     tokio::time::sleep(std::time::Duration::from_secs(35)).await;
-    let (_started, completed, failed, _coalesced) = OpenGate::counters_for_tests();
+    let (_started, completed, failed, _coalesced) = gate.instance_counters();
     assert_eq!(failed, 1, "the hung open must be failed by its deadline");
     assert_eq!(completed, 0);
     assert!(
@@ -4188,13 +4188,7 @@ async fn corrupt_postings_fall_back_to_the_envelope() {
     // does, then flush explicitly.
     let mut wb = slatedb::WriteBatch::new();
     wb.put(&pk, b"garbage-not-a-page");
-    part.write_with_options(
-        wb,
-        &slatedb::config::WriteOptions {
-            await_durable: false,
-            ..Default::default()
-        },
-    )
+    part.write_with_options(wb, &slatedb::config::WriteOptions::default())
     .await
     .expect("corrupt");
     part.flush().await.expect("flush corruption");

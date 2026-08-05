@@ -3132,13 +3132,7 @@ impl ShardEngine {
             .store(now_ms(), Ordering::SeqCst);
         let res = self
             .db
-            .write_with_options(
-                wb,
-                &WriteOptions {
-                    await_durable: false,
-                    ..Default::default()
-                },
-            )
+            .write_with_options(wb, &WriteOptions::default())
             .await;
         self.commit_write_started_ms.store(0, Ordering::SeqCst);
         let write_us = write_t0.elapsed().as_micros().min(u32::MAX as u128) as u32;
