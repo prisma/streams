@@ -134,14 +134,59 @@ without redoing the analysis:
 - **Field (soak10):** see §6 — filled in from the production
   verification run.
 
-## 6. Field validation — soak10 (2026-08-05)
+## 6. Field validation — soak10 (2026-08-05): PASS
 
-PENDING: fra + sjc, standard 10-tier 30-min ramp at the stretched
-posture, with measured idle windows (`/v1/debug/store` deltas) before
-and after the ramp. Acceptance: idle probe rate ≈ 3.6/s/instance
-(−70% vs soak9 posture), append/roundtrip percentiles within soak9
-bands, zero errors, absorption/compaction progressing (backlog drains,
-L0 bounded), no flush-stall signature at top tiers.
+fra + sjc, fresh projects with region-local buckets (first soak on the
+new local-bucket platform default — note the confound below), standard
+10-tier 30-min ramp at the stretched posture, `/v1/debug/store`
+window=300 idle samples before and after the ramp. Binary: slate HEAD
+200e8973 + this commit, built in an isolated worktree (another
+session's unrelated WIP was excluded; provenance in the campaign
+workspace).
+
+**Idle probe rate (the headline):** post-ramp steady-state idle, two
+samples per region five minutes apart, all four within 2%:
+
+| sample | total GETs/s | miss-GETs/s (404s) | LISTs/s | notes |
+|---|---|---|---|---|
+| fra b1/b2 | 4.51 / 4.56 | **2.20 / 2.27** | 0.07-0.09 | GC deletes draining normally |
+| sjc b1/b2 | 4.59 / 4.53 | **2.22 / 2.26** | 0.07-0.09 | identical shape |
+
+**~2.2 miss-GETs/s per instance vs the ~13/s measured at the old
+posture on 2026-08-03 — a −83% reduction**, better than the −73%
+prediction because this workload's single hot stream opens one shard
+engine, not all four (engines and their pollers start lazily). Idle
+LISTs stay at GC-sweep noise (~0.08/s). Per-instance idle spend at
+Class B: ~$2.90/month.
+
+**Pre-traffic idle (window A) is its own finding: a virgin instance
+performs ZERO store operations.** Both freshly-deployed servers showed
+`ops: {}` over 300 s with no shard engines open — pollers only exist
+once first traffic opens an engine. Scaled-to-zero-traffic instances
+cost nothing in requests.
+
+**Ramp parity vs soak9** (tier-median p50s; soak9 ran the 1000/500
+posture on global buckets — bucket locality changed platform-wide
+between the runs, so the delta bundles both effects):
+
+| region | append p50 s9→s10 | rt p50 s9→s10 | p99 | ceiling | errors |
+|---|---|---|---|---|---|
+| fra | 58 → 62 (+5%) | 82 → 91 (+11%) | 206 → 229 | 490 = 490 | **0** (411,055 ok) |
+| sjc | 63 → 55 (−12%) | 88 → 79 (−11%) | 186 → 185 | 490 = 490 | **0** (454,545 ok) |
+
+Deltas are inside the historical soak-to-soak variance band (fra sits
+within its 58-82 s5..s9 spread) and point in opposite directions in
+the two regions — noise, not a poll-stretch signature. The specific
+regression the manifest bound guards against (flush stalls under L0
+pressure) did not appear: c48/c64 were the *healthiest* tiers in both
+regions (fra c48 p50 76.6 ms; sjc c48 66.8 ms), and both regions held
+the 490 rps per-stream-limiter ceiling.
+
+**Integrity:** server-durable ≥ client-acked in both regions (fra
++640, sjc +510 — ambiguous-timeout retries that committed; the safe
+direction), absorb backlog 0 streams at end, GC visibly retiring WAL
+and compacted SSTs in the idle windows. All soak10 infrastructure torn
+down and verified (0 projects remaining).
 
 ## 7. Open items
 
