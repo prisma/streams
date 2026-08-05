@@ -1036,10 +1036,11 @@ export class Consumer<T> {
     return (await res.json()) as ConsumerConfig & { name: string };
   }
 
-  async delete(): Promise<void> {
-    const res = await req(this.ctx, "DELETE", this.base(), this.stream._kh());
-    if (!res.ok && res.status !== 204) throw await errorFrom(res);
-  }
+  // Consumer deletion is intentionally absent in this preview: the
+  // server refuses it (501 consumer_delete_disabled) because deletion
+  // is not yet atomic across a split collection's segments. Create a
+  // new consumer name instead. It returns as a generation-fenced
+  // operation.
 }
 
 // ---------------------------------------------------------------------

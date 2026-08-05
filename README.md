@@ -103,8 +103,13 @@ curl -X POST http://127.0.0.1:8090/v1/streams/orders/records \
 curl "http://127.0.0.1:8090/v1/streams/orders/records?routingKey=c1" \
   -H "authorization: Bearer devtoken" -H "Prisma-Encryption-Key: $KEY"
 
-# The same record, seen through the pinned Durable Streams standards surface
-# (the default routing key):
+# The raw Durable Streams surface is the DEFAULT routing key's view —
+# records appended under other routing keys (like c1 above) do not
+# appear there. Append one default-key record (no Prisma-Routing-Key),
+# then read it back through the standards route:
+curl -X POST http://127.0.0.1:8090/v1/streams/orders/records \
+  -H "authorization: Bearer devtoken" -H "Prisma-Encryption-Key: $KEY" \
+  -H 'content-type: application/json' -d '{"n":2}'
 curl http://127.0.0.1:8090/v1/stream/orders \
   -H "authorization: Bearer devtoken" -H "Prisma-Encryption-Key: $KEY"
 ```

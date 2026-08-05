@@ -105,6 +105,31 @@ refetch, and browser-support verification. The typed
 incarnation-mutation registry API is DONE and every fork-lifecycle
 mutation now rides it.
 
+## Consumer deletion is disabled for the preview (round 16)
+
+The final review found the one remaining server-code issue: the
+collection-level consumer DELETE deleted the parent config, then
+best-effort looped segment owners and returned 204 unconditionally —
+after a split, a failed or unavailable segment left lease/cursor/ack
+rows a RECREATED consumer would inherit, and a pull admitted just
+before deletion could re-lease after that segment's cleanup on another
+owner, outside any commit group the overlay can see.
+
+Preview posture (the reviewer's fast alternative, chosen over another
+state-machine change at freeze): `DELETE
+/v1/streams/{name}/consumers/{consumer}` now answers **501
+`consumer_delete_disabled`** after auth, changing nothing; the SDK's
+`Consumer.delete()` is removed. Consumers are cheap — create a new
+name. The committer-level `ConfigDelete` (per-segment, transactional
+within its segment as of round 15) remains, as internal machinery and
+under test.
+
+Collection-wide deletion returns as a **generation-fenced saga**
+(tracked #118): consumer generations in row keys and lease tokens, an
+`Active -> Deleting` lifecycle on the parent config, ordered
+delete/fence per current AND predecessor segment, failures propagated
+(never 204 over partial state), recreation under a fresh generation.
+
 ## Multi-instance fleet posture
 
 The cloud campaign validated one service instance per region against

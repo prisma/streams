@@ -3720,43 +3720,37 @@ async fn product_consumer_delete(
     cname: String,
     headers: HeaderMap,
 ) -> Response {
-    let (desc, _k, _e) = match consumer_ctx(&state, &name, &headers).await {
+    // Auth and key discipline first — the refusal below is a property
+    // of the authenticated surface, never a way around 401/403.
+    let (_desc, _k, _e) = match consumer_ctx(&state, &name, &headers).await {
         Ok(v) => v,
         Err(r) => return r,
     };
-    // Config under the parent identity; state rows under every segment
-    // identity the consumer may have touched.
-    if let Err(r) = consumer_config_op(
-        &state,
-        &desc,
-        crate::queue::QueueOp::ConfigDelete {
-            consumer: cname.clone(),
-        },
+    let _ = cname;
+    // DISABLED for the preview (round 16). Collection-level consumer
+    // deletion is not yet transactional ACROSS SEGMENTS: the previous
+    // implementation deleted the parent config, then best-effort
+    // looped segment owners and returned 204 unconditionally — a
+    // failed or unavailable segment left lease/cursor/ack rows a
+    // RECREATED consumer would inherit; and a pull admitted just
+    // before deletion could re-lease after that segment's cleanup on
+    // another owner, outside any commit group the overlay can see.
+    // Collection-wide deletion returns as a generation-fenced saga
+    // (consumer generations in row keys and lease tokens, Deleting
+    // lifecycle state, per-segment fences, 204 only after every
+    // segment settles). Until then: refusing loudly is strictly
+    // better than a 204 that is not collection-wide. Consumers are
+    // cheap — create a new NAME instead.
+    perr(
+        StatusCode::NOT_IMPLEMENTED,
+        "consumer_delete_disabled",
+        "consumer deletion is disabled in this preview: it is not yet \
+         atomic across a split collection's segments. Create a new \
+         consumer name instead; deletion returns as a generation-fenced \
+         operation",
+        None,
+        false,
     )
-    .await
-    {
-        return r;
-    }
-    if let Some(map) = &desc.segments {
-        for sg in &map.segments {
-            let identity = desc.dynamic_segment_identity(sg.seg_id);
-            if let Ok(engine) = state.engine_for(&desc.segment_route(sg)).await {
-                let _ = engine
-                    .submit_queue(
-                        identity,
-                        crate::queue::QueueOp::ConfigDelete {
-                            consumer: cname.clone(),
-                        },
-                    )
-                    .await;
-            }
-        }
-    }
-    Response::builder()
-        .status(StatusCode::NO_CONTENT)
-        .header(header::CACHE_CONTROL, "no-store")
-        .body(Body::empty())
-        .unwrap()
 }
 
 /// Consumer delivery order across segment lineage (spec §2.9): every

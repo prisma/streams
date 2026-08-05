@@ -7786,6 +7786,10 @@ async fn product_consumer_config_lifecycle() {
     )
     .await;
     assert_eq!(st, 404);
+    // Preview contract (round 16): collection-level consumer deletion
+    // is DISABLED — 501 consumer_delete_disabled, and the consumer
+    // remains fully functional. Collection-wide deletion returns as
+    // the generation-fenced saga (#118).
     let (st, _, _) = preq(
         addr,
         "DELETE",
@@ -7794,7 +7798,7 @@ async fn product_consumer_config_lifecycle() {
         b"",
     )
     .await;
-    assert_eq!(st, 204);
+    assert_eq!(st, 501);
     let (st, _, _) = preq(
         addr,
         "GET",
@@ -7803,7 +7807,7 @@ async fn product_consumer_config_lifecycle() {
         b"",
     )
     .await;
-    assert_eq!(st, 404);
+    assert_eq!(st, 200, "a refused delete must leave the consumer intact");
     engine_shutdown(&state).await;
 }
 
@@ -13632,9 +13636,22 @@ async fn queue_config_delete_is_group_local() {
     let identity = desc.dynamic_segment_identity(seg.seg_id);
     let engine = state.engine_for(&route).await.unwrap();
     engine.fail_next_group_for(identity);
-    let (st, _, _) = preq(addr, "DELETE", "/v1/streams/qc14/consumers/c1", &key, b"").await;
+    // Driven at the committer: the product DELETE endpoint is disabled
+    // for the preview (round 16); the committer ConfigDelete remains
+    // the internal machinery whose failed-group contract this pins.
+    let del = engine
+        .submit_queue(
+            identity,
+            crate::queue::QueueOp::ConfigDelete {
+                consumer: "c1".into(),
+            },
+        )
+        .await;
     assert_eq!(engine.group_failures_tripped(), 1, "the failpoint never fired");
-    assert!(st >= 500, "a config delete outlived its failed group: {st}");
+    assert!(
+        del.is_err(),
+        "a config delete outlived its failed group: {del:?}"
+    );
 
     // The consumer survives with its leases: a fresh pull leases
     // NOTHING new (both records still held), which is only true if the
@@ -14078,6 +14095,55 @@ async fn a_receive_after_delete_in_the_same_group_is_refused() {
     engine_shutdown(&state).await;
 }
 
+/// Round 16: collection-level consumer deletion is DISABLED for the
+/// preview — it is not yet atomic across a split collection's
+/// segments, and a 204 that is not collection-wide is a lie. The
+/// endpoint refuses AFTER auth (the security matrix separately proves
+/// tokenless is 401), names the reason, and changes nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn product_consumer_delete_is_disabled_and_changes_nothing() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc16",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc16/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+
+    let (st, _, b) = preq(addr, "DELETE", "/v1/streams/qc16/consumers/c1", &key, b"").await;
+    assert_eq!(st, 501, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "consumer_delete_disabled");
+
+    // Nothing changed: the consumer is still there and still works.
+    let (st, _, _) = preq(addr, "GET", "/v1/streams/qc16/consumers/c1", &key, b"").await;
+    assert_eq!(st, 200, "the refused delete removed the consumer");
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/qc16/consumers/c1:pull",
+        &key,
+        br#"{"max": 1}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "the consumer no longer serves pulls");
+    engine_shutdown(&state).await;
+}
+
 /// Round 15 A: a ConfigDelete whose state-row scan FAILS must change
 /// nothing — no error may be swallowed into a partial deletion that
 /// reports success. The failure is injected at the scan boundary (the
@@ -14136,19 +14202,21 @@ async fn a_failed_config_scan_aborts_the_delete_untouched() {
     let engine = state.engine_for(&route).await.unwrap();
     engine.fail_next_config_scan();
 
-    let (st, _, b) = preq(
-        addr,
-        "DELETE",
-        "/v1/streams/qc15c/consumers/c1",
-        &key,
-        b"",
-    )
-    .await;
-    assert!(
-        st >= 500,
-        "a delete over a failed scan must FAIL, got {st}: {}",
-        String::from_utf8_lossy(&b)
-    );
+    // Driven at the committer: the product DELETE endpoint is disabled
+    // for the preview (round 16); the committer ConfigDelete remains
+    // the internal deletion machinery whose abort contract this pins.
+    let del = engine
+        .submit_queue(
+            seg.identity,
+            crate::queue::QueueOp::ConfigDelete {
+                consumer: "c1".into(),
+            },
+        )
+        .await;
+    match del {
+        Err(m) => assert!(m.contains("state scan failed"), "wrong abort reason: {m}"),
+        Ok(o) => panic!("a delete over a failed scan must FAIL, got {o:?}"),
+    }
 
     // The consumer is exactly as it was: config present, both leases
     // still held (an immediate re-pull finds nothing deliverable).

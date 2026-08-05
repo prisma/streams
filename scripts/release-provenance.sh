@@ -14,11 +14,16 @@ echo "slatedb_pin:         $(grep -oE 'rev = \"[0-9a-f]{40}\"' Cargo.toml | head
 echo "layout_version:     $(grep -oE 'LAYOUT_VERSION: u32 = [0-9]+' src/registry.rs | grep -oE '[0-9]+$' | head -1 || echo unknown)"
 echo "conformance_pin:    $(grep -oE '@durable-streams/server-conformance-tests[\"@: ]+[0-9.]+' conformance/package.json | grep -oE '[0-9.]+$' | head -1 || echo unknown)"
 
-# SDK tarball SHA (build + pack into a temp dir, no publish).
+# SDK tarball SHA (build + pack into an ISOLATED temp dir, no
+# publish). A failed pack fails this script — the old version
+# suppressed failure and then hashed the newest match in shared /tmp,
+# so a failed pack could stamp an older artifact's hash.
 if [ "${RUN_SDK:-1}" = "1" ]; then
-  ( cd sdk && npm run build >/dev/null 2>&1 && npm pack --pack-destination /tmp >/dev/null 2>&1 ) || true
-  TARBALL=$(ls -t /tmp/prisma-streams-*.tgz 2>/dev/null | head -1 || true)
-  [ -n "$TARBALL" ] && echo "sdk_tarball_sha256: $(shasum -a 256 "$TARBALL" | cut -d' ' -f1)" || echo "sdk_tarball_sha256: (pack skipped)"
+  PACKDIR="$(mktemp -d)"
+  ( cd sdk && npm run build >/dev/null 2>&1 && npm pack --pack-destination "$PACKDIR" >/dev/null 2>&1 )
+  TARBALL=$(ls "$PACKDIR"/prisma-streams-*.tgz)
+  echo "sdk_tarball_sha256: $(shasum -a 256 "$TARBALL" | cut -d' ' -f1)"
+  rm -rf "$PACKDIR"
 fi
 
 # DST scenario totals, by test-name family, from the source of truth.
