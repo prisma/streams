@@ -67,12 +67,15 @@ SOAK-REGIONS).
   multi-instance campaign (#113) closes; recovery is
   platform-automatic instance replacement through the
   OpenGate/deadline/reaper reopen path (field-validated).
-- **Bucket placement gate (2026-08-05):** single-region Prisma
-  Buckets currently pin far from fra regardless of project or region
-  hint; `put:wal` p50 27 ms (global) vs ~215 ms (single-region,
-  mis-placed) — BUCKETS-SINGLE-REGION.md. No cell migrates to
-  single-region buckets until placement follows the service region;
-  re-measure then.
+- **Bucket placement rule (2026-08-05, rev 2):** buckets inherit
+  their PROJECT's region — set `"region"` at project CREATE or the
+  project (and its buckets) is US-homed; projects cannot be re-homed.
+  Co-located single-region buckets beat global on every op from fra
+  (`put:wal` 16 ms vs 27, GET-404 8 ms vs 268 — the fixed miss
+  penalty is gone from GET; HEAD-miss still ~121 ms, Tigris bug,
+  tracked). Migration therefore means a NEW region-set project per
+  cell — BUCKETS-SINGLE-REGION.md has the numbers and the rehearsal
+  plan.
 
 ## 4. Drills
 

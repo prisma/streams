@@ -1,76 +1,73 @@
-# Single-region Prisma Buckets — measured impact on Streams (2026-08-05)
+# Single-region Prisma Buckets — measured impact on Streams
 
-The platform switched Prisma Buckets from Tigris GLOBAL buckets to
-SINGLE-REGION buckets, intending (a) to eliminate the ~1% metadata
-trickle and (b) to make 404s faster — with a known Tigris-side bug
-that keeps 404s slow even on single-region buckets (under
-investigation by Tigris).
+**2026-08-05, revision 2.** Revision 1 claimed "placement is broken —
+single-region buckets pin far from fra regardless of region hints."
+That was WRONG, and the correction reshapes the conclusion entirely:
+**buckets inherit their PROJECT's region; a bucket has no region of
+its own.** Our campaign projects (`streams-camp75-eu`/`-use`, created
+2026-08-03) were created WITHOUT a region — `defaultRegion: null` —
+so "single-region" buckets created in them fell back to a US-shaped
+default. The old GLOBAL buckets had masked the projects' regionless
+state completely, because global buckets serve at the nearest edge no
+matter where the project lives.
 
-We measured, same binary (`freeze3` = `c1d2aedb`), same fra Compute
-service, same burst (300 keyed appends), server-side
-`/v1/debug/store` op latencies; plus client-side boto3 probes from a
-second vantage (Asia). Buckets: the retained campaign bucket
-(pre-change, global, `fly.storage.tigris.dev`) vs two freshly created
-buckets (post-change, single-region, `t3.storage.dev`) — one created
-plain, one with a `"region":"eu-central-1"` hint in the create call.
+Mechanics, verified against the management API:
 
-## Results (fra service vantage, p50 ms)
+- Project CREATE takes `"region"` (e.g. `"eu-central-1"`); the read
+  side reports it as `defaultRegion`. Omit it and the project — and
+  every bucket in it — is US-homed. (A `"region"`/`"defaultRegion"`
+  field on bucket create or project PATCH is ignored/rejected; the
+  project's create-time region is the only lever, exactly as
+  designed.)
+- New buckets land on `t3.storage.dev` (the old global ones are on
+  `fly.storage.tigris.dev`).
 
-| op | global (old) | single-region A (plain) | single-region B (region-hinted) |
+## The A/B/C, from the fra service (`freeze3` binary, 300-append burst, p50 ms)
+
+| op | global (old bucket) | single-region, region-LESS project | **single-region, EU-homed project** |
 |---|---|---|---|
-| put:wal (ack path) | **27** | 220 | 212 |
-| put:manifest | 25 | 131 | 133 |
-| get:other (data hits) | 65 | 114 | 115 |
-| get:manifest (mostly freshness probes / 404-shaped) | **268** | **111** | **110** |
-| head:wal (probe, 404-shaped) | **293** | 292 | **228** |
+| put:wal (ack path) | 27 | ~215 | **16** |
+| put:manifest | 25 | 131 | **16** |
+| get:other (data hits) | 65 | 114 | **8** |
+| get:manifest (freshness probes, 404-shaped) | 268 | 111 | **8** |
+| head:wal (probe, 404-shaped) | 293 | 292/228 | **121** |
 
-Client-side from Asia: global hits ~55–82 ms (nearest-edge serving),
-single-region hits ~250–590 ms (distance to the pinned region);
-GET-404s ~290–305 ms on BOTH bucket types from Asia.
+## Conclusions
 
-## What this means
+1. **Co-located single-region buckets are a large win everywhere.**
+   Ack-path `put:wal` 27 → 16 ms, data GETs 65 → 8 ms — the user-facing
+   append p50 in fra should drop well below the soak5 59 ms once a
+   cell runs on a properly-homed bucket.
+2. **The GET-404 penalty is gone.** The global bucket charged a fixed
+   ~270–300 ms for GETs of missing keys from every vantage; co-located
+   single-region GET-404s cost **8 ms** — same as hits. This
+   transforms the idle-probe economics that soak10's poll-stretch
+   posture was built around; revisit those knobs after the first
+   long soak on a single-region cell (defaults may be loosenable).
+3. **The residual Tigris bug is HEAD-specific, now cleanly isolated:**
+   same co-located bucket, same vantage — GET on a missing key 8 ms,
+   HEAD on a missing key **121 ms** (~15×). For Tigris's
+   investigation: `t3.storage.dev`, single-region, HEAD-miss vs
+   GET-miss. SlateDB's opener/WAL probes use HEAD, so reopen and
+   probe paths still pay this until fixed.
+4. **Migration guidance:** migrating an existing cell means a NEW
+   project created with `"region"` set (existing projects cannot be
+   re-homed) — i.e., new bucket, new service, data migration or fresh
+   namespace. The retained campaign cells stay on their global
+   buckets (they are fast there and they are throwaway); FIRST
+   single-region cell should be a fresh deployment, ideally the #113
+   campaign.
+5. **The ~1% metadata trickle** re-measure is now unblocked: the
+   EU-homed test bucket exists (`streams-sr-fra-data`,
+   `bkt_s11rnxuca330xneqe8rj2enq`, project `streams-sr-fra2` =
+   `proj_psrbg85krdtr01pn0oae51fy`). It needs a long soak window;
+   scheduled with the next co-located soak. Short-window hint:
+   get:other p99 131 ms vs p50 8 ms (n=199) — a tail exists, size
+   unknown.
 
-1. **Placement is the whole game, and it is currently wrong for us.**
-   Both single-region buckets — including the one created with a
-   region hint, which the API accepted silently and ignored — pinned
-   ~100 ms RTT away from Frankfurt (US-shaped). Every store op from
-   the fra service degraded accordingly; the ack-path `put:wal` went
-   27 ms → ~215 ms, which would take fra's append p50 from ~59 ms to
-   roughly 250 ms+. **As shipped, the single-region change makes a
-   fra-based Streams service dramatically slower.** The fix is
-   platform-side: bucket placement must follow (or be selectable to)
-   the consuming service's region. Until then, production guidance:
-   keep latency-sensitive cells on their existing global buckets.
-2. **The 404 improvement is real — on the GET path.** On the global
-   bucket, 404-shaped GETs cost a FIXED ~270–300 ms from every vantage
-   we have ever measured (fra, Asia; and soak10's idle-probe economics
-   were built around exactly this). On single-region buckets the
-   GET-404 collapses to ~one RTT to the pinned region (111 ms from
-   fra to a US-pinned bucket; would be ~5–15 ms co-located). The old
-   fixed penalty is gone from GET.
-3. **The residual Tigris bug is on HEAD.** `head:wal` stayed at
-   ~230–290 ms on single-region buckets — unchanged from global —
-   while GET-404s improved. If Tigris is looking for a
-   discriminator: on `t3.storage.dev` single-region buckets, GET on a
-   missing key ≈ one region RTT, HEAD on a missing key ≈ the old
-   ~290 ms penalty. (SlateDB's opener and WAL probes use HEAD, so
-   this still taxes reopen/probe paths.)
-4. **The ~1% metadata trickle** is not resolvable in these short
-   windows; it needs a long soak on a CO-LOCATED single-region bucket,
-   which is blocked on (1). Deferred until placement is fixed.
-
-## Follow-ups
-
-- Platform: region-follows-service placement (or honor the `region`
-  create parameter) for single-region buckets. Re-run this A/B when
-  available; expected: put:wal ≈ 5–15 ms co-located (vs 27 ms global),
-  GET-404 ≈ 5–15 ms, and the poll-stretch posture (soak10) can be
-  revisited if idle 404 probes become cheap.
-- Tigris: HEAD-on-missing-key latency on single-region buckets
-  (`t3.storage.dev`), numbers above.
-- Housekeeping: test buckets `streams-sr404-test`
-  (`bkt_fjep08jld38d9kqm48h14il5`) and `streams-sr404-fra`
-  (`bkt_wty98pjw1c0ekcjwjh8gobkg`) in project `streams-camp75-eu` are
-  kept for the re-run; delete with the project teardown. The fra
-  retained service was restored to `freeze3` + its original bucket and
-  re-verified (saga smoke PASS) after the A/B.
+Housekeeping: the two mis-homed test buckets and the one accidentally
+US-homed project from revision 1 are deleted; `streams-sr-fra2` and
+its bucket are KEPT for the trickle soak and the first migration
+rehearsal. The fra retained service was restored to `freeze3` + its
+original global bucket after each canary and re-verified (saga smoke
+PASS).
