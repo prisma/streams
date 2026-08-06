@@ -6410,6 +6410,7 @@ pub(crate) fn replay_peer_url(state: &AppState, r: &Response) -> Option<(String,
 async fn relay_segment_read(
     state: &Arc<AppState>,
     base: String,
+    desc: &StreamDesc,
     name: &str,
     seg_id: u32,
     scan_from: u64,
@@ -6454,6 +6455,12 @@ async fn relay_segment_read(
     let mut req = peer_client()
         .get(format!("{base}/v1/internal/segment-read/{name}?{q}"))
         .timeout(std::time::Duration::from_secs(40));
+    // Incarnation binding: the peer refuses outright if this name now
+    // holds a different stream (round-19 ABA).
+    let target = crate::product::InternalTarget::of(desc, seg_id)?;
+    for (k, v) in target.headers() {
+        req = req.header(k, v);
+    }
     if let Some(t) = &state.fleet_internal_token {
         req = req.header("authorization", format!("Bearer {t}"));
     }
@@ -6526,6 +6533,25 @@ async fn internal_segment_read(
         .query()
         .map(|q| q.split('&').any(|p| p == "head=1"))
         .unwrap_or(false);
+    // ABA GUARD (round-19): bind the relayed read to the sender's
+    // incarnation. Without this, a delete/recreate between dispatch and
+    // arrival serves the REPLACEMENT stream's records against the
+    // original request's cursor.
+    match state.registry.get(&name).await {
+        Ok(Some(desc)) => {
+            if let Err(r) = crate::product::verify_internal_target(&desc, &headers) {
+                return r;
+            }
+        }
+        Ok(None) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
+        Err(e) => {
+            return err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "temporarily_unavailable",
+                &e.to_string(),
+            );
+        }
+    }
     read_inner(
         state,
         name,
@@ -6702,8 +6728,8 @@ async fn read_v3_lineage_inner(
                     let peer = replay_peer_url(&state, &r).map(|(_, base)| base);
                     if let Some(base) = peer {
                         if let Some(resp) = relay_segment_read(
-                            &state, base, &desc.name, sg.seg_id, scan_from, &params, &headers,
-                            head_only,
+                            &state, base, &desc, &desc.name, sg.seg_id, scan_from, &params,
+                            &headers, head_only,
                         )
                         .await
                         {

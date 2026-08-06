@@ -3332,10 +3332,16 @@ async fn product_scan(
                                             .map(|(_, b)| b);
                                         let relayed = match peer {
                                             Some(base) => {
-                                                relay_segment_tail(
-                                                    &state, &base, &desc.name, sg.seg_id, &key_b64,
-                                                )
-                                                .await
+                                                match InternalTarget::of(&desc, sg.seg_id) {
+                                                    Some(t) => {
+                                                        relay_segment_tail(
+                                                            &state, &base, &desc.name, &t,
+                                                            &key_b64,
+                                                        )
+                                                        .await
+                                                    }
+                                                    None => None,
+                                                }
                                             }
                                             None => None,
                                         };
@@ -3486,16 +3492,21 @@ async fn product_scan(
                 let peer = crate::http::replay_peer_url(&state, &r).map(|(_, b)| b);
                 let relayed = match peer {
                     Some(base) => {
-                        relay_segment_scan(
-                            &state,
-                            &base,
-                            &desc.name,
-                            seg_id,
-                            off,
-                            max - spent,
-                            &key_b64,
-                        )
-                        .await
+                        match InternalTarget::of(&desc, seg_id) {
+                            Some(t) => {
+                                relay_segment_scan(
+                                    &state,
+                                    &base,
+                                    &desc.name,
+                                    &t,
+                                    off,
+                                    max - spent,
+                                    &key_b64,
+                                )
+                                .await
+                            }
+                            None => None,
+                        }
                     }
                     None => None,
                 };
@@ -3992,6 +4003,116 @@ fn json_ok(v: serde_json::Value) -> Response {
         .body(Body::from(v.to_string()))
         .unwrap()
 }
+
+/// The target of a fleet-internal peer RPC. **A name is not an
+/// identity** (the hardening program's central rule): a relay naming
+/// only `(stream, segment)` binds to whatever descriptor occupies that
+/// name when the request LANDS, so a delete/recreate in flight lets a
+/// stale request read — or fence and delete — the replacement's state
+/// (round-19 ABA findings). Every internal request therefore carries
+/// the sender's incarnation and the identity it derived, and the
+/// receiver re-derives both before touching anything.
+pub(crate) struct InternalTarget {
+    pub stream_epoch: [u8; 16],
+    pub seg_id: u32,
+    pub identity: [u8; 16],
+}
+
+impl InternalTarget {
+    pub fn of(desc: &StreamDesc, seg_id: u32) -> Option<Self> {
+        Some(InternalTarget {
+            stream_epoch: desc.epoch_bytes()?,
+            seg_id,
+            identity: desc.dynamic_segment_identity(seg_id),
+        })
+    }
+    pub fn headers(&self) -> [(&'static str, String); 3] {
+        [
+            (
+                "streams-internal-epoch",
+                crate::crypto::hex(&self.stream_epoch),
+            ),
+            ("streams-internal-seg", self.seg_id.to_string()),
+            (
+                "streams-internal-identity",
+                crate::crypto::hex(&self.identity),
+            ),
+        ]
+    }
+}
+
+/// Receiver-side verification of an internal RPC target against the
+/// descriptor that currently owns the name. Returns (segment, derived
+/// identity), or a response the handler must return unchanged:
+/// epoch mismatch, unknown segment, or identity disagreement all answer
+/// `409 stale_target` WITHOUT touching any state — the caller's
+/// incarnation is gone and its request must never bind to the
+/// replacement.
+pub(crate) fn verify_internal_target(
+    desc: &StreamDesc,
+    headers: &HeaderMap,
+) -> Result<(u32, [u8; 16]), Response> {
+    let h = |n: &str| {
+        headers
+            .get(n)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    let stale = |why: &str| {
+        perr(
+            StatusCode::CONFLICT,
+            "stale_target",
+            &format!("internal target does not match the current incarnation ({why})"),
+            None,
+            false,
+        )
+    };
+    let (Some(epoch_hex), Some(seg_id)) = (
+        h("streams-internal-epoch"),
+        h("streams-internal-seg").and_then(|v| v.parse::<u32>().ok()),
+    ) else {
+        return Err(perr(
+            StatusCode::BAD_REQUEST,
+            "invalid_target",
+            "internal requests must carry epoch and segment headers",
+            None,
+            false,
+        ));
+    };
+    let Some(want_epoch) =
+        crate::crypto::unhex(&epoch_hex).and_then(|v| <[u8; 16]>::try_from(v).ok())
+    else {
+        return Err(perr(
+            StatusCode::BAD_REQUEST,
+            "invalid_target",
+            "malformed internal epoch",
+            None,
+            false,
+        ));
+    };
+    if desc.epoch_bytes() != Some(want_epoch) {
+        return Err(stale("epoch"));
+    }
+    // Segment 0 is the implicit single segment and always exists.
+    let known = seg_id == 0
+        || desc
+            .segments
+            .as_ref()
+            .is_some_and(|m| m.segments.iter().any(|sg| sg.seg_id == seg_id));
+    if !known {
+        return Err(stale("segment"));
+    }
+    let identity = desc.dynamic_segment_identity(seg_id);
+    if let Some(want_id) = h("streams-internal-identity") {
+        let matches = crate::crypto::unhex(&want_id)
+            .and_then(|v| <[u8; 16]>::try_from(v).ok())
+            .is_some_and(|w| w == identity);
+        if !matches {
+            return Err(stale("identity"));
+        }
+    }
+    Ok((seg_id, identity))
+}
 //
 // A split child lives on its own shard route, so a consumer's segments
 // can be owned by different instances. The saga driver and the pull
@@ -4007,14 +4128,41 @@ async fn relay_sweep_segment(
     state: &Arc<AppState>,
     base: &str,
     name: &str,
-    seg_id: u32,
+    target: &InternalTarget,
     cname: &str,
     fence_below: u64,
     steps_left: &std::sync::Arc<std::sync::atomic::AtomicI64>,
 ) -> Result<(), (&'static str, String)> {
+    let seg_id = target.seg_id;
+    /// Per-relay chunk. Reserved ATOMICALLY before the request goes out
+    /// (round-19): eight concurrent sweeps that each merely READ
+    /// steps_left could each ask for a full chunk and collectively blow
+    /// past the per-request step budget.
+    const RELAY_CHUNK: i64 = 128;
     loop {
-        let budget = steps_left.load(std::sync::atomic::Ordering::SeqCst);
-        if budget <= 0 {
+        // Reserve first, refund the unused remainder after the reply —
+        // a load-then-send left the budget shared, not partitioned.
+        let mut reserved = 0i64;
+        loop {
+            let cur = steps_left.load(std::sync::atomic::Ordering::SeqCst);
+            if cur <= 0 {
+                break;
+            }
+            let take = cur.min(RELAY_CHUNK);
+            if steps_left
+                .compare_exchange(
+                    cur,
+                    cur - take,
+                    std::sync::atomic::Ordering::SeqCst,
+                    std::sync::atomic::Ordering::SeqCst,
+                )
+                .is_ok()
+            {
+                reserved = take;
+                break;
+            }
+        }
+        if reserved <= 0 {
             return Err((
                 "segment_cleanup_incomplete",
                 format!(
@@ -4030,9 +4178,12 @@ async fn relay_sweep_segment(
                 "consumer": cname,
                 "segId": seg_id,
                 "fenceBelow": fence_below,
-                "maxSteps": budget.min(128),
+                "maxSteps": reserved,
             }));
-        if let Some(t) = &state.auth_token {
+        for (k, v) in target.headers() {
+            req = req.header(k, v);
+        }
+        if let Some(t) = &state.fleet_internal_token {
             req = req.header("authorization", format!("Bearer {t}"));
         }
         let reply: Option<serde_json::Value> = match req.send().await {
@@ -4040,6 +4191,8 @@ async fn relay_sweep_segment(
             _ => None,
         };
         let Some(v) = reply else {
+            // Refund: the peer may have used nothing at all.
+            steps_left.fetch_add(reserved, std::sync::atomic::Ordering::SeqCst);
             return Err((
                 "segment_unavailable",
                 format!(
@@ -4048,8 +4201,8 @@ async fn relay_sweep_segment(
                 ),
             ));
         };
-        let used = v["steps"].as_i64().unwrap_or(1).max(1);
-        steps_left.fetch_sub(used, std::sync::atomic::Ordering::SeqCst);
+        let used = v["steps"].as_i64().unwrap_or(reserved).clamp(0, reserved);
+        steps_left.fetch_add(reserved - used, std::sync::atomic::Ordering::SeqCst);
         if v["complete"].as_bool() == Some(true) {
             return Ok(());
         }
@@ -4092,8 +4245,23 @@ pub(crate) async fn internal_sweep_segment(
         Ok(Some(d)) => d,
         _ => return perr(StatusCode::NOT_FOUND, "not_found", "stream", None, false),
     };
-    let route = desc.segment_route_by_id(doc.seg_id);
-    let identity = desc.dynamic_segment_identity(doc.seg_id);
+    // ABA GUARD (round-19): a stale sweep must never fence or delete a
+    // RECREATED stream's consumer state. Verified before the engine is
+    // even opened, so a mismatch touches nothing.
+    let (seg_id, identity) = match verify_internal_target(&desc, &headers) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
+    if seg_id != doc.seg_id {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "invalid_target",
+            "segment header and body disagree",
+            None,
+            false,
+        );
+    }
+    let route = desc.segment_route_by_id(seg_id);
     let engine = match state.engine_for(&route).await {
         Ok(e) => e,
         Err(r) => return r, // ownership moved: the 409 tells the relayer
@@ -4154,15 +4322,14 @@ pub(crate) async fn internal_queue_cursor(
             .and_then(|v| v.to_str().ok())
             .map(str::to_string)
     };
-    let (Some(consumer), Some(seg_id), Some(cgen)) = (
+    let (Some(consumer), Some(cgen)) = (
         q("streams-internal-consumer"),
-        q("streams-internal-seg").and_then(|v| v.parse::<u32>().ok()),
         q("streams-internal-gen").and_then(|v| v.parse::<u64>().ok()),
     ) else {
         return perr(
             StatusCode::BAD_REQUEST,
             "invalid_body",
-            "consumer/seg/gen headers required",
+            "consumer/gen headers required",
             None,
             false,
         );
@@ -4171,8 +4338,13 @@ pub(crate) async fn internal_queue_cursor(
         Ok(Some(d)) => d,
         _ => return perr(StatusCode::NOT_FOUND, "not_found", "stream", None, false),
     };
+    // ABA GUARD: cursor/tail state of a RECREATED stream must never be
+    // reported to a caller holding the previous incarnation.
+    let (seg_id, identity) = match verify_internal_target(&desc, &headers) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
     let route = desc.segment_route_by_id(seg_id);
-    let identity = desc.dynamic_segment_identity(seg_id);
     let engine = match state.engine_for(&route).await {
         Ok(e) => e,
         Err(r) => return r,
@@ -4197,7 +4369,7 @@ async fn relay_queue_cursor(
     state: &Arc<AppState>,
     base: &str,
     name: &str,
-    seg_id: u32,
+    target: &InternalTarget,
     cname: &str,
     cgen: u64,
 ) -> Option<(u64, u64)> {
@@ -4205,8 +4377,10 @@ async fn relay_queue_cursor(
         .get(format!("{base}/v1/internal/queue-cursor/{name}"))
         .timeout(std::time::Duration::from_secs(15))
         .header("streams-internal-consumer", cname)
-        .header("streams-internal-seg", seg_id.to_string())
         .header("streams-internal-gen", cgen.to_string());
+    for (k, v) in target.headers() {
+        req = req.header(k, v);
+    }
     if let Some(t) = &state.fleet_internal_token {
         req = req.header("authorization", format!("Bearer {t}"));
     }
@@ -4236,8 +4410,7 @@ pub(crate) async fn internal_segment_scan(
             .and_then(|v| v.to_str().ok())
             .map(str::to_string)
     };
-    let (Some(seg_id), Some(from), Some(max_bytes), Some(key_b64)) = (
-        q("streams-internal-seg").and_then(|v| v.parse::<u32>().ok()),
+    let (Some(from), Some(max_bytes), Some(key_b64)) = (
         q("streams-internal-from").and_then(|v| v.parse::<u64>().ok()),
         q("streams-internal-max-bytes")
             .and_then(|v| v.parse::<usize>().ok())
@@ -4250,7 +4423,7 @@ pub(crate) async fn internal_segment_scan(
         return perr(
             StatusCode::BAD_REQUEST,
             "invalid_body",
-            "seg/from/max-bytes/key headers required",
+            "from/max-bytes/key headers required",
             None,
             false,
         );
@@ -4259,12 +4432,17 @@ pub(crate) async fn internal_segment_scan(
         Ok(Some(d)) => d,
         _ => return perr(StatusCode::NOT_FOUND, "not_found", "stream", None, false),
     };
+    // ABA GUARD: never serve a recreated stream's records to a caller
+    // that asked about the previous incarnation.
+    let (seg_id, identity) = match verify_internal_target(&desc, &headers) {
+        Ok(v) => v,
+        Err(r) => return r,
+    };
     let (skey, epoch) = match crate::http::check_key(Some(&key_b64), &desc) {
         crate::http::KeyCheck::Ok(k, e) => (k, e),
         _ => return perr(StatusCode::FORBIDDEN, "wrong_key", "key", None, false),
     };
     let route = desc.segment_route_by_id(seg_id);
-    let identity = desc.dynamic_segment_identity(seg_id);
     let engine = match state.engine_for(&route).await {
         Ok(e) => e,
         Err(r) => return r,
@@ -4324,7 +4502,7 @@ async fn relay_segment_scan(
     state: &Arc<AppState>,
     base: &str,
     name: &str,
-    seg_id: u32,
+    target: &InternalTarget,
     from: u64,
     max_bytes: usize,
     key_b64: &str,
@@ -4332,10 +4510,12 @@ async fn relay_segment_scan(
     let mut req = crate::http::peer_client()
         .get(format!("{base}/v1/internal/segment-scan/{name}"))
         .timeout(std::time::Duration::from_secs(20))
-        .header("streams-internal-seg", seg_id.to_string())
         .header("streams-internal-from", from.to_string())
         .header("streams-internal-max-bytes", max_bytes.to_string())
         .header("stream-encryption-key", key_b64);
+    for (k, v) in target.headers() {
+        req = req.header(k, v);
+    }
     if let Some(t) = &state.fleet_internal_token {
         req = req.header("authorization", format!("Bearer {t}"));
     }
@@ -4374,16 +4554,19 @@ async fn relay_segment_tail(
     state: &Arc<AppState>,
     base: &str,
     name: &str,
-    seg_id: u32,
+    target: &InternalTarget,
     key_b64: &str,
 ) -> Option<u64> {
-    let tok = crate::offsets::encode_ep(seg_id, crate::offsets::Offset::START);
+    let tok = crate::offsets::encode_ep(target.seg_id, crate::offsets::Offset::START);
     let mut req = crate::http::peer_client()
         .get(format!(
             "{base}/v1/internal/segment-read/{name}?offset={tok}&head=1"
         ))
         .timeout(std::time::Duration::from_secs(15))
         .header("stream-encryption-key", key_b64);
+    for (k, v) in target.headers() {
+        req = req.header(k, v);
+    }
     if let Some(t) = &state.fleet_internal_token {
         req = req.header("authorization", format!("Bearer {t}"));
     }
@@ -4599,6 +4782,10 @@ async fn product_consumer_delete(
     let mut cur_desc = desc.clone();
     for _round in 0..5 {
         let segs = consumer_segments(&cur_desc);
+        // The incarnation this round's sweep is bound to. A relayed
+        // step carries it so a peer can refuse the request outright if
+        // the name has since been recreated (round-19 ABA).
+        let round_epoch = cur_desc.epoch_bytes();
         let sweeps = segs.iter().copied().map(|(seg_id, identity, route, _)| {
             let state = state.clone();
             let cname = cname.clone();
@@ -4613,11 +4800,25 @@ async fn product_consumer_delete(
                         // ends before the await (axum Body is !Sync).
                         let peer = crate::http::replay_peer_url(&state, &r).map(|(_, b)| b);
                         if let Some(base) = peer {
+                            let Some(stream_epoch) = round_epoch else {
+                                return Err((
+                                    "segment_unavailable",
+                                    format!(
+                                        "segment {seg_id}: no incarnation to bind the \
+                                         relayed sweep to; retry"
+                                    ),
+                                ));
+                            };
+                            let t = InternalTarget {
+                                stream_epoch,
+                                seg_id,
+                                identity,
+                            };
                             return relay_sweep_segment(
                                 &state,
                                 &base,
                                 &name,
-                                seg_id,
+                                &t,
                                 &cname,
                                 cgen + 1,
                                 &steps_left,
@@ -5049,8 +5250,15 @@ async fn product_consumer_pull(
                     let peer = crate::http::replay_peer_url(&state, &r).map(|(_, b)| b);
                     if let Some(base) = peer {
                         if let Some((cur, tail)) =
-                            relay_queue_cursor(&state, &base, &desc.name, seg_id, &cname, cgen)
-                                .await
+                            match InternalTarget::of(&desc, seg_id) {
+                                Some(t) => {
+                                    relay_queue_cursor(
+                                        &state, &base, &desc.name, &t, &cname, cgen,
+                                    )
+                                    .await
+                                }
+                                None => None,
+                            }
                         {
                             match sealed_end {
                                 Some(end) if cur >= end => continue,
@@ -5952,6 +6160,98 @@ mod tests {
         assert_eq!(parse_idle_secs("90"), Some(90));
         assert_eq!(parse_idle_secs("0d"), None);
         assert_eq!(parse_idle_secs("x"), None);
+    }
+
+    // Round-19 ABA: a peer RPC that names only (stream, segment) binds
+    // to whatever descriptor holds that name when it LANDS. These pin
+    // the guard that makes a stale relay refuse instead.
+    fn desc_with(name: &str, epoch_hex: &str) -> StreamDesc {
+        StreamDesc {
+            name: name.to_string(),
+            stream_epoch: epoch_hex.to_string(),
+            seal_gen_counter: 0,
+            key_fingerprint: String::new(),
+            created_ms: 0,
+            expires_at_ms: None,
+            deleted: false,
+            soft_deleted: false,
+            forked_from: None,
+            fork_children: Vec::new(),
+            init: None,
+            sealing: None,
+            seal_op: None,
+            content_type: "application/json".to_string(),
+            ttl_secs: None,
+            segments: None,
+            sealed: false,
+            watch_definitions: Vec::new(),
+            watch_sig_key: None,
+            parent_ref_pending: false,
+            layout_version: crate::registry::LAYOUT_VERSION,
+        }
+    }
+
+    fn target_headers(d: &StreamDesc, seg: u32) -> HeaderMap {
+        let t = InternalTarget::of(d, seg).expect("descriptor has an epoch");
+        let mut h = HeaderMap::new();
+        for (k, v) in t.headers() {
+            h.insert(k, axum::http::HeaderValue::from_str(&v).unwrap());
+        }
+        h
+    }
+
+    #[test]
+    fn internal_target_accepts_its_own_incarnation() {
+        let d = desc_with("orders", &"11".repeat(16));
+        let h = target_headers(&d, 0);
+        let (seg, id) = verify_internal_target(&d, &h).expect("same incarnation must verify");
+        assert_eq!(seg, 0);
+        assert_eq!(id, d.dynamic_segment_identity(0));
+    }
+
+    #[test]
+    fn internal_target_refuses_a_recreated_stream() {
+        // The saga/read was issued against incarnation X...
+        let x = desc_with("orders", &"11".repeat(16));
+        let h = target_headers(&x, 0);
+        // ...and the name now holds incarnation Y. The request must NOT
+        // bind: a stale sweep would otherwise fence and delete Y's
+        // generation-1 consumer state.
+        let y = desc_with("orders", &"22".repeat(16));
+        let err = verify_internal_target(&y, &h).expect_err("recreation must refuse");
+        assert_eq!(err.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn internal_target_refuses_an_unknown_segment() {
+        let d = desc_with("orders", &"33".repeat(16));
+        let mut h = target_headers(&d, 0);
+        h.insert(
+            "streams-internal-seg",
+            axum::http::HeaderValue::from_static("7"),
+        );
+        let err = verify_internal_target(&d, &h).expect_err("unknown segment must refuse");
+        assert_eq!(err.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn internal_target_refuses_a_mismatched_identity() {
+        let d = desc_with("orders", &"44".repeat(16));
+        let mut h = target_headers(&d, 0);
+        h.insert(
+            "streams-internal-identity",
+            axum::http::HeaderValue::from_str(&crate::crypto::hex(&[9u8; 16])).unwrap(),
+        );
+        let err = verify_internal_target(&d, &h).expect_err("identity mismatch must refuse");
+        assert_eq!(err.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
+    fn internal_target_requires_the_headers() {
+        let d = desc_with("orders", &"55".repeat(16));
+        let err = verify_internal_target(&d, &HeaderMap::new())
+            .expect_err("an untargeted internal request must be rejected");
+        assert_eq!(err.status(), StatusCode::BAD_REQUEST);
     }
 
     // Regression (two-instance rig): an ownership 409 translated to
