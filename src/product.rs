@@ -6179,6 +6179,8 @@ mod tests {
     fn desc_with(name: &str, epoch_hex: &str) -> StreamDesc {
         StreamDesc {
             name: name.to_string(),
+            account_id: None,
+            project_id: None,
             stream_epoch: epoch_hex.to_string(),
             seal_gen_counter: 0,
             key_fingerprint: String::new(),

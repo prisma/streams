@@ -143,6 +143,15 @@ pub struct AppState {
     /// Bearer token required on /v1/* when set (pilot authn). This is the
     /// CUSTOMER-facing account token; it never authorizes /v1/internal/*.
     pub auth_token: Option<String>,
+    /// Billing tenant boundary (docs/OBSERVABILITY-BILLING.md §3.2):
+    /// explicit account/project identity from the control plane's
+    /// deployment config — never inferred from stream names. Persisted
+    /// into every descriptor at creation.
+    pub account_id: String,
+    pub project_id: String,
+    /// Telemetry source coordinates.
+    pub cell_id: String,
+    pub region: String,
     /// Value of the `Prisma-Streams-Origin` header stamped on every
     /// response: instance name (or version) — proof the response came
     /// from a Streams server rather than the platform edge.
@@ -154,7 +163,6 @@ pub struct AppState {
     /// authorize a product operation. Required whenever fleet mode is on
     /// (startup refuses otherwise); None = internal routes fail closed.
     pub fleet_internal_token: Option<String>,
-    pub metrics: Arc<crate::metrics::Metrics>,
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
@@ -629,7 +637,6 @@ async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
             "usage_tracked": crate::usage::tracked_streams(),
             "keycache": state.keys.len(),
             "registry_cache": state.registry.cache_len(),
-            "metrics": state.metrics.len(),
             "seal_fence_entries": fence_entries,
             "seal_fence_max_generation": fence_max_gen,
             "consumer_fence_entries": cfence_entries,
@@ -777,154 +784,6 @@ async fn debug_usage(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
         "streams": streams,
     }))
     .into_response()
-}
-
-/// Billing emitter: every BILLING_INTERVAL_SECS, append one JSON-array
-/// record batch to the internal billing stream (BILLING_STREAM, default
-/// "_billing") — one record per active stream with the DELTAS since the
-/// last emission: requests, records, bytes_in, bytes_out, plus cumulative
-/// plaintext_bytes/frame_bytes (stored volume pre-compression and the
-/// achieved compression rate are derivable from these). Disabled with a
-/// warning when BILLING_STREAM_KEY is unset. The billing stream's own
-/// usage is excluded to avoid self-feedback.
-/// Server-internal segment seal: enqueue a close-only commit (no key
-/// material needed — close writes tail state only) and return the frozen
-pub fn spawn_billing(state: Arc<AppState>) {
-    let Ok(key) = std::env::var("BILLING_STREAM_KEY") else {
-        tracing::warn!("BILLING_STREAM_KEY unset; billing emitter disabled");
-        return;
-    };
-    let name = std::env::var("BILLING_STREAM").unwrap_or_else(|_| "_billing".into());
-    let interval = std::env::var("BILLING_INTERVAL_SECS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(60u64);
-    tokio::spawn(async move {
-        let self_hash = crate::crypto::stream_hash(&name);
-        let mut hdrs = HeaderMap::new();
-        if let Ok(v) = axum::http::HeaderValue::from_str(&key) {
-            hdrs.insert("stream-encryption-key", v);
-        }
-        hdrs.insert(
-            "content-type",
-            axum::http::HeaderValue::from_static("application/json"),
-        );
-        // Idempotent create (409/conflict is fine on an existing stream).
-        let _ = create_stream(state.clone(), name.clone(), hdrs.clone(), Bytes::new()).await;
-        // POSTURE (static audit): this emitter is best-effort usage
-        // telemetry, not a production billing system of record — that
-        // needs a durable outbox/ledger (deltas persisted transactionally
-        // with an ack cursor). Known accepted gaps until then: overflow-
-        // aggregate traffic (past the tracked-stream cap) has no
-        // per-stream attribution and is never emitted here (visible via
-        // /v1/debug/usage only), and checkpoints live in process memory —
-        // a restart re-bills current cumulative values. What the emitter
-        // DOES guarantee: no interval is dropped (checkpoints advance
-        // only after the append succeeds), evict-and-return incarnations
-        // are told apart by counter generation instead of value
-        // regression (which missed regrow-past-checkpoint and
-        // under-billed), and checkpoint memory does not grow with every
-        // stream ever seen.
-        let mut prev: BillingCheckpoints = std::collections::HashMap::new();
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(interval)).await;
-            let now_ms = crate::shard::now_ms();
-            let mut recs: Vec<serde_json::Value> = Vec::new();
-            let mut staged: Vec<([u8; 16], (u64, (u64, u64, u64, u64)))> = Vec::new();
-            let mut seen: std::collections::HashSet<[u8; 16]> = std::collections::HashSet::new();
-            for (h, cgen, req, rec, bi, bo, pt, fr) in crate::usage::snapshot() {
-                if h == self_hash {
-                    continue;
-                }
-                seen.insert(h);
-                let d = billing_delta(&prev, &h, cgen, req, rec, bi, bo);
-                staged.push((h, (cgen, (req, rec, bi, bo))));
-                if d == (0, 0, 0, 0) {
-                    continue;
-                }
-                recs.push(serde_json::json!({
-                    "ts": now_ms,
-                    "stream": crate::crypto::hex(&h),
-                    "requests": d.0,
-                    "records": d.1,
-                    "bytes_in": d.2,
-                    "bytes_out": d.3,
-                    "plaintext_bytes_total": pt,
-                    "frame_bytes_total": fr,
-                }));
-            }
-            if recs.is_empty() {
-                // Still advance checkpoints for streams whose counters
-                // moved without billable deltas, and drop checkpoints for
-                // evicted streams (nothing outstanding to lose — their
-                // next incarnation carries a fresh generation anyway).
-                for (h, cur) in staged {
-                    prev.insert(h, cur);
-                }
-                prev.retain(|h, _| seen.contains(h));
-                continue;
-            }
-            let body = serde_json::to_vec(&recs).unwrap_or_default();
-            let resp = append(
-                state.clone(),
-                name.clone(),
-                hdrs.clone(),
-                Body::from(body),
-                None,
-                None,
-                None,
-            )
-            .await;
-            if resp.status().is_success() {
-                for (h, cur) in staged {
-                    prev.insert(h, cur);
-                }
-                // Checkpoint hygiene: entries for streams no longer in the
-                // snapshot are dead weight (their counters object is gone;
-                // a returning stream gets a new generation). Only after a
-                // SUCCESSFUL emit — an evicted-mid-failure stream keeps
-                // nothing outstanding here by construction (its row was in
-                // this emit or a previous one).
-                prev.retain(|h, _| seen.contains(h));
-            } else {
-                tracing::warn!(
-                    status = %resp.status(),
-                    "billing emit failed; interval delta retained for retry"
-                );
-            }
-        }
-    });
-}
-
-/// stream → (counter generation, cumulative checkpoint) for the emitter.
-type BillingCheckpoints = std::collections::HashMap<[u8; 16], (u64, (u64, u64, u64, u64))>;
-
-/// One stream's billable delta against its checkpoint. Same generation
-/// and monotonic counters → plain difference. A DIFFERENT generation
-/// means the tracked entry was evicted and re-created: bill the fresh
-/// cumulative in full — value-regression detection alone missed the
-/// evict → return → regrow-past-checkpoint case (old checkpoint 10,
-/// new incarnation already at 20 reads as "delta 10" when the truth is
-/// 20). In-generation regression cannot happen (counters only grow),
-/// but is handled the same way defensively.
-fn billing_delta(
-    prev: &BillingCheckpoints,
-    h: &[u8; 16],
-    generation: u64,
-    req: u64,
-    rec: u64,
-    bi: u64,
-    bo: u64,
-) -> (u64, u64, u64, u64) {
-    match prev.get(h) {
-        Some((pgen, p))
-            if *pgen == generation && req >= p.0 && rec >= p.1 && bi >= p.2 && bo >= p.3 =>
-        {
-            (req - p.0, rec - p.1, bi - p.2, bo - p.3)
-        }
-        Some(_) => (req, rec, bi, bo),
-        None => (req, rec, bi, bo),
-    }
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -1222,6 +1081,21 @@ async fn product_entry_axum(
     if let Some(r) = crate::product::product_auth_gate(&state, &name, &method, &query, &headers) {
         return crate::product::with_product_cors(r);
     }
+    // System namespace guard (docs/OBSERVABILITY-BILLING.md §8/§15) —
+    // same rule as the raw surface: the leading `_` segment belongs to
+    // the telemetry planes and no customer credential reaches it. After
+    // auth, before body buffering. Note: usage LOOKUP endpoints live on
+    // this surface under `{name}/usage`, which is a sub-resource of a
+    // CUSTOMER stream — unaffected by this guard.
+    if crate::billing::is_reserved_stream(&name) {
+        return crate::product::with_product_cors(crate::product::perr(
+            StatusCode::FORBIDDEN,
+            "reserved_stream",
+            "names beginning with '_' are reserved for the system",
+            None,
+            false,
+        ));
+    }
     let body = match axum::body::to_bytes(req.into_body(), MAX_BODY_BYTES).await {
         Ok(b) => b,
         Err(_) => {
@@ -1280,6 +1154,19 @@ async fn stream_entry_inner(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
             "bearer token required",
+        );
+    }
+    // The `_` namespace is the system's (docs/OBSERVABILITY-BILLING.md
+    // §8/§15): `_usage`, `_ops_metrics` and `_ops_events` live there,
+    // customer credentials never reach them (their own key + the fleet
+    // credential do), and no customer stream can squat a future system
+    // name. After auth (an unauthenticated caller learns nothing),
+    // before any registry read.
+    if crate::billing::is_reserved_stream(&name) {
+        return err_resp(
+            StatusCode::FORBIDDEN,
+            "reserved_stream",
+            "names beginning with '_' are reserved for the system",
         );
     }
     match method {
@@ -1716,7 +1603,7 @@ async fn handle_of(
     Ok((engine, handle))
 }
 
-fn rand_epoch() -> [u8; 16] {
+pub(crate) fn rand_epoch() -> [u8; 16] {
     use rand::RngCore;
     let mut e = [0u8; 16];
     rand::rng().fill_bytes(&mut e);
@@ -1885,10 +1772,11 @@ fn fresh_desc(
     ttl_secs: Option<u64>,
     expires_at_ms: Option<i64>,
 ) -> StreamDesc {
-    let _ = state;
     let epoch = rand_epoch();
     StreamDesc {
         name: name.to_string(),
+        account_id: Some(state.account_id.clone()),
+        project_id: Some(state.project_id.clone()),
         stream_epoch: hex(&epoch),
         seal_gen_counter: 0,
         key_fingerprint: key.fingerprint(&epoch),
@@ -4649,9 +4537,7 @@ async fn append_core(
     }
     match outcome {
         Ok(ack) => {
-            if !ack.duplicate {
-                state.metrics.append(&name, metric_bytes);
-            }
+            if !ack.duplicate {}
             touch_ttl(&state, &desc); // writes slide the idle window
             // A DUPLICATE that did not close: the producer tuple was
             // spent by an earlier NON-closing operation, so this close
@@ -5311,7 +5197,6 @@ async fn read_fork_inner(
             }
         }
         if end <= scan_from {
-            state.metrics.read(&desc.name, 0);
             let mut r = Response::builder()
                 .status(StatusCode::NO_CONTENT)
                 .header("Stream-Next-Offset", tail_token(end))
@@ -5357,7 +5242,6 @@ async fn read_fork_inner(
         }
         buf.freeze()
     };
-    state.metrics.read(&desc.name, body.len() as u64);
     let closed_now = handle.state.lock().unwrap().durable.closed;
     let mut r = Response::builder()
         .status(StatusCode::OK)
@@ -5698,7 +5582,6 @@ pub(crate) async fn read_inner(
             // Timeout (or closed-at-tail): 204 with resume state. Metered:
             // a tail probe is billable work even when it returns no bytes
             // (run-1 finding: `offset=now` reads were invisible to billing).
-            state.metrics.read(&name, 0);
             let mut r = Response::builder()
                 .status(StatusCode::NO_CONTENT)
                 .header("Stream-Next-Offset", tail_token(end))
@@ -5818,7 +5701,6 @@ pub(crate) async fn read_inner(
         ))
         .await;
     }
-    state.metrics.read(&name, body.len() as u64);
     let mut r = Response::builder()
         .status(StatusCode::OK)
         .header(
@@ -7106,75 +6988,6 @@ struct QueueReceiveBody {
 
 // ---- internal metrics stream flusher (old-impl pattern: __stream_metrics__) ----
 
-pub async fn metrics_flusher(
-    state: Arc<AppState>,
-    metrics_key: String,
-    instance: String,
-    lb_url: String,
-) {
-    // Billing records go through the ROUTER like any tenant write (run-3
-    // finding: local appends to a shared-namespace stream fence-fight the
-    // shard's ring owner). Lossy by design: failures log and drop.
-    let auth = state.auth_token.clone().unwrap_or_default();
-    let client = reqwest::Client::builder()
-        .pool_idle_timeout(Duration::from_secs(4))
-        .timeout(Duration::from_secs(10))
-        .build()
-        .expect("metrics http client");
-    let url = format!("{}/v1/stream/__metrics__", lb_url.trim_end_matches('/'));
-    let mut created = false;
-    let mut seq = 0u64;
-    let mut tick = tokio::time::interval(Duration::from_secs(15));
-    loop {
-        tick.tick().await;
-        let drained = state.metrics.drain();
-        if drained.is_empty() {
-            continue;
-        }
-        if !created {
-            match client
-                .put(&url)
-                .header("authorization", format!("Bearer {auth}"))
-                .header("stream-encryption-key", &metrics_key)
-                .header("content-type", "application/json")
-                .send()
-                .await
-            {
-                Ok(r) if r.status().is_success() => created = true,
-                Ok(r) => {
-                    tracing::warn!("metrics stream create via router: {}", r.status());
-                    continue;
-                }
-                Err(e) => {
-                    tracing::warn!("metrics stream create via router: {e}");
-                    continue;
-                }
-            }
-        }
-        seq += 1;
-        let record = json!([{
-            "ts_ms": now_ms(),
-            "instance": instance,
-            "seq": seq,
-            "interval_s": 15,
-            "streams": drained,
-        }]);
-        match client
-            .post(&url)
-            .header("authorization", format!("Bearer {auth}"))
-            .header("stream-encryption-key", &metrics_key)
-            .header("content-type", "application/json")
-            .json(&record)
-            .send()
-            .await
-        {
-            Ok(r) if r.status().is_success() => {}
-            Ok(r) => tracing::warn!("metrics append via router: {}", r.status()),
-            Err(e) => tracing::warn!("metrics append via router: {e}"),
-        }
-    }
-}
-
 #[cfg(test)]
 mod tests {
 
@@ -7215,37 +7028,5 @@ mod tests {
         stream_slot_release(&mut m, &h);
         stream_slot_release(&mut m, &h);
         assert!(!m.contains_key(&h), "zero-count entry must be removed");
-    }
-
-    /// Review round 4: value-regression reset detection under-billed the
-    /// evict → return → regrow case. Generation ids close it.
-    #[test]
-    fn billing_deltas_follow_counter_generations() {
-        let h = [7u8; 16];
-        let mut prev: BillingCheckpoints = HashMap::new();
-
-        // First sighting: bill the full cumulative.
-        assert_eq!(
-            billing_delta(&prev, &h, 1, 10, 10, 100, 0),
-            (10, 10, 100, 0)
-        );
-        prev.insert(h, (1, (10, 10, 100, 0)));
-
-        // Same generation, counters grew: plain difference.
-        assert_eq!(billing_delta(&prev, &h, 1, 15, 12, 130, 5), (5, 2, 30, 5));
-        prev.insert(h, (1, (15, 12, 130, 5)));
-
-        // Evicted at 15 requests, returned, and REGREW PAST the old
-        // checkpoint before the next tick: cumulative 20 under a new
-        // generation. Value comparison alone would emit 5 — the truth
-        // for the new incarnation is all 20.
-        assert_eq!(
-            billing_delta(&prev, &h, 2, 20, 20, 200, 0),
-            (20, 20, 200, 0)
-        );
-
-        // Same generation with a (defensively handled) regression also
-        // re-bills the cumulative rather than underflowing.
-        assert_eq!(billing_delta(&prev, &h, 1, 3, 1, 10, 0), (3, 1, 10, 0));
     }
 }

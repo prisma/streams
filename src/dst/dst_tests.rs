@@ -4831,7 +4831,10 @@ async fn http_rig_inner(
         auth_token: auth,
         origin_marker: "dst-instance".to_string(),
         fleet_internal_token: Some("dst-internal-token".to_string()),
-        metrics: Arc::new(crate::metrics::Metrics::default()),
+        account_id: "acct_test".to_string(),
+        project_id: "proj_test".to_string(),
+        cell_id: "cell_test".to_string(),
+        region: "test".to_string(),
     });
     let app = crate::http::router(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -6644,6 +6647,10 @@ async fn product_clean_switch_rejections() {
     let (st, _, _) = preq(addr, "GET", "/v1/streams/legacy?offset=0", &[], b"").await;
     assert_eq!(st, 400);
     // Reserved namespace: product name, raw create, raw subpath.
+    // Since the telemetry cutover the whole `_` prefix refuses as
+    // 403 reserved_stream (docs/OBSERVABILITY-BILLING.md §8/§15) —
+    // earlier it fell through to the name grammar's 400. Refusal
+    // either way; the guard now names the reason.
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -6652,7 +6659,7 @@ async fn product_clean_switch_rejections() {
         br#"{"format":{"kind":"json"}}"#,
     )
     .await;
-    assert_eq!(st, 400);
+    assert_eq!(st, 403);
     let (st, _, b) = preq(
         addr,
         "PUT",
@@ -6664,7 +6671,9 @@ async fn product_clean_switch_rejections() {
         b"",
     )
     .await;
-    assert_eq!(st, 400, "{}", String::from_utf8_lossy(&b));
+    // Raw `__ds` create: refused as reserved since the telemetry
+    // cutover (was the __ds dead-route 400/404 family).
+    assert_eq!(st, 403, "{}", String::from_utf8_lossy(&b));
     let (st, _, _) = preq(addr, "GET", "/v1/stream/__ds/subscriptions", &[], b"").await;
     assert_eq!(st, 404);
     // Reserved final segments can never be stream names: the path
@@ -16814,6 +16823,8 @@ async fn catalog_pages_without_scanning_the_world() {
         let name = format!("cat-{i:05}");
         let d = crate::registry::StreamDesc {
             seal_gen_counter: 0,
+            account_id: None,
+            project_id: None,
             name: name.clone(),
             stream_epoch: format!("{:032x}", i),
             key_fingerprint: "fp".into(),
@@ -18531,5 +18542,67 @@ async fn consumer_fence_survives_ownership_move() {
         rows_after, rows_before,
         "the refused generation-1 receive still wrote delivery-state rows"
     );
+    engine_shutdown(&state).await;
+}
+
+// ---------------------------------------------------------------
+// Telemetry cutover (docs/OBSERVABILITY-BILLING.md): the `_` namespace
+// belongs to the system planes.
+// ---------------------------------------------------------------
+
+/// No customer credential — even a fully valid one — may create, read,
+/// or append to a reserved system stream on either public surface, and
+/// creation captures the billing tenant identity in the descriptor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reserved_namespace_refuses_customer_credentials() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    for target in ["_usage", "_ops_metrics", "_ops_events", "_anything"] {
+        // Product surface: create / append / read.
+        let (st, _, _) = preq(
+            addr,
+            "PUT",
+            &format!("/v1/streams/{target}"),
+            &key,
+            br#"{"format":{"kind":"json"}}"#,
+        )
+        .await;
+        assert_eq!(st, 403, "product create of {target}");
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            &format!("/v1/streams/{target}/records"),
+            &key,
+            br#"{"x":1}"#,
+        )
+        .await;
+        assert_eq!(st, 403, "product append to {target}");
+        // Raw surface.
+        let (st, _, _) = hreq(addr, "PUT", &format!("/v1/stream/{target}"), &[], b"").await;
+        assert_eq!(st, 403, "raw create of {target}");
+        let (st, _, _) = hreq(addr, "GET", &format!("/v1/stream/{target}"), &[], b"").await;
+        assert_eq!(st, 403, "raw read of {target}");
+    }
+    // A name merely CONTAINING an underscore-led inner segment is a
+    // normal customer stream.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/customers/_acme/orders",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "inner underscore segments are customer names");
+    // Billing identity is persisted at creation.
+    let desc = state
+        .registry
+        .get("customers/_acme/orders")
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(desc.account_id.as_deref(), Some("acct_test"));
+    assert_eq!(desc.project_id.as_deref(), Some("proj_test"));
     engine_shutdown(&state).await;
 }

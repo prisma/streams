@@ -836,6 +836,8 @@ mod tests {
     fn test_desc(name: &str) -> StreamDesc {
         StreamDesc {
             seal_gen_counter: 0,
+            account_id: None,
+            project_id: None,
             name: name.into(),
             stream_epoch: "00000000000000000000000000000000".into(),
             key_fingerprint: "fp".into(),

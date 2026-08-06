@@ -1,10 +1,10 @@
+mod billing;
 mod crypto;
 #[cfg(test)]
 mod dst;
 mod fleet;
 mod history;
 mod http;
-mod metrics;
 mod offsets;
 mod operator;
 mod postings;
@@ -331,14 +331,22 @@ struct Args {
     #[arg(long, env = "FLEET_INTERNAL_TOKEN")]
     fleet_internal_token: Option<String>,
 
-    /// Enable the internal `__metrics__` stream, encrypted with this key.
-    #[arg(long, env = "METRICS_KEY")]
-    metrics_key: Option<String>,
+    /// Billing tenant boundary: the account every stream created on
+    /// this deployment bills to (docs/OBSERVABILITY-BILLING.md §3.2).
+    #[arg(long, env = "ACCOUNT_ID", default_value = "acct_local")]
+    account_id: String,
 
-    /// Router URL for metrics appends: billing records are routed like any
-    /// tenant write so the shard's ring owner serves them (no fence-fights).
-    #[arg(long, env = "METRICS_LB_URL")]
-    metrics_lb_url: Option<String>,
+    /// Billing tenant boundary: the project.
+    #[arg(long, env = "PROJECT_ID", default_value = "proj_local")]
+    project_id: String,
+
+    /// Telemetry cell identity (one `_usage`/`_ops_*` set per cell).
+    #[arg(long, env = "CELL_ID", default_value = "local")]
+    cell_id: String,
+
+    /// Region tag on telemetry sources (NOT the object-store region).
+    #[arg(long, env = "REGION", default_value = "")]
+    telemetry_region: String,
 
     /// Instance tag recorded in metrics records.
     #[arg(long, env = "INSTANCE_NAME", default_value = "streams")]
@@ -890,27 +898,14 @@ async fn async_main() -> anyhow::Result<()> {
             args.instance_name.clone()
         },
         fleet_internal_token: args.fleet_internal_token.clone(),
-        metrics: Arc::new(crate::metrics::Metrics::default()),
+        account_id: args.account_id.clone(),
+        project_id: args.project_id.clone(),
+        cell_id: args.cell_id.clone(),
+        region: args.telemetry_region.clone(),
     });
     let _ = state_slot.set(Arc::downgrade(&state));
     // Unified scaler (ROUTING-V3 §5): sketch-driven splits/merges.
     crate::scaler3::start(Arc::downgrade(&state));
-    match (args.metrics_key.clone(), args.metrics_lb_url.clone()) {
-        (Some(mk), Some(lb)) => {
-            // Collection stays off without a flusher — see Metrics::enable.
-            state.metrics.enable();
-            let st = state.clone();
-            let instance = args.instance_name.clone();
-            tokio::spawn(async move {
-                crate::http::metrics_flusher(st, mk, instance, lb).await;
-            });
-        }
-        (Some(_), None) => tracing::warn!(
-            "METRICS_KEY set without METRICS_LB_URL; metrics stream disabled \
-             (billing appends must go through the router)"
-        ),
-        _ => {}
-    }
     {
         // RSS sampler for the shed check (500 ms; /proc read per request
         // would be silly). Unconditional: this used to live inside the
@@ -977,7 +972,6 @@ async fn async_main() -> anyhow::Result<()> {
             args.scale_rps_capacity
         );
     }
-    http::spawn_billing(state.clone());
     let app = http::router(state);
 
     crate::store_timing::spawn_sentinels();

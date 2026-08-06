@@ -14,6 +14,15 @@ use crate::crypto::{hex, stream_hash};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamDesc {
     pub name: String,
+    /// Billing tenant boundary (docs/OBSERVABILITY-BILLING.md §3.2):
+    /// captured from the deployment's authenticated context at creation
+    /// and immutable for the incarnation. `None` only on descriptors
+    /// created before the telemetry cutover (pre-launch data; billed
+    /// under the deployment default at meter time).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub account_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     /// 16-byte hex; minted per creation, bound into HKDF (V9 mandate).
     pub stream_epoch: String,
     /// One-way key fingerprint; wrong-key requests are rejected with 403.
@@ -1232,6 +1241,8 @@ mod tests {
     fn desc(name: &str, epoch: &str, deleted: bool) -> StreamDesc {
         StreamDesc {
             seal_gen_counter: 0,
+            account_id: None,
+            project_id: None,
             name: name.into(),
             stream_epoch: epoch.into(),
             key_fingerprint: "fp".into(),
