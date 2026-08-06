@@ -47,14 +47,14 @@ explanation, 2026-08-03). Two consequences:
 - Each idle instance was buying **~3 seconds of Tigris-internal work
   per wall-clock second** (13/s × ~230 ms) to learn, over and over,
   that nothing changed.
-- **Open bug (with Tigris, owner: Søren):** region-bound (“local”)
-  buckets still pay 174-241 ms per miss — the existence check does not
-  appear to be region-local even when the bucket is. Verified on fresh
-  local buckets 2026-08-03 (finding 1 of the local-bucket verification;
-  finding 2, remote metadata trickle, IS fixed by local buckets). If
-  this is fixed, a miss should cost roughly a local metadata lookup
-  (single-digit ms) and the latency motivation for everything below
-  mostly evaporates — the dollar posture stands either way.
+- **Bug (with Tigris, owner: Søren) — RESOLVED 2026-08-06:**
+  region-bound (“local”) buckets paid 174-241 ms per miss because an
+  eager fallback consulted a sibling metadata cluster (kept to support
+  global↔SRC conversion). Tigris disabled the fallback; the rerun
+  matrix (§7) measures SRC misses at **2-10 ms internal** (~100×),
+  global control unchanged. Exactly as predicted: the miss now costs a
+  local metadata lookup, the latency motivation evaporates, and the
+  dollar posture below stands on its own.
 
 ## 3. Dollars: the story inverts
 
@@ -190,22 +190,24 @@ down and verified (0 projects remaining).
 
 ## 7. Open items
 
-- **Tigris local-bucket 404 latency** (§2, owner: Søren) — reported as
-  a bug 2026-08-05; the region-bound existence check should be local.
-  Tigris's initial explanation (a fallback to a sibling metadata
-  cluster, kept "to support the use case that the bucket may have been
-  global before being changed to SRC") is **narrower than the measured
-  behavior**: a 2026-08-05 four-way probe matrix (same client, same
-  minutes, Server-Timing internal) showed two BORN-single-region
-  buckets — console-created that day and platform-created 08-03,
-  neither ever global — both pay the full ~240 ms miss internally
-  (238-246 ms across 10 probes), indistinguishable from the global
-  control (~243-321 + one 1.2 s outlier). Whatever consults the
-  sibling cluster fires regardless of bucket history. Bonus datapoint:
-  unauthorized requests to an SRC bucket burn the same ~240 ms before
-  their 403 — the consultation appears to run ahead of/alongside
-  authorization. Evidence: SRC-404-VERIFICATION.md in the campaign
-  workspace (with per-request x-amz-request-id for Tigris tracing).
+- **Tigris local-bucket 404 latency — RESOLVED 2026-08-06.** History:
+  reported 2026-08-05; Tigris's initial conversion-fallback explanation
+  was narrower than measured (a 08-05 four-way matrix showed two
+  BORN-single-region buckets paying the full ~240 ms miss — the eager
+  sibling-cluster fallback fired regardless of bucket history; Ovais
+  then confirmed the fallback ran eagerly because conversion is allowed
+  anytime, and disabled it). Rerun 2026-08-06 03:45 UTC, same buckets,
+  same client, same-minute: **born-SRC misses 2-10 ms internal** (was
+  238-246), global control unchanged at ~250-320 ms (the change is
+  SRC-scoped; methodology apples-to-apples). Streams impact: combined
+  with the poll stretch, per-instance idle Tigris burn fell ~350×
+  (13/s × 240 ms ≈ 3.1 s/s → 2.2/s × 4 ms ≈ 0.009 s/s). One residue
+  handed back to Tigris, low priority: unauthorized requests (403) to
+  the converted SRC bucket still burn ~235-240 ms internally — the
+  auth-denied path or converted buckets may not be covered by the
+  disable; a data-plane key on that bucket would distinguish.
+  Evidence: SRC-404-FIX-VERIFICATION.md (with x-amz-request-id per
+  request).
 - Tigris served-from header value bug (reported earlier).
 - SIN backend degradation episode 2026-08-02..03 (idle GETs 473 ms,
   writes 240 ms internal; recovered next day) — context for why SIN
