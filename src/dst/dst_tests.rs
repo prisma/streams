@@ -4840,6 +4840,7 @@ async fn http_rig_inner(
         fleet_internal_token: Some("dst-internal-token".to_string()),
         usage_key: Some(PRISMA_KEY.to_string()),
         rollup: std::sync::OnceLock::new(),
+        read_spool: std::sync::OnceLock::new(),
         billing_reads: Arc::new(crate::billing::ReadUsageAccumulator::new(
             crate::billing::MeterSource {
                 cell: "cell_test".to_string(),
@@ -19398,5 +19399,136 @@ async fn telemetry_crash_points_and_cost_gates() {
         base_bytes,
         "a re-emitted snapshot (lost ack) must apply as zero"
     );
+    engine_shutdown(&state).await;
+}
+
+/// Round-21 blocker 3: sealed read batches are DURABLE. They enter a
+/// per-instance spool before the ledger sees them, survive a process
+/// "crash" (a second spool handle on the same store), and leave only
+/// after `_usage` acknowledged. During a ledger outage the spool
+/// absorbs on disk while the accumulator keeps rotating.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn read_batches_survive_crash_in_the_spool() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let spool = crate::billing::ReadSpool::open(state.data_store.clone(), "sp1", "inst")
+        .await
+        .unwrap();
+    let _ = state.read_spool.set(std::sync::Arc::new(spool));
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/spool1",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, _) = preq(
+        addr,
+        "GET",
+        "/v1/streams/spool1/records?routingKey=k",
+        &key,
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    state.billing_reads.seal_if_aged(0);
+    // Persist to the spool WITHOUT reaching the ledger: simulate the
+    // pre-append half of a drain by spooling directly.
+    let sealed = state.billing_reads.drain_sealed(16);
+    assert_eq!(sealed.len(), 1);
+    let sp = state.read_spool.get().unwrap();
+    sp.persist(&sealed[0]).await.unwrap();
+
+    // "Crash": a fresh spool handle over the same store still has it.
+    let recovered = crate::billing::ReadSpool::open(state.data_store.clone(), "sp1", "inst")
+        .await
+        .unwrap();
+    let pending = recovered.pending(16).await.unwrap();
+    assert_eq!(pending.len(), 1, "the sealed batch survived the crash");
+    assert_eq!(pending[0].1.rows.len(), 1);
+    assert_eq!(pending[0].1.rows[0].identity.stream_name, "spool1");
+
+    // A full drain now emits from the spool and clears it after ack.
+    let n = crate::billing::drain_once(&state).await.unwrap();
+    assert!(n >= 1);
+    assert_eq!(state.read_spool.get().unwrap().depth().await, 0);
+    engine_shutdown(&state).await;
+}
+
+/// Round-21 blocker 6: EXPIRY closes storage without any delete call.
+/// A stream whose TTL lapsed has a dead descriptor and a live gauge;
+/// the drain-time reconciler resubmits the closure until the gauge
+/// zeroes, and journals the lifecycle observation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn expiry_closes_the_storage_gauge() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    // TTL 1 second.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/exp1",
+        &key,
+        br#"{"format":{"kind":"json"},"expiry":{"idle":"PT1S"}}"#,
+    )
+    .await;
+    if st != 201 {
+        // Product creation may not accept this expiry shape; fall back
+        // to the raw surface's ttl header.
+        let (st2, _, _) = hreq(
+            addr,
+            "PUT",
+            "/v1/stream/exp1",
+            &[
+                ("stream-encryption-key", PRISMA_KEY),
+                ("content-type", "application/json"),
+                ("stream-ttl", "1"),
+            ],
+            b"",
+        )
+        .await;
+        assert_eq!(st2, 201, "raw ttl create");
+    }
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/exp1/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", "k"),
+        ],
+        br#"{"n":1}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let desc = state.registry.get("exp1").await.unwrap().unwrap();
+    let seg = desc.resolve_segment("k");
+    let engine = state.engine_for(&seg.shard_route).await.unwrap();
+    let gauge_before = engine
+        .billing_meta(seg.identity)
+        .await
+        .unwrap()
+        .owned_frame_bytes_current;
+    assert!(gauge_before > 0);
+
+    // Let the TTL lapse, then run drains: the reconciler must close.
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    state.registry.invalidate("exp1");
+    let mut closed = false;
+    for _ in 0..100 {
+        let _ = crate::billing::drain_once(&state).await;
+        if let Some(m) = engine.billing_meta(seg.identity).await {
+            if m.owned_frame_bytes_current == 0 {
+                closed = true;
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+    }
+    assert!(closed, "expiry never closed the storage gauge");
     engine_shutdown(&state).await;
 }

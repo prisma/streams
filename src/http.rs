@@ -153,6 +153,9 @@ pub struct AppState {
     /// The usage rollup, when THIS instance runs it (§9.1: one fenced
     /// writer per cell). Set once at startup (ROLLUP=1) or by tests.
     pub rollup: std::sync::OnceLock<Arc<crate::rollup::UsageRollup>>,
+    /// Durable per-instance spool for sealed read batches (round-21
+    /// blocker 3): sealed usage survives crash and ledger outage.
+    pub read_spool: std::sync::OnceLock<Arc<crate::billing::ReadSpool>>,
     /// Billing tenant boundary (docs/OBSERVABILITY-BILLING.md §3.2):
     /// explicit account/project identity from the control plane's
     /// deployment config — never inferred from stream names. Persisted

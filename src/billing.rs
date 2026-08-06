@@ -949,16 +949,44 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
     let cell = state.cell_id.clone();
     let mut envelopes: Vec<UsageEnvelope> = Vec::new();
 
-    // 1. Read batches (sealed by age or bounds).
+    // 1. Read batches: seal, then SPOOL DURABLY before anything can
+    // forget them (round-21 blocker 3). The ledger is fed from the
+    // spool, and a spooled batch is deleted only after `_usage`
+    // acknowledged — a ledger outage accumulates on disk while the
+    // in-memory accumulator keeps rotating normally.
     state.billing_reads.seal_if_aged(READ_FLUSH_INTERVAL_MS);
-    let read_batches = state.billing_reads.drain_sealed(16);
-    for rb in &read_batches {
-        envelopes.push(envelope(
-            &cell,
-            UsagePayload::ReadBatch(rb.clone()),
-            rb.to_ms,
-            format!("read/{}/{}", rb.source.boot, rb.seq),
-        ));
+    let mut spooled_keys: Vec<Vec<u8>> = Vec::new();
+    let mut memless: Vec<ReadBatch> = Vec::new();
+    if let Some(spool) = state.read_spool.get() {
+        let sealed = state.billing_reads.drain_sealed(64);
+        for rb in sealed {
+            if let Err(e) = spool.persist(&rb).await {
+                // Spool down (store fault): keep the batch in memory;
+                // the deferral gauge makes the condition visible.
+                state.billing_reads.requeue(vec![rb]);
+                return Err(format!("read spool persist: {e}"));
+            }
+        }
+        for (key, rb) in spool.pending(64).await.map_err(|e| e.to_string())? {
+            envelopes.push(envelope(
+                &cell,
+                UsagePayload::ReadBatch(rb.clone()),
+                rb.to_ms,
+                format!("read/{}/{}", rb.source.boot, rb.seq),
+            ));
+            spooled_keys.push(key);
+        }
+    } else {
+        // No spool configured (bare test rigs): the pre-spool path.
+        memless = state.billing_reads.drain_sealed(16);
+        for rb in &memless {
+            envelopes.push(envelope(
+                &cell,
+                UsagePayload::ReadBatch(rb.clone()),
+                rb.to_ms,
+                format!("read/{}/{}", rb.source.boot, rb.seq),
+            ));
+        }
     }
 
     // 2. Dirty segment snapshots + month finals from every open engine.
@@ -987,7 +1015,7 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
             if envelopes.len() >= DRAIN_MAX_ENVELOPES {
                 break 'engines;
             }
-            let Some(meta) = engine.billing_meta(hash).await else {
+            let Some(mut meta) = engine.billing_meta(hash).await else {
                 continue;
             };
             // Defense in depth for §8.4: a reserved stream's row (none
@@ -995,6 +1023,52 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
             if is_reserved_stream(&meta.stream_name) {
                 engine.submit_usage_ack(hash, meta.usage_version, Vec::new());
                 continue;
+            }
+            // TERMINAL-CLOSURE RECONCILER (round-21 blocker 6): a
+            // nonzero gauge whose descriptor is gone, expired, or
+            // recreated under a new epoch means the closure was lost
+            // (full committer queue, crash, foreign owner at delete
+            // time) — resubmit it, traffic-independent, until the
+            // gauge zeroes. Deletion, cascade and EXPIRY all land here
+            // because they all leave the descriptor not-alive. A fork-
+            // retained source (soft delete with live children) is NOT
+            // closure: it flags retained_by_forks and keeps accruing —
+            // the fork billing contract.
+            match state.registry.get(&meta.stream_name).await {
+                Ok(Some(d)) if d.stream_epoch == meta.stream_id => {
+                    if d.soft_deleted && !d.deleted {
+                        meta.retained_by_forks = true;
+                    } else if !crate::http::desc_alive(&d) && meta.owned_frame_bytes_current > 0 {
+                        engine.submit_billing_close(hash);
+                        let lc = StreamLifecycle {
+                            identity: BillingIdentity {
+                                account_id: meta.account_id.clone(),
+                                project_id: meta.project_id.clone(),
+                                stream_id: meta.stream_id.clone(),
+                                stream_name: meta.stream_name.clone(),
+                            },
+                            transition: if d.deleted {
+                                "hard_deleted".to_string()
+                            } else {
+                                "expired".to_string()
+                            },
+                            at_ms: billing_now_ms(),
+                        };
+                        let id = lc.deterministic_event_id();
+                        envelopes.push(envelope(
+                            &cell,
+                            UsagePayload::StreamLifecycle(lc),
+                            billing_now_ms(),
+                            id,
+                        ));
+                    }
+                }
+                Ok(_) if meta.owned_frame_bytes_current > 0 => {
+                    // Name gone entirely, or recreated under a new
+                    // epoch: this incarnation is terminal either way.
+                    engine.submit_billing_close(hash);
+                }
+                _ => {}
             }
             // Emit the CURRENT row at ITS version (>= the marker's) —
             // acking the emitted version keeps anything newer dirty.
@@ -1030,14 +1104,23 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
     let body = serde_json::to_vec(&envelopes).map_err(|e| e.to_string())?;
     match usage_ledger_append(state, &key, body).await {
         Ok(()) => {
+            // Spooled batches leave the spool ONLY now, after the
+            // ledger acknowledged durably.
+            if let Some(spool) = state.read_spool.get() {
+                spool
+                    .remove(&spooled_keys)
+                    .await
+                    .map_err(|e| e.to_string())?;
+            }
             for (engine, hash, ver, finals) in acks {
                 engine.submit_usage_ack(hash, ver, finals);
             }
             Ok(envelopes.len())
         }
         Err(e) => {
-            // Read batches must not be lost: requeue at the front.
-            state.billing_reads.requeue(read_batches);
+            // Spooled batches stay durable in the spool; memless ones
+            // requeue at the accumulator's front.
+            state.billing_reads.requeue(memless);
             Err(e)
         }
     }
@@ -1049,6 +1132,34 @@ pub fn spawn_telemetry(state: std::sync::Arc<crate::http::AppState>) {
     if state.usage_key.is_none() {
         tracing::info!("telemetry pipeline off (USAGE_STREAM_KEY unset)");
         return;
+    }
+    // Open the durable read spool before the first drain; ownership
+    // sweep runs at start and every OUTBOX_SWEEP_SECS.
+    {
+        let st = state.clone();
+        tokio::spawn(async move {
+            match ReadSpool::open(
+                st.data_store.clone(),
+                &std::env::var("PATH_PREFIX").unwrap_or_default(),
+                &st.instance_name,
+            )
+            .await
+            {
+                Ok(sp) => {
+                    let _ = st.read_spool.set(std::sync::Arc::new(sp));
+                }
+                Err(e) => tracing::error!("read spool open failed: {e}"),
+            }
+            sweep_owned_outboxes(&st).await;
+            let sweep_secs: u64 = std::env::var("OUTBOX_SWEEP_SECS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(300);
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(sweep_secs)).await;
+                sweep_owned_outboxes(&st).await;
+            }
+        });
     }
     let secs: u64 = std::env::var("TELEMETRY_DRAIN_SECS")
         .ok()
@@ -1290,4 +1401,136 @@ pub fn spawn_rollup(state: std::sync::Arc<crate::http::AppState>, prefix: String
             }
         }
     });
+}
+
+// ---------------------------------------------------------------------
+// Durable read spool (round-21 blocker 3)
+// ---------------------------------------------------------------------
+
+/// Per-instance durable spool for sealed read batches. A sealed batch
+/// is written HERE before anything else forgets it; it leaves only
+/// after `_usage` acknowledged. This makes the design's loss bound
+/// true: a hard crash loses at most the active interval plus one drain
+/// cadence of sealed-but-unspooled batches — never the sealed backlog,
+/// and a LEDGER OUTAGE accumulates on disk, not in process memory.
+pub struct ReadSpool {
+    db: std::sync::Arc<slatedb::Db>,
+    next: std::sync::atomic::AtomicU64,
+}
+
+impl ReadSpool {
+    pub async fn open(
+        store: std::sync::Arc<dyn object_store::ObjectStore>,
+        prefix: &str,
+        instance: &str,
+    ) -> anyhow::Result<Self> {
+        let inst = if instance.is_empty() {
+            "solo"
+        } else {
+            instance
+        };
+        let path = if prefix.is_empty() {
+            format!("telemetry/read-spool/{inst}")
+        } else {
+            format!("{prefix}/telemetry/read-spool/{inst}")
+        };
+        let db = crate::on_slatedb_rt(async move {
+            slatedb::Db::builder(path.as_str(), store).build().await
+        })
+        .await?;
+        let next = match db.get(&b"meta/next-seq"[..]).await? {
+            Some(v) => u64::from_le_bytes(v[..8].try_into().unwrap_or([0; 8])),
+            None => 0,
+        };
+        Ok(ReadSpool {
+            db: std::sync::Arc::new(db),
+            next: std::sync::atomic::AtomicU64::new(next),
+        })
+    }
+
+    fn key(seq: u64) -> Vec<u8> {
+        let mut k = b"rb/".to_vec();
+        k.extend_from_slice(&seq.to_be_bytes());
+        k
+    }
+
+    /// Durably persist one sealed batch. Returns its spool key.
+    pub async fn persist(&self, b: &ReadBatch) -> anyhow::Result<Vec<u8>> {
+        let seq = self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let key = Self::key(seq);
+        let mut wb = slatedb::WriteBatch::new();
+        wb.put(key.clone(), serde_json::to_vec(b)?);
+        wb.put(&b"meta/next-seq"[..], &(seq + 1).to_le_bytes()[..]);
+        self.db.write(wb).await?;
+        // The build runs with wal_disable (the engines own their WAL
+        // cadence), so an explicit flush is what makes "spooled" mean
+        // OBJECT-STORE durable — the entire point of this spool.
+        self.db.flush().await?;
+        Ok(key)
+    }
+
+    /// Oldest pending batches (recovered across restarts).
+    pub async fn pending(&self, max: usize) -> anyhow::Result<Vec<(Vec<u8>, ReadBatch)>> {
+        let mut out = Vec::new();
+        let mut iter = self.db.scan_prefix(&b"rb/"[..], ..).await?;
+        while let Some(kv) = iter.next().await? {
+            if let Ok(b) = serde_json::from_slice(&kv.value) {
+                out.push((kv.key.to_vec(), b));
+            }
+            if out.len() >= max {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Remove batches the ledger has durably acknowledged.
+    pub async fn remove(&self, keys: &[Vec<u8>]) -> anyhow::Result<()> {
+        if keys.is_empty() {
+            return Ok(());
+        }
+        let mut wb = slatedb::WriteBatch::new();
+        for k in keys {
+            wb.delete(k.clone());
+        }
+        self.db.write(wb).await?;
+        Ok(())
+    }
+
+    pub async fn depth(&self) -> usize {
+        self.pending(usize::MAX).await.map(|v| v.len()).unwrap_or(0)
+    }
+}
+
+/// Open every shard THIS instance owns so its billing outbox becomes
+/// drainable (round-21 blocker 4): the drainer must not depend on
+/// customer traffic to rediscover dirty usage after a crash or an
+/// ownership move. Bounded by the fleet's shard count.
+pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>) {
+    let prefixes: Vec<String> = state.shard_prefixes.clone();
+    for prefix in prefixes {
+        if let Some(owner) = state.effective_owner(&prefix) {
+            if owner != state.instance_name {
+                continue;
+            }
+        }
+        let already = state.shards.read().unwrap().contains_key(&prefix);
+        if already {
+            continue;
+        }
+        // Opening registers the engine in state.shards; the normal
+        // drain covers it from then on.
+        match state
+            .gate
+            .get_or_open(&prefix, std::time::Duration::from_secs(20))
+            .await
+        {
+            crate::sharddir::OpenOutcome::Ready(_) => {
+                tracing::info!("outbox sweep opened shard {prefix}");
+            }
+            _ => {
+                tracing::debug!("outbox sweep could not open {prefix} (moving/contended)");
+            }
+        }
+    }
 }

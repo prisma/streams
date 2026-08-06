@@ -916,6 +916,7 @@ async fn async_main() -> anyhow::Result<()> {
         fleet_internal_token: args.fleet_internal_token.clone(),
         usage_key: args.usage_stream_key.clone(),
         rollup: std::sync::OnceLock::new(),
+        read_spool: std::sync::OnceLock::new(),
         billing_reads: Arc::new(crate::billing::ReadUsageAccumulator::new(
             crate::billing::MeterSource {
                 cell: args.cell_id.clone(),
