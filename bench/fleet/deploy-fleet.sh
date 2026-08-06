@@ -19,6 +19,11 @@ REGION=eu-central-1
 BINEP=$(cat "$S/artifact-endpoint.txt"); BINBKT=$(cat "$S/artifact-bucket.txt")
 BINID=$(cat "$S/binid.txt"); BINSEC=$(cat "$S/binsec.txt")
 AUTH=$(cat "$S/auth.txt"); KEY=$(cat "$S/skey.txt")
+# Fleet-internal credential (round-19): distinct from AUTH, never handed
+# to customers. Minted once into $SOAK_HOME; nothing secret in the tree.
+[ -s "$S/fleet-internal-token.txt" ] || \
+  head -c 32 /dev/urandom | base64 | tr -d '/+=' > "$S/fleet-internal-token.txt"
+FLEET_TOKEN=$(cat "$S/fleet-internal-token.txt")
 j() { python3 -c "import json;print(json.load(open('$S/bkey-fleet.json'))['data']['$1'])"; }
 RESOLV=$'nameserver 108.61.10.10\nnameserver 8.8.8.8'
 # Absolute: the deploy steps cd into $SOAK_HOME app dirs first.
@@ -57,6 +62,8 @@ if [ "$STEP" = servers ]; then
       --env SLATE_S3_ACCESS_KEY_ID="$(j accessKeyId)" \
       --env SLATE_S3_SECRET_ACCESS_KEY="$(j secretAccessKey)" \
       --env AUTH_TOKEN="$AUTH" \
+      --env FLEET_INTERNAL_TOKEN="$FLEET_TOKEN" \
+      --env FLEET_PEER_DOMAINS=prisma.build \
       --env PATH_PREFIX=fleetd2 --env INSTANCE_NAME="streams-$i" \
       --env SELF_URL="$(cat "$S/url-fleet-s$i.txt" 2>/dev/null || true)" \
       --env FLEET_PREFIX=fleetops --env FLEET_MAX=4 \

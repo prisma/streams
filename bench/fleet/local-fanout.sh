@@ -19,6 +19,9 @@ ROOT=$(cd "$HERE/../.." && pwd)
 AUTH=localsoak
 # The standard test key (same literal consumer-saga-smoke.sh defaults to).
 KEY=BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc=
+# Distinct from AUTH: /v1/internal/* is a separate trust boundary and the
+# server refuses to start fleet mode without its own credential.
+FLEET_TOKEN=local-fleet-internal-token-0001
 
 cargo build --release --bin streams-slate --bin pilot --bin s3lite \
   --manifest-path "$ROOT/Cargo.toml" 2>&1 | grep -E "^error" && exit 1 || true
@@ -50,6 +53,7 @@ server() { # ordinal, port
     SLATE_S3_REGION=local SLATE_S3_ACCESS_KEY_ID=test SLATE_S3_SECRET_ACCESS_KEY=test \
     AUTH_TOKEN=$AUTH PATH_PREFIX=fand INSTANCE_NAME="streams-$1" \
     SELF_URL="http://127.0.0.1:$2" \
+    FLEET_INTERNAL_TOKEN="$FLEET_TOKEN" FLEET_ALLOW_HTTP_PEERS=1 \
     FLEET_PREFIX=fleetops FLEET_MAX=2 SCALE_IN_SECS=999999 \
     WAL_GROUP_COMMIT=1 WAL_FLUSH_GAP_MS=10 FLUSH_INTERVAL_MS=25 \
     WAL_POST_ACK_GATHER_MS=6 FRAME_COMPRESS=1 \

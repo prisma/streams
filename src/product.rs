@@ -4065,14 +4065,8 @@ pub(crate) async fn internal_sweep_segment(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if !crate::http::authorized(&state, &headers) {
-        return perr(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer required",
-            None,
-            false,
-        );
+    if !crate::http::fleet_internal_authorized(&state, &headers) {
+        return crate::http::internal_unauthorized();
     }
     #[derive(serde::Deserialize)]
     #[serde(rename_all = "camelCase")]
@@ -4151,14 +4145,8 @@ pub(crate) async fn internal_queue_cursor(
     axum::extract::Path(name): axum::extract::Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    if !crate::http::authorized(&state, &headers) {
-        return perr(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer required",
-            None,
-            false,
-        );
+    if !crate::http::fleet_internal_authorized(&state, &headers) {
+        return crate::http::internal_unauthorized();
     }
     let q = |h: &str| {
         headers
@@ -4219,7 +4207,7 @@ async fn relay_queue_cursor(
         .header("streams-internal-consumer", cname)
         .header("streams-internal-seg", seg_id.to_string())
         .header("streams-internal-gen", cgen.to_string());
-    if let Some(t) = &state.auth_token {
+    if let Some(t) = &state.fleet_internal_token {
         req = req.header("authorization", format!("Bearer {t}"));
     }
     let v: serde_json::Value = match req.send().await {
@@ -4239,14 +4227,8 @@ pub(crate) async fn internal_segment_scan(
     axum::extract::Path(name): axum::extract::Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    if !crate::http::authorized(&state, &headers) {
-        return perr(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer required",
-            None,
-            false,
-        );
+    if !crate::http::fleet_internal_authorized(&state, &headers) {
+        return crate::http::internal_unauthorized();
     }
     let q = |h: &str| {
         headers
@@ -4257,7 +4239,12 @@ pub(crate) async fn internal_segment_scan(
     let (Some(seg_id), Some(from), Some(max_bytes), Some(key_b64)) = (
         q("streams-internal-seg").and_then(|v| v.parse::<u32>().ok()),
         q("streams-internal-from").and_then(|v| v.parse::<u64>().ok()),
-        q("streams-internal-max-bytes").and_then(|v| v.parse::<usize>().ok()),
+        q("streams-internal-max-bytes")
+            .and_then(|v| v.parse::<usize>().ok())
+            // Clamped to the public scan ceiling: an internal budget
+            // header must not buy a larger page than the operation it
+            // relays for (round-19 security finding).
+            .map(|v| v.clamp(4096, READ_MAX_BYTES_CAP)),
         q("stream-encryption-key"),
     ) else {
         return perr(
@@ -4349,7 +4336,7 @@ async fn relay_segment_scan(
         .header("streams-internal-from", from.to_string())
         .header("streams-internal-max-bytes", max_bytes.to_string())
         .header("stream-encryption-key", key_b64);
-    if let Some(t) = &state.auth_token {
+    if let Some(t) = &state.fleet_internal_token {
         req = req.header("authorization", format!("Bearer {t}"));
     }
     let v: serde_json::Value = match req.send().await {
@@ -4397,7 +4384,7 @@ async fn relay_segment_tail(
         ))
         .timeout(std::time::Duration::from_secs(15))
         .header("stream-encryption-key", key_b64);
-    if let Some(t) = &state.auth_token {
+    if let Some(t) = &state.fleet_internal_token {
         req = req.header("authorization", format!("Bearer {t}"));
     }
     let r = match req.send().await {

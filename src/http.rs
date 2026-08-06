@@ -140,20 +140,67 @@ pub struct AppState {
     /// Stream-Encryption-Key header (the upstream conformance suite cannot
     /// send custom headers). Never set in production.
     pub default_key: Option<String>,
-    /// Bearer token required on /v1/* when set (pilot authn).
+    /// Bearer token required on /v1/* when set (pilot authn). This is the
+    /// CUSTOMER-facing account token; it never authorizes /v1/internal/*.
     pub auth_token: Option<String>,
+    /// Fleet-internal credential (FLEET_INTERNAL_TOKEN). A SEPARATE trust
+    /// boundary from `auth_token`: peer RPCs can fence consumer
+    /// generations and read segment state without a stream key, so a
+    /// customer bearer must never reach them, and this token must never
+    /// authorize a product operation. Required whenever fleet mode is on
+    /// (startup refuses otherwise); None = internal routes fail closed.
+    pub fleet_internal_token: Option<String>,
     pub metrics: Arc<crate::metrics::Metrics>,
 }
 
+fn bearer(headers: &HeaderMap) -> Option<&str> {
+    headers
+        .get("authorization")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+}
+
+/// Constant-time comparison for shared-secret tokens: a byte-by-byte
+/// `==` on a secret leaks its prefix length through timing.
+fn secret_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+/// Customer/account authorization for the PUBLIC surface. Deliberately
+/// does not consult the fleet-internal token: the two credentials are
+/// separate trust boundaries (round-19 security finding), so an internal
+/// token can never perform a product operation.
 pub(crate) fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
     match &state.auth_token {
         None => true,
-        Some(t) => headers
-            .get("authorization")
-            .and_then(|v| v.to_str().ok())
-            .map(|v| v.strip_prefix("Bearer ").map(|x| x == t).unwrap_or(false))
-            .unwrap_or(false),
+        Some(t) => bearer(headers).map(|v| secret_eq(v, t)).unwrap_or(false),
     }
+}
+
+/// Authorization for /v1/internal/* ONLY. Fails closed: without a
+/// configured fleet-internal token there is no internal surface at all,
+/// and the customer bearer is never accepted here even when it matches
+/// the account token. Startup refuses to enable fleet mode without this
+/// token, so "None" in production means fleet mode is off.
+pub(crate) fn fleet_internal_authorized(state: &AppState, headers: &HeaderMap) -> bool {
+    match &state.fleet_internal_token {
+        None => false,
+        Some(t) => bearer(headers).map(|v| secret_eq(v, t)).unwrap_or(false),
+    }
+}
+
+/// Uniform 401 for internal routes — never distinguishes "fleet mode
+/// off" from "wrong token" to an unauthenticated caller.
+pub(crate) fn internal_unauthorized() -> Response {
+    err_resp(
+        StatusCode::UNAUTHORIZED,
+        "unauthorized",
+        "fleet-internal credential required",
+    )
 }
 
 impl AppState {
@@ -425,8 +472,17 @@ async fn track_inflight(
 /// admitted-concurrency cap (rate = slots/latency) from a rate cap
 /// (rate constant regardless of latency).
 async fn debug_sleep(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<HashMap<String, String>>,
 ) -> Response {
+    if !authorized(&state, &headers) {
+        return err_resp(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bearer token required",
+        );
+    }
     let ms: u64 = q
         .get("ms")
         .and_then(|v| v.parse().ok())
@@ -505,7 +561,14 @@ async fn get_segments(
     axum::Json(body).into_response()
 }
 
-async fn debug_load(State(state): State<Arc<AppState>>) -> Response {
+async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !authorized(&state, &headers) {
+        return err_resp(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bearer token required",
+        );
+    }
     let now = state.inflight.load(std::sync::atomic::Ordering::Relaxed);
     let peak = state
         .inflight_peak
@@ -647,7 +710,14 @@ async fn debug_store(
 
 /// Per-stream usage counters + the active limits. Auth: same bearer as
 /// the other debug endpoints (enforced by the middleware layer).
-async fn debug_usage() -> Response {
+async fn debug_usage(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !authorized(&state, &headers) {
+        return err_resp(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bearer token required",
+        );
+    }
     let l = crate::usage::limits();
     let streams: Vec<serde_json::Value> = crate::usage::snapshot()
         .into_iter()
@@ -883,14 +953,28 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/debug/load", get(debug_load))
         .route("/v1/debug/store", get(debug_store))
         .route("/v1/debug/usage", get(debug_usage))
+        // Every /v1/debug/* route is account-gated (round-19: the
+        // security model claims bearer auth on all of /v1/*, and these
+        // MUTATE production state — pausing absorption, occupying
+        // request slots, resetting peak gauges — or expose per-stream
+        // usage). The unsecured on-call surface is /operator only.
         .route(
             "/v1/debug/absorb-pause",
             post(
-                |Query(q): Query<std::collections::HashMap<String, String>>| async move {
+                |State(state): State<Arc<AppState>>,
+                 headers: HeaderMap,
+                 Query(q): Query<std::collections::HashMap<String, String>>| async move {
+                    if !authorized(&state, &headers) {
+                        return err_resp(
+                            StatusCode::UNAUTHORIZED,
+                            "unauthorized",
+                            "bearer token required",
+                        );
+                    }
                     let on = q.get("on").map(|v| v == "1").unwrap_or(false);
                     crate::history::absorb_pause_flag()
                         .store(on, std::sync::atomic::Ordering::Relaxed);
-                    axum::Json(serde_json::json!({"absorb_paused": on}))
+                    axum::Json(serde_json::json!({"absorb_paused": on})).into_response()
                 },
             ),
         )
@@ -6370,7 +6454,7 @@ async fn relay_segment_read(
     let mut req = peer_client()
         .get(format!("{base}/v1/internal/segment-read/{name}?{q}"))
         .timeout(std::time::Duration::from_secs(40));
-    if let Some(t) = &state.auth_token {
+    if let Some(t) = &state.fleet_internal_token {
         req = req.header("authorization", format!("Bearer {t}"));
     }
     for h in ["stream-encryption-key", "prisma-encryption-key"] {
@@ -6419,14 +6503,18 @@ async fn internal_segment_read(
     uri: axum::http::Uri,
     headers: HeaderMap,
 ) -> Response {
-    if !authorized(&state, &headers) {
-        return err_resp(StatusCode::UNAUTHORIZED, "unauthorized", "bearer required");
+    if !fleet_internal_authorized(&state, &headers) {
+        return internal_unauthorized();
     }
     params.no_fanout = true;
+    // Clamped to the SAME server-side ceiling the public read obeys: an
+    // internal budget header must not buy a bigger page than the
+    // operation it is relaying on behalf of (round-19 finding).
     params.max_bytes = headers
         .get("streams-internal-max-bytes")
         .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse().ok());
+        .and_then(|v| v.parse::<usize>().ok())
+        .map(|v| v.clamp(4096, MAX_READ_BYTES));
     if headers
         .get("streams-internal-deliver")
         .and_then(|v| v.to_str().ok())

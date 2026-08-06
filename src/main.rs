@@ -319,8 +319,17 @@ struct Args {
     conformance_default_key: Option<String>,
 
     /// Require `Authorization: Bearer <token>` on all /v1/* requests.
+    /// This is the CUSTOMER account token; it never authorizes
+    /// /v1/internal/* (round-19: those routes fence consumer
+    /// generations and read segment state without a stream key).
     #[arg(long, env = "AUTH_TOKEN")]
     auth_token: Option<String>,
+
+    /// Fleet-internal credential for /v1/internal/* peer RPCs. REQUIRED
+    /// when fleet mode is on (startup refuses otherwise), MUST differ
+    /// from --auth-token, and is never accepted on a product route.
+    #[arg(long, env = "FLEET_INTERNAL_TOKEN")]
+    fleet_internal_token: Option<String>,
 
     /// Enable the internal `__metrics__` stream, encrypted with this key.
     #[arg(long, env = "METRICS_KEY")]
@@ -650,6 +659,26 @@ async fn async_main() -> anyhow::Result<()> {
     let registry = Registry::new(ops_store.clone());
     // Only relevant when no topology exists yet; an existing topology wins.
     let fleet_mode = args.fleet_prefix.is_some() && args.fleet_max > 1;
+    // FAIL CLOSED (round-19 security): the /v1/internal/* peer surface
+    // can fence consumer generations and read segment state WITHOUT a
+    // stream key. It therefore needs its own credential, distinct from
+    // the customer account token, and fleet mode must not start without
+    // one — a fleet that silently accepted the public bearer on those
+    // routes would let any customer token corrupt any consumer.
+    if fleet_mode {
+        match (&args.fleet_internal_token, &args.auth_token) {
+            (None, _) => anyhow::bail!(
+                "fleet mode requires FLEET_INTERNAL_TOKEN (a credential distinct from                  AUTH_TOKEN) — /v1/internal/* must not be reachable with a customer bearer"
+            ),
+            (Some(t), _) if t.len() < 16 => anyhow::bail!(
+                "FLEET_INTERNAL_TOKEN must be at least 16 characters"
+            ),
+            (Some(t), Some(a)) if t == a => anyhow::bail!(
+                "FLEET_INTERNAL_TOKEN must differ from AUTH_TOKEN — they are separate                  trust boundaries"
+            ),
+            _ => {}
+        }
+    }
     let initial_shards = match args.initial_shards {
         Some(n) => {
             if fleet_mode && n < 4 * args.fleet_max as usize {
@@ -853,6 +882,7 @@ async fn async_main() -> anyhow::Result<()> {
         touch,
         default_key: args.conformance_default_key.clone(),
         auth_token: args.auth_token.clone(),
+        fleet_internal_token: args.fleet_internal_token.clone(),
         metrics: Arc::new(crate::metrics::Metrics::default()),
     });
     let _ = state_slot.set(Arc::downgrade(&state));

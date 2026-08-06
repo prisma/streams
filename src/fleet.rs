@@ -15,8 +15,8 @@
 use object_store::path::Path as ObjPath;
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
 use serde::{Deserialize, Serialize};
-use std::sync::Arc;
 use std::sync::atomic::Ordering;
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
 use crate::http::AppState;
@@ -118,6 +118,65 @@ pub fn pick_move_target(
         .filter(|(n, (_, lag))| n.as_str() != me && *lag < lag_threshold_secs / 2)
         .min_by(|a, b| a.1.0.total_cmp(&b.1.0))
         .map(|(n, _)| n.clone())
+}
+
+/// Validate a peer base URL before it can receive the fleet-internal
+/// credential (and, on relays that decrypt, a customer stream key).
+/// `fleet/urls.json` and heartbeats are bucket-writable inputs, so an
+/// unvalidated string here is an exfiltration primitive (round-19).
+///
+/// Rules: absolute http(s) origin only — scheme + host + optional port,
+/// nothing else. No userinfo (`@`), no path, no query, no fragment. TLS
+/// is mandatory unless FLEET_ALLOW_HTTP_PEERS=1 (local rigs and DST
+/// use plain http against 127.0.0.1). When FLEET_PEER_DOMAINS is set,
+/// the host must equal or be a subdomain of one of its entries.
+pub fn valid_peer_url(url: &str) -> bool {
+    let allow_http = std::env::var("FLEET_ALLOW_HTTP_PEERS").ok().as_deref() == Some("1");
+    let rest = match url.strip_prefix("https://") {
+        Some(r) => r,
+        None => match url.strip_prefix("http://") {
+            Some(r) if allow_http => r,
+            _ => return false,
+        },
+    };
+    if rest.is_empty()
+        || rest.contains('/')
+        || rest.contains('?')
+        || rest.contains('#')
+        || rest.contains('@')
+        || rest.contains('\\')
+        || rest.chars().any(|c| c.is_whitespace() || c.is_control())
+    {
+        return false;
+    }
+    let host = rest.split(':').next().unwrap_or("");
+    if host.is_empty() {
+        return false;
+    }
+    // Port, when present, must be numeric — "host:evil" is not an origin.
+    if let Some((_, port)) = rest.split_once(':') {
+        if port.is_empty() || !port.chars().all(|c| c.is_ascii_digit()) {
+            return false;
+        }
+    }
+    match std::env::var("FLEET_PEER_DOMAINS") {
+        Ok(list) if !list.trim().is_empty() => list
+            .split(',')
+            .map(str::trim)
+            .filter(|d| !d.is_empty())
+            .any(|d| host == d || host.ends_with(&format!(".{d}"))),
+        _ => true,
+    }
+}
+
+/// Last successfully-read AND validated fleet/urls.json map. A transient
+/// GET failure must not drop back to heartbeat SELF_URLs: on Compute
+/// those are stale after any redeploy (each version mints a new preview
+/// URL), so losing the published map would point relays at dead
+/// addresses until the next successful read (round-19).
+fn last_good_urls() -> &'static Mutex<std::collections::HashMap<String, String>> {
+    static M: OnceLock<Mutex<std::collections::HashMap<String, String>>> = OnceLock::new();
+    M.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
 /// Return-home admission: dropping an override hands `gain` shard(s)
@@ -441,7 +500,14 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                         .max((other.wedge_max_ms / 1000).max(0) as u64);
                     peer_load.insert(other.instance.clone(), (other.cpu_pct, eff_lag));
                     if !other.url.is_empty() {
-                        peer_urls.insert(other.instance.clone(), other.url.clone());
+                        if valid_peer_url(&other.url) {
+                            peer_urls.insert(other.instance.clone(), other.url.clone());
+                        } else {
+                            tracing::warn!(
+                                instance = %other.instance,
+                                "rejecting malformed peer URL from heartbeat"
+                            );
+                        }
                     }
                     live += 1;
                     total_rps += other.rps;
@@ -619,15 +685,39 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 // publishes the resolved map AFTER deploying and the
                 // fleet reads it here. SELF_URL heartbeats remain the
                 // plain-VM path where an instance does know its address.
-                if let Ok(r) = store.get(&ObjPath::from("fleet/urls.json")).await {
-                    if let Ok(raw) = r.bytes().await {
-                        if let Ok(m) = serde_json::from_slice::<
-                            std::collections::HashMap<String, String>,
-                        >(&raw)
-                        {
-                            peer_urls.extend(m);
-                        }
+                let published: Option<std::collections::HashMap<String, String>> =
+                    match store.get(&ObjPath::from("fleet/urls.json")).await {
+                        Ok(r) => match r.bytes().await {
+                            Ok(raw) => serde_json::from_slice::<
+                                std::collections::HashMap<String, String>,
+                            >(&raw)
+                            .ok()
+                            .map(|m| {
+                                m.into_iter()
+                                    .filter(|(inst, url)| {
+                                        let ok = valid_peer_url(url);
+                                        if !ok {
+                                            tracing::warn!(
+                                                instance = %inst,
+                                                "rejecting malformed peer URL from urls.json"
+                                            );
+                                        }
+                                        ok
+                                    })
+                                    .collect()
+                            }),
+                            Err(_) => None,
+                        },
+                        Err(_) => None,
+                    };
+                match published {
+                    Some(m) => {
+                        *last_good_urls().lock().unwrap() = m.clone();
+                        peer_urls.extend(m);
                     }
+                    // Transient failure: keep the last validated map
+                    // rather than falling back to stale heartbeat URLs.
+                    None => peer_urls.extend(last_good_urls().lock().unwrap().clone()),
                 }
                 *state.peer_urls.write().unwrap() = peer_urls.clone();
             }
@@ -965,6 +1055,45 @@ mod tests {
     // 1/1/2/0; the rebalancer moved one off the 2-owner, return-home
     // handed it straight back once the home was healthy, and ownership
     // oscillated on a ~300 s period.
+    // Round-19: fleet/urls.json and heartbeats are bucket-writable
+    // inputs, and relays send the fleet-internal credential (sometimes a
+    // customer stream key) to whatever they name. Anything that is not a
+    // bare origin must be refused before it is stored.
+    #[test]
+    fn peer_urls_must_be_bare_origins() {
+        unsafe { std::env::set_var("FLEET_ALLOW_HTTP_PEERS", "1") };
+        assert!(valid_peer_url("https://cv-abc.fra.prisma.build"));
+        assert!(valid_peer_url("http://127.0.0.1:8091"));
+        // userinfo, path, query, fragment, backslash, whitespace
+        assert!(!valid_peer_url("https://evil@attacker.example"));
+        assert!(!valid_peer_url("https://host.example/path"));
+        assert!(!valid_peer_url("https://host.example?x=1"));
+        assert!(!valid_peer_url("https://host.example#f"));
+        assert!(!valid_peer_url("https://host.example\\@evil"));
+        assert!(!valid_peer_url("https://host .example"));
+        // non-http schemes and bare hosts
+        assert!(!valid_peer_url("file:///etc/passwd"));
+        assert!(!valid_peer_url("host.example"));
+        assert!(!valid_peer_url(""));
+        // non-numeric port
+        assert!(!valid_peer_url("http://host.example:evil"));
+        unsafe { std::env::remove_var("FLEET_ALLOW_HTTP_PEERS") };
+        // TLS mandatory once the dev escape hatch is off
+        assert!(!valid_peer_url("http://127.0.0.1:8091"));
+        assert!(valid_peer_url("https://cv-abc.fra.prisma.build"));
+    }
+
+    #[test]
+    fn peer_domain_allowlist_is_enforced_when_set() {
+        unsafe { std::env::set_var("FLEET_PEER_DOMAINS", "prisma.build") };
+        assert!(valid_peer_url("https://cv-abc.fra.prisma.build"));
+        assert!(valid_peer_url("https://prisma.build"));
+        assert!(!valid_peer_url("https://attacker.example"));
+        // suffix-matching must not accept a lookalike domain
+        assert!(!valid_peer_url("https://evilprisma.build"));
+        unsafe { std::env::remove_var("FLEET_PEER_DOMAINS") };
+    }
+
     #[test]
     fn return_home_suppressed_at_fair_share() {
         // home kept 1 of its 2 shards; mean is ceil(4/4)=1; returning

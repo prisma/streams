@@ -4829,6 +4829,7 @@ async fn http_rig_inner(
         touch,
         default_key: None,
         auth_token: auth,
+        fleet_internal_token: Some("dst-internal-token".to_string()),
         metrics: Arc::new(crate::metrics::Metrics::default()),
     });
     let app = crate::http::router(state.clone());
