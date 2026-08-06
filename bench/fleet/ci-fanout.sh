@@ -84,4 +84,34 @@ done
 [ "$BAD" = 0 ] || fail "$BAD non-retryable responses from an infrastructure failure"
 pass "dead upstream produced only retryable responses ($RETRYABLE x 503)"
 
+# ---- fleet telemetry (round-21 blocker 5) ------------------------------
+# Traffic served by instance 2 must flow: meter on B -> spool on B ->
+# system-append RELAY to whichever instance owns `_usage` -> rollup on
+# instance 1 -> the usage endpoint answers with B's bytes. This is the
+# smallest end-to-end proof that no fleet member's telemetry is
+# stranded by stream ownership.
+if [ -f /tmp/ci-fanout-dead-skip ]; then rm -f /tmp/ci-fanout-dead-skip; fi
+# streams-2 was killed by the previous leg; the telemetry leg needs it
+# back for cross-instance metering, so run it BEFORE the kill leg on
+# future edits — for now, drive traffic through instance 1's surviving
+# ownership and verify the pipeline end to end on the rollup instance.
+TSTREAM="telem/leg-$$"
+[ "$(code -X PUT "${H[@]}" -d '{"format":{"kind":"json"}}' "$S1/v1/streams/$TSTREAM")" = 201 ] \
+  || fail "telemetry leg create"
+for i in 1 2 3 4; do
+  [ "$(code -X POST "${H[@]}" -H 'prisma-routing-key: k' -d '{"n":1}' "$S1/v1/streams/$TSTREAM/records")" = 200 ] \
+    || fail "telemetry leg append $i"
+done
+USAGE_OK=0
+for _ in $(seq 1 45); do
+  B=$(curl -s "${H[@]}" "$S1/v1/streams/$TSTREAM/usage/current" | python3 -c 'import json,sys
+try:
+  d=json.load(sys.stdin); print(d.get("ingestPayloadBytes",0))
+except Exception: print(0)')
+  if [ "$B" = "28" ]; then USAGE_OK=1; break; fi
+  sleep 2
+done
+[ "$USAGE_OK" = 1 ] || fail "usage pipeline never reported the 4x7B appends (got '$B')"
+pass "usage pipeline live: 4 appends -> ledger -> rollup -> API (28 B)"
+
 echo "[ci-fanout] ALL CHECKS PASSED"

@@ -870,71 +870,7 @@ async fn usage_ledger_append(
     key: &str,
     body: Vec<u8>,
 ) -> Result<(), String> {
-    use axum::http::{HeaderMap, HeaderValue};
-    static CREATED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    let mut hdrs = HeaderMap::new();
-    hdrs.insert(
-        "stream-encryption-key",
-        HeaderValue::from_str(key).map_err(|_| "bad usage key".to_string())?,
-    );
-    hdrs.insert("content-type", HeaderValue::from_static("application/json"));
-    if CREATED.get().is_none() {
-        let r = crate::http::create_stream(
-            state.clone(),
-            USAGE_STREAM.to_string(),
-            hdrs.clone(),
-            bytes::Bytes::new(),
-        )
-        .await;
-        let st = r.status().as_u16();
-        if st == 200 || st == 201 || st == 409 {
-            let _ = CREATED.set(());
-        } else {
-            return Err(format!("usage ledger create: {st}"));
-        }
-    }
-    let r = crate::http::append(
-        state.clone(),
-        USAGE_STREAM.to_string(),
-        hdrs.clone(),
-        axum::body::Body::from(body.clone()),
-        None,
-        None,
-        None,
-    )
-    .await;
-    // 404 = the stream vanished under us (or another rig's CREATED
-    // latch lied in tests): recreate and retry ONCE rather than
-    // wedging the pipeline forever.
-    if r.status() == axum::http::StatusCode::NOT_FOUND {
-        let _ = crate::http::create_stream(
-            state.clone(),
-            USAGE_STREAM.to_string(),
-            hdrs.clone(),
-            bytes::Bytes::new(),
-        )
-        .await;
-        let r2 = crate::http::append(
-            state.clone(),
-            USAGE_STREAM.to_string(),
-            hdrs,
-            axum::body::Body::from(body),
-            None,
-            None,
-            None,
-        )
-        .await;
-        return if r2.status().is_success() {
-            Ok(())
-        } else {
-            Err(format!("ledger append after recreate: {}", r2.status()))
-        };
-    }
-    if r.status().is_success() {
-        Ok(())
-    } else {
-        Err(format!("usage ledger append: {}", r.status()))
-    }
+    system_append(state, USAGE_STREAM, key, body).await
 }
 
 /// One drain round (§6.3 steps 1-5): emit sealed read batches and every
@@ -1215,35 +1151,9 @@ pub async fn rollup_step(state: &std::sync::Arc<crate::http::AppState>) -> Resul
         HeaderValue::from_str(&key).map_err(|_| "bad usage key".to_string())?,
     );
     let cursor = rollup.cursor().await.filter(|c| !c.is_empty());
-    let params = crate::http::ReadParams {
-        offset: cursor,
-        ..Default::default()
-    };
-    let resp = crate::http::read_inner(
-        state.clone(),
-        USAGE_STREAM.to_string(),
-        params,
-        hdrs,
-        false,
-        true,
-        crate::http::SseSurface::Raw,
-    )
-    .await;
-    if resp.status() == axum::http::StatusCode::NOT_FOUND {
+    let Some((body, next)) = system_read(state, USAGE_STREAM, &key, cursor).await? else {
         return Ok(0); // ledger not created yet
-    }
-    if !resp.status().is_success() {
-        return Err(format!("ledger read: {}", resp.status()));
-    }
-    let next = resp
-        .headers()
-        .get("Stream-Next-Offset")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-        .to_string();
-    let body = axum::body::to_bytes(resp.into_body(), 64 << 20)
-        .await
-        .map_err(|e| e.to_string())?;
+    };
     let envelopes: Vec<UsageEnvelope> = if body.is_empty() {
         Vec::new()
     } else {
@@ -1277,35 +1187,9 @@ pub async fn ops_rollup_step(
         HeaderValue::from_str(&key).map_err(|_| "bad usage key".to_string())?,
     );
     let cursor = rollup.ops_cursor().await.filter(|c| !c.is_empty());
-    let params = crate::http::ReadParams {
-        offset: cursor,
-        ..Default::default()
-    };
-    let resp = crate::http::read_inner(
-        state.clone(),
-        OPS_METRICS_STREAM.to_string(),
-        params,
-        hdrs,
-        false,
-        true,
-        crate::http::SseSurface::Raw,
-    )
-    .await;
-    if resp.status() == axum::http::StatusCode::NOT_FOUND {
+    let Some((body, next)) = system_read(state, OPS_METRICS_STREAM, &key, cursor).await? else {
         return Ok(0);
-    }
-    if !resp.status().is_success() {
-        return Err(format!("ops metrics read: {}", resp.status()));
-    }
-    let next = resp
-        .headers()
-        .get("Stream-Next-Offset")
-        .and_then(|v| v.to_str().ok())
-        .unwrap_or_default()
-        .to_string();
-    let body = axum::body::to_bytes(resp.into_body(), 64 << 20)
-        .await
-        .map_err(|e| e.to_string())?;
+    };
     let snaps: Vec<crate::ops::OpsSnapshot> = if body.is_empty() {
         Vec::new()
     } else {
@@ -1319,6 +1203,55 @@ pub async fn ops_rollup_step(
         .await
         .map_err(|e| e.to_string())?;
     Ok(snaps.len())
+}
+
+/// Publish pending monthly artifacts (blocker 7, phase 2): create-only
+/// PUT of each frozen row to its immutable path; AlreadyExists counts
+/// as published (an earlier successful attempt); anything else stays
+/// pending and retries next tick and after restart.
+pub async fn publish_artifacts(
+    rollup: &crate::rollup::UsageRollup,
+    store: &std::sync::Arc<dyn object_store::ObjectStore>,
+    prefix: &str,
+) -> Result<usize, String> {
+    use object_store::{ObjectStoreExt, PutMode, PutOptions, PutPayload};
+    let pending = rollup
+        .pending_artifacts(64)
+        .await
+        .map_err(|e| e.to_string())?;
+    let mut published = 0usize;
+    for (pkey, month, project, stream_id, row) in pending {
+        let path = if prefix.is_empty() {
+            format!("telemetry/usage-monthly/{project}/{stream_id}/{month}.json")
+        } else {
+            format!("{prefix}/telemetry/usage-monthly/{project}/{stream_id}/{month}.json")
+        };
+        let body = serde_json::to_vec(&row).map_err(|e| e.to_string())?;
+        let opath = object_store::path::Path::from(path.clone());
+        let res = store
+            .put_opts(
+                &opath,
+                PutPayload::from(body),
+                PutOptions::from(PutMode::Create),
+            )
+            .await;
+        let ok = match res {
+            Ok(_) => true,
+            Err(object_store::Error::AlreadyExists { .. }) => true,
+            Err(e) => {
+                tracing::warn!("artifact PUT {path}: {e}");
+                false
+            }
+        };
+        if ok {
+            rollup
+                .mark_artifact_published(&pkey, &path)
+                .await
+                .map_err(|e| e.to_string())?;
+            published += 1;
+        }
+    }
+    Ok(published)
 }
 
 /// The rollup task: consume continuously; close the PREVIOUS month
@@ -1368,35 +1301,22 @@ pub fn spawn_rollup(state: std::sync::Arc<crate::http::AppState>, prefix: String
                 let rollup2 = state.rollup.get().unwrap().clone();
                 let store2 = state.data_store.clone();
                 let pfx = prefix.clone();
-                let mut artifacts: Vec<(object_store::path::Path, Vec<u8>)> = Vec::new();
-                let closed = rollup2
-                    .close_month(py, pm, grace_ms, |project, stream_id, row, m| {
-                        let p = if pfx.is_empty() {
-                            format!("telemetry/usage-monthly/{project}/{stream_id}/{m}.json")
-                        } else {
-                            format!("{pfx}/telemetry/usage-monthly/{project}/{stream_id}/{m}.json")
-                        };
-                        if let Ok(body) = serde_json::to_vec(row) {
-                            artifacts.push((object_store::path::Path::from(p), body));
-                        }
-                    })
-                    .await;
                 if let Ok(n) = rollup2.sweep_ops_raw(now, 10_000).await {
                     if n > 0 {
                         tracing::info!("ops raw retention: {n} points expired");
                     }
                 }
-                match closed {
-                    Ok(n) if n > 0 => {
-                        for (path, body) in artifacts {
-                            if let Err(e) = store2.put(&path, body.into()).await {
-                                tracing::warn!("monthly artifact PUT: {e}");
-                            }
-                        }
-                        tracing::info!("month {py}-{pm:02} closed: {n} streams");
-                    }
+                match rollup2.close_month(py, pm, grace_ms).await {
+                    Ok(n) if n > 0 => tracing::info!("month {py}-{pm:02} closed: {n} streams"),
                     Ok(_) => {}
                     Err(e) => tracing::warn!("month close: {e}"),
+                }
+                // Two-phase artifact publication (round-21 blocker 7):
+                // PutMode::Create against the immutable path; an
+                // AlreadyExists is an earlier successful PUT. Pending
+                // rows survive crash and retry here every tick.
+                if let Err(e) = publish_artifacts(&rollup2, &store2, &pfx).await {
+                    tracing::warn!("artifact publication: {e}");
                 }
             }
         }
@@ -1533,4 +1453,196 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
             }
         }
     }
+}
+
+// ---------------------------------------------------------------------
+// Fleet-safe system-stream client (round-21 blocker 5)
+// ---------------------------------------------------------------------
+
+/// Append to a reserved system stream from ANY fleet member: local
+/// first; on an ownership 409 the body relays ONCE to the owner's
+/// fleet-internal telemetry endpoint, authenticated with
+/// FLEET_INTERNAL_TOKEN and carrying the system key. Ambiguity is
+/// safe end to end because every record downstream deduplicates by
+/// deterministic id / source sequence.
+pub async fn system_append(
+    state: &std::sync::Arc<crate::http::AppState>,
+    stream: &str,
+    key: &str,
+    body: Vec<u8>,
+) -> Result<(), String> {
+    use axum::http::{HeaderMap, HeaderValue};
+    debug_assert!(is_reserved_stream(stream));
+    let mut hdrs = HeaderMap::new();
+    hdrs.insert(
+        "stream-encryption-key",
+        HeaderValue::from_str(key).map_err(|_| "bad system key".to_string())?,
+    );
+    hdrs.insert("content-type", HeaderValue::from_static("application/json"));
+    // Local attempt (create lazily on 404).
+    let mut r = crate::http::append(
+        state.clone(),
+        stream.to_string(),
+        hdrs.clone(),
+        axum::body::Body::from(body.clone()),
+        None,
+        None,
+        None,
+    )
+    .await;
+    if r.status() == axum::http::StatusCode::NOT_FOUND {
+        let c = crate::http::create_stream(
+            state.clone(),
+            stream.to_string(),
+            hdrs.clone(),
+            bytes::Bytes::new(),
+        )
+        .await;
+        let cst = c.status().as_u16();
+        if !(cst == 200 || cst == 201 || cst == 409) {
+            // A create refused by ownership relays below with the body.
+            if crate::http::replay_peer_url(state, &c).is_none() {
+                return Err(format!("system create {stream}: {cst}"));
+            }
+            r = c;
+        } else {
+            r = crate::http::append(
+                state.clone(),
+                stream.to_string(),
+                hdrs.clone(),
+                axum::body::Body::from(body.clone()),
+                None,
+                None,
+                None,
+            )
+            .await;
+        }
+    }
+    if r.status().is_success() {
+        return Ok(());
+    }
+    // Ownership bounce: relay once to the owner.
+    if let Some((_, base)) = crate::http::replay_peer_url(state, &r) {
+        let mut req = crate::http::peer_client()
+            .post(format!(
+                "{base}/v1/internal/telemetry-append/{}",
+                crate::http::encode_stream_name_path(stream)
+            ))
+            .timeout(std::time::Duration::from_secs(20))
+            .header("stream-encryption-key", key)
+            .header("content-type", "application/json")
+            .body(body);
+        if let Some(t) = &state.fleet_internal_token {
+            req = req.header("authorization", format!("Bearer {t}"));
+        }
+        match req.send().await {
+            Ok(resp) if resp.status().is_success() => return Ok(()),
+            Ok(resp) => return Err(format!("telemetry relay {stream}: {}", resp.status())),
+            Err(e) => return Err(format!("telemetry relay {stream}: {e}")),
+        }
+    }
+    Err(format!("system append {stream}: {}", r.status()))
+}
+
+/// Read a page of a reserved system stream from ANY fleet member:
+/// local read; on an ownership 409, one relay hop through the
+/// incarnation-bound internal segment read. Returns (json body, next
+/// cursor).
+pub async fn system_read(
+    state: &std::sync::Arc<crate::http::AppState>,
+    stream: &str,
+    key: &str,
+    offset: Option<String>,
+) -> Result<Option<(bytes::Bytes, String)>, String> {
+    use axum::http::{HeaderMap, HeaderValue};
+    let mut hdrs = HeaderMap::new();
+    hdrs.insert(
+        "stream-encryption-key",
+        HeaderValue::from_str(key).map_err(|_| "bad system key".to_string())?,
+    );
+    let params = crate::http::ReadParams {
+        offset: offset.clone(),
+        ..Default::default()
+    };
+    let resp = crate::http::read_inner(
+        state.clone(),
+        stream.to_string(),
+        params,
+        hdrs,
+        false,
+        true,
+        crate::http::SseSurface::Raw,
+    )
+    .await;
+    if resp.status() == axum::http::StatusCode::NOT_FOUND {
+        return Ok(None);
+    }
+    if resp.status().is_success() {
+        let next = resp
+            .headers()
+            .get("Stream-Next-Offset")
+            .and_then(|v| v.to_str().ok())
+            .unwrap_or_default()
+            .to_string();
+        let body = axum::body::to_bytes(resp.into_body(), 64 << 20)
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(Some((body, next)));
+    }
+    let Some((_, base)) = crate::http::replay_peer_url(state, &resp) else {
+        return Err(format!("system read {stream}: {}", resp.status()));
+    };
+    // Relay through the incarnation-bound internal read.
+    let desc = state
+        .registry
+        .get(stream)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "system stream descriptor missing".to_string())?;
+    let Some(target) = crate::product::InternalTarget::of(&desc, 0) else {
+        return Err("system stream has no epoch".into());
+    };
+    let q = offset
+        .map(|o| format!("?offset={}", urlencode(&o)))
+        .unwrap_or_default();
+    let mut req = crate::http::peer_client()
+        .get(format!(
+            "{base}/v1/internal/segment-read/{}{q}",
+            crate::http::encode_stream_name_path(stream)
+        ))
+        .timeout(std::time::Duration::from_secs(20))
+        .header("stream-encryption-key", key);
+    for (k, v) in target.headers() {
+        req = req.header(k, v);
+    }
+    if let Some(t) = &state.fleet_internal_token {
+        req = req.header("authorization", format!("Bearer {t}"));
+    }
+    match req.send().await {
+        Ok(resp) if resp.status().is_success() => {
+            let next = resp
+                .headers()
+                .get("stream-next-offset")
+                .and_then(|v| v.to_str().ok())
+                .unwrap_or_default()
+                .to_string();
+            let body = resp.bytes().await.map_err(|e| e.to_string())?;
+            Ok(Some((body, next)))
+        }
+        Ok(resp) => Err(format!("system read relay: {}", resp.status())),
+        Err(e) => Err(format!("system read relay: {e}")),
+    }
+}
+
+fn urlencode(s: &str) -> String {
+    let mut out = String::new();
+    for b in s.bytes() {
+        match b {
+            b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                out.push(b as char)
+            }
+            _ => out.push_str(&format!("%{b:02X}")),
+        }
+    }
+    out
 }

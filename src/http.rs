@@ -819,6 +819,41 @@ async fn debug_ops_events(State(state): State<Arc<AppState>>, headers: HeaderMap
     .into_response()
 }
 
+/// Fleet-internal telemetry append (round-21 blocker 5): the OWNER-side
+/// target for system-stream relays. Fleet credential only; reserved
+/// names only; creates the stream lazily with the carried system key.
+async fn internal_telemetry_append(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !fleet_internal_authorized(&state, &headers) {
+        return internal_unauthorized();
+    }
+    if !crate::billing::is_reserved_stream(&name) {
+        return err_resp(
+            StatusCode::FORBIDDEN,
+            "not_system_stream",
+            "telemetry-append accepts only reserved system streams",
+        );
+    }
+    let mut hdrs = HeaderMap::new();
+    if let Some(k) = headers.get("stream-encryption-key") {
+        hdrs.insert("stream-encryption-key", k.clone());
+    }
+    hdrs.insert(
+        "content-type",
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    let c = create_stream(state.clone(), name.clone(), hdrs.clone(), Bytes::new()).await;
+    let cst = c.status().as_u16();
+    if !(cst == 200 || cst == 201 || cst == 409) {
+        return c;
+    }
+    append(state, name, hdrs, Body::from(body), None, None, None).await
+}
+
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
@@ -842,6 +877,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/internal/segment-scan/{*name}",
             get(crate::product::internal_segment_scan),
+        )
+        .route(
+            "/v1/internal/telemetry-append/{*name}",
+            post(internal_telemetry_append),
         )
         .route("/v1/debug/timings", get(debug_timings))
         .route("/v1/debug/load", get(debug_load))

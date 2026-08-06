@@ -1114,8 +1114,28 @@ pub async fn drain_fleet_events(
         }
         let ids: std::collections::HashSet<String> =
             pending.iter().map(|e| e.event_id.clone()).collect();
-        for ev in pending {
-            crate::ops::emit(ev);
+        // Round-21 ordering fix: the events reach `_ops_events`
+        // DURABLY before the CAS outbox is cleared — a crash between
+        // the two re-emits deterministic ids the rollup deduplicates,
+        // never loses the transition.
+        let Some(sys_key) = state.usage_key.clone() else {
+            continue;
+        };
+        let mut stamped = pending.clone();
+        for ev in &mut stamped {
+            if ev.cell.is_empty() {
+                ev.cell = state.cell_id.clone();
+            }
+        }
+        let body = match serde_json::to_vec(&stamped) {
+            Ok(b) => b,
+            Err(_) => continue,
+        };
+        if crate::billing::system_append(state, crate::billing::OPS_EVENTS_STREAM, &sys_key, body)
+            .await
+            .is_err()
+        {
+            continue; // outbox stays; retry next tick
         }
         emitted += ids.len();
         // Clear EXACTLY the drained ids under CAS; concurrent writers'
@@ -1141,7 +1161,6 @@ pub async fn drain_fleet_events(
             )
             .await;
     }
-    let _ = state;
     Ok(emitted)
 }
 

@@ -117,10 +117,35 @@ pub struct MonthRow {
     pub append_requests: u64,
     #[serde(default)]
     pub finalized_at_ms: Option<i64>,
+    /// Totals FROZEN at finalization (§9.5 / round-21 blocker 8): the
+    /// invoice base. Late data appends to `corrections`; it never
+    /// mutates these.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub frozen: Option<FrozenTotals>,
     #[serde(default)]
     pub corrections: Vec<UsageCorrection>,
     #[serde(default)]
     pub updated_ms: i64,
+}
+
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct FrozenTotals {
+    #[serde(default)]
+    pub ingest_bytes: u64,
+    #[serde(default)]
+    pub ingest_records: u64,
+    #[serde(default)]
+    pub storage_byte_ms: String,
+    #[serde(default)]
+    pub read_payload_bytes: u64,
+    #[serde(default)]
+    pub read_records: u64,
+    #[serde(default)]
+    pub read_operations: u64,
+    #[serde(default)]
+    pub queue_operations: u64,
+    #[serde(default)]
+    pub append_requests: u64,
 }
 
 impl MonthRow {
@@ -332,38 +357,100 @@ impl UsageRollup {
             return; // duplicate delivery of an applied batch
         }
         sources.insert(boot, rb.seq);
-        let (y, m) = crate::billing::utc_year_month(rb.to_ms);
-        let month = crate::billing::month_str(y, m);
+        // Round-21 blocker 8: a batch crossing a UTC month boundary
+        // splits proportionally by time — never wholly attributed to
+        // the month containing `to_ms`.
+        let (fy, fm) = crate::billing::utc_year_month(rb.from_ms.min(rb.to_ms));
+        let (ty, tm) = crate::billing::utc_year_month(rb.to_ms);
+        let spans: Vec<(String, f64)> = if (fy, fm) == (ty, tm) {
+            vec![(crate::billing::month_str(ty, tm), 1.0)]
+        } else {
+            let boundary = {
+                let (ny, nm) = crate::billing::next_month(fy, fm);
+                crate::billing::month_start_ms(ny, nm)
+            };
+            let total = (rb.to_ms - rb.from_ms).max(1) as f64;
+            let first = ((boundary - rb.from_ms).max(0) as f64 / total).clamp(0.0, 1.0);
+            vec![
+                (crate::billing::month_str(fy, fm), first),
+                (crate::billing::month_str(ty, tm), 1.0 - first),
+            ]
+        };
+        for (month, frac) in &spans {
+            let month = month.clone();
+            let frac = *frac;
+            if frac <= 0.0 {
+                continue;
+            }
+            self.apply_read_rows(rb, &month, frac, months, names, projects)
+                .await;
+        }
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    async fn apply_read_rows(
+        &self,
+        rb: &ReadBatch,
+        month: &str,
+        frac: f64,
+        months: &mut std::collections::HashMap<Vec<u8>, MonthRow>,
+        names: &mut std::collections::HashMap<Vec<u8>, AggRow>,
+        projects: &mut std::collections::HashMap<Vec<u8>, AggRow>,
+    ) {
+        let scale = |v: u64| -> u64 {
+            if frac >= 1.0 {
+                v
+            } else {
+                (v as f64 * frac).round() as u64
+            }
+        };
         for row in &rb.rows {
-            let mkey = k_month(&month, &row.identity.project_id, &row.identity.stream_id);
+            let mkey = k_month(month, &row.identity.project_id, &row.identity.stream_id);
             let mut mr: MonthRow = match months.get(&mkey) {
                 Some(r) => r.clone(),
                 None => get_json(&self.db, &mkey).await,
             };
+            if mr.finalized_at_ms.is_some() {
+                // Late reads after finalization: explicit correction,
+                // frozen base untouched (round-21 blocker 8).
+                mr.corrections.push(UsageCorrection {
+                    identity: row.identity.clone(),
+                    month: month.to_string(),
+                    reason: format!(
+                        "late read batch {}#{} after finalization",
+                        rb.source.boot, rb.seq
+                    ),
+                    ingest_payload_bytes_delta: 0,
+                    read_payload_bytes_delta: scale(row.read_payload_bytes) as i64,
+                    storage_byte_ms_delta: "0".into(),
+                });
+                months.insert(mkey, mr);
+                continue;
+            }
             mr.account_id = row.identity.account_id.clone();
             mr.stream_name = row.identity.stream_name.clone();
-            mr.read_payload_bytes += row.read_payload_bytes;
-            mr.read_records += row.read_records;
-            mr.read_operations += row.read_operations;
-            mr.queue_operations += row.queue_operations;
-            mr.append_requests += row.append_requests;
+            mr.read_payload_bytes += scale(row.read_payload_bytes);
+            mr.read_records += scale(row.read_records);
+            mr.read_operations += scale(row.read_operations);
+            mr.queue_operations += scale(row.queue_operations);
+            mr.append_requests += scale(row.append_requests);
             months.insert(mkey, mr);
             for (key, agg) in [
                 (
-                    k_name(&month, &row.identity.project_id, &row.identity.stream_name),
+                    k_name(month, &row.identity.project_id, &row.identity.stream_name),
                     true,
                 ),
-                (k_project(&month, &row.identity.project_id), false),
+                (k_project(month, &row.identity.project_id), false),
             ] {
                 let mut a: AggRow = match names.get(&key).or_else(|| projects.get(&key)) {
                     Some(r) => r.clone(),
                     None => get_json(&self.db, &key).await,
                 };
-                a.read_payload_bytes += row.read_payload_bytes;
-                a.read_records += row.read_records;
-                a.read_operations += row.read_operations;
-                a.queue_operations += row.queue_operations;
-                a.append_requests += row.append_requests;
+                a.read_payload_bytes += scale(row.read_payload_bytes);
+                a.read_records += scale(row.read_records);
+                a.read_operations += scale(row.read_operations);
+                a.queue_operations += scale(row.queue_operations);
+                a.append_requests += scale(row.append_requests);
                 if agg {
                     if !a.incarnations.contains(&row.identity.stream_id) {
                         a.incarnations.push(row.identity.stream_id.clone());
@@ -395,6 +482,7 @@ impl UsageRollup {
             Some(r) => r.clone(),
             None => get_json(&self.db, &mkey).await,
         };
+        let finalized = mr.finalized_at_ms.is_some();
         let sm = mr.segments.entry(snap.segment_id).or_default();
         // Version fence PER (segment, month) target: the live row and a
         // month-final can carry the same version family; a strictly
@@ -402,8 +490,42 @@ impl UsageRollup {
         if snap.usage_version <= sm.usage_version && !snap.month_final {
             return;
         }
-        if snap.month_final && sm.final_seen {
+        if snap.month_final && sm.final_seen && !finalized {
             return; // replayed final
+        }
+        if finalized {
+            if snap.month_final && sm.final_seen && snap.usage_version <= sm.usage_version {
+                return; // replayed final against a closed month
+            }
+            // LATE data into a FINALIZED month (round-21 blocker 8):
+            // the frozen base never mutates — the delta becomes an
+            // explicit, versioned correction, and the floors advance so
+            // a replay corrects exactly once.
+            let d_bytes = snap
+                .ingest_payload_bytes_month
+                .saturating_sub(sm.ingest_bytes);
+            let new_ms: u128 = snap.storage_byte_ms_month.parse().unwrap_or(0);
+            let old_ms: u128 = sm.storage_byte_ms.parse().unwrap_or(0);
+            let d_ms = new_ms.saturating_sub(old_ms);
+            if d_bytes > 0 || d_ms > 0 {
+                mr.corrections.push(UsageCorrection {
+                    identity: id.clone(),
+                    month: snap.month.clone(),
+                    reason: format!(
+                        "late segment snapshot v{} after finalization",
+                        snap.usage_version
+                    ),
+                    ingest_payload_bytes_delta: d_bytes as i64,
+                    read_payload_bytes_delta: 0,
+                    storage_byte_ms_delta: d_ms.to_string(),
+                });
+            }
+            sm.usage_version = snap.usage_version.max(sm.usage_version);
+            sm.ingest_bytes = snap.ingest_payload_bytes_month.max(sm.ingest_bytes);
+            sm.storage_byte_ms = new_ms.max(old_ms).to_string();
+            sm.final_seen = true;
+            months.insert(mkey, mr);
+            return;
         }
         // Deltas against the last applied absolutes.
         let d_bytes = snap
@@ -498,6 +620,60 @@ impl UsageRollup {
         out
     }
 
+    /// Pending monthly artifacts (blocker 7): (pending key, month,
+    /// project, stream-id, row).
+    pub async fn pending_artifacts(
+        &self,
+        max: usize,
+    ) -> anyhow::Result<Vec<(Vec<u8>, String, String, String, MonthRow)>> {
+        let mut out = Vec::new();
+        let mut iter = self.db.scan_prefix(&b"artifact-pending/"[..], ..).await?;
+        while let Some(kv) = iter.next().await? {
+            let k = std::str::from_utf8(&kv.key).unwrap_or("").to_string();
+            let parts: Vec<&str> = k.splitn(4, '/').collect();
+            if parts.len() == 4 {
+                if let Ok(row) = serde_json::from_slice::<MonthRow>(&kv.value) {
+                    out.push((
+                        kv.key.to_vec(),
+                        parts[1].to_string(),
+                        parts[2].to_string(),
+                        parts[3].to_string(),
+                        row,
+                    ));
+                }
+            }
+            if out.len() >= max {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Phase 2 of publication: the object is verifiably in the store —
+    /// retire the pending row and record the done marker.
+    pub async fn mark_artifact_published(
+        &self,
+        pending_key: &[u8],
+        object_path: &str,
+    ) -> anyhow::Result<()> {
+        let mut wb = WriteBatch::new();
+        wb.delete(pending_key.to_vec());
+        let done_key = {
+            let mut k = b"artifact-done/".to_vec();
+            k.extend_from_slice(&pending_key[b"artifact-pending/".len()..]);
+            k
+        };
+        wb.put(
+            done_key,
+            serde_json::to_vec(&serde_json::json!({
+                "path": object_path,
+                "published_ms": crate::billing::billing_now_ms(),
+            }))?,
+        );
+        self.db.write(wb).await?;
+        Ok(())
+    }
+
     // ---- month close (§9.4/§9.5/§9.6) --------------------------------
 
     /// Close (year, month) — round-21 blockers 2 and 9.
@@ -518,13 +694,7 @@ impl UsageRollup {
     /// resumes mid-month with no lost or repeated accrual (the carry is
     /// guarded by per-segment `final_seen`/boundary checks, so a replay
     /// applies zero).
-    pub async fn close_month(
-        &self,
-        year: i32,
-        month: u32,
-        grace_ms: i64,
-        mut artifact: impl FnMut(&str, &str, &MonthRow, &str),
-    ) -> anyhow::Result<usize> {
+    pub async fn close_month(&self, year: i32, month: u32, grace_ms: i64) -> anyhow::Result<usize> {
         const CLOSE_CHUNK: usize = 1000;
         let mstr = crate::billing::month_str(year, month);
         let (ny, nm) = next_month(year, month);
@@ -669,12 +839,28 @@ impl UsageRollup {
                     }
                 }
                 row.finalized_at_ms = Some(now);
+                // Freeze the invoice base (blocker 8) and stage the
+                // monthly artifact as a PENDING row in the SAME batch
+                // (blocker 7): publication is two-phase — a failed or
+                // crashed PUT retries from this durable outbox, and a
+                // finalized row is never re-derived.
+                row.frozen = Some(FrozenTotals {
+                    ingest_bytes: row.ingest_bytes(),
+                    ingest_records: row.ingest_records(),
+                    storage_byte_ms: row.storage_byte_ms().to_string(),
+                    read_payload_bytes: row.read_payload_bytes,
+                    read_records: row.read_records,
+                    read_operations: row.read_operations,
+                    queue_operations: row.queue_operations,
+                    append_requests: row.append_requests,
+                });
                 let parts: Vec<&str> = std::str::from_utf8(&key)
                     .unwrap_or("")
                     .splitn(4, '/')
                     .collect();
                 if parts.len() == 4 {
-                    artifact(parts[2], parts[3], &row, &mstr);
+                    let pkey = format!("artifact-pending/{mstr}/{}/{}", parts[2], parts[3]);
+                    wb.put(pkey.into_bytes(), serde_json::to_vec(&row)?);
                 }
                 wb.put(key, serde_json::to_vec(&row)?);
                 closed += 1;
@@ -782,41 +968,40 @@ mod tests {
         r.apply_page(&[env], "c1").await.unwrap();
 
         let day = 86_400_000u128;
-        let mut arts: Vec<(String, u128)> = Vec::new();
+        let art_for = |arts: Vec<(Vec<u8>, String, String, String, MonthRow)>, m: &str| {
+            arts.into_iter()
+                .find(|(_, month, ..)| month == m)
+                .map(|(.., row)| row.storage_byte_ms())
+        };
         // Close July: Jul 15 -> Aug 1 = 17 idle days at 100 B.
-        let n = r
-            .close_month(2026, 7, 0, |_, _, row, m| {
-                arts.push((m.to_string(), row.storage_byte_ms()))
-            })
-            .await
-            .unwrap();
-        assert_eq!(n, 1);
-        assert_eq!(arts[0], ("2026-07".into(), 17 * day * 100));
+        assert_eq!(r.close_month(2026, 7, 0).await.unwrap(), 1);
+        assert_eq!(
+            art_for(r.pending_artifacts(64).await.unwrap(), "2026-07"),
+            Some(17 * day * 100)
+        );
         // Close August: a FULLY idle month — no row existed until the
         // carry pass synthesized it. 31 days at 100 B.
-        let n = r
-            .close_month(2026, 8, 0, |_, _, row, m| {
-                arts.push((m.to_string(), row.storage_byte_ms()))
-            })
-            .await
-            .unwrap();
-        assert_eq!(n, 1, "an idle month must still close its stream");
-        assert_eq!(arts[1], ("2026-08".into(), 31 * day * 100));
+        assert_eq!(
+            r.close_month(2026, 8, 0).await.unwrap(),
+            1,
+            "an idle month must still close its stream"
+        );
+        assert_eq!(
+            art_for(r.pending_artifacts(64).await.unwrap(), "2026-08"),
+            Some(31 * day * 100)
+        );
         // September: 30 days.
-        let n = r
-            .close_month(2026, 9, 0, |_, _, row, m| {
-                arts.push((m.to_string(), row.storage_byte_ms()))
-            })
-            .await
-            .unwrap();
-        assert_eq!(n, 1);
-        assert_eq!(arts[2], ("2026-09".into(), 30 * day * 100));
+        assert_eq!(r.close_month(2026, 9, 0).await.unwrap(), 1);
+        assert_eq!(
+            art_for(r.pending_artifacts(64).await.unwrap(), "2026-09"),
+            Some(30 * day * 100)
+        );
         // The durable segment state still knows the gauge.
         let states = r.stream_segment_states("proj", &id().stream_id).await;
         assert_eq!(states.len(), 1);
         assert_eq!(states[0].owned_frame_bytes_current, 100);
         // Replays are no-ops.
-        assert_eq!(r.close_month(2026, 8, 0, |_, _, _, _| {}).await.unwrap(), 0);
+        assert_eq!(r.close_month(2026, 8, 0).await.unwrap(), 0);
         // Aggregates carried the idle storage too.
         let aug_proj = r.project_row("2026-08", "proj").await.unwrap();
         assert_eq!(aug_proj.storage_byte_ms, (31 * day * 100).to_string());
@@ -895,31 +1080,25 @@ mod tests {
         // Close July (grace 0): the idle gauge extrapolates from
         // accounted_through to the boundary, the row finalizes, one
         // artifact per stream.
-        let mut artifacts = Vec::new();
-        let n = r
-            .close_month(2026, 7, 0, |proj, sid, row, m| {
-                artifacts.push((
-                    proj.to_string(),
-                    sid.to_string(),
-                    m.to_string(),
-                    row.storage_byte_ms(),
-                ))
-            })
-            .await
-            .unwrap();
+        let n = r.close_month(2026, 7, 0).await.unwrap();
         assert_eq!(n, 1);
+        let artifacts = r.pending_artifacts(64).await.unwrap();
         assert_eq!(artifacts.len(), 1);
         let boundary = month_start_ms(2026, 8);
         let through = crate::billing::month_start_ms(2026, 7) + 1_000_000;
         let expect = 9000u128 + (boundary - through) as u128 * 40;
-        assert_eq!(artifacts[0].3, expect, "idle extrapolation to the boundary");
+        assert_eq!(
+            artifacts[0].4.storage_byte_ms(),
+            expect,
+            "idle extrapolation to the boundary"
+        );
         let closed = r
             .month_row("2026-07", "proj", &id().stream_id)
             .await
             .unwrap();
         assert!(closed.finalized_at_ms.is_some());
         // Second close: nothing left to do.
-        assert_eq!(r.close_month(2026, 7, 0, |_, _, _, _| {}).await.unwrap(), 0);
+        assert_eq!(r.close_month(2026, 7, 0).await.unwrap(), 0);
 
         // A correction after close appends explicitly; the base row is
         // never silently rewritten (§9.5).
@@ -948,6 +1127,100 @@ mod tests {
             corrected.read_payload_bytes, 77,
             "the base number is untouched; the correction is explicit"
         );
+
+        // Round-21 blocker 8: LATE DATA after finalization converts to
+        // corrections automatically — no manual envelope needed.
+        r.apply_page(&[snap(3, "2026-07", 300, 10_000, 40, false)], "c7")
+            .await
+            .unwrap();
+        let after_snap = r
+            .month_row("2026-07", "proj", &id().stream_id)
+            .await
+            .unwrap();
+        let frozen = after_snap.frozen.clone().expect("frozen at finalization");
+        assert_eq!(
+            frozen.ingest_bytes, 250,
+            "the frozen invoice base never moves"
+        );
+        assert_eq!(after_snap.corrections.len(), 2);
+        let c = &after_snap.corrections[1];
+        assert_eq!(c.ingest_payload_bytes_delta, 50);
+        // Storage corrects ZERO here: finalization already extrapolated
+        // this segment's byte-time past the late snapshot's absolute —
+        // the late value is not additive news (and negative corrections
+        // are deliberately not synthesized).
+        assert_eq!(c.storage_byte_ms_delta, "0");
+        // Replaying the same late snapshot corrects ZERO more times.
+        r.apply_page(&[snap(3, "2026-07", 300, 10_000, 40, false)], "c8")
+            .await
+            .unwrap();
+        let replay = r
+            .month_row("2026-07", "proj", &id().stream_id)
+            .await
+            .unwrap();
+        assert_eq!(replay.corrections.len(), 2, "late replay corrected twice");
+
+        // ...and a late READ batch corrects too.
+        let late_rb = ReadBatch {
+            source: MeterSource {
+                cell: "c".into(),
+                instance: "i".into(),
+                boot: "b2".into(),
+            },
+            seq: 0,
+            from_ms: crate::billing::month_start_ms(2026, 7) + 10,
+            to_ms: crate::billing::month_start_ms(2026, 7) + 20,
+            rows: vec![ReadRow {
+                identity: id(),
+                read_payload_bytes: 9,
+                read_records: 1,
+                read_operations: 1,
+                queue_operations: 0,
+                append_requests: 0,
+            }],
+        };
+        let late_env = UsageEnvelope {
+            v: 1,
+            event_id: "read/b2/0".into(),
+            event_time_ms: 0,
+            emitted_ms: 0,
+            cell: "c".into(),
+            payload: UsagePayload::ReadBatch(late_rb),
+        };
+        r.apply_page(&[late_env], "c9").await.unwrap();
+        let after_read = r
+            .month_row("2026-07", "proj", &id().stream_id)
+            .await
+            .unwrap();
+        assert_eq!(after_read.read_payload_bytes, 77, "base reads untouched");
+        assert_eq!(after_read.corrections.len(), 3);
+        assert_eq!(after_read.corrections[2].read_payload_bytes_delta, 9);
+
+        // Two-phase publication (blocker 7): pending rows survive until
+        // published with Create, the retry is idempotent, and the
+        // pending queue empties.
+        let store = mem_store();
+        let n = crate::billing::publish_artifacts(&r, &store, "t1")
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
+        assert!(r.pending_artifacts(64).await.unwrap().is_empty());
+        assert_eq!(
+            crate::billing::publish_artifacts(&r, &store, "t1")
+                .await
+                .unwrap(),
+            0,
+            "re-publication finds nothing pending"
+        );
+        use object_store::ObjectStoreExt;
+        let path = object_store::path::Path::from(format!(
+            "t1/telemetry/usage-monthly/proj/{}/2026-07.json",
+            id().stream_id
+        ));
+        let got = store.get(&path).await.expect("artifact object exists");
+        let body = got.bytes().await.unwrap();
+        let art: MonthRow = serde_json::from_slice(&body).unwrap();
+        assert!(art.frozen.is_some(), "the artifact is the frozen row");
     }
 }
 

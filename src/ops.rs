@@ -192,71 +192,7 @@ async fn ops_ledger_append(
     key: &str,
     body: Vec<u8>,
 ) -> Result<(), String> {
-    use axum::http::{HeaderMap, HeaderValue};
-    static CREATED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    let mut hdrs = HeaderMap::new();
-    hdrs.insert(
-        "stream-encryption-key",
-        HeaderValue::from_str(key).map_err(|_| "bad key".to_string())?,
-    );
-    hdrs.insert("content-type", HeaderValue::from_static("application/json"));
-    if CREATED.get().is_none() {
-        let r = crate::http::create_stream(
-            state.clone(),
-            crate::billing::OPS_EVENTS_STREAM.to_string(),
-            hdrs.clone(),
-            bytes::Bytes::new(),
-        )
-        .await;
-        let st = r.status().as_u16();
-        if st == 200 || st == 201 || st == 409 {
-            let _ = CREATED.set(());
-        } else {
-            return Err(format!("ops ledger create: {st}"));
-        }
-    }
-    let r = crate::http::append(
-        state.clone(),
-        crate::billing::OPS_EVENTS_STREAM.to_string(),
-        hdrs.clone(),
-        axum::body::Body::from(body.clone()),
-        None,
-        None,
-        None,
-    )
-    .await;
-    // 404 = the stream vanished under us (or another rig's CREATED
-    // latch lied in tests): recreate and retry ONCE rather than
-    // wedging the pipeline forever.
-    if r.status() == axum::http::StatusCode::NOT_FOUND {
-        let _ = crate::http::create_stream(
-            state.clone(),
-            crate::billing::OPS_EVENTS_STREAM.to_string(),
-            hdrs.clone(),
-            bytes::Bytes::new(),
-        )
-        .await;
-        let r2 = crate::http::append(
-            state.clone(),
-            crate::billing::OPS_EVENTS_STREAM.to_string(),
-            hdrs,
-            axum::body::Body::from(body),
-            None,
-            None,
-            None,
-        )
-        .await;
-        return if r2.status().is_success() {
-            Ok(())
-        } else {
-            Err(format!("ledger append after recreate: {}", r2.status()))
-        };
-    }
-    if r.status().is_success() {
-        Ok(())
-    } else {
-        Err(format!("ops ledger append: {}", r.status()))
-    }
+    crate::billing::system_append(state, crate::billing::OPS_EVENTS_STREAM, key, body).await
 }
 
 #[cfg(test)]
@@ -364,71 +300,7 @@ async fn metrics_ledger_append(
     key: &str,
     body: Vec<u8>,
 ) -> Result<(), String> {
-    use axum::http::{HeaderMap, HeaderValue};
-    static CREATED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
-    let mut hdrs = HeaderMap::new();
-    hdrs.insert(
-        "stream-encryption-key",
-        HeaderValue::from_str(key).map_err(|_| "bad key".to_string())?,
-    );
-    hdrs.insert("content-type", HeaderValue::from_static("application/json"));
-    if CREATED.get().is_none() {
-        let r = crate::http::create_stream(
-            state.clone(),
-            crate::billing::OPS_METRICS_STREAM.to_string(),
-            hdrs.clone(),
-            bytes::Bytes::new(),
-        )
-        .await;
-        let st = r.status().as_u16();
-        if st == 200 || st == 201 || st == 409 {
-            let _ = CREATED.set(());
-        } else {
-            return Err(format!("ops metrics create: {st}"));
-        }
-    }
-    let r = crate::http::append(
-        state.clone(),
-        crate::billing::OPS_METRICS_STREAM.to_string(),
-        hdrs.clone(),
-        axum::body::Body::from(body.clone()),
-        None,
-        None,
-        None,
-    )
-    .await;
-    // 404 = the stream vanished under us (or another rig's CREATED
-    // latch lied in tests): recreate and retry ONCE rather than
-    // wedging the pipeline forever.
-    if r.status() == axum::http::StatusCode::NOT_FOUND {
-        let _ = crate::http::create_stream(
-            state.clone(),
-            crate::billing::OPS_METRICS_STREAM.to_string(),
-            hdrs.clone(),
-            bytes::Bytes::new(),
-        )
-        .await;
-        let r2 = crate::http::append(
-            state.clone(),
-            crate::billing::OPS_METRICS_STREAM.to_string(),
-            hdrs,
-            axum::body::Body::from(body),
-            None,
-            None,
-            None,
-        )
-        .await;
-        return if r2.status().is_success() {
-            Ok(())
-        } else {
-            Err(format!("ledger append after recreate: {}", r2.status()))
-        };
-    }
-    if r.status().is_success() {
-        Ok(())
-    } else {
-        Err(format!("ops metrics append: {}", r.status()))
-    }
+    crate::billing::system_append(state, crate::billing::OPS_METRICS_STREAM, key, body).await
 }
 
 // ---- alerts (§13.2) --------------------------------------------------
