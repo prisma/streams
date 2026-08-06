@@ -10,7 +10,7 @@
 #   bench/fleet/deploy-fleet.sh gen       # starts the ramp IMMEDIATELY
 set -euo pipefail
 S=${SOAK_HOME:?set SOAK_HOME}
-STEP=${1:?servers|lb|gen}
+STEP=${1:?servers|lb|urls|gen}
 P=$(cat "$S/proj-fleet.txt")
 [ -s "$S/platform-token.txt" ] && export PRISMA_API_TOKEN=$(cat "$S/platform-token.txt")
 BIN_TAG=${BIN_TAG:-freeze4}
@@ -21,18 +21,20 @@ BINID=$(cat "$S/binid.txt"); BINSEC=$(cat "$S/binsec.txt")
 AUTH=$(cat "$S/auth.txt"); KEY=$(cat "$S/skey.txt")
 j() { python3 -c "import json;print(json.load(open('$S/bkey-fleet.json'))['data']['$1'])"; }
 RESOLV=$'nameserver 108.61.10.10\nnameserver 8.8.8.8'
+# Absolute: the deploy steps cd into $SOAK_HOME app dirs first.
+CCLI=$(cd "$(dirname "$0")/.." && pwd)/ccli.sh
 
 svc_arg() { # existing service id for a name, if any
   local f="$S/svc-$1.txt"
   if [ -s "$f" ]; then echo "--service $(cat "$f")"; fi
 }
 record_svc() { # name -> id after first deploy
-  "$(dirname "$0")/../ccli.sh" services list --project "$P" 2>/dev/null \
+  "$CCLI" services list --project "$P" 2>/dev/null \
     | awk -v n="$1" '$0 ~ n {print $1; exit}' > "$S/svc-$1.txt" || true
 }
 resolve_url() { # service name -> running preview URL
   local id; id=$(cat "$S/svc-$1.txt")
-  "$(dirname "$0")/../ccli.sh" versions list --project "$P" --service "$id" 2>/dev/null \
+  "$CCLI" versions list --project "$P" --service "$id" 2>/dev/null \
     | awk '$2=="running"{print "https://"$3; exit}' > "$S/url-$1.txt"
   cat "$S/url-$1.txt"
 }
@@ -42,7 +44,7 @@ if [ "$STEP" = servers ]; then
   for i in 1 2 3 4; do
     KA=(); [ "$i" = 1 ] && KA=(--env KEEP_AWAKE=1)
     echo "== deploying fleet-s$i =="
-    "$(dirname "$0")/../ccli.sh" deploy --project "$P" $(svc_arg "fleet-s$i") \
+    "$CCLI" deploy --project "$P" $(svc_arg "fleet-s$i") \
       --region "$REGION" --path . --http-port 8080 --service-name "fleet-s$i" \
       --env SERVER_BINARY_S3_KEY="bin/streams-$BIN_TAG-x64" \
       --env BIN_S3_ENDPOINT="$BINEP" --env BIN_S3_BUCKET="$BINBKT" --env BIN_S3_REGION=auto \
@@ -79,7 +81,7 @@ elif [ "$STEP" = lb ]; then
   UP="$(cat "$S/url-fleet-s1.txt"),$(cat "$S/url-fleet-s2.txt"),$(cat "$S/url-fleet-s3.txt"),$(cat "$S/url-fleet-s4.txt")"
   echo "UPSTREAMS=$UP"
   cd "$S/fleet-app-lb"
-  "$(dirname "$0")/../ccli.sh" deploy --project "$P" $(svc_arg fleet-lb) \
+  "$CCLI" deploy --project "$P" $(svc_arg fleet-lb) \
     --region "$REGION" --path . --http-port 8080 --service-name "fleet-lb" \
     --env LB_BINARY_S3_KEY="bin/pilot-$PILOT_TAG-x64" \
     --env BIN_S3_ENDPOINT="$BINEP" --env BIN_S3_BUCKET="$BINBKT" --env BIN_S3_REGION=auto \
@@ -87,15 +89,37 @@ elif [ "$STEP" = lb ]; then
     --env S3_ENDPOINT="$(j endpoint)" --env S3_BUCKET="$(j bucketName)" --env S3_REGION=auto \
     --env S3_ACCESS_KEY_ID="$(j accessKeyId)" --env S3_SECRET_ACCESS_KEY="$(j secretAccessKey)" \
     --env FLEET_PREFIX=fleetops --env DATA_PREFIX=fleetd2 \
+    --env PILOT_MODE=lb \
     --env ROUTER_NAME=router-1 --env UPSTREAMS="$UP" \
     --env KEEP_AWAKE=1 \
     --env RESOLV_OVERRIDE="$RESOLV" 2>&1 | grep -viE 'resolving|resolved|saved' | tail -2
   record_svc fleet-lb
   echo "fleet-lb -> $(resolve_url fleet-lb)"
+elif [ "$STEP" = urls ]; then
+  # Publish the fleet's resolved instance URLs to the coordination
+  # bucket. On Compute a deploy cannot know its own final preview URL
+  # (every version mints a new one), so SELF_URL at deploy time is
+  # always stale -- the fleet reads fleet/urls.json instead (fleet.rs),
+  # and this step must rerun AFTER any server redeploy.
+  SOAK_DIR="$S" python3 - <<'PY'
+import boto3, json, os
+S = os.environ["SOAK_DIR"]
+d = json.load(open(os.path.join(S, "bkey-fleet.json")))["data"]
+s3 = boto3.client("s3", endpoint_url=d["endpoint"],
+    aws_access_key_id=d["accessKeyId"], aws_secret_access_key=d["secretAccessKey"],
+    region_name="auto")
+urls = {}
+for i in range(1, 5):
+    with open(os.path.join(S, f"url-fleet-s{i}.txt")) as f:
+        urls[f"streams-{i}"] = f.read().strip()
+s3.put_object(Bucket=d["bucketName"], Key="fleetops/fleet/urls.json",
+    Body=json.dumps(urls).encode())
+print("published fleet/urls.json:", urls)
+PY
 elif [ "$STEP" = gen ]; then
   LBURL=$(cat "$S/url-fleet-lb.txt")
   cd "$S/fleet-app-lb"   # same pilot wrapper, MODE=gen
-  "$(dirname "$0")/../ccli.sh" deploy --project "$P" $(svc_arg fleet-gen) \
+  "$CCLI" deploy --project "$P" $(svc_arg fleet-gen) \
     --region "$REGION" --path . --http-port 8080 --service-name "fleet-gen" \
     --env LB_BINARY_S3_KEY="bin/pilot-$PILOT_TAG-x64" \
     --env BIN_S3_ENDPOINT="$BINEP" --env BIN_S3_BUCKET="$BINBKT" --env BIN_S3_REGION=auto \

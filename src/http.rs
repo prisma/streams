@@ -170,24 +170,43 @@ impl AppState {
         hash: &[u8; 16],
     ) -> Result<Arc<ShardEngine>, Response> {
         let prefix = shard_for_hash(&self.shard_prefixes, hash);
-        if let Some(e) = self.shards.read().unwrap().get(&prefix) {
-            return Ok(e.clone());
+        let owner = self.effective_owner(&prefix);
+        let not_mine = owner
+            .as_ref()
+            .is_some_and(|o| *o != self.instance_name);
+        if let Some(e) = {
+            let held = self.shards.read().unwrap().get(&prefix).cloned();
+            held
+        } {
+            // Possession must yield to the ring. An instance that lost
+            // a shard on a rendezvous redraw keeps its engine here, and
+            // slatedb fencing only fails its next WRITE — with all
+            // writes at the new owner, the loser serves reads from a
+            // view frozen at the fence point indefinitely (fleet2 leg C:
+            // a scan snapshot froze a live segment at 252 of 510
+            // records). Yield, close, and redirect like any non-owner.
+            if !not_mine {
+                return Ok(e);
+            }
+            let eng = self.shards.write().unwrap().remove(&prefix);
+            if let Some(e) = eng {
+                e.begin_close();
+            }
         }
         // R2/R3: only the ring owner may claim a shard. A stale router can
         // still send us one — answer 409 + Streams-Replay-To so the router
         // corrects itself, instead of fencing the rightful owner.
-        if let Some(owner) = self.effective_owner(&prefix) {
-            if owner != self.instance_name {
-                let mut r = err_resp(
-                    StatusCode::CONFLICT,
-                    "not_ring_owner",
-                    &format!("shard {prefix} belongs to {owner}"),
-                );
-                if let Ok(v) = axum::http::HeaderValue::from_str(&owner) {
-                    r.headers_mut().insert("streams-replay-to", v);
-                }
-                return Err(r);
+        if not_mine {
+            let owner = owner.expect("not_mine implies owner");
+            let mut r = err_resp(
+                StatusCode::CONFLICT,
+                "not_ring_owner",
+                &format!("shard {prefix} belongs to {owner}"),
+            );
+            if let Ok(v) = axum::http::HeaderValue::from_str(&owner) {
+                r.headers_mut().insert("streams-replay-to", v);
             }
+            return Err(r);
         }
         // Single-flight open with a bounded wait. A slow WAL replay
         // continues in its own task regardless of what this request does —

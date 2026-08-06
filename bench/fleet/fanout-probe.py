@@ -56,13 +56,29 @@ st, _, _ = req("PUT", f"{LB}/v1/streams/{S}", {"format": {"kind": "json"}}, JH)
 if st != 201:
     print(f"[fanout] RIG-FAIL create: {st}"); sys.exit(2)
 acked = {k: 0 for k in KEYS}
-def worker(k):
-    for i in range(250):
+lock = threading.Lock()
+# Cloud-leg findings: the hot detector needs SUSTAINED windowed rate.
+# urllib opens a TLS connection per request, so one WAN thread manages
+# ~1 req/s — 8 threads sit exactly at the 1% hot threshold and never
+# cross it. FAN_THREADS_PER_KEY raises aggregate rate; FAN_FLOOR_SECS
+# keeps the hammer running long enough for the eval windows.
+TPK = int(os.environ.get("FAN_THREADS_PER_KEY", "1"))
+FLOOR = float(os.environ.get("FAN_FLOOR_SECS", "0"))
+t_end = time.time() + FLOOR
+def worker(k, quota):
+    i = 0
+    while i < quota or time.time() < t_end:
         st, _, _ = req("POST", f"{LB}/v1/streams/{S}/records", {"i": i, "k": k},
                        {**JH, "prisma-routing-key": f"key-{k}"}, timeout=15)
         if st == 200:
-            acked[k] += 1
-ts = [threading.Thread(target=worker, args=(k,)) for k in KEYS]
+            with lock:
+                acked[k] += 1
+        i += 1
+ts = []
+for k in KEYS:
+    base_q, rem = divmod(250, TPK)
+    for t in range(TPK):
+        ts.append(threading.Thread(target=worker, args=(k, base_q + (1 if t < rem else 0))))
 for t in ts: t.start()
 for t in ts: t.join()
 print(f"[fanout] {S}: {sum(acked.values())} acked ({dict(acked)})")
