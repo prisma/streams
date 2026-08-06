@@ -996,6 +996,12 @@ pub fn spawn_telemetry(state: std::sync::Arc<crate::http::AppState>) {
             if let Err(e) = drain_once(&state).await {
                 tracing::warn!("usage drain: {e}");
             }
+            if let Err(e) = crate::ops::drain_ops_once(&state).await {
+                tracing::warn!("ops drain: {e}");
+            }
+            if let Err(e) = crate::fleet::drain_fleet_events(&state).await {
+                tracing::warn!("fleet event drain: {e}");
+            }
         }
     });
 }

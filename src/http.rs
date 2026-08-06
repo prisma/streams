@@ -796,6 +796,25 @@ async fn debug_usage(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
     .into_response()
 }
 
+/// Recent operational events (§12.5): the live ring, newest first.
+/// Bearer-gated like every debug route; the durable history lives in
+/// `_ops_events` and the ops rollup serves timelines.
+async fn debug_ops_events(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !authorized(&state, &headers) {
+        return err_resp(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bearer token required",
+        );
+    }
+    let recent = crate::ops::recent(128);
+    axum::Json(serde_json::json!({
+        "events": recent,
+        "dropped": crate::ops::EVENTS_DROPPED.load(std::sync::atomic::Ordering::Relaxed),
+    }))
+    .into_response()
+}
+
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
@@ -824,6 +843,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/debug/load", get(debug_load))
         .route("/v1/debug/store", get(debug_store))
         .route("/v1/debug/usage", get(debug_usage))
+        .route("/v1/debug/ops-events", get(debug_ops_events))
         // Every /v1/debug/* route is account-gated (round-19: the
         // security model claims bearer auth on all of /v1/*, and these
         // MUTATE production state — pausing absorption, occupying
@@ -1192,7 +1212,19 @@ async fn stream_entry_inner(
                     return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large");
                 }
             };
-            create_stream(state, name, headers, body).await
+            let r = create_stream(state.clone(), name.clone(), headers, body).await;
+            if r.status() == StatusCode::CREATED {
+                if let Ok(Some(d)) = state.registry.get(&name).await {
+                    crate::ops::emit(
+                        crate::ops::OpsEvent::new(
+                            "stream_created",
+                            format!("life/{}/created", d.stream_epoch),
+                        )
+                        .stream(&d.stream_epoch, &name),
+                    );
+                }
+            }
+            r
         }
         Method::POST => {
             let r = append(state.clone(), name.clone(), headers, body, None, None, None).await;
@@ -3627,6 +3659,16 @@ fn delete_lifecycle(
         if !hard_deleted {
             return Ok(());
         }
+        // Ops journal (§12.3): the lifecycle transition, id'd by the
+        // incarnation — a retried delete re-emits the same id and the
+        // rollup deduplicates.
+        crate::ops::emit(
+            crate::ops::OpsEvent::new(
+                "stream_hard_deleted",
+                format!("life/{}/hard_deleted", d.stream_epoch),
+            )
+            .stream(&d.stream_epoch, &name),
+        );
         // Billing closure (§6.2): the hard delete is the terminal
         // storage observation — advance every segment's storage clock
         // to now, zero its gauge, mark dirty for the ledger. Best-

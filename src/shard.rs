@@ -1299,6 +1299,17 @@ impl ShardEngine {
     /// propagates — clients sat out their full timeout (ladder D3:
     /// exactly one in-flight batch per worker lost at the move moment).
     pub fn begin_close(&self) {
+        crate::ops::emit(
+            crate::ops::OpsEvent::new(
+                "engine_closed",
+                format!(
+                    "engine/{}/closed/{}",
+                    self.prefix,
+                    crate::shard::now_ms() / 1000
+                ),
+            )
+            .shard(&self.prefix),
+        );
         if self.closed.swap(true, Ordering::SeqCst) {
             return; // already closing
         }

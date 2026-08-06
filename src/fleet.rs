@@ -95,6 +95,9 @@ pub struct Heartbeat {
 pub struct Overrides {
     #[serde(default)]
     pub entries: std::collections::HashMap<String, OverrideEntry>,
+    /// Pending-event outbox (§12.4) — same contract as Desired's.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_events: Vec<crate::ops::OpsEvent>,
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
@@ -306,6 +309,12 @@ pub struct Desired {
     pub reason: String,
     pub epoch: u64,
     pub computed_at_ms: i64,
+    /// Pending-event outbox (§12.4): the CAS that commits a desired-
+    /// count change records its event HERE; the drainer appends to
+    /// `_ops_events` and CAS-clears exactly these ids. Bounded — at the
+    /// cap the transition still proceeds and the drop is counted.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub pending_events: Vec<crate::ops::OpsEvent>,
 }
 
 pub struct FleetCfg {
@@ -351,7 +360,19 @@ pub struct FleetCfg {
     pub max: u64,
 }
 
+/// The fleet coordination store, registered by start() so the ops
+/// drainer can read/clear the CAS outboxes without threading handles.
+fn fleet_store_slot() -> &'static Mutex<Option<Arc<dyn ObjectStore>>> {
+    static S: OnceLock<Mutex<Option<Arc<dyn ObjectStore>>>> = OnceLock::new();
+    S.get_or_init(|| Mutex::new(None))
+}
+
+fn fleet_store_handle() -> Option<Arc<dyn ObjectStore>> {
+    fleet_store_slot().lock().unwrap().clone()
+}
+
 pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
+    *fleet_store_slot().lock().unwrap() = Some(store.clone());
     tokio::spawn(async move {
         let mut ewma_rps = 0.0f64;
         let mut last_ops = 0u64;
@@ -850,6 +871,15 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     if !drop_keys.is_empty() {
                         let mut next = ov.clone();
                         for k in &drop_keys {
+                            if next.pending_events.len() < 64 {
+                                next.pending_events.push(
+                                    crate::ops::OpsEvent::new(
+                                        "rebalance_return",
+                                        format!("return/{k}/{}", now_ms() / 1000),
+                                    )
+                                    .shard(k),
+                                );
+                            }
                             next.entries.remove(k);
                         }
                         let payload = PutPayload::from(serde_json::to_vec(&next).unwrap());
@@ -914,6 +944,16 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                             })
                     };
                     if let (Some(to), Some(prefix)) = (target, victim) {
+                        if ov.pending_events.len() < 64 {
+                            ov.pending_events.push(
+                                crate::ops::OpsEvent::new(
+                                    "rebalance_move",
+                                    format!("move/{prefix}/{}", now_ms() / 1000),
+                                )
+                                .shard(&prefix)
+                                .fields(serde_json::json!({"to": to.clone()})),
+                            );
+                        }
                         ov.entries.insert(
                             prefix.clone(),
                             OverrideEntry {
@@ -978,13 +1018,32 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
             };
 
             if publish {
+                let epoch = cur.as_ref().map(|d| d.epoch + 1).unwrap_or(1);
+                // The transition and its event commit in ONE CAS write
+                // (§12.4). Deterministic id: (epoch) — a re-published
+                // epoch is the same transition. Carried-over pending
+                // events survive until the drainer clears them; capped.
+                let mut pending_events = cur
+                    .as_ref()
+                    .map(|d| d.pending_events.clone())
+                    .unwrap_or_default();
+                if pending_events.len() < 64 {
+                    pending_events.push(
+                        crate::ops::OpsEvent::new("desired_changed", format!("desired/{epoch}"))
+                            .fields(serde_json::json!({
+                                "count": publish_count,
+                                "prev": cur_count,
+                            })),
+                    );
+                }
                 let next = Desired {
                     count: publish_count,
                     reason: format!(
                         "cores_used={total_cores_used:.2} util->{need_util} inflight={total_inflight:.0} slots->{need_slots} hot_cpu={max_loaded_cpu:.0}% ({need_hot}) ack_p50={max_loaded_p50:.0}ms ({need_latency}) edge_p50={edge_p50:.0}ms ({need_edge}) rps={total_rps:.0} ({need_rps}) live={live}",
                     ),
-                    epoch: cur.as_ref().map(|d| d.epoch + 1).unwrap_or(1),
+                    epoch,
                     computed_at_ms: now_ms(),
+                    pending_events,
                 };
                 let mode = match version {
                     Some(v) => PutMode::Update(v),
@@ -1015,6 +1074,75 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
             }
         }
     });
+}
+
+/// Drain the fleet CAS outboxes (§12.4): append `desired.json` and
+/// `overrides.json` pending events to `_ops_events`, then CAS-clear
+/// exactly the emitted ids. A lost clear re-emits deterministic ids
+/// the downstream rollup deduplicates; a CAS conflict retries next
+/// tick. Called from the telemetry task.
+pub async fn drain_fleet_events(
+    state: &std::sync::Arc<crate::http::AppState>,
+) -> Result<usize, String> {
+    let Some(store) = fleet_store_handle() else {
+        return Ok(0);
+    };
+    let mut emitted = 0usize;
+    for name in ["fleet/desired.json", "fleet/overrides.json"] {
+        let path = ObjPath::from(name);
+        let Ok(got) = store.get(&path).await else {
+            continue;
+        };
+        let version = UpdateVersion {
+            e_tag: got.meta.e_tag.clone(),
+            version: got.meta.version.clone(),
+        };
+        let Ok(bytes) = got.bytes().await else {
+            continue;
+        };
+        let pending: Vec<crate::ops::OpsEvent> = if name.ends_with("desired.json") {
+            serde_json::from_slice::<Desired>(&bytes)
+                .map(|d| d.pending_events)
+                .unwrap_or_default()
+        } else {
+            serde_json::from_slice::<Overrides>(&bytes)
+                .map(|o| o.pending_events)
+                .unwrap_or_default()
+        };
+        if pending.is_empty() {
+            continue;
+        }
+        let ids: std::collections::HashSet<String> =
+            pending.iter().map(|e| e.event_id.clone()).collect();
+        for ev in pending {
+            crate::ops::emit(ev);
+        }
+        emitted += ids.len();
+        // Clear EXACTLY the drained ids under CAS; concurrent writers'
+        // new events survive.
+        let cleared: Vec<u8> = if name.ends_with("desired.json") {
+            let Ok(mut d) = serde_json::from_slice::<Desired>(&bytes) else {
+                continue;
+            };
+            d.pending_events.retain(|e| !ids.contains(&e.event_id));
+            serde_json::to_vec(&d).unwrap_or_default()
+        } else {
+            let Ok(mut o) = serde_json::from_slice::<Overrides>(&bytes) else {
+                continue;
+            };
+            o.pending_events.retain(|e| !ids.contains(&e.event_id));
+            serde_json::to_vec(&o).unwrap_or_default()
+        };
+        let _ = store
+            .put_opts(
+                &path,
+                PutPayload::from(cleared),
+                PutOptions::from(PutMode::Update(version)),
+            )
+            .await;
+    }
+    let _ = state;
+    Ok(emitted)
 }
 
 #[cfg(test)]

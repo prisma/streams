@@ -7,6 +7,7 @@ mod history;
 mod http;
 mod offsets;
 mod operator;
+mod ops;
 mod postings;
 mod postings_cache;
 mod product;

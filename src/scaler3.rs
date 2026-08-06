@@ -768,6 +768,19 @@ pub fn start(st: std::sync::Weak<crate::http::AppState>) {
                 // traffic declines instead of splitting whatever now
                 // owns the name.
                 let done = execute_split_fenced(&st, &name, &epoch, seg_id, split_at).await;
+                if done {
+                    // §12.3 topology journal: deterministic per
+                    // (incarnation, parent segment) — a replayed
+                    // execution is the same transition.
+                    crate::ops::emit(
+                        crate::ops::OpsEvent::new(
+                            "split_committed",
+                            format!("split/{epoch}/{seg_id}"),
+                        )
+                        .stream(&epoch, &name)
+                        .fields(serde_json::json!({"segId": seg_id, "splitAt": split_at})),
+                    );
+                }
                 tracing::info!(
                     stream = %name,
                     seg_id,
@@ -805,6 +818,16 @@ pub fn start(st: std::sync::Weak<crate::http::AppState>) {
                 if let Some(w) = pair {
                     let (a, b) = (w[0].seg_id, w[1].seg_id);
                     let done = execute_merge_fenced(&st, &name, &epoch, a, b).await;
+                    if done {
+                        crate::ops::emit(
+                            crate::ops::OpsEvent::new(
+                                "merge_committed",
+                                format!("merge/{epoch}/{a}/{b}"),
+                            )
+                            .stream(&epoch, &name)
+                            .fields(serde_json::json!({"a": a, "b": b})),
+                        );
+                    }
                     tracing::info!(stream = %name, a, b, done, "unified scaler merge");
                 }
             }

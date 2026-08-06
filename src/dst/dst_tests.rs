@@ -19124,3 +19124,79 @@ async fn usage_pipeline_end_to_end_exactly_once() {
     assert_eq!(st, 403, "reserved names refuse even the usage endpoint");
     engine_shutdown(&state).await;
 }
+
+/// §12: operational events are typed, deterministically identified,
+/// durably journaled to `_ops_events`, and visible on the operator
+/// surface. A raw create/delete emits lifecycle events; the drain
+/// appends them to the reserved stream; a customer credential still
+/// cannot read that stream.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ops_events_journal_end_to_end() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [
+        ("stream-encryption-key", PRISMA_KEY),
+        ("content-type", "application/json"),
+    ];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/opsev1", &ct, b"").await;
+    assert_eq!(st, 201);
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/opsev1", &ct, b"").await;
+    assert!(st == 204 || st == 200);
+    let epoch = {
+        // The tombstone still names the incarnation.
+        let d = state.registry.get("opsev1").await.unwrap().unwrap();
+        d.stream_epoch.clone()
+    };
+
+    // The recent ring already shows both, newest first.
+    let recent = crate::ops::recent(64);
+    let created_id = format!("life/{epoch}/created");
+    let deleted_id = format!("life/{epoch}/hard_deleted");
+    assert!(recent.iter().any(|e| e.event_id == created_id));
+    assert!(recent.iter().any(|e| e.event_id == deleted_id));
+
+    // Drain to the durable journal.
+    let n = crate::ops::drain_ops_once(&state).await.expect("ops drain");
+    assert!(n >= 2, "drained {n}");
+
+    // The journal holds them, readable with the SYSTEM key through the
+    // in-process path...
+    let mut hdrs = axum::http::HeaderMap::new();
+    hdrs.insert(
+        "stream-encryption-key",
+        axum::http::HeaderValue::from_str(PRISMA_KEY).unwrap(),
+    );
+    let resp = crate::http::read_inner(
+        state.clone(),
+        "_ops_events".to_string(),
+        crate::http::ReadParams::default(),
+        hdrs,
+        false,
+        true,
+        crate::http::SseSurface::Raw,
+    )
+    .await;
+    assert_eq!(resp.status(), 200);
+    let body = axum::body::to_bytes(resp.into_body(), 16 << 20)
+        .await
+        .unwrap();
+    let events: Vec<crate::ops::OpsEvent> = serde_json::from_slice(&body).unwrap();
+    assert!(
+        events
+            .iter()
+            .any(|e| e.event_id == created_id && e.event_type == "stream_created")
+    );
+    assert!(events.iter().any(|e| e.event_id == deleted_id));
+    assert!(events.iter().all(|e| !e.cell.is_empty()), "cell stamped");
+
+    // ...and NOT with a customer credential over HTTP.
+    let (st, _, _) = hreq(addr, "GET", "/v1/stream/_ops_events", &ct, b"").await;
+    assert_eq!(st, 403, "reserved stream refuses the public surface");
+
+    // Operator surface answers.
+    let (st, _, b) = hreq(addr, "GET", "/v1/debug/ops-events", &[], b"").await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert!(v["events"].as_array().unwrap().len() >= 2);
+    engine_shutdown(&state).await;
+}
