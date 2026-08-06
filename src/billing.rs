@@ -69,6 +69,36 @@ pub struct MeterSource {
     pub boot: String,
 }
 
+/// TRUSTED billing time (round-21 blocker 1). Month selection, storage
+/// integration, lifecycle closure and usage event time use ONLY this —
+/// never `Stream-Timestamp`, which is customer-controlled record
+/// METADATA. A client shifting its record clock can relabel frames; it
+/// can no longer move ingest between invoice months or park the
+/// storage clock in the future to dodge accrual. Tests inject months
+/// here instead of abusing the public header.
+pub fn billing_now_ms() -> i64 {
+    #[cfg(test)]
+    {
+        let v = BILLING_CLOCK_OVERRIDE.load(std::sync::atomic::Ordering::Relaxed);
+        if v != 0 {
+            return v;
+        }
+    }
+    crate::shard::now_ms()
+}
+
+#[cfg(test)]
+pub static BILLING_CLOCK_OVERRIDE: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(0);
+
+/// Serializes month-sensitive tests: the clock-injecting test takes
+/// write; tests asserting real-now months take read.
+#[cfg(test)]
+pub fn billing_clock_lock() -> &'static tokio::sync::RwLock<()> {
+    static L: std::sync::OnceLock<tokio::sync::RwLock<()>> = std::sync::OnceLock::new();
+    L.get_or_init(|| tokio::sync::RwLock::new(()))
+}
+
 /// This process's boot id: 16 random bytes, hex, minted once.
 pub fn boot_id() -> &'static str {
     static B: std::sync::OnceLock<String> = std::sync::OnceLock::new();
@@ -942,13 +972,21 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
         u64,
         Vec<Vec<u8>>,
     )> = Vec::new();
-    for engine in engines {
+    // Bounded round (round-21 blocker 9): at most DRAIN_MAX_ENVELOPES
+    // per ledger append; the remainder stays dirty and the next round
+    // (2 s later) continues. One drain can never build an unbounded
+    // JSON body no matter how many segments went dirty at once.
+    const DRAIN_MAX_ENVELOPES: usize = 1000;
+    'engines: for engine in engines {
         let dirty = engine.usage_dirty_scan().await.unwrap_or_default();
         if dirty.is_empty() {
             continue;
         }
         let finals = engine.usage_month_finals().await.unwrap_or_default();
         for (hash, version) in dirty {
+            if envelopes.len() >= DRAIN_MAX_ENVELOPES {
+                break 'engines;
+            }
             let Some(meta) = engine.billing_meta(hash).await else {
                 continue;
             };

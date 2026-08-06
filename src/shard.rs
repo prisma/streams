@@ -2217,7 +2217,7 @@ impl ShardEngine {
                             // Nothing was ever billed here; no row to close.
                             local.billing = None;
                         } else {
-                            let now = now_ms();
+                            let now = crate::billing::billing_now_ms();
                             let finals = &mut local.month_finals;
                             bm.advance_storage_clock(now, |closed| {
                                 finals.push(closed.to_snapshot(true));
@@ -2619,7 +2619,11 @@ impl ShardEngine {
                             bm.segment_id = bref.segment_id;
                         }
                         let finals = &mut local.month_finals;
-                        bm.advance_storage_clock(ts, |closed| {
+                        // TRUSTED time only (round-21): `ts` above is
+                        // customer record metadata; billing integrates
+                        // on the server's clock.
+                        let bts = crate::billing::billing_now_ms();
+                        bm.advance_storage_clock(bts, |closed| {
                             finals.push(closed.to_snapshot(true));
                         });
                         bm.ingest_payload_bytes_total += pt_sum;

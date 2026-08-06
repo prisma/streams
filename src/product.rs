@@ -6258,8 +6258,32 @@ async fn product_usage(state: Arc<AppState>, name: String, query: &str) -> Respo
         .await
         .unwrap_or_default();
     let is_current = month == current;
+    // Round-21 blocker 2: a retained-but-idle stream has no month row
+    // yet for the CURRENT month — the durable segment index still knows
+    // its gauge, so provisional storage never reads as zero.
+    let (fallback_byte_ms, fallback_owned) = if is_current && row.segments.is_empty() {
+        let states = rollup
+            .stream_segment_states(&id.project_id, &id.stream_id)
+            .await;
+        let mstart = {
+            let (y, m) = crate::billing::parse_month(&month).unwrap();
+            crate::billing::month_start_ms(y, m)
+        };
+        let bms: u128 = states
+            .iter()
+            .map(|s| {
+                let from = s.storage_accounted_through_ms.max(mstart);
+                (now - from).max(0) as u128 * s.owned_frame_bytes_current as u128
+            })
+            .sum();
+        let owned: u64 = states.iter().map(|s| s.owned_frame_bytes_current).sum();
+        (bms, owned)
+    } else {
+        (0, 0)
+    };
     let byte_ms = if is_current {
         row.storage_byte_ms_provisional(&month, now)
+            .max(fallback_byte_ms)
     } else {
         row.storage_byte_ms()
     };
@@ -6295,7 +6319,7 @@ async fn product_usage(state: Arc<AppState>, name: String, query: &str) -> Respo
         "storageByteSeconds": (byte_ms / 1000).to_string(),
         "averageStoredBytes": avg_bytes as u64,
         "gbMonth": gb_month,
-        "ownedStoredBytesNow": row.owned_bytes_now(),
+        "ownedStoredBytesNow": row.owned_bytes_now().max(fallback_owned),
         "updatedAt": row.updated_ms,
         "finalizedAt": row.finalized_at_ms,
         "corrections": row.corrections.len(),

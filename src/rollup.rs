@@ -482,13 +482,42 @@ impl UsageRollup {
             .and_then(|v| serde_json::from_slice(&v).ok())
     }
 
+    /// All persistent segment states for one stream (bounded by its
+    /// segment count) — the current-month fallback when no month row
+    /// exists yet (round-21 blocker 2).
+    pub async fn stream_segment_states(&self, project: &str, stream_id: &str) -> Vec<SegmentState> {
+        let pfx = format!("segment/{project}/{stream_id}/").into_bytes();
+        let mut out = Vec::new();
+        if let Ok(mut iter) = self.db.scan_prefix(&pfx[..], ..).await {
+            while let Ok(Some(kv)) = iter.next().await {
+                if let Ok(st) = serde_json::from_slice::<SegmentState>(&kv.value) {
+                    out.push(st);
+                }
+            }
+        }
+        out
+    }
+
     // ---- month close (§9.4/§9.5/§9.6) --------------------------------
 
-    /// Close (year, month): advance every non-final segment's storage
-    /// integral to the exact UTC boundary (idle-gauge extrapolation —
-    /// no stream write required), stamp `finalized_at`, and hand each
-    /// closed row to `artifact` for the immutable monthly object. Rows
-    /// already finalized are untouched. Returns closed stream count.
+    /// Close (year, month) — round-21 blockers 2 and 9.
+    ///
+    /// PASS A (carry): page the persistent `segment/` index and, for
+    /// every segment whose storage clock lags the month boundary,
+    /// synthesize the missing byte-time up to the boundary INTO the
+    /// closing month's row — an idle retained stream accrues every
+    /// month with no stream write and no data-plane traffic — then
+    /// advance the segment's accounting boundary.
+    ///
+    /// PASS B (finalize): page the month's rows, extrapolate any
+    /// remaining non-final segment to the exact boundary, stamp
+    /// `finalized_at`, and hand each closed row to `artifact`.
+    ///
+    /// Both passes run in bounded chunks (`CLOSE_CHUNK` rows), each
+    /// chunk one durable WriteBatch behind a persisted cursor — a crash
+    /// resumes mid-month with no lost or repeated accrual (the carry is
+    /// guarded by per-segment `final_seen`/boundary checks, so a replay
+    /// applies zero).
     pub async fn close_month(
         &self,
         year: i32,
@@ -496,51 +525,169 @@ impl UsageRollup {
         grace_ms: i64,
         mut artifact: impl FnMut(&str, &str, &MonthRow, &str),
     ) -> anyhow::Result<usize> {
+        const CLOSE_CHUNK: usize = 1000;
         let mstr = crate::billing::month_str(year, month);
         let (ny, nm) = next_month(year, month);
         let boundary = month_start_ms(ny, nm);
-        let now = crate::shard::now_ms();
+        let start = month_start_ms(year, month);
+        let now = crate::billing::billing_now_ms();
         if now < boundary + grace_ms {
             return Ok(0); // not yet closeable
         }
-        let pfx = k_month_prefix(&mstr);
-        let mut closed = 0usize;
-        let mut wb = WriteBatch::new();
-        let mut iter = self.db.scan_prefix(&pfx[..], ..).await?;
-        let mut rows: Vec<(Vec<u8>, MonthRow)> = Vec::new();
-        while let Some(kv) = iter.next().await? {
-            if let Ok(row) = serde_json::from_slice::<MonthRow>(&kv.value) {
-                rows.push((kv.key.to_vec(), row));
-            }
-        }
-        for (key, mut row) in rows {
-            if row.finalized_at_ms.is_some() {
-                continue;
-            }
-            for sm in row.segments.values_mut() {
-                if !sm.final_seen && sm.accounted_through_ms < boundary {
-                    let cur: u128 = sm.storage_byte_ms.parse().unwrap_or(0);
-                    let add = (boundary - sm.accounted_through_ms) as u128 * sm.gauge_bytes as u128;
-                    sm.storage_byte_ms = (cur + add).to_string();
-                    sm.accounted_through_ms = boundary;
-                    sm.final_seen = true;
+        // ---- pass A: carry idle gauges into the closing month ----
+        let seg_cursor_key = format!("meta/close-seg-cursor/{mstr}").into_bytes();
+        let mut after: Option<Vec<u8>> = self
+            .db
+            .get(&seg_cursor_key[..])
+            .await
+            .ok()
+            .flatten()
+            .map(|v| v.to_vec());
+        loop {
+            let mut wb = WriteBatch::new();
+            let mut page: Vec<(Vec<u8>, SegmentState)> = Vec::new();
+            {
+                let mut iter = self.db.scan_prefix(&b"segment/"[..], ..).await?;
+                while let Some(kv) = iter.next().await? {
+                    if let Some(a) = &after {
+                        if kv.key.as_ref() <= &a[..] {
+                            continue;
+                        }
+                    }
+                    if let Ok(st) = serde_json::from_slice::<SegmentState>(&kv.value) {
+                        page.push((kv.key.to_vec(), st));
+                    }
+                    if page.len() >= CLOSE_CHUNK {
+                        break;
+                    }
                 }
             }
-            row.finalized_at_ms = Some(now);
-            // key = month/<M>/<project>/<stream-id>
-            let parts: Vec<&str> = std::str::from_utf8(&key)
-                .unwrap_or("")
-                .splitn(4, '/')
-                .collect();
-            if parts.len() == 4 {
-                artifact(parts[2], parts[3], &row, &mstr);
+            if page.is_empty() {
+                break;
             }
-            wb.put(key, serde_json::to_vec(&row)?);
-            closed += 1;
-        }
-        if closed > 0 {
+            let last_key = page.last().unwrap().0.clone();
+            for (key, mut st) in page {
+                if st.storage_accounted_through_ms >= boundary {
+                    continue;
+                }
+                // key = segment/<project>/<stream-id>/<seg>
+                let parts: Vec<&str> = std::str::from_utf8(&key)
+                    .unwrap_or("")
+                    .splitn(4, '/')
+                    .collect();
+                if parts.len() != 4 {
+                    continue;
+                }
+                let (project, stream_id) = (parts[1], parts[2]);
+                let seg_id: u32 = parts[3].parse().unwrap_or(0);
+                let mkey = k_month(&mstr, project, stream_id);
+                let mut row: MonthRow = get_json(&self.db, &mkey).await;
+                let sm = row.segments.entry(seg_id).or_default();
+                if !sm.final_seen {
+                    let span_start = st.storage_accounted_through_ms.max(start);
+                    if span_start < boundary && st.owned_frame_bytes_current > 0 {
+                        let add =
+                            (boundary - span_start) as u128 * st.owned_frame_bytes_current as u128;
+                        let cur: u128 = sm.storage_byte_ms.parse().unwrap_or(0);
+                        sm.storage_byte_ms = (cur + add).to_string();
+                        // Aggregates absorb the same delta.
+                        for (akey, is_name) in [
+                            (k_name(&mstr, project, &st.stream_name), true),
+                            (k_project(&mstr, project), false),
+                        ] {
+                            let mut a: AggRow = get_json(&self.db, &akey).await;
+                            a.add_storage(add);
+                            if is_name && !a.incarnations.contains(&stream_id.to_string()) {
+                                a.incarnations.push(stream_id.to_string());
+                            }
+                            wb.put(akey, serde_json::to_vec(&a)?);
+                        }
+                    }
+                    sm.gauge_bytes = st.owned_frame_bytes_current;
+                    sm.accounted_through_ms = boundary;
+                    sm.final_seen = true;
+                    row.account_id = st.account_id.clone();
+                    if row.stream_name.is_empty() {
+                        row.stream_name = st.stream_name.clone();
+                    }
+                    row.updated_ms = now;
+                    wb.put(mkey, serde_json::to_vec(&row)?);
+                }
+                st.storage_accounted_through_ms = boundary;
+                wb.put(key, serde_json::to_vec(&st)?);
+            }
+            wb.put(seg_cursor_key.clone(), last_key.clone());
             self.db.write(wb).await?;
+            after = Some(last_key);
         }
+        // ---- pass B: finalize the month's rows, chunked ----
+        let fin_cursor_key = format!("meta/close-fin-cursor/{mstr}").into_bytes();
+        let mut fin_after: Option<Vec<u8>> = self
+            .db
+            .get(&fin_cursor_key[..])
+            .await
+            .ok()
+            .flatten()
+            .map(|v| v.to_vec());
+        let pfx = k_month_prefix(&mstr);
+        let mut closed = 0usize;
+        loop {
+            let mut wb = WriteBatch::new();
+            let mut page: Vec<(Vec<u8>, MonthRow)> = Vec::new();
+            {
+                let mut iter = self.db.scan_prefix(&pfx[..], ..).await?;
+                while let Some(kv) = iter.next().await? {
+                    if let Some(a) = &fin_after {
+                        if kv.key.as_ref() <= &a[..] {
+                            continue;
+                        }
+                    }
+                    if let Ok(row) = serde_json::from_slice::<MonthRow>(&kv.value) {
+                        page.push((kv.key.to_vec(), row));
+                    }
+                    if page.len() >= CLOSE_CHUNK {
+                        break;
+                    }
+                }
+            }
+            if page.is_empty() {
+                break;
+            }
+            let last_key = page.last().unwrap().0.clone();
+            for (key, mut row) in page {
+                if row.finalized_at_ms.is_some() {
+                    continue;
+                }
+                for sm in row.segments.values_mut() {
+                    if !sm.final_seen && sm.accounted_through_ms < boundary {
+                        let cur: u128 = sm.storage_byte_ms.parse().unwrap_or(0);
+                        let from = sm.accounted_through_ms.max(start);
+                        let add = (boundary - from).max(0) as u128 * sm.gauge_bytes as u128;
+                        sm.storage_byte_ms = (cur + add).to_string();
+                        sm.accounted_through_ms = boundary;
+                        sm.final_seen = true;
+                    }
+                }
+                row.finalized_at_ms = Some(now);
+                let parts: Vec<&str> = std::str::from_utf8(&key)
+                    .unwrap_or("")
+                    .splitn(4, '/')
+                    .collect();
+                if parts.len() == 4 {
+                    artifact(parts[2], parts[3], &row, &mstr);
+                }
+                wb.put(key, serde_json::to_vec(&row)?);
+                closed += 1;
+            }
+            wb.put(fin_cursor_key.clone(), last_key.clone());
+            self.db.write(wb).await?;
+            fin_after = Some(last_key);
+        }
+        // Cursors are month-scoped; clear them once the month is done.
+        let mut wb = WriteBatch::new();
+        wb.delete(seg_cursor_key);
+        wb.delete(fin_cursor_key);
+        self.db.write(wb).await?;
         Ok(closed)
     }
 }
@@ -592,6 +739,87 @@ mod tests {
             cell: "c".into(),
             payload: UsagePayload::SegmentSnapshot(s),
         }
+    }
+
+    /// Round-21 blocker 2, the reviewer's exact scenario: one July
+    /// write, then TOTAL silence. July, August and September must each
+    /// accrue the correct storage byte-time, each produce one artifact,
+    /// and the gauge must never read as zero. Re-closing any month is a
+    /// no-op.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn idle_retained_months_accrue_storage() {
+        // Months close only after their boundary on the TRUSTED clock —
+        // inject December so July-September are all closeable.
+        let _xw = crate::billing::billing_clock_lock().write().await;
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::billing::BILLING_CLOCK_OVERRIDE
+                    .store(0, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let _reset = Reset;
+        crate::billing::BILLING_CLOCK_OVERRIDE.store(
+            crate::billing::month_start_ms(2026, 12),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        let r = UsageRollup::open(mem_store(), "idle").await.unwrap();
+        let jul15 = crate::billing::month_start_ms(2026, 7) + 14 * 86_400_000;
+        // Live snapshot: gauge 100 B, accounted through Jul 15.
+        let mut s0 = match snap(1, "2026-07", 500, 0, 100, false).payload.clone() {
+            UsagePayload::SegmentSnapshot(x) => x,
+            _ => unreachable!(),
+        };
+        s0.storage_accounted_through_ms = jul15;
+        let env = UsageEnvelope {
+            v: 1,
+            event_id: s0.deterministic_event_id(),
+            event_time_ms: jul15,
+            emitted_ms: jul15,
+            cell: "c".into(),
+            payload: UsagePayload::SegmentSnapshot(s0),
+        };
+        r.apply_page(&[env], "c1").await.unwrap();
+
+        let day = 86_400_000u128;
+        let mut arts: Vec<(String, u128)> = Vec::new();
+        // Close July: Jul 15 -> Aug 1 = 17 idle days at 100 B.
+        let n = r
+            .close_month(2026, 7, 0, |_, _, row, m| {
+                arts.push((m.to_string(), row.storage_byte_ms()))
+            })
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(arts[0], ("2026-07".into(), 17 * day * 100));
+        // Close August: a FULLY idle month — no row existed until the
+        // carry pass synthesized it. 31 days at 100 B.
+        let n = r
+            .close_month(2026, 8, 0, |_, _, row, m| {
+                arts.push((m.to_string(), row.storage_byte_ms()))
+            })
+            .await
+            .unwrap();
+        assert_eq!(n, 1, "an idle month must still close its stream");
+        assert_eq!(arts[1], ("2026-08".into(), 31 * day * 100));
+        // September: 30 days.
+        let n = r
+            .close_month(2026, 9, 0, |_, _, row, m| {
+                arts.push((m.to_string(), row.storage_byte_ms()))
+            })
+            .await
+            .unwrap();
+        assert_eq!(n, 1);
+        assert_eq!(arts[2], ("2026-09".into(), 30 * day * 100));
+        // The durable segment state still knows the gauge.
+        let states = r.stream_segment_states("proj", &id().stream_id).await;
+        assert_eq!(states.len(), 1);
+        assert_eq!(states[0].owned_frame_bytes_current, 100);
+        // Replays are no-ops.
+        assert_eq!(r.close_month(2026, 8, 0, |_, _, _, _| {}).await.unwrap(), 0);
+        // Aggregates carried the idle storage too.
+        let aug_proj = r.project_row("2026-08", "proj").await.unwrap();
+        assert_eq!(aug_proj.storage_byte_ms, (31 * day * 100).to_string());
     }
 
     /// Snapshots are ABSOLUTE; aggregates absorb them as deltas, and a

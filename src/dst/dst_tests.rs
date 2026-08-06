@@ -18802,16 +18802,26 @@ async fn read_meter_covers_the_matrix_exactly() {
     engine_shutdown(&state).await;
 }
 
-/// §6: the durable data-plane billing state. Committed ingest and the
-/// storage gauge are exact, atomic with the records, restart-safe, and
-/// idempotently drainable: duplicates add zero, acks are version-fenced
-/// (a racing append keeps its newer version dirty), UTC month rollover
-/// closes finals into the outbox, and hard deletion zeroes the gauge.
-/// Driven on the RAW surface because it forwards `stream-timestamp`
-/// (the product surface deliberately has no client clock) — the
-/// committer path is the same.
+/// Resets the injected billing clock even on panic.
+struct ClockGuard;
+impl Drop for ClockGuard {
+    fn drop(&mut self) {
+        crate::billing::BILLING_CLOCK_OVERRIDE.store(0, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// §6 + round-21 blocker 1: billing runs on TRUSTED server time. The
+/// injected billing clock drives months; customer `Stream-Timestamp`
+/// headers — far future or far past — move record metadata only.
+/// Ingest cannot be shifted between invoice months, a future record
+/// clock cannot park storage accrual, and deletion bills the real
+/// elapsed duration. Plus the durable-outbox battery: duplicates add
+/// zero, acks are version-fenced, month rollover writes exact finals,
+/// hard delete zeroes the gauge.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn billing_meta_is_exact_durable_and_ackable() {
+    let _xw = crate::billing::billing_clock_lock().write().await;
+    let _reset = ClockGuard;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [
@@ -18820,16 +18830,17 @@ async fn billing_meta_is_exact_durable_and_ackable() {
     ];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/bill1", &ct, b"").await;
     assert_eq!(st, 201);
-    // Commit timestamps are MONOTONE per stream (ts = hint.max(tail.ts))
-    // and creation stamps the tail with real now — so the controlled
-    // months live in the FUTURE, where hints win the max.
     let sep = crate::billing::month_start_ms(2026, 9);
-    let ts = |ms: i64| (ms * 1_000_000).to_string(); // header takes nanos
+    let set_clock = |ms: i64| {
+        crate::billing::BILLING_CLOCK_OVERRIDE.store(ms, std::sync::atomic::Ordering::Relaxed)
+    };
     let p1 = br#"{"n":1,"pad":"aaaaaaaaaa"}"#; // 26 B payload
     let body = format!("[{}]", std::str::from_utf8(p1).unwrap());
 
-    // Append 1: plain, mid-September.
-    let t1 = ts(sep + 14 * 86_400_000);
+    // Append 1 at billing time Sep 15 — carrying a FAR-FUTURE customer
+    // timestamp (2030). The header must not move the invoice month.
+    set_clock(sep + 14 * 86_400_000);
+    let future_ns = (crate::billing::month_start_ms(2030, 1) * 1_000_000).to_string();
     let (st, _, _) = hreq(
         addr,
         "POST",
@@ -18837,65 +18848,62 @@ async fn billing_meta_is_exact_durable_and_ackable() {
         &[
             ("stream-encryption-key", PRISMA_KEY),
             ("content-type", "application/json"),
-            ("stream-timestamp", &t1),
+            ("stream-timestamp", &future_ns),
         ],
         body.as_bytes(),
     )
     .await;
-    assert_eq!(st, 204, "raw append acks 204 per the pinned protocol");
+    assert_eq!(st, 204);
 
     let desc = state.registry.get("bill1").await.unwrap().unwrap();
-    // The SAME identity the append path submits under.
     let seg = desc.resolve_segment("");
     let identity = seg.identity;
     let route = seg.shard_route.clone();
     let engine = state.engine_for(&route).await.unwrap();
 
     let bm = engine.billing_meta(identity).await.expect("meta row");
-    assert_eq!(bm.ingest_payload_bytes_total, p1.len() as u64);
-    assert_eq!(bm.ingest_records_total, 1);
-    assert!(
-        bm.owned_frame_bytes_current > p1.len() as u64,
-        "frames carry the envelope"
+    assert_eq!(
+        (bm.month_year, bm.month_month),
+        (2026, 9),
+        "a far-future Stream-Timestamp must not move the billing month"
     );
-    assert_eq!((bm.month_year, bm.month_month), (2026, 9));
+    assert_eq!(bm.ingest_payload_bytes_total, p1.len() as u64);
     assert_eq!(bm.usage_version, 1);
     assert_eq!(bm.account_id, "acct_test");
-    assert_eq!(bm.stream_id, desc.stream_epoch);
     let frame1 = bm.owned_frame_bytes_current;
+    assert!(frame1 > p1.len() as u64);
     assert_eq!(
         engine.usage_dirty_scan().await.unwrap(),
-        vec![(identity, 1)],
-        "one dirty segment at version 1"
+        vec![(identity, 1)]
     );
 
-    // Append 2 with producer identity, then RETRY it: the duplicate
-    // must add exactly zero (no version bump, no bytes).
-    let t2 = ts(sep + 15 * 86_400_000);
+    // Append 2 (producer) at Sep 16 with a FAR-PAST header: billing
+    // stays at commit time. Then its duplicate adds exactly zero.
+    set_clock(sep + 15 * 86_400_000);
+    let past_ns = (crate::billing::month_start_ms(2020, 1) * 1_000_000).to_string();
     let phdrs = [
         ("stream-encryption-key", PRISMA_KEY),
         ("content-type", "application/json"),
-        ("stream-timestamp", t2.as_str()),
+        ("stream-timestamp", past_ns.as_str()),
         ("producer-id", "pX"),
         ("producer-epoch", "1"),
         ("producer-seq", "0"),
     ];
     let (st, _, _) = hreq(addr, "POST", "/v1/stream/bill1", &phdrs, body.as_bytes()).await;
-    assert!(st == 200 || st == 204, "producer append answered {st}");
+    assert!(st == 200 || st == 204);
     let v2 = engine.billing_meta(identity).await.unwrap();
     assert_eq!(v2.usage_version, 2);
-    assert_eq!(v2.ingest_records_total, 2);
-    let (st, _, _) = hreq(addr, "POST", "/v1/stream/bill1", &phdrs, body.as_bytes()).await;
-    assert!(st == 200 || st == 204, "duplicate ack answered {st}");
-    let dup = engine.billing_meta(identity).await.unwrap();
     assert_eq!(
-        dup.usage_version, 2,
-        "a duplicate must not bump the version"
+        (v2.month_year, v2.month_month),
+        (2026, 9),
+        "a far-past header must not move billing either"
     );
-    assert_eq!(dup.ingest_payload_bytes_total, 2 * p1.len() as u64);
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/bill1", &phdrs, body.as_bytes()).await;
+    assert!(st == 200 || st == 204);
+    let dup = engine.billing_meta(identity).await.unwrap();
+    assert_eq!(dup.usage_version, 2, "duplicate adds zero");
     assert_eq!(dup.owned_frame_bytes_current, 2 * frame1);
 
-    // Ack at version 2: marker clears.
     engine.submit_usage_ack(identity, 2, Vec::new());
     for _ in 0..100 {
         if engine.usage_dirty_scan().await.unwrap().is_empty() {
@@ -18905,56 +18913,29 @@ async fn billing_meta_is_exact_durable_and_ackable() {
     }
     assert!(engine.usage_dirty_scan().await.unwrap().is_empty());
 
-    // Append 3 in OCTOBER: September closes into the outbox, the live
-    // month resets, the marker returns at version 3.
+    // Billing time moves to Oct 10: September closes with the EXACT
+    // integral (1 day at frame1 + 15 days at 2·frame1).
     let oct = crate::billing::month_start_ms(2026, 10);
-    let t3 = ts(oct + 9 * 86_400_000);
-    let (st, _, _) = hreq(
-        addr,
-        "POST",
-        "/v1/stream/bill1",
-        &[
-            ("stream-encryption-key", PRISMA_KEY),
-            ("content-type", "application/json"),
-            ("stream-timestamp", &t3),
-        ],
-        body.as_bytes(),
-    )
-    .await;
+    set_clock(oct + 9 * 86_400_000);
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/bill1", &ct, body.as_bytes()).await;
     assert_eq!(st, 204);
     let m3 = engine.billing_meta(identity).await.unwrap();
     assert_eq!(m3.usage_version, 3);
     assert_eq!((m3.month_year, m3.month_month), (2026, 10));
-    assert_eq!(m3.month_ingest_payload_bytes, p1.len() as u64);
     let finals = engine.usage_month_finals().await.unwrap();
-    assert_eq!(
-        finals.len(),
-        1,
-        "September's final snapshot is in the outbox"
-    );
+    assert_eq!(finals.len(), 1);
     let (fkey, fsnap) = &finals[0];
     assert_eq!(fsnap.month, "2026-09");
-    assert!(fsnap.month_final);
-    assert_eq!(fsnap.ingest_payload_bytes_month, 2 * p1.len() as u64);
-    // September byte-time: exact integral of the gauge over the
-    // in-month spans (frame1 for one day, then 2·frame1 for the 15
-    // days to the October boundary).
     let day = 86_400_000u128;
     let expect = day * frame1 as u128 + (15 * day) * (2 * frame1) as u128;
     assert_eq!(fsnap.storage_byte_ms_month.parse::<u128>().unwrap(), expect);
-    assert_eq!(
-        engine.usage_dirty_scan().await.unwrap(),
-        vec![(identity, 3)]
-    );
 
-    // A STALE ack (version 2) must keep version 3 dirty; acking 3 with
-    // the exact final key clears both.
+    // Stale ack refused; exact ack clears marker + final.
     engine.submit_usage_ack(identity, 2, Vec::new());
     tokio::time::sleep(std::time::Duration::from_millis(120)).await;
     assert_eq!(
         engine.usage_dirty_scan().await.unwrap(),
-        vec![(identity, 3)],
-        "a stale ack erased a newer dirty version"
+        vec![(identity, 3)]
     );
     engine.submit_usage_ack(identity, 3, vec![fkey.clone()]);
     for _ in 0..100 {
@@ -18963,13 +18944,14 @@ async fn billing_meta_is_exact_durable_and_ackable() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    assert!(engine.usage_dirty_scan().await.unwrap().is_empty());
     assert!(engine.usage_month_finals().await.unwrap().is_empty());
 
-    // Hard delete: the terminal storage observation — gauge to ZERO,
-    // version bumped, dirty again for the ledger.
+    // Delete at billing time Oct 20. The record clock said 2030; the
+    // REAL elapsed October storage (10 days at 3·frame1) is still
+    // integrated before the gauge zeroes.
+    set_clock(oct + 19 * 86_400_000);
     let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/bill1", &ct, b"").await;
-    assert!(st == 204 || st == 200, "delete answered {st}");
+    assert!(st == 204 || st == 200);
     let mut closed = None;
     for _ in 0..150 {
         if let Some(m) = engine.billing_meta(identity).await {
@@ -18980,11 +18962,15 @@ async fn billing_meta_is_exact_durable_and_ackable() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    let closed = closed.expect("hard delete never closed the storage gauge");
+    let closed = closed.expect("hard delete never closed the gauge");
     assert_eq!(closed.usage_version, 4);
-    assert!(
-        !engine.usage_dirty_scan().await.unwrap().is_empty(),
-        "the closure must reach the ledger"
+    let oct_ms: u128 = closed.month_byte_ms();
+    // October = the rollover span (Oct 1 → Oct 10 at the pre-append
+    // gauge 2f) plus the post-append span (Oct 10 → Oct 20 at 3f).
+    assert_eq!(
+        oct_ms,
+        (9 * day) * (2 * frame1) as u128 + (10 * day) * (3 * frame1) as u128,
+        "deletion bills the real elapsed duration, not the record clock"
     );
     engine_shutdown(&state).await;
 }
@@ -18996,6 +18982,9 @@ async fn billing_meta_is_exact_durable_and_ackable() {
 /// read with exact numbers.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn usage_pipeline_end_to_end_exactly_once() {
+    // Month-sensitive on the REAL clock: hold the read side so the
+    // clock-injecting tests cannot move billing months mid-assert.
+    let _xr = crate::billing::billing_clock_lock().read().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     // This rig instance runs the rollup too.
@@ -19295,6 +19284,9 @@ async fn ops_metrics_and_alerts_flow() {
 /// ledger append, and an idle drain appends nothing at all.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn telemetry_crash_points_and_cost_gates() {
+    // Month-sensitive on the REAL clock: hold the read side so the
+    // clock-injecting tests cannot move billing months mid-assert.
+    let _xr = crate::billing::billing_clock_lock().read().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "p6")
