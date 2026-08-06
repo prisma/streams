@@ -670,9 +670,9 @@ async fn async_main() -> anyhow::Result<()> {
             (None, _) => anyhow::bail!(
                 "fleet mode requires FLEET_INTERNAL_TOKEN (a credential distinct from                  AUTH_TOKEN) — /v1/internal/* must not be reachable with a customer bearer"
             ),
-            (Some(t), _) if t.len() < 16 => anyhow::bail!(
-                "FLEET_INTERNAL_TOKEN must be at least 16 characters"
-            ),
+            (Some(t), _) if t.len() < 16 => {
+                anyhow::bail!("FLEET_INTERNAL_TOKEN must be at least 16 characters")
+            }
             (Some(t), Some(a)) if t == a => anyhow::bail!(
                 "FLEET_INTERNAL_TOKEN must differ from AUTH_TOKEN — they are separate                  trust boundaries"
             ),

@@ -13,6 +13,10 @@ echo "== clippy (all targets) =="
 cargo clippy --all-targets 2>&1 | tee /tmp/clippy.out | tail -3
 # The branch carries a small pre-existing warning set; the gate is
 # "no NEW warnings": compare against the recorded count.
+# The baseline is a HIGH-WATER MARK for the whole tree, not a claim that
+# the tree is clean: it was stale at 114 through round 18 (the real count
+# was 345) and silently un-runnable. Measured against 93066698 and
+# refreshed whenever a change legitimately moves it DOWN.
 BASELINE=$(cat scripts/clippy-warning-baseline.txt)
 COUNT=$(grep -c '^warning' /tmp/clippy.out || true)
 if [ "$COUNT" -gt "$BASELINE" ]; then

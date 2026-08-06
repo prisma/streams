@@ -396,8 +396,8 @@ async fn lb() {
                 {
                     if let Ok(raw) = r.bytes().await {
                         if let Ok(d) = serde_json::from_slice::<serde_json::Value>(&raw) {
-                            view.desired = (d["count"].as_u64().unwrap_or(1) as usize)
-                                .clamp(1, n_up);
+                            view.desired =
+                                (d["count"].as_u64().unwrap_or(1) as usize).clamp(1, n_up);
                         }
                     }
                 }
@@ -707,10 +707,7 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
         if !live.is_empty() {
             active = live;
         }
-        let ov = shard
-            .as_deref()
-            .and_then(|sh| f.overrides.get(sh))
-            .cloned();
+        let ov = shard.as_deref().and_then(|sh| f.overrides.get(sh)).cloned();
         (active, shard, ov)
     };
     // Ownership mirrors the servers' effective_owner: a rebalancer
@@ -754,7 +751,12 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
     let t0 = Instant::now();
     let http = lb.http.get();
     let send_to = |i: usize| {
-        let url = format!("{}{}{}", lb.upstreams.read().unwrap()[i].clone(), path, query);
+        let url = format!(
+            "{}{}{}",
+            lb.upstreams.read().unwrap()[i].clone(),
+            path,
+            query
+        );
         http.request(method.clone(), url)
             .headers(headers.clone())
             .body(body.clone())
@@ -784,7 +786,9 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
     while let Some(target) = resp.as_ref().ok().and_then(&replay_target) {
         // The bouncing instance answered: it is alive, and it is the one
         // whose ownership view disagrees with this router's pick.
-        lb.stats[cur_i].last_seen_ms.store(now_ms(), Ordering::Relaxed);
+        lb.stats[cur_i]
+            .last_seen_ms
+            .store(now_ms(), Ordering::Relaxed);
         lb.stats[cur_i].replays.fetch_add(1, Ordering::Relaxed);
         if follows >= 2 {
             break;

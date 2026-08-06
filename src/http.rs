@@ -222,9 +222,7 @@ impl AppState {
     ) -> Result<Arc<ShardEngine>, Response> {
         let prefix = shard_for_hash(&self.shard_prefixes, hash);
         let owner = self.effective_owner(&prefix);
-        let not_mine = owner
-            .as_ref()
-            .is_some_and(|o| *o != self.instance_name);
+        let not_mine = owner.as_ref().is_some_and(|o| *o != self.instance_name);
         if let Some(e) = {
             let held = self.shards.read().unwrap().get(&prefix).cloned();
             held
@@ -3075,13 +3073,9 @@ pub(crate) mod fork_failpoints {
                 Fp::ProductFinalBeforeAppend => {
                     "product seal: before the final-bearing append submits"
                 }
-                Fp::ForkBeforeSourceRef => {
-                    "fork create: before the source reference installs"
-                }
+                Fp::ForkBeforeSourceRef => "fork create: before the source reference installs",
                 Fp::InitBeforeSeed => "create: before the tail row seeds",
-                Fp::ForkAfterSourceRef => {
-                    "fork create: after the source reference installs"
-                }
+                Fp::ForkAfterSourceRef => "fork create: after the source reference installs",
                 Fp::ReleaseAfterEpochCheck => {
                     "fork-ref release: after the incarnation epoch check, \
                      before the release write"
@@ -3094,9 +3088,7 @@ pub(crate) mod fork_failpoints {
                     "consumer deletion saga: before a fan-out round's \
                      descriptor refresh"
                 }
-                Fp::DeleteBeforeDecision => {
-                    "stream delete: before the soft-versus-hard decision"
-                }
+                Fp::DeleteBeforeDecision => "stream delete: before the soft-versus-hard decision",
             }
         }
     }
@@ -6368,30 +6360,6 @@ async fn sse_response(
 
 // ---- per-key ordering read surface (PER-KEY-ORDERING.md §4) ----
 
-/// ROUTING-V3 lineage reads (spec §3.4/§9) for dynamic maps with
-/// successors. Contract:
-///
-/// - `?key=<k>`: ordered read for one routing key. The cursor names a
-///   position in ONE segment of the key's lineage
-///   (`epoch = segment id`); a drained sealed segment hands the next
-///   cursor to the successor containing the key at offset 0. Long-poll
-///   waits only on the key's LIVE segment.
-/// - no key: deterministic whole-stream replay in segment-id order —
-///   every record exactly once, no cross-key ordering.
-/// - live without a key: unsupported (one scalar cursor cannot
-///   represent concurrent segment progress).
-/// - SSE across lineage: not yet wired (single-segment streams keep
-///   full SSE); explicit 400 rather than silent misbehavior.
-/// `may_refresh`: one stale-descriptor retry. Two shapes demand it —
-/// a cursor token naming a segment our cached map does not know yet,
-/// and a CLOSED segment handle our map still calls live-and-last (a
-/// split sealed it after our descriptor read; stopping there would
-/// declare Up-To-Date below the successor's records). A refreshed map
-/// that STILL shows live-and-last with no pending transition is a
-/// genuinely user-closed stream; one whose pending transition names
-/// this segment is mid-split (seal done, successors unpublished) — the
-/// SEAL GAP — and the response may carry records and a resume cursor
-/// but NEVER Stream-Closed and NEVER a final Stream-Up-To-Date.
 /// Percent-encode a stream name for use as a URL PATH, preserving the
 /// hierarchy separator. Product names are hierarchical UTF-8 and may
 /// legally contain '?', '#', '%' — interpolating one raw into a relay
@@ -6454,7 +6422,6 @@ async fn relay_segment_read(
     state: &Arc<AppState>,
     base: String,
     desc: &StreamDesc,
-    name: &str,
     seg_id: u32,
     scan_from: u64,
     params: &ReadParams,
@@ -6498,7 +6465,7 @@ async fn relay_segment_read(
     let mut req = peer_client()
         .get(format!(
             "{base}/v1/internal/segment-read/{}?{q}",
-            encode_stream_name_path(name)
+            encode_stream_name_path(&desc.name)
         ))
         .timeout(std::time::Duration::from_secs(40));
     // Incarnation binding: the peer refuses outright if this name now
@@ -6610,6 +6577,30 @@ async fn internal_segment_read(
     .await
 }
 
+/// ROUTING-V3 lineage reads (spec §3.4/§9) for dynamic maps with
+/// successors. Contract:
+///
+/// - `?key=<k>`: ordered read for one routing key. The cursor names a
+///   position in ONE segment of the key's lineage
+///   (`epoch = segment id`); a drained sealed segment hands the next
+///   cursor to the successor containing the key at offset 0. Long-poll
+///   waits only on the key's LIVE segment.
+/// - no key: deterministic whole-stream replay in segment-id order —
+///   every record exactly once, no cross-key ordering.
+/// - live without a key: unsupported (one scalar cursor cannot
+///   represent concurrent segment progress).
+/// - SSE across lineage: not yet wired (single-segment streams keep
+///   full SSE); explicit 400 rather than silent misbehavior.
+/// `may_refresh`: one stale-descriptor retry. Two shapes demand it —
+/// a cursor token naming a segment our cached map does not know yet,
+/// and a CLOSED segment handle our map still calls live-and-last (a
+/// split sealed it after our descriptor read; stopping there would
+/// declare Up-To-Date below the successor's records). A refreshed map
+/// that STILL shows live-and-last with no pending transition is a
+/// genuinely user-closed stream; one whose pending transition names
+/// this segment is mid-split (seal done, successors unpublished) — the
+/// SEAL GAP — and the response may carry records and a resume cursor
+/// but NEVER Stream-Closed and NEVER a final Stream-Up-To-Date.
 async fn read_v3_lineage_inner(
     state: Arc<AppState>,
     desc: StreamDesc,
@@ -6774,8 +6765,7 @@ async fn read_v3_lineage_inner(
                     let peer = replay_peer_url(&state, &r).map(|(_, base)| base);
                     if let Some(base) = peer {
                         if let Some(resp) = relay_segment_read(
-                            &state, base, &desc, &desc.name, sg.seg_id, scan_from, &params,
-                            &headers, head_only,
+                            &state, base, &desc, sg.seg_id, scan_from, &params, &headers, head_only,
                         )
                         .await
                         {

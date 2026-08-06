@@ -3335,8 +3335,7 @@ async fn product_scan(
                                                 match InternalTarget::of(&desc, sg.seg_id) {
                                                     Some(t) => {
                                                         relay_segment_tail(
-                                                            &state, &base, &desc.name, &t,
-                                                            &key_b64,
+                                                            &state, &base, &desc.name, &t, &key_b64,
                                                         )
                                                         .await
                                                     }
@@ -3491,23 +3490,21 @@ async fn product_scan(
                 // (records WITH routing keys) from its owner.
                 let peer = crate::http::replay_peer_url(&state, &r).map(|(_, b)| b);
                 let relayed = match peer {
-                    Some(base) => {
-                        match InternalTarget::of(&desc, seg_id) {
-                            Some(t) => {
-                                relay_segment_scan(
-                                    &state,
-                                    &base,
-                                    &desc.name,
-                                    &t,
-                                    off,
-                                    max - spent,
-                                    &key_b64,
-                                )
-                                .await
-                            }
-                            None => None,
+                    Some(base) => match InternalTarget::of(&desc, seg_id) {
+                        Some(t) => {
+                            relay_segment_scan(
+                                &state,
+                                &base,
+                                &desc.name,
+                                &t,
+                                off,
+                                max - spent,
+                                &key_b64,
+                            )
+                            .await
                         }
-                    }
+                        None => None,
+                    },
                     None => None,
                 };
                 match relayed {
@@ -4173,9 +4170,9 @@ async fn relay_sweep_segment(
         }
         let mut req = crate::http::peer_client()
             .post(format!(
-            "{base}/v1/internal/sweep-segment/{}",
-            crate::http::encode_stream_name_path(name)
-        ))
+                "{base}/v1/internal/sweep-segment/{}",
+                crate::http::encode_stream_name_path(name)
+            ))
             .timeout(std::time::Duration::from_secs(30))
             .json(&json!({
                 "consumer": cname,
@@ -4352,7 +4349,10 @@ pub(crate) async fn internal_queue_cursor(
         Ok(e) => e,
         Err(r) => return r,
     };
-    let cursor = engine.queue_cursor(identity, &consumer, cgen).await.unwrap_or(0);
+    let cursor = engine
+        .queue_cursor(identity, &consumer, cgen)
+        .await
+        .unwrap_or(0);
     let local = match engine.stream_handle(identity).await {
         Ok(h) => h.state.lock().unwrap().durable.next,
         Err(_) => 0,
@@ -4480,7 +4480,13 @@ pub(crate) async fn internal_segment_scan(
     {
         Ok(o) => o,
         Err(m) => {
-            return perr(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m, None, true);
+            return perr(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &m,
+                None,
+                true,
+            );
         }
     };
     use base64::Engine as _;
@@ -4946,12 +4952,11 @@ async fn product_consumer_delete(
         if fresh.epoch_bytes() != Some(epoch) {
             return no_touch_204();
         }
-        let pending = fresh
-            .segments
-            .as_ref()
-            .is_some_and(|m| m.pending.is_some());
-        let mut fresh_ids: Vec<u32> =
-            consumer_segments(&fresh).iter().map(|(id, ..)| *id).collect();
+        let pending = fresh.segments.as_ref().is_some_and(|m| m.pending.is_some());
+        let mut fresh_ids: Vec<u32> = consumer_segments(&fresh)
+            .iter()
+            .map(|(id, ..)| *id)
+            .collect();
         fresh_ids.sort_unstable();
         if !pending && fresh_ids == swept_ids {
             // Everything that can hold this consumer's rows was swept
@@ -5259,17 +5264,13 @@ async fn product_consumer_pull(
                     // segments the same way — converges).
                     let peer = crate::http::replay_peer_url(&state, &r).map(|(_, b)| b);
                     if let Some(base) = peer {
-                        if let Some((cur, tail)) =
-                            match InternalTarget::of(&desc, seg_id) {
-                                Some(t) => {
-                                    relay_queue_cursor(
-                                        &state, &base, &desc.name, &t, &cname, cgen,
-                                    )
+                        if let Some((cur, tail)) = match InternalTarget::of(&desc, seg_id) {
+                            Some(t) => {
+                                relay_queue_cursor(&state, &base, &desc.name, &t, &cname, cgen)
                                     .await
-                                }
-                                None => None,
                             }
-                        {
+                            None => None,
+                        } {
                             match sealed_end {
                                 Some(end) if cur >= end => continue,
                                 None if tail <= cur => continue,

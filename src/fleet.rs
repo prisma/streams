@@ -833,9 +833,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                         let owned = state
                             .shard_prefixes
                             .iter()
-                            .filter(|p| {
-                                state.effective_owner(p).as_deref() == Some(home.as_str())
-                            })
+                            .filter(|p| state.effective_owner(p).as_deref() == Some(home.as_str()))
                             .count();
                         let gain = pending_returns.get(&home).copied().unwrap_or(0) + 1;
                         if !return_home_allowed(

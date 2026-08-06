@@ -2932,9 +2932,9 @@ impl ShardEngine {
                             {
                                 let fk = crate::queue::fence_key(&hash, &consumer);
                                 let cur = match self.db.get(&fk[..]).await {
-                                    Ok(Some(v)) => u64::from_le_bytes(
-                                        v[..8].try_into().unwrap_or([0; 8]),
-                                    ),
+                                    Ok(Some(v)) => {
+                                        u64::from_le_bytes(v[..8].try_into().unwrap_or([0; 8]))
+                                    }
                                     _ => 0,
                                 };
                                 if fence_below > cur {
@@ -3149,9 +3149,9 @@ impl ShardEngine {
                                 None => {
                                     let fk = crate::queue::fence_key(&hash, &cname);
                                     let durable = match self.db.get(&fk[..]).await {
-                                        Ok(Some(v)) => u64::from_le_bytes(
-                                            v[..8].try_into().unwrap_or([0; 8]),
-                                        ),
+                                        Ok(Some(v)) => {
+                                            u64::from_le_bytes(v[..8].try_into().unwrap_or([0; 8]))
+                                        }
                                         // A failed read must NOT be
                                         // read as "unfenced": refuse
                                         // the op and let the client
