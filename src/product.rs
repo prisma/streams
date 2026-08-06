@@ -4172,7 +4172,10 @@ async fn relay_sweep_segment(
             ));
         }
         let mut req = crate::http::peer_client()
-            .post(format!("{base}/v1/internal/sweep-segment/{name}"))
+            .post(format!(
+            "{base}/v1/internal/sweep-segment/{}",
+            crate::http::encode_stream_name_path(name)
+        ))
             .timeout(std::time::Duration::from_secs(30))
             .json(&json!({
                 "consumer": cname,
@@ -4374,7 +4377,10 @@ async fn relay_queue_cursor(
     cgen: u64,
 ) -> Option<(u64, u64)> {
     let mut req = crate::http::peer_client()
-        .get(format!("{base}/v1/internal/queue-cursor/{name}"))
+        .get(format!(
+            "{base}/v1/internal/queue-cursor/{}",
+            crate::http::encode_stream_name_path(name)
+        ))
         .timeout(std::time::Duration::from_secs(15))
         .header("streams-internal-consumer", cname)
         .header("streams-internal-gen", cgen.to_string());
@@ -4508,7 +4514,10 @@ async fn relay_segment_scan(
     key_b64: &str,
 ) -> Option<crate::http::ReadOut> {
     let mut req = crate::http::peer_client()
-        .get(format!("{base}/v1/internal/segment-scan/{name}"))
+        .get(format!(
+            "{base}/v1/internal/segment-scan/{}",
+            crate::http::encode_stream_name_path(name)
+        ))
         .timeout(std::time::Duration::from_secs(20))
         .header("streams-internal-from", from.to_string())
         .header("streams-internal-max-bytes", max_bytes.to_string())
@@ -4560,7 +4569,8 @@ async fn relay_segment_tail(
     let tok = crate::offsets::encode_ep(target.seg_id, crate::offsets::Offset::START);
     let mut req = crate::http::peer_client()
         .get(format!(
-            "{base}/v1/internal/segment-read/{name}?offset={tok}&head=1"
+            "{base}/v1/internal/segment-read/{}?offset={tok}&head=1",
+            crate::http::encode_stream_name_path(name)
         ))
         .timeout(std::time::Duration::from_secs(15))
         .header("stream-encryption-key", key_b64);

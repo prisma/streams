@@ -43,6 +43,15 @@ fn fnv1a(s: &str) -> u32 {
     }
     h
 }
+/// How long an upstream stays locally ejected after an unmarked
+/// (platform-edge) response. Long enough to cover a redeploy gap,
+/// short enough that a revived instance rejoins quickly.
+fn eject_ms() -> u64 {
+    env("LB_EJECT_MS")
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(5_000)
+}
+
 fn pick(stream: &str, upstreams: &[String]) -> usize {
     let mut best = 0usize;
     let mut best_score = 0u32;
@@ -91,6 +100,63 @@ fn fleet_store(prefix: &str) -> Arc<dyn object_store::ObjectStore> {
         .build()
         .expect("s3 store");
     Arc::new(object_store::prefix::PrefixStore::new(s3, prefix))
+}
+
+/// The COLLECTION NAME a request targets, decoded, mirroring the
+/// server's ProductRoute grammar. Names are hierarchical UTF-8
+/// ("customers/acme/orders"), so hashing only the first path segment
+/// routed every stream under a shared prefix to one instance and made
+/// the 409-replay path carry traffic that should never have missed
+/// (round-19 fleet-contract finding). Sub-resources and the known final
+/// action verbs terminate the name; a ':' anywhere else is part of it.
+fn collection_name(path: &str) -> Option<String> {
+    const SUBRESOURCES: [&str; 5] = ["records", "consumers", "producers", "watches", "forks"];
+    let rest = path
+        .strip_prefix("/v1/streams/")
+        .or_else(|| path.strip_prefix("/v1/stream/"))?;
+    let rest = rest.split('?').next().unwrap_or(rest);
+    // Trim the trailing action verb, if any: ".../name:seal".
+    let (head, _verb) = match rest.rsplit_once(':') {
+        Some((h, v)) if !v.contains('/') => (h, Some(v)),
+        _ => (rest, None),
+    };
+    // Trim a trailing sub-resource path ("<name>/records", "<name>/
+    // consumers/<c>"): everything from the FIRST segment that is a known
+    // sub-resource keyword onward belongs to the route, not the name.
+    let segs: Vec<&str> = head.split('/').collect();
+    let end = segs
+        .iter()
+        .position(|s| SUBRESOURCES.contains(s))
+        .unwrap_or(segs.len());
+    let name = segs[..end].join("/");
+    let name = percent_decode(&name);
+    if name.is_empty() { None } else { Some(name) }
+}
+
+/// One-shot percent-decoding of a path (the SDK encodes each name
+/// segment). '+' is NOT a space — same rule as the server.
+fn percent_decode(v: &str) -> String {
+    let b = v.as_bytes();
+    let mut out = Vec::with_capacity(b.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i] == b'%' && i + 2 < b.len() {
+            let hex = |c: u8| match c {
+                b'0'..=b'9' => Some(c - b'0'),
+                b'a'..=b'f' => Some(c - b'a' + 10),
+                b'A'..=b'F' => Some(c - b'A' + 10),
+                _ => None,
+            };
+            if let (Some(h), Some(l)) = (hex(b[i + 1]), hex(b[i + 2])) {
+                out.push(h * 16 + l);
+                i += 3;
+                continue;
+            }
+        }
+        out.push(b[i]);
+        i += 1;
+    }
+    String::from_utf8(out).unwrap_or_else(|_| v.to_string())
 }
 
 /// Mirrors crypto::stream_hash — shard choice keys off the stream name.
@@ -190,6 +256,14 @@ struct UpStat {
     /// view disagreed with the router's pick. Nonzero steady-state means
     /// the router's override/topology view is stale.
     replays: AtomicU64,
+    /// Unmarked (platform-edge) responses seen from this upstream: it is
+    /// dead or unpublished, not answering as a Streams server.
+    unmarked: AtomicU64,
+    /// Local ejection deadline (ms since epoch). Set the instant an
+    /// unmarked response arrives — the router must stop sending NEW
+    /// requests here immediately rather than waiting out the ~30 s
+    /// heartbeat-dark window (round-19 must-fix 4).
+    eject_until_ms: AtomicU64,
 }
 
 struct Lb {
@@ -224,6 +298,8 @@ async fn lb() {
             cold_starts: AtomicU64::new(0),
             last_seen_ms: AtomicU64::new(0),
             replays: AtomicU64::new(0),
+            unmarked: AtomicU64::new(0),
+            eject_until_ms: AtomicU64::new(0),
         })
         .collect();
     let n_up = upstreams.len();
@@ -522,6 +598,8 @@ async fn lb() {
                             "lastMs": s.last_us.load(Ordering::Relaxed) as f64 / 1000.0,
                             "coldStarts": s.cold_starts.load(Ordering::Relaxed),
                             "replays": s.replays.load(Ordering::Relaxed),
+                            "unmarked": s.unmarked.load(Ordering::Relaxed),
+                            "ejected": s.eject_until_ms.load(Ordering::Relaxed) > now_ms(),
                         })
                     })
                     .collect();
@@ -564,12 +642,7 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
     // terminates the name. Registry-scoped paths (/v1/streams catalog,
     // /v1/segments, /health) are not stream-scoped — any instance
     // answers; pin them to the first active ordinal so sleepers sleep.
-    let stream: Option<String> = path
-        .strip_prefix("/v1/stream/")
-        .or_else(|| path.strip_prefix("/v1/streams/"))
-        .and_then(|r| r.split(['/', '?', ':']).next())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
+    let stream: Option<String> = collection_name(&path);
     if stream.is_none()
         && !(path == "/v1/streams"
             || path == "/v1/segments"
@@ -591,11 +664,34 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
         let shard = stream
             .as_deref()
             .map(|st| shard_for(&f.topology, &name_hash(st)));
-        let active = if f.active.is_empty() {
+        let mut active = if f.active.is_empty() {
             vec!["streams-1".to_string()]
         } else {
             f.active.clone()
         };
+        // Locally ejected ordinals (an unmarked platform response within
+        // the eject window) are removed from the routing set NOW —
+        // round-19 MF4: heartbeat-dark detection takes ~30 s, and every
+        // request routed there in the meantime is a client-visible
+        // failure. Never eject the last candidate: some upstream must
+        // remain so a fully-ejected fleet still produces a real answer
+        // (and its own retryable error) rather than a routing panic.
+        let now = now_ms();
+        let live: Vec<String> = active
+            .iter()
+            .filter(|n| {
+                n.strip_prefix("streams-")
+                    .and_then(|o| o.parse::<usize>().ok())
+                    .and_then(|o| o.checked_sub(1))
+                    .and_then(|i| lb.stats.get(i))
+                    .map(|st| st.eject_until_ms.load(Ordering::Relaxed) <= now)
+                    .unwrap_or(true)
+            })
+            .cloned()
+            .collect();
+        if !live.is_empty() {
+            active = live;
+        }
         let ov = shard
             .as_deref()
             .and_then(|sh| f.overrides.get(sh))
@@ -631,7 +727,11 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
             headers.insert(k.clone(), v.clone());
         }
     }
-    let body = match axum::body::to_bytes(req.into_body(), 16 * 1024 * 1024).await {
+    // Same ceiling the server enforces (MAX_BODY_BYTES = 32 MiB). A
+    // router that buffered less made the effective public limit depend
+    // on whether a request arrived directly or through the router
+    // (round-19 fleet-contract finding).
+    let body = match axum::body::to_bytes(req.into_body(), 32 * 1024 * 1024).await {
         Ok(b) => b,
         Err(_) => return (StatusCode::PAYLOAD_TOO_LARGE, "body too large").into_response(),
     };
@@ -690,6 +790,32 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
     s.last_seen_ms.store(now_ms(), Ordering::Relaxed);
     match resp {
         Ok(r) => {
+            // ROUND-19 MF4: a response WITHOUT Prisma-Streams-Origin never
+            // reached a Streams server — it is the platform edge's static
+            // page for a dead or unpublished service. Passing its 404
+            // through tells the SDK "this stream does not exist", which is
+            // not retryable and makes applications delete or recreate live
+            // data. Convert to a retryable 503 and eject the upstream
+            // locally at once, instead of waiting out heartbeat-dark.
+            if !r.headers().contains_key("prisma-streams-origin") {
+                s.unmarked.fetch_add(1, Ordering::Relaxed);
+                s.eject_until_ms
+                    .store(now_ms() + eject_ms(), Ordering::Relaxed);
+                let body = serde_json::json!({
+                    "error": {
+                        "code": "upstream_unavailable",
+                        "message": "the serving instance is unavailable; retry",
+                        "retryable": true,
+                    }
+                });
+                return Response::builder()
+                    .status(StatusCode::SERVICE_UNAVAILABLE)
+                    .header("content-type", "application/json")
+                    .header("retry-after", "1")
+                    .header("cache-control", "no-store")
+                    .body(Body::from(body.to_string()))
+                    .unwrap();
+            }
             s.reqs.fetch_add(1, Ordering::Relaxed);
             s.window.fetch_add(1, Ordering::Relaxed);
             s.last_us.store(us, Ordering::Relaxed);

@@ -882,6 +882,13 @@ async fn async_main() -> anyhow::Result<()> {
         touch,
         default_key: args.conformance_default_key.clone(),
         auth_token: args.auth_token.clone(),
+        // Never empty: a standalone server still must be
+        // distinguishable from the platform edge (round-19 MF4).
+        origin_marker: if args.instance_name.is_empty() {
+            format!("streams/{}", env!("CARGO_PKG_VERSION"))
+        } else {
+            args.instance_name.clone()
+        },
         fleet_internal_token: args.fleet_internal_token.clone(),
         metrics: Arc::new(crate::metrics::Metrics::default()),
     });

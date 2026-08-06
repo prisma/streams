@@ -143,6 +143,10 @@ pub struct AppState {
     /// Bearer token required on /v1/* when set (pilot authn). This is the
     /// CUSTOMER-facing account token; it never authorizes /v1/internal/*.
     pub auth_token: Option<String>,
+    /// Value of the `Prisma-Streams-Origin` header stamped on every
+    /// response: instance name (or version) — proof the response came
+    /// from a Streams server rather than the platform edge.
+    pub origin_marker: String,
     /// Fleet-internal credential (FLEET_INTERNAL_TOKEN). A SEPARATE trust
     /// boundary from `auth_token`: peer RPCs can fence consumer
     /// generations and read segment state without a stream key, so a
@@ -997,13 +1001,28 @@ pub fn router(state: Arc<AppState>) -> Router {
             state.clone(),
             track_inflight,
         ))
-        .layer(axum::middleware::map_response(|mut resp: Response| async {
-            resp.headers_mut().insert(
-                "x-content-type-options",
-                axum::http::HeaderValue::from_static("nosniff"),
-            );
-            resp
-        }))
+        // Server-origin marker on EVERY response, including errors
+        // (round-19 must-fix 4). A 404 from a real server means "this
+        // stream does not exist" — a 404 from the PLATFORM edge (dead
+        // or unpublished service) means "this upstream is unavailable",
+        // and the SDK retries 429/503 but never 404. A router that
+        // cannot tell them apart turns an instance loss into permanent
+        // "stream deleted" for applications (the hard-kill campaign:
+        // 8,371 semantic 404s in ~30 s). Marked responses are ours;
+        // unmarked ones never reached a server.
+        .layer(axum::middleware::map_response_with_state(
+            state.clone(),
+            |State(state): State<Arc<AppState>>, mut resp: Response| async move {
+                resp.headers_mut().insert(
+                    "x-content-type-options",
+                    axum::http::HeaderValue::from_static("nosniff"),
+                );
+                if let Ok(v) = axum::http::HeaderValue::from_str(&state.origin_marker) {
+                    resp.headers_mut().insert("prisma-streams-origin", v);
+                }
+                resp
+            },
+        ))
         .with_state(state)
 }
 
@@ -6373,6 +6392,30 @@ async fn sse_response(
 /// this segment is mid-split (seal done, successors unpublished) — the
 /// SEAL GAP — and the response may carry records and a resume cursor
 /// but NEVER Stream-Closed and NEVER a final Stream-Up-To-Date.
+/// Percent-encode a stream name for use as a URL PATH, preserving the
+/// hierarchy separator. Product names are hierarchical UTF-8 and may
+/// legally contain '?', '#', '%' — interpolating one raw into a relay
+/// URL turned the rest of the name into a query, fragment, or invalid
+/// escape and addressed the wrong stream (round-19 fleet-contract
+/// finding). Every internal relay must route its name through this.
+pub(crate) fn encode_stream_name_path(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 8);
+    for seg in name.split('/') {
+        if !out.is_empty() {
+            out.push('/');
+        }
+        for b in seg.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    out.push(b as char)
+                }
+                _ => out.push_str(&format!("%{b:02X}")),
+            }
+        }
+    }
+    out
+}
+
 /// Shared client for fleet-internal peer calls (segment fan-out). One
 /// pool, HTTP/1.1, idle timeout under the platform's ~5 s VM-suspend
 /// socket kill (same rule as the store client and the pilot LB).
@@ -6453,7 +6496,10 @@ async fn relay_segment_read(
         q.push_str("&head=1");
     }
     let mut req = peer_client()
-        .get(format!("{base}/v1/internal/segment-read/{name}?{q}"))
+        .get(format!(
+            "{base}/v1/internal/segment-read/{}?{q}",
+            encode_stream_name_path(name)
+        ))
         .timeout(std::time::Duration::from_secs(40));
     // Incarnation binding: the peer refuses outright if this name now
     // holds a different stream (round-19 ABA).
@@ -7141,6 +7187,23 @@ pub async fn metrics_flusher(
 
 #[cfg(test)]
 mod tests {
+
+    // Round-19 fleet-contract: hierarchical names with characters that
+    // are structural in a URL must survive a relay intact.
+    #[test]
+    fn stream_names_encode_for_peer_paths() {
+        assert_eq!(
+            encode_stream_name_path("customers/acme/orders"),
+            "customers/acme/orders",
+            "the hierarchy separator must survive"
+        );
+        assert_eq!(encode_stream_name_path("a?b"), "a%3Fb");
+        assert_eq!(encode_stream_name_path("a#b"), "a%23b");
+        assert_eq!(encode_stream_name_path("a%b"), "a%25b");
+        assert_eq!(encode_stream_name_path("a b"), "a%20b");
+        // UTF-8 is encoded byte-wise.
+        assert_eq!(encode_stream_name_path("é"), "%C3%A9");
+    }
     use super::*;
 
     #[test]
