@@ -19200,3 +19200,91 @@ async fn ops_events_journal_end_to_end() {
     assert!(v["events"].as_array().unwrap().len() >= 2);
     engine_shutdown(&state).await;
 }
+
+/// §11/§13: mergeable snapshots reach `_ops_metrics`, the ops rollup
+/// materializes raw + 1-minute tiers behind its own exactly-once
+/// cursor, and the alert evaluator opens and resolves with durable
+/// alert events.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ops_metrics_and_alerts_flow() {
+    let store = mem();
+    let (state, _addr) = http_rig(store).await;
+    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "opsflow")
+        .await
+        .unwrap();
+    let _ = state.rollup.set(std::sync::Arc::new(rollup));
+
+    // Two snapshot emissions land in the same minute bucket.
+    crate::ops::emit_metrics_once(&state).await.expect("emit 1");
+    crate::ops::emit_metrics_once(&state).await.expect("emit 2");
+    let mut total = 0;
+    for _ in 0..20 {
+        let n = crate::billing::ops_rollup_step(&state)
+            .await
+            .expect("ops rollup");
+        total += n;
+        if n == 0 {
+            break;
+        }
+    }
+    assert!(total >= 2, "rollup consumed {total} snapshots");
+    let now = crate::shard::now_ms();
+    let minute = now - now.rem_euclid(60_000);
+    let m1 = state
+        .rollup
+        .get()
+        .unwrap()
+        .ops_m1("", minute)
+        .await
+        .or(state
+            .rollup
+            .get()
+            .unwrap()
+            .ops_m1("", minute - 60_000)
+            .await)
+        .expect("m1 aggregate exists");
+    assert!(m1.samples >= 2, "both snapshots merged into one minute");
+    assert!(m1.gauges_max.contains_key("open_engines"));
+
+    // Alerts: force the read-meter backpressure rule by filling the
+    // sealed queue beyond its cap, evaluate, then drain and re-evaluate.
+    for i in 0..crate::billing::READ_SEALED_MAX_BATCHES + 2 {
+        let id = crate::billing::BillingIdentity {
+            account_id: "a".into(),
+            project_id: "p".into(),
+            stream_id: format!("{i:032x}"),
+            stream_name: format!("s{i}"),
+        };
+        state.billing_reads.meter(
+            &id,
+            crate::billing::RowDelta {
+                read_operations: 1,
+                ..Default::default()
+            },
+        );
+        state.billing_reads.seal_if_aged(0);
+    }
+    let snap = crate::ops::collect_snapshot(&state);
+    crate::ops::evaluate_alerts(&state, &snap).await;
+    let open = crate::ops::open_alerts();
+    assert!(
+        open.iter()
+            .any(|a| a.fingerprint == "read_meter_backpressure"),
+        "backpressure alert must open: {open:?}"
+    );
+    // Drain the queue (ledger works in this rig), re-evaluate: resolved.
+    while !state.billing_reads.drain_sealed(64).is_empty() {}
+    let snap2 = crate::ops::collect_snapshot(&state);
+    crate::ops::evaluate_alerts(&state, &snap2).await;
+    assert!(
+        !crate::ops::open_alerts()
+            .iter()
+            .any(|a| a.fingerprint == "read_meter_backpressure"),
+        "alert must resolve once the queue drains"
+    );
+    // Both transitions are journaled.
+    let recent = crate::ops::recent(64);
+    assert!(recent.iter().any(|e| e.event_type == "alert_opened"));
+    assert!(recent.iter().any(|e| e.event_type == "alert_resolved"));
+    engine_shutdown(&state).await;
+}

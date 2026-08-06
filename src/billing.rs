@@ -989,8 +989,13 @@ pub fn spawn_telemetry(state: std::sync::Arc<crate::http::AppState>) {
         .ok()
         .and_then(|v| v.parse().ok())
         .unwrap_or(2);
+    let metrics_secs: u64 = std::env::var("METRICS_INTERVAL_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(15);
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(secs.max(1)));
+        let mut last_metrics = 0i64;
         loop {
             tick.tick().await;
             if let Err(e) = drain_once(&state).await {
@@ -1001,6 +1006,13 @@ pub fn spawn_telemetry(state: std::sync::Arc<crate::http::AppState>) {
             }
             if let Err(e) = crate::fleet::drain_fleet_events(&state).await {
                 tracing::warn!("fleet event drain: {e}");
+            }
+            let now = crate::shard::now_ms();
+            if now - last_metrics >= (metrics_secs as i64) * 1000 {
+                last_metrics = now;
+                if let Err(e) = crate::ops::emit_metrics_once(&state).await {
+                    tracing::warn!("ops metrics emit: {e}");
+                }
             }
         }
     });
@@ -1071,6 +1083,68 @@ pub async fn rollup_step(state: &std::sync::Arc<crate::http::AppState>) -> Resul
     Ok(envelopes.len())
 }
 
+/// One ops-metrics rollup step (§13.1): consume `_ops_metrics` from
+/// its own cursor into raw + m1 tiers.
+pub async fn ops_rollup_step(
+    state: &std::sync::Arc<crate::http::AppState>,
+) -> Result<usize, String> {
+    let Some(rollup) = state.rollup.get() else {
+        return Ok(0);
+    };
+    let Some(key) = state.usage_key.clone() else {
+        return Ok(0);
+    };
+    use axum::http::{HeaderMap, HeaderValue};
+    let mut hdrs = HeaderMap::new();
+    hdrs.insert(
+        "stream-encryption-key",
+        HeaderValue::from_str(&key).map_err(|_| "bad usage key".to_string())?,
+    );
+    let cursor = rollup.ops_cursor().await.filter(|c| !c.is_empty());
+    let params = crate::http::ReadParams {
+        offset: cursor,
+        ..Default::default()
+    };
+    let resp = crate::http::read_inner(
+        state.clone(),
+        OPS_METRICS_STREAM.to_string(),
+        params,
+        hdrs,
+        false,
+        true,
+        crate::http::SseSurface::Raw,
+    )
+    .await;
+    if resp.status() == axum::http::StatusCode::NOT_FOUND {
+        return Ok(0);
+    }
+    if !resp.status().is_success() {
+        return Err(format!("ops metrics read: {}", resp.status()));
+    }
+    let next = resp
+        .headers()
+        .get("Stream-Next-Offset")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let body = axum::body::to_bytes(resp.into_body(), 64 << 20)
+        .await
+        .map_err(|e| e.to_string())?;
+    let snaps: Vec<crate::ops::OpsSnapshot> = if body.is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_slice(&body).map_err(|e| format!("ops decode: {e}"))?
+    };
+    if snaps.is_empty() {
+        return Ok(0);
+    }
+    rollup
+        .apply_ops_page(&snaps, &next)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(snaps.len())
+}
+
 /// The rollup task: consume continuously; close the PREVIOUS month
 /// after the grace period, writing one immutable artifact per stream
 /// (§9.6) under telemetry/usage-monthly/.
@@ -1093,13 +1167,22 @@ pub fn spawn_rollup(state: std::sync::Arc<crate::http::AppState>, prefix: String
             .unwrap_or(24 * 3_600_000);
         let mut last_close = 0i64;
         loop {
-            match rollup_step(&state).await {
-                Ok(0) => tokio::time::sleep(std::time::Duration::from_secs(2)).await,
-                Ok(_) => {}
+            let usage_n = match rollup_step(&state).await {
+                Ok(n) => n,
                 Err(e) => {
                     tracing::warn!("rollup step: {e}");
-                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                    0
                 }
+            };
+            let ops_n = match ops_rollup_step(&state).await {
+                Ok(n) => n,
+                Err(e) => {
+                    tracing::warn!("ops rollup step: {e}");
+                    0
+                }
+            };
+            if usage_n == 0 && ops_n == 0 {
+                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
             }
             let now = crate::shard::now_ms();
             if now - last_close > 3_600_000 {
@@ -1122,6 +1205,11 @@ pub fn spawn_rollup(state: std::sync::Arc<crate::http::AppState>, prefix: String
                         }
                     })
                     .await;
+                if let Ok(n) = rollup2.sweep_ops_raw(now, 10_000).await {
+                    if n > 0 {
+                        tracing::info!("ops raw retention: {n} points expired");
+                    }
+                }
                 match closed {
                     Ok(n) if n > 0 => {
                         for (path, body) in artifacts {

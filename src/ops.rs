@@ -256,3 +256,243 @@ mod tests {
         assert!(g.recent.len() <= RECENT_CAP);
     }
 }
+
+// ---------------------------------------------------------------------
+// `_ops_metrics` snapshots (§11) and the alert evaluator (§13.2)
+// ---------------------------------------------------------------------
+
+/// One instance's low-cardinality snapshot: counters and gauges only —
+/// no stream names, routing keys, or per-customer dimensions (§11.2).
+/// Counters are cumulative (mergeable by differencing); gauges are
+/// instantaneous. Store-latency histograms remain on the live
+/// `/v1/debug/timings` surface; the snapshot carries their summary.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+pub struct OpsSnapshot {
+    pub v: u16,
+    pub ts_ms: i64,
+    pub cell: String,
+    pub region: String,
+    pub instance: String,
+    pub role: String,
+    pub counters: std::collections::BTreeMap<String, u64>,
+    pub gauges: std::collections::BTreeMap<String, u64>,
+}
+
+/// Collect the instance snapshot from the live plane.
+pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSnapshot {
+    let mut counters = std::collections::BTreeMap::new();
+    let mut gauges = std::collections::BTreeMap::new();
+    counters.insert(
+        "fleet_ops_total".into(),
+        state.fleet_ops.load(Ordering::Relaxed),
+    );
+    counters.insert(
+        "ops_events_dropped_total".into(),
+        EVENTS_DROPPED.load(Ordering::Relaxed),
+    );
+    counters.insert(
+        "read_meter_seal_deferrals_total".into(),
+        state.billing_reads.seal_deferrals.load(Ordering::Relaxed),
+    );
+    let (rows, est, sealed) = state.billing_reads.unflushed();
+    gauges.insert("read_meter_unflushed_rows".into(), rows as u64);
+    gauges.insert("read_meter_unflushed_bytes_est".into(), est as u64);
+    gauges.insert("read_meter_sealed_batches".into(), sealed as u64);
+    gauges.insert(
+        "open_engines".into(),
+        state.shards.read().unwrap().len() as u64,
+    );
+    OpsSnapshot {
+        v: 1,
+        ts_ms: crate::shard::now_ms(),
+        cell: state.cell_id.clone(),
+        region: state.region.clone(),
+        instance: state.instance_name.clone(),
+        role: if state.rollup.get().is_some() {
+            "rollup".into()
+        } else {
+            "server".into()
+        },
+        counters,
+        gauges,
+    }
+}
+
+/// Emit one snapshot to `_ops_metrics` (§11.2 cadence: the telemetry
+/// task calls this every METRICS_INTERVAL_SECS, default 15).
+pub async fn emit_metrics_once(
+    state: &std::sync::Arc<crate::http::AppState>,
+) -> Result<(), String> {
+    let Some(key) = state.usage_key.clone() else {
+        return Ok(());
+    };
+    let snap = collect_snapshot(state);
+    evaluate_alerts(state, &snap).await;
+    let body = serde_json::to_vec(&[snap]).map_err(|e| e.to_string())?;
+    metrics_ledger_append(state, &key, body).await
+}
+
+async fn metrics_ledger_append(
+    state: &std::sync::Arc<crate::http::AppState>,
+    key: &str,
+    body: Vec<u8>,
+) -> Result<(), String> {
+    use axum::http::{HeaderMap, HeaderValue};
+    static CREATED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    let mut hdrs = HeaderMap::new();
+    hdrs.insert(
+        "stream-encryption-key",
+        HeaderValue::from_str(key).map_err(|_| "bad key".to_string())?,
+    );
+    hdrs.insert("content-type", HeaderValue::from_static("application/json"));
+    if CREATED.get().is_none() {
+        let r = crate::http::create_stream(
+            state.clone(),
+            crate::billing::OPS_METRICS_STREAM.to_string(),
+            hdrs.clone(),
+            bytes::Bytes::new(),
+        )
+        .await;
+        let st = r.status().as_u16();
+        if st == 200 || st == 201 || st == 409 {
+            let _ = CREATED.set(());
+        } else {
+            return Err(format!("ops metrics create: {st}"));
+        }
+    }
+    let r = crate::http::append(
+        state.clone(),
+        crate::billing::OPS_METRICS_STREAM.to_string(),
+        hdrs,
+        axum::body::Body::from(body),
+        None,
+        None,
+        None,
+    )
+    .await;
+    if r.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("ops metrics append: {}", r.status()))
+    }
+}
+
+// ---- alerts (§13.2) --------------------------------------------------
+
+#[derive(Clone, Debug, Serialize)]
+pub struct AlertState {
+    pub fingerprint: String,
+    pub summary: String,
+    pub opened_at_ms: i64,
+    pub last_seen_ms: i64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub resolved_at_ms: Option<i64>,
+}
+
+fn alerts_map() -> &'static Mutex<std::collections::HashMap<String, AlertState>> {
+    static A: std::sync::OnceLock<Mutex<std::collections::HashMap<String, AlertState>>> =
+        std::sync::OnceLock::new();
+    A.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
+}
+
+/// Open alerts for the operator surface.
+pub fn open_alerts() -> Vec<AlertState> {
+    alerts_map()
+        .lock()
+        .unwrap()
+        .values()
+        .filter(|a| a.resolved_at_ms.is_none())
+        .cloned()
+        .collect()
+}
+
+/// Evaluate the initial rule set against one snapshot; open/resolve
+/// transitions append to `_ops_events` (§13.2: the stored record is
+/// the audit trail). Rules read only what the snapshot carries — the
+/// evaluator itself is a pure function of observable state.
+pub async fn evaluate_alerts(state: &std::sync::Arc<crate::http::AppState>, snap: &OpsSnapshot) {
+    let g = |k: &str| snap.gauges.get(k).copied().unwrap_or(0);
+    // (fingerprint, breached, human summary)
+    let dirty_total = {
+        let engines: Vec<_> = state.shards.read().unwrap().values().cloned().collect();
+        let mut n = 0usize;
+        for e in engines {
+            n += e.usage_dirty_scan().await.map(|v| v.len()).unwrap_or(0);
+        }
+        n as u64
+    };
+    let rules: Vec<(String, bool, String)> = vec![
+        (
+            "usage_outbox_lag".into(),
+            dirty_total > usage_outbox_alert_threshold(),
+            format!("{dirty_total} unacknowledged usage snapshots"),
+        ),
+        (
+            "read_meter_backpressure".into(),
+            g("read_meter_sealed_batches") >= crate::billing::READ_SEALED_MAX_BATCHES as u64,
+            "the read-usage sealed queue is full (ledger down?)".into(),
+        ),
+        (
+            "ops_event_drops".into(),
+            snap.counters
+                .get("ops_events_dropped_total")
+                .copied()
+                .unwrap_or(0)
+                > 0,
+            "operational events were dropped at the queue cap".into(),
+        ),
+    ];
+    let now = snap.ts_ms;
+    let mut map = alerts_map().lock().unwrap();
+    for (fp, breached, summary) in rules {
+        match (map.get_mut(&fp), breached) {
+            (Some(a), true) => {
+                a.last_seen_ms = now;
+                if a.resolved_at_ms.is_some() {
+                    // Re-opened.
+                    a.opened_at_ms = now;
+                    a.resolved_at_ms = None;
+                    emit(
+                        OpsEvent::new("alert_opened", format!("alert/{fp}/{now}"))
+                            .warn()
+                            .fields(serde_json::json!({"fingerprint": fp, "summary": summary})),
+                    );
+                }
+            }
+            (Some(a), false) => {
+                if a.resolved_at_ms.is_none() {
+                    a.resolved_at_ms = Some(now);
+                    emit(
+                        OpsEvent::new("alert_resolved", format!("alert/{fp}/resolved/{now}"))
+                            .fields(serde_json::json!({"fingerprint": fp})),
+                    );
+                }
+            }
+            (None, true) => {
+                map.insert(
+                    fp.clone(),
+                    AlertState {
+                        fingerprint: fp.clone(),
+                        summary: summary.clone(),
+                        opened_at_ms: now,
+                        last_seen_ms: now,
+                        resolved_at_ms: None,
+                    },
+                );
+                emit(
+                    OpsEvent::new("alert_opened", format!("alert/{fp}/{now}"))
+                        .warn()
+                        .fields(serde_json::json!({"fingerprint": fp, "summary": summary})),
+                );
+            }
+            (None, false) => {}
+        }
+    }
+}
+
+fn usage_outbox_alert_threshold() -> u64 {
+    std::env::var("ALERT_USAGE_OUTBOX_DIRTY")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(1000)
+}

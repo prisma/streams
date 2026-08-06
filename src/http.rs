@@ -810,6 +810,7 @@ async fn debug_ops_events(State(state): State<Arc<AppState>>, headers: HeaderMap
     let recent = crate::ops::recent(128);
     axum::Json(serde_json::json!({
         "events": recent,
+        "alerts": crate::ops::open_alerts(),
         "dropped": crate::ops::EVENTS_DROPPED.load(std::sync::atomic::Ordering::Relaxed),
     }))
     .into_response()

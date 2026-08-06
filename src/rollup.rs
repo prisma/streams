@@ -722,3 +722,111 @@ mod tests {
         );
     }
 }
+
+// ---------------------------------------------------------------------
+// Operational metrics rollup (§13.1): raw 15 s points + 1-minute
+// aggregates in the SAME materialization, with a raw-tier retention
+// sweep. Longer tiers (5 m/1 h) are the same mechanism applied again.
+// ---------------------------------------------------------------------
+
+const K_OPS_CURSOR: &[u8] = b"meta/ops-cursor";
+pub const OPS_RAW_RETENTION_MS: i64 = 7 * 86_400_000;
+
+fn k_ops_raw(instance: &str, ts_ms: i64) -> Vec<u8> {
+    format!("ops/raw/{instance}/{ts_ms:020}").into_bytes()
+}
+fn k_ops_m1(instance: &str, minute_ms: i64) -> Vec<u8> {
+    format!("ops/m1/{instance}/{minute_ms:020}").into_bytes()
+}
+
+/// One-minute aggregate: last cumulative counters + max gauges seen.
+#[derive(Clone, Debug, Default, Serialize, Deserialize)]
+pub struct OpsM1 {
+    #[serde(default)]
+    pub counters: std::collections::BTreeMap<String, u64>,
+    #[serde(default)]
+    pub gauges_max: std::collections::BTreeMap<String, u64>,
+    #[serde(default)]
+    pub samples: u32,
+}
+
+impl UsageRollup {
+    pub async fn ops_cursor(&self) -> Option<String> {
+        self.db
+            .get(K_OPS_CURSOR)
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| String::from_utf8(v.to_vec()).ok())
+    }
+
+    /// Ingest one `_ops_metrics` page: raw point + m1 merge + cursor in
+    /// one WriteBatch (same §9.3 discipline as usage pages).
+    pub async fn apply_ops_page(
+        &self,
+        snaps: &[crate::ops::OpsSnapshot],
+        next_cursor: &str,
+    ) -> anyhow::Result<()> {
+        let mut wb = WriteBatch::new();
+        let mut m1s: std::collections::HashMap<Vec<u8>, OpsM1> = Default::default();
+        for s in snaps {
+            wb.put(k_ops_raw(&s.instance, s.ts_ms), serde_json::to_vec(s)?);
+            let minute = s.ts_ms - s.ts_ms.rem_euclid(60_000);
+            let key = k_ops_m1(&s.instance, minute);
+            let mut agg: OpsM1 = match m1s.get(&key) {
+                Some(a) => a.clone(),
+                None => get_json(&self.db, &key).await,
+            };
+            for (k, v) in &s.counters {
+                agg.counters.insert(k.clone(), *v); // cumulative: last wins
+            }
+            for (k, v) in &s.gauges {
+                let e = agg.gauges_max.entry(k.clone()).or_insert(0);
+                *e = (*e).max(*v);
+            }
+            agg.samples += 1;
+            m1s.insert(key, agg);
+        }
+        for (k, agg) in &m1s {
+            wb.put(k.clone(), serde_json::to_vec(agg)?);
+        }
+        wb.put(K_OPS_CURSOR, next_cursor.as_bytes());
+        self.db.write(wb).await?;
+        Ok(())
+    }
+
+    pub async fn ops_m1(&self, instance: &str, minute_ms: i64) -> Option<OpsM1> {
+        self.db
+            .get(&k_ops_m1(instance, minute_ms)[..])
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_slice(&v).ok())
+    }
+
+    /// Retention sweep for the raw tier (§13.1): delete points older
+    /// than the cutoff, bounded per call.
+    pub async fn sweep_ops_raw(&self, now_ms: i64, max_deletes: usize) -> anyhow::Result<usize> {
+        let cutoff = now_ms - OPS_RAW_RETENTION_MS;
+        let mut wb = WriteBatch::new();
+        let mut n = 0usize;
+        let mut iter = self.db.scan_prefix(&b"ops/raw/"[..], ..).await?;
+        while let Some(kv) = iter.next().await? {
+            if n >= max_deletes {
+                break;
+            }
+            let key = std::str::from_utf8(&kv.key).unwrap_or("");
+            let Some(ts) = key.rsplit('/').next().and_then(|t| t.parse::<i64>().ok()) else {
+                continue;
+            };
+            if ts < cutoff {
+                wb.delete(kv.key.to_vec());
+                n += 1;
+            }
+        }
+        if n > 0 {
+            self.db.write(wb).await?;
+        }
+        Ok(n)
+    }
+}
