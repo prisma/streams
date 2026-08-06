@@ -1000,11 +1000,25 @@ async fn async_main() -> anyhow::Result<()> {
     }
     // Telemetry pipeline (docs/OBSERVABILITY-BILLING.md): the drainer on
     // every instance; the rollup consumer where ROLLUP=1.
-    if args.billing_mode == "required" && args.usage_stream_key.is_none() {
-        anyhow::bail!(
-            "BILLING_MODE=required needs USAGE_STREAM_KEY — production \
-             billing refuses to run without the usage ledger (§14.1)"
-        );
+    if args.billing_mode == "required" {
+        if args.usage_stream_key.is_none() {
+            anyhow::bail!(
+                "BILLING_MODE=required needs USAGE_STREAM_KEY — production \
+                 billing refuses to run without the usage ledger (§14.1)"
+            );
+        }
+        // Round-21: production billing must never silently attribute a
+        // customer's traffic to the placeholder tenant.
+        if args.account_id == "acct_local"
+            || args.project_id == "proj_local"
+            || args.cell_id == "local"
+        {
+            anyhow::bail!(
+                "BILLING_MODE=required needs explicit ACCOUNT_ID, PROJECT_ID \
+                 and CELL_ID — refusing to bill production traffic to the \
+                 local placeholders"
+            );
+        }
     }
     crate::billing::spawn_telemetry(state.clone());
     if args.rollup == "1" {

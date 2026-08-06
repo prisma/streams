@@ -21,7 +21,10 @@ use serde::{Deserialize, Serialize};
 use slatedb::{Db, WriteBatch};
 use std::sync::Arc;
 
-pub const ROLLUP_PATH: &str = "telemetry/usage-rollup/v1/p0";
+// v2: every key carries the ACCOUNT (round-21 multi-tenant identity —
+// project ids are not assumed globally unique). Fresh namespace; the
+// preview's v1 rollup data is disposable pre-launch.
+pub const ROLLUP_PATH: &str = "telemetry/usage-rollup/v2/p0";
 
 // ---------------------------------------------------------------------
 // Keyspace (§9.2)
@@ -30,24 +33,24 @@ pub const ROLLUP_PATH: &str = "telemetry/usage-rollup/v1/p0";
 fn k_source(boot: &str) -> Vec<u8> {
     format!("source/{boot}").into_bytes()
 }
-fn k_segment(project: &str, stream_id: &str, seg: u32) -> Vec<u8> {
-    format!("segment/{project}/{stream_id}/{seg}").into_bytes()
+fn k_segment(account: &str, project: &str, stream_id: &str, seg: u32) -> Vec<u8> {
+    format!("segment/{account}/{project}/{stream_id}/{seg}").into_bytes()
 }
-fn k_month(month: &str, project: &str, stream_id: &str) -> Vec<u8> {
-    format!("month/{month}/{project}/{stream_id}").into_bytes()
+fn k_month(month: &str, account: &str, project: &str, stream_id: &str) -> Vec<u8> {
+    format!("month/{month}/{account}/{project}/{stream_id}").into_bytes()
 }
 fn k_month_prefix(month: &str) -> Vec<u8> {
     format!("month/{month}/").into_bytes()
 }
-fn k_name(month: &str, project: &str, name: &str) -> Vec<u8> {
+fn k_name(month: &str, account: &str, project: &str, name: &str) -> Vec<u8> {
     format!(
-        "name/{month}/{project}/{}",
+        "name/{month}/{account}/{project}/{}",
         crate::crypto::hex(&crate::crypto::stream_hash(name))
     )
     .into_bytes()
 }
-fn k_project(month: &str, project: &str) -> Vec<u8> {
-    format!("project/{month}/{project}").into_bytes()
+fn k_project(month: &str, account: &str, project: &str) -> Vec<u8> {
+    format!("project/{month}/{account}/{project}").into_bytes()
 }
 const K_CURSOR: &[u8] = b"meta/usage-cursor";
 
@@ -296,7 +299,12 @@ impl UsageRollup {
                     // already structural (stream_id keying).
                 }
                 UsagePayload::UsageCorrection(c) => {
-                    let key = k_month(&c.month, &c.identity.project_id, &c.identity.stream_id);
+                    let key = k_month(
+                        &c.month,
+                        &c.identity.account_id,
+                        &c.identity.project_id,
+                        &c.identity.stream_id,
+                    );
                     let mut row: MonthRow = match months.get(&key) {
                         Some(r) => r.clone(),
                         None => get_json(&self.db, &key).await,
@@ -405,7 +413,12 @@ impl UsageRollup {
             }
         };
         for row in &rb.rows {
-            let mkey = k_month(month, &row.identity.project_id, &row.identity.stream_id);
+            let mkey = k_month(
+                month,
+                &row.identity.account_id,
+                &row.identity.project_id,
+                &row.identity.stream_id,
+            );
             let mut mr: MonthRow = match months.get(&mkey) {
                 Some(r) => r.clone(),
                 None => get_json(&self.db, &mkey).await,
@@ -437,10 +450,18 @@ impl UsageRollup {
             months.insert(mkey, mr);
             for (key, agg) in [
                 (
-                    k_name(month, &row.identity.project_id, &row.identity.stream_name),
+                    k_name(
+                        month,
+                        &row.identity.account_id,
+                        &row.identity.project_id,
+                        &row.identity.stream_name,
+                    ),
                     true,
                 ),
-                (k_project(month, &row.identity.project_id), false),
+                (
+                    k_project(month, &row.identity.account_id, &row.identity.project_id),
+                    false,
+                ),
             ] {
                 let mut a: AggRow = match names.get(&key).or_else(|| projects.get(&key)) {
                     Some(r) => r.clone(),
@@ -472,12 +493,17 @@ impl UsageRollup {
         projects: &mut std::collections::HashMap<Vec<u8>, AggRow>,
     ) {
         let id = &snap.identity;
-        let skey = k_segment(&id.project_id, &id.stream_id, snap.segment_id);
+        let skey = k_segment(
+            &id.account_id,
+            &id.project_id,
+            &id.stream_id,
+            snap.segment_id,
+        );
         let mut st: SegmentState = match segs.get(&skey) {
             Some(r) => r.clone(),
             None => get_json(&self.db, &skey).await,
         };
-        let mkey = k_month(&snap.month, &id.project_id, &id.stream_id);
+        let mkey = k_month(&snap.month, &id.account_id, &id.project_id, &id.stream_id);
         let mut mr: MonthRow = match months.get(&mkey) {
             Some(r) => r.clone(),
             None => get_json(&self.db, &mkey).await,
@@ -554,8 +580,14 @@ impl UsageRollup {
             segs.insert(skey, st);
         }
         for (key, is_name) in [
-            (k_name(&snap.month, &id.project_id, &id.stream_name), true),
-            (k_project(&snap.month, &id.project_id), false),
+            (
+                k_name(&snap.month, &id.account_id, &id.project_id, &id.stream_name),
+                true,
+            ),
+            (
+                k_project(&snap.month, &id.account_id, &id.project_id),
+                false,
+            ),
         ] {
             let mut a: AggRow = match names.get(&key).or_else(|| projects.get(&key)) {
                 Some(r) => r.clone(),
@@ -577,27 +609,39 @@ impl UsageRollup {
 
     // ---- point reads (the customer API) ------------------------------
 
-    pub async fn month_row(&self, month: &str, project: &str, stream_id: &str) -> Option<MonthRow> {
+    pub async fn month_row(
+        &self,
+        month: &str,
+        account: &str,
+        project: &str,
+        stream_id: &str,
+    ) -> Option<MonthRow> {
         self.db
-            .get(&k_month(month, project, stream_id)[..])
+            .get(&k_month(month, account, project, stream_id)[..])
             .await
             .ok()
             .flatten()
             .and_then(|v| serde_json::from_slice(&v).ok())
     }
 
-    pub async fn name_row(&self, month: &str, project: &str, name: &str) -> Option<AggRow> {
+    pub async fn name_row(
+        &self,
+        month: &str,
+        account: &str,
+        project: &str,
+        name: &str,
+    ) -> Option<AggRow> {
         self.db
-            .get(&k_name(month, project, name)[..])
+            .get(&k_name(month, account, project, name)[..])
             .await
             .ok()
             .flatten()
             .and_then(|v| serde_json::from_slice(&v).ok())
     }
 
-    pub async fn project_row(&self, month: &str, project: &str) -> Option<AggRow> {
+    pub async fn project_row(&self, month: &str, account: &str, project: &str) -> Option<AggRow> {
         self.db
-            .get(&k_project(month, project)[..])
+            .get(&k_project(month, account, project)[..])
             .await
             .ok()
             .flatten()
@@ -607,8 +651,13 @@ impl UsageRollup {
     /// All persistent segment states for one stream (bounded by its
     /// segment count) — the current-month fallback when no month row
     /// exists yet (round-21 blocker 2).
-    pub async fn stream_segment_states(&self, project: &str, stream_id: &str) -> Vec<SegmentState> {
-        let pfx = format!("segment/{project}/{stream_id}/").into_bytes();
+    pub async fn stream_segment_states(
+        &self,
+        account: &str,
+        project: &str,
+        stream_id: &str,
+    ) -> Vec<SegmentState> {
+        let pfx = format!("segment/{account}/{project}/{stream_id}/").into_bytes();
         let mut out = Vec::new();
         if let Ok(mut iter) = self.db.scan_prefix(&pfx[..], ..).await {
             while let Ok(Some(kv)) = iter.next().await {
@@ -630,14 +679,14 @@ impl UsageRollup {
         let mut iter = self.db.scan_prefix(&b"artifact-pending/"[..], ..).await?;
         while let Some(kv) = iter.next().await? {
             let k = std::str::from_utf8(&kv.key).unwrap_or("").to_string();
-            let parts: Vec<&str> = k.splitn(4, '/').collect();
-            if parts.len() == 4 {
+            let parts: Vec<&str> = k.splitn(5, '/').collect();
+            if parts.len() == 5 {
                 if let Ok(row) = serde_json::from_slice::<MonthRow>(&kv.value) {
                     out.push((
                         kv.key.to_vec(),
                         parts[1].to_string(),
-                        parts[2].to_string(),
-                        parts[3].to_string(),
+                        format!("{}/{}", parts[2], parts[3]),
+                        parts[4].to_string(),
                         row,
                     ));
                 }
@@ -740,17 +789,17 @@ impl UsageRollup {
                 if st.storage_accounted_through_ms >= boundary {
                     continue;
                 }
-                // key = segment/<project>/<stream-id>/<seg>
+                // key = segment/<account>/<project>/<stream-id>/<seg>
                 let parts: Vec<&str> = std::str::from_utf8(&key)
                     .unwrap_or("")
-                    .splitn(4, '/')
+                    .splitn(5, '/')
                     .collect();
-                if parts.len() != 4 {
+                if parts.len() != 5 {
                     continue;
                 }
-                let (project, stream_id) = (parts[1], parts[2]);
-                let seg_id: u32 = parts[3].parse().unwrap_or(0);
-                let mkey = k_month(&mstr, project, stream_id);
+                let (account, project, stream_id) = (parts[1], parts[2], parts[3]);
+                let seg_id: u32 = parts[4].parse().unwrap_or(0);
+                let mkey = k_month(&mstr, account, project, stream_id);
                 let mut row: MonthRow = get_json(&self.db, &mkey).await;
                 let sm = row.segments.entry(seg_id).or_default();
                 if !sm.final_seen {
@@ -762,8 +811,8 @@ impl UsageRollup {
                         sm.storage_byte_ms = (cur + add).to_string();
                         // Aggregates absorb the same delta.
                         for (akey, is_name) in [
-                            (k_name(&mstr, project, &st.stream_name), true),
-                            (k_project(&mstr, project), false),
+                            (k_name(&mstr, account, project, &st.stream_name), true),
+                            (k_project(&mstr, account, project), false),
                         ] {
                             let mut a: AggRow = get_json(&self.db, &akey).await;
                             a.add_storage(add);
@@ -997,13 +1046,15 @@ mod tests {
             Some(30 * day * 100)
         );
         // The durable segment state still knows the gauge.
-        let states = r.stream_segment_states("proj", &id().stream_id).await;
+        let states = r
+            .stream_segment_states("acct", "proj", &id().stream_id)
+            .await;
         assert_eq!(states.len(), 1);
         assert_eq!(states[0].owned_frame_bytes_current, 100);
         // Replays are no-ops.
         assert_eq!(r.close_month(2026, 8, 0).await.unwrap(), 0);
         // Aggregates carried the idle storage too.
-        let aug_proj = r.project_row("2026-08", "proj").await.unwrap();
+        let aug_proj = r.project_row("2026-08", "acct", "proj").await.unwrap();
         assert_eq!(aug_proj.storage_byte_ms, (31 * day * 100).to_string());
     }
 
@@ -1026,15 +1077,18 @@ mod tests {
             .await
             .unwrap();
         let row = r
-            .month_row("2026-07", "proj", &id().stream_id)
+            .month_row("2026-07", "acct", "proj", &id().stream_id)
             .await
             .unwrap();
         assert_eq!(row.ingest_bytes(), 250, "absolute, not summed");
         assert_eq!(row.storage_byte_ms(), 9000);
-        let proj = r.project_row("2026-07", "proj").await.unwrap();
+        let proj = r.project_row("2026-07", "acct", "proj").await.unwrap();
         assert_eq!(proj.ingest_bytes, 250, "aggregate absorbed deltas once");
         assert_eq!(proj.storage_byte_ms, "9000");
-        let name = r.name_row("2026-07", "proj", "orders").await.unwrap();
+        let name = r
+            .name_row("2026-07", "acct", "proj", "orders")
+            .await
+            .unwrap();
         assert_eq!(name.incarnations, vec![id().stream_id]);
 
         // A read batch, then its duplicate: applied once.
@@ -1071,7 +1125,7 @@ mod tests {
             .await
             .unwrap();
         let row = r
-            .month_row("2026-07", "proj", &id().stream_id)
+            .month_row("2026-07", "acct", "proj", &id().stream_id)
             .await
             .unwrap();
         assert_eq!(row.read_payload_bytes, 77, "source-seq dedupe");
@@ -1093,7 +1147,7 @@ mod tests {
             "idle extrapolation to the boundary"
         );
         let closed = r
-            .month_row("2026-07", "proj", &id().stream_id)
+            .month_row("2026-07", "acct", "proj", &id().stream_id)
             .await
             .unwrap();
         assert!(closed.finalized_at_ms.is_some());
@@ -1119,7 +1173,7 @@ mod tests {
         };
         r.apply_page(&[corr], "c6").await.unwrap();
         let corrected = r
-            .month_row("2026-07", "proj", &id().stream_id)
+            .month_row("2026-07", "acct", "proj", &id().stream_id)
             .await
             .unwrap();
         assert_eq!(corrected.corrections.len(), 1);
@@ -1134,7 +1188,7 @@ mod tests {
             .await
             .unwrap();
         let after_snap = r
-            .month_row("2026-07", "proj", &id().stream_id)
+            .month_row("2026-07", "acct", "proj", &id().stream_id)
             .await
             .unwrap();
         let frozen = after_snap.frozen.clone().expect("frozen at finalization");
@@ -1155,7 +1209,7 @@ mod tests {
             .await
             .unwrap();
         let replay = r
-            .month_row("2026-07", "proj", &id().stream_id)
+            .month_row("2026-07", "acct", "proj", &id().stream_id)
             .await
             .unwrap();
         assert_eq!(replay.corrections.len(), 2, "late replay corrected twice");
@@ -1189,7 +1243,7 @@ mod tests {
         };
         r.apply_page(&[late_env], "c9").await.unwrap();
         let after_read = r
-            .month_row("2026-07", "proj", &id().stream_id)
+            .month_row("2026-07", "acct", "proj", &id().stream_id)
             .await
             .unwrap();
         assert_eq!(after_read.read_payload_bytes, 77, "base reads untouched");
@@ -1214,7 +1268,7 @@ mod tests {
         );
         use object_store::ObjectStoreExt;
         let path = object_store::path::Path::from(format!(
-            "t1/telemetry/usage-monthly/proj/{}/2026-07.json",
+            "t1/telemetry/usage-monthly/acct/proj/{}/2026-07.json",
             id().stream_id
         ));
         let got = store.get(&path).await.expect("artifact object exists");

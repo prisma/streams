@@ -6252,9 +6252,15 @@ async fn product_usage(state: Arc<AppState>, name: String, query: &str) -> Respo
             false,
         );
     }
-    let id = crate::billing::identity_of(&state, &desc);
+    let mut id = crate::billing::identity_of(&state, &desc);
+    // Historical incarnation lookup (round-21 dashboard gap): after a
+    // delete/recreate, ?streamId= addresses a PRIOR incarnation's rows
+    // directly — invoice history survives the live resource.
+    if let Some(sid) = query.split('&').find_map(|kv| kv.strip_prefix("streamId=")) {
+        id.stream_id = sid.to_string();
+    }
     let row: crate::rollup::MonthRow = rollup
-        .month_row(&month, &id.project_id, &id.stream_id)
+        .month_row(&month, &id.account_id, &id.project_id, &id.stream_id)
         .await
         .unwrap_or_default();
     let is_current = month == current;
@@ -6263,7 +6269,7 @@ async fn product_usage(state: Arc<AppState>, name: String, query: &str) -> Respo
     // its gauge, so provisional storage never reads as zero.
     let (fallback_byte_ms, fallback_owned) = if is_current && row.segments.is_empty() {
         let states = rollup
-            .stream_segment_states(&id.project_id, &id.stream_id)
+            .stream_segment_states(&id.account_id, &id.project_id, &id.stream_id)
             .await;
         let mstart = {
             let (y, m) = crate::billing::parse_month(&month).unwrap();
@@ -6294,6 +6300,9 @@ async fn product_usage(state: Arc<AppState>, name: String, query: &str) -> Respo
     };
     let avg_bytes = byte_ms / month_ms.max(1);
     let gb_month = byte_ms as f64 / month_ms as f64 / 1e9;
+    let name_agg = rollup
+        .name_row(&month, &id.account_id, &id.project_id, &id.stream_name)
+        .await;
     let status = if row.finalized_at_ms.is_some() {
         if row.corrections.is_empty() {
             "finalized"
@@ -6323,6 +6332,12 @@ async fn product_usage(state: Arc<AppState>, name: String, query: &str) -> Respo
         "updatedAt": row.updated_ms,
         "finalizedAt": row.finalized_at_ms,
         "corrections": row.corrections.len(),
+        "nameAggregate": name_agg.as_ref().map(|a| serde_json::json!({
+            "ingestPayloadBytes": a.ingest_bytes,
+            "readPayloadBytes": a.read_payload_bytes,
+            "storageByteSeconds": (a.storage_byte_ms.parse::<u128>().unwrap_or(0) / 1000).to_string(),
+        })),
+        "incarnations": name_agg.map(|a| a.incarnations).unwrap_or_default(),
         "metering": {
             "readFlushIntervalSeconds": crate::billing::READ_FLUSH_INTERVAL_MS / 1000,
             "possibleReadLossWindowSeconds": crate::billing::READ_FLUSH_INTERVAL_MS / 1000,

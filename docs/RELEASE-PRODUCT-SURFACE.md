@@ -1004,10 +1004,14 @@ to end.
 
 ## Round 20 (2026-08-06): the telemetry cutover — v0.2.0-preview.6
 
-docs/OBSERVABILITY-BILLING.md (approved 2026-08-06) implemented in
-full: four planes, fresh namespace, hard cutover — `__metrics__`,
-`metrics.rs` and the `_billing` emitter are deleted, with no dual-write
-and no decoders.
+docs/OBSERVABILITY-BILLING.md (approved 2026-08-06), Phase 1: core
+billing state, ledger schema, point-read rollup, and telemetry
+transport implemented, with the legacy planes (`__metrics__`,
+`metrics.rs`, `_billing`) deleted — no dual-write, no decoders.
+**Round-21 correction:** the original "implemented in full" wording
+overstated this; billing reconciliation, invoice-grade month
+finalization, fleet-wide delivery and comprehensive operations history
+were completed or explicitly deferred in round 21 (next section).
 
 | plane | what shipped | proof |
 |---|---|---|
@@ -1039,3 +1043,57 @@ metering (0 in v1 per §5); reconciliation beyond version-lag checks;
 invoice export tooling. Cloud rerun of the telemetry cost budgets
 (§17.2 appends/instance-hour) belongs to the next WAN campaign with
 the preview.6 binary.
+
+## Round 21 (2026-08-06): the invoice boundaries — v0.2.0-preview.7
+
+The round-21 review confirmed the core (billing state in the same
+durable commit as customer data) and identified the boundaries that
+kept the system below invoice grade. All eleven "before charging any
+customer" items are addressed:
+
+1. **Trusted time** — billing months, storage integration and closure
+   run on server wall time; `Stream-Timestamp` is record metadata only.
+   The abuse cases (far-future, far-past, delete-after-future-clock)
+   are pinned by tests driven by an injected billing clock.
+2. **Idle-month carry** — close_month's carry pass over the persistent
+   segment index accrues every retained idle month with zero stream
+   writes; the current-month API falls back to durable segment state.
+3. **Durable read spool** — sealed batches persist per-instance before
+   emission and leave only after ledger ack; the crash-loss bound is
+   genuinely the active interval plus one drain cadence.
+4. **Fleet-safe ledgers** — one system-stream client with a single
+   Streams-Replay-To hop (fleet credential) for appends AND rollup
+   reads; verified live on the two-instance gate.
+5. **Owned-shard sweep** — outbox discovery is traffic-independent.
+6. **Terminal closure** — a drain-time reconciler closes deleted,
+   expired and recreated-over incarnations until the gauge zeroes, and
+   emits the lifecycle observations; fork-retained sources flag
+   retained_by_forks and keep accruing.
+7. **Two-phase artifacts** — frozen at finalization, staged durably,
+   published with PutMode::Create, retried after crash.
+8. **Late data = corrections** — finalized months freeze their invoice
+   base; late snapshots/reads append versioned corrections exactly
+   once; boundary-crossing read batches split proportionally.
+9. **Bounded ops** — drain ≤1,000 envelopes/round; month close chunked
+   behind persisted cursors.
+10. **Account-scoped identity** — every rollup key and artifact path
+    carries the account (fresh v2 rollup namespace).
+11. **Required-mode identity** — BILLING_MODE=required refuses the
+    local placeholder tenant and the missing ledger key.
+
+Dashboard: the usage endpoint serves prior incarnations via ?streamId=,
+returns the name aggregate + incarnation list, and answers for
+tombstoned streams. Versions reconciled: Cargo, SDK and tag all carry
+0.2.0-preview.7 (preview.6's artifacts were mixed — noted, not
+rewritten).
+
+**Still open before invoices** (tracked, not silent): scheduled
+reconciliation + invoice export; the terminal-closure residual (a
+clean-marker deleted stream needs the catalog-walk reconciler);
+`_usage`/ops retention jobs; 5-minute/1-hour ops tiers, event-history
+query surface, full metric families and SLO alert set (ops workstream
+2); the acceptance campaigns on a 3-node fleet (timestamp abuse, idle
+months, ledger outage + crash, foreign-owned `_usage`, artifact PUT
+failure, late data after finalization, million-row month close,
+duplicate project ids across accounts, CAS-crash event replay,
+operator timeline after restart).

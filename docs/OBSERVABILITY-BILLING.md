@@ -1,6 +1,6 @@
 # Prisma Streams billing, usage, telemetry, and observability
 
-**Status:** APPROVED (2026-08-06) — implementation in progress on `slate`; this document is the authority for the telemetry cutover  
+**Status:** APPROVED (2026-08-06). Phase 1 implemented (rounds 20-21): atomic ingest/storage state on trusted server time with idle-month carry-forward, broad read coverage with a durable per-instance spool, the `_usage` ledger with fleet-safe delivery, the exactly-once point-read rollup with two-phase month finalization and automatic late-data corrections, terminal-closure reconciliation, basic events and basic ops metrics. Remaining before invoice-grade use: full reconciliation, invoice export, comprehensive ops history / SLO telemetry, retention jobs, and the 3-node fleet acceptance campaign.  
 **Target:** pre-launch hard cutover; no compatibility work for `_billing`, `__metrics__`, or their schemas  
 **Scope:** per-stream monthly billing, customer usage dashboards, fleet and storage observability, durable operational event history, alerting, and telemetry-pipeline self-monitoring
 
