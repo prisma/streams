@@ -201,7 +201,12 @@ down and verified (0 projects remaining).
   238-246), global control unchanged at ~250-320 ms (the change is
   SRC-scoped; methodology apples-to-apples). Streams impact: combined
   with the poll stretch, per-instance idle Tigris burn fell ~350×
-  (13/s × 240 ms ≈ 3.1 s/s → 2.2/s × 4 ms ≈ 0.009 s/s). One residue
+  (13/s × 240 ms ≈ 3.1 s/s → 2.2/s × 4 ms ≈ 0.009 s/s). **HEAD-404s
+  fixed too** (03:52 UTC probe: SRC HEAD misses 2-6 ms after a
+  one-time ~250 ms first-touch; global control unchanged) — this
+  supersedes the interim co-located HEAD-404 ≈ 121 ms measured during
+  the rollout window (FLEET-CAMPAIGN notes), and matters because
+  SlateDB's open-time existence probes are HEAD-shaped. One residue
   handed back to Tigris, low priority: unauthorized requests (403) to
   the converted SRC bucket still burn ~235-240 ms internally — the
   auth-denied path or converted buckets may not be covered by the
