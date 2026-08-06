@@ -1590,6 +1590,7 @@ mod tests {
                     touch: None,
                     seal_gen: None,
                     seal_fence_to: None,
+                    billing: None,
                     resp: tx,
                 };
                 let _ = feeder.try_enqueue(req);
@@ -1663,6 +1664,7 @@ mod tests {
                 touch: None,
                 seal_gen: None,
                 seal_fence_to: None,
+                billing: None,
                 resp: tx,
             };
             let _ = engine.try_enqueue(req);

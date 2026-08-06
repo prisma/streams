@@ -882,6 +882,7 @@ impl Workload {
             touch: None,
             seal_gen: None,
             seal_fence_to: None,
+            billing: None,
             resp: tx,
         };
         if engine.try_enqueue(req).is_err() {
@@ -954,6 +955,7 @@ impl Workload {
             touch: None,
             seal_gen: None,
             seal_fence_to: None,
+            billing: None,
             resp: tx,
         };
         if engine.try_enqueue(req).is_err() {

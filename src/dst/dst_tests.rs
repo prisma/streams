@@ -2946,6 +2946,7 @@ async fn append_sized(
         touch: None,
         seal_gen: None,
         seal_fence_to: None,
+        billing: None,
         resp: tx,
     };
     assert!(engine.try_enqueue(req).is_ok(), "enqueue");
@@ -3371,6 +3372,7 @@ async fn append_n(
         touch: None,
         seal_gen: None,
         seal_fence_to: None,
+        billing: None,
         resp: tx,
     };
     assert!(engine.try_enqueue(req).is_ok(), "enqueue");
@@ -4237,6 +4239,7 @@ async fn sparse_key_reads_page_with_bounded_spans() {
             touch: None,
             seal_gen: None,
             seal_fence_to: None,
+            billing: None,
             resp: tx,
         };
         assert!(engine.try_enqueue(req).is_ok());
@@ -4334,6 +4337,7 @@ async fn corrupt_postings_fall_back_to_the_envelope() {
             touch: None,
             seal_gen: None,
             seal_fence_to: None,
+            billing: None,
             resp: tx,
         };
         assert!(engine.try_enqueue(req).is_ok());
@@ -4449,6 +4453,7 @@ async fn repeated_keyed_reads_hit_the_postings_cache() {
             touch: None,
             seal_gen: None,
             seal_fence_to: None,
+            billing: None,
             resp: tx,
         };
         assert!(engine.try_enqueue(req).is_ok());
@@ -4557,6 +4562,7 @@ async fn stream_seq_is_scoped_to_the_routing_key() {
                 touch: None,
                 seal_gen: None,
                 seal_fence_to: None,
+                billing: None,
                 resp: tx,
             };
             assert!(engine.try_enqueue(req).is_ok());
@@ -4647,6 +4653,7 @@ async fn producer_retries_across_a_split_commit_once() {
                 touch: None,
                 seal_gen: None,
                 seal_fence_to: None,
+                billing: None,
                 resp: tx,
             };
             assert!(engine.try_enqueue(req).is_ok());
@@ -5691,6 +5698,7 @@ async fn stream_seq_resolves_through_predecessors() {
                 touch: None,
                 seal_gen: None,
                 seal_fence_to: None,
+                billing: None,
                 resp: tx,
             };
             assert!(engine.try_enqueue(req).is_ok());
@@ -5789,6 +5797,7 @@ async fn producer_lanes_scoped_per_routing_key() {
                 touch: None,
                 seal_gen: None,
                 seal_fence_to: None,
+                billing: None,
                 resp: tx,
             };
             assert!(engine.try_enqueue(req).is_ok());
@@ -12282,6 +12291,7 @@ async fn a_fence_survives_handle_eviction() {
             sealed_reject_new: None,
             touch: None,
             usage: crate::usage::counters(&identity),
+            billing: None,
             resp: tx,
         };
         assert!(engine.try_enqueue(req).is_ok());
@@ -12778,6 +12788,7 @@ async fn a_fence_outlives_the_maintenance_sweep() {
         sealed_reject_new: None,
         touch: None,
         usage: crate::usage::counters(&identity),
+        billing: None,
         resp: tx,
     };
     assert!(engine.try_enqueue(req).is_ok());
@@ -18786,5 +18797,192 @@ async fn read_meter_covers_the_matrix_exactly() {
         "sealed rows carry the full billing identity"
     );
     assert!(state.billing_reads.snapshot_active().is_empty());
+    engine_shutdown(&state).await;
+}
+
+/// §6: the durable data-plane billing state. Committed ingest and the
+/// storage gauge are exact, atomic with the records, restart-safe, and
+/// idempotently drainable: duplicates add zero, acks are version-fenced
+/// (a racing append keeps its newer version dirty), UTC month rollover
+/// closes finals into the outbox, and hard deletion zeroes the gauge.
+/// Driven on the RAW surface because it forwards `stream-timestamp`
+/// (the product surface deliberately has no client clock) — the
+/// committer path is the same.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn billing_meta_is_exact_durable_and_ackable() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [
+        ("stream-encryption-key", PRISMA_KEY),
+        ("content-type", "application/json"),
+    ];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/bill1", &ct, b"").await;
+    assert_eq!(st, 201);
+    // Commit timestamps are MONOTONE per stream (ts = hint.max(tail.ts))
+    // and creation stamps the tail with real now — so the controlled
+    // months live in the FUTURE, where hints win the max.
+    let sep = crate::billing::month_start_ms(2026, 9);
+    let ts = |ms: i64| (ms * 1_000_000).to_string(); // header takes nanos
+    let p1 = br#"{"n":1,"pad":"aaaaaaaaaa"}"#; // 26 B payload
+    let body = format!("[{}]", std::str::from_utf8(p1).unwrap());
+
+    // Append 1: plain, mid-September.
+    let t1 = ts(sep + 14 * 86_400_000);
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/bill1",
+        &[
+            ("stream-encryption-key", PRISMA_KEY),
+            ("content-type", "application/json"),
+            ("stream-timestamp", &t1),
+        ],
+        body.as_bytes(),
+    )
+    .await;
+    assert_eq!(st, 204, "raw append acks 204 per the pinned protocol");
+
+    let desc = state.registry.get("bill1").await.unwrap().unwrap();
+    // The SAME identity the append path submits under.
+    let seg = desc.resolve_segment("");
+    let identity = seg.identity;
+    let route = seg.shard_route.clone();
+    let engine = state.engine_for(&route).await.unwrap();
+
+    let bm = engine.billing_meta(identity).await.expect("meta row");
+    assert_eq!(bm.ingest_payload_bytes_total, p1.len() as u64);
+    assert_eq!(bm.ingest_records_total, 1);
+    assert!(
+        bm.owned_frame_bytes_current > p1.len() as u64,
+        "frames carry the envelope"
+    );
+    assert_eq!((bm.month_year, bm.month_month), (2026, 9));
+    assert_eq!(bm.usage_version, 1);
+    assert_eq!(bm.account_id, "acct_test");
+    assert_eq!(bm.stream_id, desc.stream_epoch);
+    let frame1 = bm.owned_frame_bytes_current;
+    assert_eq!(
+        engine.usage_dirty_scan().await.unwrap(),
+        vec![(identity, 1)],
+        "one dirty segment at version 1"
+    );
+
+    // Append 2 with producer identity, then RETRY it: the duplicate
+    // must add exactly zero (no version bump, no bytes).
+    let t2 = ts(sep + 15 * 86_400_000);
+    let phdrs = [
+        ("stream-encryption-key", PRISMA_KEY),
+        ("content-type", "application/json"),
+        ("stream-timestamp", t2.as_str()),
+        ("producer-id", "pX"),
+        ("producer-epoch", "1"),
+        ("producer-seq", "0"),
+    ];
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/bill1", &phdrs, body.as_bytes()).await;
+    assert!(st == 200 || st == 204, "producer append answered {st}");
+    let v2 = engine.billing_meta(identity).await.unwrap();
+    assert_eq!(v2.usage_version, 2);
+    assert_eq!(v2.ingest_records_total, 2);
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/bill1", &phdrs, body.as_bytes()).await;
+    assert!(st == 200 || st == 204, "duplicate ack answered {st}");
+    let dup = engine.billing_meta(identity).await.unwrap();
+    assert_eq!(
+        dup.usage_version, 2,
+        "a duplicate must not bump the version"
+    );
+    assert_eq!(dup.ingest_payload_bytes_total, 2 * p1.len() as u64);
+    assert_eq!(dup.owned_frame_bytes_current, 2 * frame1);
+
+    // Ack at version 2: marker clears.
+    engine.submit_usage_ack(identity, 2, Vec::new());
+    for _ in 0..100 {
+        if engine.usage_dirty_scan().await.unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(engine.usage_dirty_scan().await.unwrap().is_empty());
+
+    // Append 3 in OCTOBER: September closes into the outbox, the live
+    // month resets, the marker returns at version 3.
+    let oct = crate::billing::month_start_ms(2026, 10);
+    let t3 = ts(oct + 9 * 86_400_000);
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/bill1",
+        &[
+            ("stream-encryption-key", PRISMA_KEY),
+            ("content-type", "application/json"),
+            ("stream-timestamp", &t3),
+        ],
+        body.as_bytes(),
+    )
+    .await;
+    assert_eq!(st, 204);
+    let m3 = engine.billing_meta(identity).await.unwrap();
+    assert_eq!(m3.usage_version, 3);
+    assert_eq!((m3.month_year, m3.month_month), (2026, 10));
+    assert_eq!(m3.month_ingest_payload_bytes, p1.len() as u64);
+    let finals = engine.usage_month_finals().await.unwrap();
+    assert_eq!(
+        finals.len(),
+        1,
+        "September's final snapshot is in the outbox"
+    );
+    let (fkey, fsnap) = &finals[0];
+    assert_eq!(fsnap.month, "2026-09");
+    assert!(fsnap.month_final);
+    assert_eq!(fsnap.ingest_payload_bytes_month, 2 * p1.len() as u64);
+    // September byte-time: exact integral of the gauge over the
+    // in-month spans (frame1 for one day, then 2·frame1 for the 15
+    // days to the October boundary).
+    let day = 86_400_000u128;
+    let expect = day * frame1 as u128 + (15 * day) * (2 * frame1) as u128;
+    assert_eq!(fsnap.storage_byte_ms_month.parse::<u128>().unwrap(), expect);
+    assert_eq!(
+        engine.usage_dirty_scan().await.unwrap(),
+        vec![(identity, 3)]
+    );
+
+    // A STALE ack (version 2) must keep version 3 dirty; acking 3 with
+    // the exact final key clears both.
+    engine.submit_usage_ack(identity, 2, Vec::new());
+    tokio::time::sleep(std::time::Duration::from_millis(120)).await;
+    assert_eq!(
+        engine.usage_dirty_scan().await.unwrap(),
+        vec![(identity, 3)],
+        "a stale ack erased a newer dirty version"
+    );
+    engine.submit_usage_ack(identity, 3, vec![fkey.clone()]);
+    for _ in 0..100 {
+        if engine.usage_dirty_scan().await.unwrap().is_empty() {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert!(engine.usage_dirty_scan().await.unwrap().is_empty());
+    assert!(engine.usage_month_finals().await.unwrap().is_empty());
+
+    // Hard delete: the terminal storage observation — gauge to ZERO,
+    // version bumped, dirty again for the ledger.
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/bill1", &ct, b"").await;
+    assert!(st == 204 || st == 200, "delete answered {st}");
+    let mut closed = None;
+    for _ in 0..150 {
+        if let Some(m) = engine.billing_meta(identity).await {
+            if m.owned_frame_bytes_current == 0 {
+                closed = Some(m);
+                break;
+            }
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    let closed = closed.expect("hard delete never closed the storage gauge");
+    assert_eq!(closed.usage_version, 4);
+    assert!(
+        !engine.usage_dirty_scan().await.unwrap().is_empty(),
+        "the closure must reach the ledger"
+    );
     engine_shutdown(&state).await;
 }

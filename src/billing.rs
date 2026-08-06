@@ -249,6 +249,40 @@ impl SegmentBillingMetaV1 {
     }
 }
 
+/// What an append request carries so the committer can attribute its
+/// durable billing state: the identity plus which logical segment the
+/// submit hash addresses. One Arc per request, built where the
+/// descriptor is already in hand.
+#[derive(Clone, Debug)]
+pub struct BillingRef {
+    pub identity: BillingIdentity,
+    pub segment_id: u32,
+}
+
+impl SegmentBillingMetaV1 {
+    /// The `_usage` view of this row (live or closed-month final).
+    pub fn to_snapshot(&self, month_final: bool) -> SegmentSnapshot {
+        SegmentSnapshot {
+            identity: BillingIdentity {
+                account_id: self.account_id.clone(),
+                project_id: self.project_id.clone(),
+                stream_id: self.stream_id.clone(),
+                stream_name: self.stream_name.clone(),
+            },
+            segment_id: self.segment_id,
+            usage_version: self.usage_version,
+            month: month_str(self.month_year, self.month_month),
+            month_final,
+            ingest_payload_bytes_month: self.month_ingest_payload_bytes,
+            ingest_records_month: self.month_ingest_records,
+            owned_frame_bytes_current: self.owned_frame_bytes_current,
+            storage_byte_ms_month: self.month_storage_byte_ms.clone(),
+            storage_accounted_through_ms: self.storage_accounted_through_ms,
+            retained_by_forks: self.retained_by_forks,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------
 // `_usage` ledger schema (JSON records)
 // ---------------------------------------------------------------------

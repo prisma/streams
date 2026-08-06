@@ -370,6 +370,11 @@ pub struct AppendReq {
     pub seq: Option<String>,
     pub bytes: usize,
     pub close: bool,
+    /// Billing attribution (docs/OBSERVABILITY-BILLING.md §6): when
+    /// present, the committer updates the durable SegmentBillingMeta
+    /// row in the SAME WriteBatch as the records. None on internal
+    /// writes that are not customer ingest (fences, absorber copies).
+    pub billing: Option<std::sync::Arc<crate::billing::BillingRef>>,
     /// The seal-claim generation that authorizes this append (present
     /// on every claim-authorized write: final-bearing closes, plain
     /// closes that installed an Empty claim, run_seal's segment closes,
@@ -447,6 +452,24 @@ pub enum AppendErr {
 
 pub enum CommitOp {
     Append(AppendReq),
+    /// Usage-outbox acknowledgment (§6.3): `_usage` durably holds the
+    /// snapshot at `version` — delete the dirty marker iff no NEWER
+    /// version exists, and delete the exact listed closed-month rows.
+    /// Serialized through the committer so an append racing the drain
+    /// keeps its newer version dirty. Fire-and-forget by design: a lost
+    /// ack re-emits an identical snapshot, which the rollup
+    /// deduplicates by version.
+    UsageAck {
+        hash: [u8; 16],
+        version: u64,
+        month_final_keys: Vec<Vec<u8>>,
+    },
+    /// Hard-delete closure (§6.2): advance the storage clock to now,
+    /// zero the owned-bytes gauge, bump the version and mark dirty —
+    /// the terminal storage observation for the incarnation.
+    BillingClose {
+        hash: [u8; 16],
+    },
     /// Queue-profile state transition (PROFILES.md §7): serialized with
     /// appends, durable at the watermark like everything else.
     Queue {
@@ -1803,6 +1826,8 @@ impl ShardEngine {
                             CommitOp::Absorbed { .. }
                             | CommitOp::AbsorbedBatch { .. }
                             | CommitOp::TrimTick
+                            | CommitOp::UsageAck { .. }
+                            | CommitOp::BillingClose { .. }
                             | CommitOp::TrimStep { .. } => {}
                         }
                     }
@@ -1826,6 +1851,8 @@ impl ShardEngine {
                     CommitOp::Absorbed { .. }
                     | CommitOp::AbsorbedBatch { .. }
                     | CommitOp::TrimTick
+                    | CommitOp::UsageAck { .. }
+                    | CommitOp::BillingClose { .. }
                     | CommitOp::TrimStep { .. } => {}
                 }
                 while let Ok(op) = rx.try_recv() {
@@ -1839,6 +1866,8 @@ impl ShardEngine {
                         CommitOp::Absorbed { .. }
                         | CommitOp::AbsorbedBatch { .. }
                         | CommitOp::TrimTick
+                        | CommitOp::UsageAck { .. }
+                        | CommitOp::BillingClose { .. }
                         | CommitOp::TrimStep { .. } => {}
                     }
                 }
@@ -1980,6 +2009,8 @@ impl ShardEngine {
                     CommitOp::Absorbed { .. }
                     | CommitOp::AbsorbedBatch { .. }
                     | CommitOp::TrimTick
+                    | CommitOp::UsageAck { .. }
+                    | CommitOp::BillingClose { .. }
                     | CommitOp::TrimStep { .. } => {}
                 }
             }
@@ -2027,6 +2058,15 @@ impl ShardEngine {
             /// ring (empty when the ring is off). Offsets are contiguous
             /// per stream: every append path assigns at fields.next.
             ring_recs: Vec<(u64, Bytes)>,
+            /// Durable billing state (§6.1), loaded from the DB on this
+            /// group's first billed touch, mutated batch-locally, and
+            /// staged into the same WriteBatch. A failed group discards
+            /// it — the DB row is the only truth.
+            billing: Option<crate::billing::SegmentBillingMetaV1>,
+            billing_dirty: bool,
+            /// Closed-month final snapshots produced by storage-clock
+            /// rollover in this group, staged as sentinel-'V' rows.
+            month_finals: Vec<crate::billing::SegmentSnapshot>,
         }
 
         let mut wb = WriteBatch::new();
@@ -2074,6 +2114,8 @@ impl ShardEngine {
                 CommitOp::Absorbed { hash, .. } => *hash,
                 CommitOp::Queue { hash, .. } => *hash,
                 CommitOp::TrimStep { hash } => *hash,
+                CommitOp::UsageAck { hash, .. } => *hash,
+                CommitOp::BillingClose { hash } => *hash,
                 // Expanded at commit_group entry; unreachable here.
                 CommitOp::AbsorbedBatch { .. } | CommitOp::TrimTick => continue,
             };
@@ -2093,6 +2135,9 @@ impl ShardEngine {
                                 queue_configs: HashMap::new(),
                                 appended_bytes: 0,
                                 ring_recs: Vec::new(),
+                                billing: None,
+                                billing_dirty: false,
+                                month_finals: Vec::new(),
                             },
                         );
                     }
@@ -2109,6 +2154,69 @@ impl ShardEngine {
             match op {
                 // Expanded at commit_group entry; unreachable here.
                 CommitOp::AbsorbedBatch { .. } | CommitOp::TrimTick => {}
+                CommitOp::UsageAck {
+                    version,
+                    month_final_keys,
+                    ..
+                } => {
+                    // Newest-version check: batch-local state first (an
+                    // append EARLIER in this very group already bumped
+                    // it), else the durable row. A NEWER version stays
+                    // dirty — the drain that acked version N must not
+                    // erase evidence of N+1.
+                    let cur = match &local.billing {
+                        Some(bm) => bm.usage_version,
+                        None => match self
+                            .db
+                            .get(&crate::billing::billing_meta_key(&hash)[..])
+                            .await
+                        {
+                            Ok(Some(v)) => {
+                                serde_json::from_slice::<crate::billing::SegmentBillingMetaV1>(&v)
+                                    .map(|m| m.usage_version)
+                                    .unwrap_or(0)
+                            }
+                            _ => 0,
+                        },
+                    };
+                    if cur <= version {
+                        wb.delete(crate::billing::usage_dirty_key(&hash));
+                        extra_writes = true;
+                    }
+                    for k in month_final_keys {
+                        wb.delete(k);
+                        extra_writes = true;
+                    }
+                }
+                CommitOp::BillingClose { .. } => {
+                    if local.billing.is_none() {
+                        let loaded = match self
+                            .db
+                            .get(&crate::billing::billing_meta_key(&hash)[..])
+                            .await
+                        {
+                            Ok(Some(v)) => serde_json::from_slice(&v).unwrap_or_default(),
+                            _ => crate::billing::SegmentBillingMetaV1::default(),
+                        };
+                        local.billing = Some(loaded);
+                    }
+                    {
+                        let bm = local.billing.as_mut().unwrap();
+                        if bm.stream_id.is_empty() {
+                            // Nothing was ever billed here; no row to close.
+                            local.billing = None;
+                        } else {
+                            let now = now_ms();
+                            let finals = &mut local.month_finals;
+                            bm.advance_storage_clock(now, |closed| {
+                                finals.push(closed.to_snapshot(true));
+                            });
+                            bm.owned_frame_bytes_current = 0;
+                            bm.usage_version += 1;
+                            local.billing_dirty = true;
+                        }
+                    }
+                }
                 CommitOp::Append(req) => {
                     #[cfg(test)]
                     client_append_hashes.insert(hash);
@@ -2474,6 +2582,43 @@ impl ShardEngine {
                     usage
                         .frame_bytes
                         .fetch_add(frame_sum, std::sync::atomic::Ordering::Relaxed);
+                    // DURABLE billing state (§6.1), same WriteBatch as
+                    // the records above. Duplicates never reach here
+                    // (the producer-dedupe arm answered earlier), so a
+                    // duplicate adds exactly zero by construction.
+                    if let Some(bref) = &req.billing {
+                        if local.billing.is_none() {
+                            let loaded = match self
+                                .db
+                                .get(&crate::billing::billing_meta_key(&hash)[..])
+                                .await
+                            {
+                                Ok(Some(v)) => serde_json::from_slice(&v).unwrap_or_default(),
+                                _ => crate::billing::SegmentBillingMetaV1::default(),
+                            };
+                            local.billing = Some(loaded);
+                        }
+                        let bm = local.billing.as_mut().unwrap();
+                        if bm.stream_id.is_empty() {
+                            bm.v = 1;
+                            bm.account_id = bref.identity.account_id.clone();
+                            bm.project_id = bref.identity.project_id.clone();
+                            bm.stream_id = bref.identity.stream_id.clone();
+                            bm.stream_name = bref.identity.stream_name.clone();
+                            bm.segment_id = bref.segment_id;
+                        }
+                        let finals = &mut local.month_finals;
+                        bm.advance_storage_clock(ts, |closed| {
+                            finals.push(closed.to_snapshot(true));
+                        });
+                        bm.ingest_payload_bytes_total += pt_sum;
+                        bm.ingest_records_total += req.entries.len() as u64;
+                        bm.month_ingest_payload_bytes += pt_sum;
+                        bm.month_ingest_records += req.entries.len() as u64;
+                        bm.owned_frame_bytes_current += frame_sum;
+                        bm.usage_version += 1;
+                        local.billing_dirty = true;
+                    }
                     records += req.entries.len() as u64;
                     local.fields.next = start + req.entries.len() as u64;
                     local.fields.ts = ts;
@@ -3486,6 +3631,31 @@ impl ShardEngine {
                 }
                 changed = true;
             }
+            // Billing rows (§6.1/§6.3), atomic with everything above:
+            // the meta row, its dirty marker (value = the version the
+            // drainer must acknowledge), and any month-final snapshots
+            // the storage clock closed in this group.
+            if local.billing_dirty {
+                if let Some(bm) = &local.billing {
+                    wb.put(
+                        crate::billing::billing_meta_key(hash),
+                        serde_json::to_vec(bm).unwrap_or_default(),
+                    );
+                    wb.put(
+                        crate::billing::usage_dirty_key(hash),
+                        &bm.usage_version.to_le_bytes()[..],
+                    );
+                    changed = true;
+                }
+                for snap in &local.month_finals {
+                    if let Some((y, m)) = crate::billing::parse_month(&snap.month) {
+                        wb.put(
+                            crate::billing::usage_month_final_key(hash, y, m),
+                            serde_json::to_vec(snap).unwrap_or_default(),
+                        );
+                    }
+                }
+            }
             tails.push((local.handle.clone(), f.clone()));
             if local.appended_bytes > 0 {
                 signals.push(AbsorbSignal {
@@ -3516,7 +3686,11 @@ impl ShardEngine {
                 }
             }
         }
-        if pending.is_empty() && !changed && queue_pending.is_empty() {
+        if pending.is_empty() && !changed && queue_pending.is_empty() && !extra_writes {
+            // extra_writes: an ack-only or maintenance-only group has no
+            // pending responses and no tail movement, but its direct
+            // WriteBatch entries (usage-outbox acks, fence rows) are
+            // real writes that must reach the store.
             return;
         }
         if !changed && records == 0 && touches.is_empty() && !extra_writes {
@@ -3899,6 +4073,75 @@ impl ShardEngine {
         let f = self.seal_fences.lock().unwrap();
         let max = f.values().copied().max().unwrap_or(0);
         (f.len(), max)
+    }
+
+    /// Usage-dirty index scan (§6.3): every segment whose durable
+    /// billing state has versions `_usage` has not acknowledged.
+    /// (hash, unacked version). One prefix scan; the drainer's
+    /// discovery path after restart or ownership move.
+    pub async fn usage_dirty_scan(&self) -> anyhow::Result<Vec<([u8; 16], u64)>> {
+        let mut pfx = Vec::with_capacity(17);
+        pfx.extend_from_slice(&crate::billing::USAGE_DIRTY_SENTINEL);
+        pfx.push(b'U');
+        let mut out = Vec::new();
+        let mut iter = self.db.scan_prefix(&pfx[..], ..).await?;
+        while let Some(kv) = iter.next().await? {
+            if kv.key.len() != 33 || kv.value.len() < 8 {
+                continue;
+            }
+            let mut h = [0u8; 16];
+            h.copy_from_slice(&kv.key[17..33]);
+            let v = u64::from_le_bytes(kv.value[..8].try_into().unwrap());
+            out.push((h, v));
+        }
+        Ok(out)
+    }
+
+    /// The durable billing row for one segment (None = never billed).
+    pub async fn billing_meta(
+        &self,
+        hash: [u8; 16],
+    ) -> Option<crate::billing::SegmentBillingMetaV1> {
+        self.db
+            .get(&crate::billing::billing_meta_key(&hash)[..])
+            .await
+            .ok()
+            .flatten()
+            .and_then(|v| serde_json::from_slice(&v).ok())
+    }
+
+    /// Closed-month final snapshots awaiting ledger acknowledgment
+    /// (sentinel-'V' rows): (exact key, snapshot).
+    pub async fn usage_month_finals(
+        &self,
+    ) -> anyhow::Result<Vec<(Vec<u8>, crate::billing::SegmentSnapshot)>> {
+        let mut pfx = Vec::with_capacity(17);
+        pfx.extend_from_slice(&crate::billing::USAGE_DIRTY_SENTINEL);
+        pfx.push(b'V');
+        let mut out = Vec::new();
+        let mut iter = self.db.scan_prefix(&pfx[..], ..).await?;
+        while let Some(kv) = iter.next().await? {
+            if let Ok(snap) = serde_json::from_slice(&kv.value) {
+                out.push((kv.key.to_vec(), snap));
+            }
+        }
+        Ok(out)
+    }
+
+    /// Acknowledge `_usage` durability for a segment's snapshot at
+    /// `version` (+ exact month-final rows). Fire-and-forget through
+    /// the committer — see CommitOp::UsageAck.
+    pub fn submit_usage_ack(&self, hash: [u8; 16], version: u64, month_final_keys: Vec<Vec<u8>>) {
+        let _ = self.tx.try_send(CommitOp::UsageAck {
+            hash,
+            version,
+            month_final_keys,
+        });
+    }
+
+    /// Terminal storage closure for a hard-deleted segment (§6.2).
+    pub fn submit_billing_close(&self, hash: [u8; 16]) {
+        let _ = self.tx.try_send(CommitOp::BillingClose { hash });
     }
 
     /// Consumer-fence cardinality (round 17): one non-expiring entry

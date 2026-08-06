@@ -347,6 +347,7 @@ async fn seal_identity(
         touch: None,
         seal_gen,
         seal_fence_to: None,
+        billing: None,
         resp: tx,
     };
     if engine.try_enqueue(req).is_err() {

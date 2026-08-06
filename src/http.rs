@@ -2734,6 +2734,10 @@ async fn create_stream(
             usage: crate::usage::counters(&crate::crypto::stream_hash(&desc.name)),
             seal_gen: None,
             seal_fence_to: None,
+            billing: Some(std::sync::Arc::new(crate::billing::BillingRef {
+                identity: crate::billing::identity_of(&state, &desc),
+                segment_id: 0,
+            })),
             resp: tx,
         };
         if engine.try_enqueue(req).is_err() {
@@ -3614,6 +3618,26 @@ fn delete_lifecycle(
         if !hard_deleted {
             return Ok(());
         }
+        // Billing closure (§6.2): the hard delete is the terminal
+        // storage observation — advance every segment's storage clock
+        // to now, zero its gauge, mark dirty for the ledger. Best-
+        // effort per segment (a full committer queue re-closes on the
+        // drainer's next look at a still-nonzero gauge of a deleted
+        // stream; the row is monotone either way).
+        {
+            let seg_ids: Vec<u32> = d
+                .segments
+                .as_ref()
+                .map(|m| m.segments.iter().map(|sg| sg.seg_id).collect())
+                .unwrap_or_else(|| vec![0]);
+            for sid in seg_ids {
+                let identity = d.dynamic_segment_identity(sid);
+                let route = d.segment_route_by_id(sid);
+                if let Ok(engine) = state.engine_for(&route).await {
+                    engine.submit_billing_close(identity);
+                }
+            }
+        }
         if let Some((src, fid, sep)) = parent {
             // Released CONCLUSIVELY: the tombstone owes nothing more.
             // This is `update`, not `cas_update`, because the
@@ -3854,6 +3878,7 @@ pub(crate) async fn fence_segment_for_key(
         sealed_reject_new: None,
         touch: None,
         usage: crate::usage::counters(&route),
+        billing: None,
         resp: tx,
     };
     engine
@@ -4453,6 +4478,10 @@ async fn append_core(
         touch,
         seal_gen: raw_seal_gen,
         seal_fence_to: None,
+        billing: Some(std::sync::Arc::new(crate::billing::BillingRef {
+            identity: crate::billing::identity_of(&state, &desc),
+            segment_id: seg.seg_id,
+        })),
         resp: tx,
     };
     let engine = match state.engine_for(&seg.shard_route).await {
