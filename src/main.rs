@@ -82,8 +82,13 @@ struct Args {
     secret_access_key: String,
 
     /// Initial shard count (power of two) if no topology exists yet (D3).
-    #[arg(long, env = "INITIAL_SHARDS", default_value_t = 1)]
-    initial_shards: usize,
+    /// Unset = auto: 1 standalone, next_power_of_two(4 × FLEET_MAX) in
+    /// fleet mode — a topology as coarse as the fleet gives rendezvous a
+    /// permanently uneven draw and turns the rebalancer's override into a
+    /// return-home tug-of-war (FLEET-CAMPAIGN.md: 4 shards over 4
+    /// instances drew 1/1/2/0 and oscillated on a ~300 s period).
+    #[arg(long, env = "INITIAL_SHARDS")]
+    initial_shards: Option<usize>,
 
     /// Shard-log WAL flush interval (D22, amended). 5 ms minted WAL SSTs
     /// ~7× faster than SlateDB's WAL GC reaps them; the growing backlog
@@ -643,7 +648,25 @@ async fn async_main() -> anyhow::Result<()> {
     let data_store = args.store_for(&args.data_bucket)?;
 
     let registry = Registry::new(ops_store.clone());
-    let topology = load_or_init_topology(&ops_store, args.initial_shards)
+    // Only relevant when no topology exists yet; an existing topology wins.
+    let fleet_mode = args.fleet_prefix.is_some() && args.fleet_max > 1;
+    let initial_shards = match args.initial_shards {
+        Some(n) => {
+            if fleet_mode && n < 4 * args.fleet_max as usize {
+                tracing::warn!(
+                    "INITIAL_SHARDS={n} < 4×FLEET_MAX={}: a fresh topology this coarse \
+                     draws unevenly under rendezvous and the rebalancer flaps against \
+                     return-home; use >= {}",
+                    args.fleet_max,
+                    (4 * args.fleet_max as usize).next_power_of_two()
+                );
+            }
+            n
+        }
+        None if fleet_mode => (4 * args.fleet_max as usize).next_power_of_two(),
+        None => 1,
+    };
+    let topology = load_or_init_topology(&ops_store, initial_shards)
         .await
         .context("load topology")?;
     tracing::info!(

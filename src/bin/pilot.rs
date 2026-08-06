@@ -69,6 +69,12 @@ struct FleetView {
     active: Vec<String>,
     /// Shard bit-prefixes from the data namespace's topology.json.
     topology: Vec<String>,
+    /// Rebalancer shard moves (fleet/overrides.json): prefix -> instance.
+    /// Routing consults these before the rendezvous pick, mirroring the
+    /// servers' effective_owner — without this every request for an
+    /// override-owned shard takes a 409 Streams-Replay-To double hop
+    /// (FLEET-CAMPAIGN.md: streams-3's entire steady-state load).
+    overrides: std::collections::HashMap<String, String>,
 }
 
 fn fleet_store(prefix: &str) -> Arc<dyn object_store::ObjectStore> {
@@ -180,6 +186,10 @@ struct UpStat {
     last_us: AtomicU64,
     cold_starts: AtomicU64,
     last_seen_ms: AtomicU64,
+    /// 409 Streams-Replay-To bounces THIS upstream issued — its ownership
+    /// view disagreed with the router's pick. Nonzero steady-state means
+    /// the router's override/topology view is stale.
+    replays: AtomicU64,
 }
 
 struct Lb {
@@ -208,6 +218,7 @@ async fn lb() {
             last_us: AtomicU64::new(0),
             cold_starts: AtomicU64::new(0),
             last_seen_ms: AtomicU64::new(0),
+            replays: AtomicU64::new(0),
         })
         .collect();
     let lb = Arc::new(Lb {
@@ -271,15 +282,16 @@ async fn lb() {
             loop {
                 // Single guard: two lock() temporaries in one expression
                 // would self-deadlock the std Mutex.
-                let (prev_desired, prev_topo) = {
+                let (prev_desired, prev_topo, prev_ov) = {
                     let f = lb.fleet.lock().unwrap();
-                    (f.desired, f.topology.clone())
+                    (f.desired, f.topology.clone(), f.overrides.clone())
                 };
                 let mut view = FleetView {
                     desired: prev_desired,
                     heartbeats: Vec::new(),
                     active: Vec::new(),
                     topology: prev_topo,
+                    overrides: prev_ov,
                 };
                 if let Ok(r) = fstore
                     .get(&object_store::path::Path::from("fleet/desired.json"))
@@ -291,6 +303,32 @@ async fn lb() {
                                 .clamp(1, lb.upstreams.len());
                         }
                     }
+                }
+                // Rebalancer overrides: a successful read replaces the map
+                // (absent file = no overrides); a transient error keeps the
+                // previous view rather than flapping routing on a blip.
+                match fstore
+                    .get(&object_store::path::Path::from("fleet/overrides.json"))
+                    .await
+                {
+                    Ok(r) => {
+                        if let Ok(raw) = r.bytes().await {
+                            if let Ok(o) = serde_json::from_slice::<serde_json::Value>(&raw) {
+                                view.overrides = o["entries"]
+                                    .as_object()
+                                    .map(|m| {
+                                        m.iter()
+                                            .filter_map(|(k, v)| {
+                                                v["to"].as_str().map(|t| (k.clone(), t.to_string()))
+                                            })
+                                            .collect()
+                                    })
+                                    .unwrap_or_default();
+                            }
+                        }
+                    }
+                    Err(object_store::Error::NotFound { .. }) => view.overrides.clear(),
+                    Err(_) => {}
                 }
                 let now_ms = SystemTime::now()
                     .duration_since(UNIX_EPOCH)
@@ -449,6 +487,7 @@ async fn lb() {
                             "ewmaMs": s.ewma_us.load(Ordering::Relaxed) as f64 / 1000.0,
                             "lastMs": s.last_us.load(Ordering::Relaxed) as f64 / 1000.0,
                             "coldStarts": s.cold_starts.load(Ordering::Relaxed),
+                            "replays": s.replays.load(Ordering::Relaxed),
                         })
                     })
                     .collect();
@@ -465,6 +504,7 @@ async fn lb() {
                         "desired": fleet.desired,
                         "heartbeats": fleet.heartbeats.iter().map(|(r, p50, l, cpu)| serde_json::json!({"rps": r, "ackMs": p50, "live": l, "cpu": cpu})).collect::<Vec<_>>(),
                         "topology": fleet.topology,
+                        "overrides": fleet.overrides,
                         "history": history,
                     })),
                 )
@@ -508,7 +548,7 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
     // topology), rendezvous over only the active set (first `desired`
     // upstreams) — instances beyond the desired count receive nothing and
     // scale to zero.
-    let (active, shard) = {
+    let (active, shard, override_to) = {
         let f = lb.fleet.lock().unwrap();
         let shard = stream
             .as_deref()
@@ -518,28 +558,33 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
         } else {
             f.active.clone()
         };
-        (active, shard)
+        let ov = shard
+            .as_deref()
+            .and_then(|sh| f.overrides.get(sh))
+            .cloned();
+        (active, shard, ov)
     };
-    // Rendezvous over instance NAMES from the live-filtered active set —
-    // the identical computation the servers run for their R2 check.
-    // Nameless (registry-scoped) requests pin to the first active.
-    let chosen = match &shard {
-        Some(sh) => &active[pick(sh, &active)],
-        None => &active[0],
+    // Ownership mirrors the servers' effective_owner: a rebalancer
+    // override whose target is active wins; otherwise rendezvous over
+    // instance NAMES from the live-filtered active set — the identical
+    // computation the servers run for their R2 check. Nameless
+    // (registry-scoped) requests pin to the first active.
+    let chosen: &str = match (&override_to, &shard) {
+        (Some(t), _) if active.iter().any(|a| a == t) => t,
+        (_, Some(sh)) => &active[pick(sh, &active)],
+        _ => &active[0],
     };
-    let i = chosen
+    let first_i = chosen
         .strip_prefix("streams-")
         .and_then(|n| n.parse::<usize>().ok())
         .and_then(|n| n.checked_sub(1))
         .filter(|n| *n < lb.upstreams.len())
         .unwrap_or(0);
-    let s = &lb.stats[i];
     let query = req
         .uri()
         .query()
         .map(|q| format!("?{q}"))
         .unwrap_or_default();
-    let url = format!("{}{}{}", lb.upstreams[i], path, query);
     let method = reqwest::Method::from_bytes(req.method().as_str().as_bytes()).unwrap();
     let mut headers = HeaderMap::new();
     for (k, v) in req.headers() {
@@ -553,40 +598,57 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
         Err(_) => return (StatusCode::PAYLOAD_TOO_LARGE, "body too large").into_response(),
     };
 
-    let idle_ms = now_ms().saturating_sub(s.last_seen_ms.load(Ordering::Relaxed));
     let t0 = Instant::now();
     let http = lb.http.get();
-    let mut resp = http
-        .request(method.clone(), url)
-        .headers(headers.clone())
-        .body(body.clone())
-        .send()
-        .await;
+    let send_to = |i: usize| {
+        let url = format!("{}{}{}", lb.upstreams[i], path, query);
+        http.request(method.clone(), url)
+            .headers(headers.clone())
+            .body(body.clone())
+            .send()
+    };
+    let replay_target = |r: &reqwest::Response| {
+        if r.status() != 409 {
+            return None;
+        }
+        r.headers()
+            .get("streams-replay-to")
+            .and_then(|v| v.to_str().ok())
+            .and_then(|n| n.strip_prefix("streams-"))
+            .and_then(|n| n.parse::<usize>().ok())
+            .and_then(|n| n.checked_sub(1))
+            .filter(|n| *n < lb.upstreams.len())
+    };
     // R3: an instance that doesn't own the shard answers 409 with
     // Streams-Replay-To: <instance-name>; replay there without involving
-    // the client (Fly-Replay pattern).
-    if let Ok(r) = &resp {
-        if r.status() == 409 {
-            if let Some(target) = r
-                .headers()
-                .get("streams-replay-to")
-                .and_then(|v| v.to_str().ok())
-                .and_then(|n| n.strip_prefix("streams-"))
-                .and_then(|n| n.parse::<usize>().ok())
-                .and_then(|n| n.checked_sub(1))
-                .filter(|n| *n < lb.upstreams.len())
-            {
-                let url2 = format!("{}{}{}", lb.upstreams[target], path, query);
-                resp = http
-                    .request(method, url2)
-                    .headers(headers)
-                    .body(body)
-                    .send()
-                    .await;
-            }
+    // the client (Fly-Replay pattern). Up to two follows: mid-move both
+    // the pick and the first target can miss, so the second follow backs
+    // off briefly to let the fence settle instead of leaking the 409
+    // (FLEET-CAMPAIGN.md: 299 leaked 409s, all in transition windows).
+    let mut cur_i = first_i;
+    let mut resp = send_to(cur_i).await;
+    let mut follows = 0usize;
+    while let Some(target) = resp.as_ref().ok().and_then(&replay_target) {
+        // The bouncing instance answered: it is alive, and it is the one
+        // whose ownership view disagrees with this router's pick.
+        lb.stats[cur_i].last_seen_ms.store(now_ms(), Ordering::Relaxed);
+        lb.stats[cur_i].replays.fetch_add(1, Ordering::Relaxed);
+        if follows >= 2 {
+            break;
         }
+        if follows == 1 {
+            tokio::time::sleep(Duration::from_millis(75)).await;
+        }
+        cur_i = target;
+        follows += 1;
+        resp = send_to(cur_i).await;
     }
+    // Attribute the request to the upstream that actually served it —
+    // run 1 counted replayed traffic under the first pick, freezing the
+    // real owner's counters at zero while it carried the load.
+    let s = &lb.stats[cur_i];
     let us = t0.elapsed().as_micros() as u64;
+    let idle_ms = now_ms().saturating_sub(s.last_seen_ms.load(Ordering::Relaxed));
     s.last_seen_ms.store(now_ms(), Ordering::Relaxed);
     match resp {
         Ok(r) => {
@@ -624,11 +686,24 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
 
 struct Gen {
     ok: AtomicU64,
+    // `ok` alone cannot drive loss accounting: with READ_EVERY on, 1/N of
+    // the successes are reads that append nothing, and the run-1 campaign
+    // misread that mix as a 122k-record loss (FLEET-CAMPAIGN.md). Split
+    // counters make Σ(stream tails) == ok_appends × BATCH checkable
+    // directly.
+    ok_appends: AtomicU64,
+    ok_reads: AtomicU64,
     errs: AtomicU64,
     window: AtomicU64,
     achieved: AtomicU64,
     throttled: AtomicU64,
     concurrency: AtomicU64,
+    // Drain: workers stop taking new attempts, in-flight ones finish, and
+    // /stats then reports exact final counters — the run-1 kill-mid-flight
+    // stop left a 41 s accounting gap that turned the zero-loss check into
+    // a one-sided bound. Set by POST /drain or SIGTERM.
+    draining: std::sync::atomic::AtomicBool,
+    active_workers: AtomicU64,
     hist: Mutex<Histogram<u64>>,
     // Windowed histogram, reset at each concurrency level so per-level
     // percentiles aren't polluted by boot cold-starts or earlier levels.
@@ -723,11 +798,15 @@ async fn generator() {
     let attr_n = attr_upstreams.len().max(1);
     let g = Arc::new(Gen {
         ok: AtomicU64::new(0),
+        ok_appends: AtomicU64::new(0),
+        ok_reads: AtomicU64::new(0),
         errs: AtomicU64::new(0),
         window: AtomicU64::new(0),
         achieved: AtomicU64::new(0),
         throttled: AtomicU64::new(0),
         concurrency: AtomicU64::new(0),
+        draining: std::sync::atomic::AtomicBool::new(false),
+        active_workers: AtomicU64::new(0),
         hist: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
         hist_win: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
         last_err: Mutex::new(String::new()),
@@ -735,6 +814,21 @@ async fn generator() {
         per_up_window: (0..attr_n).map(|_| AtomicU64::new(0)).collect(),
         per_up_rate: (0..attr_n).map(|_| AtomicU64::new(0)).collect(),
     });
+
+    // SIGTERM = drain, same as POST /drain: platform stops become
+    // graceful, and whatever polls /stats up to the end reads exact
+    // counters instead of a mid-flight snapshot.
+    #[cfg(unix)]
+    {
+        let g = g.clone();
+        tokio::spawn(async move {
+            let mut term =
+                tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate()).unwrap();
+            term.recv().await;
+            g.draining.store(true, Ordering::Relaxed);
+            println!("pilot gen: SIGTERM -> draining");
+        });
+    }
 
     // 1s ticker: achieved/s window.
     {
@@ -769,7 +863,7 @@ async fn generator() {
                 if g.concurrency.swap(desired, Ordering::Relaxed) != desired {
                     g.hist_win.lock().unwrap().reset();
                 }
-                while spawned < desired {
+                while spawned < desired && !g.draining.load(Ordering::Relaxed) {
                     spawned += 1;
                     let g = g.clone();
                     let rc = rc.clone();
@@ -781,7 +875,11 @@ async fn generator() {
                     let stream_prefix2 = stream_prefix2.clone();
                     let (read_every, pad_n) = (read_every, record_pad);
                     tokio::spawn(async move {
+                        g.active_workers.fetch_add(1, Ordering::Relaxed);
                         loop {
+                            if g.draining.load(Ordering::Relaxed) {
+                                break;
+                            }
                             let n = seq.fetch_add(1, Ordering::Relaxed);
                             let name = format!("{}-{}", stream_prefix2, n as usize % n_streams);
                             let i = if upstreams.len() == 1 {
@@ -796,7 +894,8 @@ async fn generator() {
                             };
                             let t0 = Instant::now();
                             let http = rc.get();
-                            let res = if read_every > 0 && n % read_every == read_every - 1 {
+                            let is_read = read_every > 0 && n % read_every == read_every - 1;
+                            let res = if is_read {
                                 http.get(format!("{}/v1/stream/{name}?offset=now", upstreams[i]))
                                     .header("authorization", format!("Bearer {auth}"))
                                     .header("stream-encryption-key", key.clone())
@@ -818,6 +917,11 @@ async fn generator() {
                                 Ok(r) if r.status().is_success() => {
                                     let _ = r.bytes().await;
                                     g.ok.fetch_add(1, Ordering::Relaxed);
+                                    if is_read {
+                                        g.ok_reads.fetch_add(1, Ordering::Relaxed);
+                                    } else {
+                                        g.ok_appends.fetch_add(1, Ordering::Relaxed);
+                                    }
                                     g.window.fetch_add(1, Ordering::Relaxed);
                                     let ai = attr_i.min(g.per_up_window.len().saturating_sub(1));
                                     g.per_up_window[ai].fetch_add(1, Ordering::Relaxed);
@@ -857,6 +961,7 @@ async fn generator() {
                                 }
                             }
                         }
+                        g.active_workers.fetch_sub(1, Ordering::Relaxed);
                     });
                 }
                 tokio::time::sleep(Duration::from_secs(1)).await;
@@ -864,46 +969,70 @@ async fn generator() {
         });
     }
 
-    let app = Router::new()
-        .route(
-            "/",
-            get(|State(g): State<Arc<Gen>>| async move {
-                let (win_p50, win_p99, win_n) = {
-                    let hw = g.hist_win.lock().unwrap();
-                    (
-                        hw.value_at_quantile(0.5) as f64 / 1000.0,
-                        hw.value_at_quantile(0.99) as f64 / 1000.0,
-                        hw.len(),
-                    )
-                };
-                let h = g.hist.lock().unwrap();
-                let per_up: Vec<u64> = g
-                    .per_up_rate
-                    .iter()
-                    .map(|c| c.load(Ordering::Relaxed))
-                    .collect();
-                let json = serde_json::json!({
-                    "mode": "closed-loop",
-                    "winP50Ms": win_p50,
-                    "winP99Ms": win_p99,
-                    "winSamples": win_n,
-                    "concurrency": g.concurrency.load(Ordering::Relaxed),
-                    "achievedPerSec": g.achieved.load(Ordering::Relaxed),
-                    "perUpstreamPerSec": per_up,
-                    "ok": g.ok.load(Ordering::Relaxed),
-                    "errs": g.errs.load(Ordering::Relaxed),
-                    "throttled": g.throttled.load(Ordering::Relaxed),
-                    "meanMs": h.mean() / 1000.0,
-                    "p50Ms": h.value_at_quantile(0.5) as f64 / 1000.0,
-                    "p99Ms": h.value_at_quantile(0.99) as f64 / 1000.0,
-                    "maxMs": h.max() as f64 / 1000.0,
-                    "elapsedMin": g.start.elapsed().as_secs_f64() / 60.0,
-                    "lastErr": g.last_err.lock().unwrap().clone(),
-                });
-                drop(h);
-                ([("access-control-allow-origin", "*")], axum::Json(json))
-            }),
+    fn gen_stats_json(g: &Gen) -> serde_json::Value {
+        let (win_p50, win_p99, win_n) = {
+            let hw = g.hist_win.lock().unwrap();
+            (
+                hw.value_at_quantile(0.5) as f64 / 1000.0,
+                hw.value_at_quantile(0.99) as f64 / 1000.0,
+                hw.len(),
+            )
+        };
+        let h = g.hist.lock().unwrap();
+        let per_up: Vec<u64> = g
+            .per_up_rate
+            .iter()
+            .map(|c| c.load(Ordering::Relaxed))
+            .collect();
+        serde_json::json!({
+            "mode": "closed-loop",
+            "winP50Ms": win_p50,
+            "winP99Ms": win_p99,
+            "winSamples": win_n,
+            "concurrency": g.concurrency.load(Ordering::Relaxed),
+            "achievedPerSec": g.achieved.load(Ordering::Relaxed),
+            "perUpstreamPerSec": per_up,
+            "ok": g.ok.load(Ordering::Relaxed),
+            "okAppends": g.ok_appends.load(Ordering::Relaxed),
+            "okReads": g.ok_reads.load(Ordering::Relaxed),
+            "errs": g.errs.load(Ordering::Relaxed),
+            "throttled": g.throttled.load(Ordering::Relaxed),
+            "draining": g.draining.load(Ordering::Relaxed),
+            "activeWorkers": g.active_workers.load(Ordering::Relaxed),
+            "meanMs": h.mean() / 1000.0,
+            "p50Ms": h.value_at_quantile(0.5) as f64 / 1000.0,
+            "p99Ms": h.value_at_quantile(0.99) as f64 / 1000.0,
+            "maxMs": h.max() as f64 / 1000.0,
+            "elapsedMin": g.start.elapsed().as_secs_f64() / 60.0,
+            "lastErr": g.last_err.lock().unwrap().clone(),
+        })
+    }
+
+    async fn gen_stats(State(g): State<Arc<Gen>>) -> impl axum::response::IntoResponse {
+        (
+            [("access-control-allow-origin", "*")],
+            axum::Json(gen_stats_json(&g)),
         )
+    }
+
+    // Drain contract: stop taking new attempts, let in-flight ones land,
+    // then read /stats for EXACT final counters (draining=true and
+    // activeWorkers=0 means the numbers are final). Zero-loss accounting
+    // becomes an equality instead of a kill-window bound.
+    async fn gen_drain(State(g): State<Arc<Gen>>) -> impl axum::response::IntoResponse {
+        g.draining.store(true, Ordering::Relaxed);
+        axum::Json(serde_json::json!({
+            "draining": true,
+            "activeWorkers": g.active_workers.load(Ordering::Relaxed),
+        }))
+    }
+
+    let app = Router::new()
+        .route("/", get(gen_stats))
+        // The LB serves its stats at /stats; run 1 spent a debugging
+        // detour on the asymmetry. Same payload on both paths.
+        .route("/stats", get(gen_stats))
+        .route("/drain", get(gen_drain).post(gen_drain))
         .with_state(g);
 
     let port = env("PORT").unwrap_or_else(|| "8080".into());

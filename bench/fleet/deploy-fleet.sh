@@ -27,12 +27,12 @@ svc_arg() { # existing service id for a name, if any
   if [ -s "$f" ]; then echo "--service $(cat "$f")"; fi
 }
 record_svc() { # name -> id after first deploy
-  bunx --bun @prisma/compute-cli services list --project "$P" 2>/dev/null \
+  "$(dirname "$0")/../ccli.sh" services list --project "$P" 2>/dev/null \
     | awk -v n="$1" '$0 ~ n {print $1; exit}' > "$S/svc-$1.txt" || true
 }
 resolve_url() { # service name -> running preview URL
   local id; id=$(cat "$S/svc-$1.txt")
-  bunx --bun @prisma/compute-cli versions list --project "$P" --service "$id" 2>/dev/null \
+  "$(dirname "$0")/../ccli.sh" versions list --project "$P" --service "$id" 2>/dev/null \
     | awk '$2=="running"{print "https://"$3; exit}' > "$S/url-$1.txt"
   cat "$S/url-$1.txt"
 }
@@ -42,7 +42,7 @@ if [ "$STEP" = servers ]; then
   for i in 1 2 3 4; do
     KA=(); [ "$i" = 1 ] && KA=(--env KEEP_AWAKE=1)
     echo "== deploying fleet-s$i =="
-    bunx --bun @prisma/compute-cli deploy --project "$P" $(svc_arg "fleet-s$i") \
+    "$(dirname "$0")/../ccli.sh" deploy --project "$P" $(svc_arg "fleet-s$i") \
       --region "$REGION" --path . --http-port 8080 --service-name "fleet-s$i" \
       --env SERVER_BINARY_S3_KEY="bin/streams-$BIN_TAG-x64" \
       --env BIN_S3_ENDPOINT="$BINEP" --env BIN_S3_BUCKET="$BINBKT" --env BIN_S3_REGION=auto \
@@ -76,7 +76,7 @@ elif [ "$STEP" = lb ]; then
   UP="$(cat "$S/url-fleet-s1.txt"),$(cat "$S/url-fleet-s2.txt"),$(cat "$S/url-fleet-s3.txt"),$(cat "$S/url-fleet-s4.txt")"
   echo "UPSTREAMS=$UP"
   cd "$S/fleet-app-lb"
-  bunx --bun @prisma/compute-cli deploy --project "$P" $(svc_arg fleet-lb) \
+  "$(dirname "$0")/../ccli.sh" deploy --project "$P" $(svc_arg fleet-lb) \
     --region "$REGION" --path . --http-port 8080 --service-name "fleet-lb" \
     --env LB_BINARY_S3_KEY="bin/pilot-$PILOT_TAG-x64" \
     --env BIN_S3_ENDPOINT="$BINEP" --env BIN_S3_BUCKET="$BINBKT" --env BIN_S3_REGION=auto \
@@ -92,7 +92,7 @@ elif [ "$STEP" = lb ]; then
 elif [ "$STEP" = gen ]; then
   LBURL=$(cat "$S/url-fleet-lb.txt")
   cd "$S/fleet-app-lb"   # same pilot wrapper, MODE=gen
-  bunx --bun @prisma/compute-cli deploy --project "$P" $(svc_arg fleet-gen) \
+  "$(dirname "$0")/../ccli.sh" deploy --project "$P" $(svc_arg fleet-gen) \
     --region "$REGION" --path . --http-port 8080 --service-name "fleet-gen" \
     --env LB_BINARY_S3_KEY="bin/pilot-$PILOT_TAG-x64" \
     --env BIN_S3_ENDPOINT="$BINEP" --env BIN_S3_BUCKET="$BINBKT" --env BIN_S3_REGION=auto \

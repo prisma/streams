@@ -114,6 +114,21 @@ pub fn pick_move_target(
         .map(|(n, _)| n.clone())
 }
 
+/// Return-home admission: dropping an override hands `gain` shard(s)
+/// back to the rendezvous home, which currently owns `owned`. Allowed
+/// only while that stays within the fair share ceil(total/active) —
+/// above it, the imbalance that caused the original move re-appears
+/// immediately and the rebalancer/return-home pair flap on a
+/// ~REBALANCE_RETURN_SECS period (FLEET-CAMPAIGN.md, 4 shards over 4
+/// instances). A drained home (owns nothing) is always below the mean,
+/// so the ladder-p3 refill this block exists for still happens.
+pub fn return_home_allowed(owned: usize, gain: usize, total: usize, active_n: usize) -> bool {
+    if active_n == 0 {
+        return false;
+    }
+    owned + gain <= total.div_ceil(active_n)
+}
+
 /// Rebalance victim: the laggiest shard THIS instance actually serves.
 /// Possession, not the ring, is the truth here — and the lag must be
 /// keyed by shard prefix, never re-derived from a stream hash (records
@@ -667,6 +682,8 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                         .unwrap_or(300);
                     let active = state.ring_active.read().unwrap().clone();
                     let mut drop_keys: Vec<String> = Vec::new();
+                    let mut pending_returns: std::collections::HashMap<String, usize> =
+                        std::collections::HashMap::new();
                     for (prefix, e) in ov.entries.iter() {
                         if now_ms() - e.ms < return_secs * 1000 {
                             continue;
@@ -683,9 +700,34 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                             .get(&home)
                             .map(|(_, lag)| *lag == 0)
                             .unwrap_or(home == cfg.instance && crate::usage::absorb_lag_max() == 0);
-                        if healthy {
-                            drop_keys.push(prefix.clone());
+                        if !healthy {
+                            continue;
                         }
+                        // Load-aware return: giving the shard back must not
+                        // push the home above its fair share, or the
+                        // rebalancer moves it right out again and the pair
+                        // flap on a ~return_secs period (FLEET-CAMPAIGN.md:
+                        // 4 shards over 4 instances). A drained home (the
+                        // ladder-p3 case this block exists for) is below
+                        // the mean and still gets its shards back.
+                        let owned = state
+                            .shard_prefixes
+                            .iter()
+                            .filter(|p| {
+                                state.effective_owner(p).as_deref() == Some(home.as_str())
+                            })
+                            .count();
+                        let gain = pending_returns.get(&home).copied().unwrap_or(0) + 1;
+                        if !return_home_allowed(
+                            owned,
+                            gain,
+                            state.shard_prefixes.len(),
+                            active.len(),
+                        ) {
+                            continue;
+                        }
+                        *pending_returns.entry(home).or_insert(0) += 1;
+                        drop_keys.push(prefix.clone());
                     }
                     if !drop_keys.is_empty() {
                         let mut next = ov.clone();
@@ -887,6 +929,46 @@ mod tests {
         // fleet-wide backlog: hold shards rather than pass them around
         let p = peers(&[("a", 5.0, 90), ("b", 5.0, 80), ("c", 5.0, 70)]);
         assert_eq!(pick_move_target(&p, "a", 60), None);
+    }
+
+    // Regression: FLEET-CAMPAIGN.md — 4 shards over 4 instances drew
+    // 1/1/2/0; the rebalancer moved one off the 2-owner, return-home
+    // handed it straight back once the home was healthy, and ownership
+    // oscillated on a ~300 s period.
+    #[test]
+    fn return_home_suppressed_at_fair_share() {
+        // home kept 1 of its 2 shards; mean is ceil(4/4)=1; returning
+        // would make 2 > 1 — the exact flap case.
+        assert!(!return_home_allowed(1, 1, 4, 4));
+    }
+
+    #[test]
+    fn drained_home_still_gets_refilled() {
+        // ladder p3: the once-lagged instance owns nothing; the mean is
+        // 1; refilling to 1 is exactly fair.
+        assert!(return_home_allowed(0, 1, 4, 4));
+    }
+
+    #[test]
+    fn fine_granularity_returns_normally() {
+        // 16 shards over 4 instances: home at 3 takes its 4th back.
+        assert!(return_home_allowed(3, 1, 16, 4));
+        assert!(!return_home_allowed(4, 1, 16, 4));
+    }
+
+    #[test]
+    fn multiple_pending_returns_share_the_budget() {
+        // two overrides pointing at the same healthy home in one pass:
+        // the second must count the first (16/4: home at 2, gains 1+1
+        // fine; a third would breach).
+        assert!(return_home_allowed(2, 1, 16, 4));
+        assert!(return_home_allowed(2, 2, 16, 4));
+        assert!(!return_home_allowed(2, 3, 16, 4));
+    }
+
+    #[test]
+    fn empty_active_set_never_returns() {
+        assert!(!return_home_allowed(0, 1, 4, 0));
     }
 
     #[test]
