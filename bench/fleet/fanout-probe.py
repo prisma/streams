@@ -125,10 +125,15 @@ def scan_all(base):
         d = json.loads(b) if b.strip() else []
         items = d if isinstance(d, list) else d.get("items", d.get("records", []))
         tot += len(items)
-        nxt = (d.get("cursor") if isinstance(d, dict) else None) or hget(h, "Prisma-Next-Cursor")
-        done = (isinstance(d, dict) and (d.get("complete") or d.get("upToDate"))) or hget(h, "Prisma-Up-To-Date")
-        if done or not nxt or nxt == tok:
+        # Scan continuation is its own header pair — run-2 cloud finding:
+        # listening for the records-read headers made every >1-page scan
+        # look complete at exactly one maxBytes page (~4,436 items), and
+        # two phantom "boundary" bugs were chased before the real one.
+        if hget(h, "Prisma-Scan-Complete"):
             return tot, None
+        nxt = hget(h, "Prisma-Next-Scan-Cursor")
+        if not nxt or nxt == tok:
+            return tot, "no cursor and not complete"
         tok = nxt
     return tot, "no-convergence"
 total = sum(acked.values())

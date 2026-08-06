@@ -229,14 +229,19 @@ scan, which led to the third bug below.
    get no writes — so a rendezvous-redraw loser served reads from a view
    frozen at the fence point indefinitely. Possession now yields to the
    ring (close + 409) — commit 60564d04.
-3. **Boundary consumers trusted the local durable counter.** A handle
-   that lives through own→lose→own-again keeps a LOCAL `durable.next`
-   frozen at its last stint; the interim owner's commits are only in the
-   shared store. The READ path adopts the store's durable tracker per
-   read (which is why reads were always exact); scan-snapshot creation
-   and the pull cursor probe did not, so a cloud scan froze a live
-   segment's boundary at 1,013 of 1,826 records and exported short
-   forever. Both now adopt `durable_absorbed` like reads do.
+3. **The probe's scan walker followed the wrong continuation headers**
+   — the honest correction of what first looked like a server bug. Scan
+   pagination speaks `Prisma-Next-Scan-Cursor`/`Prisma-Scan-Complete`;
+   the walker listened for the records-read pair, so every multi-page
+   scan "completed" at exactly one maxBytes page (~4,436 items at
+   200 KB) and two phantom boundary bugs were chased before the pinned
+   page-size total gave it away. With the walker fixed, scans are
+   **9/9 exact** across three cross-owner streams × three bases. The
+   chase still produced real hardening: scan-snapshot creation and the
+   pull cursor probe now adopt `durable_absorbed` like the read path
+   (max(local, store frontier)) — a handle that lives through
+   own→lose→own-again keeps a local counter frozen at its last stint,
+   and only the read path adopted the store's tracker before.
 
 ## Field legs (fleet3/fleet4, eu-central-1)
 
@@ -260,8 +265,37 @@ errs). **Zero acked loss through a hard kill and replacement.**
 
 **Leg C — cloud fan-out.** Probe (40 WAN threads, 110 s floor — one
 urllib thread ≈ 1 req/s, and 8 threads sat exactly ON the 1 % hot-split
-threshold; sustained rate, not burst volume, arms the detector) split a
-keyed stream into 5 cross-owner segments: reads exact on LB + two
-instances, pull, settle, saga delete all green. The scan shortfall was
-bug 3; re-verdict on the fixed build below.
+threshold; sustained rate, not burst volume, arms the detector) split
+keyed streams into 3-5 cross-owner segments across three runs:
+**reads exact on the LB and both probed instances, scan 9/9 exact
+(4,698 + 5,248 + 5,287 items across three streams × three bases), pull
+delivers, settle acks, saga DELETE 204 with the relayed sweep, 404
+after.** The launch-posture item — cross-owner segment fan-out — is
+demonstrated on the cloud fleet end to end.
 
+**Leg D — scale-in.** With load stopped, the fleet published the shrink
+itself: `desired.json` epoch 8, count 4→1, reason verbatim
+`cores_used=0.02 util->1 inflight=0 slots->0 … rps=0 live=4`. Routing
+verified pinned to ordinal 1 (a probe batch moved ONLY streams-1's LB
+counter, +6 of 6); engine possession consolidated to streams-1 as
+shards were touched, with untouched engines closing idle. The
+non-desired instances had not been platform-suspended after 23 min —
+their own 2 s heartbeat loops keep the VM busy enough to defer Compute's
+idle suspend. That is platform-side behavior (the wake path for
+sleepers is exercised elsewhere: run 1's baseline and every cold start);
+the fleet's own scale-in contract — publish the shrink, stop routing to
+non-desired ordinals, consolidate ownership — is demonstrated.
+
+## Round-2 verdict
+
+Every improvement from the round-1 review is implemented and
+field-validated, and the launch posture's last open item — cross-owner
+segment fan-out — is closed on the cloud fleet. The campaign's method
+(status-counting probes, drained-book equalities, per-key attribution)
+caught two real product bugs (translator swallow, stale possession), a
+real robustness gap (boundary consumers vs. the durable tracker), and
+one probe bug (scan continuation headers) — and can say precisely which
+was which.
+
+Fleet left running for follow-ups; gen drained. All fleet services and
+the retained fra/ewr freeze4 services expire 2026-08-19.

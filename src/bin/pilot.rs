@@ -193,7 +193,12 @@ struct UpStat {
 }
 
 struct Lb {
-    upstreams: Vec<String>,
+    /// Live per-ordinal upstream URLs. Seeded from UPSTREAMS; the fleet
+    /// poller overwrites entries from fleet/urls.json so a replaced
+    /// instance (new preview URL after redeploy) is reachable without
+    /// redeploying this router — env-frozen URLs turn every instance
+    /// replacement into a full redeploy cascade.
+    upstreams: std::sync::RwLock<Vec<String>>,
     stats: Vec<UpStat>,
     history: Mutex<VecDeque<serde_json::Value>>,
     gen_stats: Mutex<serde_json::Value>,
@@ -221,8 +226,9 @@ async fn lb() {
             replays: AtomicU64::new(0),
         })
         .collect();
+    let n_up = upstreams.len();
     let lb = Arc::new(Lb {
-        upstreams,
+        upstreams: std::sync::RwLock::new(upstreams),
         stats,
         history: Mutex::new(VecDeque::new()),
         gen_stats: Mutex::new(serde_json::json!(null)),
@@ -300,7 +306,7 @@ async fn lb() {
                     if let Ok(raw) = r.bytes().await {
                         if let Ok(d) = serde_json::from_slice::<serde_json::Value>(&raw) {
                             view.desired = (d["count"].as_u64().unwrap_or(1) as usize)
-                                .clamp(1, lb.upstreams.len());
+                                .clamp(1, n_up);
                         }
                     }
                 }
@@ -335,7 +341,7 @@ async fn lb() {
                     .unwrap()
                     .as_millis() as i64;
                 let mut ages_ms: Vec<i64> = Vec::new();
-                for i in 0..lb.upstreams.len() {
+                for i in 0..n_up {
                     let p = object_store::path::Path::from(format!("fleet/streams-{}.json", i + 1));
                     let mut entry = (0.0, 0.0, false, 0.0);
                     let mut age = i64::MAX;
@@ -373,7 +379,7 @@ async fn lb() {
                 // the >30s-dark (same rule as the servers' R2 check).
                 // Fallback: everyone asleep → unfiltered, so the first
                 // request wakes the ordinal owner.
-                let d = view.desired.clamp(1, lb.upstreams.len());
+                let d = view.desired.clamp(1, n_up);
                 let mut active: Vec<String> = (1..=d)
                     .filter(|i| ages_ms.get(i - 1).map(|a| *a < 30_000).unwrap_or(false))
                     .map(|i| format!("streams-{i}"))
@@ -391,7 +397,7 @@ async fn lb() {
                 // ordinals out of band; one /health GET wakes them.
                 for i in 1..=d {
                     if ages_ms.get(i - 1).map(|a| *a >= 8_000).unwrap_or(true) {
-                        let url = format!("{}/health", lb.upstreams[i - 1]);
+                        let url = format!("{}/health", lb.upstreams.read().unwrap()[i - 1]);
                         let c = lb.http.get();
                         tokio::spawn(async move {
                             let _ = c.get(url).timeout(Duration::from_secs(20)).send().await;
@@ -410,6 +416,34 @@ async fn lb() {
                                         .iter()
                                         .filter_map(|s| s.as_str().map(String::from))
                                         .collect();
+                                }
+                            }
+                        }
+                    }
+                }
+                // Replaced instances publish their new preview URLs to
+                // fleet/urls.json (deploy step `urls`); adopt them so a
+                // kill+redeploy rejoins without touching this router.
+                if let Ok(r) = fstore
+                    .get(&object_store::path::Path::from("fleet/urls.json"))
+                    .await
+                {
+                    if let Ok(raw) = r.bytes().await {
+                        if let Ok(m) = serde_json::from_slice::<
+                            std::collections::HashMap<String, String>,
+                        >(&raw)
+                        {
+                            let mut ups = lb.upstreams.write().unwrap();
+                            for (name, url) in m {
+                                if let Some(i) = name
+                                    .strip_prefix("streams-")
+                                    .and_then(|n| n.parse::<usize>().ok())
+                                    .and_then(|n| n.checked_sub(1))
+                                {
+                                    if i < ups.len() && !url.is_empty() && ups[i] != url {
+                                        println!("lb: upstream {name} -> {url}");
+                                        ups[i] = url;
+                                    }
                                 }
                             }
                         }
@@ -498,7 +532,7 @@ async fn lb() {
                 (
                     [("access-control-allow-origin", "*")],
                     axum::Json(serde_json::json!({
-                        "upstreams": lb.upstreams.len(),
+                        "upstreams": lb.stats.len(),
                         "stats": stats,
                         "gen": gv,
                         "desired": fleet.desired,
@@ -582,7 +616,7 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
         .strip_prefix("streams-")
         .and_then(|n| n.parse::<usize>().ok())
         .and_then(|n| n.checked_sub(1))
-        .filter(|n| *n < lb.upstreams.len())
+        .filter(|n| *n < lb.stats.len())
         .unwrap_or(0);
     let query = req
         .uri()
@@ -605,7 +639,7 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
     let t0 = Instant::now();
     let http = lb.http.get();
     let send_to = |i: usize| {
-        let url = format!("{}{}{}", lb.upstreams[i], path, query);
+        let url = format!("{}{}{}", lb.upstreams.read().unwrap()[i].clone(), path, query);
         http.request(method.clone(), url)
             .headers(headers.clone())
             .body(body.clone())
@@ -621,7 +655,7 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
             .and_then(|n| n.strip_prefix("streams-"))
             .and_then(|n| n.parse::<usize>().ok())
             .and_then(|n| n.checked_sub(1))
-            .filter(|n| *n < lb.upstreams.len())
+            .filter(|n| *n < lb.stats.len())
     };
     // R3: an instance that doesn't own the shard answers 409 with
     // Streams-Replay-To: <instance-name>; replay there without involving

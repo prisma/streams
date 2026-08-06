@@ -41,7 +41,10 @@ resolve_url() { # service name -> running preview URL
 
 if [ "$STEP" = servers ]; then
   cd "$S/fleet-app-server"
-  for i in 1 2 3 4; do
+  # ONLY=N deploys a single ordinal (instance replacement — leg B kills
+  # one service and revives just it; redeploying all four would churn
+  # every URL mid-campaign).
+  for i in ${ONLY:-1 2 3 4}; do
     KA=(); [ "$i" = 1 ] && KA=(--env KEEP_AWAKE=1)
     echo "== deploying fleet-s$i =="
     "$CCLI" deploy --project "$P" $(svc_arg "fleet-s$i") \

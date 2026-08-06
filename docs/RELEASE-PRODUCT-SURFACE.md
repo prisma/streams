@@ -895,10 +895,14 @@ validated now:
   desired 1->2->3->4 under ramp, zero-loss accounting through repeated
   ownership transitions -- docs/FLEET-CAMPAIGN.md)
 
-still to validate (#113):
-  cross-owner segment fan-out (the saga's engine_for() is local-owner
-  today; no splits were provoked on the fleet campaign, so cross-owner
-  execution remains unproven)
+still to validate (#113): NONE — closed 2026-08-06.
+  cross-owner segment fan-out is implemented (f5f1d9d8: peer relay for
+  reads/scan pages, internal per-segment sweep for the deletion saga,
+  cursor probes for pull; ownership 409s preserved through the product
+  translators) and demonstrated on the 4-instance fleet: keyed reads
+  exact on router + instances, scans 9/9 exact across three cross-owner
+  streams, pull/settle, and the relayed deletion saga completing 204
+  (docs/FLEET-CAMPAIGN.md round 2)
 ```
 
 ## Provenance (v0.2.0-preview.4)
