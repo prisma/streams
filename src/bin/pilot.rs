@@ -539,6 +539,10 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
     if stream.is_none()
         && !(path == "/v1/streams"
             || path == "/v1/segments"
+            // /v1/segments/{name} is a registry read — any instance
+            // answers. Run-2 rig finding: rejecting it blinded the
+            // probe's split detection through the LB.
+            || path.starts_with("/v1/segments/")
             || path == "/health"
             || path.starts_with("/v1/debug"))
     {

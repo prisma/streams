@@ -4823,6 +4823,7 @@ async fn http_rig_inner(
         instance_name: String::new(),
         ring_active: std::sync::RwLock::new(Vec::new()),
         ring_overrides: std::sync::RwLock::new(std::collections::HashMap::new()),
+        peer_urls: std::sync::RwLock::new(std::collections::HashMap::new()),
         data_store: store,
         keys,
         touch,

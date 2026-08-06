@@ -847,6 +847,7 @@ async fn async_main() -> anyhow::Result<()> {
         instance_name: args.instance_name.clone(),
         ring_active: std::sync::RwLock::new(Vec::new()),
         ring_overrides: std::sync::RwLock::new(std::collections::HashMap::new()),
+        peer_urls: std::sync::RwLock::new(std::collections::HashMap::new()),
         data_store,
         keys,
         touch,

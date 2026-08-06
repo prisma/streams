@@ -128,6 +128,11 @@ pub struct AppState {
     /// shard prefix -> instance. Consulted before the rendezvous pick; an
     /// override whose target is not in the active set is ignored.
     pub ring_overrides: std::sync::RwLock<std::collections::HashMap<String, String>>,
+    /// Fresh peers' published base URLs (heartbeat `url`, from SELF_URL),
+    /// updated by the fleet loop. Segment fan-out — cross-owner lineage
+    /// reads and consumer sweeps — addresses owners through this map;
+    /// empty in standalone mode or when SELF_URL isn't deployed.
+    pub peer_urls: std::sync::RwLock<std::collections::HashMap<String, String>>,
     pub data_store: Arc<dyn ObjectStore>,
     pub keys: Arc<KeyCache>,
     pub touch: Arc<crate::touch::TouchRegistry>,
@@ -835,6 +840,26 @@ pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(|| async { "ok" }))
         .route("/v1/segments/{*name}", get(get_segments))
+        // Fleet-internal segment fan-out target (bearer-gated): a keyed,
+        // segment-positioned read served strictly from local ownership.
+        // Peers relay here when a lineage crosses instances; the public
+        // raw route keeps rejecting ?key= (audit P0 standards isolation).
+        .route(
+            "/v1/internal/segment-read/{*name}",
+            get(internal_segment_read),
+        )
+        .route(
+            "/v1/internal/sweep-segment/{*name}",
+            post(crate::product::internal_sweep_segment),
+        )
+        .route(
+            "/v1/internal/queue-cursor/{*name}",
+            get(crate::product::internal_queue_cursor),
+        )
+        .route(
+            "/v1/internal/segment-scan/{*name}",
+            get(crate::product::internal_segment_scan),
+        )
         .route("/v1/debug/timings", get(debug_timings))
         .route("/v1/debug/load", get(debug_load))
         .route("/v1/debug/store", get(debug_store))
@@ -900,7 +925,7 @@ pub fn ring_pick(shard: &str, instances: &[String]) -> usize {
     best
 }
 
-fn err_resp(status: StatusCode, code: &str, message: &str) -> Response {
+pub(crate) fn err_resp(status: StatusCode, code: &str, message: &str) -> Response {
     (
         status,
         [(header::CONTENT_TYPE, "application/json")],
@@ -1010,6 +1035,12 @@ pub struct ReadParams {
     /// is always durable; only product_read installs Applied.
     #[serde(skip)]
     pub(crate) deliver: crate::shard::Deliver,
+    /// Set on peer-relayed segment reads (/v1/internal/segment-read):
+    /// serve strictly from local ownership — a foreign segment answers
+    /// 409 Streams-Replay-To instead of relaying again, so fan-out depth
+    /// is exactly one and ownership churn can never build relay cycles.
+    #[serde(skip)]
+    pub(crate) no_fanout: bool,
 }
 
 /// Reserved Durable Streams control namespace (appendix §2.6): matched
@@ -6239,6 +6270,167 @@ async fn sse_response(
 /// this segment is mid-split (seal done, successors unpublished) — the
 /// SEAL GAP — and the response may carry records and a resume cursor
 /// but NEVER Stream-Closed and NEVER a final Stream-Up-To-Date.
+/// Shared client for fleet-internal peer calls (segment fan-out). One
+/// pool, HTTP/1.1, idle timeout under the platform's ~5 s VM-suspend
+/// socket kill (same rule as the store client and the pilot LB).
+pub(crate) fn peer_client() -> &'static reqwest::Client {
+    static C: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    C.get_or_init(|| {
+        reqwest::Client::builder()
+            .http1_only()
+            .pool_idle_timeout(std::time::Duration::from_secs(4))
+            .tcp_nodelay(true)
+            .build()
+            .expect("peer client")
+    })
+}
+
+/// Resolve a Streams-Replay-To response to a peer base URL. None when
+/// the response is not an ownership bounce or the peer is unknown
+/// (standalone mode, missing SELF_URL) — callers fall back to returning
+/// the original 409, which is today's behavior.
+pub(crate) fn replay_peer_url(state: &AppState, r: &Response) -> Option<(String, String)> {
+    let owner = r
+        .headers()
+        .get("streams-replay-to")?
+        .to_str()
+        .ok()?
+        .to_string();
+    let url = state.peer_urls.read().unwrap().get(&owner)?.clone();
+    Some((owner, url))
+}
+
+/// Relay one segment-positioned read to the segment's owner and stream
+/// its raw response back verbatim. The peer serves under no_fanout, so
+/// depth is exactly one; any relay failure returns None and the caller
+/// surfaces the original ownership 409 (retryable via the router).
+async fn relay_segment_read(
+    state: &Arc<AppState>,
+    base: String,
+    name: &str,
+    seg_id: u32,
+    scan_from: u64,
+    params: &ReadParams,
+    headers: &HeaderMap,
+    head_only: bool,
+) -> Option<Response> {
+    let tok = if scan_from == u64::MAX {
+        "now".to_string()
+    } else if scan_from == 0 {
+        crate::offsets::encode_ep(seg_id, Offset::START)
+    } else {
+        crate::offsets::encode_ep(seg_id, Offset(Some(scan_from - 1)))
+    };
+    // No urlencoding dep (supply-chain posture): RFC 3986 unreserved
+    // pass-through, everything else percent-encoded.
+    fn pct(s: &str) -> String {
+        let mut out = String::with_capacity(s.len());
+        for b in s.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    out.push(b as char)
+                }
+                _ => out.push_str(&format!("%{b:02X}")),
+            }
+        }
+        out
+    }
+    let mut q = format!("offset={tok}");
+    if let Some(k) = &params.key {
+        q.push_str(&format!("&key={}", pct(k)));
+    }
+    if let Some(l) = &params.live {
+        q.push_str(&format!("&live={}", pct(l)));
+    }
+    if let Some(t) = &params.timeout {
+        q.push_str(&format!("&timeout={}", pct(t)));
+    }
+    if head_only {
+        q.push_str("&head=1");
+    }
+    let mut req = peer_client()
+        .get(format!("{base}/v1/internal/segment-read/{name}?{q}"))
+        .timeout(std::time::Duration::from_secs(40));
+    if let Some(t) = &state.auth_token {
+        req = req.header("authorization", format!("Bearer {t}"));
+    }
+    for h in ["stream-encryption-key", "prisma-encryption-key"] {
+        if let Some(v) = headers.get(h) {
+            req = req.header(h, v.clone());
+        }
+    }
+    if let Some(mb) = params.max_bytes {
+        req = req.header("streams-internal-max-bytes", mb.to_string());
+    }
+    if params.deliver == crate::shard::Deliver::Applied {
+        req = req.header("streams-internal-deliver", "applied");
+    }
+    match req.send().await {
+        Ok(r) => {
+            let mut out = Response::builder().status(r.status().as_u16());
+            for (k, v) in r.headers() {
+                let n = k.as_str();
+                if n != "connection" && n != "transfer-encoding" {
+                    out = out.header(k, v);
+                }
+            }
+            use futures_util::TryStreamExt;
+            Some(
+                out.body(axum::body::Body::from_stream(
+                    r.bytes_stream().map_err(std::io::Error::other),
+                ))
+                .unwrap(),
+            )
+        }
+        Err(e) => {
+            tracing::warn!("segment fan-out relay to {base} failed: {e}");
+            None
+        }
+    }
+}
+
+/// Fleet-internal fan-out target: a keyed, segment-positioned read
+/// served strictly from local ownership (no_fanout). Bearer-gated with
+/// the fleet's shared token; the internal max-bytes/deliver headers are
+/// honored only here so the public raw grammar stays pinned.
+async fn internal_segment_read(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Query(mut params): Query<ReadParams>,
+    uri: axum::http::Uri,
+    headers: HeaderMap,
+) -> Response {
+    if !authorized(&state, &headers) {
+        return err_resp(StatusCode::UNAUTHORIZED, "unauthorized", "bearer required");
+    }
+    params.no_fanout = true;
+    params.max_bytes = headers
+        .get("streams-internal-max-bytes")
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse().ok());
+    if headers
+        .get("streams-internal-deliver")
+        .and_then(|v| v.to_str().ok())
+        == Some("applied")
+    {
+        params.deliver = crate::shard::Deliver::Applied;
+    }
+    let head_only = uri
+        .query()
+        .map(|q| q.split('&').any(|p| p == "head=1"))
+        .unwrap_or(false);
+    read_inner(
+        state,
+        name,
+        params,
+        headers,
+        head_only,
+        true,
+        SseSurface::Raw,
+    )
+    .await
+}
+
 async fn read_v3_lineage_inner(
     state: Arc<AppState>,
     desc: StreamDesc,
@@ -6381,6 +6573,7 @@ async fn read_v3_lineage_inner(
         None => crate::offsets::encode_ep(seg_id, Offset::START),
         Some(o) => crate::offsets::encode_ep(seg_id, Offset(Some(o))),
     };
+    let entry_pos = pos;
     loop {
         let sg = &lineage[pos];
         let identity = desc.dynamic_segment_identity(sg.seg_id);
@@ -6390,7 +6583,53 @@ async fn read_v3_lineage_inner(
         // child.
         let engine = match state.engine_for(&desc.segment_route(sg)).await {
             Ok(e) => e,
-            Err(r) => return r,
+            Err(r) => {
+                // Cross-owner lineage fan-out: this segment lives on a
+                // peer. Relay this one segment-positioned page to its
+                // owner and stream the raw response back — the caller
+                // (raw or product wrapper) treats it exactly like a
+                // locally-served page. Depth is one (no_fanout on the
+                // peer). Fallback: surface the ownership 409, which
+                // routers follow via Streams-Replay-To.
+                if !params.no_fanout {
+                    let peer = replay_peer_url(&state, &r).map(|(_, base)| base);
+                    if let Some(base) = peer {
+                        if let Some(resp) = relay_segment_read(
+                            &state, base, &desc.name, sg.seg_id, scan_from, &params, &headers,
+                            head_only,
+                        )
+                        .await
+                        {
+                            return resp;
+                        }
+                    }
+                    return r;
+                }
+                // no_fanout (we ARE the relay target): never relay
+                // again. Hop-forward walked over drained local segments
+                // into a foreign one — hand the cursor to it with an
+                // empty page; the client's next request reaches its
+                // owner and the cursor advances every round (no relay
+                // cycles under ownership churn). If the REQUESTED
+                // segment itself is foreign (ownership moved between
+                // the relayer's pick and now), surface the 409.
+                if pos > entry_pos {
+                    let body: Bytes = if desc.is_json() {
+                        Bytes::from_static(b"[]")
+                    } else {
+                        Bytes::new()
+                    };
+                    return Response::builder()
+                        .status(StatusCode::OK)
+                        .header(header::CONTENT_TYPE, desc.content_type.clone())
+                        .header("Stream-Next-Offset", seg_tok(sg.seg_id, None))
+                        .header(header::CACHE_CONTROL, "no-store")
+                        .header("Cross-Origin-Resource-Policy", "cross-origin")
+                        .body(Body::from(body))
+                        .unwrap();
+                }
+                return r;
+            }
         };
         let handle = match engine.stream_handle(identity).await {
             Ok(h) => h,

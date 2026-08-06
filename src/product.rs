@@ -2662,6 +2662,26 @@ async fn translate_append_response(
     // Error translation: lift the machine code from the shared path's
     // error body where one exists (the producer taxonomy — spec Stage 5
     // §9 — depends on it), else map by status.
+    //
+    // Ownership bounce first: an append routed to a segment another
+    // instance owns must keep Streams-Replay-To visible, or routers
+    // cannot converge and every post-split append to a foreign child
+    // fails as an opaque "conflict" (the two-instance rig lost every
+    // such record silently — the client saw 409, the hammer didn't
+    // check, and the child segments stayed empty).
+    if status.as_u16() == 409 {
+        if let Some(to) = raw.headers().get("streams-replay-to").cloned() {
+            let mut r = perr(
+                status,
+                "not_stream_owner",
+                "another instance owns the target segment; retry through the router",
+                None,
+                true,
+            );
+            r.headers_mut().insert("streams-replay-to", to);
+            return r;
+        }
+    }
     let retry_after = raw.headers().get("retry-after").cloned();
     let sealed_hdr = raw.headers().contains_key("stream-closed");
     let expected = raw
@@ -2843,6 +2863,24 @@ fn start_token(desc: &StreamDesc, rk: &str) -> String {
 
 fn translate_read_error(raw: Response) -> Response {
     let status = raw.status();
+    // An ownership bounce is NOT a cursor condition: mapping it to
+    // cursor_beyond_tail told SDKs to rewind healthy cursors and — by
+    // dropping Streams-Replay-To — hid the one signal routers use to
+    // converge (the fleet campaign's cross-owner lineage reads died
+    // exactly here). Preserve it as its own retryable error.
+    if status.as_u16() == 409 {
+        if let Some(to) = raw.headers().get("streams-replay-to").cloned() {
+            let mut r = perr(
+                status,
+                "not_stream_owner",
+                "another instance owns the target segment; retry through the router",
+                None,
+                true,
+            );
+            r.headers_mut().insert("streams-replay-to", to);
+            return r;
+        }
+    }
     let (code, message, retryable) = match status.as_u16() {
         404 => ("not_found", "stream not found", false),
         403 => ("wrong_key", "encryption key mismatch", false),
@@ -3046,6 +3084,7 @@ async fn product_read(
         sig: None,
         max_bytes,
         deliver,
+        no_fanout: false,
     };
     let mut ih = HeaderMap::new();
     if let Ok(v) = axum::http::HeaderValue::from_str(&key_b64) {
@@ -3284,9 +3323,32 @@ async fn product_scan(
                             None => {
                                 let identity = desc.dynamic_segment_identity(sg.seg_id);
                                 let engine = match state.engine_for(&desc.segment_route(sg)).await {
-                                    Ok(e) => e,
-                                    Err(r) => return translate_read_error(r),
+                                    Ok(e) => Some(e),
+                                    Err(r) => {
+                                        // Cross-owner snapshot: the live
+                                        // tail comes from the owner via
+                                        // the internal head probe.
+                                        let peer = crate::http::replay_peer_url(&state, &r)
+                                            .map(|(_, b)| b);
+                                        let relayed = match peer {
+                                            Some(base) => {
+                                                relay_segment_tail(
+                                                    &state, &base, &desc.name, sg.seg_id, &key_b64,
+                                                )
+                                                .await
+                                            }
+                                            None => None,
+                                        };
+                                        match relayed {
+                                            Some(end) => {
+                                                segs.push((sg.seg_id, end));
+                                                continue;
+                                            }
+                                            None => return translate_read_error(r),
+                                        }
+                                    }
                                 };
+                                let engine = engine.expect("ok branch");
                                 match engine.stream_handle(identity).await {
                                     Ok(h) => h.state.lock().unwrap().durable.next,
                                     Err(e) => {
@@ -3367,44 +3429,68 @@ async fn product_scan(
                 false,
             );
         };
-        let engine = match state.engine_for(&route).await {
-            Ok(e) => e,
-            Err(r) => return translate_read_error(r),
-        };
-        let handle = match engine.stream_handle(identity).await {
-            Ok(h) => h,
-            Err(e) => {
-                return perr(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    &e.to_string(),
+        let out = match state.engine_for(&route).await {
+            Ok(engine) => {
+                let handle = match engine.stream_handle(identity).await {
+                    Ok(h) => h,
+                    Err(e) => {
+                        return perr(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "internal",
+                            &e.to_string(),
+                            None,
+                            true,
+                        );
+                    }
+                };
+                state.keys.put(identity, skey.clone(), epoch);
+                match crate::http::read_merged(
+                    &skey,
+                    &epoch,
+                    &handle,
+                    &engine,
+                    off,
                     None,
-                    true,
-                );
+                    max - spent,
+                    crate::shard::Deliver::Durable,
+                )
+                .await
+                {
+                    Ok(o) => o,
+                    Err(m) => {
+                        return perr(
+                            StatusCode::INTERNAL_SERVER_ERROR,
+                            "internal",
+                            &m,
+                            None,
+                            true,
+                        );
+                    }
+                }
             }
-        };
-        state.keys.put(identity, skey.clone(), epoch);
-        let out = match crate::http::read_merged(
-            &skey,
-            &epoch,
-            &handle,
-            &engine,
-            off,
-            None,
-            max - spent,
-            crate::shard::Deliver::Durable,
-        )
-        .await
-        {
-            Ok(o) => o,
-            Err(m) => {
-                return perr(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    &m,
-                    None,
-                    true,
-                );
+            Err(r) => {
+                // Cross-owner scan page: fetch this segment's slice
+                // (records WITH routing keys) from its owner.
+                let peer = crate::http::replay_peer_url(&state, &r).map(|(_, b)| b);
+                let relayed = match peer {
+                    Some(base) => {
+                        relay_segment_scan(
+                            &state,
+                            &base,
+                            &desc.name,
+                            seg_id,
+                            off,
+                            max - spent,
+                            &key_b64,
+                        )
+                        .await
+                    }
+                    None => None,
+                };
+                match relayed {
+                    Some(o) => o,
+                    None => return translate_read_error(r),
+                }
             }
         };
         let mut progressed = false;
@@ -3885,6 +3971,426 @@ const CONSUMER_DELETE_REQUEST_STEPS: u32 = 512;
 /// them concurrently, boundedly.
 const CONSUMER_DELETE_SEGMENT_CONCURRENCY: usize = 8;
 
+// ---- fleet-internal segment fan-out (cross-owner consumer ops) ------
+
+fn json_ok(v: serde_json::Value) -> Response {
+    Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "application/json")
+        .body(Body::from(v.to_string()))
+        .unwrap()
+}
+//
+// A split child lives on its own shard route, so a consumer's segments
+// can be owned by different instances. The saga driver and the pull
+// walk relay the per-segment piece to its owner over the fleet-internal
+// endpoints below (bearer = the fleet's shared token; depth is one —
+// the handlers never relay again). Ownership 409s from the handlers
+// flow back and the caller surfaces its normal retryable error.
+
+/// Relay one segment's ConfigDeleteStep loop to its owner. Chunks the
+/// caller's remaining step budget so a relayed segment obeys the same
+/// per-request bound as a local one (durable progress either way).
+async fn relay_sweep_segment(
+    state: &Arc<AppState>,
+    base: &str,
+    name: &str,
+    seg_id: u32,
+    cname: &str,
+    fence_below: u64,
+    steps_left: &std::sync::Arc<std::sync::atomic::AtomicI64>,
+) -> Result<(), (&'static str, String)> {
+    loop {
+        let budget = steps_left.load(std::sync::atomic::Ordering::SeqCst);
+        if budget <= 0 {
+            return Err((
+                "segment_cleanup_incomplete",
+                format!(
+                    "segment {seg_id} still has rows after this request's \
+                     cleanup budget; progress is durable — retry to resume"
+                ),
+            ));
+        }
+        let mut req = crate::http::peer_client()
+            .post(format!("{base}/v1/internal/sweep-segment/{name}"))
+            .timeout(std::time::Duration::from_secs(30))
+            .json(&json!({
+                "consumer": cname,
+                "segId": seg_id,
+                "fenceBelow": fence_below,
+                "maxSteps": budget.min(128),
+            }));
+        if let Some(t) = &state.auth_token {
+            req = req.header("authorization", format!("Bearer {t}"));
+        }
+        let reply: Option<serde_json::Value> = match req.send().await {
+            Ok(r) if r.status().is_success() => r.json().await.ok(),
+            _ => None,
+        };
+        let Some(v) = reply else {
+            return Err((
+                "segment_unavailable",
+                format!(
+                    "segment {seg_id}'s owner did not complete the relayed \
+                     sweep; the deletion is incomplete — retry"
+                ),
+            ));
+        };
+        let used = v["steps"].as_i64().unwrap_or(1).max(1);
+        steps_left.fetch_sub(used, std::sync::atomic::Ordering::SeqCst);
+        if v["complete"].as_bool() == Some(true) {
+            return Ok(());
+        }
+    }
+}
+
+/// Fleet-internal sweep target: run bounded ConfigDeleteStep rounds for
+/// ONE locally-owned segment. fence_below arrives from the caller so
+/// the generation-fenced cleanup semantics (round 17) hold unchanged.
+pub(crate) async fn internal_sweep_segment(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    headers: HeaderMap,
+    body: Bytes,
+) -> Response {
+    if !crate::http::authorized(&state, &headers) {
+        return perr(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bearer required",
+            None,
+            false,
+        );
+    }
+    #[derive(serde::Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Doc {
+        consumer: String,
+        seg_id: u32,
+        fence_below: u64,
+        max_steps: i64,
+    }
+    let doc: Doc = match serde_json::from_slice(&body) {
+        Ok(d) => d,
+        Err(e) => {
+            return perr(
+                StatusCode::BAD_REQUEST,
+                "invalid_body",
+                &e.to_string(),
+                None,
+                false,
+            );
+        }
+    };
+    let desc = match state.registry.get(&name).await {
+        Ok(Some(d)) => d,
+        _ => return perr(StatusCode::NOT_FOUND, "not_found", "stream", None, false),
+    };
+    let route = desc.segment_route_by_id(doc.seg_id);
+    let identity = desc.dynamic_segment_identity(doc.seg_id);
+    let engine = match state.engine_for(&route).await {
+        Ok(e) => e,
+        Err(r) => return r, // ownership moved: the 409 tells the relayer
+    };
+    let mut steps = 0i64;
+    loop {
+        if steps >= doc.max_steps.clamp(1, CONSUMER_DELETE_REQUEST_STEPS as i64) {
+            return json_ok(json!({"complete": false, "steps": steps}));
+        }
+        steps += 1;
+        match engine
+            .submit_queue(
+                identity,
+                crate::queue::QueueOp::ConfigDeleteStep {
+                    consumer: doc.consumer.clone(),
+                    fence_below: doc.fence_below,
+                    max_rows: CONSUMER_DELETE_STEP_ROWS,
+                    max_bytes: CONSUMER_DELETE_STEP_BYTES,
+                },
+            )
+            .await
+        {
+            Ok(crate::queue::QueueOut::DeleteStep { complete: true, .. }) => {
+                return json_ok(json!({"complete": true, "steps": steps}));
+            }
+            Ok(crate::queue::QueueOut::DeleteStep {
+                complete: false, ..
+            }) => continue,
+            other => {
+                return perr(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "segment_cleanup_failed",
+                    &format!("relayed cleanup step failed: {other:?}"),
+                    None,
+                    true,
+                );
+            }
+        }
+    }
+}
+
+/// Fleet-internal consumer-cursor probe for ONE locally-owned segment:
+/// (queue cursor, durable tail). Lets a pull walk skip a FOREIGN drained
+/// predecessor and yield past a FOREIGN empty live sibling without
+/// taking the segment's engine — the two cases whole-request replay
+/// cannot converge on (each owner would bounce on the other's segment).
+pub(crate) async fn internal_queue_cursor(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !crate::http::authorized(&state, &headers) {
+        return perr(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bearer required",
+            None,
+            false,
+        );
+    }
+    let q = |h: &str| {
+        headers
+            .get(h)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    let (Some(consumer), Some(seg_id), Some(cgen)) = (
+        q("streams-internal-consumer"),
+        q("streams-internal-seg").and_then(|v| v.parse::<u32>().ok()),
+        q("streams-internal-gen").and_then(|v| v.parse::<u64>().ok()),
+    ) else {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "invalid_body",
+            "consumer/seg/gen headers required",
+            None,
+            false,
+        );
+    };
+    let desc = match state.registry.get(&name).await {
+        Ok(Some(d)) => d,
+        _ => return perr(StatusCode::NOT_FOUND, "not_found", "stream", None, false),
+    };
+    let route = desc.segment_route_by_id(seg_id);
+    let identity = desc.dynamic_segment_identity(seg_id);
+    let engine = match state.engine_for(&route).await {
+        Ok(e) => e,
+        Err(r) => return r,
+    };
+    let cursor = engine.queue_cursor(identity, &consumer, cgen).await.unwrap_or(0);
+    let tail = match engine.stream_handle(identity).await {
+        Ok(h) => h.state.lock().unwrap().durable.next,
+        Err(_) => 0,
+    };
+    json_ok(json!({"cursor": cursor, "tail": tail}))
+}
+
+/// Relay a cursor/tail probe to a segment's owner. None on any failure
+/// — the caller falls back to its normal ownership error.
+async fn relay_queue_cursor(
+    state: &Arc<AppState>,
+    base: &str,
+    name: &str,
+    seg_id: u32,
+    cname: &str,
+    cgen: u64,
+) -> Option<(u64, u64)> {
+    let mut req = crate::http::peer_client()
+        .get(format!("{base}/v1/internal/queue-cursor/{name}"))
+        .timeout(std::time::Duration::from_secs(15))
+        .header("streams-internal-consumer", cname)
+        .header("streams-internal-seg", seg_id.to_string())
+        .header("streams-internal-gen", cgen.to_string());
+    if let Some(t) = &state.auth_token {
+        req = req.header("authorization", format!("Bearer {t}"));
+    }
+    let v: serde_json::Value = match req.send().await {
+        Ok(r) if r.status().is_success() => r.json().await.ok()?,
+        _ => return None,
+    };
+    Some((v["cursor"].as_u64()?, v["tail"].as_u64()?))
+}
+
+/// Fleet-internal scan-page source: read_merged over the wire for ONE
+/// locally-owned segment, records with their routing keys (a raw page
+/// carries payloads only, and scan items surface routingKey per
+/// record). Parameters ride internal headers; the stream key rides its
+/// normal header because the payloads must be decrypted here.
+pub(crate) async fn internal_segment_scan(
+    axum::extract::State(state): axum::extract::State<Arc<AppState>>,
+    axum::extract::Path(name): axum::extract::Path<String>,
+    headers: HeaderMap,
+) -> Response {
+    if !crate::http::authorized(&state, &headers) {
+        return perr(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bearer required",
+            None,
+            false,
+        );
+    }
+    let q = |h: &str| {
+        headers
+            .get(h)
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string)
+    };
+    let (Some(seg_id), Some(from), Some(max_bytes), Some(key_b64)) = (
+        q("streams-internal-seg").and_then(|v| v.parse::<u32>().ok()),
+        q("streams-internal-from").and_then(|v| v.parse::<u64>().ok()),
+        q("streams-internal-max-bytes").and_then(|v| v.parse::<usize>().ok()),
+        q("stream-encryption-key"),
+    ) else {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "invalid_body",
+            "seg/from/max-bytes/key headers required",
+            None,
+            false,
+        );
+    };
+    let desc = match state.registry.get(&name).await {
+        Ok(Some(d)) => d,
+        _ => return perr(StatusCode::NOT_FOUND, "not_found", "stream", None, false),
+    };
+    let (skey, epoch) = match crate::http::check_key(Some(&key_b64), &desc) {
+        crate::http::KeyCheck::Ok(k, e) => (k, e),
+        _ => return perr(StatusCode::FORBIDDEN, "wrong_key", "key", None, false),
+    };
+    let route = desc.segment_route_by_id(seg_id);
+    let identity = desc.dynamic_segment_identity(seg_id);
+    let engine = match state.engine_for(&route).await {
+        Ok(e) => e,
+        Err(r) => return r,
+    };
+    let handle = match engine.stream_handle(identity).await {
+        Ok(h) => h,
+        Err(e) => {
+            return perr(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+                None,
+                true,
+            );
+        }
+    };
+    state.keys.put(identity, skey.clone(), epoch);
+    let out = match crate::http::read_merged(
+        &skey,
+        &epoch,
+        &handle,
+        &engine,
+        from,
+        None,
+        max_bytes,
+        crate::shard::Deliver::Durable,
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(m) => {
+            return perr(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m, None, true);
+        }
+    };
+    use base64::Engine as _;
+    let items: Vec<serde_json::Value> = out
+        .recs
+        .iter()
+        .map(|r| {
+            json!({
+                "off": r.off,
+                "rk": r.rkey,
+                "p": base64::engine::general_purpose::STANDARD.encode(&r.payload),
+            })
+        })
+        .collect();
+    json_ok(json!({
+        "items": items,
+        "last": out.last,
+        "end": out.end,
+        "completed": out.completed,
+    }))
+}
+
+/// Relay one scan page's segment read to its owner; None on failure.
+async fn relay_segment_scan(
+    state: &Arc<AppState>,
+    base: &str,
+    name: &str,
+    seg_id: u32,
+    from: u64,
+    max_bytes: usize,
+    key_b64: &str,
+) -> Option<crate::http::ReadOut> {
+    let mut req = crate::http::peer_client()
+        .get(format!("{base}/v1/internal/segment-scan/{name}"))
+        .timeout(std::time::Duration::from_secs(20))
+        .header("streams-internal-seg", seg_id.to_string())
+        .header("streams-internal-from", from.to_string())
+        .header("streams-internal-max-bytes", max_bytes.to_string())
+        .header("stream-encryption-key", key_b64);
+    if let Some(t) = &state.auth_token {
+        req = req.header("authorization", format!("Bearer {t}"));
+    }
+    let v: serde_json::Value = match req.send().await {
+        Ok(r) if r.status().is_success() => r.json().await.ok()?,
+        _ => return None,
+    };
+    use base64::Engine as _;
+    let recs = v["items"]
+        .as_array()?
+        .iter()
+        .map(|it| {
+            Some(crate::http::PlainRec {
+                off: it["off"].as_u64()?,
+                rkey: it["rk"].as_str()?.to_string(),
+                payload: Bytes::from(
+                    base64::engine::general_purpose::STANDARD
+                        .decode(it["p"].as_str()?)
+                        .ok()?,
+                ),
+            })
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(crate::http::ReadOut {
+        recs,
+        last: v["last"].as_u64(),
+        end: v["end"].as_u64()?,
+        completed: v["completed"].as_bool()?,
+    })
+}
+
+/// Relay a segment-tail probe (scan snapshot creation) via the internal
+/// segment read's head path: Stream-Next-Offset on the reply IS the
+/// segment's durable end.
+async fn relay_segment_tail(
+    state: &Arc<AppState>,
+    base: &str,
+    name: &str,
+    seg_id: u32,
+    key_b64: &str,
+) -> Option<u64> {
+    let tok = crate::offsets::encode_ep(seg_id, crate::offsets::Offset::START);
+    let mut req = crate::http::peer_client()
+        .get(format!(
+            "{base}/v1/internal/segment-read/{name}?offset={tok}&head=1"
+        ))
+        .timeout(std::time::Duration::from_secs(15))
+        .header("stream-encryption-key", key_b64);
+    if let Some(t) = &state.auth_token {
+        req = req.header("authorization", format!("Bearer {t}"));
+    }
+    let r = match req.send().await {
+        Ok(r) if r.status().is_success() => r,
+        _ => return None,
+    };
+    let tok = r.headers().get("stream-next-offset")?.to_str().ok()?;
+    let (_, off) = crate::offsets::parse_ep(tok).ok()?;
+    Some(off.scan_from())
+}
+
 async fn product_consumer_delete(
     state: Arc<AppState>,
     name: String,
@@ -4091,11 +4597,28 @@ async fn product_consumer_delete(
         let sweeps = segs.iter().copied().map(|(seg_id, identity, route, _)| {
             let state = state.clone();
             let cname = cname.clone();
+            let name = name.clone();
             let steps_left = steps_left.clone();
             async move {
                 let engine = match state.engine_for(&route).await {
                     Ok(e) => e,
-                    Err(_) => {
+                    Err(r) => {
+                        // Cross-owner sweep fan-out: run this segment's
+                        // DeleteStep loop on its owner. The borrow of r
+                        // ends before the await (axum Body is !Sync).
+                        let peer = crate::http::replay_peer_url(&state, &r).map(|(_, b)| b);
+                        if let Some(base) = peer {
+                            return relay_sweep_segment(
+                                &state,
+                                &base,
+                                &name,
+                                seg_id,
+                                &cname,
+                                cgen + 1,
+                                &steps_left,
+                            )
+                            .await;
+                        }
                         return Err((
                             "segment_unavailable",
                             format!(
@@ -4510,7 +5033,29 @@ async fn product_consumer_pull(
         for (seg_id, identity, route, sealed_end) in lineage.iter().copied() {
             let engine = match state.engine_for(&route).await {
                 Ok(e) => e,
-                Err(r) => return translate_read_error(r),
+                Err(r) => {
+                    // Cross-owner pull: a FOREIGN drained predecessor or
+                    // empty live sibling must not stop the walk — probe
+                    // its cursor/tail on the owner and skip past it. A
+                    // foreign segment with deliverable backlog keeps the
+                    // ownership 409 (leases are owner-local; the router
+                    // replays the pull to the owner, which now skips OUR
+                    // segments the same way — converges).
+                    let peer = crate::http::replay_peer_url(&state, &r).map(|(_, b)| b);
+                    if let Some(base) = peer {
+                        if let Some((cur, tail)) =
+                            relay_queue_cursor(&state, &base, &desc.name, seg_id, &cname, cgen)
+                                .await
+                        {
+                            match sealed_end {
+                                Some(end) if cur >= end => continue,
+                                None if tail <= cur => continue,
+                                _ => {}
+                            }
+                        }
+                    }
+                    return translate_read_error(r);
+                }
             };
             if let Some(end) = sealed_end {
                 let cursor = engine
@@ -5402,5 +5947,41 @@ mod tests {
         assert_eq!(parse_idle_secs("90"), Some(90));
         assert_eq!(parse_idle_secs("0d"), None);
         assert_eq!(parse_idle_secs("x"), None);
+    }
+
+    // Regression (two-instance rig): an ownership 409 translated to
+    // cursor_beyond_tail told SDKs to rewind healthy cursors, and
+    // dropping Streams-Replay-To hid the only signal routers use to
+    // converge — cross-owner lineage reads died as fake tail overruns
+    // and every post-split append to a foreign child failed opaquely.
+    #[test]
+    fn ownership_bounce_survives_read_translation() {
+        let mut raw = crate::http::err_resp(
+            StatusCode::CONFLICT,
+            "not_ring_owner",
+            "shard 000 belongs to streams-2",
+        );
+        raw.headers_mut().insert(
+            "streams-replay-to",
+            axum::http::HeaderValue::from_static("streams-2"),
+        );
+        let out = translate_read_error(raw);
+        assert_eq!(out.status(), StatusCode::CONFLICT);
+        assert_eq!(
+            out.headers()
+                .get("streams-replay-to")
+                .and_then(|v| v.to_str().ok()),
+            Some("streams-2")
+        );
+    }
+
+    #[test]
+    fn plain_409_still_reads_as_beyond_tail() {
+        // The deliver=applied rewind contract is untouched: a 409
+        // WITHOUT a replay target keeps its cursor_beyond_tail meaning.
+        let raw = crate::http::err_resp(StatusCode::CONFLICT, "conflict", "beyond tail");
+        let out = translate_read_error(raw);
+        assert_eq!(out.status(), StatusCode::CONFLICT);
+        assert!(out.headers().get("streams-replay-to").is_none());
     }
 }

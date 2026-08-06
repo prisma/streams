@@ -81,6 +81,12 @@ pub struct Heartbeat {
     /// instance (ladder p4b D3: zero-flow vacuous run).
     #[serde(default)]
     pub wedge_max_ms: i64,
+    /// This instance's own base URL (SELF_URL env), published so peers
+    /// can fan segment-scoped work out to the owner — cross-owner
+    /// lineage reads and consumer sweeps need an address, and only the
+    /// platform (not the instance's peers) knows it otherwise.
+    #[serde(default)]
+    pub url: String,
 }
 
 /// fleet/overrides.json: rebalancer shard moves, CAS-updated by the
@@ -383,6 +389,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 draining: false,
                 absorb_lag_max_secs: crate::usage::absorb_lag_max(),
                 wedge_max_ms,
+                url: std::env::var("SELF_URL").unwrap_or_default(),
             };
             let path = ObjPath::from(format!("fleet/{}.json", cfg.instance));
             if let Err(e) = store
@@ -404,6 +411,9 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 std::collections::HashMap::new();
             // Fresh peers' load (cpu, absorb lag), for rebalance targets.
             let mut peer_load: std::collections::HashMap<String, (f64, u64)> =
+                std::collections::HashMap::new();
+            // Fresh peers' published base URLs, for segment fan-out.
+            let mut peer_urls: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
             // (cpu, effective lag secs incl. wedge)
             let mut listing = store.list(Some(&ObjPath::from("fleet")));
@@ -430,6 +440,9 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                         .absorb_lag_max_secs
                         .max((other.wedge_max_ms / 1000).max(0) as u64);
                     peer_load.insert(other.instance.clone(), (other.cpu_pct, eff_lag));
+                    if !other.url.is_empty() {
+                        peer_urls.insert(other.instance.clone(), other.url.clone());
+                    }
                     live += 1;
                     total_rps += other.rps;
                     total_cores_used += other.cpu_pct / 100.0;
@@ -600,6 +613,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     active = ordinal;
                 }
                 *state.ring_active.write().unwrap() = active;
+                *state.peer_urls.write().unwrap() = peer_urls.clone();
             }
 
             // R4 rebalancer (SCALING.md §4). Every instance mirrors

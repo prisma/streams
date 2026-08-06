@@ -52,11 +52,14 @@ if [ "$STEP" = servers ]; then
       --env SLATE_S3_ACCESS_KEY_ID="$(j accessKeyId)" \
       --env SLATE_S3_SECRET_ACCESS_KEY="$(j secretAccessKey)" \
       --env AUTH_TOKEN="$AUTH" \
-      --env PATH_PREFIX=fleetd --env INSTANCE_NAME="streams-$i" \
+      --env PATH_PREFIX=fleetd2 --env INSTANCE_NAME="streams-$i" \
+      --env SELF_URL="$(cat "$S/url-fleet-s$i.txt" 2>/dev/null || true)" \
       --env FLEET_PREFIX=fleetops --env FLEET_MAX=4 \
       --env SCALE_OUT_CPU_PCT=30 --env SCALE_CPU_SUSTAIN_SECS=10 \
       --env SCALE_IN_CPU_PCT=5 --env SCALE_IN_SECS=900 \
-      --env INITIAL_SHARDS=4 \
+      --env INITIAL_SHARDS=16 \
+      --env SCALE_HOT_PCT=1 --env SCALE_HOT_EVALS=1 \
+      --env SCALE_EVAL_SECS=5 --env SCALE_RATE_WINDOW_SECS=10 \
       --env WAL_GROUP_COMMIT=1 --env WAL_FLUSH_GAP_MS=10 --env FLUSH_INTERVAL_MS=25 \
       --env WAL_POST_ACK_GATHER_MS=6 --env FRAME_COMPRESS=1 \
       --env L0_SST_SIZE_BYTES=16777216 --env MAX_UNFLUSHED_BYTES=33554432 \
@@ -83,7 +86,7 @@ elif [ "$STEP" = lb ]; then
     --env BIN_S3_ACCESS_KEY_ID="$BINID" --env BIN_S3_SECRET_ACCESS_KEY="$BINSEC" \
     --env S3_ENDPOINT="$(j endpoint)" --env S3_BUCKET="$(j bucketName)" --env S3_REGION=auto \
     --env S3_ACCESS_KEY_ID="$(j accessKeyId)" --env S3_SECRET_ACCESS_KEY="$(j secretAccessKey)" \
-    --env FLEET_PREFIX=fleetops --env DATA_PREFIX=fleetd \
+    --env FLEET_PREFIX=fleetops --env DATA_PREFIX=fleetd2 \
     --env ROUTER_NAME=router-1 --env UPSTREAMS="$UP" \
     --env KEEP_AWAKE=1 \
     --env RESOLV_OVERRIDE="$RESOLV" 2>&1 | grep -viE 'resolving|resolved|saved' | tail -2
