@@ -213,7 +213,15 @@ down and verified (0 projects remaining).
   disable; a data-plane key on that bucket would distinguish.
   Evidence: SRC-404-FIX-VERIFICATION.md (with x-amz-request-id per
   request).
-- Tigris served-from header value bug (reported earlier).
+- Tigris served-from header value bug — **fix verified 2026-08-06**
+  (single vantage): 874/874 requests across the original CAS-evidence
+  global bucket + both SRC buckets label consistently (served-from ∈
+  ingress ∪ residency); the geo-exotic metadata trickle (soak3's
+  ~1-1.5% get:manifest/get:other with eu→jnb / us-west→syd/hkg /
+  us-east→ord labels — the one class real routing never explained)
+  is absent at P>99.9% detection power. Multi-region confirmation
+  rides the next fleet/soak for free (`served_from_by_class` +
+  the staging non-local alarm).
 - SIN backend degradation episode 2026-08-02..03 (idle GETs 473 ms,
   writes 240 ms internal; recovered next day) — context for why SIN
   soak numbers from those days are not baselines.
