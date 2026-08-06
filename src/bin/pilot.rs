@@ -915,6 +915,18 @@ struct Gen {
     // on, computed client-side with the same rendezvous hash the LB uses.
     per_up_window: Vec<AtomicU64>,
     per_up_rate: Vec<AtomicU64>,
+    /// COMPACT ACKNOWLEDGED-ID LEDGER (round-19 correction). Aggregate
+    /// tail sums prove no aggregate DEFICIT; they cannot prove every
+    /// acknowledged operation appears exactly once — a missing ack could
+    /// be masked by an ambiguous op that committed. Each append carries
+    /// a unique op id, and per stream we keep count/sum/xor of the ids
+    /// the server ACKNOWLEDGED. The reader recomputes the same three
+    /// over the ids it actually reads back: all three matching pins the
+    /// multiset (count catches loss/duplication, sum+xor catch
+    /// substitution) in O(1) memory instead of a million-entry set.
+    ack_count: Vec<AtomicU64>,
+    ack_sum: Vec<AtomicU64>,
+    ack_xor: Vec<AtomicU64>,
 }
 
 async fn generator() {
@@ -1014,6 +1026,9 @@ async fn generator() {
         start: Instant::now(),
         per_up_window: (0..attr_n).map(|_| AtomicU64::new(0)).collect(),
         per_up_rate: (0..attr_n).map(|_| AtomicU64::new(0)).collect(),
+        ack_count: (0..n_streams).map(|_| AtomicU64::new(0)).collect(),
+        ack_sum: (0..n_streams).map(|_| AtomicU64::new(0)).collect(),
+        ack_xor: (0..n_streams).map(|_| AtomicU64::new(0)).collect(),
     });
 
     // SIGTERM = drain, same as POST /drain: platform stops become
@@ -1122,6 +1137,11 @@ async fn generator() {
                                         g.ok_reads.fetch_add(1, Ordering::Relaxed);
                                     } else {
                                         g.ok_appends.fetch_add(1, Ordering::Relaxed);
+                                        // Ledger the ACKNOWLEDGED op id.
+                                        let sx = n as usize % n_streams;
+                                        g.ack_count[sx].fetch_add(1, Ordering::Relaxed);
+                                        g.ack_sum[sx].fetch_add(n, Ordering::Relaxed);
+                                        g.ack_xor[sx].fetch_xor(n, Ordering::Relaxed);
                                     }
                                     g.window.fetch_add(1, Ordering::Relaxed);
                                     let ai = attr_i.min(g.per_up_window.len().saturating_sub(1));
@@ -1196,6 +1216,18 @@ async fn generator() {
             "ok": g.ok.load(Ordering::Relaxed),
             "okAppends": g.ok_appends.load(Ordering::Relaxed),
             "okReads": g.ok_reads.load(Ordering::Relaxed),
+            "ledger": g
+                .ack_count
+                .iter()
+                .enumerate()
+                .map(|(i, c)| {
+                    serde_json::json!({
+                        "count": c.load(Ordering::Relaxed),
+                        "sum": g.ack_sum[i].load(Ordering::Relaxed),
+                        "xor": g.ack_xor[i].load(Ordering::Relaxed),
+                    })
+                })
+                .collect::<Vec<_>>(),
             "errs": g.errs.load(Ordering::Relaxed),
             "throttled": g.throttled.load(Ordering::Relaxed),
             "draining": g.draining.load(Ordering::Relaxed),

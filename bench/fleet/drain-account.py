@@ -72,6 +72,60 @@ for i in range(N):
 if missing:
     print(f"[drain] FAIL: tails unreadable: {missing}"); sys.exit(1)
 
+# ---- SET-LEVEL AUDIT (round-19 correction) ---------------------------
+# Aggregate tails prove no aggregate acknowledged DEFICIT. They cannot
+# prove "every acknowledged operation appears exactly once": a missing
+# ack can be masked by an ambiguous op that committed. SET_AUDIT=1 pages
+# every stream and recomputes the generator's compact ledger
+# (count/sum/xor over acknowledged op ids) from what is actually
+# readable — all three matching pins the multiset.
+if os.environ.get("SET_AUDIT") == "1" and final.get("ledger"):
+    import urllib.parse
+    bad = []
+    for i, led in enumerate(final["ledger"]):
+        name = f"{PREFIX}-{i}"
+        seen_count = seen_sum = seen_xor = 0
+        dup_guard = set()
+        tok, hops = None, 0
+        while hops < 10_000:
+            hops += 1
+            q = f"?offset={tok}" if tok else ""
+            st, h, body = get(f"{LURL}/v1/stream/{name}{q}", headers=H)
+            if st != 200 or not body.strip():
+                break
+            recs = json.loads(body)
+            if not recs:
+                break
+            for r in recs:
+                oid = r.get("i")
+                if oid is None:
+                    continue
+                seen_count += 1
+                seen_sum = (seen_sum + oid) % (1 << 64)
+                seen_xor ^= oid
+                if oid in dup_guard:
+                    bad.append(f"{name}: duplicate op id {oid}")
+                dup_guard.add(oid)
+            nxt = None
+            for k, v in h.items():
+                if k.lower() == "stream-next-offset":
+                    nxt = v
+            if not nxt or nxt == tok:
+                break
+            tok = nxt
+        if (seen_count, seen_sum, seen_xor) != (led["count"], led["sum"] % (1 << 64), led["xor"]):
+            bad.append(
+                f"{name}: ledger mismatch acked(count={led['count']},sum={led['sum']},"
+                f"xor={led['xor']}) vs read(count={seen_count},sum={seen_sum},xor={seen_xor})"
+            )
+    if bad:
+        print("[drain] SET-AUDIT FAIL:")
+        for b in bad[:10]:
+            print("   ", b)
+        sys.exit(1)
+    print(f"[drain] SET-AUDIT: every acknowledged op id appears EXACTLY ONCE "
+          f"across {len(final['ledger'])} streams")
+
 exp = final["okAppends"]
 errs = final["errs"]
 print(f"[drain] TAILS Σ={total:,} vs okAppends={exp:,} (Δ={total-exp:+}, errs={errs})")

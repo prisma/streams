@@ -23,9 +23,42 @@ in this table. A patch with neither is a defect in the ledger.
 Reviewed surfaces and their enforcement points (audited across rounds
 1–17; anchors in parentheses):
 
-- **AuthN:** bearer token on every `/v1/*` route; route parsing is
-  exact and happens BEFORE auth, auth BEFORE body buffering (#99).
-  Negative-auth matrix in the suite covers every product route.
+- **AuthN — TWO credentials, two boundaries (round 19):**
+  - the CUSTOMER account bearer authorizes every public `/v1/*` route
+    (product, raw, `/v1/segments`, and — since round 19 — every
+    `/v1/debug/*` route, which previously answered unauthenticated
+    while this document claimed otherwise; `absorb-pause` and `sleep`
+    MUTATE production state, `load` resets peak gauges, `usage`
+    exposes per-stream data). Route parsing is exact and happens
+    BEFORE auth, auth BEFORE body buffering (#99). Negative-auth
+    matrix in the suite covers every product route.
+  - `FLEET_INTERNAL_TOKEN` authorizes ONLY `/v1/internal/*` (peer
+    fan-out RPCs). It is mandatory in fleet mode — startup refuses a
+    missing token, one under 16 characters, or one equal to
+    `AUTH_TOKEN` — and the two never cross: a customer bearer cannot
+    reach an internal route, and the internal token cannot perform a
+    product operation. Internal routes fail CLOSED when unset.
+    Rationale: these RPCs fence consumer generations and read segment
+    state without a stream key, so a customer token reaching them
+    would be a cross-tenant corruption primitive.
+  - The ONLY unauthenticated surface is `/operator` (explicit product
+    decision; operational metadata only — never names, keys or tokens).
+- **Peer trust (round 19):** peer base URLs (heartbeat `url` and
+  `fleet/urls.json`, both bucket-writable) are validated as bare
+  http(s) origins — no userinfo, path, query, fragment, whitespace or
+  non-numeric port — with TLS mandatory unless
+  `FLEET_ALLOW_HTTP_PEERS=1` and an optional `FLEET_PEER_DOMAINS`
+  allowlist. Relays carry the internal token, and the customer key
+  only where decryption is actually required.
+- **Incarnation binding (round 19):** every internal RPC carries the
+  sender's stream epoch, segment id, and derived segment identity; the
+  receiver re-derives all three against the current descriptor before
+  reading or mutating anything and answers `409 stale_target` on any
+  mismatch. A name is not an identity, across instances too.
+- **Response origin (round 19):** every response, errors included,
+  carries `Prisma-Streams-Origin`. Routers treat an unmarked response
+  as "never reached a server" and convert it to a retryable 503 —
+  platform 404s can no longer masquerade as "stream does not exist".
 - **Encryption:** stream keys are client-supplied per request and
   never stored; the server holds only fingerprints for mismatch
   refusal (403 `wrong_key`). The raw surface may run with

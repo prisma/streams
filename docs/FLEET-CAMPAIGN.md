@@ -117,7 +117,7 @@ reads as a 122 k "loss" that is entirely the read mix. Reconcile via max-`i` as 
 **Validated:** fleet formation on a shared single-region bucket; desired.json scaling
 under a real ramp (multi-signal scaler, CAS'd publishes); ordinal wake of sleeping
 instances; rendezvous routing with replay correction across two disagreeing
-coordination layers; multi-instance zero-loss through repeated ownership transitions;
+coordination layers; no aggregate acknowledged deficit through repeated ownership transitions;
 both API surfaces behind one router.
 
 **Not validated (unchanged from the v0.2.0-preview.4 launch posture):** cross-owner
@@ -250,7 +250,7 @@ streams, 47 min through a 1→4 scale-up: 2,884,145 attempts, 2,595,752
 acked appends, 373 client-visible errors (0.013 %), 24 throttles.
 Drained books: **Σ tails 2,595,774 = okAppends + 22 error-ambiguous
 commits (≤ 373 errs)** — the soak7 class where the client saw an error
-but the commit landed. Zero loss.
+but the commit landed. **No aggregate acknowledged deficit** — see the wording note below.
 
 **Leg B — owner kill + replace under load.** At 2,212/s,
 `services destroy` on fleet-s2 (05:51:02Z). Client-visible blast
@@ -285,6 +285,28 @@ idle suspend. That is platform-side behavior (the wake path for
 sleepers is exercised elsewhere: run 1's baseline and every cold start);
 the fleet's own scale-in contract — publish the shrink, stop routing to
 non-desired ordinals, consolidate ownership — is demonstrated.
+
+## Wording: what the accounting proves (round-19 correction)
+
+The drained books show
+
+```
+Σ stream tails  ==  acknowledged appends  +  a surplus bounded by ambiguous errors
+```
+
+That is strong evidence of **no aggregate acknowledged deficit**. It is
+NOT proof that *every acknowledged operation appears exactly once* — a
+missing acknowledged record could in principle be masked by an ambiguous
+operation that committed. The campaigns above are reported with the
+weaker, true claim.
+
+The set-level audit now exists in the harness: the generator writes a
+unique op id per append and keeps a compact acknowledged-ID ledger
+(count/sum/xor per stream, O(1) memory), and `drain-account.py
+SET_AUDIT=1` pages every stream and recomputes all three from what is
+readable. Matching count, sum and xor pins the multiset — count catches
+loss or duplication, sum and xor catch substitution — and duplicate ids
+are reported directly. The next campaign runs with it.
 
 ## Round-2 verdict
 
