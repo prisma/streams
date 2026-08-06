@@ -134,3 +134,134 @@ open field item.
   (needs `PRISMA_API_TOKEN` from `$SOAK_HOME/platform-token.txt`; ids in
   `$SOAK_HOME/svc-fleet-*.txt`).
 - Retained fra + ewr field services (both freeze4) expire 2026-08-19.
+
+---
+
+# Round 2: hardening, cross-owner fan-out, and the chaos legs
+
+**Date:** 2026-08-06 · **Server binaries:** fleet2 → fleet3 → fleet4 (slate
+705842b5 → f5f1d9d8 → 60564d04 → +boundary adoption) · **Router:** pilot
+fleet2/fleet3 · Same project/bucket; fresh data namespace `fleetd2`
+(16-shard topology from the new INITIAL_SHARDS auto-derivation).
+
+Round 1's improvement list was implemented in full and then validated by
+three field legs on the standing fleet. The legs did their job: they
+caught three real cross-instance bugs that every single-instance battery
+had missed, all in the same family — **an instance's local view of a
+segment whose ownership moved is not the truth, and every path that
+bypassed the read path's store-adoption served that stale view.**
+
+## What round 2 changed
+
+Fleet/scaler:
+- `INITIAL_SHARDS` unset now auto-derives `next_pow2(4 × FLEET_MAX)` in
+  fleet mode; explicit coarse values warn (the run-1 flap).
+- Return-home is load-aware (`return_home_allowed`): dropping an
+  override may not push the home past `ceil(total/active)` — the
+  rebalancer/return-home tug-of-war cannot re-create the imbalance it
+  is resolving.
+
+Router (pilot LB):
+- Reads `fleet/overrides.json` and routes override-owned shards
+  directly (run 1 double-hopped 100 % of an override's traffic).
+- Attributes stats to the FINAL responder + a per-upstream `replays`
+  counter (run 1 froze the real owner's counters at zero).
+- Follows a second `409 Streams-Replay-To` after a 75 ms backoff
+  (run 1 leaked 299 mid-transition 409s to clients; run 2's scale-up
+  leaked **zero** — 447 replay-corrected picks, 0 client errors).
+- Adopts `fleet/urls.json` for upstream URLs: a replaced instance's new
+  preview URL is picked up with **no router redeploy** (Compute mints a
+  new URL per version, so env-frozen UPSTREAMS turned every instance
+  replacement into a redeploy cascade).
+
+Generator/harness:
+- `okAppends`/`okReads` split counters + `POST /drain` (and SIGTERM →
+  drain): zero-loss accounting is now a closed-books equality instead
+  of a kill-window bound.
+- Observer records `desired.json` epoch + reason verbatim per
+  transition, plus the overrides map.
+- `bench/ccli.sh` carries `PRISMA_API_TOKEN` on every compute-cli call.
+
+## Cross-owner segment fan-out (the open launch-posture item) — CLOSED
+
+A split child owns an independent shard route, so a keyed lineage can
+span instances. Implemented (commit f5f1d9d8):
+
+- Ownership 409s survive the product error translators as retryable
+  `not_stream_owner` WITH `Streams-Replay-To` (they were being swallowed
+  into `cursor_beyond_tail` on reads — telling SDKs to rewind healthy
+  cursors — and into an opaque `conflict` on appends, which silently
+  failed every post-split append to a foreign child).
+- Instances discover peers via heartbeat `url` + `fleet/urls.json` →
+  `AppState.peer_urls`.
+- Reads relay one segment-positioned page to its owner over bearer-gated
+  `/v1/internal/segment-read` (depth capped at one by `no_fanout`; a
+  relay target that hop-forwards into a third owner's segment hands the
+  cursor over with an empty page, so progress is monotone under
+  ownership churn).
+- Scan snapshots take foreign live tails via the internal head probe and
+  page foreign segments via `/v1/internal/segment-scan` (records travel
+  with routing keys).
+- The consumer-deletion saga relays per-segment `ConfigDeleteStep` loops
+  over `/v1/internal/sweep-segment`, carrying the caller's generation
+  fence and step budget.
+- Pull skips foreign drained predecessors / empty live siblings via
+  `/v1/internal/queue-cursor`; leases stay owner-local (the router
+  replays delivery to the segment's owner, which skips OUR segments the
+  same way — convergent).
+
+Proof, local two-instance rig (`bench/fleet/local-fanout.sh` +
+`fanout-probe.py`), 7-segment cross-owner stream: **reads 24/24 walks
+exact on the LB and BOTH instances, scan 2000/2000 on all bases,
+pull + settle pass, saga DELETE 204 with the relayed sweep.** Cloud
+(4-instance fleet, 5-segment stream): same battery green except the
+scan, which led to the third bug below.
+
+## Three real bugs the field legs caught
+
+1. **Translator swallow** (above): every cross-owner read died as a fake
+   `cursor_beyond_tail`, every cross-owner append as `conflict`. Found
+   because run 2's probe counted ACKS, not attempts — run 1's blind
+   hammer had masked the append half entirely.
+2. **Possession served stale reads after ownership moved away.**
+   `engine_for`'s possession fast path short-circuited the R2 ring
+   check; slatedb fencing only fails the loser's next WRITE, and losers
+   get no writes — so a rendezvous-redraw loser served reads from a view
+   frozen at the fence point indefinitely. Possession now yields to the
+   ring (close + 409) — commit 60564d04.
+3. **Boundary consumers trusted the local durable counter.** A handle
+   that lives through own→lose→own-again keeps a LOCAL `durable.next`
+   frozen at its last stint; the interim owner's commits are only in the
+   shared store. The READ path adopts the store's durable tracker per
+   read (which is why reads were always exact); scan-snapshot creation
+   and the pull cursor probe did not, so a cloud scan froze a live
+   segment's boundary at 1,013 of 1,826 records and exported short
+   forever. Both now adopt `durable_absorbed` like reads do.
+
+## Field legs (fleet3/fleet4, eu-central-1)
+
+**Leg A — steady soak.** Constant conc-192 closed loop, 32 keyless
+streams, 47 min through a 1→4 scale-up: 2,884,145 attempts, 2,595,752
+acked appends, 373 client-visible errors (0.013 %), 24 throttles.
+Drained books: **Σ tails 2,595,774 = okAppends + 22 error-ambiguous
+commits (≤ 373 errs)** — the soak7 class where the client saw an error
+but the commit landed. Zero loss.
+
+**Leg B — owner kill + replace under load.** At 2,212/s,
+`services destroy` on fleet-s2 (05:51:02Z). Client-visible blast
+radius: 8,371 404s during the ~30 s heartbeat-dark detection window,
+then the ring excluded streams-2 and the fleet ran 3-wide (its 16
+shards redistributed 3/6/7). Revived as a FRESH service (new preview
+URL) at 05:53:58Z; `urls.json` propagated the address and the instance
+was live and serving 3 rebalanced shards **within ~55 s, with zero
+router/generator changes**. Drained books through the whole episode:
+925,557 acked appends, Σ tails 925,567 (+10 error-ambiguous ≤ 9,078
+errs). **Zero acked loss through a hard kill and replacement.**
+
+**Leg C — cloud fan-out.** Probe (40 WAN threads, 110 s floor — one
+urllib thread ≈ 1 req/s, and 8 threads sat exactly ON the 1 % hot-split
+threshold; sustained rate, not burst volume, arms the detector) split a
+keyed stream into 5 cross-owner segments: reads exact on LB + two
+instances, pull, settle, saga delete all green. The scan shortfall was
+bug 3; re-verdict on the fixed build below.
+

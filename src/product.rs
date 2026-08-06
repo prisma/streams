@@ -3349,7 +3349,7 @@ async fn product_scan(
                                     }
                                 };
                                 let engine = engine.expect("ok branch");
-                                match engine.stream_handle(identity).await {
+                                let local = match engine.stream_handle(identity).await {
                                     Ok(h) => h.state.lock().unwrap().durable.next,
                                     Err(e) => {
                                         return perr(
@@ -3360,6 +3360,18 @@ async fn product_scan(
                                             true,
                                         );
                                     }
+                                };
+                                // Adopt the shared durable tracker like the
+                                // read path does: a handle that lived through
+                                // an own->lose->own-again cycle keeps a LOCAL
+                                // counter frozen at its last stint while the
+                                // interim owner's commits sit in the store
+                                // (fleet3 leg C: a snapshot froze a live
+                                // segment at 1,013 of 1,826 and exports were
+                                // silently short forever after).
+                                match engine.durable_absorbed(&identity).await {
+                                    Ok((remote, _)) => local.max(remote),
+                                    Err(_) => local,
                                 }
                             }
                         };
@@ -4178,9 +4190,15 @@ pub(crate) async fn internal_queue_cursor(
         Err(r) => return r,
     };
     let cursor = engine.queue_cursor(identity, &consumer, cgen).await.unwrap_or(0);
-    let tail = match engine.stream_handle(identity).await {
+    let local = match engine.stream_handle(identity).await {
         Ok(h) => h.state.lock().unwrap().durable.next,
         Err(_) => 0,
+    };
+    // Same adoption as the read path — the local counter understates a
+    // segment whose interim commits landed under another owner.
+    let tail = match engine.durable_absorbed(&identity).await {
+        Ok((remote, _)) => local.max(remote),
+        Err(_) => local,
     };
     json_ok(json!({"cursor": cursor, "tail": tail}))
 }
