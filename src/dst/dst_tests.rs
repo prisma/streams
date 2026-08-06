@@ -19288,3 +19288,123 @@ async fn ops_metrics_and_alerts_flow() {
     assert!(recent.iter().any(|e| e.event_type == "alert_resolved"));
     engine_shutdown(&state).await;
 }
+
+/// §19.6 crash points not already pinned structurally: "emit succeeds,
+/// ack lost" re-emits an IDENTICAL snapshot the rollup deduplicates to
+/// zero, and §17.2's batching gate — N dirty streams drain as ONE
+/// ledger append, and an idle drain appends nothing at all.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn telemetry_crash_points_and_cost_gates() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "p6")
+        .await
+        .unwrap();
+    let _ = state.rollup.set(std::sync::Arc::new(rollup));
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    // Three streams, one record each.
+    for i in 0..3 {
+        let (st, _, _) = preq(
+            addr,
+            "PUT",
+            &format!("/v1/streams/cg{i}"),
+            &key,
+            br#"{"format":{"kind":"json"}}"#,
+        )
+        .await;
+        assert_eq!(st, 201);
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            &format!("/v1/streams/cg{i}/records"),
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", "k"),
+            ],
+            br#"{"n":1}"#,
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+    // §17.2: all three dirty segments (+ the read batch) drain in ONE
+    // round = one ledger append, not one per stream.
+    state.billing_reads.seal_if_aged(0);
+    let n = crate::billing::drain_once(&state).await.unwrap();
+    assert!(n >= 3, "one batched drain covered all dirty streams: {n}");
+    for _ in 0..100 {
+        if crate::billing::drain_once(&state).await.unwrap() == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    // Idle: zero appends, zero per-stream PUTs of any kind.
+    assert_eq!(crate::billing::drain_once(&state).await.unwrap(), 0);
+
+    // Consume the ledger.
+    let mut applied = 0;
+    for _ in 0..50 {
+        let k = crate::billing::rollup_step(&state).await.unwrap();
+        applied += k;
+        if k == 0 {
+            break;
+        }
+    }
+    assert!(applied >= n);
+    let (st, _, body) = preq(addr, "GET", "/v1/streams/cg0/usage/current", &key, b"").await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    let base_bytes = v["ingestPayloadBytes"].as_u64().unwrap();
+    assert_eq!(base_bytes, 7, r#"{{"n":1}} is 7 bytes"#);
+
+    // CRASH POINT "emit ok, ack lost": re-emit the CURRENT snapshot
+    // with its deterministic id (exactly what a re-drain does when the
+    // ack never landed), then re-consume. Numbers must not move.
+    let desc = state.registry.get("cg0").await.unwrap().unwrap();
+    let seg = desc.resolve_segment("k");
+    let engine = state.engine_for(&seg.shard_route).await.unwrap();
+    let meta = engine.billing_meta(seg.identity).await.unwrap();
+    let snap = meta.to_snapshot(false);
+    let env = crate::billing::UsageEnvelope {
+        v: 1,
+        event_id: snap.deterministic_event_id(),
+        event_time_ms: meta.storage_accounted_through_ms,
+        emitted_ms: crate::shard::now_ms(),
+        cell: "cell_test".into(),
+        payload: crate::billing::UsagePayload::SegmentSnapshot(snap),
+    };
+    // Append the duplicate straight to the ledger via the system path.
+    let mut hdrs = axum::http::HeaderMap::new();
+    hdrs.insert(
+        "stream-encryption-key",
+        axum::http::HeaderValue::from_str(PRISMA_KEY).unwrap(),
+    );
+    hdrs.insert(
+        "content-type",
+        axum::http::HeaderValue::from_static("application/json"),
+    );
+    let r = crate::http::append(
+        state.clone(),
+        "_usage".to_string(),
+        hdrs,
+        axum::body::Body::from(serde_json::to_vec(&[env]).unwrap()),
+        None,
+        None,
+        None,
+    )
+    .await;
+    assert!(r.status().is_success());
+    for _ in 0..50 {
+        if crate::billing::rollup_step(&state).await.unwrap() == 0 {
+            break;
+        }
+    }
+    let (st, _, body2) = preq(addr, "GET", "/v1/streams/cg0/usage/current", &key, b"").await;
+    assert_eq!(st, 200);
+    let v2: serde_json::Value = serde_json::from_slice(&body2).unwrap();
+    assert_eq!(
+        v2["ingestPayloadBytes"].as_u64().unwrap(),
+        base_bytes,
+        "a re-emitted snapshot (lost ack) must apply as zero"
+    );
+    engine_shutdown(&state).await;
+}

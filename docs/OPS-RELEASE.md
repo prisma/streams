@@ -72,6 +72,18 @@ Reviewed surfaces and their enforcement points (audited across rounds
   bearer + key (#122, round 17).
 - **Isolation:** the raw route is a true default-key view — keyed
   product records are never served through it (#92).
+- **Telemetry planes (round 20, docs/OBSERVABILITY-BILLING.md):** the
+  whole leading-`_` stream namespace is SYSTEM-RESERVED — refused with
+  403 on both public surfaces after auth, invisible to the catalog,
+  excluded from customer usage and limits. `_usage`, `_ops_metrics` and
+  `_ops_events` are encrypted with the deployment's USAGE_STREAM_KEY
+  (minted into `$SOAK_HOME/usage-stream-key.txt`, never the customer
+  key) and written only through the in-process system path.
+  BILLING_MODE=required refuses startup without the ledger key. Ops
+  events and metrics are low-cardinality by construction: stream names
+  appear only in `_ops_events` (operator surface), never in
+  `_ops_metrics` dimensions; record content, routing keys, producer
+  identities and tokens are prohibited telemetry fields everywhere.
 - **Secrets handling:** all deployment secrets in `$SOAK_HOME`
   (outside the repo); nothing secret in the tree — enforced by
   convention and review, checked at release time.

@@ -24,6 +24,11 @@ AUTH=$(cat "$S/auth.txt"); KEY=$(cat "$S/skey.txt")
 [ -s "$S/fleet-internal-token.txt" ] || \
   head -c 32 /dev/urandom | base64 | tr -d '/+=' > "$S/fleet-internal-token.txt"
 FLEET_TOKEN=$(cat "$S/fleet-internal-token.txt")
+# System telemetry key for _usage/_ops_* (round 20): a real 32-byte
+# stream key, minted once into $SOAK_HOME; nothing secret in the tree.
+[ -s "$S/usage-stream-key.txt" ] || \
+  head -c 32 /dev/urandom | base64 > "$S/usage-stream-key.txt"
+USAGE_KEY=$(cat "$S/usage-stream-key.txt")
 j() { python3 -c "import json;print(json.load(open('$S/bkey-fleet.json'))['data']['$1'])"; }
 RESOLV=$'nameserver 108.61.10.10\nnameserver 8.8.8.8'
 # Absolute: the deploy steps cd into $SOAK_HOME app dirs first.
@@ -64,6 +69,8 @@ if [ "$STEP" = servers ]; then
       --env AUTH_TOKEN="$AUTH" \
       --env FLEET_INTERNAL_TOKEN="$FLEET_TOKEN" \
       --env FLEET_PEER_DOMAINS=prisma.build \
+      --env USAGE_STREAM_KEY="$USAGE_KEY" --env BILLING_MODE=required \
+      $([ "$i" = 1 ] && echo "--env ROLLUP=1") \
       --env PATH_PREFIX=fleetd2 --env INSTANCE_NAME="streams-$i" \
       --env SELF_URL="$(cat "$S/url-fleet-s$i.txt" 2>/dev/null || true)" \
       --env FLEET_PREFIX=fleetops --env FLEET_MAX=4 \

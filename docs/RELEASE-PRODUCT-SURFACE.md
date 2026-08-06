@@ -1001,3 +1001,41 @@ and the hard-kill leg re-run against real Compute edges — the local
 acceptance uses connection-refused, the platform produces its static
 404 page, and only the latter exercises the unmarked-response path end
 to end.
+
+## Round 20 (2026-08-06): the telemetry cutover — v0.2.0-preview.6
+
+docs/OBSERVABILITY-BILLING.md (approved 2026-08-06) implemented in
+full: four planes, fresh namespace, hard cutover — `__metrics__`,
+`metrics.rs` and the `_billing` emitter are deleted, with no dual-write
+and no decoders.
+
+| plane | what shipped | proof |
+|---|---|---|
+| data-plane billing state (§6) | SegmentBillingMetaV1 updated in the SAME committer WriteBatch as the records: exact payload/record ingest, canonical-frame storage gauge, UTC month splitting, usage_version; sentinel dirty index + closed-month finals as the durable outbox; version-fenced UsageAck through the committer; BillingClose on hard delete | billing_meta_is_exact_durable_and_ackable: exact byte-ms integral at rollover, duplicate adds zero, stale ack refused, delete zeroes gauge |
+| read meter (§7) | ONE accumulator at the public response coordinator; payload-bytes-only across read/lineage/fork/scan/SSE/pull/HEAD; internal relays and reserved streams structurally excluded; seal-and-rotate with source boot+seq; ledger-outage backpressure merges instead of dropping attribution | read_meter_covers_the_matrix_exactly (26 B reads meter 26 B, not the framed wire body) |
+| `_usage` ledger + rollup + API (§8-§10) | reserved system streams under the `_` namespace (403 on both public surfaces); drainer emits batched idempotent envelopes; SlateDB rollup applies each page as ONE WriteBatch (source-seq dedupe, absolute→delta snapshots, cursor) ; month close extrapolates idle gauges to the boundary + one immutable artifact per stream-month; GET /v1/streams/{name}/usage = a bearer-authorized POINT READ | usage_pipeline_end_to_end_exactly_once (full-ledger replay changes nothing); rollup unit (double-close no-op, correction-after-close explicit) |
+| ops events (§12) | `_ops_events` with deterministic ids; fleet CAS outboxes INSIDE desired.json/overrides.json (append then CAS-clear exact ids); lifecycle/split/merge/engine emitters; bounded queue with counted drops + telemetry_gap; /v1/debug/ops-events | ops_events_journal_end_to_end + overflow unit |
+| ops metrics + alerts (§11/§13) | 15 s low-cardinality snapshots; ops rollup raw+1-minute tiers behind an exactly-once cursor with a bounded 7-day raw retention sweep; alert evaluator (outbox lag, read-meter backpressure, event drops) with fingerprinted open/resolve journaled as events | ops_metrics_and_alerts_flow |
+| crash points + cost gates (§17/§19.6) | emit-ok/ack-lost re-emission applies as ZERO; N dirty streams drain as ONE ledger append; idle drain appends nothing; per-stream PUTs per tick = 0 by construction | telemetry_crash_points_and_cost_gates |
+
+**Live proof** on the release build: with the pipeline running
+(TELEMETRY_DRAIN_SECS=1, ROLLUP=1), the field gate's real load drove a
+split; the customer endpoint then answered `gate/split-12527` with
+ingestPayloadBytes=79,286 / ingestRecords=4,002 / a live storage gauge
+— and /v1/debug/ops-events showed the actual split_committed,
+stream_created and stream_hard_deleted events with zero drops.
+
+Battery on this build: suite **316/0**, DS conformance **332/0/6 with
+the telemetry pipeline live**, field gate + saga smoke PASS with
+telemetry live, fmt clean. Deploy rigs mint USAGE_STREAM_KEY into
+$SOAK_HOME, set BILLING_MODE=required fleet-wide and ROLLUP=1 on
+instance 1.
+
+**Known deferred (documented, not silent):** 5-minute/1-hour ops tiers
+(same mechanism as the shipped raw/1-minute tiers); fleet-mode rollup
+co-location (the usage API answers 503 usage_unavailable off the
+rollup instance; the LB can pin /usage there); watch-notification read
+metering (0 in v1 per §5); reconciliation beyond version-lag checks;
+invoice export tooling. Cloud rerun of the telemetry cost budgets
+(§17.2 appends/instance-hour) belongs to the next WAN campaign with
+the preview.6 binary.

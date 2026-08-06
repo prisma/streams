@@ -866,13 +866,40 @@ async fn usage_ledger_append(
     let r = crate::http::append(
         state.clone(),
         USAGE_STREAM.to_string(),
-        hdrs,
-        axum::body::Body::from(body),
+        hdrs.clone(),
+        axum::body::Body::from(body.clone()),
         None,
         None,
         None,
     )
     .await;
+    // 404 = the stream vanished under us (or another rig's CREATED
+    // latch lied in tests): recreate and retry ONCE rather than
+    // wedging the pipeline forever.
+    if r.status() == axum::http::StatusCode::NOT_FOUND {
+        let _ = crate::http::create_stream(
+            state.clone(),
+            USAGE_STREAM.to_string(),
+            hdrs.clone(),
+            bytes::Bytes::new(),
+        )
+        .await;
+        let r2 = crate::http::append(
+            state.clone(),
+            USAGE_STREAM.to_string(),
+            hdrs,
+            axum::body::Body::from(body),
+            None,
+            None,
+            None,
+        )
+        .await;
+        return if r2.status().is_success() {
+            Ok(())
+        } else {
+            Err(format!("ledger append after recreate: {}", r2.status()))
+        };
+    }
     if r.status().is_success() {
         Ok(())
     } else {
