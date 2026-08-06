@@ -18266,3 +18266,130 @@ async fn a_stale_delete_after_cross_key_recreation_is_untouched_204() {
     assert_eq!(st, 403, "a live-target delete with the wrong key must 403");
     engine_shutdown(&state).await;
 }
+
+// ---------------------------------------------------------------
+// Round 19 must-fix 3: consumer-generation fences must survive an
+// OWNERSHIP MOVE, not just handle eviction.
+// ---------------------------------------------------------------
+
+/// The scenario the round-19 review specified. A generation-1 pull is
+/// in flight; DELETE fences and cleans the segment on owner A; the
+/// shard then moves to owner B, which opens a FRESH engine whose
+/// in-memory fence map is empty. The resumed generation-1 receive must
+/// still refuse, and must write no cursor, lease or ack row — the
+/// parent deletion may already have answered 204.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn consumer_fence_survives_ownership_move() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc19",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for i in 0..2 {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/qc19/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", &format!("k{i}")),
+            ],
+            format!("{{\"n\":{i}}}").as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qc19/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/qc19/consumers/c1:pull",
+        &key,
+        br#"{"max": 2}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+
+    state.registry.invalidate("qc19");
+    let desc = state.registry.get("qc19").await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let route = desc.segment_route_by_id(seg.seg_id);
+    let identity = desc.dynamic_segment_identity(seg.seg_id);
+    let engine = state.engine_for(&route).await.unwrap();
+
+    // Owner A fences generation 1 and cleans the segment.
+    let del = engine
+        .submit_queue(
+            identity,
+            crate::queue::QueueOp::ConfigDeleteStep {
+                consumer: "c1".into(),
+                fence_below: 2,
+                max_rows: 4096,
+                max_bytes: 1 << 20,
+            },
+        )
+        .await;
+    assert!(matches!(
+        del,
+        Ok(crate::queue::QueueOut::DeleteStep { complete: true, .. })
+    ));
+    // The fence is DURABLE, not just resident.
+    assert_eq!(
+        engine.durable_consumer_fence(identity, "c1").await,
+        Some(2),
+        "the cleanup step must persist its fence"
+    );
+
+    // OWNERSHIP MOVES: the new owner opens a fresh engine with an empty
+    // fence map. (Before this fix that map's emptiness read as "no
+    // fence" and the receive below was ACCEPTED.)
+    engine.forget_consumer_fences_for_test();
+    let rows_before = engine
+        .count_consumer_state_rows(identity, "c1")
+        .await
+        .unwrap();
+
+    let resumed = engine
+        .submit_queue(
+            identity,
+            crate::queue::QueueOp::Receive {
+                consumer: "c1".into(),
+                cgen: 1,
+                max: 2,
+                visibility_ms: 30_000,
+                max_deliveries: 3,
+                keys: Default::default(),
+                covered_to: 0,
+            },
+        )
+        .await;
+    let err = resumed.expect_err("a dead generation was accepted after the move");
+    assert!(
+        err.starts_with("consumer_generation_fenced"),
+        "expected a fence refusal, got: {err}"
+    );
+    let rows_after = engine
+        .count_consumer_state_rows(identity, "c1")
+        .await
+        .unwrap();
+    assert_eq!(
+        rows_after, rows_before,
+        "the refused generation-1 receive still wrote delivery-state rows"
+    );
+    engine_shutdown(&state).await;
+}

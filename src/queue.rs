@@ -177,6 +177,28 @@ pub fn config_key(hash: &[u8; 16], consumer: &str) -> Vec<u8> {
     k
 }
 
+/// DURABLE consumer-generation fence: `<hash16> 'F' <consumer>` →
+/// minimum live generation (u64 LE).
+///
+/// The engine-resident fence map survives handle eviction but NOT a
+/// shard moving to another engine or instance — a fresh owner opened an
+/// empty map, so a parked generation-1 Receive that arrived after the
+/// move was accepted and re-created lease rows for a generation whose
+/// deletion had already returned 204 (round-19 must-fix 3). The fence
+/// therefore lives in the shard DB, written through the SAME ordered
+/// committer path as the cleanup it guards, and every owner consults it
+/// before Receive/Settle.
+///
+/// The row is tiny, monotonic, and long-lived: new generations are always
+/// above it, so it never needs deleting.
+pub fn fence_key(hash: &[u8; 16], consumer: &str) -> Vec<u8> {
+    let mut k = Vec::with_capacity(17 + consumer.len());
+    k.extend_from_slice(hash);
+    k.push(b'F');
+    k.extend_from_slice(consumer.as_bytes());
+    k
+}
+
 /// Parse "<off>:<gen>" lease tokens (permissive: None on malformed).
 pub fn parse_token(t: &str) -> Option<(u64, u32)> {
     let (o, g) = t.split_once(':')?;

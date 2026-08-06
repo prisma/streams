@@ -2918,6 +2918,30 @@ impl ShardEngine {
                                 let e = f.entry((hash, consumer.clone())).or_insert(0);
                                 *e = (*e).max(fence_below);
                             }
+                            // ...and DURABLY, in this same ordered
+                            // commit. The in-memory map dies with the
+                            // engine, so a shard that moves to another
+                            // instance opened an EMPTY fence map and
+                            // accepted a parked dead-generation
+                            // Receive — re-creating lease rows after
+                            // the parent deletion had already answered
+                            // 204 (round-19 must-fix 3). The row is
+                            // monotonic; a concurrent lower fence can
+                            // never lower it because every writer is
+                            // this shard's single committer.
+                            {
+                                let fk = crate::queue::fence_key(&hash, &consumer);
+                                let cur = match self.db.get(&fk[..]).await {
+                                    Ok(Some(v)) => u64::from_le_bytes(
+                                        v[..8].try_into().unwrap_or([0; 8]),
+                                    ),
+                                    _ => 0,
+                                };
+                                if fence_below > cur {
+                                    wb.put(&fk[..], &fence_below.to_le_bytes()[..]);
+                                    extra_writes = true;
+                                }
+                            }
                             // PHASE 1 — enumerate, fallibly and
                             // BOUNDEDLY. Deletion stages nothing until
                             // the scans it ran succeeded (round 15 A),
@@ -3106,10 +3130,47 @@ impl ShardEngine {
                         | QueueOp::Settle { consumer, cgen, .. } => Some((consumer.clone(), *cgen)),
                         _ => None,
                     } {
+                        // The engine-resident fence answers instantly
+                        // for anything this engine fenced itself. If it
+                        // has no entry, the DURABLE row decides — this
+                        // engine may be a NEW owner of a shard whose
+                        // fence was installed elsewhere (round-19
+                        // must-fix 3), and an empty map must never read
+                        // as "no fence". Loaded once per
+                        // (segment, consumer) and cached, so the hot
+                        // path stays a map lookup.
                         let fenced = {
-                            let f = self.consumer_fences.lock().unwrap();
-                            f.get(&(hash, cname.clone()))
-                                .is_some_and(|min_live| op_gen < *min_live)
+                            let cached = {
+                                let f = self.consumer_fences.lock().unwrap();
+                                f.get(&(hash, cname.clone())).copied()
+                            };
+                            match cached {
+                                Some(min_live) => op_gen < min_live,
+                                None => {
+                                    let fk = crate::queue::fence_key(&hash, &cname);
+                                    let durable = match self.db.get(&fk[..]).await {
+                                        Ok(Some(v)) => u64::from_le_bytes(
+                                            v[..8].try_into().unwrap_or([0; 8]),
+                                        ),
+                                        // A failed read must NOT be
+                                        // read as "unfenced": refuse
+                                        // the op and let the client
+                                        // retry (fail closed).
+                                        Ok(None) => 0,
+                                        Err(e) => {
+                                            let _ = resp.send(Err(format!(
+                                                "consumer_fence_unverified: {e}"
+                                            )));
+                                            continue;
+                                        }
+                                    };
+                                    self.consumer_fences
+                                        .lock()
+                                        .unwrap()
+                                        .insert((hash, cname.clone()), durable);
+                                    op_gen < durable
+                                }
+                            }
                         };
                         if fenced {
                             let _ = resp.send(Err(format!(
@@ -3849,6 +3910,27 @@ impl ShardEngine {
         let f = self.consumer_fences.lock().unwrap();
         let max = f.values().copied().max().unwrap_or(0);
         (f.len(), max)
+    }
+
+    /// Test hook: empty the engine-resident fence map WITHOUT touching
+    /// the durable rows — the deterministic stand-in for "this shard
+    /// just moved to another instance, which opened a fresh engine".
+    /// The durable fence must still refuse dead generations.
+    #[cfg(test)]
+    pub fn forget_consumer_fences_for_test(&self) {
+        self.consumer_fences.lock().unwrap().clear();
+    }
+
+    /// Test view of the DURABLE fence row (None = no row).
+    #[cfg(test)]
+    pub async fn durable_consumer_fence(&self, hash: [u8; 16], consumer: &str) -> Option<u64> {
+        let k = crate::queue::fence_key(&hash, consumer);
+        self.db
+            .get(&k[..])
+            .await
+            .ok()
+            .flatten()
+            .map(|v| u64::from_le_bytes(v[..8].try_into().unwrap_or([0; 8])))
     }
 
     #[cfg(test)]
