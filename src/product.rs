@@ -403,6 +403,11 @@ pub(crate) enum ProductRoute {
         name: String,
         watch: String,
     },
+    /// Customer usage lookup (§10): control-plane metadata — bearer
+    /// auth, no record key, a rollup point read.
+    Usage {
+        name: String,
+    },
     /// The ONE route that can authorize itself, with a signature.
     WatchWait {
         name: String,
@@ -456,6 +461,9 @@ pub(crate) fn classify_route(path: &str) -> Result<ProductRoute, Response> {
     }
     if rest == "watches" {
         return Ok(ProductRoute::Watches { name });
+    }
+    if rest == "usage" || rest == "usage/current" {
+        return Ok(ProductRoute::Usage { name });
     }
     if let Some(wrest) = rest.strip_prefix("watches/") {
         // `{watch}/keys/{key}` is the signed observation resource, and
@@ -692,6 +700,18 @@ pub async fn product_entry(
                 ),
             };
         }
+        ProductRoute::Usage { name } => {
+            return match method {
+                Method::GET => product_usage(state, name, &query).await,
+                _ => perr(
+                    StatusCode::METHOD_NOT_ALLOWED,
+                    "method_not_allowed",
+                    "usage accepts GET",
+                    None,
+                    false,
+                ),
+            };
+        }
         ProductRoute::Watches { name } => {
             return if method == Method::GET {
                 product_watches_list(state, name).await
@@ -772,12 +792,14 @@ fn split_subresource(path: &str) -> Option<(&str, &str)> {
     let seg: Vec<&str> = path.split('/').collect();
     let n = seg.len();
     // (segments consumed from the end, the shape's leading keyword)
-    let shapes: [(usize, &str); 5] = [
+    let shapes: [(usize, &str); 7] = [
         (4, "watches"),   // watches/{watch}/keys/{key}
         (2, "watches"),   // watches/{watch}
         (2, "consumers"), // consumers/{consumer}
+        (2, "usage"),     // usage/current
         (1, "watches"),   // watches
         (1, "records"),   // records
+        (1, "usage"),     // usage (§10 customer lookup)
     ];
     for (take, head) in shapes {
         if n <= take || seg[n - take] != head {
@@ -6175,6 +6197,113 @@ pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMa
         .header(header::CACHE_CONTROL, "no-store")
         .body(Body::from(body.to_string()))
         .unwrap()
+}
+
+// ---- customer usage API (docs/OBSERVABILITY-BILLING.md §10) ----------
+
+/// GET /v1/streams/{name}/usage[?month=YYYY-MM] and .../usage/current.
+/// Control-plane metadata: bearer-authorized, NO record key required,
+/// answered from the rollup with a point read (never a ledger scan).
+async fn product_usage(state: Arc<AppState>, name: String, query: &str) -> Response {
+    let Some(rollup) = state.rollup.get() else {
+        return perr(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "usage_unavailable",
+            "the usage rollup is not running on this instance",
+            None,
+            true,
+        );
+    };
+    let desc = match state.registry.get(&name).await {
+        Ok(Some(d)) => d,
+        Ok(None) => {
+            return perr(
+                StatusCode::NOT_FOUND,
+                "not_found",
+                "stream not found",
+                None,
+                false,
+            );
+        }
+        Err(e) => {
+            return perr(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+                None,
+                true,
+            );
+        }
+    };
+    let now = crate::shard::now_ms();
+    let (cy, cm) = crate::billing::utc_year_month(now);
+    let current = crate::billing::month_str(cy, cm);
+    let month = query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("month="))
+        .map(str::to_string)
+        .unwrap_or_else(|| current.clone());
+    if crate::billing::parse_month(&month).is_none() {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "invalid_month",
+            "month must be YYYY-MM",
+            None,
+            false,
+        );
+    }
+    let id = crate::billing::identity_of(&state, &desc);
+    let row: crate::rollup::MonthRow = rollup
+        .month_row(&month, &id.project_id, &id.stream_id)
+        .await
+        .unwrap_or_default();
+    let is_current = month == current;
+    let byte_ms = if is_current {
+        row.storage_byte_ms_provisional(&month, now)
+    } else {
+        row.storage_byte_ms()
+    };
+    let month_ms = {
+        let (y, m) = crate::billing::parse_month(&month).unwrap();
+        let (ny, nm) = crate::billing::next_month(y, m);
+        (crate::billing::month_start_ms(ny, nm) - crate::billing::month_start_ms(y, m)) as u128
+    };
+    let avg_bytes = byte_ms / month_ms.max(1);
+    let gb_month = byte_ms as f64 / month_ms as f64 / 1e9;
+    let status = if row.finalized_at_ms.is_some() {
+        if row.corrections.is_empty() {
+            "finalized"
+        } else {
+            "corrected"
+        }
+    } else {
+        "provisional"
+    };
+    json_ok(json!({
+        "projectId": id.project_id,
+        "streamId": id.stream_id,
+        "streamName": id.stream_name,
+        "month": month,
+        "status": status,
+        "ingestPayloadBytes": row.ingest_bytes(),
+        "ingestRecords": row.ingest_records(),
+        "readPayloadBytes": row.read_payload_bytes,
+        "readRecords": row.read_records,
+        "readOperations": row.read_operations,
+        "queueOperations": row.queue_operations,
+        "appendRequests": row.append_requests,
+        "storageByteSeconds": (byte_ms / 1000).to_string(),
+        "averageStoredBytes": avg_bytes as u64,
+        "gbMonth": gb_month,
+        "ownedStoredBytesNow": row.owned_bytes_now(),
+        "updatedAt": row.updated_ms,
+        "finalizedAt": row.finalized_at_ms,
+        "corrections": row.corrections.len(),
+        "metering": {
+            "readFlushIntervalSeconds": crate::billing::READ_FLUSH_INTERVAL_MS / 1000,
+            "possibleReadLossWindowSeconds": crate::billing::READ_FLUSH_INTERVAL_MS / 1000,
+        }
+    }))
 }
 
 #[cfg(test)]

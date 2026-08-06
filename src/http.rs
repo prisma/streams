@@ -146,6 +146,13 @@ pub struct AppState {
     /// The read-delivery meter (docs/OBSERVABILITY-BILLING.md §7): ONE
     /// accumulator, fed only at the public response coordinator.
     pub billing_reads: Arc<crate::billing::ReadUsageAccumulator>,
+    /// System encryption key for `_usage` (§8.1). None = the telemetry
+    /// pipeline is off (dev default); production billing mode requires
+    /// it at startup.
+    pub usage_key: Option<String>,
+    /// The usage rollup, when THIS instance runs it (§9.1: one fenced
+    /// writer per cell). Set once at startup (ROLLUP=1) or by tests.
+    pub rollup: std::sync::OnceLock<Arc<crate::rollup::UsageRollup>>,
     /// Billing tenant boundary (docs/OBSERVABILITY-BILLING.md §3.2):
     /// explicit account/project identity from the control plane's
     /// deployment config — never inferred from stream names. Persisted
@@ -1858,7 +1865,7 @@ pub(crate) async fn product_delete(state: Arc<AppState>, name: String) -> Respon
     delete_stream(state, name).await
 }
 
-async fn create_stream(
+pub(crate) async fn create_stream(
     state: Arc<AppState>,
     name: String,
     headers: HeaderMap,
@@ -2734,10 +2741,12 @@ async fn create_stream(
             usage: crate::usage::counters(&crate::crypto::stream_hash(&desc.name)),
             seal_gen: None,
             seal_fence_to: None,
-            billing: Some(std::sync::Arc::new(crate::billing::BillingRef {
-                identity: crate::billing::identity_of(&state, &desc),
-                segment_id: 0,
-            })),
+            billing: (!crate::billing::is_reserved_stream(&desc.name)).then(|| {
+                std::sync::Arc::new(crate::billing::BillingRef {
+                    identity: crate::billing::identity_of(&state, &desc),
+                    segment_id: 0,
+                })
+            }),
             resp: tx,
         };
         if engine.try_enqueue(req).is_err() {
@@ -4478,10 +4487,15 @@ async fn append_core(
         touch,
         seal_gen: raw_seal_gen,
         seal_fence_to: None,
-        billing: Some(std::sync::Arc::new(crate::billing::BillingRef {
-            identity: crate::billing::identity_of(&state, &desc),
-            segment_id: seg.seg_id,
-        })),
+        // Reserved system streams bill nothing (§8.4) — without this,
+        // every `_usage` emission would dirty `_usage` itself and the
+        // drainer would feed back forever.
+        billing: (!crate::billing::is_reserved_stream(&desc.name)).then(|| {
+            std::sync::Arc::new(crate::billing::BillingRef {
+                identity: crate::billing::identity_of(&state, &desc),
+                segment_id: seg.seg_id,
+            })
+        }),
         resp: tx,
     };
     let engine = match state.engine_for(&seg.shard_route).await {

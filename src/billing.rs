@@ -807,3 +807,328 @@ pub fn meter_append_request(state: &crate::http::AppState, desc: &crate::registr
         },
     );
 }
+
+// ---------------------------------------------------------------------
+// The telemetry drainer (§6.3/§7) and the `_usage` transport (§8)
+// ---------------------------------------------------------------------
+
+/// Envelope for one emission batch: read batches + segment snapshots +
+/// closed-month finals, appended to `_usage` as one JSON-array record
+/// batch (one envelope per record).
+fn envelope(
+    cell: &str,
+    payload: UsagePayload,
+    event_time_ms: i64,
+    event_id: String,
+) -> UsageEnvelope {
+    UsageEnvelope {
+        v: 1,
+        event_id,
+        event_time_ms,
+        emitted_ms: crate::shard::now_ms(),
+        cell: cell.to_string(),
+        payload,
+    }
+}
+
+/// Ensure `_usage` exists and append one JSON-array body with the
+/// system key, through the normal in-process raw path (ownership,
+/// group commit and durability all apply). Ok(()) only after the
+/// append acknowledged durably.
+async fn usage_ledger_append(
+    state: &std::sync::Arc<crate::http::AppState>,
+    key: &str,
+    body: Vec<u8>,
+) -> Result<(), String> {
+    use axum::http::{HeaderMap, HeaderValue};
+    static CREATED: std::sync::OnceLock<()> = std::sync::OnceLock::new();
+    let mut hdrs = HeaderMap::new();
+    hdrs.insert(
+        "stream-encryption-key",
+        HeaderValue::from_str(key).map_err(|_| "bad usage key".to_string())?,
+    );
+    hdrs.insert("content-type", HeaderValue::from_static("application/json"));
+    if CREATED.get().is_none() {
+        let r = crate::http::create_stream(
+            state.clone(),
+            USAGE_STREAM.to_string(),
+            hdrs.clone(),
+            bytes::Bytes::new(),
+        )
+        .await;
+        let st = r.status().as_u16();
+        if st == 200 || st == 201 || st == 409 {
+            let _ = CREATED.set(());
+        } else {
+            return Err(format!("usage ledger create: {st}"));
+        }
+    }
+    let r = crate::http::append(
+        state.clone(),
+        USAGE_STREAM.to_string(),
+        hdrs,
+        axum::body::Body::from(body),
+        None,
+        None,
+        None,
+    )
+    .await;
+    if r.status().is_success() {
+        Ok(())
+    } else {
+        Err(format!("usage ledger append: {}", r.status()))
+    }
+}
+
+/// One drain round (§6.3 steps 1-5): emit sealed read batches and every
+/// dirty segment snapshot (+ closed-month finals) to `_usage`, then
+/// acknowledge exactly what was emitted. Idempotent under every crash
+/// interleaving: a lost emission leaves dirty state; a lost ack
+/// re-emits an identical snapshot the rollup deduplicates.
+pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result<usize, String> {
+    let Some(key) = state.usage_key.clone() else {
+        return Ok(0);
+    };
+    let cell = state.cell_id.clone();
+    let mut envelopes: Vec<UsageEnvelope> = Vec::new();
+
+    // 1. Read batches (sealed by age or bounds).
+    state.billing_reads.seal_if_aged(READ_FLUSH_INTERVAL_MS);
+    let read_batches = state.billing_reads.drain_sealed(16);
+    for rb in &read_batches {
+        envelopes.push(envelope(
+            &cell,
+            UsagePayload::ReadBatch(rb.clone()),
+            rb.to_ms,
+            format!("read/{}/{}", rb.source.boot, rb.seq),
+        ));
+    }
+
+    // 2. Dirty segment snapshots + month finals from every open engine.
+    let engines: Vec<std::sync::Arc<crate::shard::ShardEngine>> = {
+        let map = state.shards.read().unwrap();
+        map.values().cloned().collect()
+    };
+    let mut acks: Vec<(
+        std::sync::Arc<crate::shard::ShardEngine>,
+        [u8; 16],
+        u64,
+        Vec<Vec<u8>>,
+    )> = Vec::new();
+    for engine in engines {
+        let dirty = engine.usage_dirty_scan().await.unwrap_or_default();
+        if dirty.is_empty() {
+            continue;
+        }
+        let finals = engine.usage_month_finals().await.unwrap_or_default();
+        for (hash, version) in dirty {
+            let Some(meta) = engine.billing_meta(hash).await else {
+                continue;
+            };
+            // Defense in depth for §8.4: a reserved stream's row (none
+            // should exist) is acked away, never emitted.
+            if is_reserved_stream(&meta.stream_name) {
+                engine.submit_usage_ack(hash, meta.usage_version, Vec::new());
+                continue;
+            }
+            // Emit the CURRENT row at ITS version (>= the marker's) —
+            // acking the emitted version keeps anything newer dirty.
+            let ver = meta.usage_version;
+            let snap = meta.to_snapshot(false);
+            let mut final_keys = Vec::new();
+            for (k, fs) in finals
+                .iter()
+                .filter(|(k, _)| k.len() >= 33 && k[17..33] == hash)
+            {
+                envelopes.push(envelope(
+                    &cell,
+                    UsagePayload::SegmentSnapshot(fs.clone()),
+                    fs.storage_accounted_through_ms,
+                    fs.deterministic_event_id(),
+                ));
+                final_keys.push(k.clone());
+            }
+            envelopes.push(envelope(
+                &cell,
+                UsagePayload::SegmentSnapshot(snap.clone()),
+                meta.storage_accounted_through_ms,
+                snap.deterministic_event_id(),
+            ));
+            let _ = version;
+            acks.push((engine.clone(), hash, ver, final_keys));
+        }
+    }
+
+    if envelopes.is_empty() {
+        return Ok(0);
+    }
+    let body = serde_json::to_vec(&envelopes).map_err(|e| e.to_string())?;
+    match usage_ledger_append(state, &key, body).await {
+        Ok(()) => {
+            for (engine, hash, ver, finals) in acks {
+                engine.submit_usage_ack(hash, ver, finals);
+            }
+            Ok(envelopes.len())
+        }
+        Err(e) => {
+            // Read batches must not be lost: requeue at the front.
+            state.billing_reads.requeue(read_batches);
+            Err(e)
+        }
+    }
+}
+
+/// The drainer task: every TELEMETRY_DRAIN_SECS (default 2), one drain
+/// round. Errors log and retry — the durable outbox holds the truth.
+pub fn spawn_telemetry(state: std::sync::Arc<crate::http::AppState>) {
+    if state.usage_key.is_none() {
+        tracing::info!("telemetry pipeline off (USAGE_STREAM_KEY unset)");
+        return;
+    }
+    let secs: u64 = std::env::var("TELEMETRY_DRAIN_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2);
+    tokio::spawn(async move {
+        let mut tick = tokio::time::interval(std::time::Duration::from_secs(secs.max(1)));
+        loop {
+            tick.tick().await;
+            if let Err(e) = drain_once(&state).await {
+                tracing::warn!("usage drain: {e}");
+            }
+        }
+    });
+}
+
+// ---------------------------------------------------------------------
+// The rollup consumer (§9.3) and month closer (§9.4-§9.6)
+// ---------------------------------------------------------------------
+
+/// One rollup step: read the next `_usage` page from the stored cursor
+/// through the normal in-process read path, apply it transactionally,
+/// advance. Returns envelopes applied (0 = caught up).
+pub async fn rollup_step(state: &std::sync::Arc<crate::http::AppState>) -> Result<usize, String> {
+    let Some(rollup) = state.rollup.get() else {
+        return Ok(0);
+    };
+    let Some(key) = state.usage_key.clone() else {
+        return Ok(0);
+    };
+    use axum::http::{HeaderMap, HeaderValue};
+    let mut hdrs = HeaderMap::new();
+    hdrs.insert(
+        "stream-encryption-key",
+        HeaderValue::from_str(&key).map_err(|_| "bad usage key".to_string())?,
+    );
+    let cursor = rollup.cursor().await.filter(|c| !c.is_empty());
+    let params = crate::http::ReadParams {
+        offset: cursor,
+        ..Default::default()
+    };
+    let resp = crate::http::read_inner(
+        state.clone(),
+        USAGE_STREAM.to_string(),
+        params,
+        hdrs,
+        false,
+        true,
+        crate::http::SseSurface::Raw,
+    )
+    .await;
+    if resp.status() == axum::http::StatusCode::NOT_FOUND {
+        return Ok(0); // ledger not created yet
+    }
+    if !resp.status().is_success() {
+        return Err(format!("ledger read: {}", resp.status()));
+    }
+    let next = resp
+        .headers()
+        .get("Stream-Next-Offset")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or_default()
+        .to_string();
+    let body = axum::body::to_bytes(resp.into_body(), 64 << 20)
+        .await
+        .map_err(|e| e.to_string())?;
+    let envelopes: Vec<UsageEnvelope> = if body.is_empty() {
+        Vec::new()
+    } else {
+        serde_json::from_slice(&body).map_err(|e| format!("ledger decode: {e}"))?
+    };
+    if envelopes.is_empty() {
+        return Ok(0);
+    }
+    rollup
+        .apply_page(&envelopes, &next)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(envelopes.len())
+}
+
+/// The rollup task: consume continuously; close the PREVIOUS month
+/// after the grace period, writing one immutable artifact per stream
+/// (§9.6) under telemetry/usage-monthly/.
+pub fn spawn_rollup(state: std::sync::Arc<crate::http::AppState>, prefix: String) {
+    use object_store::ObjectStoreExt;
+    tokio::spawn(async move {
+        let store = state.data_store.clone();
+        let rollup = match crate::rollup::UsageRollup::open(store.clone(), &prefix).await {
+            Ok(r) => std::sync::Arc::new(r),
+            Err(e) => {
+                tracing::error!("usage rollup open failed: {e}");
+                return;
+            }
+        };
+        let _ = state.rollup.set(rollup);
+        tracing::info!("usage rollup running");
+        let grace_ms: i64 = std::env::var("MONTH_CLOSE_GRACE_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(24 * 3_600_000);
+        let mut last_close = 0i64;
+        loop {
+            match rollup_step(&state).await {
+                Ok(0) => tokio::time::sleep(std::time::Duration::from_secs(2)).await,
+                Ok(_) => {}
+                Err(e) => {
+                    tracing::warn!("rollup step: {e}");
+                    tokio::time::sleep(std::time::Duration::from_secs(5)).await;
+                }
+            }
+            let now = crate::shard::now_ms();
+            if now - last_close > 3_600_000 {
+                last_close = now;
+                let (cy, cm) = utc_year_month(now);
+                let (py, pm) = if cm == 1 { (cy - 1, 12) } else { (cy, cm - 1) };
+                let rollup2 = state.rollup.get().unwrap().clone();
+                let store2 = state.data_store.clone();
+                let pfx = prefix.clone();
+                let mut artifacts: Vec<(object_store::path::Path, Vec<u8>)> = Vec::new();
+                let closed = rollup2
+                    .close_month(py, pm, grace_ms, |project, stream_id, row, m| {
+                        let p = if pfx.is_empty() {
+                            format!("telemetry/usage-monthly/{project}/{stream_id}/{m}.json")
+                        } else {
+                            format!("{pfx}/telemetry/usage-monthly/{project}/{stream_id}/{m}.json")
+                        };
+                        if let Ok(body) = serde_json::to_vec(row) {
+                            artifacts.push((object_store::path::Path::from(p), body));
+                        }
+                    })
+                    .await;
+                match closed {
+                    Ok(n) if n > 0 => {
+                        for (path, body) in artifacts {
+                            if let Err(e) = store2.put(&path, body.into()).await {
+                                tracing::warn!("monthly artifact PUT: {e}");
+                            }
+                        }
+                        tracing::info!("month {py}-{pm:02} closed: {n} streams");
+                    }
+                    Ok(_) => {}
+                    Err(e) => tracing::warn!("month close: {e}"),
+                }
+            }
+        }
+    });
+}

@@ -14,6 +14,7 @@ mod product_cursor;
 mod protocol_pin;
 mod queue;
 mod registry;
+mod rollup;
 mod scaler3;
 mod segmap;
 mod shard;
@@ -347,6 +348,20 @@ struct Args {
     /// Region tag on telemetry sources (NOT the object-store region).
     #[arg(long, env = "REGION", default_value = "")]
     telemetry_region: String,
+
+    /// System encryption key for the `_usage` ledger (§8.1). Unset =
+    /// telemetry pipeline off. BILLING_MODE=required refuses to start
+    /// without it (§14.1).
+    #[arg(long, env = "USAGE_STREAM_KEY")]
+    usage_stream_key: Option<String>,
+
+    /// "required" makes readiness fail without the usage ledger key.
+    #[arg(long, env = "BILLING_MODE", default_value = "off")]
+    billing_mode: String,
+
+    /// Run the usage rollup consumer + month closer on THIS instance.
+    #[arg(long, env = "ROLLUP", default_value = "0")]
+    rollup: String,
 
     /// Instance tag recorded in metrics records.
     #[arg(long, env = "INSTANCE_NAME", default_value = "streams")]
@@ -898,6 +913,8 @@ async fn async_main() -> anyhow::Result<()> {
             args.instance_name.clone()
         },
         fleet_internal_token: args.fleet_internal_token.clone(),
+        usage_key: args.usage_stream_key.clone(),
+        rollup: std::sync::OnceLock::new(),
         billing_reads: Arc::new(crate::billing::ReadUsageAccumulator::new(
             crate::billing::MeterSource {
                 cell: args.cell_id.clone(),
@@ -978,6 +995,18 @@ async fn async_main() -> anyhow::Result<()> {
             args.fleet_prefix.as_deref().unwrap_or(""),
             args.scale_rps_capacity
         );
+    }
+    // Telemetry pipeline (docs/OBSERVABILITY-BILLING.md): the drainer on
+    // every instance; the rollup consumer where ROLLUP=1.
+    if args.billing_mode == "required" && args.usage_stream_key.is_none() {
+        anyhow::bail!(
+            "BILLING_MODE=required needs USAGE_STREAM_KEY — production \
+             billing refuses to run without the usage ledger (§14.1)"
+        );
+    }
+    crate::billing::spawn_telemetry(state.clone());
+    if args.rollup == "1" {
+        crate::billing::spawn_rollup(state.clone(), args.path_prefix.clone().unwrap_or_default());
     }
     let app = http::router(state);
 

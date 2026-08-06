@@ -4838,6 +4838,8 @@ async fn http_rig_inner(
         auth_token: auth,
         origin_marker: "dst-instance".to_string(),
         fleet_internal_token: Some("dst-internal-token".to_string()),
+        usage_key: Some(PRISMA_KEY.to_string()),
+        rollup: std::sync::OnceLock::new(),
         billing_reads: Arc::new(crate::billing::ReadUsageAccumulator::new(
             crate::billing::MeterSource {
                 cell: "cell_test".to_string(),
@@ -18984,5 +18986,141 @@ async fn billing_meta_is_exact_durable_and_ackable() {
         !engine.usage_dirty_scan().await.unwrap().is_empty(),
         "the closure must reach the ledger"
     );
+    engine_shutdown(&state).await;
+}
+
+/// §6-§10 end to end: ingest and reads flow meter → durable outbox →
+/// `_usage` ledger → rollup → the customer usage API, exactly once.
+/// Replaying the drain and the rollup page must change NOTHING
+/// (idempotence at both hops), and the dashboard answer is a point
+/// read with exact numbers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn usage_pipeline_end_to_end_exactly_once() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    // This rig instance runs the rollup too.
+    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "")
+        .await
+        .unwrap();
+    let _ = state.rollup.set(std::sync::Arc::new(rollup));
+
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/pipe1",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let p1 = br#"{"n":1,"pad":"aaaaaaaaaa"}"#; // 26 B
+    for k in ["k1", "k2"] {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/pipe1/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", k),
+            ],
+            p1,
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+    // One keyed read = 26 read bytes.
+    let (st, _, _) = preq(
+        addr,
+        "GET",
+        "/v1/streams/pipe1/records?routingKey=k1",
+        &key,
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+
+    // Drain: read batches + dirty snapshots reach `_usage`; the outbox
+    // acks down to empty.
+    state.billing_reads.seal_if_aged(0);
+    let n = crate::billing::drain_once(&state).await.expect("drain");
+    assert!(n >= 2, "expected snapshots + a read batch, drained {n}");
+    // Drain again with nothing new: nothing to emit.
+    for _ in 0..100 {
+        if crate::billing::drain_once(&state).await.unwrap() == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+    assert_eq!(crate::billing::drain_once(&state).await.unwrap(), 0);
+
+    // Rollup: consume the ledger to the end.
+    let mut applied = 0;
+    for _ in 0..50 {
+        let k = crate::billing::rollup_step(&state).await.expect("rollup");
+        applied += k;
+        if k == 0 {
+            break;
+        }
+    }
+    assert!(applied >= n, "rollup consumed the drained page(s)");
+
+    // The customer answer: exact ingest, exact read bytes, storage > 0.
+    let (st, _, body) = preq(addr, "GET", "/v1/streams/pipe1/usage/current", &key, b"").await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&body));
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["ingestPayloadBytes"], 2 * p1.len() as u64);
+    assert_eq!(v["ingestRecords"], 2);
+    assert_eq!(v["readPayloadBytes"], p1.len() as u64);
+    assert_eq!(v["appendRequests"], 2);
+    assert_eq!(v["status"], "provisional");
+    assert!(v["ownedStoredBytesNow"].as_u64().unwrap() > 2 * p1.len() as u64);
+    assert!(
+        v["storageByteSeconds"]
+            .as_str()
+            .unwrap()
+            .parse::<u128>()
+            .unwrap()
+            > 0,
+        "provisional storage extrapolates from the gauge"
+    );
+
+    // REPLAY the rollup from cursor zero — the design's §16 crash case
+    // (rows written, cursor lost). Re-application must be a no-op.
+    let before = serde_json::to_string(&v).unwrap();
+    // Reset the cursor by applying an empty page carrying cursor "".
+    state
+        .rollup
+        .get()
+        .unwrap()
+        .apply_page(&[], "")
+        .await
+        .unwrap();
+    let mut reapplied = 0;
+    for _ in 0..50 {
+        let k = crate::billing::rollup_step(&state)
+            .await
+            .expect("rollup replay");
+        reapplied += k;
+        if k == 0 {
+            break;
+        }
+    }
+    assert!(reapplied >= applied, "the replay re-read the ledger");
+    let (st, _, body2) = preq(addr, "GET", "/v1/streams/pipe1/usage/current", &key, b"").await;
+    assert_eq!(st, 200);
+    let v2: serde_json::Value = serde_json::from_slice(&body2).unwrap();
+    for f in [
+        "ingestPayloadBytes",
+        "ingestRecords",
+        "readPayloadBytes",
+        "appendRequests",
+    ] {
+        assert_eq!(v2[f], v[f], "replay changed {f}: {before} vs {v2}");
+    }
+
+    // The ledger itself never appears in its own books (§8.4).
+    let (st, _, _) = preq(addr, "GET", "/v1/streams/_usage/usage", &key, b"").await;
+    assert_eq!(st, 403, "reserved names refuse even the usage endpoint");
     engine_shutdown(&state).await;
 }
