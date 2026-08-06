@@ -43,6 +43,21 @@ fn fnv1a(s: &str) -> u32 {
     }
     h
 }
+/// Log an upstream transport error at most once a second: a dead
+/// instance under load produces tens of thousands of identical errors.
+fn tracing_warn_once(e: &reqwest::Error) {
+    static LAST: AtomicU64 = AtomicU64::new(0);
+    let now = now_ms();
+    let prev = LAST.load(Ordering::Relaxed);
+    if now.saturating_sub(prev) > 1000
+        && LAST
+            .compare_exchange(prev, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+    {
+        eprintln!("lb: upstream transport error: {e}");
+    }
+}
+
 /// How long an upstream stays locally ejected after an unmarked
 /// (platform-edge) response. Long enough to cover a redeploy gap,
 /// short enough that a revived instance rejoins quickly.
@@ -840,8 +855,30 @@ async fn proxy(State(lb): State<Arc<Lb>>, req: Request) -> Response {
             .unwrap()
         }
         Err(e) => {
+            // A transport failure is the STRONGEST form of "never
+            // reached a Streams server" — connection refused, reset, or
+            // timeout against a dead instance. It gets the same
+            // treatment as an unmarked platform response (round-19
+            // MF4): retryable 503 + immediate local ejection, never a
+            // 502 (which the SDK does not retry any more than a 404).
             s.errs.fetch_add(1, Ordering::Relaxed);
-            (StatusCode::BAD_GATEWAY, format!("upstream error: {e}")).into_response()
+            s.eject_until_ms
+                .store(now_ms() + eject_ms(), Ordering::Relaxed);
+            tracing_warn_once(&e);
+            let body = serde_json::json!({
+                "error": {
+                    "code": "upstream_unavailable",
+                    "message": "the serving instance is unavailable; retry",
+                    "retryable": true,
+                }
+            });
+            Response::builder()
+                .status(StatusCode::SERVICE_UNAVAILABLE)
+                .header("content-type", "application/json")
+                .header("retry-after", "1")
+                .header("cache-control", "no-store")
+                .body(Body::from(body.to_string()))
+                .unwrap()
         }
     }
 }
