@@ -613,6 +613,22 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     active = ordinal;
                 }
                 *state.ring_active.write().unwrap() = active;
+                // fleet/urls.json overrides heartbeat-published URLs: on
+                // Compute a deploy cannot know its own final preview URL
+                // (each version mints a new one), so the deploy script
+                // publishes the resolved map AFTER deploying and the
+                // fleet reads it here. SELF_URL heartbeats remain the
+                // plain-VM path where an instance does know its address.
+                if let Ok(r) = store.get(&ObjPath::from("fleet/urls.json")).await {
+                    if let Ok(raw) = r.bytes().await {
+                        if let Ok(m) = serde_json::from_slice::<
+                            std::collections::HashMap<String, String>,
+                        >(&raw)
+                        {
+                            peer_urls.extend(m);
+                        }
+                    }
+                }
                 *state.peer_urls.write().unwrap() = peer_urls.clone();
             }
 
