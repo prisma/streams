@@ -560,6 +560,27 @@ pub(crate) fn with_product_cors(mut resp: Response) -> Response {
 /// Everything under `/v1/streams/{*path}`: subresource suffixes are
 /// parsed here because stream names are hierarchical (spec Stage 8:
 /// explicit matching before wildcard interpretation).
+/// Operation-count metering at the dispatch choke point (§4.5's
+/// non-priced dimensions). Bytes are metered where payloads are in
+/// hand; OPERATIONS are counted here so no handler forgets them. The
+/// registry read is a warm cache hit for a request that just succeeded.
+enum OpKind {
+    Append,
+    Queue,
+}
+
+async fn meter_op_if_ok(state: &Arc<AppState>, name: &str, ok: bool, kind: OpKind) {
+    if !ok {
+        return;
+    }
+    if let Ok(Some(desc)) = state.registry.get(name).await {
+        match kind {
+            OpKind::Append => crate::billing::meter_append_request(state, &desc),
+            OpKind::Queue => crate::billing::meter_queue_op(state, &desc),
+        }
+    }
+}
+
 pub async fn product_entry(
     state: Arc<AppState>,
     path: String,
@@ -611,9 +632,17 @@ pub async fn product_entry(
     match route {
         ProductRoute::Records { name } => {
             return match (method.clone(), verb.as_deref()) {
-                (Method::POST, None) => product_append(state, name, headers, body, false).await,
+                (Method::POST, None) => {
+                    let r = product_append(state.clone(), name.clone(), headers, body, false).await;
+                    let ok = r.status().is_success();
+                    meter_op_if_ok(&state, &name, ok, OpKind::Append).await;
+                    r
+                }
                 (Method::POST, Some("batch")) => {
-                    product_append(state, name, headers, body, true).await
+                    let r = product_append(state.clone(), name.clone(), headers, body, true).await;
+                    let ok = r.status().is_success();
+                    meter_op_if_ok(&state, &name, ok, OpKind::Append).await;
+                    r
                 }
                 (Method::GET, None) => product_read(state, name, headers, &query, None).await,
                 (Method::GET, Some("long-poll")) => {
@@ -647,7 +676,12 @@ pub async fn product_entry(
                     product_consumer_pull(state, name, cname, headers, body).await
                 }
                 (Method::POST, Some("settle")) => {
-                    product_consumer_settle(state, name, cname, headers, body).await
+                    let r =
+                        product_consumer_settle(state.clone(), name.clone(), cname, headers, body)
+                            .await;
+                    let ok = r.status().is_success();
+                    meter_op_if_ok(&state, &name, ok, OpKind::Queue).await;
+                    r
                 }
                 _ => perr(
                     StatusCode::METHOD_NOT_ALLOWED,
@@ -3085,6 +3119,7 @@ async fn product_read(
         max_bytes,
         deliver,
         no_fanout: false,
+        internal: false,
     };
     let mut ih = HeaderMap::new();
     if let Ok(v) = axum::http::HeaderValue::from_str(&key_b64) {
@@ -3430,6 +3465,7 @@ async fn product_scan(
     let mut body = Vec::with_capacity(4096);
     body.push(b'[');
     let mut n_items = 0usize;
+    let mut bill_bytes = 0u64;
     while idx < sc.segments.len() && spent < max {
         let (seg_id, snap_end) = sc.segments[idx];
         if off >= snap_end {
@@ -3542,6 +3578,7 @@ async fn product_scan(
             }
             body.push(b'}');
             n_items += 1;
+            bill_bytes += r.payload.len() as u64;
             spent += r.payload.len() + r.rkey.len() + 24;
             off = r.off + 1;
             progressed = true;
@@ -3573,6 +3610,10 @@ async fn product_scan(
         };
         r = r.header("Prisma-Next-Scan-Cursor", next.encode(&skey));
     }
+    // §4.2/§5: one scan operation, payload bytes only. Pages fetched
+    // from peer owners are included HERE (this is the public delivery)
+    // and never metered by the internal endpoint that served them.
+    crate::billing::meter_read(&state, &desc, bill_bytes, n_items as u64);
     r.body(Body::from(body)).unwrap()
 }
 
@@ -5422,6 +5463,12 @@ async fn product_consumer_pull(
                         "value": value,
                     }));
                 }
+                let delivered_payload: u64 = leased
+                    .iter()
+                    .filter_map(|(off, ..)| by_off.get(off))
+                    .map(|(_, p)| p.len() as u64)
+                    .sum();
+                crate::billing::meter_pull(&state, &desc, delivered_payload, messages.len() as u64);
                 return Response::builder()
                     .status(StatusCode::OK)
                     .header(header::CONTENT_TYPE, "application/json")

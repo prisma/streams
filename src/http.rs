@@ -143,6 +143,9 @@ pub struct AppState {
     /// Bearer token required on /v1/* when set (pilot authn). This is the
     /// CUSTOMER-facing account token; it never authorizes /v1/internal/*.
     pub auth_token: Option<String>,
+    /// The read-delivery meter (docs/OBSERVABILITY-BILLING.md §7): ONE
+    /// accumulator, fed only at the public response coordinator.
+    pub billing_reads: Arc<crate::billing::ReadUsageAccumulator>,
     /// Billing tenant boundary (docs/OBSERVABILITY-BILLING.md §3.2):
     /// explicit account/project identity from the control plane's
     /// deployment config — never inferred from stream names. Persisted
@@ -1020,6 +1023,11 @@ pub struct ReadParams {
     /// is exactly one and ownership churn can never build relay cycles.
     #[serde(skip)]
     pub(crate) no_fanout: bool,
+    /// Fleet-internal request: NEVER metered (§4.2 — internal relays
+    /// return counts; the public coordinator that requested the page
+    /// meters exactly once). Serde-skipped so no query string sets it.
+    #[serde(skip)]
+    pub(crate) internal: bool,
 }
 
 /// Reserved Durable Streams control namespace (appendix §2.6): matched
@@ -1179,7 +1187,17 @@ async fn stream_entry_inner(
             };
             create_stream(state, name, headers, body).await
         }
-        Method::POST => append(state, name, headers, body, None, None, None).await,
+        Method::POST => {
+            let r = append(state.clone(), name.clone(), headers, body, None, None, None).await;
+            // Operation count only (§4.5) — the BILLED ingest bytes are
+            // the committer's, atomic with the records themselves.
+            if r.status().is_success() {
+                if let Ok(Some(desc)) = state.registry.get(&name).await {
+                    crate::billing::meter_append_request(&state, &desc);
+                }
+            }
+            r
+        }
         Method::GET => read(state, name, params, headers, false).await,
         Method::HEAD => read(state, name, params, headers, true).await,
         Method::DELETE => delete_stream(state, name).await,
@@ -5112,6 +5130,9 @@ async fn read_fork_inner(
         (st.durable.next, st.durable.closed)
     };
     if head_only {
+        if !params.internal {
+            crate::billing::meter_read(&state, &desc, 0, 0);
+        }
         let mut r = Response::builder()
             .status(StatusCode::OK)
             .header(header::CONTENT_TYPE, desc.content_type.clone())
@@ -5243,6 +5264,13 @@ async fn read_fork_inner(
         buf.freeze()
     };
     let closed_now = handle.state.lock().unwrap().durable.closed;
+    // §4.2: fork reads bill to the FORK resource requested — `desc`
+    // here is the fork's descriptor even when records were stitched
+    // from the ancestor chain.
+    if !params.internal {
+        let payload: u64 = out.recs.iter().map(|r| r.payload.len() as u64).sum();
+        crate::billing::meter_read(&state, &desc, payload, out.recs.len() as u64);
+    }
     let mut r = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, desc.content_type.clone())
@@ -5409,6 +5437,10 @@ pub(crate) async fn read_inner(
                 state, name, params, headers, head_only, false, surface,
             ))
             .await;
+        }
+        // §5: HEAD is one read operation with zero data bytes.
+        if !params.internal {
+            crate::billing::meter_read(&state, &desc, 0, 0);
         }
         let mut r = Response::builder()
             .status(StatusCode::OK)
@@ -5750,6 +5782,15 @@ pub(crate) async fn read_inner(
     crate::usage::counters(&crate::crypto::stream_hash(&desc.name))
         .bytes_out
         .fetch_add(body.len() as u64, std::sync::atomic::Ordering::Relaxed);
+    // THE read meter (§5/§7): payload bytes only — array brackets,
+    // commas, frame encryption and headers are excluded by summing the
+    // record payloads, not the wire body. An empty long-poll meters the
+    // operation with zero data bytes. Internal relays never meter; the
+    // coordinator that requested them does.
+    if !params.internal {
+        let payload: u64 = out.recs.iter().map(|r| r.payload.len() as u64).sum();
+        crate::billing::meter_read(&state, &desc, payload, out.recs.len() as u64);
+    }
     r.body(Body::from(body)).unwrap()
 }
 
@@ -5833,6 +5874,8 @@ pub(crate) fn sse_lineage_response(
 ) -> Response {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(64);
     let sse_hash = crate::crypto::stream_hash(&desc.name);
+    // One subscribe operation; delivered bytes meter per chunk (§5).
+    crate::billing::meter_read(&state, &desc, 0, 0);
     let cursor = params.cursor.clone();
     let rk_hash = crate::crypto::stream_hash(&rk);
     let seg_tok = |seg_id: u32, next: u64| {
@@ -5902,11 +5945,19 @@ pub(crate) fn sse_lineage_response(
                                 && will_end
                                 && genuine_closure(&state, &desc.name, true).await;
                             let n = out.recs.len();
+                            let bill_id = crate::billing::identity_of(&state, &desc);
                             for (i, r) in out.recs.iter().enumerate() {
                                 let ev = sse_data_event(&desc, &r.payload);
                                 if tx.send(Ok(Bytes::from(ev))).await.is_err() {
                                     return;
                                 }
+                                // §4.2: each emitted payload, pre-framing.
+                                crate::billing::meter_read_chunk(
+                                    &state.billing_reads,
+                                    &bill_id,
+                                    r.payload.len() as u64,
+                                    1,
+                                );
                                 let last_rec = i + 1 == n && out.completed;
                                 let (utd, cls) = if last_rec {
                                     (will_end, report_closed)
@@ -6063,6 +6114,8 @@ async fn sse_response(
 ) -> Response {
     let sse_hash = crate::crypto::stream_hash(&desc.name);
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(64);
+    // One subscribe operation; delivered bytes meter per chunk (§5).
+    crate::billing::meter_read(&state, &desc, 0, 0);
     let binary = {
         let mt = crate::registry::media_type(&desc.content_type);
         mt != "application/json" && !mt.starts_with("text/")
@@ -6120,11 +6173,19 @@ async fn sse_response(
                         let report_closed =
                             closed && will_end && genuine_closure(&state, &desc.name, true).await;
                         let n = out.recs.len();
+                        let bill_id = crate::billing::identity_of(&state, &desc);
                         for (i, r) in out.recs.iter().enumerate() {
                             let ev = sse_data_event(&desc, &r.payload);
                             if tx.send(Ok(Bytes::from(ev))).await.is_err() {
                                 return;
                             }
+                            // §4.2: each emitted payload, pre-framing.
+                            crate::billing::meter_read_chunk(
+                                &state.billing_reads,
+                                &bill_id,
+                                r.payload.len() as u64,
+                                1,
+                            );
                             let last_rec = i + 1 == n && out.completed;
                             let (utd, cls) = if last_rec {
                                 (will_end, report_closed)
@@ -6409,6 +6470,7 @@ async fn internal_segment_read(
         return internal_unauthorized();
     }
     params.no_fanout = true;
+    params.internal = true;
     // Clamped to the SAME server-side ceiling the public read obeys: an
     // internal budget header must not buy a bigger page than the
     // operation it is relaying on behalf of (round-19 finding).

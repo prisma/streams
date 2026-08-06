@@ -4831,6 +4831,13 @@ async fn http_rig_inner(
         auth_token: auth,
         origin_marker: "dst-instance".to_string(),
         fleet_internal_token: Some("dst-internal-token".to_string()),
+        billing_reads: Arc::new(crate::billing::ReadUsageAccumulator::new(
+            crate::billing::MeterSource {
+                cell: "cell_test".to_string(),
+                instance: "dst-instance".to_string(),
+                boot: crate::billing::boot_id().to_string(),
+            },
+        )),
         account_id: "acct_test".to_string(),
         project_id: "proj_test".to_string(),
         cell_id: "cell_test".to_string(),
@@ -18604,5 +18611,180 @@ async fn reserved_namespace_refuses_customer_credentials() {
         .unwrap();
     assert_eq!(desc.account_id.as_deref(), Some("acct_test"));
     assert_eq!(desc.project_id.as_deref(), Some("proj_test"));
+    engine_shutdown(&state).await;
+}
+
+/// §5 metering coverage matrix, driven end to end over HTTP: the ONE
+/// read meter sees exact payload bytes (never framing, brackets or
+/// encryption expansion), operations count where data doesn't, and
+/// internal relays add nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn read_meter_covers_the_matrix_exactly() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/meter1",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    // Two records with EXACTLY known payload sizes.
+    let p1 = br#"{"n":1,"pad":"aaaaaaaaaa"}"#; // 26 bytes
+    let p2 = br#"{"n":22,"pad":"bbbbbb"}"#; // 23 bytes
+    for (k, p) in [("k1", &p1[..]), ("k2", &p2[..])] {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/meter1/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", k),
+            ],
+            p,
+        )
+        .await;
+        assert_eq!(st, 200);
+    }
+    let row = |state: &Arc<crate::http::AppState>, name: &str| -> crate::billing::RowDelta {
+        state
+            .billing_reads
+            .snapshot_active()
+            .into_iter()
+            .find(|(id, _)| id.stream_name == name)
+            .map(|(_, d)| d)
+            .unwrap_or_default()
+    };
+    let after_appends = row(&state, "meter1");
+    assert_eq!(after_appends.append_requests, 2, "two append ops");
+    assert_eq!(
+        after_appends.read_payload_bytes, 0,
+        "appends meter no read bytes"
+    );
+
+    // Keyed product read: payload bytes only — the JSON array wrapper
+    // and framing must NOT appear in the meter.
+    let (st, _, body) = preq(
+        addr,
+        "GET",
+        "/v1/streams/meter1/records?routingKey=k1",
+        &key,
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    assert!(body.len() > p1.len(), "wire body carries framing");
+    let m = row(&state, "meter1");
+    assert_eq!(
+        m.read_payload_bytes,
+        p1.len() as u64,
+        "read meters exactly the record payload"
+    );
+    assert_eq!(m.read_records, 1);
+    assert_eq!(m.read_operations, 1);
+
+    // Scan: both records, payload bytes only, one operation.
+    let (st, _, _) = preq(addr, "GET", "/v1/streams/meter1:scan", &key, b"").await;
+    assert_eq!(st, 200);
+    let m2 = row(&state, "meter1");
+    assert_eq!(
+        m2.read_payload_bytes,
+        (p1.len() + p1.len() + p2.len()) as u64,
+        "scan adds exactly the two payloads"
+    );
+    assert_eq!(m2.read_operations, 2);
+    assert_eq!(m2.read_records, 3);
+
+    // Consumer pull delivers both payloads and counts ONE queue op.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/meter1/consumers/c1",
+        &key,
+        br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/meter1/consumers/c1:pull",
+        &key,
+        br#"{"max":10}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let msgs = serde_json::from_slice::<serde_json::Value>(&b).unwrap()["messages"]
+        .as_array()
+        .unwrap()
+        .len();
+    assert_eq!(msgs, 2);
+    let m3 = row(&state, "meter1");
+    assert_eq!(m3.queue_operations, 1, "pull is one queue operation");
+    assert_eq!(
+        m3.read_payload_bytes,
+        m2.read_payload_bytes + (p1.len() + p2.len()) as u64,
+        "pull delivers both payloads at exact size"
+    );
+
+    // Raw HEAD: one read operation, zero data bytes.
+    let bytes_before_head = row(&state, "meter1").read_payload_bytes;
+    let ops_before_head = row(&state, "meter1").read_operations;
+    let (st, _, _) = preq(addr, "HEAD", "/v1/stream/meter1", &[], b"").await;
+    assert_eq!(st, 200);
+    let m4 = row(&state, "meter1");
+    assert_eq!(m4.read_payload_bytes, bytes_before_head);
+    assert_eq!(m4.read_operations, ops_before_head + 1);
+
+    // Internal segment-read (the fleet relay path) must add NOTHING:
+    // the public coordinator that requested it meters, not the server.
+    let desc = state.registry.get("meter1").await.unwrap().unwrap();
+    let target = crate::product::InternalTarget::of(&desc, 0).unwrap();
+    let mut hdrs: Vec<(String, String)> = vec![
+        (
+            "authorization".into(),
+            "Bearer dst-internal-token".to_string(),
+        ),
+        ("stream-encryption-key".into(), PRISMA_KEY.to_string()),
+    ];
+    for (k, v) in target.headers() {
+        hdrs.push((k.to_string(), v));
+    }
+    let hdr_refs: Vec<(&str, &str)> = hdrs.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    let before_internal = row(&state, "meter1");
+    let (st, _, _) = preq(
+        addr,
+        "GET",
+        "/v1/internal/segment-read/meter1?offset=&head=1",
+        &hdr_refs,
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200, "internal head probe serves");
+    let after_internal = row(&state, "meter1");
+    assert_eq!(
+        before_internal, after_internal,
+        "an internal relay changed the customer meter"
+    );
+
+    // Rotation: sealing moves the rows into a batch with this boot's
+    // source identity and a monotone sequence.
+    state.billing_reads.seal_if_aged(0);
+    let batches = state.billing_reads.drain_sealed(8);
+    assert_eq!(batches.len(), 1);
+    assert_eq!(batches[0].source.boot, crate::billing::boot_id());
+    assert!(
+        batches[0]
+            .rows
+            .iter()
+            .any(|r| r.identity.stream_name == "meter1"
+                && r.identity.account_id == "acct_test"
+                && !r.identity.stream_id.is_empty()),
+        "sealed rows carry the full billing identity"
+    );
+    assert!(state.billing_reads.snapshot_active().is_empty());
     engine_shutdown(&state).await;
 }

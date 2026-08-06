@@ -898,6 +898,13 @@ async fn async_main() -> anyhow::Result<()> {
             args.instance_name.clone()
         },
         fleet_internal_token: args.fleet_internal_token.clone(),
+        billing_reads: Arc::new(crate::billing::ReadUsageAccumulator::new(
+            crate::billing::MeterSource {
+                cell: args.cell_id.clone(),
+                instance: args.instance_name.clone(),
+                boot: crate::billing::boot_id().to_string(),
+            },
+        )),
         account_id: args.account_id.clone(),
         project_id: args.project_id.clone(),
         cell_id: args.cell_id.clone(),

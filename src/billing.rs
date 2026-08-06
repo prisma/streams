@@ -505,3 +505,271 @@ mod tests {
         assert_ne!(s.deterministic_event_id(), f.deterministic_event_id());
     }
 }
+
+// ---------------------------------------------------------------------
+// Read-delivery meter (§7): ONE accumulator at the public response
+// coordinator
+// ---------------------------------------------------------------------
+
+/// Flush thresholds (§7.2). The active map seals into a batch on any of
+/// these; a sealed batch is what the drainer appends to `_usage`.
+pub const READ_FLUSH_INTERVAL_MS: i64 = 10_000;
+pub const READ_FLUSH_MAX_ENTRIES: usize = 10_000;
+pub const READ_FLUSH_MAX_EST_BYTES: usize = 1 << 20;
+/// Sealed batches waiting for the ledger. When the ledger is down long
+/// enough to fill this, sealing PAUSES and deltas keep merging into the
+/// active map — attribution is never discarded (§14.1), memory stays
+/// bounded by stream cardinality, and the lag is visible.
+pub const READ_SEALED_MAX_BATCHES: usize = 64;
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct RowDelta {
+    pub read_payload_bytes: u64,
+    pub read_records: u64,
+    pub read_operations: u64,
+    pub queue_operations: u64,
+    pub append_requests: u64,
+}
+
+struct ActiveMap {
+    rows: std::collections::HashMap<BillingIdentity, RowDelta>,
+    opened_ms: i64,
+    /// Rough encoded-size estimate (identity strings + numbers), used
+    /// only against READ_FLUSH_MAX_EST_BYTES.
+    est_bytes: usize,
+}
+
+pub struct ReadUsageAccumulator {
+    active: std::sync::Mutex<ActiveMap>,
+    sealed: std::sync::Mutex<std::collections::VecDeque<ReadBatch>>,
+    seq: std::sync::atomic::AtomicU64,
+    source: MeterSource,
+    /// Batches that could not seal because the sealed queue was full —
+    /// a telemetry-lag signal, not data loss (rows kept merging).
+    pub seal_deferrals: std::sync::atomic::AtomicU64,
+}
+
+impl ReadUsageAccumulator {
+    pub fn new(source: MeterSource) -> Self {
+        ReadUsageAccumulator {
+            active: std::sync::Mutex::new(ActiveMap {
+                rows: std::collections::HashMap::new(),
+                opened_ms: 0,
+                est_bytes: 0,
+            }),
+            sealed: std::sync::Mutex::new(std::collections::VecDeque::new()),
+            seq: std::sync::atomic::AtomicU64::new(0),
+            source,
+            seal_deferrals: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Add one observation. Reserved system streams are never metered
+    /// (self-metering exclusion, §8.4).
+    pub fn meter(&self, id: &BillingIdentity, d: RowDelta) {
+        if is_reserved_stream(&id.stream_name) {
+            return;
+        }
+        let mut a = self.active.lock().unwrap();
+        if a.rows.is_empty() {
+            a.opened_ms = crate::shard::now_ms();
+        }
+        match a.rows.get_mut(id) {
+            Some(row) => {
+                row.read_payload_bytes += d.read_payload_bytes;
+                row.read_records += d.read_records;
+                row.read_operations += d.read_operations;
+                row.queue_operations += d.queue_operations;
+                row.append_requests += d.append_requests;
+                a.est_bytes += 8;
+            }
+            None => {
+                a.est_bytes += 120
+                    + id.account_id.len()
+                    + id.project_id.len()
+                    + id.stream_id.len()
+                    + id.stream_name.len();
+                a.rows.insert(id.clone(), d);
+            }
+        }
+        if a.rows.len() >= READ_FLUSH_MAX_ENTRIES || a.est_bytes >= READ_FLUSH_MAX_EST_BYTES {
+            self.seal_locked(&mut a);
+        }
+    }
+
+    fn seal_locked(&self, a: &mut ActiveMap) {
+        if a.rows.is_empty() {
+            return;
+        }
+        let mut sealed = self.sealed.lock().unwrap();
+        if sealed.len() >= READ_SEALED_MAX_BATCHES {
+            // Ledger outage: keep merging instead of sealing. Rotation
+            // resumes as soon as the drainer catches up.
+            self.seal_deferrals
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            return;
+        }
+        let rows = std::mem::take(&mut a.rows)
+            .into_iter()
+            .map(|(identity, d)| ReadRow {
+                identity,
+                read_payload_bytes: d.read_payload_bytes,
+                read_records: d.read_records,
+                read_operations: d.read_operations,
+                queue_operations: d.queue_operations,
+                append_requests: d.append_requests,
+            })
+            .collect();
+        let now = crate::shard::now_ms();
+        sealed.push_back(ReadBatch {
+            source: self.source.clone(),
+            seq: self.seq.fetch_add(1, std::sync::atomic::Ordering::SeqCst),
+            from_ms: a.opened_ms,
+            to_ms: now,
+            rows,
+        });
+        a.est_bytes = 0;
+        a.opened_ms = now;
+    }
+
+    /// Timer/shutdown entry: seal if the active interval is at least
+    /// `max_age_ms` old (0 = unconditionally).
+    pub fn seal_if_aged(&self, max_age_ms: i64) {
+        let mut a = self.active.lock().unwrap();
+        if a.rows.is_empty() {
+            return;
+        }
+        if max_age_ms == 0 || crate::shard::now_ms() - a.opened_ms >= max_age_ms {
+            self.seal_locked(&mut a);
+        }
+    }
+
+    /// Hand up to `max` sealed batches to the drainer. The drainer
+    /// requeues on emission failure — a batch leaves this process only
+    /// after `_usage` acknowledged it.
+    pub fn drain_sealed(&self, max: usize) -> Vec<ReadBatch> {
+        let mut sealed = self.sealed.lock().unwrap();
+        let n = sealed.len().min(max);
+        sealed.drain(..n).collect()
+    }
+
+    /// Failed emission: put the batches back at the FRONT, original
+    /// order, so sequence numbers stay as monotone as delivery allows.
+    pub fn requeue(&self, batches: Vec<ReadBatch>) {
+        let mut sealed = self.sealed.lock().unwrap();
+        for b in batches.into_iter().rev() {
+            sealed.push_front(b);
+        }
+    }
+
+    /// (active rows, active est bytes, sealed batches) — the §14.2 lag
+    /// gauges, and the "maximum possible loss" numerator.
+    pub fn unflushed(&self) -> (usize, usize, usize) {
+        let a = self.active.lock().unwrap();
+        let s = self.sealed.lock().unwrap();
+        (a.rows.len(), a.est_bytes, s.len())
+    }
+
+    /// Test/operator view of the live (unsealed) rows.
+    pub fn snapshot_active(&self) -> Vec<(BillingIdentity, RowDelta)> {
+        let a = self.active.lock().unwrap();
+        a.rows.iter().map(|(k, v)| (k.clone(), v.clone())).collect()
+    }
+}
+
+/// The BillingIdentity for a descriptor, with deployment defaults for
+/// descriptors created before the cutover.
+pub fn identity_of(
+    state: &crate::http::AppState,
+    desc: &crate::registry::StreamDesc,
+) -> BillingIdentity {
+    BillingIdentity {
+        account_id: desc
+            .account_id
+            .clone()
+            .unwrap_or_else(|| state.account_id.clone()),
+        project_id: desc
+            .project_id
+            .clone()
+            .unwrap_or_else(|| state.project_id.clone()),
+        stream_id: desc.stream_epoch.clone(),
+        stream_name: desc.name.clone(),
+    }
+}
+
+/// Meter one externally delivered read page (op + payload bytes).
+pub fn meter_read(
+    state: &crate::http::AppState,
+    desc: &crate::registry::StreamDesc,
+    bytes: u64,
+    records: u64,
+) {
+    state.billing_reads.meter(
+        &identity_of(state, desc),
+        RowDelta {
+            read_payload_bytes: bytes,
+            read_records: records,
+            read_operations: 1,
+            ..Default::default()
+        },
+    );
+}
+
+/// Meter SSE/subscription payload chunks (no extra operation count).
+pub fn meter_read_chunk(
+    acc: &ReadUsageAccumulator,
+    id: &BillingIdentity,
+    bytes: u64,
+    records: u64,
+) {
+    acc.meter(
+        id,
+        RowDelta {
+            read_payload_bytes: bytes,
+            read_records: records,
+            ..Default::default()
+        },
+    );
+}
+
+/// Meter a queue operation with delivered payload (pull; redelivery
+/// meters again by design §4.2).
+pub fn meter_pull(
+    state: &crate::http::AppState,
+    desc: &crate::registry::StreamDesc,
+    bytes: u64,
+    records: u64,
+) {
+    state.billing_reads.meter(
+        &identity_of(state, desc),
+        RowDelta {
+            read_payload_bytes: bytes,
+            read_records: records,
+            queue_operations: 1,
+            ..Default::default()
+        },
+    );
+}
+
+/// Meter a zero-data queue operation (settle/extend/config).
+pub fn meter_queue_op(state: &crate::http::AppState, desc: &crate::registry::StreamDesc) {
+    state.billing_reads.meter(
+        &identity_of(state, desc),
+        RowDelta {
+            queue_operations: 1,
+            ..Default::default()
+        },
+    );
+}
+
+/// Count an accepted append request (informational dimension §4.5; the
+/// BILLED ingest bytes come from the committer, not this counter).
+pub fn meter_append_request(state: &crate::http::AppState, desc: &crate::registry::StreamDesc) {
+    state.billing_reads.meter(
+        &identity_of(state, desc),
+        RowDelta {
+            append_requests: 1,
+            ..Default::default()
+        },
+    );
+}
