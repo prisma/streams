@@ -932,3 +932,72 @@ closed; open work proceeds on the simulator (#108), fleet validation
 (#113), operations (#114 follow-ons), with the close-group liveness
 question RESOLVED (root-caused and fixed, see the #115 section of the
 ops notes).
+
+## Round 19 (2026-08-06): the fleet trust boundary — v0.2.0-preview.5
+
+The multi-instance review approved the fleet architecture conditionally
+on four must-fixes. All four are implemented, plus the fleet-contract
+patch and the two claim corrections. **The fleet's new distributed
+trust boundary now obeys the same identity, authorization and
+durability rules as the rest of the system.**
+
+| finding | fix | proof |
+|---|---|---|
+| **MF1** `/v1/internal/*` accepted the CUSTOMER bearer — a client token could install an arbitrary consumer fence and delete cursor/lease/ack rows with no stream key | `FLEET_INTERNAL_TOKEN` is a separate mandatory credential (fleet mode refuses to start without one, under 16 chars, or equal to `AUTH_TOKEN`); internal routes accept only it, the public surface never does, both compared in constant time; relays forward it instead of the customer bearer; internal budget headers clamp to public ceilings; **every** `/v1/debug/*` route is now bearer-gated (the security doc had claimed this while `absorb-pause`, `sleep`, `load` and `usage` answered unauthenticated); peer URLs validated as bare origins with optional domain allowlist | wire probes: customer bearer → 401, no auth → 401, fleet token on the product surface → 401, unauthenticated debug → 401; 2 unit tests on URL validation; ci-fanout gate |
+| **MF2** internal RPCs named only (stream, segment), so a delete/recreate in flight let a stale read serve the replacement's records — and a stale sweep fence and delete the replacement's generation-1 consumer state | every internal request carries a typed `InternalTarget` (stream epoch, segment id, derived identity); the receiver re-derives all three against the current descriptor **before opening an engine or touching a row** and answers `409 stale_target` on any mismatch. Applied to segment-read, segment-scan, tail probe, queue-cursor, sweep-segment | 5 unit tests (own incarnation verifies; recreation, unknown segment, mismatched identity, missing headers refuse) |
+| **MF3** the consumer-generation fence lived only in engine memory, so a shard moving to a new instance opened an empty map and accepted a dead generation's parked receive — after its DELETE had answered 204 | the fence is persisted as `<hash16>'F'<consumer>` in the same ordered committer batch as the cleanup it guards; Receive/Settle consult the resident map and, on a miss, the durable row (a failed fence READ refuses the op rather than reading as unfenced) | **red-verified** DST `consumer_fence_survives_ownership_move`: with the durable consult disabled the dead generation is accepted exactly as predicted; with it, refused with no row written |
+| **MF4** platform-edge 404s reached clients as "stream does not exist" (8,371 in the hard-kill campaign); the SDK retries 429/503 but never 404 | every response carries `Prisma-Streams-Origin` (middleware, errors included); the router treats an unmarked response — and any transport failure — as "never reached a server": `503 upstream_unavailable` + `Retry-After` + immediate local ejection (`LB_EJECT_MS`), ejected ordinals leave the routing set at once | acceptance rerun (12 streams, instance killed mid-load): **200s and 503s only — zero 404s, zero 502s** |
+
+Fleet-contract patch: peer relay URLs percent-encode each name segment
+(names may legally contain `?`, `#`, `%`); the router extracts the full
+hierarchical name via the ProductRoute grammar instead of the first path
+segment; router body limit raised to the server's 32 MiB; last validated
+`urls.json` retained on transient read failure; cross-owner cleanup
+budget reserved atomically with refund.
+
+Claim corrections (both were overclaims):
+- **Scale-in is functional, not economic.** Routing and ownership
+  scale-in are verified; the VMs do NOT suspend, because their own 2 s
+  heartbeats keep them alive. The preview's cost floor is a WARM fleet
+  of `FLEET_MAX`. Standby behavior is a pre-GA item. REPORT.md corrected.
+- **"Zero loss" → "no aggregate acknowledged deficit."** The set-level
+  audit now exists: the generator keeps a compact acknowledged-ID ledger
+  (count/sum/xor per stream) and `drain-account.py SET_AUDIT=1`
+  recomputes it from what is readable, catching loss, duplication and
+  substitution.
+
+New permanent gate: `bench/fleet/ci-fanout.sh` — a bounded two-process
+job covering cross-owner read/scan/pull/settle/deletion, internal-API
+authorization, incarnation binding, the origin marker, hierarchical +
+percent-encoded names, and dead-upstream semantics. Verified green.
+
+### Battery on 41f22de2 (v0.2.0-preview.5)
+
+| gate | result |
+|---|---|
+| Rust suite | **304/0** (181 DST scenario tests) |
+| pinned DS conformance 0.3.6 | **332 passed / 0 failed / 6 skipped** |
+| field gate, unpaced | **PASS** |
+| field gate, `FIELD_PACE_MS=1200` | **PASS** |
+| consumer-saga smoke | **PASS** |
+| installed-tarball SDK smoke | **PASS** (0.2.0-preview.5, sha 1ee306fb…) |
+| two-instance cross-owner gate (`ci-fanout.sh`) | **ALL CHECKS PASSED** |
+| hard-kill 404/503 acceptance | **PASS** — zero semantic 404s, zero 502s |
+| `cargo fmt --check` | clean |
+| clippy (whole tree) | **342**, below the 345 measured at `93066698` (the recorded baseline had been stale at 114 since before this round and is refreshed) |
+
+```
+code_commit:        41f22de2…  (round 19)
+slatedb_pin:        0717cc1e…
+conformance_pin:    0.3.6
+layout_version:     3
+sdk_tarball_sha256: 1ee306fb5c491e54074f45a77d944f1f2d5e67cb28c417f527455f9263028d58
+```
+
+**Not yet re-run on the WAN.** The cloud fleet still runs the fleet4
+binary (pre-round-19). Before enabling fleet mode for customers, the
+fleet must be redeployed on this build with `FLEET_INTERNAL_TOKEN` set
+and the hard-kill leg re-run against real Compute edges — the local
+acceptance uses connection-refused, the platform produces its static
+404 page, and only the latter exercises the unmarked-response path end
+to end.
