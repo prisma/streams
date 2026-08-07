@@ -14,8 +14,8 @@
 //!     never silently rewritten (§9.5).
 
 use crate::billing::{
-    ReadBatch, SegmentSnapshot, UsageCorrection, UsageEnvelope, UsagePayload, month_start_ms,
-    next_month, parse_month,
+    ReadBatch, ReadRow, SegmentSnapshot, UsageCorrection, UsageEnvelope, UsagePayload,
+    month_start_ms, next_month, parse_month,
 };
 use serde::{Deserialize, Serialize};
 use slatedb::{Db, WriteBatch};
@@ -226,6 +226,23 @@ impl AggRow {
     }
 }
 
+
+/// Every (month, duration-ms) span of [from, to): walks each UTC month
+/// boundary the interval crosses.
+fn month_spans(from_ms: i64, to_ms: i64) -> Vec<(String, i64)> {
+    let to = to_ms.max(from_ms + 1);
+    let mut out = Vec::new();
+    let mut cur = from_ms;
+    while cur < to {
+        let (y, m) = crate::billing::utc_year_month(cur);
+        let (ny, nm) = next_month(y, m);
+        let boundary = month_start_ms(ny, nm).min(to);
+        out.push((crate::billing::month_str(y, m), boundary - cur));
+        cur = boundary;
+    }
+    out
+}
+
 // ---------------------------------------------------------------------
 // The rollup database
 // ---------------------------------------------------------------------
@@ -365,53 +382,77 @@ impl UsageRollup {
             return; // duplicate delivery of an applied batch
         }
         sources.insert(boot, rb.seq);
-        // Round-21 blocker 8: a batch crossing a UTC month boundary
-        // splits proportionally by time — never wholly attributed to
-        // the month containing `to_ms`.
-        let (fy, fm) = crate::billing::utc_year_month(rb.from_ms.min(rb.to_ms));
-        let (ty, tm) = crate::billing::utc_year_month(rb.to_ms);
-        let spans: Vec<(String, f64)> = if (fy, fm) == (ty, tm) {
-            vec![(crate::billing::month_str(ty, tm), 1.0)]
-        } else {
-            let boundary = {
-                let (ny, nm) = crate::billing::next_month(fy, fm);
-                crate::billing::month_start_ms(ny, nm)
-            };
-            let total = (rb.to_ms - rb.from_ms).max(1) as f64;
-            let first = ((boundary - rb.from_ms).max(0) as f64 / total).clamp(0.0, 1.0);
-            vec![
-                (crate::billing::month_str(fy, fm), first),
-                (crate::billing::month_str(ty, tm), 1.0 - first),
-            ]
-        };
-        for (month, frac) in &spans {
-            let month = month.clone();
-            let frac = *frac;
-            if frac <= 0.0 {
-                continue;
-            }
-            self.apply_read_rows(rb, &month, frac, months, names, projects)
+        // Round-22 item 5: EXACT integer allocation across every UTC
+        // month boundary the batch intersects. Each dimension of each
+        // row is split with integer proportions and the remainder goes
+        // to the final span, so sum(allocations) == original for every
+        // metered dimension — one byte can never bill twice, and a
+        // batch spanning many months (a long outage) covers the
+        // intermediate months too.
+        let spans = month_spans(rb.from_ms, rb.to_ms);
+        if spans.len() == 1 {
+            self.apply_read_rows(rb, &spans[0].0, months, names, projects)
                 .await;
+        } else {
+            let total: i64 = spans.iter().map(|(_, d)| *d).sum::<i64>().max(1);
+            let mut allocated: Vec<Vec<[u64; 5]>> =
+                vec![vec![[0; 5]; rb.rows.len()]; spans.len()];
+            for (ri, row) in rb.rows.iter().enumerate() {
+                let dims = [
+                    row.read_payload_bytes,
+                    row.read_records,
+                    row.read_operations,
+                    row.queue_operations,
+                    row.append_requests,
+                ];
+                for (di, v) in dims.iter().enumerate() {
+                    let mut given = 0u64;
+                    for (si, (_, dur)) in spans.iter().enumerate() {
+                        let a = if si + 1 == spans.len() {
+                            *v - given // remainder-to-last: exact by construction
+                        } else {
+                            ((*v as u128 * *dur as u128) / total as u128) as u64
+                        };
+                        allocated[si][ri][di] = a;
+                        given += a;
+                    }
+                }
+            }
+            for (si, (month, _)) in spans.iter().enumerate() {
+                let scaled = ReadBatch {
+                    source: rb.source.clone(),
+                    seq: rb.seq,
+                    from_ms: rb.from_ms,
+                    to_ms: rb.to_ms,
+                    rows: rb
+                        .rows
+                        .iter()
+                        .enumerate()
+                        .map(|(ri, row)| ReadRow {
+                            identity: row.identity.clone(),
+                            read_payload_bytes: allocated[si][ri][0],
+                            read_records: allocated[si][ri][1],
+                            read_operations: allocated[si][ri][2],
+                            queue_operations: allocated[si][ri][3],
+                            append_requests: allocated[si][ri][4],
+                        })
+                        .collect(),
+                };
+                self.apply_read_rows(&scaled, month, months, names, projects)
+                    .await;
+            }
         }
     }
 
-    #[allow(clippy::too_many_arguments)]
     async fn apply_read_rows(
         &self,
         rb: &ReadBatch,
         month: &str,
-        frac: f64,
         months: &mut std::collections::HashMap<Vec<u8>, MonthRow>,
         names: &mut std::collections::HashMap<Vec<u8>, AggRow>,
         projects: &mut std::collections::HashMap<Vec<u8>, AggRow>,
     ) {
-        let scale = |v: u64| -> u64 {
-            if frac >= 1.0 {
-                v
-            } else {
-                (v as f64 * frac).round() as u64
-            }
-        };
+        let scale = |v: u64| -> u64 { v };
         for row in &rb.rows {
             let mkey = k_month(
                 month,
@@ -571,7 +612,15 @@ impl UsageRollup {
         mr.account_id = id.account_id.clone();
         mr.stream_name = id.stream_name.clone();
         months.insert(mkey, mr);
-        if snap.usage_version > st.usage_version {
+        // Round-22 item 4: a rollover emits a month-FINAL and a live
+        // snapshot under the SAME usage_version. Whichever arrives
+        // second must still be able to advance the global state, or the
+        // next month's carry starts from the stale gauge/boundary — so
+        // same-version ties break on the storage clock.
+        let advances = snap.usage_version > st.usage_version
+            || (snap.usage_version == st.usage_version
+                && snap.storage_accounted_through_ms > st.storage_accounted_through_ms);
+        if advances {
             st.usage_version = snap.usage_version;
             st.owned_frame_bytes_current = snap.owned_frame_bytes_current;
             st.storage_accounted_through_ms = snap.storage_accounted_through_ms;
@@ -785,6 +834,14 @@ impl UsageRollup {
                 break;
             }
             let last_key = page.last().unwrap().0.clone();
+            // Round-22 item 3: page-LOCAL row caches, exactly like
+            // apply_page. Two segments of one stream in one page must
+            // MERGE into a single month-row put — independent
+            // read-modify-writes into the same WriteBatch let the last
+            // put win and silently dropped a segment's byte-time, with
+            // both SegmentStates already advanced (unrecoverable).
+            let mut mrows: std::collections::HashMap<Vec<u8>, MonthRow> = Default::default();
+            let mut arows: std::collections::HashMap<Vec<u8>, AggRow> = Default::default();
             for (key, mut st) in page {
                 if st.storage_accounted_through_ms >= boundary {
                     continue;
@@ -800,7 +857,10 @@ impl UsageRollup {
                 let (account, project, stream_id) = (parts[1], parts[2], parts[3]);
                 let seg_id: u32 = parts[4].parse().unwrap_or(0);
                 let mkey = k_month(&mstr, account, project, stream_id);
-                let mut row: MonthRow = get_json(&self.db, &mkey).await;
+                let mut row: MonthRow = match mrows.get(&mkey) {
+                    Some(rw) => rw.clone(),
+                    None => get_json(&self.db, &mkey).await,
+                };
                 let sm = row.segments.entry(seg_id).or_default();
                 if !sm.final_seen {
                     let span_start = st.storage_accounted_through_ms.max(start);
@@ -814,12 +874,15 @@ impl UsageRollup {
                             (k_name(&mstr, account, project, &st.stream_name), true),
                             (k_project(&mstr, account, project), false),
                         ] {
-                            let mut a: AggRow = get_json(&self.db, &akey).await;
+                            let mut a: AggRow = match arows.get(&akey) {
+                                Some(x) => x.clone(),
+                                None => get_json(&self.db, &akey).await,
+                            };
                             a.add_storage(add);
                             if is_name && !a.incarnations.contains(&stream_id.to_string()) {
                                 a.incarnations.push(stream_id.to_string());
                             }
-                            wb.put(akey, serde_json::to_vec(&a)?);
+                            arows.insert(akey, a);
                         }
                     }
                     sm.gauge_bytes = st.owned_frame_bytes_current;
@@ -830,10 +893,16 @@ impl UsageRollup {
                         row.stream_name = st.stream_name.clone();
                     }
                     row.updated_ms = now;
-                    wb.put(mkey, serde_json::to_vec(&row)?);
+                    mrows.insert(mkey, row);
                 }
                 st.storage_accounted_through_ms = boundary;
                 wb.put(key, serde_json::to_vec(&st)?);
+            }
+            for (k, row) in &mrows {
+                wb.put(k.clone(), serde_json::to_vec(row)?);
+            }
+            for (k, a) in &arows {
+                wb.put(k.clone(), serde_json::to_vec(a)?);
             }
             wb.put(seg_cursor_key.clone(), last_key.clone());
             self.db.write(wb).await?;
@@ -974,6 +1043,247 @@ mod tests {
             cell: "c".into(),
             payload: UsagePayload::SegmentSnapshot(s),
         }
+    }
+
+    /// Round-22 item 3: THREE segments of one stream, idle months —
+    /// every month bills the SUM of all three (nothing last-put-wins),
+    /// and name/project aggregates match.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn multi_segment_idle_carry_sums_all_segments() {
+        let _xw = crate::billing::billing_clock_lock().write().await;
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::billing::BILLING_CLOCK_OVERRIDE
+                    .store(0, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let _r = Reset;
+        crate::billing::BILLING_CLOCK_OVERRIDE.store(
+            crate::billing::month_start_ms(2026, 12),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        let r = UsageRollup::open(mem_store(), "mseg").await.unwrap();
+        let jul15 = crate::billing::month_start_ms(2026, 7) + 14 * 86_400_000;
+        // Three segments, gauges 100/200/300, all accounted through Jul 15.
+        for (seg, gauge) in [(0u32, 100u64), (1, 200), (2, 300)] {
+            let s = SegmentSnapshot {
+                identity: id(),
+                segment_id: seg,
+                usage_version: 1,
+                month: "2026-07".into(),
+                month_final: false,
+                ingest_payload_bytes_month: 10,
+                ingest_records_month: 1,
+                owned_frame_bytes_current: gauge,
+                storage_byte_ms_month: "0".into(),
+                storage_accounted_through_ms: jul15,
+                retained_by_forks: false,
+            };
+            let env = UsageEnvelope {
+                v: 1,
+                event_id: s.deterministic_event_id(),
+                event_time_ms: jul15,
+                emitted_ms: jul15,
+                cell: "c".into(),
+                payload: UsagePayload::SegmentSnapshot(s),
+            };
+            r.apply_page(&[env], &format!("c{seg}")).await.unwrap();
+        }
+        let day = 86_400_000u128;
+        let total_gauge = 600u128;
+        // July: 17 idle days x 600 B across the three segments.
+        assert_eq!(r.close_month(2026, 7, 0).await.unwrap(), 1);
+        let jul = r
+            .month_row("2026-07", "acct", "proj", &id().stream_id)
+            .await
+            .unwrap();
+        assert_eq!(jul.storage_byte_ms(), 17 * day * total_gauge);
+        // August, fully idle: 31 days x 600 — the multi-segment carry
+        // must SUM, not last-put-win.
+        assert_eq!(r.close_month(2026, 8, 0).await.unwrap(), 1);
+        let aug = r
+            .month_row("2026-08", "acct", "proj", &id().stream_id)
+            .await
+            .unwrap();
+        assert_eq!(aug.storage_byte_ms(), 31 * day * total_gauge);
+        assert_eq!(aug.segments.len(), 3, "every segment carried");
+        let agg = r.project_row("2026-08", "acct", "proj").await.unwrap();
+        assert_eq!(agg.storage_byte_ms, (31 * day * total_gauge).to_string());
+        let name = r.name_row("2026-08", "acct", "proj", "orders").await.unwrap();
+        assert_eq!(name.storage_byte_ms, (31 * day * total_gauge).to_string());
+    }
+
+    /// Round-22 item 4: a rollover's month-final and live snapshots
+    /// share a usage version; whichever applies second must still
+    /// advance the global segment state, and the NEXT month's carry
+    /// uses the NEW gauge exactly.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn same_version_live_snapshot_advances_segment_state() {
+        let _xw = crate::billing::billing_clock_lock().write().await;
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::billing::BILLING_CLOCK_OVERRIDE
+                    .store(0, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let _r = Reset;
+        crate::billing::BILLING_CLOCK_OVERRIDE.store(
+            crate::billing::month_start_ms(2026, 11),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        let r = UsageRollup::open(mem_store(), "svtie").await.unwrap();
+        let aug1 = crate::billing::month_start_ms(2026, 8);
+        // Month-FINAL for July at version 5 (accounted through Aug 1,
+        // OLD gauge 100), then the LIVE August snapshot at the SAME
+        // version with the NEW gauge 400 accounted through Aug 2.
+        let mk = |month: &str, final_: bool, gauge: u64, through: i64, byte_ms: u128| {
+            let s = SegmentSnapshot {
+                identity: id(),
+                segment_id: 0,
+                usage_version: 5,
+                month: month.into(),
+                month_final: final_,
+                ingest_payload_bytes_month: 0,
+                ingest_records_month: 0,
+                owned_frame_bytes_current: gauge,
+                storage_byte_ms_month: byte_ms.to_string(),
+                storage_accounted_through_ms: through,
+                retained_by_forks: false,
+            };
+            UsageEnvelope {
+                v: 1,
+                event_id: s.deterministic_event_id(),
+                event_time_ms: through,
+                emitted_ms: through,
+                cell: "c".into(),
+                payload: UsagePayload::SegmentSnapshot(s),
+            }
+        };
+        r.apply_page(
+            &[
+                mk("2026-07", true, 100, aug1, 999),
+                mk("2026-08", false, 400, aug1 + 86_400_000, 34_560_000_000),
+            ],
+            "c1",
+        )
+        .await
+        .unwrap();
+        let st = &r.stream_segment_states("acct", "proj", &id().stream_id).await[0];
+        assert_eq!(
+            st.owned_frame_bytes_current, 400,
+            "the live snapshot must win the same-version tie"
+        );
+        assert_eq!(st.storage_accounted_through_ms, aug1 + 86_400_000);
+        // Close August: gauge 400 from Aug 2 to Sep 1 (30 more days).
+        assert_eq!(r.close_month(2026, 8, 0).await.unwrap(), 1);
+        let aug = r
+            .month_row("2026-08", "acct", "proj", &id().stream_id)
+            .await
+            .unwrap();
+        let day = 86_400_000u128;
+        assert_eq!(
+            aug.storage_byte_ms(),
+            34_560_000_000 + 30 * day * 400,
+            "the month close must extrapolate from the NEW gauge"
+        );
+    }
+
+    /// Round-22 item 5: integer month allocation is exact — the sum of
+    /// per-month allocations equals the original for every dimension,
+    /// across two AND four month spans.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn read_batch_month_split_is_exact() {
+        let r = UsageRollup::open(mem_store(), "split").await.unwrap();
+        let aug1 = crate::billing::month_start_ms(2026, 8);
+        // One byte, one record, one op split dead-center on a boundary:
+        // must land as 0+1 or 1+0, never 1+1.
+        let rb = ReadBatch {
+            source: MeterSource {
+                cell: "c".into(),
+                instance: "i".into(),
+                boot: "bx".into(),
+            },
+            seq: 0,
+            from_ms: aug1 - 5_000,
+            to_ms: aug1 + 5_000,
+            rows: vec![ReadRow {
+                identity: id(),
+                read_payload_bytes: 1,
+                read_records: 1,
+                read_operations: 1,
+                queue_operations: 0,
+                append_requests: 0,
+            }],
+        };
+        let env = UsageEnvelope {
+            v: 1,
+            event_id: "read/bx/0".into(),
+            event_time_ms: 0,
+            emitted_ms: 0,
+            cell: "c".into(),
+            payload: UsagePayload::ReadBatch(rb),
+        };
+        r.apply_page(&[env], "c1").await.unwrap();
+        let jul = r
+            .month_row("2026-07", "acct", "proj", &id().stream_id)
+            .await
+            .unwrap_or_default();
+        let aug = r
+            .month_row("2026-08", "acct", "proj", &id().stream_id)
+            .await
+            .unwrap_or_default();
+        assert_eq!(
+            jul.read_payload_bytes + aug.read_payload_bytes,
+            1,
+            "one byte bills exactly once"
+        );
+        assert_eq!(jul.read_records + aug.read_records, 1);
+        // A four-month batch (long outage) covers the INTERIOR months.
+        let rb2 = ReadBatch {
+            source: MeterSource {
+                cell: "c".into(),
+                instance: "i".into(),
+                boot: "by".into(),
+            },
+            seq: 0,
+            from_ms: crate::billing::month_start_ms(2026, 1) + 10,
+            to_ms: crate::billing::month_start_ms(2026, 4) + 10,
+            rows: vec![ReadRow {
+                identity: id(),
+                read_payload_bytes: 1_000_003,
+                read_records: 77,
+                read_operations: 13,
+                queue_operations: 5,
+                append_requests: 9,
+            }],
+        };
+        let env2 = UsageEnvelope {
+            v: 1,
+            event_id: "read/by/0".into(),
+            event_time_ms: 0,
+            emitted_ms: 0,
+            cell: "c".into(),
+            payload: UsagePayload::ReadBatch(rb2),
+        };
+        r.apply_page(&[env2], "c2").await.unwrap();
+        let mut sums = [0u64; 5];
+        for m in ["2026-01", "2026-02", "2026-03", "2026-04"] {
+            let row = r
+                .month_row(m, "acct", "proj", &id().stream_id)
+                .await
+                .unwrap_or_default();
+            sums[0] += row.read_payload_bytes;
+            sums[1] += row.read_records;
+            sums[2] += row.read_operations;
+            sums[3] += row.queue_operations;
+            sums[4] += row.append_requests;
+            if m == "2026-02" || m == "2026-03" {
+                assert!(row.read_payload_bytes > 0, "interior month {m} covered");
+            }
+        }
+        assert_eq!(sums, [1_000_003, 77, 13, 5, 9], "sum preserved per dimension");
     }
 
     /// Round-21 blocker 2, the reviewer's exact scenario: one July
