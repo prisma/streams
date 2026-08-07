@@ -6403,6 +6403,7 @@ mod tests {
             expires_at_ms: None,
             deleted: false,
             soft_deleted: false,
+        logical_close_ms: None,
             forked_from: None,
             fork_children: Vec::new(),
             init: None,

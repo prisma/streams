@@ -876,6 +876,7 @@ mod tests {
             watch_sig_key: None,
             parent_ref_pending: false,
             soft_deleted: false,
+        logical_close_ms: None,
             forked_from: None,
             fork_children: Vec::new(),
             init: None,

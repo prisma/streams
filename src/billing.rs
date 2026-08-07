@@ -1144,9 +1144,40 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
             match state.registry.get(&meta.stream_name).await {
                 Ok(Some(d)) if d.stream_epoch == meta.stream_id => {
                     if d.soft_deleted && !d.deleted {
+                        let was_retained = meta.retained_by_forks;
                         meta.retained_by_forks = true;
+                        // Round-22 item 7: the fork billing contract is
+                        // persisted ON the row, not only in emitted
+                        // snapshots — it must survive restarts and
+                        // ownership moves.
+                        if !was_retained {
+                            if let Err(e) = engine.submit_billing_retained(hash, true).await {
+                                tracing::warn!(
+                                    "retained-by-forks persist failed for {}: {e}",
+                                    meta.stream_name
+                                );
+                            }
+                        }
                     } else if !crate::http::desc_alive(&d) && meta.owned_frame_bytes_current > 0 {
-                        engine.submit_billing_close(hash);
+                        // Round-22 item 7: the close accounts to the
+                        // PERSISTED logical time — the tombstone's
+                        // stamp for deletes, the configured expiry
+                        // instant for expirations — never to "whenever
+                        // the closure finally ran". The persisted time
+                        // also makes the lifecycle event id identical
+                        // across retries, so the ledger dedupes them.
+                        let close_ms = if d.deleted {
+                            d.logical_close_ms.unwrap_or_else(billing_now_ms)
+                        } else {
+                            d.expires_at_ms.unwrap_or_else(billing_now_ms)
+                        };
+                        if let Err(e) = engine.submit_billing_close(hash, close_ms).await {
+                            tracing::warn!(
+                                "billing close submit failed for {} (row stays dirty): {e}",
+                                meta.stream_name
+                            );
+                            continue;
+                        }
                         let lc = StreamLifecycle {
                             identity: BillingIdentity {
                                 account_id: meta.account_id.clone(),
@@ -1159,11 +1190,11 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
                             } else {
                                 "expired".to_string()
                             },
-                            at_ms: billing_now_ms(),
+                            at_ms: close_ms,
                         };
                         let id = lc.deterministic_event_id();
                         let env =
-                            envelope(&cell, UsagePayload::StreamLifecycle(lc), billing_now_ms(), id);
+                            envelope(&cell, UsagePayload::StreamLifecycle(lc), close_ms, id);
                         body_bytes += encoded_size(&env);
                         envelopes.push(env);
                     }
@@ -1171,7 +1202,16 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
                 Ok(_) if meta.owned_frame_bytes_current > 0 => {
                     // Name gone entirely, or recreated under a new
                     // epoch: this incarnation is terminal either way.
-                    engine.submit_billing_close(hash);
+                    // No persisted stamp survives the replacement —
+                    // account to now (residual documented at the
+                    // tombstone walk).
+                    if let Err(e) = engine.submit_billing_close(hash, billing_now_ms()).await {
+                        tracing::warn!(
+                            "billing close submit failed for {} (row stays dirty): {e}",
+                            meta.stream_name
+                        );
+                        continue;
+                    }
                 }
                 Err(e) => {
                     // Round-22 item 7 (fail closed): a registry read
@@ -1734,6 +1774,92 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
                 tracing::debug!("outbox sweep could not open {prefix} (moving/contended)");
             }
         }
+    }
+    tombstone_walk(state).await;
+}
+
+/// Round-22 item 7: the tombstone walk. Dirty-index reconciliation
+/// only sees rows that are DIRTY; a closure lost while the row sat
+/// clean (crash between the registry tombstone and the committer op,
+/// ownership move mid-delete) leaves a nonzero gauge nothing ever
+/// revisits. Page the registry RAW — tombstones, expirations and
+/// fork-retention included — and for every terminal descriptor whose
+/// segments this instance owns, resubmit the close against the
+/// PERSISTED logical time. Idempotent: a zero gauge no-ops, and the
+/// persisted stamp makes every retry account to the same instant.
+/// Fork-retained sources get their durable flag here too.
+///
+/// Residual (accepted): a closure lost to a crash while the row was
+/// clean AND the name recreated under a new epoch before the next
+/// sweep replaces the tombstone this walk needs; that incarnation's
+/// gauge is then reachable only through the dirty-path reconciler.
+pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
+    if state.usage_key.is_none() {
+        return;
+    }
+    let mut after: Option<String> = None;
+    loop {
+        let page = match state.registry.list_page_raw(after.as_deref(), 256).await {
+            Ok(p) => p,
+            Err(e) => {
+                tracing::warn!("tombstone walk paused (registry list): {e}");
+                return;
+            }
+        };
+        for d in &page.streams {
+            let expired = d
+                .expires_at_ms
+                .is_some_and(|e| billing_now_ms() >= e);
+            let retained = d.soft_deleted && !d.deleted;
+            let terminal = d.deleted || expired;
+            if !terminal && !retained {
+                continue;
+            }
+            let seg_ids: Vec<u32> = d
+                .segments
+                .as_ref()
+                .map(|m| m.segments.iter().map(|sg| sg.seg_id).collect())
+                .unwrap_or_else(|| vec![0]);
+            for sid in seg_ids {
+                let route = d.segment_route_by_id(sid);
+                // Foreign routes are skipped — every instance walks the
+                // same registry and closes what IT owns.
+                let Ok(engine) = state.engine_for(&route).await else {
+                    continue;
+                };
+                let hash = d.dynamic_segment_identity(sid);
+                let Some(meta) = engine.billing_meta(hash).await else {
+                    continue;
+                };
+                if meta.stream_id != d.stream_epoch {
+                    continue;
+                }
+                if terminal && meta.owned_frame_bytes_current > 0 {
+                    let close_ms = if d.deleted {
+                        d.logical_close_ms.unwrap_or_else(billing_now_ms)
+                    } else {
+                        d.expires_at_ms.unwrap_or_else(billing_now_ms)
+                    };
+                    tracing::info!(
+                        "tombstone walk: closing {}#{sid} ({} B) at persisted {}",
+                        d.name,
+                        meta.owned_frame_bytes_current,
+                        close_ms
+                    );
+                    if let Err(e) = engine.submit_billing_close(hash, close_ms).await {
+                        tracing::warn!("tombstone-walk close failed for {}: {e}", d.name);
+                    }
+                } else if retained && !meta.retained_by_forks {
+                    if let Err(e) = engine.submit_billing_retained(hash, true).await {
+                        tracing::warn!("tombstone-walk retain failed for {}: {e}", d.name);
+                    }
+                }
+            }
+        }
+        if page.exhausted || page.next_after.is_none() {
+            return;
+        }
+        after = page.next_after;
     }
 }
 

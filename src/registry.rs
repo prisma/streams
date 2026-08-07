@@ -37,6 +37,14 @@ pub struct StreamDesc {
     /// re-creation is blocked while references exist.
     #[serde(default, skip_serializing_if = "std::ops::Not::not")]
     pub soft_deleted: bool,
+    /// Round-22 item 7: the logical close instant, stamped in the SAME
+    /// registry write that tombstones (`deleted = true`). Billing
+    /// closure is a saga and this is its durable debt record — however
+    /// late the committer op finally lands (crash, full queue, closed
+    /// shard, ownership move), the storage clock stops HERE, not at
+    /// "whenever the closure happened to run".
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub logical_close_ms: Option<i64>,
     /// Fork parentage (pinned DS protocol): records below `fork_offset`
     /// are served from the ancestor chain; this stream's own records
     /// begin at `fork_offset` (a binary sub-offset materializes the
@@ -1118,6 +1126,51 @@ impl Registry {
         })
     }
 
+    /// Unfiltered catalog page for RECONCILERS (round-22 item 7):
+    /// tombstoned, expired, fork-retained and initializing descriptors
+    /// included — the billing tombstone walk needs exactly the rows
+    /// `list_page` hides. Same pagination contract.
+    pub async fn list_page_raw(
+        &self,
+        after: Option<&str>,
+        limit: usize,
+    ) -> Result<CatalogPage, object_store::Error> {
+        use futures_util::TryStreamExt;
+        let prefix = ObjPath::from("registry/by-name");
+        let offset =
+            after.map(|n| ObjPath::from(format!("registry/by-name/{}.json", hex(n.as_bytes()))));
+        let mut stream = match &offset {
+            Some(o) => self.store.list_with_offset(Some(&prefix), o),
+            None => self.store.list(Some(&prefix)),
+        };
+        let mut out = Vec::new();
+        let mut last_name = None;
+        let mut exhausted = false;
+        while out.len() < limit {
+            let Some(meta) = stream.try_next().await? else {
+                exhausted = true;
+                break;
+            };
+            last_name = name_from_desc_path(&meta.location).or(last_name);
+            let raw = match self.store.get(&meta.location).await {
+                Ok(r) => r.bytes().await?,
+                Err(object_store::Error::NotFound { .. }) => continue,
+                Err(e) => return Err(e),
+            };
+            let d = decode_desc(&raw).map_err(|e| object_store::Error::Generic {
+                store: "registry",
+                source: format!("catalog: undecodable descriptor at {}: {e}", meta.location)
+                    .into(),
+            })?;
+            out.push(d);
+        }
+        Ok(CatalogPage {
+            streams: out,
+            next_after: last_name,
+            exhausted,
+        })
+    }
+
     pub async fn list(&self, limit: usize) -> Result<Vec<StreamDesc>, object_store::Error> {
         use futures_util::TryStreamExt;
         let prefix = ObjPath::from("registry/by-name");
@@ -1257,6 +1310,7 @@ mod tests {
             watch_sig_key: None,
             parent_ref_pending: false,
             soft_deleted: false,
+            logical_close_ms: None,
             forked_from: None,
             fork_children: Vec::new(),
             init: None,
@@ -1593,6 +1647,50 @@ mod tests {
         assert!(reg.get("s").await.unwrap().unwrap().deleted);
         reg.expire_for_tests("s");
         assert!(reg.get("s").await.unwrap().unwrap().deleted);
+    }
+
+    /// Round-22 item 7: the tombstone write carries the logical close
+    /// stamp durably, and the RAW catalog page — the reconciler's view
+    /// — returns tombstoned and expired descriptors that the customer
+    /// catalog hides.
+    #[tokio::test]
+    async fn tombstone_stamp_persists_and_raw_page_sees_terminals() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let reg = Registry::new(store.clone());
+        reg.create(desc("alive", "e1", false)).await.unwrap();
+        reg.create(desc("gone", "e2", false)).await.unwrap();
+        let mut ex = desc("expired", "e3", false);
+        ex.expires_at_ms = Some(1); // long past
+        reg.create(ex).await.unwrap();
+        // Tombstone with the stamp in the SAME write.
+        reg.update("gone", |d| {
+            d.deleted = true;
+            d.logical_close_ms = Some(1_786_000_000_000);
+        })
+        .await
+        .unwrap();
+        reg.invalidate("gone");
+        let got = reg.get("gone").await.unwrap().unwrap();
+        assert!(got.deleted);
+        assert_eq!(
+            got.logical_close_ms,
+            Some(1_786_000_000_000),
+            "the debt survives on the tombstone"
+        );
+        // Customer catalog: only the live stream.
+        let visible = reg.list_page(None, 10).await.unwrap();
+        assert_eq!(visible.streams.len(), 1);
+        assert_eq!(visible.streams[0].name, "alive");
+        // Reconciler view: everything, terminals included.
+        let raw = reg.list_page_raw(None, 10).await.unwrap();
+        assert_eq!(raw.streams.len(), 3, "raw page hides nothing");
+        assert!(raw.streams.iter().any(|d| d.deleted));
+        assert!(
+            raw.streams
+                .iter()
+                .any(|d| d.expires_at_ms.is_some_and(|e| e < 1000)),
+            "expired descriptor present"
+        );
     }
 
     /// A corrupt descriptor must surface as an ERROR — treating it as

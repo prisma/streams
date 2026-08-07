@@ -464,11 +464,24 @@ pub enum CommitOp {
         version: u64,
         month_final_keys: Vec<Vec<u8>>,
     },
-    /// Hard-delete closure (§6.2): advance the storage clock to now,
-    /// zero the owned-bytes gauge, bump the version and mark dirty —
-    /// the terminal storage observation for the incarnation.
+    /// Hard-delete/expiry closure (§6.2): advance the storage clock to
+    /// the PERSISTED logical close instant (round-22 item 7 — the
+    /// tombstone's stamp or the configured expiry, never "whenever
+    /// this op finally ran"), zero the owned-bytes gauge, bump the
+    /// version and mark dirty — the terminal storage observation for
+    /// the incarnation. `close_ms <= 0` falls back to billing-now.
     BillingClose {
         hash: [u8; 16],
+        close_ms: i64,
+    },
+    /// Durable fork-retention flag (round-22 item 7): a soft-deleted
+    /// source retained by live forks keeps accruing storage under the
+    /// fork billing contract; the flag must survive restarts and
+    /// ownership moves on the row itself, not only in emitted
+    /// snapshots.
+    BillingRetained {
+        hash: [u8; 16],
+        retained: bool,
     },
     /// Queue-profile state transition (PROFILES.md §7): serialized with
     /// appends, durable at the watermark like everything else.
@@ -1839,6 +1852,7 @@ impl ShardEngine {
                             | CommitOp::TrimTick
                             | CommitOp::UsageAck { .. }
                             | CommitOp::BillingClose { .. }
+                            | CommitOp::BillingRetained { .. }
                             | CommitOp::TrimStep { .. } => {}
                         }
                     }
@@ -1864,6 +1878,7 @@ impl ShardEngine {
                     | CommitOp::TrimTick
                     | CommitOp::UsageAck { .. }
                     | CommitOp::BillingClose { .. }
+                    | CommitOp::BillingRetained { .. }
                     | CommitOp::TrimStep { .. } => {}
                 }
                 while let Ok(op) = rx.try_recv() {
@@ -1879,6 +1894,7 @@ impl ShardEngine {
                         | CommitOp::TrimTick
                         | CommitOp::UsageAck { .. }
                         | CommitOp::BillingClose { .. }
+                        | CommitOp::BillingRetained { .. }
                         | CommitOp::TrimStep { .. } => {}
                     }
                 }
@@ -2022,6 +2038,7 @@ impl ShardEngine {
                     | CommitOp::TrimTick
                     | CommitOp::UsageAck { .. }
                     | CommitOp::BillingClose { .. }
+                    | CommitOp::BillingRetained { .. }
                     | CommitOp::TrimStep { .. } => {}
                 }
             }
@@ -2126,7 +2143,8 @@ impl ShardEngine {
                 CommitOp::Queue { hash, .. } => *hash,
                 CommitOp::TrimStep { hash } => *hash,
                 CommitOp::UsageAck { hash, .. } => *hash,
-                CommitOp::BillingClose { hash } => *hash,
+                CommitOp::BillingClose { hash, .. } => *hash,
+                CommitOp::BillingRetained { hash, .. } => *hash,
                 // Expanded at commit_group entry; unreachable here.
                 CommitOp::AbsorbedBatch { .. } | CommitOp::TrimTick => continue,
             };
@@ -2199,7 +2217,7 @@ impl ShardEngine {
                         extra_writes = true;
                     }
                 }
-                CommitOp::BillingClose { .. } => {
+                CommitOp::BillingClose { close_ms, .. } => {
                     if local.billing.is_none() {
                         let loaded = match self
                             .db
@@ -2217,12 +2235,44 @@ impl ShardEngine {
                             // Nothing was ever billed here; no row to close.
                             local.billing = None;
                         } else {
-                            let now = crate::billing::billing_now_ms();
+                            // Round-22 item 7: account to the PERSISTED
+                            // logical close instant; the monotone guard
+                            // in advance_storage_clock makes any late
+                            // retry a no-op advance + idempotent zero.
+                            let at = if close_ms > 0 {
+                                close_ms
+                            } else {
+                                crate::billing::billing_now_ms()
+                            };
                             let finals = &mut local.month_finals;
-                            bm.advance_storage_clock(now, |closed| {
+                            bm.advance_storage_clock(at, |closed| {
                                 finals.push(closed.to_snapshot(true));
                             });
                             bm.owned_frame_bytes_current = 0;
+                            bm.usage_version += 1;
+                            local.billing_dirty = true;
+                        }
+                    }
+                }
+                CommitOp::BillingRetained { retained, .. } => {
+                    if local.billing.is_none() {
+                        let loaded = match self
+                            .db
+                            .get(&crate::billing::billing_meta_key(&hash)[..])
+                            .await
+                        {
+                            Ok(Some(v)) => serde_json::from_slice(&v).unwrap_or_default(),
+                            _ => crate::billing::SegmentBillingMetaV1::default(),
+                        };
+                        local.billing = Some(loaded);
+                    }
+                    {
+                        let bm = local.billing.as_mut().unwrap();
+                        if bm.stream_id.is_empty() {
+                            // Nothing was ever billed here; no row to flag.
+                            local.billing = None;
+                        } else if bm.retained_by_forks != retained {
+                            bm.retained_by_forks = retained;
                             bm.usage_version += 1;
                             local.billing_dirty = true;
                         }
@@ -4154,9 +4204,30 @@ impl ShardEngine {
         });
     }
 
-    /// Terminal storage closure for a hard-deleted segment (§6.2).
-    pub fn submit_billing_close(&self, hash: [u8; 16]) {
-        let _ = self.tx.try_send(CommitOp::BillingClose { hash });
+    /// Terminal storage closure for a hard-deleted or expired segment
+    /// (§6.2), accounted to the persisted logical close instant.
+    /// AWAITED submission (round-22 item 7): the caller knows whether
+    /// the closure entered the committer queue — a full queue is
+    /// backpressure, never a silent drop; the registry-persisted debt
+    /// plus the sweep reconciler retry anything that still fails.
+    pub async fn submit_billing_close(&self, hash: [u8; 16], close_ms: i64) -> Result<(), String> {
+        self.tx
+            .send(CommitOp::BillingClose { hash, close_ms })
+            .await
+            .map_err(|_| "committer queue closed".to_string())
+    }
+
+    /// Durably persist the fork-retention flag on the billing row
+    /// (round-22 item 7); awaited like the closure.
+    pub async fn submit_billing_retained(
+        &self,
+        hash: [u8; 16],
+        retained: bool,
+    ) -> Result<(), String> {
+        self.tx
+            .send(CommitOp::BillingRetained { hash, retained })
+            .await
+            .map_err(|_| "committer queue closed".to_string())
     }
 
     /// Consumer-fence cardinality (round 17): one non-expiring entry

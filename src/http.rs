@@ -1886,6 +1886,7 @@ fn fresh_desc(
             .or(expires_at_ms),
         deleted: false,
         soft_deleted: false,
+        logical_close_ms: None,
         forked_from: None,
         fork_children: Vec::new(),
         init: None,
@@ -3529,6 +3530,9 @@ fn release_fork_ref(
                 if should_tombstone {
                     next.soft_deleted = false;
                     next.deleted = true;
+                    // Round-22 item 7: the closure debt rides the SAME
+                    // registry write — the billing clock stops here.
+                    next.logical_close_ms = Some(crate::billing::billing_now_ms());
                     next.parent_ref_pending = next.forked_from.is_some();
                 }
                 if removed || should_tombstone {
@@ -3680,6 +3684,11 @@ fn delete_lifecycle(
         fork_failpoints::pause_delete_before_decision(&name).await;
         let mut hard_deleted = false;
         let epoch = d.stream_epoch.clone();
+        // Round-22 item 7: ONE logical close instant, decided here,
+        // stamped into the tombstone write below and used by every
+        // closure submission — however late a retry lands, it accounts
+        // to THIS time.
+        let close_stamp = crate::billing::billing_now_ms();
         state
             .registry
             .cas_update_incarnation(&name, &epoch, |x| {
@@ -3691,6 +3700,7 @@ fn delete_lifecycle(
                     hard_deleted = false;
                 } else {
                     x.deleted = true;
+                    x.logical_close_ms = Some(close_stamp);
                     x.parent_ref_pending = x.forked_from.is_some();
                     hard_deleted = true;
                 }
@@ -3714,10 +3724,11 @@ fn delete_lifecycle(
         );
         // Billing closure (§6.2): the hard delete is the terminal
         // storage observation — advance every segment's storage clock
-        // to now, zero its gauge, mark dirty for the ledger. Best-
-        // effort per segment (a full committer queue re-closes on the
-        // drainer's next look at a still-nonzero gauge of a deleted
-        // stream; the row is monotone either way).
+        // to the persisted close stamp, zero its gauge, mark dirty for
+        // the ledger. Submission is AWAITED (round-22 item 7): a full
+        // committer queue is backpressure, never a silent drop; a
+        // submission that still fails is safe because the debt lives
+        // on the tombstone and the sweep reconciler retries it.
         {
             let seg_ids: Vec<u32> = d
                 .segments
@@ -3728,7 +3739,12 @@ fn delete_lifecycle(
                 let identity = d.dynamic_segment_identity(sid);
                 let route = d.segment_route_by_id(sid);
                 if let Ok(engine) = state.engine_for(&route).await {
-                    engine.submit_billing_close(identity);
+                    if let Err(e) = engine.submit_billing_close(identity, close_stamp).await {
+                        tracing::warn!(
+                            "delete {name}: billing close submit failed \
+                             (tombstone debt persists; sweep retries): {e}"
+                        );
+                    }
                 }
             }
         }
