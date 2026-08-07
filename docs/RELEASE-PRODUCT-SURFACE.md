@@ -1100,3 +1100,62 @@ months, ledger outage + crash, foreign-owned `_usage`, artifact PUT
 failure, late data after finalization, million-row month close,
 duplicate project ids across accounts, CAS-crash event replay,
 operator timeline after restart).
+
+## Round 22 (2026-08-07): boundary correctness for the invoice — v0.2.0-preview.8
+
+The round-22 review accepted the round-21 architecture and demanded
+exactness at its boundaries. All ten must-fix items and the doc set
+landed (commits R22-A..E), and an independent judge verified every
+item against the repo with file:line evidence before this tag: exact
+rollup arithmetic (multi-segment idle carry sums, same-version
+final/live tie-break, integer month splits with remainder-to-last);
+spool integrity (remainder requeue, corrupt-row quarantine + standing
+alert, verified-readable open); financial scans that fail closed;
+terminal closure as a durable saga (tombstone-stamped logical close
+time, awaited submission, registry tombstone walk, durable fork
+retention); invoice-grade corrections (full dimensions + provenance,
+exactly-once by id, materialized sums on rows and aggregates,
+immutable per-correction artifacts) with verified-content artifact
+publication and ordered missed-month catch-up; the one-project-per-
+cell tenancy contract formalized; and the required-mode readiness
+gate with the `/operator/billing.json` surface. Status truth lives in
+docs/OBSERVABILITY-BILLING-STATUS.md — invoice-grade operation still
+requires reconciliation jobs, invoice export, retention, ops
+workstream 2, and the 3-node fleet acceptance campaign.
+
+### Provenance (exact, at freeze)
+
+```text
+code_commit:         b07da287fec3c7ebfc2b5dd283456f561d88714f
+tag:                 v0.2.0-preview.8 (on the release-report commit
+                     immediately following code_commit)
+slatedb_pin:         git+https://github.com/slatedb/slatedb.git
+                     rev 0717cc1e4e9bad10a4773760f66bac4264ecf05e (0.15.0)
+registry_layout:     3
+rollup_schema:       telemetry/usage-rollup/v2/p0 (usage rollup v2)
+conformance_pin:     @durable-streams/server-conformance-tests 0.3.6
+sdk_version:         0.2.0-preview.8
+sdk_tarball_sha256:  91a5556f5e29bdc43edc26daf563155ef0694c7ef88116f2d72dbe616726bb44
+rust_suite:          326 passed / 0 failed (310 bin + 16 aux targets)
+dst_scenarios:       190 #[tokio::test] scenarios in src/dst
+ds_conformance:      332 passed / 0 failed / 6 skipped (338) against the
+                     preview.8 binary (local rig, conformance default key,
+                     staging engine posture)
+release_gate:        RELEASE_GATE_LOCAL_OK (fmt; clippy 221 <= baseline 221,
+                     refreshed DOWN from 342 by the machine-fix sweep;
+                     suite; cargo-deny advisories/bans/licenses/sources ok)
+billing_mode:        off by default; BILLING_MODE=required is the
+                     production posture (refuses placeholder identities,
+                     opens the read spool and — on the rollup owner —
+                     the rollup DB synchronously before serving)
+rollup_owner:        the single ROLLUP=1 instance per cell (staging:
+                     instance 1, per docs/STAGING.md); one project per
+                     cell is the deployment contract
+known_gate_note:     bench/fleet/ci-fanout.sh currently fails its
+                     pull-delivers leg identically on THIS machine for
+                     preview.7 and preview.8 binaries (0 appends acked in
+                     the probe; environment-level, predates round 22 —
+                     verified by rebuilding the frozen v0.2.0-preview.7
+                     tag and reproducing byte-identical verdicts). Not a
+                     round-22 regression; tracked for the fleet campaign.
+```
