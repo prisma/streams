@@ -969,7 +969,10 @@ async fn async_main() -> anyhow::Result<()> {
                 }
                 st.rss_mb_cached
                     .store(mb, std::sync::atomic::Ordering::Relaxed);
-                tokio::time::sleep(Duration::from_millis(500)).await;
+                // Peak-since-scrape for the ops snapshot (OOM review I4):
+                // 250 ms sampling, max-held until the scrape drains it.
+                crate::ops::RSS_PEAK_MB.fetch_max(mb, std::sync::atomic::Ordering::Relaxed);
+                tokio::time::sleep(Duration::from_millis(250)).await;
             }
         });
     }

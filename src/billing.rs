@@ -616,11 +616,12 @@ mod tests {
         }
     }
 
-    /// Round-22 item 2a: a store fault after batch k of n leaves
-    /// 1..k in the spool and k..n back in memory — the remainder is
-    /// never dropped.
+    /// Round-22 item 2a + OOM review item 5: a drain round persists as
+    /// ONE all-or-nothing WriteBatch (one flush). On a store fault the
+    /// WHOLE drained set requeues in order — nothing is dropped and
+    /// nothing is half-durable; on success the whole round lands.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn spool_fault_requeues_the_remainder() {
+    async fn spool_fault_requeues_the_whole_round() {
         let store: std::sync::Arc<dyn object_store::ObjectStore> =
             std::sync::Arc::new(object_store::memory::InMemory::new());
         let spool = ReadSpool::open(store, "", "t-remainder").await.unwrap();
@@ -630,23 +631,35 @@ mod tests {
             boot: "b".into(),
         });
         acc.requeue(vec![test_batch(0), test_batch(1), test_batch(2)]);
-        // Allow exactly one persist, then fault.
+        // Fault the round's single batched write.
         spool
             .fail_after
-            .store(1, std::sync::atomic::Ordering::SeqCst);
+            .store(0, std::sync::atomic::Ordering::SeqCst);
         let err = spool_sealed(&acc, &spool, 10).await.unwrap_err();
         assert!(err.contains("read spool persist"), "{err}");
-        // Batch 0 is durable; batches 1 and 2 are back in memory in
-        // original order — nothing was dropped.
-        let spooled = spool.pending(10).await.unwrap();
-        assert_eq!(spooled.len(), 1);
-        assert_eq!(spooled[0].1.seq, 0);
+        assert!(
+            spool.pending(10).await.unwrap().is_empty(),
+            "all-or-nothing: a failed round leaves NOTHING half-durable"
+        );
         let back = acc.drain_sealed(10);
         assert_eq!(
             back.iter().map(|b| b.seq).collect::<Vec<_>>(),
-            vec![1, 2],
-            "the failed batch AND the unpersisted tail requeued"
+            vec![0, 1, 2],
+            "the whole round requeued in original order"
         );
+        // Heal the store: the next round lands all three batches in one
+        // WriteBatch, and the accumulator is empty.
+        acc.requeue(back);
+        spool
+            .fail_after
+            .store(-1, std::sync::atomic::Ordering::SeqCst);
+        spool_sealed(&acc, &spool, 10).await.unwrap();
+        let spooled = spool.pending(10).await.unwrap();
+        assert_eq!(
+            spooled.iter().map(|(_, b)| b.seq).collect::<Vec<_>>(),
+            vec![0, 1, 2]
+        );
+        assert!(acc.drain_sealed(10).is_empty());
     }
 
     /// Round-22 item 2c: a corrupt spool row is quarantined (moved,
@@ -995,14 +1008,16 @@ pub async fn spool_sealed(
     max: usize,
 ) -> Result<(), String> {
     let sealed = acc.drain_sealed(max);
-    let mut it = sealed.into_iter();
-    while let Some(rb) = it.next() {
-        if let Err(e) = spool.persist(&rb).await {
-            let mut back = vec![rb];
-            back.extend(it);
-            acc.requeue(back);
-            return Err(format!("read spool persist: {e}"));
-        }
+    if sealed.is_empty() {
+        return Ok(());
+    }
+    // One WriteBatch + one flush for the whole round (OOM review item
+    // 5). persist_all is all-or-nothing: on error nothing became
+    // durable, so the WHOLE drained set — not just a suffix — requeues
+    // (round-22 item 2a's no-loss guarantee, now trivially whole-set).
+    if let Err(e) = spool.persist_all(&sealed).await {
+        acc.requeue(sealed);
+        return Err(format!("read spool persist: {e}"));
     }
     Ok(())
 }
@@ -1427,11 +1442,16 @@ pub async fn rollup_step(state: &std::sync::Arc<crate::http::AppState>) -> Resul
     if envelopes.is_empty() {
         return Ok(0);
     }
+    let t_apply = std::time::Instant::now();
     rollup
         .apply_page(&envelopes, &next)
         .await
         .map_err(|e| e.to_string())?;
     LAST_ROLLUP_APPLY_MS.store(crate::shard::now_ms(), std::sync::atomic::Ordering::Relaxed);
+    ROLLUP_APPLY_DURATION_MS.store(
+        t_apply.elapsed().as_millis() as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
     Ok(envelopes.len())
 }
 
@@ -1477,6 +1497,8 @@ pub async fn ops_rollup_step(
 pub static LAST_DRAIN_OK_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 pub static LAST_ROLLUP_APPLY_MS: std::sync::atomic::AtomicI64 =
     std::sync::atomic::AtomicI64::new(0);
+pub static ROLLUP_APPLY_DURATION_MS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 pub static WALK_CLOSE_SUBMITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Monthly-artifact content mismatches observed at publication (an
@@ -1692,6 +1714,71 @@ pub fn spawn_rollup(state: std::sync::Arc<crate::http::AppState>, prefix: String
 /// true: a hard crash loses at most the active interval plus one drain
 /// cadence of sealed-but-unspooled batches — never the sealed backlog,
 /// and a LEDGER OUTAGE accumulates on disk, not in process memory.
+/// ONE small shared cache + bounded settings for BOTH telemetry
+/// SlateDB databases (read spool + usage rollup). OOM review item 3:
+/// these two DBs previously used `Db::builder(..).build()` bare and
+/// inherited SlateDB's per-DB defaults — a 512 MB-class cache and the
+/// default L0/compaction posture — bypassing the process's carefully
+/// bounded shared caches (192 MiB shard + 32 MiB history + 64 MiB
+/// postings). One extra default-cached DB put the process at the
+/// Compute kill line; two (ROLLUP=1) explained the local 1 GiB climb.
+pub(crate) fn telemetry_cache() -> std::sync::Arc<slatedb::db_cache::foyer::FoyerCache> {
+    static CACHE: std::sync::OnceLock<std::sync::Arc<slatedb::db_cache::foyer::FoyerCache>> =
+        std::sync::OnceLock::new();
+    CACHE
+        .get_or_init(|| {
+            let bytes = std::env::var("TELEMETRY_CACHE_BYTES")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(16 * 1024 * 1024);
+            TELEMETRY_CACHE_CAPACITY.store(bytes, std::sync::atomic::Ordering::Relaxed);
+            std::sync::Arc::new(slatedb::db_cache::foyer::FoyerCache::new_with_opts(
+                slatedb::db_cache::foyer::FoyerCacheOptions {
+                    max_capacity: bytes,
+                    ..Default::default()
+                },
+            ))
+        })
+        .clone()
+}
+
+/// Observable cache bound (ops snapshot): capacity, since foyer does
+/// not expose resident bytes cheaply — the BOUND is the safety claim.
+pub static TELEMETRY_CACHE_CAPACITY: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Telemetry DBs are tiny and quiet next to shard/history DBs: small
+/// memtables, small L0 targets, long metadata polls, and the same slow
+/// GC cadence as history. Never SlateDB defaults.
+pub(crate) fn telemetry_settings() -> slatedb::config::Settings {
+    let mut gc = slatedb::config::Settings::default()
+        .garbage_collector_options
+        .unwrap_or_default();
+    for slot in [
+        &mut gc.wal_options,
+        &mut gc.manifest_options,
+        &mut gc.compacted_options,
+        &mut gc.compactions_options,
+    ] {
+        *slot = Some(slatedb::config::GarbageCollectorDirectoryOptions {
+            interval: Some(std::time::Duration::from_secs(600)),
+            ..slot.unwrap_or_default()
+        });
+    }
+    slatedb::config::Settings {
+        wal_enabled: false,
+        flush_interval: Some(std::time::Duration::from_millis(200)),
+        manifest_poll_interval: std::time::Duration::from_secs(300),
+        garbage_collector_options: Some(gc),
+        compression_codec: Some(slatedb::config::CompressionCodec::Zstd),
+        max_unflushed_bytes: 8 * 1024 * 1024,
+        l0_sst_size_bytes: 2 * 1024 * 1024,
+        l0_max_ssts: 32,
+        l0_max_ssts_per_key: 32,
+        ..Default::default()
+    }
+}
+
 pub struct ReadSpool {
     db: std::sync::Arc<slatedb::Db>,
     next: std::sync::atomic::AtomicU64,
@@ -1699,6 +1786,12 @@ pub struct ReadSpool {
     /// at open) — nonzero means reads may be under-billed and an
     /// operator must inspect; the rows themselves are preserved.
     quarantined: std::sync::atomic::AtomicU64,
+    /// Exact resident (pending-key -> encoded len) map, maintained at
+    /// open/persist/remove/quarantine — the depth and byte gauges the
+    /// OOM review asks for, WITHOUT a scan per metrics tick.
+    sizes: std::sync::Mutex<std::collections::HashMap<Vec<u8>, u64>>,
+    pending_rows: std::sync::atomic::AtomicU64,
+    pending_bytes: std::sync::atomic::AtomicU64,
     /// Test fault injection: -1 = never fail; N >= 0 = allow N more
     /// successful persists, then fail every one after.
     #[cfg(test)]
@@ -1722,7 +1815,11 @@ impl ReadSpool {
             format!("{prefix}/telemetry/read-spool/{inst}")
         };
         let db = crate::on_slatedb_rt(async move {
-            slatedb::Db::builder(path.as_str(), store).build().await
+            slatedb::Db::builder(path.as_str(), store)
+                .with_settings(telemetry_settings())
+                .with_db_cache(telemetry_cache())
+                .build()
+                .await
         })
         .await?;
         let next = match db.get(&b"meta/next-seq"[..]).await? {
@@ -1737,10 +1834,20 @@ impl ReadSpool {
         while (it.next().await?).is_some() {
             prior += 1;
         }
+        let mut sizes = std::collections::HashMap::new();
+        let mut it = db.scan_prefix(&b"rb/"[..], ..).await?;
+        while let Some(kv) = it.next().await? {
+            sizes.insert(kv.key.to_vec(), kv.value.len() as u64);
+        }
+        let rows = sizes.len() as u64;
+        let bytes: u64 = sizes.values().sum();
         let sp = ReadSpool {
             db: std::sync::Arc::new(db),
             next: std::sync::atomic::AtomicU64::new(next),
             quarantined: std::sync::atomic::AtomicU64::new(prior),
+            sizes: std::sync::Mutex::new(sizes),
+            pending_rows: std::sync::atomic::AtomicU64::new(rows),
+            pending_bytes: std::sync::atomic::AtomicU64::new(bytes),
             #[cfg(test)]
             fail_after: std::sync::atomic::AtomicI64::new(-1),
         };
@@ -1758,6 +1865,17 @@ impl ReadSpool {
 
     /// Durably persist one sealed batch. Returns its spool key.
     pub async fn persist(&self, b: &ReadBatch) -> anyhow::Result<Vec<u8>> {
+        let keys = self.persist_all(std::slice::from_ref(b)).await?;
+        Ok(keys.into_iter().next().expect("one key per batch"))
+    }
+
+    /// Durably persist a WHOLE drain round in ONE WriteBatch with ONE
+    /// flush (OOM review item 5): a flush per sealed batch minted a
+    /// tiny L0 per batch and fed compaction churn on the two-thread
+    /// SlateDB runtime the history compactor also needs. All-or-
+    /// nothing: on error, NOTHING in `batches` is durable and the
+    /// caller requeues the whole slice.
+    pub async fn persist_all(&self, batches: &[ReadBatch]) -> anyhow::Result<Vec<Vec<u8>>> {
         #[cfg(test)]
         {
             let left = self.fail_after.load(std::sync::atomic::Ordering::SeqCst);
@@ -1769,17 +1887,42 @@ impl ReadSpool {
                     .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
             }
         }
-        let seq = self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        let key = Self::key(seq);
+        if batches.is_empty() {
+            return Ok(Vec::new());
+        }
+        let seq0 = self
+            .next
+            .fetch_add(batches.len() as u64, std::sync::atomic::Ordering::SeqCst);
         let mut wb = slatedb::WriteBatch::new();
-        wb.put(key.clone(), serde_json::to_vec(b)?);
-        wb.put(&b"meta/next-seq"[..], &(seq + 1).to_le_bytes()[..]);
+        let mut keys = Vec::with_capacity(batches.len());
+        let mut encoded = Vec::with_capacity(batches.len());
+        for (i, b) in batches.iter().enumerate() {
+            let key = Self::key(seq0 + i as u64);
+            let v = serde_json::to_vec(b)?;
+            encoded.push((key.clone(), v.len() as u64));
+            wb.put(key.clone(), v);
+            keys.push(key);
+        }
+        wb.put(
+            &b"meta/next-seq"[..],
+            &(seq0 + batches.len() as u64).to_le_bytes()[..],
+        );
         self.db.write(wb).await?;
         // The build runs with wal_disable (the engines own their WAL
         // cadence), so an explicit flush is what makes "spooled" mean
         // OBJECT-STORE durable — the entire point of this spool.
         self.db.flush().await?;
-        Ok(key)
+        {
+            let mut sizes = self.sizes.lock().unwrap();
+            for (k, len) in encoded {
+                sizes.insert(k, len);
+                self.pending_bytes
+                    .fetch_add(len, std::sync::atomic::Ordering::Relaxed);
+                self.pending_rows
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        Ok(keys)
     }
 
     /// Oldest pending batches (recovered across restarts). A row that
@@ -1824,6 +1967,15 @@ impl ReadSpool {
             self.db.flush().await?;
             self.quarantined
                 .fetch_add(corrupt.len() as u64, std::sync::atomic::Ordering::Relaxed);
+            let mut sizes = self.sizes.lock().unwrap();
+            for (k, _) in &corrupt {
+                if let Some(len) = sizes.remove(k) {
+                    self.pending_bytes
+                        .fetch_sub(len, std::sync::atomic::Ordering::Relaxed);
+                    self.pending_rows
+                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
         }
         Ok(out)
     }
@@ -1837,7 +1989,7 @@ impl ReadSpool {
     #[cfg(test)]
     pub async fn put_raw(&self, key: &[u8], val: &[u8]) -> anyhow::Result<()> {
         let mut wb = slatedb::WriteBatch::new();
-        wb.put(key.to_vec(), val.to_vec());
+        wb.put(key, val);
         self.db.write(wb).await?;
         Ok(())
     }
@@ -1862,7 +2014,28 @@ impl ReadSpool {
             wb.delete(k.clone());
         }
         self.db.write(wb).await?;
+        {
+            let mut sizes = self.sizes.lock().unwrap();
+            for k in keys {
+                if let Some(len) = sizes.remove(k) {
+                    self.pending_bytes
+                        .fetch_sub(len, std::sync::atomic::Ordering::Relaxed);
+                    self.pending_rows
+                        .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            }
+        }
         Ok(())
+    }
+
+    /// (rows, encoded bytes) resident in the spool — exact, lock-cheap
+    /// gauges for the ops snapshot and the readiness surface.
+    pub fn resident(&self) -> (u64, u64) {
+        (
+            self.pending_rows.load(std::sync::atomic::Ordering::Relaxed),
+            self.pending_bytes
+                .load(std::sync::atomic::Ordering::Relaxed),
+        )
     }
 
     pub async fn depth(&self) -> usize {
@@ -1874,12 +2047,40 @@ impl ReadSpool {
 /// drainable (round-21 blocker 4): the drainer must not depend on
 /// customer traffic to rediscover dirty usage after a crash or an
 /// ownership move. Bounded by the fleet's shard count.
+/// Prefixes the SWEEP (or the tombstone walk) opened solely for
+/// telemetry-debt discovery. Customer-opened engines never enter this
+/// set and are never closed here.
+fn sweep_opened() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
+    static S: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
+        std::sync::OnceLock::new();
+    S.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+}
+
+/// Sweep-resident engine count (ops gauge): how many engines exist
+/// ONLY because billing debt discovery opened them.
+pub fn sweep_resident_engines() -> u64 {
+    sweep_opened().lock().unwrap().len() as u64
+}
+
+/// OOM review item 6: discovery must not mean PERMANENT residency. A
+/// 16-shard topology swept at boot kept 16 full engines (memtables,
+/// absorbers, history partitions) resident on a nominally idle
+/// instance. Engines this sweep opens are MARKED; once their billing
+/// debt is drained (no dirty rows, no month finals) a later pass
+/// deliberately closes them again — the same remove+begin_close dance
+/// the ownership-yield path uses. Debt probes fail toward KEEPING the
+/// engine (discovery must not lose to a transient scan fault), and a
+/// customer engine that raced into the mark window costs one benign
+/// re-open on its next request.
 pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>) {
+    let pre: std::collections::HashSet<String> =
+        state.shards.read().unwrap().keys().cloned().collect();
     let prefixes: Vec<String> = state.shard_prefixes.clone();
     for prefix in prefixes {
         if let Some(owner) = state.effective_owner(&prefix)
             && owner != state.instance_name
         {
+            sweep_opened().lock().unwrap().remove(&prefix);
             continue;
         }
         let already = state.shards.read().unwrap().contains_key(&prefix);
@@ -1887,7 +2088,7 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
             continue;
         }
         // Opening registers the engine in state.shards; the normal
-        // drain covers it from then on.
+        // drain covers it while it stays open.
         match state
             .gate
             .get_or_open(&prefix, std::time::Duration::from_secs(20))
@@ -1902,6 +2103,48 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
         }
     }
     tombstone_walk(state).await;
+    // Mark everything that appeared during this cycle (sweep opens +
+    // walk opens), then probe every marked engine and close the
+    // debt-free ones.
+    {
+        let now: Vec<String> = state.shards.read().unwrap().keys().cloned().collect();
+        let mut marks = sweep_opened().lock().unwrap();
+        for p in now {
+            if !pre.contains(&p) {
+                marks.insert(p);
+            }
+        }
+    }
+    let marked: Vec<String> = sweep_opened().lock().unwrap().iter().cloned().collect();
+    for prefix in marked {
+        if let Some(owner) = state.effective_owner(&prefix)
+            && owner != state.instance_name
+        {
+            sweep_opened().lock().unwrap().remove(&prefix);
+            continue;
+        }
+        let Some(engine) = state.shards.read().unwrap().get(&prefix).cloned() else {
+            sweep_opened().lock().unwrap().remove(&prefix);
+            continue;
+        };
+        let debt = match engine.usage_dirty_scan().await {
+            Ok(d) => !d.is_empty(),
+            Err(_) => true, // fail toward keeping discovery alive
+        } || match engine.usage_month_finals().await {
+            Ok(f) => !f.is_empty(),
+            Err(_) => true,
+        };
+        if debt {
+            tracing::info!("outbox sweep keeps {prefix} resident (billing debt pending)");
+            continue;
+        }
+        let eng = state.shards.write().unwrap().remove(&prefix);
+        if let Some(e) = eng {
+            e.begin_close();
+        }
+        sweep_opened().lock().unwrap().remove(&prefix);
+        tracing::info!("outbox sweep closed debt-free shard {prefix}");
+    }
 }
 
 /// Round-22 item 7: the tombstone walk. Dirty-index reconciliation

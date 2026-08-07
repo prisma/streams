@@ -76,3 +76,98 @@ Updated: 2026-08-07 (post round-22 boundary review).
 | Fleet (3-node) billing acceptance | NOT RUN |
 | Month-boundary soak (clock-driven, multi-day) | NOT RUN (simulated in tests only) |
 | Invoice-export dry run | BLOCKED on export tooling |
+
+## OOM review (2026-08-07): preview.7 kill — mechanisms landed
+
+The ab21 A/B campaign killed preview.7 under load (both conc 128 and
+192, each after ≈1 GiB accepted payload). The review's diagnosis —
+history-L0/absorber backpressure amplified by process-wide memory
+budgeting failures — is supported by the recorded facts: the failed
+run's preserved bucket shows **16 physical shards** (16 × 32 MiB
+nominal gather exposure = 512 MiB), and both telemetry SlateDB DBs
+(read spool; rollup under ROLLUP=1) opened with SlateDB per-DB
+defaults instead of bounded caches.
+
+### Claim correction (supersedes earlier wording)
+
+`BILLING_METER=off` disables ONLY the committer-side
+SegmentBillingMetaV1 mutation. It does NOT disable the read meter, the
+read-spool DB, `_usage` ledger appends, the rollup consumer/DB,
+`_ops_events`/`_ops_metrics`, or the owned-shard outbox sweep. The
+billing-off arm therefore exonerates the same-WriteBatch billing
+metadata — and NOT the round-20/21 telemetry subsystem. The full-off
+discriminator is `USAGE_STREAM_KEY` unset + `ROLLUP=0` +
+`BILLING_MODE=off` on a fresh process and namespace (experiment arm B).
+
+### Mechanisms landed (this round)
+
+| review item | mechanism |
+|---|---|
+| 1. process-wide absorber budget | `AbsorbBudget` (bytes semaphore + concurrent-gather cap, ONE process static); every gather reserves gather_max × build-multiplier BEFORE reading frames; oversized estimates clamp to the whole budget (serialize, never deadlock) |
+| 2. absorber phase stagger | first tick seeded from the shard-prefix hash (interval_at), like the WAL stagger |
+| 3. bounded telemetry DBs | `TELEMETRY_CACHE_BYTES` (16 MiB default) shared by spool + rollup; explicit small Settings (8 MiB unflushed, 2 MiB L0 target, 32 L0 cap, slow polls/GC) — SlateDB defaults unreachable |
+| 4. rollup off ingest | deployment contract: multi-instance cells run ROLLUP=1 on a designated non-ingest instance; single-instance cells co-locate ONLY with the bounded posture + SLATEDB_RT_THREADS=4 (STAGING/RUNBOOK) |
+| 5. batched spool flush | `persist_all`: one WriteBatch + one flush per drain round, all-or-nothing (whole-round requeue) |
+| 6. sweep residency | sweep/walk-opened engines are MARKED and deliberately closed once billing-debt-free (remove + begin_close); probes fail toward keeping discovery alive; `sweep_resident_engines` gauge |
+| P2 shed | admission pressure = sampled RSS + reserved absorber bytes (`memory_pressure_mb`), so the line moves before the allocation shows in a sample |
+
+### Instrumentation landed
+
+Ops snapshot (`_ops_metrics`, 15 s): `history_l0_ssts_max`,
+`history_l0_bytes_total`, `history_compacted_runs_max`,
+`history_partitions_open`, `history_flush_wait_ms_max`
+(peak-since-scrape), `gather_last_{reserved,actual,read_ms,write_ms,flush_ms}`,
+`absorb_reserved_bytes`, `absorb_gathers_inflight`,
+`absorb_bytes_total` / `ingest_bytes_total` (rate pair),
+`read_spool_pending_{rows,bytes}`, `telemetry_cache_capacity_bytes`,
+`rollup_apply_duration_ms`, `rss_mb`, `rss_peak_since_scrape_mb`
+(250 ms in-process sampler feeds the peak), cgroup
+`memory.current/peak` + `oom_kill` when the platform exposes them, and
+mimalloc current/peak commit. Per-partition detail:
+`GET /v1/debug/absorb`. L0 facts come from each open partition's
+IN-MEMORY manifest snapshot (`Db::manifest()`) — no store requests.
+Not available at the current upstream pin: SlateDB-internal
+compaction-queue depth and unflushed-bytes counters (no public stats
+API); `history_flush_wait_ms_max` + the L0 gauges are the operative
+substitutes, and a public stats surface is tracked as an upstream ask.
+
+### Deterministic regression
+
+`stalled_flush_keeps_gather_memory_bounded_then_recovers`: a gather
+stalled in its history flush holds the budget → aggregate reserved
+bytes can never exceed capacity (the 16×32 MiB shape is impossible by
+construction), the next gather WAITS (backpressure) while the shed
+expression trips on RSS+reserved, and healing hands the budget to the
+waiter (recovery without restart). Plus `gather_concurrency_cap_holds`
+and `absorber_phase_stagger_is_prefix_seeded`. Timing-independent; the
+soak-scale injected-slowdown leg is part of the acceptance gate below.
+
+### Acceptance gate before preview.7-class builds are restored
+
+At least THREE consecutive full-telemetry soaks, each: ≥5 GiB accepted
+payload; concurrency 128 and 192; zero process exits/restarts;
+client-visible errors limited to deliberate 429/503 shedding; cgroup
+peak comfortably below the platform kill line; flat post-warm-up RSS
+trend; absorber lag bounded and recovering; history L0 bounded (no
+monotonic climb); spool/rollup backlog bounded; exact acked-operation
+reconciliation. PLUS one injected history-compactor slowdown run
+proving: admission sheds, memory stays bounded, the absorber catches
+up after healing, the process never dies.
+
+### Separate platform blocker
+
+The Compute zombie (process dead; version "running"; edge 500s with no
+`Prisma-Streams-Origin`; no self-recovery until manual redeploy) is a
+platform process-supervision/health-removal defect, tracked separately
+from the app's memory behavior. A durability service cannot depend on
+an operator noticing a silent zombie.
+
+### Campaign state
+
+Recorded in the soak results (ab21 FINDINGS): failed-run topology facts,
+the exoneration correction, and the A/B fairness note (slate accepted
+~26× Bun's work per wall-clock; the decisive comparison is preview.4 vs
+preview.7 slate at equal accepted bytes/topology). Experiment-matrix
+arms (B: full telemetry off; D: forced 4 shards; then E/F) run on
+Compute with fresh namespaces at conc 192 to a fixed ≥2 GiB accepted
+target; results land in the same FINDINGS file.

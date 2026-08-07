@@ -130,6 +130,19 @@ PROJECT_ID=<proj_...>
 CELL_ID=<cell tag>
 ROLLUP=1                            # exactly one instance per cell
 
+# --- memory survival posture (OOM review, 2026-08-07)
+INITIAL_SHARDS=4                    # 16 shards multiplied absorber exposure 16x
+ABSORB_GATHER_MAX_BYTES=8388608     # per-gather packing cap (8 MiB)
+ABSORB_GLOBAL_BUDGET_BYTES=67108864 # PROCESS-WIDE gather budget (64 MiB)
+ABSORB_GLOBAL_GATHERS=2             # concurrent gathers, process-wide
+SLATEDB_RT_THREADS=4                # telemetry flushers must not starve history compaction
+TELEMETRY_CACHE_BYTES=16777216      # spool+rollup DBs share ONE bounded cache
+ADMIT_RSS_SHED_MB=500               # 600 was too close to the ~740 MB kill line
+# ROLLUP placement: on multi-instance cells, ROLLUP=1 goes on a
+# designated NON-INGEST instance (it must not compete with history
+# compaction on an ingestion VM); a single-instance cell accepts the
+# co-location with the bounded caches + RT_THREADS=4 above.
+
 # --- engine (1 GB discipline, RUNBOOK 3.2/3.3)
 FLUSH_INTERVAL_MS=25
 WAL_GROUP_COMMIT=1

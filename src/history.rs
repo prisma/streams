@@ -88,6 +88,200 @@ pub fn hist2_record_key(route: RouteHash, inc: SegmentHash, offset: u64) -> Vec<
 /// Shared block cache for ALL history DBs (absorber writes + reads):
 /// SlateDB's per-DB default is 512 MB, and the absorber opens a DB per
 /// absorbed stream — unbounded aggregate cache on a 1 GB box.
+/// Per-partition L0 facts from the db's IN-MEMORY manifest snapshot
+/// (`Db::manifest()` — no object-store request). The manifest types
+/// only expose Serialize at this pin, so this walks the serde view
+/// tolerantly: (l0_sst_count, l0_bytes_est, compacted_runs,
+/// manifest_id). The review's leading indicator — "history L0
+/// approaching 64 × 4 MiB" — is exactly l0_sst_count here.
+pub fn history_l0_stats(db: &slatedb::Db) -> (u64, u64, u64, u64) {
+    fn sum_sizes(v: &serde_json::Value) -> u64 {
+        match v {
+            serde_json::Value::Object(m) => m
+                .iter()
+                .map(|(k, v)| {
+                    if v.is_u64() && (k.contains("size") || k.ends_with("_bytes")) {
+                        v.as_u64().unwrap_or(0)
+                    } else {
+                        sum_sizes(v)
+                    }
+                })
+                .sum(),
+            serde_json::Value::Array(a) => a.iter().map(sum_sizes).sum(),
+            _ => 0,
+        }
+    }
+    fn find<'a>(v: &'a serde_json::Value, key: &str) -> Option<&'a serde_json::Value> {
+        match v {
+            serde_json::Value::Object(m) => {
+                m.get(key).or_else(|| m.values().find_map(|x| find(x, key)))
+            }
+            serde_json::Value::Array(a) => a.iter().find_map(|x| find(x, key)),
+            _ => None,
+        }
+    }
+    let vm = db.manifest();
+    let Ok(j) = serde_json::to_value(&vm) else {
+        return (0, 0, 0, 0);
+    };
+    let id = find(&j, "id").and_then(|v| v.as_u64()).unwrap_or(0);
+    let (l0n, l0b) = find(&j, "l0")
+        .and_then(|v| v.as_array())
+        .map(|a| (a.len() as u64, a.iter().map(sum_sizes).sum()))
+        .unwrap_or((0, 0));
+    let runs = find(&j, "compacted")
+        .and_then(|v| v.as_array())
+        .map(|a| a.len() as u64)
+        .unwrap_or(0);
+    (l0n, l0b, runs, id)
+}
+
+// ---------------------------------------------------------------------
+// Process-wide absorber memory budget (OOM review item 1)
+// ---------------------------------------------------------------------
+
+/// ONE budget for EVERY shard's gathers. `gather_max_bytes` alone is a
+/// per-shard packing bound: at 16 open shards it multiplied to 512 MiB
+/// of nominal simultaneous gather exposure — the preview.7 kill
+/// amplifier — because each gather also transiently holds more than its
+/// accounting value (raw frame vectors, the WriteBatch's cloned
+/// values+keys, posting-run builders, and SST construction inside
+/// SlateDB). Every gather must RESERVE here before it reads or clones a
+/// single frame; the reservation covers those transients via the build
+/// multiplier, and an estimate above the whole budget clamps to it, so
+/// an oversized gather serializes process-wide instead of deadlocking.
+/// Budgets are process-wide BY CONSTRUCTION: the semaphores live in one
+/// process-level static, not per absorber.
+pub struct AbsorbBudget {
+    bytes: tokio::sync::Semaphore,
+    gathers: tokio::sync::Semaphore,
+    capacity: usize,
+    reserved: AtomicU64,
+    inflight: AtomicU64,
+}
+
+/// Multiplier from packed batch bytes to transient build memory: raw
+/// frames + WriteBatch value/key clones + posting builders + SST
+/// encode. Conservative by design — under-reserving is how instances
+/// die between RSS samples.
+pub const ABSORB_BUILD_MULTIPLIER: usize = 3;
+
+pub fn absorb_budget() -> &'static AbsorbBudget {
+    static B: std::sync::OnceLock<AbsorbBudget> = std::sync::OnceLock::new();
+    B.get_or_init(|| {
+        let bytes: usize = std::env::var("ABSORB_GLOBAL_BUDGET_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(64 * 1024 * 1024);
+        let gathers: usize = std::env::var("ABSORB_GLOBAL_GATHERS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(2)
+            .max(1);
+        AbsorbBudget::new(bytes, gathers)
+    })
+}
+
+/// The shed expression (OOM review P2), factored for a deterministic
+/// test: pressure = sampled RSS + absorber bytes ALREADY RESERVED —
+/// the reservation is visible the instant it is granted, so admission
+/// backs off BEFORE the allocation shows up in an RSS sample.
+pub fn memory_pressure_mb(rss_mb: u64, reserved_bytes: u64) -> u64 {
+    rss_mb.saturating_add(reserved_bytes / (1024 * 1024))
+}
+
+pub struct AbsorbReservation {
+    bytes: usize,
+    budget: &'static AbsorbBudget,
+}
+
+impl AbsorbBudget {
+    pub fn new(bytes: usize, gathers: usize) -> Self {
+        AbsorbBudget {
+            bytes: tokio::sync::Semaphore::new(bytes.max(1)),
+            gathers: tokio::sync::Semaphore::new(gathers.max(1)),
+            capacity: bytes.max(1),
+            reserved: AtomicU64::new(0),
+            inflight: AtomicU64::new(0),
+        }
+    }
+
+    /// Reserve BEFORE any frame is read. Blocks until the process-wide
+    /// bytes AND a concurrent-gather slot are available — that wait IS
+    /// the backpressure that keeps N shards from building N batches at
+    /// once on a 1 GiB instance. The reservation releases to the budget
+    /// it came from on drop, whatever happened to the gather.
+    pub async fn reserve(&'static self, estimate: usize) -> AbsorbReservation {
+        let want = estimate.clamp(1, self.capacity);
+        // Semaphore permits are u32-bounded per acquire_many; the
+        // capacity clamp keeps `want` far below that for any sane
+        // budget (u32::MAX = 4 GiB).
+        let g = self
+            .gathers
+            .acquire()
+            .await
+            .expect("absorb budget semaphore closed");
+        g.forget();
+        let b = self
+            .bytes
+            .acquire_many(want as u32)
+            .await
+            .expect("absorb budget semaphore closed");
+        b.forget();
+        self.reserved
+            .fetch_add(want as u64, std::sync::atomic::Ordering::Relaxed);
+        self.inflight
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        AbsorbReservation {
+            bytes: want,
+            budget: self,
+        }
+    }
+
+    pub fn reserved_bytes(&self) -> u64 {
+        self.reserved.load(std::sync::atomic::Ordering::Relaxed)
+    }
+}
+
+impl Drop for AbsorbReservation {
+    fn drop(&mut self) {
+        let b = self.budget;
+        b.bytes.add_permits(self.bytes);
+        b.gathers.add_permits(1);
+        b.reserved
+            .fetch_sub(self.bytes as u64, std::sync::atomic::Ordering::Relaxed);
+        b.inflight
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Bytes currently reserved by in-flight gathers — the admission shed
+/// adds this to sampled RSS (a gather can allocate tens of MiB between
+/// RSS samples; the reservation is visible the instant it is granted).
+pub fn absorb_reserved_bytes() -> u64 {
+    absorb_budget()
+        .reserved
+        .load(std::sync::atomic::Ordering::Relaxed)
+}
+
+pub fn absorb_gathers_inflight() -> u64 {
+    absorb_budget()
+        .inflight
+        .load(std::sync::atomic::Ordering::Relaxed)
+}
+
+// Gather observability (OOM review instrumentation): last-gather phase
+// timings + reserved-vs-actual, and cumulative absorbed/ingested bytes
+// for rate derivation between ops snapshots.
+pub static ABSORB_BYTES_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static INGEST_BYTES_TOTAL: AtomicU64 = AtomicU64::new(0);
+pub static GATHER_LAST_RESERVED: AtomicU64 = AtomicU64::new(0);
+pub static GATHER_LAST_ACTUAL: AtomicU64 = AtomicU64::new(0);
+pub static GATHER_LAST_READ_MS: AtomicU64 = AtomicU64::new(0);
+pub static GATHER_LAST_WRITE_MS: AtomicU64 = AtomicU64::new(0);
+pub static GATHER_LAST_FLUSH_MS: AtomicU64 = AtomicU64::new(0);
+pub static HISTORY_FLUSH_WAIT_MS_MAX: AtomicU64 = AtomicU64::new(0);
+
 pub(crate) fn history_cache() -> Arc<slatedb::db_cache::foyer::FoyerCache> {
     static CACHE: std::sync::OnceLock<Arc<slatedb::db_cache::foyer::FoyerCache>> =
         std::sync::OnceLock::new();
@@ -440,7 +634,18 @@ impl Absorber {
             let mut seed_failures: u32 = 0;
             let mut seed_next_tick: u32 = 0;
             const RESCAN_EVERY: u32 = 120; // ~10 min at the 5 s tick
-            let mut tick = tokio::time::interval(absorber.cfg.tick);
+            // OOM review item 2: co-opened shards must not become due
+            // and flush together — seed each absorber's phase from its
+            // shard prefix, exactly like the WAL tick stagger. Sixteen
+            // absorbers with identical phases synchronized their gather
+            // peaks; staggered phases spread them across the tick.
+            let phase = {
+                let h = crate::crypto::stream_hash(&absorber.shard.prefix);
+                let tick_ms = absorber.cfg.tick.as_millis().max(1) as u64;
+                Duration::from_millis(u64::from_le_bytes(h[..8].try_into().unwrap()) % tick_ms)
+            };
+            let mut tick =
+                tokio::time::interval_at(tokio::time::Instant::now() + phase, absorber.cfg.tick);
             let mut tick_n: u32 = 0;
             loop {
                 // Lifecycle: this task holds the engine Arc, so the signal
@@ -700,6 +905,22 @@ impl Absorber {
                             }
                         }
                         if !v2_lane.is_empty() && !absorber.shard.is_closed() {
+                            // OOM review item 1: reserve the PROCESS-WIDE
+                            // budget before a single frame is read. The
+                            // estimate is this gather's packing cap times
+                            // the build multiplier; waiting here is the
+                            // intended backpressure when other shards'
+                            // gathers hold the budget.
+                            let est = absorber
+                                .cfg
+                                .gather_max_bytes
+                                .saturating_mul(ABSORB_BUILD_MULTIPLIER);
+                            let _reservation = absorb_budget().reserve(est).await;
+                            GATHER_LAST_RESERVED
+                                .store(est as u64, std::sync::atomic::Ordering::Relaxed);
+                            if absorber.shard.is_closed() {
+                                continue; // fenced while waiting for budget
+                            }
                             match absorber.absorb_gather_v2(&v2_lane).await {
                                 Ok(outcome) => {
                                     // Retire ONLY what the gather settled:
@@ -834,6 +1055,7 @@ impl Absorber {
         // Rough WriteBatch bookkeeping cost per entry, on top of key+value.
         const ENTRY_OVERHEAD: usize = 64;
         let part = self.shard.history_partition().await?;
+        let t_read = Instant::now();
         let mut wb = WriteBatch::new();
         let mut out = GatherOutcome::default();
         let mut batch_bytes: usize = 0;
@@ -977,9 +1199,21 @@ impl Absorber {
         if out.advanced.is_empty() {
             return Ok(out);
         }
+        let ord = std::sync::atomic::Ordering::Relaxed;
+        GATHER_LAST_READ_MS.store(t_read.elapsed().as_millis() as u64, ord);
+        GATHER_LAST_ACTUAL.store(batch_bytes as u64, ord);
+        let t_write = Instant::now();
         part.write_with_options(wb, &WriteOptions::default())
             .await?;
+        GATHER_LAST_WRITE_MS.store(t_write.elapsed().as_millis() as u64, ord);
+        let t_flush = Instant::now();
         part.flush().await?; // wal off => memtable -> L0, manifest published
+        // Flush wait is the review's leading indicator: when history L0
+        // approaches its cap, THIS is what starts blocking.
+        let flush_ms = t_flush.elapsed().as_millis() as u64;
+        GATHER_LAST_FLUSH_MS.store(flush_ms, ord);
+        HISTORY_FLUSH_WAIT_MS_MAX.fetch_max(flush_ms, ord);
+        ABSORB_BYTES_TOTAL.fetch_add(out.advanced.iter().map(|(_, _, b)| *b).sum::<u64>(), ord);
         // The pages are durable: warm the slice cache with the runs we
         // just wrote. Readers clip to their own durable boundary, so an
         // install racing the boundary advance can never over-serve.
@@ -1502,6 +1736,100 @@ mod tests {
             .await
             .expect("absorber did not exit after its engine was fenced")
             .unwrap();
+    }
+
+    /// OOM review item 1, forced mechanism (no timing dependence): a
+    /// gather stalled in its history flush — the "compaction fell
+    /// behind" shape — HOLDS its process-wide reservation, so (a) the
+    /// aggregate reserved bytes can never exceed the budget no matter
+    /// how many shards want to gather, (b) the next gather WAITS
+    /// instead of building a second resident batch, and (c) healing
+    /// (the stalled flush completing) hands the budget to the waiter —
+    /// the absorber catches up instead of the process dying.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn stalled_flush_keeps_gather_memory_bounded_then_recovers() {
+        let budget: &'static AbsorbBudget = Box::leak(Box::new(AbsorbBudget::new(100, 2)));
+        // Sixteen shards all want 32-MiB-class gathers (scaled here):
+        // estimates clamp to the whole budget, so the FIRST holds
+        // everything — exactly "one oversized gather serializes".
+        let stalled = budget.reserve(60).await;
+        assert_eq!(budget.reserved_bytes(), 60);
+        let second = budget.reserve(60); // 60+60 > 100: must wait
+        tokio::pin!(second);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut second)
+                .await
+                .is_err(),
+            "a second gather must NOT proceed while the stall holds the budget"
+        );
+        // The bound is the invariant the review demanded: reserved can
+        // never exceed capacity — "32 MiB x open shards" is impossible
+        // by construction, not by convention.
+        assert!(budget.reserved_bytes() <= 100);
+        // While stalled, admission pressure includes the reservation
+        // (review P2): a 500 MB RSS instance with 60 B reserved playing
+        // at MiB scale — use real numbers: 500 MB RSS + 128 MiB
+        // reserved trips a 600 MB line even though sampled RSS alone
+        // would not.
+        assert_eq!(memory_pressure_mb(500, 128 * 1024 * 1024), 628);
+        assert!(memory_pressure_mb(500, 128 * 1024 * 1024) > 600);
+        assert!(memory_pressure_mb(500, 0) <= 600);
+        // HEAL: the stalled flush completes, its reservation drops, and
+        // the waiter proceeds — recovery without restart.
+        drop(stalled);
+        let recovered = tokio::time::timeout(Duration::from_secs(5), second)
+            .await
+            .expect("waiter must be granted after healing");
+        assert_eq!(budget.reserved_bytes(), 60);
+        drop(recovered);
+        assert_eq!(budget.reserved_bytes(), 0, "full release after drop");
+    }
+
+    /// The concurrent-gather cap is enforced independently of bytes:
+    /// two small gathers pass, the third waits for a slot.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn gather_concurrency_cap_holds() {
+        let budget: &'static AbsorbBudget = Box::leak(Box::new(AbsorbBudget::new(1000, 2)));
+        let a = budget.reserve(10).await;
+        let b = budget.reserve(10).await;
+        let third = budget.reserve(10);
+        tokio::pin!(third);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut third)
+                .await
+                .is_err(),
+            "third concurrent gather must wait for a slot"
+        );
+        drop(a);
+        let c = tokio::time::timeout(Duration::from_secs(5), third)
+            .await
+            .expect("slot handoff");
+        drop(b);
+        drop(c);
+        assert_eq!(budget.reserved_bytes(), 0);
+    }
+
+    /// Absorber phases are seeded from the shard prefix: different
+    /// prefixes yield different phases (co-opened shards do not flush
+    /// in lockstep), and the phase always fits inside one tick.
+    #[test]
+    fn absorber_phase_stagger_is_prefix_seeded() {
+        let tick_ms = 5000u64;
+        let phase = |prefix: &str| -> u64 {
+            let h = crate::crypto::stream_hash(prefix);
+            u64::from_le_bytes(h[..8].try_into().unwrap()) % tick_ms
+        };
+        let prefixes = [
+            "0000", "0001", "0010", "0011", "0100", "0101", "0110", "0111", "1000", "1001", "1010",
+            "1011", "1100", "1101", "1110", "1111",
+        ];
+        let phases: Vec<u64> = prefixes.iter().map(|p| phase(p)).collect();
+        let distinct: std::collections::HashSet<_> = phases.iter().collect();
+        assert!(
+            distinct.len() >= 12,
+            "16 shard prefixes must spread across the tick, got {distinct:?}"
+        );
+        assert!(phases.iter().all(|p| *p < tick_ms));
     }
 
     /// Wedge detector: a stale in-progress db.write reads as blocked;

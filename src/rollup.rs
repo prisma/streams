@@ -372,9 +372,14 @@ impl UsageRollup {
         } else {
             format!("{prefix}/{ROLLUP_PATH}")
         };
-        let db =
-            crate::on_slatedb_rt(async move { Db::builder(path.as_str(), store).build().await })
-                .await?;
+        let db = crate::on_slatedb_rt(async move {
+            Db::builder(path.as_str(), store)
+                .with_settings(crate::billing::telemetry_settings())
+                .with_db_cache(crate::billing::telemetry_cache())
+                .build()
+                .await
+        })
+        .await?;
         Ok(UsageRollup { db: Arc::new(db) })
     }
 

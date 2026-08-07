@@ -47,6 +47,15 @@ provision)
   ;;
 server)
   j() { python3 -c "import json;print(json.load(open('$BUCKET_JSON'))['data']['$1'])" }
+  # SURVIVAL POSTURE (OOM review): 4 shards (the 16-shard topology
+  # multiplied absorber exposure 16x and killed preview.7), 8 MiB
+  # per-gather cap under a 64 MiB PROCESS-WIDE budget with 2 concurrent
+  # gathers, 4 SlateDB runtime threads (telemetry flushers must not
+  # starve the history compactor), shed at 500 MB (600 was too close to
+  # the ~740 MB platform kill line for inter-sample SST spikes), and
+  # EVERY cache bound explicit. NOTE: a fresh namespace is REQUIRED for
+  # a shard-count change — existing topology.json wins over
+  # INITIAL_SHARDS.
   bunx --bun @prisma/compute-cli deploy --project $BENCH_PROJECT --service $BENCH_SVC_SERVER \
     --region $BENCH_REGION --path $HERE/../deploy/app-server --http-port 8080 \
     --env SERVER_BINARY_S3_KEY=$BENCH_BIN_KEY \
@@ -59,8 +68,10 @@ server)
     --env FLUSH_INTERVAL_MS=50 --env L0_SST_SIZE_BYTES=8388608 --env MAX_UNFLUSHED_BYTES=16777216 \
     --env SHARED_CACHE_BYTES=134217728 \
     --env L0_MAX_SSTS=32 --env L0_MAX_SSTS_PER_KEY=0 --env MANIFEST_POLL_MS=1000 \
-    --env INITIAL_SHARDS=16 --env ADMIT_MAX_INFLIGHT=256 --env ADMIT_RSS_SHED_MB=550 \
+    --env INITIAL_SHARDS=4 --env ADMIT_MAX_INFLIGHT=256 --env ADMIT_RSS_SHED_MB=500 \
     --env ABSORB_BYTES=4194304 --env ABSORB_AGE_SECS=300 --env ABSORB_PASS_BYTES=33554432 --env TRIM_PER_OP=8192 \
+    --env ABSORB_GATHER_MAX_BYTES=8388608 --env ABSORB_GLOBAL_BUDGET_BYTES=67108864 --env ABSORB_GLOBAL_GATHERS=2 \
+    --env SLATEDB_RT_THREADS=4 --env TELEMETRY_CACHE_BYTES=16777216 --env HISTORY_CACHE_BYTES=33554432 --env POSTINGS_CACHE_BYTES=67108864 \
     --env KEEP_AWAKE=1 \
     2>&1 | grep -E 'New version|error'
   ;;

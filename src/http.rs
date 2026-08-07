@@ -465,13 +465,19 @@ async fn track_inflight(
     }
     // RSS shed: writes only — reads don't grow memtables, and rejecting
     // them would hide the instance from its own operators.
+    // OOM review P2: the guard considers sampled RSS PLUS the absorber
+    // bytes already reserved — a gather can allocate tens of MiB
+    // between RSS samples, and the reservation is visible the moment it
+    // is granted, so the shed line moves BEFORE the memory does.
     if state.admit_rss_shed_mb > 0
         && path_is_stream
         && req.method() != axum::http::Method::GET
-        && state
-            .rss_mb_cached
-            .load(std::sync::atomic::Ordering::Relaxed)
-            > state.admit_rss_shed_mb
+        && crate::history::memory_pressure_mb(
+            state
+                .rss_mb_cached
+                .load(std::sync::atomic::Ordering::Relaxed),
+            crate::history::absorb_reserved_bytes(),
+        ) > state.admit_rss_shed_mb
     {
         state
             .admit_shed
@@ -911,6 +917,76 @@ pub fn router(state: Arc<AppState>) -> Router {
             ),
         )
         .route("/v1/debug/sleep", get(debug_sleep))
+        // OOM-review causal detail: per-partition history L0 posture,
+        // the process-wide absorber budget, last-gather phases, and
+        // telemetry-plane residency — the exact signals needed to prove
+        // (or refute) "history compaction fell behind". Authorized like
+        // every other /v1/debug route.
+        .route(
+            "/v1/debug/absorb",
+            get(
+                |State(state): State<Arc<AppState>>, headers: HeaderMap| async move {
+                    if !authorized(&state, &headers) {
+                        return err_resp(
+                            StatusCode::UNAUTHORIZED,
+                            "unauthorized",
+                            "bearer token required",
+                        );
+                    }
+                    let ord = std::sync::atomic::Ordering::Relaxed;
+                    let engines: Vec<_> = {
+                        let m = state.shards.read().unwrap();
+                        m.iter().map(|(p, e)| (p.clone(), e.clone())).collect()
+                    };
+                    let mut parts = Vec::new();
+                    for (prefix, e) in engines {
+                        if let Some(part) = e.history_partition_if_open() {
+                            let (l0, l0b, runs, mid) = crate::history::history_l0_stats(&part);
+                            parts.push(serde_json::json!({
+                                "shard": prefix,
+                                "l0SstCount": l0,
+                                "l0BytesEst": l0b,
+                                "compactedRuns": runs,
+                                "manifestId": mid,
+                            }));
+                        }
+                    }
+                    let spool = state.read_spool.get().map(|sp| {
+                        let (rows, bytes) = sp.resident();
+                        serde_json::json!({
+                            "pendingRows": rows,
+                            "pendingBytes": bytes,
+                            "quarantined": sp.quarantined_count(),
+                        })
+                    });
+                    axum::Json(serde_json::json!({
+                        "historyPartitions": parts,
+                        "absorber": {
+                            "reservedBytes": crate::history::absorb_reserved_bytes(),
+                            "gathersInflight": crate::history::absorb_gathers_inflight(),
+                            "lastReservedBytes": crate::history::GATHER_LAST_RESERVED.load(ord),
+                            "lastActualBytes": crate::history::GATHER_LAST_ACTUAL.load(ord),
+                            "lastReadMs": crate::history::GATHER_LAST_READ_MS.load(ord),
+                            "lastWriteMs": crate::history::GATHER_LAST_WRITE_MS.load(ord),
+                            "lastFlushMs": crate::history::GATHER_LAST_FLUSH_MS.load(ord),
+                            "absorbedBytesTotal": crate::history::ABSORB_BYTES_TOTAL.load(ord),
+                            "ingestBytesTotal": crate::history::INGEST_BYTES_TOTAL.load(ord),
+                        },
+                        "telemetry": {
+                            "spool": spool,
+                            "cacheCapacityBytes":
+                                crate::billing::TELEMETRY_CACHE_CAPACITY.load(ord),
+                            "sweepResidentEngines":
+                                crate::billing::sweep_resident_engines(),
+                        },
+                        "process": {
+                            "rssMb": state.rss_mb_cached.load(ord),
+                        },
+                    }))
+                    .into_response()
+                },
+            ),
+        )
         // Operator dashboard: UNSECURED by explicit product decision (on-call
         // must see the cell without credentials). The payload is therefore
         // restricted to operational metadata — never stream names, tenant

@@ -125,6 +125,9 @@ with an empty pool rather than dead sockets.
 | `MONTH_CLOSE_GRACE_MS` | 86400000 | wait after a month boundary before closing it |
 | `METRICS_INTERVAL_SECS` | 15 | `_ops_metrics` snapshot cadence |
 | `ALERT_USAGE_OUTBOX_DIRTY` | 1000 | unacked usage snapshots that open the outbox-lag alert |
+| `ABSORB_GLOBAL_BUDGET_BYTES` | 67108864 | PROCESS-WIDE absorber gather budget; every gather reserves (estimate x build multiplier) BEFORE reading frames |
+| `ABSORB_GLOBAL_GATHERS` | 2 | concurrent gathers, process-wide |
+| `TELEMETRY_CACHE_BYTES` | 16777216 | ONE bounded cache shared by the read-spool and rollup SlateDB DBs (they must never inherit SlateDB's per-DB defaults) |
 | `SLATEDB_RT_THREADS` | 2 | worker threads of the dedicated SlateDB runtime (two-runtime split) |
 
 Rejections are 429s with error codes `limit_bytes_per_sec` /
@@ -694,3 +697,33 @@ owner) is open.
 | `artifactContentMismatches > 0` | an immutable artifact path holds bytes we did not stage — POTENTIAL TAMPERING | the row stays pending on purpose; diff the object against the rollup row, resolve manually, never overwrite without recording why |
 | `tombstoneWalkCloseSubmits` climbing steadily | closures being recovered by the walk rather than the delete path | acceptable under crash churn; investigate if it grows without deletes |
 | invoice readiness check | before export: `ready=true`, no open alerts, `oldestUnclosedMonth` = previous month, pending artifact queues empty, mismatches 0 | then the frozen rows + correction artifacts under `telemetry/usage-monthly/` are the invoice inputs |
+
+
+## Memory survival posture (OOM review, 2026-08-07)
+
+The preview.7 kill (ab21 campaign) was history-L0/absorber backpressure
+amplified by process-wide budgeting failures: 16 shards x 32 MiB
+per-shard gather budget (512 MiB nominal) plus two telemetry SlateDB
+DBs on default (512 MB-class) caches, all sharing a two-thread SlateDB
+runtime with the history compactor. Deploy posture until the fleet
+acceptance campaign clears a looser one:
+
+```text
+INITIAL_SHARDS=4                    # fresh namespace required to change
+ABSORB_GATHER_MAX_BYTES=8388608
+ABSORB_GLOBAL_BUDGET_BYTES=67108864 # the hard process-wide bound
+ABSORB_GLOBAL_GATHERS=2
+SLATEDB_RT_THREADS=4
+TELEMETRY_CACHE_BYTES=16777216
+ADMIT_RSS_SHED_MB=500               # shed = RSS + reserved absorber bytes
+SHARED_CACHE_BYTES / HISTORY_CACHE_BYTES / POSTINGS_CACHE_BYTES explicit
+ROLLUP=0 on ingestion instances (designated instance carries ROLLUP=1)
+```
+
+Watch: `history_flush_wait_ms_max` (leading indicator: history L0
+approaching 64 SSTs makes flushes block), `history_l0_ssts_max`,
+`absorb_reserved_bytes` + `absorb_gathers_inflight` (bounded by
+construction), `absorb_bytes_total` vs `ingest_bytes_total` (absorption
+keeping up), `rss_peak_since_scrape_mb` (inter-sample spikes),
+`read_spool_pending_bytes`, `sweep_resident_engines`. Detail:
+`GET /v1/debug/absorb` (authorized).

@@ -1439,6 +1439,13 @@ impl ShardEngine {
             .await;
     }
 
+    /// The history partition ONLY IF already open — the metrics path
+    /// must never trigger an open (an idle shard would materialize a
+    /// whole partition DB just to report zeros).
+    pub fn history_partition_if_open(&self) -> Option<Arc<Db>> {
+        self.history2.get().cloned()
+    }
+
     /// The shard's shared history v2 partition, opened once and shared
     /// between the absorber's gather lane and v2 history reads. Values
     /// are raw stream-key-encrypted frames, so the partition needs no
@@ -3713,6 +3720,8 @@ impl ShardEngine {
             }
             tails.push((local.handle.clone(), f.clone()));
             if local.appended_bytes > 0 {
+                crate::history::INGEST_BYTES_TOTAL
+                    .fetch_add(local.appended_bytes, std::sync::atomic::Ordering::Relaxed);
                 signals.push(AbsorbSignal {
                     hash: *hash,
                     appended_bytes: local.appended_bytes,

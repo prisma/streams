@@ -241,6 +241,11 @@ pub struct OpsSnapshot {
     pub gauges: std::collections::BTreeMap<String, u64>,
 }
 
+/// Peak sampled RSS (MB) since the last ops scrape — fed by the 250 ms
+/// process sampler, drained (swap 0) by each snapshot, so a spike
+/// between snapshots is never invisible.
+pub static RSS_PEAK_MB: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Collect the instance snapshot from the live plane.
 pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSnapshot {
     let mut counters = std::collections::BTreeMap::new();
@@ -267,6 +272,137 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
     );
     if let Some(sp) = state.read_spool.get() {
         gauges.insert("read_spool_quarantined".into(), sp.quarantined_count());
+        let (rows, bytes) = sp.resident();
+        gauges.insert("read_spool_pending_rows".into(), rows);
+        gauges.insert("read_spool_pending_bytes".into(), bytes);
+    }
+    // ---- OOM-review causal metrics ------------------------------------
+    // Absorber: process-wide budget + last-gather phases. reserved vs
+    // actual is the review's "is the multiplier honest" check.
+    let ord = Ordering::Relaxed;
+    gauges.insert(
+        "absorb_reserved_bytes".into(),
+        crate::history::absorb_reserved_bytes(),
+    );
+    gauges.insert(
+        "absorb_gathers_inflight".into(),
+        crate::history::absorb_gathers_inflight(),
+    );
+    gauges.insert(
+        "gather_last_reserved_bytes".into(),
+        crate::history::GATHER_LAST_RESERVED.load(ord),
+    );
+    gauges.insert(
+        "gather_last_actual_bytes".into(),
+        crate::history::GATHER_LAST_ACTUAL.load(ord),
+    );
+    gauges.insert(
+        "gather_last_read_ms".into(),
+        crate::history::GATHER_LAST_READ_MS.load(ord),
+    );
+    gauges.insert(
+        "gather_last_write_ms".into(),
+        crate::history::GATHER_LAST_WRITE_MS.load(ord),
+    );
+    gauges.insert(
+        "gather_last_flush_ms".into(),
+        crate::history::GATHER_LAST_FLUSH_MS.load(ord),
+    );
+    // PEAK-SINCE-SCRAPE (swap 0): a flush stall between snapshots
+    // cannot vanish — the next snapshot carries the peak.
+    gauges.insert(
+        "history_flush_wait_ms_max".into(),
+        crate::history::HISTORY_FLUSH_WAIT_MS_MAX.swap(0, ord),
+    );
+    counters.insert(
+        "absorb_bytes_total".into(),
+        crate::history::ABSORB_BYTES_TOTAL.load(ord),
+    );
+    counters.insert(
+        "ingest_bytes_total".into(),
+        crate::history::INGEST_BYTES_TOTAL.load(ord),
+    );
+    // History partitions: L0 posture from each OPEN partition's
+    // in-memory manifest snapshot (no store requests, never opens one).
+    {
+        let engines: Vec<_> = state.shards.read().unwrap().values().cloned().collect();
+        let (mut open, mut l0_max, mut l0_bytes, mut runs_max) = (0u64, 0u64, 0u64, 0u64);
+        for e in engines {
+            if let Some(part) = e.history_partition_if_open() {
+                let (n, b, runs, _id) = crate::history::history_l0_stats(&part);
+                open += 1;
+                l0_max = l0_max.max(n);
+                l0_bytes += b;
+                runs_max = runs_max.max(runs);
+            }
+        }
+        gauges.insert("history_partitions_open".into(), open);
+        gauges.insert("history_l0_ssts_max".into(), l0_max);
+        gauges.insert("history_l0_bytes_total".into(), l0_bytes);
+        gauges.insert("history_compacted_runs_max".into(), runs_max);
+    }
+    gauges.insert(
+        "sweep_resident_engines".into(),
+        crate::billing::sweep_resident_engines(),
+    );
+    gauges.insert(
+        "telemetry_cache_capacity_bytes".into(),
+        crate::billing::TELEMETRY_CACHE_CAPACITY.load(ord),
+    );
+    gauges.insert(
+        "rollup_apply_duration_ms".into(),
+        crate::billing::ROLLUP_APPLY_DURATION_MS.load(ord),
+    );
+    // Process memory: sampled RSS + peak-since-scrape (the 250 ms
+    // sampler keeps the peak; inter-snapshot SST-build spikes survive),
+    // allocator commit, and cgroup truth when the platform provides it.
+    gauges.insert("rss_mb".into(), state.rss_mb_cached.load(ord));
+    gauges.insert("rss_peak_since_scrape_mb".into(), RSS_PEAK_MB.swap(0, ord));
+    {
+        let mut current_commit = 0usize;
+        let mut peak_commit = 0usize;
+        unsafe {
+            let mut elapsed = 0;
+            let mut ut = 0;
+            let mut st_ = 0;
+            let mut rss = 0;
+            let mut prss = 0;
+            let mut flt = 0;
+            libmimalloc_sys::mi_process_info(
+                &mut elapsed,
+                &mut ut,
+                &mut st_,
+                &mut rss,
+                &mut prss,
+                &mut current_commit,
+                &mut peak_commit,
+                &mut flt,
+            );
+        }
+        gauges.insert(
+            "mi_current_commit_mb".into(),
+            (current_commit / 1048576) as u64,
+        );
+        gauges.insert("mi_peak_commit_mb".into(), (peak_commit / 1048576) as u64);
+    }
+    for (file, name) in [
+        ("/sys/fs/cgroup/memory.current", "cgroup_memory_current_mb"),
+        ("/sys/fs/cgroup/memory.peak", "cgroup_memory_peak_mb"),
+    ] {
+        if let Ok(s) = std::fs::read_to_string(file)
+            && let Ok(v) = s.trim().parse::<u64>()
+        {
+            gauges.insert(name.into(), v / 1048576);
+        }
+    }
+    if let Ok(s) = std::fs::read_to_string("/sys/fs/cgroup/memory.events") {
+        for line in s.lines() {
+            if let Some(v) = line.strip_prefix("oom_kill ")
+                && let Ok(n) = v.trim().parse::<u64>()
+            {
+                counters.insert("cgroup_oom_kill_total".into(), n);
+            }
+        }
     }
     OpsSnapshot {
         v: 1,
