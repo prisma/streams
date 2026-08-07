@@ -150,6 +150,8 @@ pin, DST scenario count).
 | [CONFORMANCE.md](./CONFORMANCE.md) | the pinned Durable Streams suite; how to run it |
 | [docs/ROUTING-V3.md](./docs/ROUTING-V3.md) | routing keys, physical scaling, postings, cost |
 | [OPERATIONS.md](./OPERATIONS.md) | provider requirements, backup/PITR, identity, SLOs |
+| [docs/OBSERVABILITY-BILLING.md](./docs/OBSERVABILITY-BILLING.md) | billing/usage/telemetry design (normative) |
+| [docs/OBSERVABILITY-BILLING-STATUS.md](./docs/OBSERVABILITY-BILLING-STATUS.md) | billing implementation matrix + open gates |
 | [SECURITY.md](./SECURITY.md) | key custody, watch capabilities, tenant isolation |
 | [docs/dst/](./docs/dst/) | the deterministic-simulation program + scenario catalogue |
 | [docs/history/](./docs/history/) | removed designs (profiles, …) — provenance only |

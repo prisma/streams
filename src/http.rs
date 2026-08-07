@@ -856,7 +856,8 @@ async fn internal_telemetry_append(
 
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
-        .route("/health", get(|| async { "ok" }))
+        .route("/health", get(health_axum))
+        .route("/operator/billing.json", get(billing_readiness_axum))
         .route("/v1/segments/{*name}", get(get_segments))
         // Fleet-internal segment fan-out target (bearer-gated): a keyed,
         // segment-positioned read served strictly from local ownership.
@@ -1146,6 +1147,90 @@ async fn product_list_axum(
     crate::product::with_product_cors(
         crate::product::product_list(state, query.unwrap_or_default(), headers).await,
     )
+}
+
+/// Health: in BILLING_MODE=required an instance is NOT ready until
+/// its billing prerequisites hold (round-22 item 10) — the read spool
+/// is open and, on a rollup owner, the rollup DB is open. Both are
+/// opened synchronously at startup, so a 503 here means startup-order
+/// bugs or a lost OnceLock, and the platform should not route yet.
+async fn health_axum(State(state): State<Arc<AppState>>) -> Response {
+    if crate::billing::billing_required() {
+        let spool_ok = state.read_spool.get().is_some();
+        let rollup_ok =
+            std::env::var("ROLLUP").map(|v| v != "1").unwrap_or(true) || state.rollup.get().is_some();
+        if !spool_ok || !rollup_ok {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("billing not ready (spool={spool_ok}, rollup={rollup_ok})"),
+            )
+                .into_response();
+        }
+    }
+    "ok".into_response()
+}
+
+/// GET /operator/billing.json — the billing-readiness surface
+/// (round-22 item 10): one JSON answer for "is this fleet's billing
+/// pipeline healthy" — ledger reachability (last successful drain),
+/// rollup cursor progress, spool corruption, close debt, pending
+/// artifacts, and open alerts.
+async fn billing_readiness_axum(State(state): State<Arc<AppState>>) -> Response {
+    use std::sync::atomic::Ordering;
+    let now = crate::shard::now_ms();
+    let spool = state.read_spool.get();
+    let (spool_open, quarantined, depth) = match spool {
+        Some(sp) => (true, sp.quarantined_count(), sp.depth().await as u64),
+        None => (false, 0, 0),
+    };
+    let last_drain = crate::billing::LAST_DRAIN_OK_MS.load(Ordering::Relaxed);
+    let last_apply = crate::billing::LAST_ROLLUP_APPLY_MS.load(Ordering::Relaxed);
+    let mut rollup_info = serde_json::json!({ "running": false });
+    if let Some(r) = state.rollup.get() {
+        let pending = r.pending_artifacts(1000).await.map(|v| v.len()).unwrap_or(0);
+        let pending_corr = r
+            .pending_correction_artifacts(1000)
+            .await
+            .map(|v| v.len())
+            .unwrap_or(0);
+        let oldest = r
+            .db
+            .get(&b"meta/oldest-unclosed-month"[..])
+            .await
+            .ok()
+            .flatten()
+            .map(|v| String::from_utf8_lossy(&v).to_string());
+        rollup_info = serde_json::json!({
+            "running": true,
+            "lastApplyMs": last_apply,
+            "lastApplyAgeSecs": if last_apply > 0 { (now - last_apply) / 1000 } else { -1 },
+            "oldestUnclosedMonth": oldest,
+            "pendingArtifacts": pending,
+            "pendingCorrectionArtifacts": pending_corr,
+        });
+    }
+    let ready = !crate::billing::billing_required()
+        || (state.usage_key.is_some()
+            && spool_open
+            && (std::env::var("ROLLUP").map(|v| v != "1").unwrap_or(true)
+                || state.rollup.get().is_some()));
+    axum::Json(serde_json::json!({
+        "mode": std::env::var("BILLING_MODE").unwrap_or_else(|_| "off".into()),
+        "ready": ready,
+        "usageLedgerConfigured": state.usage_key.is_some(),
+        "spool": { "open": spool_open, "depth": depth, "quarantined": quarantined },
+        "drain": {
+            "lastOkMs": last_drain,
+            "lastOkAgeSecs": if last_drain > 0 { (now - last_drain) / 1000 } else { -1 },
+        },
+        "rollup": rollup_info,
+        "artifactContentMismatches":
+            crate::billing::ARTIFACT_MISMATCHES.load(Ordering::Relaxed),
+        "tombstoneWalkCloseSubmits":
+            crate::billing::WALK_CLOSE_SUBMITS.load(Ordering::Relaxed),
+        "openAlerts": crate::ops::open_alerts(),
+    }))
+    .into_response()
 }
 
 /// GET /v1/projects/{project}/usage (round-22 doc item D3): project-

@@ -1,5 +1,11 @@
 # Prisma Streams on SlateDB — Pilot & Hardening Report
 
+> **HISTORICAL (2026-07-14).** Kept as the record of the SlateDB pilot
+> and its hardening rounds. The surfaces, figures, and telemetry planes
+> described below predate the product-surface cutover and the round-20+
+> billing system (docs/OBSERVABILITY-BILLING.md). Do not operate from
+> this file.
+
 2026-07-14. Covers: the production pilot on Prisma Compute (runs 1–4 +
 follow-ups), the DynamoDB-operator design review (3 rounds → READY), every
 change implemented, and the scale assessment.

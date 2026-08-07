@@ -288,8 +288,9 @@ URLs), generalized:
    bump (D21 recreate semantics).
 5. **Metering & audit:** issuance writes the audit record (who, stream,
    scope); CDN access logs (standard log delivery, hourly) reconcile
-   `read_bytes` per stream into `__metrics__` for billing and anomaly
-   alarms. The unauthenticated stance is explicit: possession of an
+   `read_bytes` per stream into the `_usage` ledger (the `__metrics__`
+   plane is deleted — docs/OBSERVABILITY-BILLING.md) for billing and
+   anomaly alarms. The unauthenticated stance is explicit: possession of an
    unexpired capability URL IS authorization for that scope — bounded,
    revocable, ciphertext-only.
 6. **Renewal without stampedes:** the next expiry-bucket's URL is

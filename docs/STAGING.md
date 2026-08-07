@@ -123,8 +123,12 @@ SERVER_BINARY_S3_KEY=bin/streams-stg1-x64
 
 # --- auth
 AUTH_TOKEN=<staging bearer>         # gates the API
-METRICS_KEY=<32B base64url>         # metrics stream encryption
-BILLING_STREAM_KEY=<32B base64url>  # usage emitter; unset = disabled
+USAGE_STREAM_KEY=<32B base64url>    # `_usage`/`_ops_*` system-ledger key
+BILLING_MODE=required               # staging runs the production gate
+ACCOUNT_ID=<acct_...>               # real identities; placeholders refused
+PROJECT_ID=<proj_...>
+CELL_ID=<cell tag>
+ROLLUP=1                            # exactly one instance per cell
 
 # --- engine (1 GB discipline, RUNBOOK 3.2/3.3)
 FLUSH_INTERVAL_MS=25

@@ -1048,8 +1048,11 @@ the preview.6 binary.
 
 The round-21 review confirmed the core (billing state in the same
 durable commit as customer data) and identified the boundaries that
-kept the system below invoice grade. All eleven "before charging any
-customer" items are addressed:
+kept the system below invoice grade. Initial implementations landed
+for all eleven "before charging any customer" items; invoice-grade
+operation additionally requires the gates tracked in
+docs/OBSERVABILITY-BILLING-STATUS.md (round-22 boundary review,
+reconciliation, invoice export, retention, fleet acceptance):
 
 1. **Trusted time** — billing months, storage integration and closure
    run on server wall time; `Stream-Timestamp` is record metadata only.

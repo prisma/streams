@@ -1364,8 +1364,12 @@ pub fn spawn_telemetry(state: std::sync::Arc<crate::http::AppState>) {
         let mut last_metrics = 0i64;
         loop {
             tick.tick().await;
-            if let Err(e) = drain_once(&state).await {
-                tracing::warn!("usage drain: {e}");
+            match drain_once(&state).await {
+                Ok(_) => {
+                    LAST_DRAIN_OK_MS
+                        .store(crate::shard::now_ms(), std::sync::atomic::Ordering::Relaxed);
+                }
+                Err(e) => tracing::warn!("usage drain: {e}"),
             }
             if let Err(e) = crate::ops::drain_ops_once(&state).await {
                 tracing::warn!("ops drain: {e}");
@@ -1420,6 +1424,7 @@ pub async fn rollup_step(state: &std::sync::Arc<crate::http::AppState>) -> Resul
         .apply_page(&envelopes, &next)
         .await
         .map_err(|e| e.to_string())?;
+    LAST_ROLLUP_APPLY_MS.store(crate::shard::now_ms(), std::sync::atomic::Ordering::Relaxed);
     Ok(envelopes.len())
 }
 
@@ -1458,6 +1463,16 @@ pub async fn ops_rollup_step(
         .map_err(|e| e.to_string())?;
     Ok(snaps.len())
 }
+
+/// Billing-readiness telemetry (round-22 item 10): recency of the
+/// last successful drain (ledger reachable) and rollup apply (cursor
+/// progressing), and the tombstone walk's lifetime close submissions.
+pub static LAST_DRAIN_OK_MS: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(0);
+pub static LAST_ROLLUP_APPLY_MS: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(0);
+pub static WALK_CLOSE_SUBMITS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 /// Monthly-artifact content mismatches observed at publication (an
 /// AlreadyExists object whose bytes differ from the frozen row). Any
@@ -1579,18 +1594,29 @@ pub async fn publish_artifacts(
 /// The rollup task: consume continuously; close the PREVIOUS month
 /// after the grace period, writing one immutable artifact per stream
 /// (§9.6) under telemetry/usage-monthly/.
+/// Open the rollup DB and register it on the state. Required mode
+/// calls this synchronously BEFORE serving (round-22 item 10): a
+/// rollup instance that cannot open its database is not ready.
+pub async fn open_rollup(
+    state: &std::sync::Arc<crate::http::AppState>,
+    prefix: &str,
+) -> anyhow::Result<()> {
+    if state.rollup.get().is_some() {
+        return Ok(());
+    }
+    let r = crate::rollup::UsageRollup::open(state.data_store.clone(), prefix).await?;
+    let _ = state.rollup.set(std::sync::Arc::new(r));
+    Ok(())
+}
+
 pub fn spawn_rollup(state: std::sync::Arc<crate::http::AppState>, prefix: String) {
     use object_store::ObjectStoreExt;
     tokio::spawn(async move {
         let store = state.data_store.clone();
-        let rollup = match crate::rollup::UsageRollup::open(store.clone(), &prefix).await {
-            Ok(r) => std::sync::Arc::new(r),
-            Err(e) => {
-                tracing::error!("usage rollup open failed: {e}");
-                return;
-            }
-        };
-        let _ = state.rollup.set(rollup);
+        if let Err(e) = open_rollup(&state, &prefix).await {
+            tracing::error!("usage rollup open failed: {e}");
+            return;
+        }
         tracing::info!("usage rollup running");
         let grace_ms: i64 = std::env::var("MONTH_CLOSE_GRACE_MS")
             .ok()
@@ -1945,6 +1971,8 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
                     );
                     if let Err(e) = engine.submit_billing_close(hash, close_ms).await {
                         tracing::warn!("tombstone-walk close failed for {}: {e}", d.name);
+                    } else {
+                        WALK_CLOSE_SUBMITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
                 } else if retained && !meta.retained_by_forks {
                     if let Err(e) = engine.submit_billing_retained(hash, true).await {

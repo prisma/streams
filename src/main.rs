@@ -1026,6 +1026,17 @@ async fn async_main() -> anyhow::Result<()> {
         crate::billing::open_read_spool(&state).await.map_err(|e| {
             anyhow::anyhow!("BILLING_MODE=required: read spool must open before serving: {e}")
         })?;
+        // ...and the rollup instance's database likewise: a rollup
+        // owner that cannot open its DB must not serve (item 10).
+        if args.rollup == "1" {
+            crate::billing::open_rollup(&state, &args.path_prefix.clone().unwrap_or_default())
+                .await
+                .map_err(|e| {
+                    anyhow::anyhow!(
+                        "BILLING_MODE=required: rollup DB must open before serving: {e}"
+                    )
+                })?;
+        }
     }
     crate::billing::spawn_telemetry(state.clone());
     if args.rollup == "1" {

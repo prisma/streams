@@ -1,5 +1,10 @@
 # Pilot experiment: scale-from-0 fleet on Prisma Compute
 
+> **HISTORICAL (2026-07).** Kept as a record of the pilot phase; the
+> Bun/TypeScript implementation, `_billing`/`__metrics__` planes and
+> figures below predate the SlateDB cutover and the round-20+ telemetry
+> system (docs/OBSERVABILITY-BILLING.md). Do not operate from this file.
+
 Date: 2026-07-13 · Region: Singapore (`ap-southeast-1` Compute, `sin` Tigris)
 Project: `streams-pilot` (`proj_cmrj2f0ij3snqwfdvtof3w2v0`), workspace
 `prisma-streams-slatedb`.

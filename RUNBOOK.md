@@ -116,9 +116,15 @@ with an empty pool rather than dead sockets.
 | `LIMIT_REQS_PER_SEC` | 1000 | per-shard append-request limit |
 | `LIMIT_RECS_PER_SEC` | 5000 | per-shard record limit |
 | `LIMIT_BURST_SECS` | 2 | bucket capacity = rate x this |
-| `BILLING_STREAM_KEY` | — | base64url 32-byte key; unset = billing emitter disabled (warned) |
-| `BILLING_STREAM` | `_billing` | internal stream receiving usage records |
-| `BILLING_INTERVAL_SECS` | 60 | emission cadence |
+| `USAGE_STREAM_KEY` | — | base64url 32-byte key for the `_usage`/`_ops_*` system ledgers; unset = telemetry pipeline off |
+| `BILLING_MODE` | `off` | `required` = refuse to serve without ledger key, real identities, an open read spool (and rollup DB on the rollup owner) |
+| `ACCOUNT_ID` / `PROJECT_ID` / `CELL_ID` | `acct_local`/`proj_local`/`local` | the cell's tenant identity (one project per cell); placeholders are refused in required mode |
+| `ROLLUP` | — | `1` = this instance runs the usage rollup consumer + month closer |
+| `TELEMETRY_DRAIN_SECS` | 2 | drain cadence: sealed reads + dirty snapshots -> `_usage` |
+| `OUTBOX_SWEEP_SECS` | 300 | owned-shard outbox sweep + billing tombstone walk cadence |
+| `MONTH_CLOSE_GRACE_MS` | 86400000 | wait after a month boundary before closing it |
+| `METRICS_INTERVAL_SECS` | 15 | `_ops_metrics` snapshot cadence |
+| `ALERT_USAGE_OUTBOX_DIRTY` | 1000 | unacked usage snapshots that open the outbox-lag alert |
 | `SLATEDB_RT_THREADS` | 2 | worker threads of the dedicated SlateDB runtime (two-runtime split) |
 
 Rejections are 429s with error codes `limit_bytes_per_sec` /
@@ -167,8 +173,7 @@ morning's slower substrate had paced the identical binary to a survivable
 | env | default | notes |
 |---|---|---|
 | `AUTH_TOKEN` | — | when set, all `/v1/*` requires `Authorization: Bearer <token>`. `/health` is always open |
-| `METRICS_KEY` | — | enables the internal `__metrics__` stream (billing/usage records), encrypted with this key |
-| `METRICS_LB_URL` | — | metrics appends are routed like tenant writes (through the LB) so the shard's ring owner serves them |
+| `USAGE_STREAM_KEY` | — | (see billing table above) system-ledger key; the old `__metrics__`/`METRICS_KEY` plane is deleted |
 | `INSTANCE_NAME` | `streams` | instance tag in metrics + fleet heartbeats (`streams-1`…) |
 
 Stream keys: `streams-keys generate` → 32-byte base64. Clients pass it as
@@ -610,7 +615,8 @@ anything listed in `$SOAK_HOME/preserve.txt`.
 
 Bearer token gates the API; the stream key gates the data (two independent
 factors — a leaked token cannot decrypt). Keys never persist server-side;
-backups are ciphertext. Metrics stream is encrypted under `METRICS_KEY`.
+backups are ciphertext. System telemetry ledgers (`_usage`, `_ops_events`,
+`_ops_metrics`) are encrypted under `USAGE_STREAM_KEY`.
 Full identity/custody/audit design: [OPERATIONS.md §3](./OPERATIONS.md).
 Never commit tokens, keys, or presigned URLs; the deploy scripts keep them
 in a local scratch directory outside the repo.
@@ -664,3 +670,27 @@ already reaching 1.6–2.5 s in EU. Ops note: the compute CLI prints
 "Service URL" on deploy (no domain guessing), and `--env` values
 containing commas must be wrapped in inner quotes or the CLI splits them
 into separate variables.
+
+
+## Billing pipeline runbooks (round-22 item D4)
+
+Readiness surface: `GET /operator/billing.json` — one JSON answer with
+`ready`, spool state, last-drain age, rollup cursor age, the
+oldest-unclosed month, pending artifact counts, mismatch and
+tombstone-walk counters, and open alerts. In `BILLING_MODE=required`,
+`/health` answers 503 until the spool (and rollup DB, on the rollup
+owner) is open.
+
+| symptom | meaning | action |
+|---|---|---|
+| `spool.open=false` | read spool failed to open (required mode refuses to boot in this state) | check store credentials/path; restart; reads meter in memory only in non-required mode |
+| `spool.depth` climbing | `_usage` ledger unreachable — sealed read batches accumulating durably | check the rollup/owner instance and store health; depth drains automatically on recovery |
+| `spool.quarantined > 0` (alert `read_spool_corruption`) | corrupt spool rows moved to `quarantine/` — those reads are NOT billed | inspect `telemetry/read-spool/<instance>` quarantine rows; recover or write off explicitly; the counter persists across restarts until the quarantine is cleared |
+| alert `usage_outbox_lag` | dirty segment snapshots not acknowledged (threshold `ALERT_USAGE_OUTBOX_DIRTY`) | ledger append path down or committer wedged; see `drain.lastOkAgeSecs` |
+| `drain.lastOkAgeSecs` large | no successful drain round — ledger unreachable or scans failing CLOSED | financial scans defer on error by design; fix the store fault, drains self-heal |
+| `rollup.lastApplyAgeSecs` large with traffic | rollup consumer stalled (cursor not progressing) | check the ROLLUP=1 instance; the ledger retains everything, catch-up is automatic |
+| `rollup.oldestUnclosedMonth` far behind | month closes are overdue | closes catch up IN ORDER automatically each tick; investigate close errors in logs if the marker stays put |
+| `pendingArtifacts`/`pendingCorrectionArtifacts` stuck > 0 | create-only PUTs failing, or a content mismatch | see next row; transient store faults retry every tick |
+| `artifactContentMismatches > 0` | an immutable artifact path holds bytes we did not stage — POTENTIAL TAMPERING | the row stays pending on purpose; diff the object against the rollup row, resolve manually, never overwrite without recording why |
+| `tombstoneWalkCloseSubmits` climbing steadily | closures being recovered by the walk rather than the delete path | acceptable under crash churn; investigate if it grows without deletes |
+| invoice readiness check | before export: `ready=true`, no open alerts, `oldestUnclosedMonth` = previous month, pending artifact queues empty, mismatches 0 | then the frozen rows + correction artifacts under `telemetry/usage-monthly/` are the invoice inputs |

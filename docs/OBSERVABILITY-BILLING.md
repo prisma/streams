@@ -1,6 +1,6 @@
 # Prisma Streams billing, usage, telemetry, and observability
 
-**Status:** APPROVED (2026-08-06). Phase 1 implemented (rounds 20-21): atomic ingest/storage state on trusted server time with idle-month carry-forward, broad read coverage with a durable per-instance spool, the `_usage` ledger with fleet-safe delivery, the exactly-once point-read rollup with two-phase month finalization and automatic late-data corrections, terminal-closure reconciliation, basic events and basic ops metrics. Remaining before invoice-grade use: full reconciliation, invoice export, comprehensive ops history / SLO telemetry, retention jobs, and the 3-node fleet acceptance campaign.  
+**Status:** APPROVED (2026-08-06). This document is the NORMATIVE DESIGN — target semantics and invariants. Implementation state, per-item gates, and campaign results live in [OBSERVABILITY-BILLING-STATUS.md](./OBSERVABILITY-BILLING-STATUS.md); where this document and the status matrix disagree about what exists today, the status matrix wins.  
 **Target:** pre-launch hard cutover; no compatibility work for `_billing`, `__metrics__`, or their schemas  
 **Scope:** per-stream monthly billing, customer usage dashboards, fleet and storage observability, durable operational event history, alerting, and telemetry-pipeline self-monitoring
 
@@ -508,12 +508,14 @@ The active writer is fenced by SlateDB. Read replicas use `DbReader` and a share
 ### 9.2 Keyspace
 
 ```text
-source/<boot-id>                              → last processed read-batch seq
-segment/<project>/<stream-id>/<segment-id>    → latest absolute segment state
-month/<YYYY-MM>/<project>/<stream-id>          → per-incarnation monthly rollup
-name/<YYYY-MM>/<project>/<name-hash>           → aggregate across incarnations
-project/<YYYY-MM>/<project>                    → project aggregate
-meta/usage-cursor                              → consumed `_usage` cursor
+source/<boot-id>                                     → last processed read-batch seq
+segment/<account>/<project>/<stream-id>/<segment-id> → latest absolute segment state
+month/<YYYY-MM>/<account>/<project>/<stream-id>      → per-incarnation monthly rollup
+name/<YYYY-MM>/<account>/<project>/<name-hash>       → aggregate across incarnations
+project/<YYYY-MM>/<account>/<project>                → project aggregate
+corr-pending/... , corr-done/...                     → correction-artifact outbox
+meta/usage-cursor                                    → consumed `_usage` cursor
+meta/oldest-unclosed-month                           → ordered month-close marker
 ```
 
 ### 9.3 Transactional processing
@@ -558,10 +560,31 @@ At month close, the closer advances every active gauge to the exact UTC boundary
 At finalization, write one immutable object per billable stream incarnation:
 
 ```text
-usage/monthly/<project>/<stream-id>/<YYYY-MM>.json
+telemetry/usage-monthly/<account>/<project>/<stream-id>/<YYYY-MM>.json
 ```
 
 This is one PUT per active stream per month, not per telemetry tick.
+Corrections applied after finalization publish as their own immutable
+objects under `<YYYY-MM>.corrections/<correction-id>.json`, next to the
+monthly artifact; the monthly object itself is never rewritten.
+
+### Tenancy decision (round-22 item 1, FORMAL)
+
+**One project per cell is the deployment contract.** A cell (one
+Compute service + its bucket set) serves exactly one `ACCOUNT_ID` /
+`PROJECT_ID` pair, injected as environment at deploy time; the
+platform provisioner owns that mapping. Under this contract the
+deployment-global identity is correct by construction: billing
+identity comes ONLY from cell configuration plus the per-stream
+identity persisted at creation — never from stream names, client
+headers, or any request-derived value. `BILLING_MODE=required`
+refuses to boot on placeholder identities, and
+`GET /v1/projects/{project}/usage` answers only for the cell's own
+project. **Precondition for ever sharing a cell across projects:**
+per-request authenticated principals persisted at stream creation and
+carried through the meter, ledger, and rollup keyspace (already
+account/project-scoped). Until that authentication layer exists,
+shared cells are out of contract.
 
 It is the invoice/audit artifact. The live dashboard reads the rollup DB; historical finalized months may be served from the immutable object or cache.
 
