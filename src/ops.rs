@@ -265,6 +265,9 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
         "open_engines".into(),
         state.shards.read().unwrap().len() as u64,
     );
+    if let Some(sp) = state.read_spool.get() {
+        gauges.insert("read_spool_quarantined".into(), sp.quarantined_count());
+    }
     OpsSnapshot {
         v: 1,
         ts_ms: crate::shard::now_ms(),
@@ -366,6 +369,17 @@ pub async fn evaluate_alerts(state: &std::sync::Arc<crate::http::AppState>, snap
                 .unwrap_or(0)
                 > 0,
             "operational events were dropped at the queue cap".into(),
+        ),
+        (
+            // Round-22 item 2c: quarantined spool rows are metered
+            // reads that are NOT reaching the invoice — a standing
+            // page until an operator recovers or writes them off.
+            "read_spool_corruption".into(),
+            g("read_spool_quarantined") > 0,
+            format!(
+                "{} corrupt read-spool rows quarantined — reads under-billed until recovered",
+                g("read_spool_quarantined")
+            ),
         ),
     ];
     let now = snap.ts_ms;

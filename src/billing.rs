@@ -568,6 +568,90 @@ mod tests {
         f.month_final = true;
         assert_ne!(s.deterministic_event_id(), f.deterministic_event_id());
     }
+
+    fn test_batch(seq: u64) -> ReadBatch {
+        ReadBatch {
+            source: MeterSource {
+                cell: "c".into(),
+                instance: "i".into(),
+                boot: "b".into(),
+            },
+            seq,
+            from_ms: 0,
+            to_ms: 1000,
+            rows: vec![ReadRow {
+                identity: BillingIdentity {
+                    account_id: "a".into(),
+                    project_id: "p".into(),
+                    stream_id: "22".repeat(8),
+                    stream_name: "orders".into(),
+                },
+                read_payload_bytes: seq + 1,
+                read_records: 1,
+                read_operations: 1,
+                queue_operations: 0,
+                append_requests: 0,
+            }],
+        }
+    }
+
+    /// Round-22 item 2a: a store fault after batch k of n leaves
+    /// 1..k in the spool and k..n back in memory — the remainder is
+    /// never dropped.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn spool_fault_requeues_the_remainder() {
+        let store: std::sync::Arc<dyn object_store::ObjectStore> =
+            std::sync::Arc::new(object_store::memory::InMemory::new());
+        let spool = ReadSpool::open(store, "", "t-remainder").await.unwrap();
+        let acc = ReadUsageAccumulator::new(MeterSource {
+            cell: "c".into(),
+            instance: "i".into(),
+            boot: "b".into(),
+        });
+        acc.requeue(vec![test_batch(0), test_batch(1), test_batch(2)]);
+        // Allow exactly one persist, then fault.
+        spool.fail_after.store(1, std::sync::atomic::Ordering::SeqCst);
+        let err = spool_sealed(&acc, &spool, 10).await.unwrap_err();
+        assert!(err.contains("read spool persist"), "{err}");
+        // Batch 0 is durable; batches 1 and 2 are back in memory in
+        // original order — nothing was dropped.
+        let spooled = spool.pending(10).await.unwrap();
+        assert_eq!(spooled.len(), 1);
+        assert_eq!(spooled[0].1.seq, 0);
+        let back = acc.drain_sealed(10);
+        assert_eq!(
+            back.iter().map(|b| b.seq).collect::<Vec<_>>(),
+            vec![1, 2],
+            "the failed batch AND the unpersisted tail requeued"
+        );
+    }
+
+    /// Round-22 item 2c: a corrupt spool row is quarantined (moved,
+    /// preserved, counted — the count survives reopen), never
+    /// silently skipped, and never blocks the healthy rows.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn spool_quarantines_corrupt_rows() {
+        let store: std::sync::Arc<dyn object_store::ObjectStore> =
+            std::sync::Arc::new(object_store::memory::InMemory::new());
+        let spool = ReadSpool::open(store.clone(), "", "t-quarantine")
+            .await
+            .unwrap();
+        spool.persist(&test_batch(7)).await.unwrap();
+        spool.put_raw(b"rb/\x00garbage", b"{not json").await.unwrap();
+        let ok = spool.pending(10).await.unwrap();
+        assert_eq!(ok.len(), 1, "healthy row still drains");
+        assert_eq!(ok[0].1.seq, 7);
+        assert_eq!(spool.quarantined_count(), 1);
+        assert_eq!(spool.quarantine_rows().await.len(), 1, "row preserved");
+        // Idempotent: the moved row is not re-quarantined.
+        spool.pending(10).await.unwrap();
+        assert_eq!(spool.quarantined_count(), 1);
+        // The alert condition survives a restart.
+        drop(spool);
+        let reopened = ReadSpool::open(store, "", "t-quarantine").await.unwrap();
+        assert_eq!(reopened.quarantined_count(), 1);
+        assert_eq!(reopened.pending(10).await.unwrap().len(), 1);
+    }
 }
 
 // ---------------------------------------------------------------------
@@ -861,6 +945,40 @@ fn envelope(
     }
 }
 
+/// Encoded size of one envelope, for the drain's hard byte budget.
+fn encoded_size(e: &UsageEnvelope) -> usize {
+    serde_json::to_vec(e).map(|v| v.len()).unwrap_or(4096) + 1
+}
+
+/// BILLING_MODE=required: production billing — volatile fallbacks are
+/// refused and billing infrastructure failures are fatal at startup.
+pub fn billing_required() -> bool {
+    std::env::var("BILLING_MODE").map(|v| v == "required").unwrap_or(false)
+}
+
+/// Drain step 1: move sealed batches into the durable spool. On a
+/// mid-loop store fault the failed batch AND the not-yet-persisted
+/// remainder requeue at the accumulator head (round-22 item 2a) — a
+/// fault after batch k of n must leave batches k..n in memory and
+/// 1..k in the spool, nothing dropped.
+pub async fn spool_sealed(
+    acc: &ReadUsageAccumulator,
+    spool: &ReadSpool,
+    max: usize,
+) -> Result<(), String> {
+    let sealed = acc.drain_sealed(max);
+    let mut it = sealed.into_iter();
+    while let Some(rb) = it.next() {
+        if let Err(e) = spool.persist(&rb).await {
+            let mut back = vec![rb];
+            back.extend(it);
+            acc.requeue(back);
+            return Err(format!("read spool persist: {e}"));
+        }
+    }
+    Ok(())
+}
+
 /// Ensure `_usage` exists and append one JSON-array body with the
 /// system key, through the normal in-process raw path (ownership,
 /// group commit and durability all apply). Ok(()) only after the
@@ -893,35 +1011,37 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
     state.billing_reads.seal_if_aged(READ_FLUSH_INTERVAL_MS);
     let mut spooled_keys: Vec<Vec<u8>> = Vec::new();
     let mut memless: Vec<ReadBatch> = Vec::new();
+    let mut body_bytes = 0usize;
     if let Some(spool) = state.read_spool.get() {
-        let sealed = state.billing_reads.drain_sealed(64);
-        for rb in sealed {
-            if let Err(e) = spool.persist(&rb).await {
-                // Spool down (store fault): keep the batch in memory;
-                // the deferral gauge makes the condition visible.
-                state.billing_reads.requeue(vec![rb]);
-                return Err(format!("read spool persist: {e}"));
-            }
-        }
+        spool_sealed(&state.billing_reads, spool, 64).await?;
         for (key, rb) in spool.pending(64).await.map_err(|e| e.to_string())? {
-            envelopes.push(envelope(
+            let env = envelope(
                 &cell,
                 UsagePayload::ReadBatch(rb.clone()),
                 rb.to_ms,
                 format!("read/{}/{}", rb.source.boot, rb.seq),
-            ));
+            );
+            body_bytes += encoded_size(&env);
+            envelopes.push(env);
             spooled_keys.push(key);
         }
+    } else if billing_required() {
+        // Round-22 item 2b: required mode has NO memory-only window.
+        // Until the spool is open, drains fail (the meter keeps
+        // accumulating; nothing is emitted from volatile state).
+        return Err("read spool not open (BILLING_MODE=required refuses the memory-only path)".into());
     } else {
         // No spool configured (bare test rigs): the pre-spool path.
         memless = state.billing_reads.drain_sealed(16);
         for rb in &memless {
-            envelopes.push(envelope(
+            let env = envelope(
                 &cell,
                 UsagePayload::ReadBatch(rb.clone()),
                 rb.to_ms,
                 format!("read/{}/{}", rb.source.boot, rb.seq),
-            ));
+            );
+            body_bytes += encoded_size(&env);
+            envelopes.push(env);
         }
     }
 
@@ -936,21 +1056,40 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
         u64,
         Vec<Vec<u8>>,
     )> = Vec::new();
-    // Bounded round (round-21 blocker 9): at most DRAIN_MAX_ENVELOPES
-    // per ledger append; the remainder stays dirty and the next round
-    // (2 s later) continues. One drain can never build an unbounded
-    // JSON body no matter how many segments went dirty at once.
+    // HARD-bounded round (round-21 blocker 9, tightened by round-22
+    // item 9): at most DRAIN_MAX_ENVELOPES and DRAIN_MAX_BYTES of
+    // encoded payload per ledger append — month finals and lifecycle
+    // events count against the budget like everything else. A row's
+    // contribution (finals + live snapshot + lifecycle) is admitted
+    // atomically: over budget, the whole row waits for the next round
+    // (2 s later) with its dirty marker intact.
     const DRAIN_MAX_ENVELOPES: usize = 1000;
+    const DRAIN_MAX_BYTES: usize = 1_000_000;
+    const LIFECYCLE_EST: usize = 512;
     'engines: for engine in engines {
-        let dirty = engine.usage_dirty_scan().await.unwrap_or_default();
+        // Round-22 item 6: financial scans fail CLOSED. A scan error
+        // skips this engine's contribution entirely — no emit and no
+        // ack, so every dirty row stays dirty and the next round
+        // retries — instead of treating "scan failed" as "nothing
+        // exists" and acking finals away against an empty list.
+        let dirty = match engine.usage_dirty_scan().await {
+            Ok(d) => d,
+            Err(e) => {
+                tracing::warn!("usage dirty scan failed (engine drain deferred): {e}");
+                continue;
+            }
+        };
         if dirty.is_empty() {
             continue;
         }
-        let finals = engine.usage_month_finals().await.unwrap_or_default();
-        for (hash, version) in dirty {
-            if envelopes.len() >= DRAIN_MAX_ENVELOPES {
-                break 'engines;
+        let finals = match engine.usage_month_finals().await {
+            Ok(f) => f,
+            Err(e) => {
+                tracing::warn!("month-final scan failed (engine drain deferred, fail closed): {e}");
+                continue;
             }
+        };
+        for (hash, version) in dirty {
             let Some(mut meta) = engine.billing_meta(hash).await else {
                 continue;
             };
@@ -959,6 +1098,38 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
             if is_reserved_stream(&meta.stream_name) {
                 engine.submit_usage_ack(hash, meta.usage_version, Vec::new());
                 continue;
+            }
+            // Admit the row's WHOLE contribution against the budget
+            // before any side effect: its month finals, its live
+            // snapshot, and headroom for a possible lifecycle event.
+            // (A first row larger than the whole budget still ships
+            // alone — the bound is per-append, not a wedge.)
+            let row_finals: Vec<(&Vec<u8>, &SegmentSnapshot)> = finals
+                .iter()
+                .filter(|(k, _)| k.len() >= 33 && k[17..33] == hash)
+                .map(|(k, f)| (k, f))
+                .collect();
+            let snap_probe = meta.to_snapshot(false);
+            let mut row_bytes = LIFECYCLE_EST + encoded_size(&envelope(
+                &cell,
+                UsagePayload::SegmentSnapshot(snap_probe),
+                meta.storage_accounted_through_ms,
+                String::new(),
+            ));
+            for (_, fs) in &row_finals {
+                row_bytes += encoded_size(&envelope(
+                    &cell,
+                    UsagePayload::SegmentSnapshot((*fs).clone()),
+                    fs.storage_accounted_through_ms,
+                    String::new(),
+                ));
+            }
+            let row_envs = row_finals.len() + 2;
+            if !envelopes.is_empty()
+                && (envelopes.len() + row_envs > DRAIN_MAX_ENVELOPES
+                    || body_bytes + row_bytes > DRAIN_MAX_BYTES)
+            {
+                break 'engines;
             }
             // TERMINAL-CLOSURE RECONCILER (round-21 blocker 6): a
             // nonzero gauge whose descriptor is gone, expired, or
@@ -991,12 +1162,10 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
                             at_ms: billing_now_ms(),
                         };
                         let id = lc.deterministic_event_id();
-                        envelopes.push(envelope(
-                            &cell,
-                            UsagePayload::StreamLifecycle(lc),
-                            billing_now_ms(),
-                            id,
-                        ));
+                        let env =
+                            envelope(&cell, UsagePayload::StreamLifecycle(lc), billing_now_ms(), id);
+                        body_bytes += encoded_size(&env);
+                        envelopes.push(env);
                     }
                 }
                 Ok(_) if meta.owned_frame_bytes_current > 0 => {
@@ -1004,31 +1173,42 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
                     // epoch: this incarnation is terminal either way.
                     engine.submit_billing_close(hash);
                 }
-                _ => {}
+                Err(e) => {
+                    // Round-22 item 7 (fail closed): a registry read
+                    // fault must not default to "emit and ack as if
+                    // alive" — the row stays dirty and retries.
+                    tracing::warn!(
+                        "registry read failed for {} (usage row deferred): {e}",
+                        meta.stream_name
+                    );
+                    continue;
+                }
+                Ok(_) => {}
             }
             // Emit the CURRENT row at ITS version (>= the marker's) —
             // acking the emitted version keeps anything newer dirty.
             let ver = meta.usage_version;
             let snap = meta.to_snapshot(false);
             let mut final_keys = Vec::new();
-            for (k, fs) in finals
-                .iter()
-                .filter(|(k, _)| k.len() >= 33 && k[17..33] == hash)
-            {
-                envelopes.push(envelope(
+            for (k, fs) in row_finals {
+                let env = envelope(
                     &cell,
                     UsagePayload::SegmentSnapshot(fs.clone()),
                     fs.storage_accounted_through_ms,
                     fs.deterministic_event_id(),
-                ));
+                );
+                body_bytes += encoded_size(&env);
+                envelopes.push(env);
                 final_keys.push(k.clone());
             }
-            envelopes.push(envelope(
+            let env = envelope(
                 &cell,
                 UsagePayload::SegmentSnapshot(snap.clone()),
                 meta.storage_accounted_through_ms,
                 snap.deterministic_event_id(),
-            ));
+            );
+            body_bytes += encoded_size(&env);
+            envelopes.push(env);
             let _ = version;
             acks.push((engine.clone(), hash, ver, final_keys));
         }
@@ -1062,6 +1242,27 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
     }
 }
 
+/// Open the durable read spool (verified readable — `ReadSpool::open`
+/// scans pending rows before returning) and register it on the state.
+/// Required mode calls this SYNCHRONOUSLY before the instance serves
+/// (round-22 items 2b/10): there is no memory-only window in which a
+/// crash could lose metered reads.
+pub async fn open_read_spool(
+    state: &std::sync::Arc<crate::http::AppState>,
+) -> anyhow::Result<()> {
+    if state.read_spool.get().is_some() {
+        return Ok(());
+    }
+    let sp = ReadSpool::open(
+        state.data_store.clone(),
+        &std::env::var("PATH_PREFIX").unwrap_or_default(),
+        &state.instance_name,
+    )
+    .await?;
+    let _ = state.read_spool.set(std::sync::Arc::new(sp));
+    Ok(())
+}
+
 /// The drainer task: every TELEMETRY_DRAIN_SECS (default 2), one drain
 /// round. Errors log and retry — the durable outbox holds the truth.
 pub fn spawn_telemetry(state: std::sync::Arc<crate::http::AppState>) {
@@ -1069,22 +1270,14 @@ pub fn spawn_telemetry(state: std::sync::Arc<crate::http::AppState>) {
         tracing::info!("telemetry pipeline off (USAGE_STREAM_KEY unset)");
         return;
     }
-    // Open the durable read spool before the first drain; ownership
+    // Open the durable read spool before the first drain (required
+    // mode already opened it synchronously at startup); ownership
     // sweep runs at start and every OUTBOX_SWEEP_SECS.
     {
         let st = state.clone();
         tokio::spawn(async move {
-            match ReadSpool::open(
-                st.data_store.clone(),
-                &std::env::var("PATH_PREFIX").unwrap_or_default(),
-                &st.instance_name,
-            )
-            .await
-            {
-                Ok(sp) => {
-                    let _ = st.read_spool.set(std::sync::Arc::new(sp));
-                }
-                Err(e) => tracing::error!("read spool open failed: {e}"),
+            if let Err(e) = open_read_spool(&st).await {
+                tracing::error!("read spool open failed: {e}");
             }
             sweep_owned_outboxes(&st).await;
             let sweep_secs: u64 = std::env::var("OUTBOX_SWEEP_SECS")
@@ -1336,6 +1529,14 @@ pub fn spawn_rollup(state: std::sync::Arc<crate::http::AppState>, prefix: String
 pub struct ReadSpool {
     db: std::sync::Arc<slatedb::Db>,
     next: std::sync::atomic::AtomicU64,
+    /// Corrupt rows moved to `quarantine/` since open (plus any found
+    /// at open) — nonzero means reads may be under-billed and an
+    /// operator must inspect; the rows themselves are preserved.
+    quarantined: std::sync::atomic::AtomicU64,
+    /// Test fault injection: -1 = never fail; N >= 0 = allow N more
+    /// successful persists, then fail every one after.
+    #[cfg(test)]
+    pub fail_after: std::sync::atomic::AtomicI64,
 }
 
 impl ReadSpool {
@@ -1362,10 +1563,25 @@ impl ReadSpool {
             Some(v) => u64::from_le_bytes(v[..8].try_into().unwrap_or([0; 8])),
             None => 0,
         };
-        Ok(ReadSpool {
+        // Rows quarantined by earlier boots stay on the books: the
+        // corruption alert survives restarts until an operator clears
+        // the quarantine explicitly.
+        let mut prior = 0u64;
+        let mut it = db.scan_prefix(&b"quarantine/"[..], ..).await?;
+        while (it.next().await?).is_some() {
+            prior += 1;
+        }
+        let sp = ReadSpool {
             db: std::sync::Arc::new(db),
             next: std::sync::atomic::AtomicU64::new(next),
-        })
+            quarantined: std::sync::atomic::AtomicU64::new(prior),
+            #[cfg(test)]
+            fail_after: std::sync::atomic::AtomicI64::new(-1),
+        };
+        // Round-22 item 2b: an openable spool whose PENDING rows cannot
+        // be scanned is not "ready" — prove readability before use.
+        sp.pending(16).await?;
+        Ok(sp)
     }
 
     fn key(seq: u64) -> Vec<u8> {
@@ -1376,6 +1592,17 @@ impl ReadSpool {
 
     /// Durably persist one sealed batch. Returns its spool key.
     pub async fn persist(&self, b: &ReadBatch) -> anyhow::Result<Vec<u8>> {
+        #[cfg(test)]
+        {
+            let left = self.fail_after.load(std::sync::atomic::Ordering::SeqCst);
+            if left == 0 {
+                anyhow::bail!("injected spool fault");
+            }
+            if left > 0 {
+                self.fail_after
+                    .fetch_sub(1, std::sync::atomic::Ordering::SeqCst);
+            }
+        }
         let seq = self.next.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let key = Self::key(seq);
         let mut wb = slatedb::WriteBatch::new();
@@ -1389,19 +1616,74 @@ impl ReadSpool {
         Ok(key)
     }
 
-    /// Oldest pending batches (recovered across restarts).
+    /// Oldest pending batches (recovered across restarts). A row that
+    /// does not decode is QUARANTINED (round-22 item 2c): moved to
+    /// `quarantine/<key>` in one batch — preserved for forensics,
+    /// never re-parsed, never silently skipped — counted, logged at
+    /// error level, and raised as an alert by the ops evaluator.
+    /// Scan/store faults still propagate as errors (fail closed);
+    /// only decode failures quarantine.
     pub async fn pending(&self, max: usize) -> anyhow::Result<Vec<(Vec<u8>, ReadBatch)>> {
         let mut out = Vec::new();
+        let mut corrupt: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
         let mut iter = self.db.scan_prefix(&b"rb/"[..], ..).await?;
         while let Some(kv) = iter.next().await? {
-            if let Ok(b) = serde_json::from_slice(&kv.value) {
-                out.push((kv.key.to_vec(), b));
-            }
-            if out.len() >= max {
-                break;
+            match serde_json::from_slice(&kv.value) {
+                Ok(b) => {
+                    out.push((kv.key.to_vec(), b));
+                    if out.len() >= max {
+                        break;
+                    }
+                }
+                Err(e) => {
+                    tracing::error!(
+                        "read spool row corrupt ({} bytes at {}): {e} — quarantining; \
+                         reads in this batch are NOT billed until an operator recovers it",
+                        kv.value.len(),
+                        String::from_utf8_lossy(&kv.key),
+                    );
+                    corrupt.push((kv.key.to_vec(), kv.value.to_vec()));
+                }
             }
         }
+        if !corrupt.is_empty() {
+            let mut wb = slatedb::WriteBatch::new();
+            for (k, v) in &corrupt {
+                let mut qk = b"quarantine/".to_vec();
+                qk.extend_from_slice(k);
+                wb.put(qk, v.clone());
+                wb.delete(k.clone());
+            }
+            self.db.write(wb).await?;
+            self.db.flush().await?;
+            self.quarantined
+                .fetch_add(corrupt.len() as u64, std::sync::atomic::Ordering::Relaxed);
+        }
         Ok(out)
+    }
+
+    /// Quarantined-row count (this boot + found at open). Nonzero is
+    /// an open alert until the quarantine is cleared by an operator.
+    pub fn quarantined_count(&self) -> u64 {
+        self.quarantined.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub async fn put_raw(&self, key: &[u8], val: &[u8]) -> anyhow::Result<()> {
+        let mut wb = slatedb::WriteBatch::new();
+        wb.put(key.to_vec(), val.to_vec());
+        self.db.write(wb).await?;
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub async fn quarantine_rows(&self) -> Vec<Vec<u8>> {
+        let mut out = Vec::new();
+        let mut it = self.db.scan_prefix(&b"quarantine/"[..], ..).await.unwrap();
+        while let Some(kv) = it.next().await.unwrap() {
+            out.push(kv.key.to_vec());
+        }
+        out
     }
 
     /// Remove batches the ledger has durably acknowledged.

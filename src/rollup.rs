@@ -793,7 +793,11 @@ impl UsageRollup {
     /// guarded by per-segment `final_seen`/boundary checks, so a replay
     /// applies zero).
     pub async fn close_month(&self, year: i32, month: u32, grace_ms: i64) -> anyhow::Result<usize> {
+        // Round-22 item 9: chunks are bounded by ROWS AND BYTES — a
+        // month of few-but-huge rows (a stream with thousands of
+        // segments) must not build an unbounded WriteBatch.
         const CLOSE_CHUNK: usize = 1000;
+        const CLOSE_CHUNK_BYTES: usize = 1_000_000;
         let mstr = crate::billing::month_str(year, month);
         let (ny, nm) = next_month(year, month);
         let boundary = month_start_ms(ny, nm);
@@ -814,6 +818,7 @@ impl UsageRollup {
         loop {
             let mut wb = WriteBatch::new();
             let mut page: Vec<(Vec<u8>, SegmentState)> = Vec::new();
+            let mut page_bytes = 0usize;
             {
                 let mut iter = self.db.scan_prefix(&b"segment/"[..], ..).await?;
                 while let Some(kv) = iter.next().await? {
@@ -822,10 +827,16 @@ impl UsageRollup {
                             continue;
                         }
                     }
+                    page_bytes += kv.value.len();
                     if let Ok(st) = serde_json::from_slice::<SegmentState>(&kv.value) {
                         page.push((kv.key.to_vec(), st));
                     }
-                    if page.len() >= CLOSE_CHUNK {
+                    // Byte-bound only once something is in the page —
+                    // an empty page must mean "pass done", never
+                    // "chunk full of undecodable rows".
+                    if page.len() >= CLOSE_CHUNK
+                        || (page_bytes >= CLOSE_CHUNK_BYTES && !page.is_empty())
+                    {
                         break;
                     }
                 }
@@ -922,6 +933,7 @@ impl UsageRollup {
         loop {
             let mut wb = WriteBatch::new();
             let mut page: Vec<(Vec<u8>, MonthRow)> = Vec::new();
+            let mut page_bytes = 0usize;
             {
                 let mut iter = self.db.scan_prefix(&pfx[..], ..).await?;
                 while let Some(kv) = iter.next().await? {
@@ -930,10 +942,13 @@ impl UsageRollup {
                             continue;
                         }
                     }
+                    page_bytes += kv.value.len();
                     if let Ok(row) = serde_json::from_slice::<MonthRow>(&kv.value) {
                         page.push((kv.key.to_vec(), row));
                     }
-                    if page.len() >= CLOSE_CHUNK {
+                    if page.len() >= CLOSE_CHUNK
+                        || (page_bytes >= CLOSE_CHUNK_BYTES && !page.is_empty())
+                    {
                         break;
                     }
                 }

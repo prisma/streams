@@ -1019,6 +1019,13 @@ async fn async_main() -> anyhow::Result<()> {
                  local placeholders"
             );
         }
+        // Round-22 items 2b/10: the read spool must be OPEN and
+        // READABLE before this instance serves a single request —
+        // required mode has no memory-only fallback window, so a spool
+        // that cannot open (or whose rows cannot be scanned) is fatal.
+        crate::billing::open_read_spool(&state).await.map_err(|e| {
+            anyhow::anyhow!("BILLING_MODE=required: read spool must open before serving: {e}")
+        })?;
     }
     crate::billing::spawn_telemetry(state.clone());
     if args.rollup == "1" {
