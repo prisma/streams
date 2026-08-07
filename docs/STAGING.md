@@ -37,7 +37,7 @@ the isolation and blast-radius unit (COMPUTE-SPEC §2).
 | region | `ap-southeast-1` (SIN) | our warmest measurement base; the sinmax rig, single-region max-out and P2C validation all ran here |
 | server instances | 4 × 1 CPU / 1 GB, `FLEET_MIN=2`, `FLEET_MAX=6` | 4 is the validated cluster size (docs/SCALING.md §10); MIN=2 keeps an HA floor and avoids cold-start routing (§5); MAX=6 caps cost |
 | router tier | 2 × `pilot MODE=lb` | **required**, not optional — see §5 |
-| shards | `INITIAL_SHARDS=4                   # survival posture (OOM review); fresh namespace required to change` | matches the validated ladder/cluster topology; power of two, set at keyspace creation and immutable |
+| shards | `INITIAL_SHARDS=4` | survival posture (OOM review); power of two, set at keyspace creation and immutable — a fresh namespace is required to change it |
 | prefixes | `PATH_PREFIX=stg1`, `FLEET_PREFIX=stg1-fleet` | a fresh prefix is how we get a clean environment; keep the name versioned so `stg2` can exist alongside |
 
 Client entry point is the **LB domain only**. Server instance domains are
@@ -112,7 +112,7 @@ timeboxes; staging uses the real defaults so we observe real damping.
 INSTANCE_NAME=streams-<n>          # ordinal; the ring's identity contract
 PATH_PREFIX=stg1
 FLEET_PREFIX=stg1-fleet
-INITIAL_SHARDS=8
+INITIAL_SHARDS=4                    # survival posture (OOM review); fresh namespace required to change
 FLEET_MIN=2
 FLEET_MAX=6
 
