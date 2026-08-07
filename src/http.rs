@@ -4574,8 +4574,13 @@ async fn append_core(
         seal_fence_to: None,
         // Reserved system streams bill nothing (§8.4) — without this,
         // every `_usage` emission would dirty `_usage` itself and the
-        // drainer would feed back forever.
-        billing: (!crate::billing::is_reserved_stream(&desc.name)).then(|| {
+        // drainer would feed back forever. BILLING_METER=off exists for
+        // A/B isolation in benchmarks only.
+        billing: (!crate::billing::is_reserved_stream(&desc.name)
+            && std::env::var("BILLING_METER")
+                .map(|v| v != "off")
+                .unwrap_or(true))
+        .then(|| {
             std::sync::Arc::new(crate::billing::BillingRef {
                 identity: crate::billing::identity_of(&state, &desc),
                 segment_id: seg.seg_id,
