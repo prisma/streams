@@ -156,7 +156,7 @@ impl TouchJournal {
             loop {
                 tick.tick().await;
                 ticks += 1;
-                if flusher.flush_bucket(ticks % 40 == 0) {
+                if flusher.flush_bucket(ticks.is_multiple_of(40)) {
                     return;
                 }
             }

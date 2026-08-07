@@ -321,7 +321,7 @@ pub(crate) fn admit_append_in(
     let n = m.len();
     if !m.contains_key(hash) && n >= MAX_TRACKED {
         let tick = OVERFLOW_SCAN_TICK.fetch_add(1, Ordering::Relaxed);
-        let freed = tick % EVICT_SCAN_EVERY == 0 && evict_one_idle(&mut m, EVICT_IDLE);
+        let freed = tick.is_multiple_of(EVICT_SCAN_EVERY) && evict_one_idle(&mut m, EVICT_IDLE);
         if !freed {
             drop(m);
             admit_on(&mut overflow.lock().unwrap(), l, bytes, records)?;

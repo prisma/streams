@@ -20,7 +20,7 @@ use slatedb::{Db, WriteBatch};
 use tokio::sync::mpsc;
 
 use crate::crypto::{RouteHash, SegmentHash, StreamKey, hex};
-use crate::shard::{AbsorbSignal, ShardEngine, now_ms, read_frames_range};
+use crate::shard::{AbsorbSignal, ShardEngine, read_frames_range};
 
 // ---- block transformer: AES-256-GCM with a random nonce per block ----
 
@@ -219,10 +219,10 @@ impl KeyCache {
         let mut map = self.map.lock().unwrap();
         if map.len() >= KEY_CACHE_MAX && !map.contains_key(&hash) {
             map.retain(|_, e| e.at.elapsed() <= KEY_TTL);
-            if map.len() >= KEY_CACHE_MAX {
-                if let Some(oldest) = map.iter().min_by_key(|(_, e)| e.at).map(|(h, _)| *h) {
-                    map.remove(&oldest);
-                }
+            if map.len() >= KEY_CACHE_MAX
+                && let Some(oldest) = map.iter().min_by_key(|(_, e)| e.at).map(|(h, _)| *h)
+            {
+                map.remove(&oldest);
             }
         }
         map.insert(
@@ -488,7 +488,7 @@ impl Absorber {
                         // backoff until the FIRST scan succeeds, then
                         // rescan at low cadence as a safety net.
                         if (!seeded && tick_n >= seed_next_tick)
-                            || (seeded && tick_n % RESCAN_EVERY == 0)
+                            || (seeded && tick_n.is_multiple_of(RESCAN_EVERY))
                         {
                             match absorber.seed_from_dirty_index(&mut pending).await {
                                 Ok(n) => {
@@ -528,7 +528,7 @@ impl Absorber {
                         // version opened a history DB per stream faster
                         // than anything evicted: 2.3 GB RSS in seven
                         // minutes). Fat backlogs enter due-now and big.
-                        if tick_n % absorber.cfg.sweep_every.max(1) == 0 {
+                        if tick_n.is_multiple_of(absorber.cfg.sweep_every.max(1)) {
                             for (hash, backlog_records) in absorber.shard.absorb_backlog() {
                                 pending.entry(hash).or_insert_with(|| PendingAbsorb {
                                     // Signals carry exact appended bytes;

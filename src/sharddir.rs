@@ -91,6 +91,7 @@ type OpenFn = Box<
         + Sync,
 >;
 
+#[derive(Default)]
 struct PrefixGate {
     /// Present while an open task is running: subscribe, don't start.
     inflight: Option<tokio::sync::watch::Receiver<Option<OpenResult>>>,
@@ -101,17 +102,6 @@ struct PrefixGate {
     /// When the currently-serving engine was opened (for lifetime-based
     /// strike reset on close).
     opened_at: Option<Instant>,
-}
-
-impl Default for PrefixGate {
-    fn default() -> Self {
-        PrefixGate {
-            inflight: None,
-            holdoff_until: None,
-            strikes: 0,
-            opened_at: None,
-        }
-    }
 }
 
 fn holdoff_for(strikes: u32) -> Duration {

@@ -95,11 +95,11 @@ async fn handle(State(state): State<Arc<AppState>>, method: Method, uri: Uri) ->
     state.downstream.fetch_add(1, Ordering::Relaxed);
 
     // Cache.
-    if let Some((resp, expiry)) = state.cache.lock().unwrap().get(&url).cloned() {
-        if Instant::now() < expiry {
-            state.cache_hits.fetch_add(1, Ordering::Relaxed);
-            return respond(&resp);
-        }
+    if let Some((resp, expiry)) = state.cache.lock().unwrap().get(&url).cloned()
+        && Instant::now() < expiry
+    {
+        state.cache_hits.fetch_add(1, Ordering::Relaxed);
+        return respond(&resp);
     }
 
     // Coalesce: join an in-flight upstream request if one exists.

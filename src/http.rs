@@ -244,10 +244,7 @@ impl AppState {
         let prefix = shard_for_hash(&self.shard_prefixes, hash);
         let owner = self.effective_owner(&prefix);
         let not_mine = owner.as_ref().is_some_and(|o| *o != self.instance_name);
-        if let Some(e) = {
-            let held = self.shards.read().unwrap().get(&prefix).cloned();
-            held
-        } {
+        if let Some(e) = { self.shards.read().unwrap().get(&prefix).cloned() } {
             // Possession must yield to the ring. An instance that lost
             // a shard on a rendezvous redraw keeps its engine here, and
             // slatedb fencing only fails its next WRITE — with all
@@ -320,10 +317,10 @@ impl AppState {
         if active.is_empty() || self.instance_name.is_empty() {
             return None;
         }
-        if let Some(t) = self.ring_overrides.read().unwrap().get(prefix) {
-            if active.iter().any(|a| a == t) {
-                return Some(t.clone());
-            }
+        if let Some(t) = self.ring_overrides.read().unwrap().get(prefix)
+            && active.iter().any(|a| a == t)
+        {
+            return Some(t.clone());
         }
         Some(active[ring_pick(prefix, &active)].clone())
     }
@@ -722,7 +719,7 @@ async fn debug_store(
         .clamp(1, 300);
     let swap = q.get("swap").map(|v| v == "1").unwrap_or(false);
     let mut snap = crate::store_timing::snapshot(window, swap);
-    if let Some(obj) = snap.as_object_mut() {
+    if let Some(_obj) = snap.as_object_mut() {
         // History DbReader service: hits vs misses shows how much
         // per-request manifest traffic the cache absorbs; stale_reopens
         // is bounded by absorb cadence; coalesced proves single-flight.
@@ -1157,8 +1154,8 @@ async fn product_list_axum(
 async fn health_axum(State(state): State<Arc<AppState>>) -> Response {
     if crate::billing::billing_required() {
         let spool_ok = state.read_spool.get().is_some();
-        let rollup_ok =
-            std::env::var("ROLLUP").map(|v| v != "1").unwrap_or(true) || state.rollup.get().is_some();
+        let rollup_ok = std::env::var("ROLLUP").map(|v| v != "1").unwrap_or(true)
+            || state.rollup.get().is_some();
         if !spool_ok || !rollup_ok {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1187,19 +1184,22 @@ async fn billing_readiness_axum(State(state): State<Arc<AppState>>) -> Response 
     let last_apply = crate::billing::LAST_ROLLUP_APPLY_MS.load(Ordering::Relaxed);
     let mut rollup_info = serde_json::json!({ "running": false });
     if let Some(r) = state.rollup.get() {
-        let pending = r.pending_artifacts(1000).await.map(|v| v.len()).unwrap_or(0);
+        let pending = r
+            .pending_artifacts(1000)
+            .await
+            .map(|v| v.len())
+            .unwrap_or(0);
         let pending_corr = r
             .pending_correction_artifacts(1000)
             .await
             .map(|v| v.len())
             .unwrap_or(0);
-        let oldest = r
-            .db
-            .get(&b"meta/oldest-unclosed-month"[..])
-            .await
-            .ok()
-            .flatten()
-            .map(|v| String::from_utf8_lossy(&v).to_string());
+        let oldest =
+            r.db.get(&b"meta/oldest-unclosed-month"[..])
+                .await
+                .ok()
+                .flatten()
+                .map(|v| String::from_utf8_lossy(&v).to_string());
         rollup_info = serde_json::json!({
             "running": true,
             "lastApplyMs": last_apply,
@@ -1250,9 +1250,7 @@ async fn project_usage_axum(
             false,
         ));
     }
-    crate::product::with_product_cors(
-        crate::product::project_usage(state, project, &query).await,
-    )
+    crate::product::with_product_cors(crate::product::project_usage(state, project, &query).await)
 }
 
 /// Prisma product surface (spec Stage 8): everything under /v1/streams/.
@@ -1367,16 +1365,16 @@ async fn stream_entry_inner(
                 }
             };
             let r = create_stream(state.clone(), name.clone(), headers, body).await;
-            if r.status() == StatusCode::CREATED {
-                if let Ok(Some(d)) = state.registry.get(&name).await {
-                    crate::ops::emit(
-                        crate::ops::OpsEvent::new(
-                            "stream_created",
-                            format!("life/{}/created", d.stream_epoch),
-                        )
-                        .stream(&d.stream_epoch, &name),
-                    );
-                }
+            if r.status() == StatusCode::CREATED
+                && let Ok(Some(d)) = state.registry.get(&name).await
+            {
+                crate::ops::emit(
+                    crate::ops::OpsEvent::new(
+                        "stream_created",
+                        format!("life/{}/created", d.stream_epoch),
+                    )
+                    .stream(&d.stream_epoch, &name),
+                );
             }
             r
         }
@@ -1384,10 +1382,10 @@ async fn stream_entry_inner(
             let r = append(state.clone(), name.clone(), headers, body, None, None, None).await;
             // Operation count only (§4.5) — the BILLED ingest bytes are
             // the committer's, atomic with the records themselves.
-            if r.status().is_success() {
-                if let Ok(Some(desc)) = state.registry.get(&name).await {
-                    crate::billing::meter_append_request(&state, &desc);
-                }
+            if r.status().is_success()
+                && let Ok(Some(desc)) = state.registry.get(&name).await
+            {
+                crate::billing::meter_append_request(&state, &desc);
             }
             r
         }
@@ -1738,7 +1736,7 @@ pub(crate) async fn read_stitched(
         if part.completed || cursor >= cap {
             // Ancestor drained to the cap (or its whole range): hop to
             // the next owner at the cap.
-            cursor = cursor.max(cap.min(u64::MAX));
+            cursor = cursor.max(cap);
             if cursor < cap && part.completed {
                 // The ancestor's durable end sits below the cap only if
                 // records were lost — surface it rather than looping.
@@ -2031,18 +2029,18 @@ pub(crate) fn fresh_desc_product(
 /// R2 ring-ownership check shared by both creation surfaces.
 pub(crate) fn ring_owner_check(state: &Arc<AppState>, name: &str) -> Option<Response> {
     let prefix = shard_for_hash(&state.shard_prefixes, &crate::crypto::stream_hash(name));
-    if let Some(owner) = state.effective_owner(&prefix) {
-        if owner != state.instance_name {
-            let mut r = err_resp(
-                StatusCode::CONFLICT,
-                "not_ring_owner",
-                &format!("shard {prefix} belongs to {owner}"),
-            );
-            if let Ok(v) = axum::http::HeaderValue::from_str(&owner) {
-                r.headers_mut().insert("streams-replay-to", v);
-            }
-            return Some(r);
+    if let Some(owner) = state.effective_owner(&prefix)
+        && owner != state.instance_name
+    {
+        let mut r = err_resp(
+            StatusCode::CONFLICT,
+            "not_ring_owner",
+            &format!("shard {prefix} belongs to {owner}"),
+        );
+        if let Ok(v) = axum::http::HeaderValue::from_str(&owner) {
+            r.headers_mut().insert("streams-replay-to", v);
         }
+        return Some(r);
     }
     None
 }
@@ -2089,18 +2087,18 @@ pub(crate) async fn create_stream(
     // append and read paths use, and let the client re-issue at the owner.
     {
         let prefix = shard_for_hash(&state.shard_prefixes, &crate::crypto::stream_hash(&name));
-        if let Some(owner) = state.effective_owner(&prefix) {
-            if owner != state.instance_name {
-                let mut r = err_resp(
-                    StatusCode::CONFLICT,
-                    "not_ring_owner",
-                    &format!("shard {prefix} belongs to {owner}"),
-                );
-                if let Ok(v) = axum::http::HeaderValue::from_str(&owner) {
-                    r.headers_mut().insert("streams-replay-to", v);
-                }
-                return r;
+        if let Some(owner) = state.effective_owner(&prefix)
+            && owner != state.instance_name
+        {
+            let mut r = err_resp(
+                StatusCode::CONFLICT,
+                "not_ring_owner",
+                &format!("shard {prefix} belongs to {owner}"),
+            );
+            if let Ok(v) = axum::http::HeaderValue::from_str(&owner) {
+                r.headers_mut().insert("streams-replay-to", v);
             }
+            return r;
         }
     }
     let ct_hdr_present = hdr(&headers, "content-type").is_some();
@@ -2457,63 +2455,63 @@ pub(crate) async fn create_stream(
     // yet. The same request resumes the work; a different request is a
     // conflict, not an idempotent hit; a stale claim is taken over.
     let mut resume_init = false;
-    if let Some(d) = existing.as_ref() {
-        if let Some(init) = &d.init {
-            if !desc_alive(d) {
-                // dead-and-initializing: fall through to the recreate arm
-            } else if init.request_hash != create_hash {
-                if !init_claim_stale(d) {
-                    return err_resp(
-                        StatusCode::CONFLICT,
-                        "creating",
-                        "stream is being created by a different request",
-                    );
-                }
+    if let Some(d) = existing.as_ref()
+        && let Some(init) = &d.init
+    {
+        if !desc_alive(d) {
+            // dead-and-initializing: fall through to the recreate arm
+        } else if init.request_hash != create_hash {
+            if !init_claim_stale(d) {
                 return err_resp(
                     StatusCode::CONFLICT,
-                    "config_mismatch",
-                    "stream exists with different config",
+                    "creating",
+                    "stream is being created by a different request",
                 );
-            } else {
-                // The resume path skips validate_live, so the key has to
-                // be checked HERE. Without it, a caller replaying the
-                // same creation body under a DIFFERENT key resumed the
-                // initialization and wrote the initial content with that
-                // key, while the descriptor kept the original
-                // fingerprint — a stream whose configured key cannot
-                // decrypt its own first record.
-                match check_key(raw_key(&headers, &state), d) {
-                    KeyCheck::Ok(..) => {}
-                    _ => {
-                        return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch");
-                    }
+            }
+            return err_resp(
+                StatusCode::CONFLICT,
+                "config_mismatch",
+                "stream exists with different config",
+            );
+        } else {
+            // The resume path skips validate_live, so the key has to
+            // be checked HERE. Without it, a caller replaying the
+            // same creation body under a DIFFERENT key resumed the
+            // initialization and wrote the initial content with that
+            // key, while the descriptor kept the original
+            // fingerprint — a stream whose configured key cannot
+            // decrypt its own first record.
+            match check_key(raw_key(&headers, &state), d) {
+                KeyCheck::Ok(..) => {}
+                _ => {
+                    return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch");
                 }
-                // Belt and braces: the initialization identity itself
-                // records which key it was claimed for.
-                if !init.key_fingerprint.is_empty() && init.key_fingerprint != d.key_fingerprint {
+            }
+            // Belt and braces: the initialization identity itself
+            // records which key it was claimed for.
+            if !init.key_fingerprint.is_empty() && init.key_fingerprint != d.key_fingerprint {
+                return err_resp(
+                    StatusCode::FORBIDDEN,
+                    "wrong_key",
+                    "initialization was claimed under a different key",
+                );
+            }
+            // …and the recorded parentage must still be the one this
+            // request is asking for. The resume path skips
+            // validate_live, which is where forks are normally
+            // compared.
+            match (&d.forked_from, &expected_fork_ref) {
+                (None, None) => {}
+                (Some(a), Some(b)) if a.same_identity(b) => {}
+                _ => {
                     return err_resp(
-                        StatusCode::FORBIDDEN,
-                        "wrong_key",
-                        "initialization was claimed under a different key",
+                        StatusCode::CONFLICT,
+                        "fork_source_changed",
+                        "this initialization was claimed against a different fork source",
                     );
                 }
-                // …and the recorded parentage must still be the one this
-                // request is asking for. The resume path skips
-                // validate_live, which is where forks are normally
-                // compared.
-                match (&d.forked_from, &expected_fork_ref) {
-                    (None, None) => {}
-                    (Some(a), Some(b)) if a.same_identity(b) => {}
-                    _ => {
-                        return err_resp(
-                            StatusCode::CONFLICT,
-                            "fork_source_changed",
-                            "this initialization was claimed against a different fork source",
-                        );
-                    }
-                }
-                resume_init = true;
             }
+            resume_init = true;
         }
     }
 
@@ -2658,197 +2656,196 @@ pub(crate) async fn create_stream(
     // seeded at the fork boundary BEFORE the first handle load caches
     // next = 0, and the source's reference count records this fork.
     let mut materialize_entry: Option<Bytes> = None;
-    if let Some(fc) = &fork_ctx {
-        if created {
-            if let Err(e) = engine
-                .seed_fork_tail(hash, crate::crypto::stream_hash(&desc.name), fc.boundary)
+    if let Some(fc) = &fork_ctx
+        && created
+    {
+        if let Err(e) = engine
+            .seed_fork_tail(hash, crate::crypto::stream_hash(&desc.name), fc.boundary)
+            .await
+        {
+            return err_resp(
+                StatusCode::INTERNAL_SERVER_ERROR,
+                "internal",
+                &e.to_string(),
+            );
+        }
+        // Install the reference by unique id (idempotent set
+        // insert). A CAS that DECLINES means the source vanished or
+        // was tombstoned in the race — the audit found that treated
+        // as success, leaving a live fork pointing at a deleted
+        // source. The presence check below is the actual proof.
+        let fork_id = desc.stream_epoch.clone();
+        // Stamp the id into our OWN ForkRef so release can name it.
+        if desc
+            .forked_from
+            .as_ref()
+            .is_some_and(|f| f.fork_id.is_empty())
+        {
+            let fid = fork_id.clone();
+            let mut already = false;
+            let stamped = match state
+                .registry
+                .cas_update_incarnation(&name, &desc.stream_epoch, |d| {
+                    match d.forked_from.as_mut() {
+                        Some(f) if f.fork_id.is_empty() => {
+                            f.fork_id = fid.clone();
+                            true
+                        }
+                        Some(f) => {
+                            already = f.fork_id == fid;
+                            false
+                        }
+                        None => false,
+                    }
+                })
                 .await
             {
+                Ok(v) => v,
+                Err(e) => {
+                    return err_resp(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &e.to_string(),
+                    );
+                }
+            };
+            state.registry.invalidate(&name);
+            // A declined CAS here means the child was deleted (or
+            // re-forked) underneath us. Installing a source
+            // reference for it anyway would pin the source's data
+            // for a child that no longer exists.
+            if !stamped && !already {
+                return err_resp(
+                    StatusCode::CONFLICT,
+                    "fork_target_changed",
+                    "the fork target changed while it was being created; retry",
+                );
+            }
+            // Reflect the stamp into the LOCAL snapshot: the
+            // readiness give-back names the reference through
+            // `desc.forked_from.fork_id`, and a stale empty id
+            // silently skipped the release — the source stayed
+            // pinned by a child deleted mid-creation (FRK-013).
+            if let Some(f) = desc.forked_from.as_mut() {
+                f.fork_id = fork_id.clone();
+            }
+        }
+        // The CHILD must still exist to be worth anchoring: a
+        // half-made child deleted in the stamp-to-install window
+        // must not pin the source at all (FRK-013). This check
+        // closes the ordinary path; the residual window between it
+        // and the install CAS — including a crash inside it — is
+        // repaired by the tombstone's RETAINED debt. The park sits
+        // BETWEEN the check and the install so tests can drive
+        // exactly that window.
+        match state.registry.get(&name).await {
+            Ok(Some(c)) if desc_alive(&c) && c.stream_epoch == desc.stream_epoch => {}
+            _ => {
+                return err_resp(
+                    StatusCode::CONFLICT,
+                    "fork_target_changed",
+                    "the fork target changed while it was being created; retry",
+                );
+            }
+        }
+        #[cfg(test)]
+        fork_failpoints::pause_fork_before_source_ref(&name).await;
+        match state
+            .registry
+            .cas_update_retry(&fc.source, |d| {
+                // The reference is installed on the incarnation the
+                // child actually forked. Between validating the
+                // source and getting here it can be recreated,
+                // start expiring, begin sealing or begin a split —
+                // and a reference installed on the wrong one leaves
+                // a child whose data nobody is keeping.
+                // Already installed — idempotent, and checked FIRST:
+                // a source retained for THIS child is soft-deleted
+                // by definition, so demanding liveness here refused
+                // the very retry the retention exists to serve.
+                if d.fork_children.iter().any(|c| c == &fork_id) {
+                    return !d.deleted && d.stream_epoch == fc.source_desc.stream_epoch;
+                }
+                if d.deleted
+                    || d.soft_deleted
+                    || d.init.is_some()
+                    || d.stream_epoch != fc.source_desc.stream_epoch
+                    || d.sealing.is_some()
+                    || d.segments.as_ref().is_some_and(|m| {
+                        m.pending.is_some() || m.segments.iter().filter(|s| s.is_live()).count() > 1
+                    })
+                {
+                    return false;
+                }
+                d.fork_children.push(fork_id.clone());
+                true
+            })
+            .await
+        {
+            Ok(true) => {}
+            Ok(false) => {
+                // The source moved: recreated, deleted, sealing, or
+                // splitting. The child exists but nothing is
+                // keeping its data, so refuse rather than hand back
+                // a fork with no anchor. Deleting the half-made
+                // child is the delete path's job — which is now
+                // resumable — so report the conflict and let the
+                // caller retry against the current source.
+                return err_resp(
+                    StatusCode::CONFLICT,
+                    "fork_source_changed",
+                    "the fork source changed while the fork was being created; retry",
+                );
+            }
+            Err(e) => {
                 return err_resp(
                     StatusCode::INTERNAL_SERVER_ERROR,
                     "internal",
                     &e.to_string(),
                 );
             }
-            // Install the reference by unique id (idempotent set
-            // insert). A CAS that DECLINES means the source vanished or
-            // was tombstoned in the race — the audit found that treated
-            // as success, leaving a live fork pointing at a deleted
-            // source. The presence check below is the actual proof.
-            let fork_id = desc.stream_epoch.clone();
-            // Stamp the id into our OWN ForkRef so release can name it.
-            if desc
-                .forked_from
-                .as_ref()
-                .is_some_and(|f| f.fork_id.is_empty())
-            {
-                let fid = fork_id.clone();
-                let mut already = false;
-                let stamped = match state
-                    .registry
-                    .cas_update_incarnation(&name, &desc.stream_epoch, |d| {
-                        match d.forked_from.as_mut() {
-                            Some(f) if f.fork_id.is_empty() => {
-                                f.fork_id = fid.clone();
-                                true
-                            }
-                            Some(f) => {
-                                already = f.fork_id == fid;
-                                false
-                            }
-                            None => false,
-                        }
-                    })
-                    .await
-                {
-                    Ok(v) => v,
-                    Err(e) => {
-                        return err_resp(
-                            StatusCode::INTERNAL_SERVER_ERROR,
-                            "internal",
-                            &e.to_string(),
-                        );
-                    }
-                };
-                state.registry.invalidate(&name);
-                // A declined CAS here means the child was deleted (or
-                // re-forked) underneath us. Installing a source
-                // reference for it anyway would pin the source's data
-                // for a child that no longer exists.
-                if !stamped && !already {
-                    return err_resp(
-                        StatusCode::CONFLICT,
-                        "fork_target_changed",
-                        "the fork target changed while it was being created; retry",
-                    );
-                }
-                // Reflect the stamp into the LOCAL snapshot: the
-                // readiness give-back names the reference through
-                // `desc.forked_from.fork_id`, and a stale empty id
-                // silently skipped the release — the source stayed
-                // pinned by a child deleted mid-creation (FRK-013).
-                if let Some(f) = desc.forked_from.as_mut() {
-                    f.fork_id = fork_id.clone();
-                }
-            }
-            // The CHILD must still exist to be worth anchoring: a
-            // half-made child deleted in the stamp-to-install window
-            // must not pin the source at all (FRK-013). This check
-            // closes the ordinary path; the residual window between it
-            // and the install CAS — including a crash inside it — is
-            // repaired by the tombstone's RETAINED debt. The park sits
-            // BETWEEN the check and the install so tests can drive
-            // exactly that window.
-            match state.registry.get(&name).await {
-                Ok(Some(c)) if desc_alive(&c) && c.stream_epoch == desc.stream_epoch => {}
-                _ => {
-                    return err_resp(
-                        StatusCode::CONFLICT,
-                        "fork_target_changed",
-                        "the fork target changed while it was being created; retry",
-                    );
-                }
-            }
-            #[cfg(test)]
-            fork_failpoints::pause_fork_before_source_ref(&name).await;
-            match state
-                .registry
-                .cas_update_retry(&fc.source, |d| {
-                    // The reference is installed on the incarnation the
-                    // child actually forked. Between validating the
-                    // source and getting here it can be recreated,
-                    // start expiring, begin sealing or begin a split —
-                    // and a reference installed on the wrong one leaves
-                    // a child whose data nobody is keeping.
-                    // Already installed — idempotent, and checked FIRST:
-                    // a source retained for THIS child is soft-deleted
-                    // by definition, so demanding liveness here refused
-                    // the very retry the retention exists to serve.
-                    if d.fork_children.iter().any(|c| c == &fork_id) {
-                        return !d.deleted && d.stream_epoch == fc.source_desc.stream_epoch;
-                    }
-                    if d.deleted
-                        || d.soft_deleted
-                        || d.init.is_some()
-                        || d.stream_epoch != fc.source_desc.stream_epoch
-                        || d.sealing.is_some()
-                        || d.segments.as_ref().is_some_and(|m| {
-                            m.pending.is_some()
-                                || m.segments.iter().filter(|s| s.is_live()).count() > 1
-                        })
-                    {
-                        return false;
-                    }
-                    d.fork_children.push(fork_id.clone());
-                    true
-                })
-                .await
-            {
-                Ok(true) => {}
-                Ok(false) => {
-                    // The source moved: recreated, deleted, sealing, or
-                    // splitting. The child exists but nothing is
-                    // keeping its data, so refuse rather than hand back
-                    // a fork with no anchor. Deleting the half-made
-                    // child is the delete path's job — which is now
-                    // resumable — so report the conflict and let the
-                    // caller retry against the current source.
-                    return err_resp(
-                        StatusCode::CONFLICT,
-                        "fork_source_changed",
-                        "the fork source changed while the fork was being created; retry",
-                    );
-                }
-                Err(e) => {
-                    return err_resp(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal",
-                        &e.to_string(),
-                    );
-                }
-            }
-            state.registry.invalidate(&fc.source);
-            #[cfg(test)]
-            fork_failpoints::pause_fork_after_source_ref(&name).await;
-            // Post-install: the child can have been deleted between the
-            // pre-check and the install CAS. Release the reference this
-            // request just installed — its tombstone's retained debt
-            // covers the crash variant of the same window.
-            match state.registry.get(&name).await {
-                Ok(Some(c)) if desc_alive(&c) && c.stream_epoch == desc.stream_epoch => {}
-                _ => {
-                    if let Err(m) =
-                        release_fork_ref(&state, &fc.source, &fork_id, &fc.source_desc.stream_epoch)
-                            .await
-                    {
-                        tracing::error!(stream = %name, "releasing a dead child's fresh reference: {m}");
-                    }
-                    return err_resp(
-                        StatusCode::CONFLICT,
-                        "fork_target_changed",
-                        "the fork target changed while it was being created; retry",
-                    );
-                }
-            }
-            match state.registry.get(&fc.source).await {
-                Ok(Some(sd)) if sd.fork_children.iter().any(|c| c == &fork_id) => {}
-                Ok(_) => {
-                    return err_resp(
-                        StatusCode::CONFLICT,
-                        "fork_source_gone",
-                        "fork source disappeared before the reference was installed",
-                    );
-                }
-                Err(e) => {
-                    return err_resp(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal",
-                        &e.to_string(),
-                    );
-                }
-            }
-            materialize_entry = fc.materialize.clone();
         }
+        state.registry.invalidate(&fc.source);
+        #[cfg(test)]
+        fork_failpoints::pause_fork_after_source_ref(&name).await;
+        // Post-install: the child can have been deleted between the
+        // pre-check and the install CAS. Release the reference this
+        // request just installed — its tombstone's retained debt
+        // covers the crash variant of the same window.
+        match state.registry.get(&name).await {
+            Ok(Some(c)) if desc_alive(&c) && c.stream_epoch == desc.stream_epoch => {}
+            _ => {
+                if let Err(m) =
+                    release_fork_ref(&state, &fc.source, &fork_id, &fc.source_desc.stream_epoch)
+                        .await
+                {
+                    tracing::error!(stream = %name, "releasing a dead child's fresh reference: {m}");
+                }
+                return err_resp(
+                    StatusCode::CONFLICT,
+                    "fork_target_changed",
+                    "the fork target changed while it was being created; retry",
+                );
+            }
+        }
+        match state.registry.get(&fc.source).await {
+            Ok(Some(sd)) if sd.fork_children.iter().any(|c| c == &fork_id) => {}
+            Ok(_) => {
+                return err_resp(
+                    StatusCode::CONFLICT,
+                    "fork_source_gone",
+                    "fork source disappeared before the reference was installed",
+                );
+            }
+            Err(e) => {
+                return err_resp(
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "internal",
+                    &e.to_string(),
+                );
+            }
+        }
+        materialize_entry = fc.materialize.clone();
     }
 
     // Initial body / close-on-create ride the committer.
@@ -3008,12 +3005,11 @@ pub(crate) async fn create_stream(
                 // Compensate: give back the source reference this
                 // initialization installed, so the parent is not held by
                 // a child that will never exist.
-                if let Some(fr) = desc.forked_from.as_ref().filter(|f| !f.fork_id.is_empty()) {
-                    if let Err(m) =
+                if let Some(fr) = desc.forked_from.as_ref().filter(|f| !f.fork_id.is_empty())
+                    && let Err(m) =
                         release_fork_ref(&state, &fr.source, &fr.fork_id, &fr.source_epoch).await
-                    {
-                        tracing::error!(stream = %name, "releasing an abandoned fork claim: {m}");
-                    }
+                {
+                    tracing::error!(stream = %name, "releasing an abandoned fork claim: {m}");
                 }
                 return gone_or_missing(now.as_ref());
             }
@@ -3058,10 +3054,10 @@ async fn delete_stream(state: Arc<AppState>, name: String) -> Response {
         // bouncing — its own debt AND any left on the ancestors by an
         // interrupted cascade. Those references keep whole generations
         // of data alive forever.
-        if d.deleted {
-            if let Err(e) = delete_lifecycle(&state, &name).await {
-                return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e);
-            }
+        if d.deleted
+            && let Err(e) = delete_lifecycle(&state, &name).await
+        {
+            return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e);
         }
         return gone_or_missing(Some(&d));
     }
@@ -3601,18 +3597,12 @@ fn release_fork_ref(
         // Only the hidden intermediate name could repair it, which no
         // ordinary client knows to ask for.
         if cur.deleted {
-            if cur.parent_ref_pending {
-                if let Some(gp) = cur.forked_from.as_ref() {
-                    if release_fork_ref(&state, &gp.source, &gp.fork_id, &gp.source_epoch).await? {
-                        clear_parent_debt(
-                            &state,
-                            &src,
-                            &source_epoch,
-                            Some((&gp.source, &gp.fork_id)),
-                        )
-                        .await?;
-                    }
-                }
+            if cur.parent_ref_pending
+                && let Some(gp) = cur.forked_from.as_ref()
+                && release_fork_ref(&state, &gp.source, &gp.fork_id, &gp.source_epoch).await?
+            {
+                clear_parent_debt(&state, &src, &source_epoch, Some((&gp.source, &gp.fork_id)))
+                    .await?;
             }
             // A hard-deleted source holds no live references.
             return Ok(true);
@@ -3679,22 +3669,13 @@ fn release_fork_ref(
             // tombstone keeps its epoch), so the debt clear stays
             // fenced to it. The grandparent release carries the
             // ForkRef's own recorded source epoch.
-            if let Some(after) = state.registry.get(&src).await.map_err(|e| e.to_string())? {
-                if after.stream_epoch == source_epoch {
-                    if let Some(gf) = after.forked_from.as_ref() {
-                        if release_fork_ref(&state, &gf.source, &gf.fork_id, &gf.source_epoch)
-                            .await?
-                        {
-                            clear_parent_debt(
-                                &state,
-                                &src,
-                                &source_epoch,
-                                Some((&gf.source, &gf.fork_id)),
-                            )
-                            .await?;
-                        }
-                    }
-                }
+            if let Some(after) = state.registry.get(&src).await.map_err(|e| e.to_string())?
+                && after.stream_epoch == source_epoch
+                && let Some(gf) = after.forked_from.as_ref()
+                && release_fork_ref(&state, &gf.source, &gf.fork_id, &gf.source_epoch).await?
+            {
+                clear_parent_debt(&state, &src, &source_epoch, Some((&gf.source, &gf.fork_id)))
+                    .await?;
             }
         }
         Ok(removed_ref)
@@ -3726,18 +3707,17 @@ fn delete_lifecycle(
         // generation that was tombstoned but never released its own
         // parent is reachable by deleting it again.
         if d.deleted {
-            if d.parent_ref_pending {
-                if let Some((src, fid, sep)) = parent.clone() {
-                    // Clear the debt only on a CONCLUSIVE release: an
-                    // absent reference on a live source may still be
-                    // installed by a creator in flight, and this very
-                    // retry is what repairs that crash later. A source
-                    // recreated since the fork is conclusive too — the
-                    // incarnation this debt was owed to is gone.
-                    if release_fork_ref(&state, &src, &fid, &sep).await? {
-                        clear_parent_debt(&state, &name, &d.stream_epoch, Some((&src, &fid)))
-                            .await?;
-                    }
+            if d.parent_ref_pending
+                && let Some((src, fid, sep)) = parent.clone()
+            {
+                // Clear the debt only on a CONCLUSIVE release: an
+                // absent reference on a live source may still be
+                // installed by a creator in flight, and this very
+                // retry is what repairs that crash later. A source
+                // recreated since the fork is conclusive too — the
+                // incarnation this debt was owed to is gone.
+                if release_fork_ref(&state, &src, &fid, &sep).await? {
+                    clear_parent_debt(&state, &name, &d.stream_epoch, Some((&src, &fid))).await?;
                 }
             }
             // Then walk UP. A crashed cascade leaves the debt on a
@@ -3849,13 +3829,13 @@ fn delete_lifecycle(
             for sid in seg_ids {
                 let identity = d.dynamic_segment_identity(sid);
                 let route = d.segment_route_by_id(sid);
-                if let Ok(engine) = state.engine_for(&route).await {
-                    if let Err(e) = engine.submit_billing_close(identity, close_stamp).await {
-                        tracing::warn!(
-                            "delete {name}: billing close submit failed \
+                if let Ok(engine) = state.engine_for(&route).await
+                    && let Err(e) = engine.submit_billing_close(identity, close_stamp).await
+                {
+                    tracing::warn!(
+                        "delete {name}: billing close submit failed \
                              (tombstone debt persists; sweep retries): {e}"
-                        );
-                    }
+                    );
                 }
             }
         }
@@ -4663,7 +4643,7 @@ async fn append_core(
     };
 
     let bytes = entries.iter().map(|e| e.len()).sum();
-    let metric_bytes = bytes as u64;
+    let _metric_bytes = bytes as u64;
     #[cfg(test)]
     if !close {
         fork_failpoints::pause_append_before_enqueue(&name).await;
@@ -4797,25 +4777,24 @@ async fn append_core(
         // REQUEST ITSELF — a malformed body, the wrong content type, a
         // sequence reused with different content — are terminal.
         let definitive = final_err_disposition(e) == FinalDisposition::DefinitivelyRejected;
-        if close && close_carries_content && definitive {
-            if let Some(g) = raw_seal_gen {
-                if let Err(m) = crate::product::abandon_seal_intent(
-                    &state,
-                    &name,
-                    &this_close_op,
-                    &desc.stream_epoch,
-                    g,
-                )
-                .await
-                {
-                    tracing::error!(stream = %name, "abandoning a refused raw close intent: {m}");
-                }
-            }
+        if close
+            && close_carries_content
+            && definitive
+            && let Some(g) = raw_seal_gen
+            && let Err(m) = crate::product::abandon_seal_intent(
+                &state,
+                &name,
+                &this_close_op,
+                &desc.stream_epoch,
+                g,
+            )
+            .await
+        {
+            tracing::error!(stream = %name, "abandoning a refused raw close intent: {m}");
         }
     }
     match outcome {
         Ok(ack) => {
-            if !ack.duplicate {}
             touch_ttl(&state, &desc); // writes slide the idle window
             // A DUPLICATE that did not close: the producer tuple was
             // spent by an earlier NON-closing operation, so this close
@@ -4827,23 +4806,23 @@ async fn append_core(
             // sits Sealing behind an undeliverable promise until a
             // takeover discards it. The response stays the protocol's
             // duplicate answer; the collection stays open.
-            if close && ack.duplicate && !ack.closed {
-                if let Some(g) = raw_seal_gen {
-                    if let Err(m) = crate::product::abandon_seal_intent(
-                        &state,
-                        &name,
-                        &this_close_op,
-                        &desc.stream_epoch,
-                        g,
-                    )
-                    .await
-                    {
-                        tracing::error!(
-                            stream = %name,
-                            "releasing a non-closing duplicate's seal intent: {m}"
-                        );
-                    }
-                }
+            if close
+                && ack.duplicate
+                && !ack.closed
+                && let Some(g) = raw_seal_gen
+                && let Err(m) = crate::product::abandon_seal_intent(
+                    &state,
+                    &name,
+                    &this_close_op,
+                    &desc.stream_epoch,
+                    g,
+                )
+                .await
+            {
+                tracing::error!(
+                    stream = %name,
+                    "releasing a non-closing duplicate's seal intent: {m}"
+                );
             }
             // The seal's own final record also carries `close`, but that
             // operation finishes the transition itself — it marks the
@@ -5057,7 +5036,7 @@ pub(crate) struct ReadOut {
 
 /// Merged two-tier read returning plaintext records.
 async fn read_records(
-    state: &AppState,
+    _state: &AppState,
     _desc: &StreamDesc,
     key: &StreamKey,
     epoch: &[u8; 16],
@@ -5932,14 +5911,14 @@ pub(crate) async fn read_inner(
         });
     let up_to_date = out.completed;
     let etag = read_etag(&desc, scan_from, out.end, closed);
-    if let Some(inm) = hdr(&headers, "if-none-match") {
-        if inm == etag {
-            return Response::builder()
-                .status(StatusCode::NOT_MODIFIED)
-                .header("ETag", etag)
-                .body(Body::empty())
-                .unwrap();
-        }
+    if let Some(inm) = hdr(&headers, "if-none-match")
+        && inm == etag
+    {
+        return Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header("ETag", etag)
+            .body(Body::empty())
+            .unwrap();
     }
 
     let body: Bytes = if desc.is_json() && !frames_format {
@@ -6967,14 +6946,13 @@ async fn read_v3_lineage_inner(
                 // routers follow via Streams-Replay-To.
                 if !params.no_fanout {
                     let peer = replay_peer_url(&state, &r).map(|(_, base)| base);
-                    if let Some(base) = peer {
-                        if let Some(resp) = relay_segment_read(
+                    if let Some(base) = peer
+                        && let Some(resp) = relay_segment_read(
                             &state, base, &desc, sg.seg_id, scan_from, &params, &headers, head_only,
                         )
                         .await
-                        {
-                            return resp;
-                        }
+                    {
+                        return resp;
                     }
                     return r;
                 }
@@ -7041,13 +7019,13 @@ async fn read_v3_lineage_inner(
                 });
             }
             state.registry.invalidate(&desc.name);
-            if let Ok(Some(fresh)) = state.registry.get(&desc.name).await {
-                if desc_alive(&fresh) {
-                    return Box::pin(read_v3_lineage_inner(
-                        state, fresh, params, headers, head_only, false, surface,
-                    ))
-                    .await;
-                }
+            if let Ok(Some(fresh)) = state.registry.get(&desc.name).await
+                && desc_alive(&fresh)
+            {
+                return Box::pin(read_v3_lineage_inner(
+                    state, fresh, params, headers, head_only, false, surface,
+                ))
+                .await;
             }
         }
         // The SEAL GAP: this segment is sealed but its successors are

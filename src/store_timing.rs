@@ -12,7 +12,7 @@
 use std::collections::VecDeque;
 use std::ops::Range;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -178,7 +178,7 @@ pub fn spawn_sentinels() {
                 .min(u32::MAX as u128);
             push_drift(&drift().tokio, over as u32);
             ticks += 1;
-            if ticks % 100 == 0 {
+            if ticks.is_multiple_of(100) {
                 // ~1 s cadence: cumulative steal/total ticks for window deltas
                 if let Some((st, tot)) = read_steal() {
                     let mut r = drift().steal.lock().unwrap();
@@ -461,10 +461,10 @@ impl<S: Stream<Item = Result<ObjectMeta>> + Unpin> Stream for TimedStream<S> {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<Option<Result<ObjectMeta>>> {
         let poll = self.inner.poll_next_unpin(cx);
-        if let std::task::Poll::Ready(None) = poll {
-            if let Some(g) = self.guard.take() {
-                g.finish(true);
-            }
+        if let std::task::Poll::Ready(None) = poll
+            && let Some(g) = self.guard.take()
+        {
+            g.finish(true);
         }
         poll
     }
@@ -741,10 +741,10 @@ fn parse_server_timing_us(v: &str) -> Option<u32> {
             continue;
         }
         for seg in segs {
-            if let Some(ms) = seg.trim().strip_prefix("dur=") {
-                if let Ok(ms) = ms.trim().parse::<f64>() {
-                    return Some((ms * 1000.0).clamp(0.0, u32::MAX as f64) as u32);
-                }
+            if let Some(ms) = seg.trim().strip_prefix("dur=")
+                && let Ok(ms) = ms.trim().parse::<f64>()
+            {
+                return Some((ms * 1000.0).clamp(0.0, u32::MAX as f64) as u32);
             }
         }
     }

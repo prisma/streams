@@ -393,13 +393,10 @@ async fn lb() {
                 if let Ok(r) = fstore
                     .get(&object_store::path::Path::from("fleet/desired.json"))
                     .await
+                    && let Ok(raw) = r.bytes().await
+                    && let Ok(d) = serde_json::from_slice::<serde_json::Value>(&raw)
                 {
-                    if let Ok(raw) = r.bytes().await {
-                        if let Ok(d) = serde_json::from_slice::<serde_json::Value>(&raw) {
-                            view.desired =
-                                (d["count"].as_u64().unwrap_or(1) as usize).clamp(1, n_up);
-                        }
-                    }
+                    view.desired = (d["count"].as_u64().unwrap_or(1) as usize).clamp(1, n_up);
                 }
                 // Rebalancer overrides: a successful read replaces the map
                 // (absent file = no overrides); a transient error keeps the
@@ -409,19 +406,19 @@ async fn lb() {
                     .await
                 {
                     Ok(r) => {
-                        if let Ok(raw) = r.bytes().await {
-                            if let Ok(o) = serde_json::from_slice::<serde_json::Value>(&raw) {
-                                view.overrides = o["entries"]
-                                    .as_object()
-                                    .map(|m| {
-                                        m.iter()
-                                            .filter_map(|(k, v)| {
-                                                v["to"].as_str().map(|t| (k.clone(), t.to_string()))
-                                            })
-                                            .collect()
-                                    })
-                                    .unwrap_or_default();
-                            }
+                        if let Ok(raw) = r.bytes().await
+                            && let Ok(o) = serde_json::from_slice::<serde_json::Value>(&raw)
+                        {
+                            view.overrides = o["entries"]
+                                .as_object()
+                                .map(|m| {
+                                    m.iter()
+                                        .filter_map(|(k, v)| {
+                                            v["to"].as_str().map(|t| (k.clone(), t.to_string()))
+                                        })
+                                        .collect()
+                                })
+                                .unwrap_or_default();
                         }
                     }
                     Err(object_store::Error::NotFound { .. }) => view.overrides.clear(),
@@ -436,32 +433,31 @@ async fn lb() {
                     let p = object_store::path::Path::from(format!("fleet/streams-{}.json", i + 1));
                     let mut entry = (0.0, 0.0, false, 0.0);
                     let mut age = i64::MAX;
-                    if let Ok(r) = fstore.get(&p).await {
-                        if let Ok(raw) = r.bytes().await {
-                            if let Ok(h) = serde_json::from_slice::<serde_json::Value>(&raw) {
-                                let ts = h["ts_ms"].as_i64().unwrap_or(0);
-                                age = now_ms - ts;
-                                let live = age < 10_000;
-                                entry = (
-                                    if live {
-                                        h["rps"].as_f64().unwrap_or(0.0)
-                                    } else {
-                                        0.0
-                                    },
-                                    if live {
-                                        h["ack_p50_ms"].as_f64().unwrap_or(0.0)
-                                    } else {
-                                        0.0
-                                    },
-                                    live,
-                                    if live {
-                                        h["cpu_pct"].as_f64().unwrap_or(0.0)
-                                    } else {
-                                        0.0
-                                    },
-                                );
-                            }
-                        }
+                    if let Ok(r) = fstore.get(&p).await
+                        && let Ok(raw) = r.bytes().await
+                        && let Ok(h) = serde_json::from_slice::<serde_json::Value>(&raw)
+                    {
+                        let ts = h["ts_ms"].as_i64().unwrap_or(0);
+                        age = now_ms - ts;
+                        let live = age < 10_000;
+                        entry = (
+                            if live {
+                                h["rps"].as_f64().unwrap_or(0.0)
+                            } else {
+                                0.0
+                            },
+                            if live {
+                                h["ack_p50_ms"].as_f64().unwrap_or(0.0)
+                            } else {
+                                0.0
+                            },
+                            live,
+                            if live {
+                                h["cpu_pct"].as_f64().unwrap_or(0.0)
+                            } else {
+                                0.0
+                            },
+                        );
                     }
                     ages_ms.push(age);
                     view.heartbeats.push(entry);
@@ -495,22 +491,18 @@ async fn lb() {
                         });
                     }
                 }
-                if topo_age == 0 || view.topology.is_empty() {
-                    if let Ok(r) = dstore
+                if (topo_age == 0 || view.topology.is_empty())
+                    && let Ok(r) = dstore
                         .get(&object_store::path::Path::from("topology.json"))
                         .await
-                    {
-                        if let Ok(raw) = r.bytes().await {
-                            if let Ok(t) = serde_json::from_slice::<serde_json::Value>(&raw) {
-                                if let Some(shards) = t["shards"].as_array() {
-                                    view.topology = shards
-                                        .iter()
-                                        .filter_map(|s| s.as_str().map(String::from))
-                                        .collect();
-                                }
-                            }
-                        }
-                    }
+                    && let Ok(raw) = r.bytes().await
+                    && let Ok(t) = serde_json::from_slice::<serde_json::Value>(&raw)
+                    && let Some(shards) = t["shards"].as_array()
+                {
+                    view.topology = shards
+                        .iter()
+                        .filter_map(|s| s.as_str().map(String::from))
+                        .collect();
                 }
                 // Replaced instances publish their new preview URLs to
                 // fleet/urls.json (deploy step `urls`); adopt them so a
@@ -518,25 +510,22 @@ async fn lb() {
                 if let Ok(r) = fstore
                     .get(&object_store::path::Path::from("fleet/urls.json"))
                     .await
+                    && let Ok(raw) = r.bytes().await
+                    && let Ok(m) =
+                        serde_json::from_slice::<std::collections::HashMap<String, String>>(&raw)
                 {
-                    if let Ok(raw) = r.bytes().await {
-                        if let Ok(m) = serde_json::from_slice::<
-                            std::collections::HashMap<String, String>,
-                        >(&raw)
+                    let mut ups = lb.upstreams.write().unwrap();
+                    for (name, url) in m {
+                        if let Some(i) = name
+                            .strip_prefix("streams-")
+                            .and_then(|n| n.parse::<usize>().ok())
+                            .and_then(|n| n.checked_sub(1))
+                            && i < ups.len()
+                            && !url.is_empty()
+                            && ups[i] != url
                         {
-                            let mut ups = lb.upstreams.write().unwrap();
-                            for (name, url) in m {
-                                if let Some(i) = name
-                                    .strip_prefix("streams-")
-                                    .and_then(|n| n.parse::<usize>().ok())
-                                    .and_then(|n| n.checked_sub(1))
-                                {
-                                    if i < ups.len() && !url.is_empty() && ups[i] != url {
-                                        println!("lb: upstream {name} -> {url}");
-                                        ups[i] = url;
-                                    }
-                                }
-                            }
+                            println!("lb: upstream {name} -> {url}");
+                            ups[i] = url;
                         }
                     }
                 }
@@ -1172,7 +1161,7 @@ async fn generator() {
                                         .and_then(|v| v.parse::<u64>().ok())
                                         .map(|secs| secs * 1000)
                                         .unwrap_or(500);
-                                    let jitter = (n % 400) as u64;
+                                    let jitter = n % 400;
                                     tokio::time::sleep(Duration::from_millis(ra_ms + jitter)).await;
                                 }
                                 Ok(r) => {

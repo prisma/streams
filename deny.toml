@@ -45,4 +45,7 @@ deny = [
 unknown-registry = "deny"
 unknown-git = "deny"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-allow-git = []
+# The ONE intentional git dependency: upstream SlateDB at an exact,
+# ledgered rev (Cargo.toml documents the pin; docs/SLATEDB-FORK.md the
+# history). Everything else must come from crates.io.
+allow-git = ["https://github.com/slatedb/slatedb"]

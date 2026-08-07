@@ -120,7 +120,7 @@ pub fn hex(b: &[u8]) -> String {
 }
 
 pub fn unhex(s: &str) -> Option<Vec<u8>> {
-    if s.len() % 2 != 0 {
+    if !s.len().is_multiple_of(2) {
         return None;
     }
     (0..s.len() / 2)
@@ -274,13 +274,13 @@ impl FrameCipher {
         // byte-identical re-encryption property within a deployment.
         let mut ver = FRAME_VER;
         let mut compressed: Option<Vec<u8>> = None;
-        if frame_compress_enabled() && plaintext.len() >= COMPRESS_MIN_BYTES {
-            if let Ok(z) = zstd::bulk::compress(plaintext, 1) {
-                if z.len() < plaintext.len() {
-                    ver = FRAME_VER_Z;
-                    compressed = Some(z);
-                }
-            }
+        if frame_compress_enabled()
+            && plaintext.len() >= COMPRESS_MIN_BYTES
+            && let Ok(z) = zstd::bulk::compress(plaintext, 1)
+            && z.len() < plaintext.len()
+        {
+            ver = FRAME_VER_Z;
+            compressed = Some(z);
         }
         let msg: &[u8] = compressed.as_deref().unwrap_or(plaintext);
         let rk = routing_key.as_bytes();

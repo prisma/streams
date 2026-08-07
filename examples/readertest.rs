@@ -47,7 +47,7 @@ async fn main() -> anyhow::Result<()> {
     let store: Arc<dyn object_store::ObjectStore> = Arc::new(
         object_store::aws::AmazonS3Builder::new()
             .with_endpoint(
-                &std::env::var("RT_EP").unwrap_or_else(|_| "http://127.0.0.1:9503".into()),
+                std::env::var("RT_EP").unwrap_or_else(|_| "http://127.0.0.1:9503".into()),
             )
             .with_bucket_name("scale5")
             .with_region("local")

@@ -79,13 +79,13 @@ pub fn canonical_name(raw: &str) -> Result<String, Response> {
     if segments[0] == RESERVED_ROOT {
         return bad("invalid_name", "the __ds namespace is reserved");
     }
-    if let Some(last) = segments.last() {
-        if RESERVED_FINAL_SEGMENTS.contains(last) {
-            return bad(
-                "invalid_name",
-                "'records', 'consumers' and 'watches' are reserved subresource names",
-            );
-        }
+    if let Some(last) = segments.last()
+        && RESERVED_FINAL_SEGMENTS.contains(last)
+    {
+        return bad(
+            "invalid_name",
+            "'records', 'consumers' and 'watches' are reserved subresource names",
+        );
     }
     // A name that itself reads as a subresource path would be
     // unaddressable: `x/consumers/records` as a COLLECTION can never be
@@ -440,7 +440,7 @@ pub(crate) fn classify_route(path: &str) -> Result<ProductRoute, Response> {
     let (path, _) = strip_verb(path);
     let Some((stream, rest)) = split_subresource(path) else {
         return Ok(ProductRoute::Collection {
-            name: canonical_name(path).map_err(|r| r)?,
+            name: canonical_name(path)?,
         });
     };
     let name = canonical_name(stream)?;
@@ -753,7 +753,7 @@ pub async fn product_entry(
         }
         ProductRoute::Collection { .. } => {}
     }
-    let name = match canonical_name(&strip_verb(&path).0.to_string()) {
+    let name = match canonical_name(strip_verb(&path).0) {
         Ok(n) => n,
         Err(r) => return r,
     };
@@ -1204,16 +1204,16 @@ async fn product_seal(
                 );
             }
             for h in ["producer-id", "producer-epoch", "producer-seq"] {
-                if let Some(v) = headers.get(h) {
-                    if v.to_str().is_err() {
-                        return perr(
-                            StatusCode::BAD_REQUEST,
-                            "invalid_producer",
-                            &format!("{h} is not a valid header value"),
-                            None,
-                            false,
-                        );
-                    }
+                if let Some(v) = headers.get(h)
+                    && v.to_str().is_err()
+                {
+                    return perr(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_producer",
+                        &format!("{h} is not a valid header value"),
+                        None,
+                        false,
+                    );
                 }
             }
             let has_any_producer = ["producer-id", "producer-epoch", "producer-seq"]
@@ -1290,10 +1290,10 @@ async fn product_seal(
             if let Ok(v) = axum::http::HeaderValue::from_str(&key_b64) {
                 ih.insert("prisma-encryption-key", v);
             }
-            if let Some(rk) = &doc.routing_key {
-                if let Ok(v) = axum::http::HeaderValue::from_str(rk) {
-                    ih.insert("prisma-routing-key", v);
-                }
+            if let Some(rk) = &doc.routing_key
+                && let Ok(v) = axum::http::HeaderValue::from_str(rk)
+            {
+                ih.insert("prisma-routing-key", v);
             }
             for h in ["producer-id", "producer-epoch", "producer-seq"] {
                 if let Some(v) = headers.get(h) {
@@ -1332,13 +1332,12 @@ async fn product_seal(
                 // and definitive in fact.
                 let definitive = crate::http::final_code_disposition(st, code.as_deref())
                     == crate::http::FinalDisposition::DefinitivelyRejected;
-                if definitive {
-                    if let Err(e) =
+                if definitive
+                    && let Err(e) =
                         abandon_seal_intent(&state, &name, &op_id, &ticket.epoch, ticket.generation)
                             .await
-                    {
-                        tracing::error!(stream = %name, "abandoning a refused seal intent: {e}");
-                    }
+                {
+                    tracing::error!(stream = %name, "abandoning a refused seal intent: {e}");
                 }
                 return resp;
             }
@@ -2151,10 +2150,11 @@ pub(crate) async fn run_seal(
         // Terminal — but only OUR terminal counts as our success. A
         // caller driving a specific operation must not report
         // completion because somebody else's seal got there first.
-        if let Some(o) = op.as_deref() {
-            if !o.is_empty() && desc.seal_op.as_deref() != Some(o) {
-                return Err("the collection sealed under a different operation".into());
-            }
+        if let Some(o) = op.as_deref()
+            && !o.is_empty()
+            && desc.seal_op.as_deref() != Some(o)
+        {
+            return Err("the collection sealed under a different operation".into());
         }
         return Ok(());
     }
@@ -2167,10 +2167,11 @@ pub(crate) async fn run_seal(
     // (final_committed=true no longer owes); an owner that has not
     // marked cannot get here, because segment closes and publication
     // both refuse an owing claim.
-    if let Some(sl) = &desc.sealing {
-        if sl.owes_final() && op.as_deref() == Some(sl.operation_id.as_str()) {
-            return Err("this seal has not committed its final record yet".into());
-        }
+    if let Some(sl) = &desc.sealing
+        && sl.owes_final()
+        && op.as_deref() == Some(sl.operation_id.as_str())
+    {
+        return Err("this seal has not committed its final record yet".into());
     }
     // A topology transition in flight is resolved BEFORE the seal
     // takes its snapshot of live segments. Otherwise the two interleave:
@@ -2192,12 +2193,11 @@ pub(crate) async fn run_seal(
     // Resuming a claim that is already ours by identity (a planted
     // recovery, a plain close joining a plain sealing): adopt its
     // standing generation — the segment closes below must carry it.
-    if our_gen.is_none() {
-        if let Some(sl) = &desc.sealing {
-            if sl.operation_id == op_id {
-                our_gen = Some(sl.claim_generation);
-            }
-        }
+    if our_gen.is_none()
+        && let Some(sl) = &desc.sealing
+        && sl.operation_id == op_id
+    {
+        our_gen = Some(sl.claim_generation);
     }
     if desc.sealing.is_none()
         || desc
@@ -2324,10 +2324,11 @@ pub(crate) async fn run_seal(
         return Err("the collection this seal was issued against no longer exists".into());
     }
     if final_state.sealed && final_state.sealing.is_none() {
-        if let Some(o) = op.as_deref() {
-            if !o.is_empty() && final_state.seal_op.as_deref() != Some(o) {
-                return Err("the collection sealed under a different operation".into());
-            }
+        if let Some(o) = op.as_deref()
+            && !o.is_empty()
+            && final_state.seal_op.as_deref() != Some(o)
+        {
+            return Err("the collection sealed under a different operation".into());
         }
         return Ok(());
     }
@@ -2725,18 +2726,18 @@ async fn translate_append_response(
     // fails as an opaque "conflict" (the two-instance rig lost every
     // such record silently — the client saw 409, the hammer didn't
     // check, and the child segments stayed empty).
-    if status.as_u16() == 409 {
-        if let Some(to) = raw.headers().get("streams-replay-to").cloned() {
-            let mut r = perr(
-                status,
-                "not_stream_owner",
-                "another instance owns the target segment; retry through the router",
-                None,
-                true,
-            );
-            r.headers_mut().insert("streams-replay-to", to);
-            return r;
-        }
+    if status.as_u16() == 409
+        && let Some(to) = raw.headers().get("streams-replay-to").cloned()
+    {
+        let mut r = perr(
+            status,
+            "not_stream_owner",
+            "another instance owns the target segment; retry through the router",
+            None,
+            true,
+        );
+        r.headers_mut().insert("streams-replay-to", to);
+        return r;
     }
     let retry_after = raw.headers().get("retry-after").cloned();
     let sealed_hdr = raw.headers().contains_key("stream-closed");
@@ -2838,12 +2839,12 @@ fn parse_query(query: &str) -> std::collections::HashMap<String, String> {
         while i < b.len() {
             if b[i] == b'%' && i + 2 < b.len() + 1 && i + 2 < b.len() + 1 {
                 let hex = b.get(i + 1..i + 3);
-                if let Some(h) = hex {
-                    if let Ok(x) = u8::from_str_radix(std::str::from_utf8(h).unwrap_or("zz"), 16) {
-                        out.push(x);
-                        i += 3;
-                        continue;
-                    }
+                if let Some(h) = hex
+                    && let Ok(x) = u8::from_str_radix(std::str::from_utf8(h).unwrap_or("zz"), 16)
+                {
+                    out.push(x);
+                    i += 3;
+                    continue;
                 }
             }
             out.push(b[i]);
@@ -2924,18 +2925,18 @@ fn translate_read_error(raw: Response) -> Response {
     // dropping Streams-Replay-To — hid the one signal routers use to
     // converge (the fleet campaign's cross-owner lineage reads died
     // exactly here). Preserve it as its own retryable error.
-    if status.as_u16() == 409 {
-        if let Some(to) = raw.headers().get("streams-replay-to").cloned() {
-            let mut r = perr(
-                status,
-                "not_stream_owner",
-                "another instance owns the target segment; retry through the router",
-                None,
-                true,
-            );
-            r.headers_mut().insert("streams-replay-to", to);
-            return r;
-        }
+    if status.as_u16() == 409
+        && let Some(to) = raw.headers().get("streams-replay-to").cloned()
+    {
+        let mut r = perr(
+            status,
+            "not_stream_owner",
+            "another instance owns the target segment; retry through the router",
+            None,
+            true,
+        );
+        r.headers_mut().insert("streams-replay-to", to);
+        return r;
     }
     let (code, message, retryable) = match status.as_u16() {
         404 => ("not_found", "stream not found", false),
@@ -4837,8 +4838,8 @@ async fn product_consumer_delete(
         return no_touch_204();
     }
     let cgen = rec.generation;
-    if rec.state == crate::queue::ConsumerLifecycle::Active {
-        if let Err(r) = consumer_config_op(
+    if rec.state == crate::queue::ConsumerLifecycle::Active
+        && let Err(r) = consumer_config_op(
             &state,
             &desc,
             crate::queue::QueueOp::ConfigLifecycle {
@@ -4848,9 +4849,8 @@ async fn product_consumer_delete(
             },
         )
         .await
-        {
-            return r;
-        }
+    {
+        return r;
     }
     // Fan out until the segment set is stable across a full round.
     // Segments are swept CONCURRENTLY (bounded) and each segment is
@@ -5326,19 +5326,19 @@ async fn product_consumer_pull(
                     // replays the pull to the owner, which now skips OUR
                     // segments the same way — converges).
                     let peer = crate::http::replay_peer_url(&state, &r).map(|(_, b)| b);
-                    if let Some(base) = peer {
-                        if let Some((cur, tail)) = match InternalTarget::of(&desc, seg_id) {
+                    if let Some(base) = peer
+                        && let Some((cur, tail)) = match InternalTarget::of(&desc, seg_id) {
                             Some(t) => {
                                 relay_queue_cursor(&state, &base, &desc.name, &t, &cname, cgen)
                                     .await
                             }
                             None => None,
-                        } {
-                            match sealed_end {
-                                Some(end) if cur >= end => continue,
-                                None if tail <= cur => continue,
-                                _ => {}
-                            }
+                        }
+                    {
+                        match sealed_end {
+                            Some(end) if cur >= end => continue,
+                            None if tail <= cur => continue,
+                            _ => {}
                         }
                     }
                     return translate_read_error(r);
@@ -6031,10 +6031,10 @@ async fn product_watch_wait(
         }
     }
     // Cache the key for sig derivation on later keyless waits.
-    if let Some(kb) = product_key(&headers) {
-        if let crate::http::KeyCheck::Ok(k, e) = crate::http::check_key(Some(&kb), &desc) {
-            state.keys.put(desc.storage_hash(), k, e);
-        }
+    if let Some(kb) = product_key(&headers)
+        && let crate::http::KeyCheck::Ok(k, e) = crate::http::check_key(Some(&kb), &desc)
+    {
+        state.keys.put(desc.storage_hash(), k, e);
     }
     let journal = state
         .touch
@@ -6184,12 +6184,12 @@ pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMa
     // page came back full". A page that crossed a run of tombstoned,
     // expired or half-built streams is short but not final, and ending
     // there hides every live stream behind the run.
-    if !page.exhausted {
-        if let Some(n) = page.next_after {
-            use base64::Engine;
-            body["cursor"] =
-                json!(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(n.as_bytes()));
-        }
+    if !page.exhausted
+        && let Some(n) = page.next_after
+    {
+        use base64::Engine;
+        body["cursor"] =
+            json!(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(n.as_bytes()));
     }
     Response::builder()
         .status(StatusCode::OK)
@@ -6495,7 +6495,7 @@ mod tests {
             expires_at_ms: None,
             deleted: false,
             soft_deleted: false,
-        logical_close_ms: None,
+            logical_close_ms: None,
             forked_from: None,
             fork_children: Vec::new(),
             init: None,

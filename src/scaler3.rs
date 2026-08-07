@@ -148,7 +148,10 @@ pub fn note_append(desc: &StreamDesc, seg: &crate::registry::SegRoute, bytes: u6
     let mut g = state().lock().unwrap();
     // Amortized idle sweep keeps the population honest without a
     // per-append scan.
-    if SKETCH_TICK.fetch_add(1, std::sync::atomic::Ordering::Relaxed) % SKETCH_SWEEP_EVERY == 0 {
+    if SKETCH_TICK
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        .is_multiple_of(SKETCH_SWEEP_EVERY)
+    {
         g.sketches
             .retain(|_, e| now - e.last_fed_ms < SKETCH_IDLE_MS);
     }
@@ -876,7 +879,7 @@ mod tests {
             watch_sig_key: None,
             parent_ref_pending: false,
             soft_deleted: false,
-        logical_close_ms: None,
+            logical_close_ms: None,
             forked_from: None,
             fork_children: Vec::new(),
             init: None,

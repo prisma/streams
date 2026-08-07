@@ -331,7 +331,6 @@ impl AggRow {
     }
 }
 
-
 /// Every (month, duration-ms) span of [from, to): walks each UTC month
 /// boundary the interval crosses.
 fn month_spans(from_ms: i64, to_ms: i64) -> Vec<(String, i64)> {
@@ -598,8 +597,7 @@ impl UsageRollup {
                 .await;
         } else {
             let total: i64 = spans.iter().map(|(_, d)| *d).sum::<i64>().max(1);
-            let mut allocated: Vec<Vec<[u64; 5]>> =
-                vec![vec![[0; 5]; rb.rows.len()]; spans.len()];
+            let mut allocated: Vec<Vec<[u64; 5]>> = vec![vec![[0; 5]; rb.rows.len()]; spans.len()];
             for (ri, row) in rb.rows.iter().enumerate() {
                 let dims = [
                     row.read_payload_bytes,
@@ -695,7 +693,8 @@ impl UsageRollup {
                     append_requests_delta: scale(row.append_requests) as i64,
                     storage_byte_ms_delta: "0".into(),
                 };
-                self.push_correction(&mut mr, c, names, projects, extra).await;
+                self.push_correction(&mut mr, c, names, projects, extra)
+                    .await;
                 months.insert(mkey, mr);
                 continue;
             }
@@ -827,7 +826,8 @@ impl UsageRollup {
                     append_requests_delta: 0,
                     storage_byte_ms_delta: d_ms.to_string(),
                 };
-                self.push_correction(&mut mr, c, names, projects, extra).await;
+                self.push_correction(&mut mr, c, names, projects, extra)
+                    .await;
             }
             months.insert(mkey, mr);
             return;
@@ -967,16 +967,16 @@ impl UsageRollup {
         while let Some(kv) = iter.next().await? {
             let k = std::str::from_utf8(&kv.key).unwrap_or("").to_string();
             let parts: Vec<&str> = k.splitn(5, '/').collect();
-            if parts.len() == 5 {
-                if let Ok(row) = serde_json::from_slice::<MonthRow>(&kv.value) {
-                    out.push((
-                        kv.key.to_vec(),
-                        parts[1].to_string(),
-                        format!("{}/{}", parts[2], parts[3]),
-                        parts[4].to_string(),
-                        row,
-                    ));
-                }
+            if parts.len() == 5
+                && let Ok(row) = serde_json::from_slice::<MonthRow>(&kv.value)
+            {
+                out.push((
+                    kv.key.to_vec(),
+                    parts[1].to_string(),
+                    format!("{}/{}", parts[2], parts[3]),
+                    parts[4].to_string(),
+                    row,
+                ));
             }
             if out.len() >= max {
                 break;
@@ -993,7 +993,7 @@ impl UsageRollup {
         object_path: &str,
     ) -> anyhow::Result<()> {
         let mut wb = WriteBatch::new();
-        wb.delete(pending_key.to_vec());
+        wb.delete(pending_key);
         let done_key = {
             let mut k = b"artifact-done/".to_vec();
             k.extend_from_slice(&pending_key[b"artifact-pending/".len()..]);
@@ -1047,7 +1047,7 @@ impl UsageRollup {
         object_path: &str,
     ) -> anyhow::Result<()> {
         let mut wb = WriteBatch::new();
-        wb.delete(pending_key.to_vec());
+        wb.delete(pending_key);
         let done_key = {
             let mut k = b"corr-done/".to_vec();
             k.extend_from_slice(&pending_key[b"corr-pending/".len()..]);
@@ -1069,10 +1069,7 @@ impl UsageRollup {
     /// one or more boundaries catches up oldest-first; the marker
     /// advances only after that month's close completed, so a crash
     /// resumes at the same month. Returns (month, streams closed).
-    pub async fn close_months_due(
-        &self,
-        grace_ms: i64,
-    ) -> anyhow::Result<Vec<(String, usize)>> {
+    pub async fn close_months_due(&self, grace_ms: i64) -> anyhow::Result<Vec<(String, usize)>> {
         const MARKER: &[u8] = b"meta/oldest-unclosed-month";
         fn prev_month(y: i32, m: u32) -> (i32, u32) {
             if m == 1 { (y - 1, 12) } else { (y, m - 1) }
@@ -1174,10 +1171,10 @@ impl UsageRollup {
             {
                 let mut iter = self.db.scan_prefix(&b"segment/"[..], ..).await?;
                 while let Some(kv) = iter.next().await? {
-                    if let Some(a) = &after {
-                        if kv.key.as_ref() <= &a[..] {
-                            continue;
-                        }
+                    if let Some(a) = &after
+                        && kv.key.as_ref() <= &a[..]
+                    {
+                        continue;
                     }
                     page_bytes += kv.value.len();
                     if let Ok(st) = serde_json::from_slice::<SegmentState>(&kv.value) {
@@ -1289,10 +1286,10 @@ impl UsageRollup {
             {
                 let mut iter = self.db.scan_prefix(&pfx[..], ..).await?;
                 while let Some(kv) = iter.next().await? {
-                    if let Some(a) = &fin_after {
-                        if kv.key.as_ref() <= &a[..] {
-                            continue;
-                        }
+                    if let Some(a) = &fin_after
+                        && kv.key.as_ref() <= &a[..]
+                    {
+                        continue;
                     }
                     page_bytes += kv.value.len();
                     if let Ok(row) = serde_json::from_slice::<MonthRow>(&kv.value) {
@@ -1477,7 +1474,10 @@ mod tests {
         assert_eq!(aug.segments.len(), 3, "every segment carried");
         let agg = r.project_row("2026-08", "acct", "proj").await.unwrap();
         assert_eq!(agg.storage_byte_ms, (31 * day * total_gauge).to_string());
-        let name = r.name_row("2026-08", "acct", "proj", "orders").await.unwrap();
+        let name = r
+            .name_row("2026-08", "acct", "proj", "orders")
+            .await
+            .unwrap();
         assert_eq!(name.storage_byte_ms, (31 * day * total_gauge).to_string());
     }
 
@@ -1537,7 +1537,9 @@ mod tests {
         )
         .await
         .unwrap();
-        let st = &r.stream_segment_states("acct", "proj", &id().stream_id).await[0];
+        let st = &r
+            .stream_segment_states("acct", "proj", &id().stream_id)
+            .await[0];
         assert_eq!(
             st.owned_frame_bytes_current, 400,
             "the live snapshot must win the same-version tie"
@@ -1650,7 +1652,11 @@ mod tests {
                 assert!(row.read_payload_bytes > 0, "interior month {m} covered");
             }
         }
-        assert_eq!(sums, [1_000_003, 77, 13, 5, 9], "sum preserved per dimension");
+        assert_eq!(
+            sums,
+            [1_000_003, 77, 13, 5, 9],
+            "sum preserved per dimension"
+        );
     }
 
     /// Round-22 item 8: a rollup that was down across several
@@ -1705,13 +1711,20 @@ mod tests {
             vec!["2026-07", "2026-08", "2026-09", "2026-10", "2026-11"],
             "oldest first, no gaps"
         );
-        assert!(closed.iter().all(|(_, n)| *n == 1), "every month closed the stream");
+        assert!(
+            closed.iter().all(|(_, n)| *n == 1),
+            "every month closed the stream"
+        );
         let day = 86_400_000u128;
         let nov = r
             .month_row("2026-11", "acct", "proj", &id().stream_id)
             .await
             .unwrap();
-        assert_eq!(nov.storage_byte_ms(), 30 * day * 100, "idle November billed");
+        assert_eq!(
+            nov.storage_byte_ms(),
+            30 * day * 100,
+            "idle November billed"
+        );
         assert_eq!(
             r.pending_artifacts(64).await.unwrap().len(),
             5,
@@ -2067,13 +2080,20 @@ mod tests {
             "t1/telemetry/usage-monthly/acct/proj/{}/2026-07.corrections/corr~1.json",
             id().stream_id
         ));
-        let cbody = store.get(&cpath).await.expect("correction artifact").bytes().await.unwrap();
+        let cbody = store
+            .get(&cpath)
+            .await
+            .expect("correction artifact")
+            .bytes()
+            .await
+            .unwrap();
         let cart: crate::billing::UsageCorrection = serde_json::from_slice(&cbody).unwrap();
         assert_eq!(cart.read_payload_bytes_delta, 12);
 
         // Content verification (round-22 item 8a): an AlreadyExists
         // whose bytes DIFFER is a mismatch — never marked published.
-        let clash = object_store::path::Path::from("t2/telemetry/usage-monthly/acct/proj/x/2026-01.json");
+        let clash =
+            object_store::path::Path::from("t2/telemetry/usage-monthly/acct/proj/x/2026-01.json");
         store
             .put(&clash, object_store::PutPayload::from(b"tampered".to_vec()))
             .await
@@ -2088,7 +2108,9 @@ mod tests {
             r.db.write(wb).await.unwrap();
         }
         let before = crate::billing::ARTIFACT_MISMATCHES.load(std::sync::atomic::Ordering::Relaxed);
-        let n2 = crate::billing::publish_artifacts(&r, &store, "t2").await.unwrap();
+        let n2 = crate::billing::publish_artifacts(&r, &store, "t2")
+            .await
+            .unwrap();
         assert_eq!(n2, 0, "mismatched artifact must NOT publish");
         assert_eq!(
             crate::billing::ARTIFACT_MISMATCHES.load(std::sync::atomic::Ordering::Relaxed),
@@ -2200,7 +2222,7 @@ impl UsageRollup {
                 continue;
             };
             if ts < cutoff {
-                wb.delete(kv.key.to_vec());
+                wb.delete(&kv.key);
                 n += 1;
             }
         }

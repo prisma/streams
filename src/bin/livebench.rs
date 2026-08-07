@@ -282,10 +282,10 @@ async fn main() -> anyhow::Result<()> {
                     ))
                     .send()
                     .await;
-                if let Ok(r) = res {
-                    if let Ok(v) = r.json::<serde_json::Value>().await {
-                        cursor = v["cursor"].as_str().unwrap_or("now").to_string();
-                    }
+                if let Ok(r) = res
+                    && let Ok(v) = r.json::<serde_json::Value>().await
+                {
+                    cursor = v["cursor"].as_str().unwrap_or("now").to_string();
                 }
                 if shared.stop.load(Ordering::Relaxed) {
                     break;
@@ -434,21 +434,20 @@ async fn main() -> anyhow::Result<()> {
         "missed invalidations: {missed} {}",
         if missed == 0 { "✓" } else { "✗ FAIL" }
     );
-    if let Some(edge) = &args.edge_url {
-        if let Ok(r) = http.get(format!("{edge}/_edge/stats")).send().await {
-            if let Ok(v) = r.json::<serde_json::Value>().await {
-                let down = v["downstream"].as_u64().unwrap_or(0);
-                let up = v["upstream"].as_u64().unwrap_or(0);
-                println!(
-                    "edge: downstream={} upstream={} coalesced={} cache_hits={} | ORIGIN LOAD REDUCTION: {:.1}x",
-                    down,
-                    up,
-                    v["coalesced"].as_u64().unwrap_or(0),
-                    v["cache_hits"].as_u64().unwrap_or(0),
-                    if up > 0 { down as f64 / up as f64 } else { 0.0 }
-                );
-            }
-        }
+    if let Some(edge) = &args.edge_url
+        && let Ok(r) = http.get(format!("{edge}/_edge/stats")).send().await
+        && let Ok(v) = r.json::<serde_json::Value>().await
+    {
+        let down = v["downstream"].as_u64().unwrap_or(0);
+        let up = v["upstream"].as_u64().unwrap_or(0);
+        println!(
+            "edge: downstream={} upstream={} coalesced={} cache_hits={} | ORIGIN LOAD REDUCTION: {:.1}x",
+            down,
+            up,
+            v["coalesced"].as_u64().unwrap_or(0),
+            v["cache_hits"].as_u64().unwrap_or(0),
+            if up > 0 { down as f64 / up as f64 } else { 0.0 }
+        );
     }
     anyhow::ensure!(missed == 0, "{missed} missed invalidations");
     Ok(())

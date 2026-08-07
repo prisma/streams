@@ -9,7 +9,7 @@ use object_store::path::Path as ObjPath;
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
 use serde::{Deserialize, Serialize};
 
-use crate::crypto::{hex, stream_hash};
+use crate::crypto::hex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamDesc {
@@ -595,14 +595,13 @@ impl Registry {
         if cache.len() >= REGISTRY_CACHE_MAX && !cache.contains_key(&name) {
             let ttl = self.cache_ttl;
             cache.retain(|_, e| e.at.elapsed() < ttl);
-            if cache.len() >= REGISTRY_CACHE_MAX {
-                if let Some(oldest) = cache
+            if cache.len() >= REGISTRY_CACHE_MAX
+                && let Some(oldest) = cache
                     .iter()
                     .min_by_key(|(_, e)| e.at)
                     .map(|(n, _)| n.clone())
-                {
-                    cache.remove(&oldest);
-                }
+            {
+                cache.remove(&oldest);
             }
         }
         cache.insert(name, entry);
@@ -1159,8 +1158,7 @@ impl Registry {
             };
             let d = decode_desc(&raw).map_err(|e| object_store::Error::Generic {
                 store: "registry",
-                source: format!("catalog: undecodable descriptor at {}: {e}", meta.location)
-                    .into(),
+                source: format!("catalog: undecodable descriptor at {}: {e}", meta.location).into(),
             })?;
             out.push(d);
         }
@@ -1180,14 +1178,12 @@ impl Registry {
             if out.len() >= limit {
                 break;
             }
-            if let Ok(r) = self.store.get(&meta.location).await {
-                if let Ok(raw) = r.bytes().await {
-                    if let Ok(d) = decode_desc(&raw) {
-                        if !d.deleted {
-                            out.push(d);
-                        }
-                    }
-                }
+            if let Ok(r) = self.store.get(&meta.location).await
+                && let Ok(raw) = r.bytes().await
+                && let Ok(d) = decode_desc(&raw)
+                && !d.deleted
+            {
+                out.push(d);
             }
         }
         Ok(out)
@@ -1289,6 +1285,7 @@ pub fn shard_prefix_matches(prefix: &str, hash: &[u8; 16]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::crypto::stream_hash;
     use object_store::ObjectStoreExt;
 
     fn desc(name: &str, epoch: &str, deleted: bool) -> StreamDesc {

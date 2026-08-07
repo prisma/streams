@@ -157,10 +157,10 @@ pub fn valid_peer_url(url: &str) -> bool {
         return false;
     }
     // Port, when present, must be numeric — "host:evil" is not an origin.
-    if let Some((_, port)) = rest.split_once(':') {
-        if port.is_empty() || !port.chars().all(|c| c.is_ascii_digit()) {
-            return false;
-        }
+    if let Some((_, port)) = rest.split_once(':')
+        && (port.is_empty() || !port.chars().all(|c| c.is_ascii_digit()))
+    {
+        return false;
     }
     match std::env::var("FLEET_PEER_DOMAINS") {
         Ok(list) if !list.trim().is_empty() => list

@@ -17,7 +17,7 @@ use slatedb::config::{DurabilityLevel, ScanOptions, WriteOptions};
 use slatedb::{Db, WriteBatch};
 use tokio::sync::{Notify, mpsc, oneshot};
 
-use crate::crypto::{FrameHeader, decode_frame, encrypt_frame};
+use crate::crypto::decode_frame;
 
 pub fn tail_key(hash: &[u8; 16]) -> Vec<u8> {
     let mut k = Vec::with_capacity(17);
@@ -1354,10 +1354,10 @@ impl ShardEngine {
             }
             // Same zombie logic for the shared history partition: the new
             // owner's open fences it, but close it deliberately.
-            if let Some(h2) = history2 {
-                if let Err(e) = h2.close().await {
-                    tracing::warn!(shard = %prefix, "history2 close after move-away: {e}");
-                }
+            if let Some(h2) = history2
+                && let Err(e) = h2.close().await
+            {
+                tracing::warn!(shard = %prefix, "history2 close after move-away: {e}");
             }
         });
     }
@@ -2047,10 +2047,10 @@ impl ShardEngine {
         let group_t0 = std::time::Instant::now();
         let mut oldest_enqueue: Option<std::time::Instant> = None;
         for op in &ops {
-            if let CommitOp::Append(r) = op {
-                if oldest_enqueue.map(|o| r.enqueued_at < o).unwrap_or(true) {
-                    oldest_enqueue = Some(r.enqueued_at);
-                }
+            if let CommitOp::Append(r) = op
+                && oldest_enqueue.map(|o| r.enqueued_at < o).unwrap_or(true)
+            {
+                oldest_enqueue = Some(r.enqueued_at);
             }
         }
         let queue_wait_us = oldest_enqueue
@@ -2148,27 +2148,24 @@ impl ShardEngine {
                 // Expanded at commit_group entry; unreachable here.
                 CommitOp::AbsorbedBatch { .. } | CommitOp::TrimTick => continue,
             };
-            if !locals.contains_key(&hash) {
+            if let std::collections::hash_map::Entry::Vacant(e) = locals.entry(hash) {
                 match self.stream_handle(hash).await {
                     Ok(handle) => {
                         let applied = handle.state.lock().unwrap().applied.clone();
-                        locals.insert(
-                            hash,
-                            Local {
-                                handle,
-                                fields: applied.clone(),
-                                base: applied,
-                                producers: HashMap::new(),
-                                seqs: HashMap::new(),
-                                queue: None,
-                                queue_configs: HashMap::new(),
-                                appended_bytes: 0,
-                                ring_recs: Vec::new(),
-                                billing: None,
-                                billing_dirty: false,
-                                month_finals: Vec::new(),
-                            },
-                        );
+                        e.insert(Local {
+                            handle,
+                            fields: applied.clone(),
+                            base: applied,
+                            producers: HashMap::new(),
+                            seqs: HashMap::new(),
+                            queue: None,
+                            queue_configs: HashMap::new(),
+                            appended_bytes: 0,
+                            ring_recs: Vec::new(),
+                            billing: None,
+                            billing_dirty: false,
+                            month_finals: Vec::new(),
+                        });
                     }
                     Err(e) => {
                         if let CommitOp::Append(r) = op {
@@ -2530,16 +2527,16 @@ impl ShardEngine {
                                 local.seqs.insert(req.key_hash, v);
                             }
                         }
-                        if let Some(cur) = local.seqs.get(&req.key_hash) {
-                            if seq <= cur {
-                                pending.push((
-                                    req.resp,
-                                    Err(AppendErr::SeqConflict {
-                                        current: Some(cur.clone()),
-                                    }),
-                                ));
-                                continue;
-                            }
+                        if let Some(cur) = local.seqs.get(&req.key_hash)
+                            && seq <= cur
+                        {
+                            pending.push((
+                                req.resp,
+                                Err(AppendErr::SeqConflict {
+                                    current: Some(cur.clone()),
+                                }),
+                            ));
+                            continue;
                         }
                     }
                     // Seal fence (round 8): a claim-authorized write
@@ -3388,16 +3385,15 @@ impl ShardEngine {
                             )));
                             continue;
                         }
-                        if let Some(staged) = local.queue_configs.get(&cname) {
-                            if staged.state != ConsumerLifecycle::Active
-                                || staged.generation != op_gen
-                            {
-                                let _ = resp.send(Err(format!(
-                                    "consumer_not_found: generation {op_gen} is not the \
+                        if let Some(staged) = local.queue_configs.get(&cname)
+                            && (staged.state != ConsumerLifecycle::Active
+                                || staged.generation != op_gen)
+                        {
+                            let _ = resp.send(Err(format!(
+                                "consumer_not_found: generation {op_gen} is not the \
                                      active record in this commit group"
-                                )));
-                                continue;
-                            }
+                            )));
+                            continue;
                         }
                     }
                     if local.queue.is_none() {
@@ -3516,10 +3512,7 @@ impl ShardEngine {
                                     cs.cursor += 1;
                                     extra_writes = true;
                                 }
-                                wb.put(
-                                    cursor_key(&hash, &consumer, cgen),
-                                    cs.cursor.to_le_bytes().to_vec(),
-                                );
+                                wb.put(cursor_key(&hash, &consumer, cgen), cs.cursor.to_le_bytes());
                                 let backlog = (local.fields.next - cs.cursor)
                                     .saturating_sub(cs.acked.len() as u64);
                                 QueueOut::Received {
@@ -3633,10 +3626,7 @@ impl ShardEngine {
                                     cs.cursor += 1;
                                     extra_writes = true;
                                 }
-                                wb.put(
-                                    cursor_key(&hash, &consumer, cgen),
-                                    cs.cursor.to_le_bytes().to_vec(),
-                                );
+                                wb.put(cursor_key(&hash, &consumer, cgen), cs.cursor.to_le_bytes());
                                 let backlog = (local.fields.next - cs.cursor)
                                     .saturating_sub(cs.acked.len() as u64);
                                 QueueOut::Settled {
@@ -3783,7 +3773,7 @@ impl ShardEngine {
         }
 
         let encode_us = group_t0.elapsed().as_micros().min(u32::MAX as u128) as u32;
-        let group_bytes: u64 = locals.iter().map(|(_, l)| l.appended_bytes).sum();
+        let group_bytes: u64 = locals.values().map(|l| l.appended_bytes).sum();
         // Deterministic group-write failure (DST): everything this
         // group promised — acks, duplicates, idempotent closes,
         // state-dependent refusals, fence reports — fails together,
@@ -3834,7 +3824,7 @@ impl ShardEngine {
 
         match res {
             Ok(handle) => {
-                for (_, local) in &locals {
+                for local in locals.values() {
                     let mut st = local.handle.state.lock().unwrap();
                     st.applied = local.fields.clone();
                     for (plane, v) in &local.producers {
@@ -3849,7 +3839,7 @@ impl ShardEngine {
                 }
                 // Wake Applied-mode readers now that the state above is
                 // published; durable waiters are woken only at dispatch.
-                for (_, local) in &locals {
+                for local in locals.values() {
                     local.handle.applied_notify.notify_waiters();
                 }
                 // Trim-debt bookkeeping: streams whose safe target still
@@ -4481,10 +4471,11 @@ pub async fn read_frames(
     // result, and the ring holds only durable frames — an Applied read
     // chasing the just-applied suffix must scan (the suffix is
     // memtable-resident, so the scan costs no store round-trip).
-    if key_filter.is_none() && deliver == Deliver::Durable {
-        if let Some(hit) = engine.ring_read(handle, scan_from, end, max_bytes) {
-            return Ok(hit);
-        }
+    if key_filter.is_none()
+        && deliver == Deliver::Durable
+        && let Some(hit) = engine.ring_read(handle, scan_from, end, max_bytes)
+    {
+        return Ok(hit);
     }
     let range = record_key(&hash, scan_from)..record_key(&hash, end);
     let mut iter = engine

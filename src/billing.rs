@@ -631,7 +631,9 @@ mod tests {
         });
         acc.requeue(vec![test_batch(0), test_batch(1), test_batch(2)]);
         // Allow exactly one persist, then fault.
-        spool.fail_after.store(1, std::sync::atomic::Ordering::SeqCst);
+        spool
+            .fail_after
+            .store(1, std::sync::atomic::Ordering::SeqCst);
         let err = spool_sealed(&acc, &spool, 10).await.unwrap_err();
         assert!(err.contains("read spool persist"), "{err}");
         // Batch 0 is durable; batches 1 and 2 are back in memory in
@@ -658,7 +660,10 @@ mod tests {
             .await
             .unwrap();
         spool.persist(&test_batch(7)).await.unwrap();
-        spool.put_raw(b"rb/\x00garbage", b"{not json").await.unwrap();
+        spool
+            .put_raw(b"rb/\x00garbage", b"{not json")
+            .await
+            .unwrap();
         let ok = spool.pending(10).await.unwrap();
         assert_eq!(ok.len(), 1, "healthy row still drains");
         assert_eq!(ok[0].1.seq, 7);
@@ -974,7 +979,9 @@ fn encoded_size(e: &UsageEnvelope) -> usize {
 /// BILLING_MODE=required: production billing — volatile fallbacks are
 /// refused and billing infrastructure failures are fatal at startup.
 pub fn billing_required() -> bool {
-    std::env::var("BILLING_MODE").map(|v| v == "required").unwrap_or(false)
+    std::env::var("BILLING_MODE")
+        .map(|v| v == "required")
+        .unwrap_or(false)
 }
 
 /// Drain step 1: move sealed batches into the durable spool. On a
@@ -1050,7 +1057,9 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
         // Round-22 item 2b: required mode has NO memory-only window.
         // Until the spool is open, drains fail (the meter keeps
         // accumulating; nothing is emitted from volatile state).
-        return Err("read spool not open (BILLING_MODE=required refuses the memory-only path)".into());
+        return Err(
+            "read spool not open (BILLING_MODE=required refuses the memory-only path)".into(),
+        );
     } else {
         // No spool configured (bare test rigs): the pre-spool path.
         memless = state.billing_reads.drain_sealed(16);
@@ -1131,12 +1140,13 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
                 .map(|(k, f)| (k, f))
                 .collect();
             let snap_probe = meta.to_snapshot(false);
-            let mut row_bytes = LIFECYCLE_EST + encoded_size(&envelope(
-                &cell,
-                UsagePayload::SegmentSnapshot(snap_probe),
-                meta.storage_accounted_through_ms,
-                String::new(),
-            ));
+            let mut row_bytes = LIFECYCLE_EST
+                + encoded_size(&envelope(
+                    &cell,
+                    UsagePayload::SegmentSnapshot(snap_probe),
+                    meta.storage_accounted_through_ms,
+                    String::new(),
+                ));
             for (_, fs) in &row_finals {
                 row_bytes += encoded_size(&envelope(
                     &cell,
@@ -1171,13 +1181,13 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
                         // persisted ON the row, not only in emitted
                         // snapshots — it must survive restarts and
                         // ownership moves.
-                        if !was_retained {
-                            if let Err(e) = engine.submit_billing_retained(hash, true).await {
-                                tracing::warn!(
-                                    "retained-by-forks persist failed for {}: {e}",
-                                    meta.stream_name
-                                );
-                            }
+                        if !was_retained
+                            && let Err(e) = engine.submit_billing_retained(hash, true).await
+                        {
+                            tracing::warn!(
+                                "retained-by-forks persist failed for {}: {e}",
+                                meta.stream_name
+                            );
                         }
                     } else if !crate::http::desc_alive(&d) && meta.owned_frame_bytes_current > 0 {
                         // Round-22 item 7: the close accounts to the
@@ -1214,8 +1224,7 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
                             at_ms: close_ms,
                         };
                         let id = lc.deterministic_event_id();
-                        let env =
-                            envelope(&cell, UsagePayload::StreamLifecycle(lc), close_ms, id);
+                        let env = envelope(&cell, UsagePayload::StreamLifecycle(lc), close_ms, id);
                         body_bytes += encoded_size(&env);
                         envelopes.push(env);
                     }
@@ -1308,9 +1317,7 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
 /// Required mode calls this SYNCHRONOUSLY before the instance serves
 /// (round-22 items 2b/10): there is no memory-only window in which a
 /// crash could lose metered reads.
-pub async fn open_read_spool(
-    state: &std::sync::Arc<crate::http::AppState>,
-) -> anyhow::Result<()> {
+pub async fn open_read_spool(state: &std::sync::Arc<crate::http::AppState>) -> anyhow::Result<()> {
     if state.read_spool.get().is_some() {
         return Ok(());
     }
@@ -1467,19 +1474,16 @@ pub async fn ops_rollup_step(
 /// Billing-readiness telemetry (round-22 item 10): recency of the
 /// last successful drain (ledger reachable) and rollup apply (cursor
 /// progressing), and the tombstone walk's lifetime close submissions.
-pub static LAST_DRAIN_OK_MS: std::sync::atomic::AtomicI64 =
-    std::sync::atomic::AtomicI64::new(0);
+pub static LAST_DRAIN_OK_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
 pub static LAST_ROLLUP_APPLY_MS: std::sync::atomic::AtomicI64 =
     std::sync::atomic::AtomicI64::new(0);
-pub static WALK_CLOSE_SUBMITS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+pub static WALK_CLOSE_SUBMITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Monthly-artifact content mismatches observed at publication (an
 /// AlreadyExists object whose bytes differ from the frozen row). Any
 /// nonzero value is a standing operator alert: an immutable invoice
 /// path holds content we did not stage.
-pub static ARTIFACT_MISMATCHES: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+pub static ARTIFACT_MISMATCHES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Publish pending monthly + correction artifacts (blocker 7 phase 2,
 /// hardened by round-22 item 8): create-only PUT of each staged body
@@ -1510,32 +1514,29 @@ pub async fn publish_artifacts(
             .await
         {
             Ok(_) => true,
-            Err(object_store::Error::AlreadyExists { .. }) => {
-                match store.get(&opath).await {
-                    Ok(r) => match r.bytes().await {
-                        Ok(existing) if existing.as_ref() == body => true,
-                        Ok(existing) => {
-                            ARTIFACT_MISMATCHES
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            tracing::error!(
-                                "artifact CONTENT MISMATCH at {path}: existing {}B != staged {}B — \
+            Err(object_store::Error::AlreadyExists { .. }) => match store.get(&opath).await {
+                Ok(r) => match r.bytes().await {
+                    Ok(existing) if existing.as_ref() == body => true,
+                    Ok(existing) => {
+                        ARTIFACT_MISMATCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        tracing::error!(
+                            "artifact CONTENT MISMATCH at {path}: existing {}B != staged {}B — \
                                  refusing to mark published; operator must reconcile",
-                                existing.len(),
-                                body.len()
-                            );
-                            false
-                        }
-                        Err(e) => {
-                            tracing::warn!("artifact verify read {path}: {e}");
-                            false
-                        }
-                    },
-                    Err(e) => {
-                        tracing::warn!("artifact verify get {path}: {e}");
+                            existing.len(),
+                            body.len()
+                        );
                         false
                     }
+                    Err(e) => {
+                        tracing::warn!("artifact verify read {path}: {e}");
+                        false
+                    }
+                },
+                Err(e) => {
+                    tracing::warn!("artifact verify get {path}: {e}");
+                    false
                 }
-            }
+            },
             Err(e) => {
                 tracing::warn!("artifact PUT {path}: {e}");
                 false
@@ -1574,7 +1575,9 @@ pub async fn publish_artifacts(
     for (pkey, month, acct_proj, stream_id, cid, body) in corr {
         let safe = cid.replace('/', "~");
         let path = if prefix.is_empty() {
-            format!("telemetry/usage-monthly/{acct_proj}/{stream_id}/{month}.corrections/{safe}.json")
+            format!(
+                "telemetry/usage-monthly/{acct_proj}/{stream_id}/{month}.corrections/{safe}.json"
+            )
         } else {
             format!(
                 "{prefix}/telemetry/usage-monthly/{acct_proj}/{stream_id}/{month}.corrections/{safe}.json"
@@ -1612,7 +1615,7 @@ pub async fn open_rollup(
 pub fn spawn_rollup(state: std::sync::Arc<crate::http::AppState>, prefix: String) {
     use object_store::ObjectStoreExt;
     tokio::spawn(async move {
-        let store = state.data_store.clone();
+        let _store = state.data_store.clone();
         if let Err(e) = open_rollup(&state, &prefix).await {
             tracing::error!("usage rollup open failed: {e}");
             return;
@@ -1647,10 +1650,10 @@ pub fn spawn_rollup(state: std::sync::Arc<crate::http::AppState>, prefix: String
                 let rollup2 = state.rollup.get().unwrap().clone();
                 let store2 = state.data_store.clone();
                 let pfx = prefix.clone();
-                if let Ok(n) = rollup2.sweep_ops_raw(now, 10_000).await {
-                    if n > 0 {
-                        tracing::info!("ops raw retention: {n} points expired");
-                    }
+                if let Ok(n) = rollup2.sweep_ops_raw(now, 10_000).await
+                    && n > 0
+                {
+                    tracing::info!("ops raw retention: {n} points expired");
                 }
                 // Round-22 item 8: missed months catch up IN ORDER from
                 // the persisted oldest-unfinalized marker — a rollup
@@ -1874,10 +1877,10 @@ impl ReadSpool {
 pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>) {
     let prefixes: Vec<String> = state.shard_prefixes.clone();
     for prefix in prefixes {
-        if let Some(owner) = state.effective_owner(&prefix) {
-            if owner != state.instance_name {
-                continue;
-            }
+        if let Some(owner) = state.effective_owner(&prefix)
+            && owner != state.instance_name
+        {
+            continue;
         }
         let already = state.shards.read().unwrap().contains_key(&prefix);
         if already {
@@ -1930,9 +1933,7 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
             }
         };
         for d in &page.streams {
-            let expired = d
-                .expires_at_ms
-                .is_some_and(|e| billing_now_ms() >= e);
+            let expired = d.expires_at_ms.is_some_and(|e| billing_now_ms() >= e);
             let retained = d.soft_deleted && !d.deleted;
             let terminal = d.deleted || expired;
             if !terminal && !retained {
@@ -1974,10 +1975,11 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
                     } else {
                         WALK_CLOSE_SUBMITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     }
-                } else if retained && !meta.retained_by_forks {
-                    if let Err(e) = engine.submit_billing_retained(hash, true).await {
-                        tracing::warn!("tombstone-walk retain failed for {}: {e}", d.name);
-                    }
+                } else if retained
+                    && !meta.retained_by_forks
+                    && let Err(e) = engine.submit_billing_retained(hash, true).await
+                {
+                    tracing::warn!("tombstone-walk retain failed for {}: {e}", d.name);
                 }
             }
         }

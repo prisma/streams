@@ -403,10 +403,11 @@ impl PostingsCache {
                     .map(|w| (w.from, w.to));
                 let covered = g.slices.get_mut(&key).and_then(|e| {
                     let mut effective_to = e.slice.indexed_to_offset;
-                    if let Some((wf, wt)) = warm_to {
-                        if wf <= effective_to && wt > effective_to {
-                            effective_to = wt;
-                        }
+                    if let Some((wf, wt)) = warm_to
+                        && wf <= effective_to
+                        && wt > effective_to
+                    {
+                        effective_to = wt;
                     }
                     if e.slice.covered_from <= from && upto <= effective_to {
                         e.last_used = Instant::now();
@@ -503,10 +504,11 @@ impl PostingsCache {
                             .get(&key)
                             .map(|e| {
                                 let mut eff = e.slice.indexed_to_offset;
-                                if let Some((wf, wt)) = warm_to {
-                                    if wf <= eff && wt > eff {
-                                        eff = wt;
-                                    }
+                                if let Some((wf, wt)) = warm_to
+                                    && wf <= eff
+                                    && wt > eff
+                                {
+                                    eff = wt;
                                 }
                                 e.slice.covered_from <= from && upto <= eff
                             })
@@ -574,76 +576,76 @@ impl PostingsCache {
             let res = load_runs(&cache, &part, route, inc, kh, start_bucket, target_offset).await;
             let mut g = cache.inner.lock().unwrap();
             g.inflight.remove(&key);
-            if let Ok((new_runs, _enc, provable_to, corrupt)) = res {
-                if !corrupt {
-                    let (runs, first_bucket, covered_from, decoded) = match &existing {
-                        Some(s) if s.first_bucket <= want_bucket => {
-                            // Forward extension: append past indexed_to.
-                            let mut merged: Vec<AbsRun> = s.runs.to_vec();
-                            let cut = s.indexed_to_offset;
-                            let fresh: Vec<AbsRun> = new_runs
-                                .iter()
-                                .copied()
-                                .filter(|r| r.start >= cut)
-                                .collect();
-                            crate::postings::append_page_runs(&mut merged, fresh);
-                            let bytes =
-                                merged.len() * std::mem::size_of::<AbsRun>() + ENTRY_OVERHEAD_BYTES;
-                            (merged, s.first_bucket, s.covered_from, bytes)
-                        }
-                        _ => {
-                            let bytes = new_runs.len() * std::mem::size_of::<AbsRun>()
-                                + ENTRY_OVERHEAD_BYTES;
-                            // Store loads prove coverage at bucket
-                            // granularity: every bucket from start_bucket
-                            // was scanned in full.
-                            (new_runs, start_bucket, start_bucket * BUCKET_OFFSETS, bytes)
-                        }
-                    };
-                    let old_bytes = g
-                        .slices
-                        .get(&key)
-                        .map(|e| e.slice.decoded_bytes)
-                        .unwrap_or(0);
-                    let slice = Arc::new(PostingsSlice {
-                        first_bucket,
-                        last_bucket_exclusive: provable_to.div_ceil(BUCKET_OFFSETS),
-                        covered_from,
-                        indexed_to_offset: provable_to,
-                        runs: runs.into(),
-                        decoded_bytes: decoded,
-                    });
-                    g.total_bytes = g.total_bytes + decoded - old_bytes;
-                    g.slices.insert(
-                        key,
-                        Entry {
-                            slice,
-                            last_used: Instant::now(),
-                        },
-                    );
-                    // Weight eviction: drop least-recent entries (never
-                    // the one just inserted) until the budget holds.
-                    // Every victim poisons its segment's warm absence
-                    // proof (see install_chunk).
-                    while g.total_bytes > cache.max_bytes && g.slices.len() > 1 {
-                        let victim = g
-                            .slices
+            if let Ok((new_runs, _enc, provable_to, corrupt)) = res
+                && !corrupt
+            {
+                let (runs, first_bucket, covered_from, decoded) = match &existing {
+                    Some(s) if s.first_bucket <= want_bucket => {
+                        // Forward extension: append past indexed_to.
+                        let mut merged: Vec<AbsRun> = s.runs.to_vec();
+                        let cut = s.indexed_to_offset;
+                        let fresh: Vec<AbsRun> = new_runs
                             .iter()
-                            .filter(|(k, _)| **k != key)
-                            .min_by_key(|(_, e)| e.last_used)
-                            .map(|(k, _)| *k);
-                        match victim {
-                            Some(v) => {
-                                if let Some(e) = g.slices.remove(&v) {
-                                    g.total_bytes -= e.slice.decoded_bytes;
-                                    cache.evictions.fetch_add(1, Ordering::Relaxed);
-                                }
-                                if let Some(w) = g.warm.get_mut(&v.0) {
-                                    w.clean = false;
-                                }
+                            .copied()
+                            .filter(|r| r.start >= cut)
+                            .collect();
+                        crate::postings::append_page_runs(&mut merged, fresh);
+                        let bytes =
+                            merged.len() * std::mem::size_of::<AbsRun>() + ENTRY_OVERHEAD_BYTES;
+                        (merged, s.first_bucket, s.covered_from, bytes)
+                    }
+                    _ => {
+                        let bytes =
+                            new_runs.len() * std::mem::size_of::<AbsRun>() + ENTRY_OVERHEAD_BYTES;
+                        // Store loads prove coverage at bucket
+                        // granularity: every bucket from start_bucket
+                        // was scanned in full.
+                        (new_runs, start_bucket, start_bucket * BUCKET_OFFSETS, bytes)
+                    }
+                };
+                let old_bytes = g
+                    .slices
+                    .get(&key)
+                    .map(|e| e.slice.decoded_bytes)
+                    .unwrap_or(0);
+                let slice = Arc::new(PostingsSlice {
+                    first_bucket,
+                    last_bucket_exclusive: provable_to.div_ceil(BUCKET_OFFSETS),
+                    covered_from,
+                    indexed_to_offset: provable_to,
+                    runs: runs.into(),
+                    decoded_bytes: decoded,
+                });
+                g.total_bytes = g.total_bytes + decoded - old_bytes;
+                g.slices.insert(
+                    key,
+                    Entry {
+                        slice,
+                        last_used: Instant::now(),
+                    },
+                );
+                // Weight eviction: drop least-recent entries (never
+                // the one just inserted) until the budget holds.
+                // Every victim poisons its segment's warm absence
+                // proof (see install_chunk).
+                while g.total_bytes > cache.max_bytes && g.slices.len() > 1 {
+                    let victim = g
+                        .slices
+                        .iter()
+                        .filter(|(k, _)| **k != key)
+                        .min_by_key(|(_, e)| e.last_used)
+                        .map(|(k, _)| *k);
+                    match victim {
+                        Some(v) => {
+                            if let Some(e) = g.slices.remove(&v) {
+                                g.total_bytes -= e.slice.decoded_bytes;
+                                cache.evictions.fetch_add(1, Ordering::Relaxed);
                             }
-                            None => break,
+                            if let Some(w) = g.warm.get_mut(&v.0) {
+                                w.clean = false;
+                            }
                         }
+                        None => break,
                     }
                 }
             }

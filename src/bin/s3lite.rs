@@ -98,7 +98,8 @@ fn tier_class(method: &Method, key: &str, query: &HashMap<String, String>) -> &'
     }
     // history2 lives UNDER the shard prefix (ownership travels with the
     // shard) — classify it as history, checked before the shards/ match.
-    let tier = if key.contains("history2/") {
+
+    (if key.contains("history2/") {
         "hist"
     } else if key.contains("shards/") {
         "shard"
@@ -110,8 +111,7 @@ fn tier_class(method: &Method, key: &str, query: &HashMap<String, String>) -> &'
         "registry"
     } else {
         "other"
-    };
-    tier
+    }) as _
 }
 
 /// Object kind within the tier — the second classification axis.
@@ -230,12 +230,13 @@ fn percent_decode(s: &str, plus_is_space: bool) -> String {
     let mut out = Vec::with_capacity(bytes.len());
     let mut i = 0;
     while i < bytes.len() {
-        if bytes[i] == b'%' && i + 2 < bytes.len() {
-            if let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16) {
-                out.push(v);
-                i += 3;
-                continue;
-            }
+        if bytes[i] == b'%'
+            && i + 2 < bytes.len()
+            && let Ok(v) = u8::from_str_radix(&s[i + 1..i + 3], 16)
+        {
+            out.push(v);
+            i += 3;
+            continue;
         }
         if bytes[i] == b'+' && plus_is_space {
             out.push(b' ');
@@ -326,7 +327,7 @@ async fn handle(
             let objects = state.objects.lock().unwrap();
             let no_query = HashMap::new();
             for key in objects.keys() {
-                let k = key.splitn(2, '/').nth(1).unwrap_or(key);
+                let k = key.split_once('/').map(|x| x.1).unwrap_or(key);
                 let tier = tier_class(&Method::PUT, k, &no_query);
                 *live.entry((tier, kind_class(k))).or_default() += 1;
             }
@@ -391,9 +392,9 @@ async fn dispatch(
 ) -> Response {
     match (method.clone(), key.is_empty()) {
         // ---- bucket-level ----
-        (Method::GET, true) => list_objects(&state, &bucket, &query),
+        (Method::GET, true) => list_objects(state, bucket, query),
         (Method::POST, true) if query.contains_key("delete") => {
-            batch_delete(&state, &bucket, body).await
+            batch_delete(state, bucket, body).await
         }
         (Method::HEAD, true) => StatusCode::OK.into_response(),
         (Method::PUT, true) => StatusCode::OK.into_response(), // create bucket
@@ -412,14 +413,14 @@ async fn dispatch(
                 .insert(format!("{full_key}:{id}"), BTreeMap::new());
             let xml = format!(
                 "<?xml version=\"1.0\" encoding=\"UTF-8\"?>\n<InitiateMultipartUploadResult><Bucket>{}</Bucket><Key>{}</Key><UploadId>{}</UploadId></InitiateMultipartUploadResult>",
-                xml_escape(&bucket),
-                xml_escape(&key),
+                xml_escape(bucket),
+                xml_escape(key),
                 id
             );
             ([(header::CONTENT_TYPE, "application/xml")], xml).into_response()
         }
         (Method::POST, false) if query.contains_key("uploadId") => {
-            complete_multipart(&state, &bucket, &key, &full_key, &query).await
+            complete_multipart(state, bucket, key, full_key, query).await
         }
         (Method::PUT, false) if query.contains_key("uploadId") => {
             state.stats.multipart.fetch_add(1, Ordering::Relaxed);
@@ -449,9 +450,9 @@ async fn dispatch(
                 .remove(&format!("{full_key}:{upload_id}"));
             StatusCode::NO_CONTENT.into_response()
         }
-        (Method::PUT, false) => put_object(&state, &full_key, &headers, body).await,
-        (Method::GET, false) => get_object(&state, &full_key, &headers, false),
-        (Method::HEAD, false) => get_object(&state, &full_key, &headers, true),
+        (Method::PUT, false) => put_object(state, full_key, &headers, body).await,
+        (Method::GET, false) => get_object(state, full_key, &headers, false),
+        (Method::HEAD, false) => get_object(state, full_key, &headers, true),
         (Method::DELETE, false) => {
             state.stats.delete.fetch_add(1, Ordering::Relaxed);
             state.objects.lock().unwrap().remove(full_key);
@@ -558,14 +559,13 @@ fn get_object(
     if let Some(inm) = headers
         .get(header::IF_NONE_MATCH)
         .and_then(|v| v.to_str().ok())
+        && (inm == obj.etag || inm.split(',').any(|t| t.trim() == obj.etag))
     {
-        if inm == obj.etag || inm.split(',').any(|t| t.trim() == obj.etag) {
-            return Response::builder()
-                .status(StatusCode::NOT_MODIFIED)
-                .header(header::ETAG, obj.etag.clone())
-                .body(Body::empty())
-                .unwrap();
-        }
+        return Response::builder()
+            .status(StatusCode::NOT_MODIFIED)
+            .header(header::ETAG, obj.etag.clone())
+            .body(Body::empty())
+            .unwrap();
     }
     let total = if obj.discarded {
         obj.orig_len
@@ -622,9 +622,8 @@ fn parse_range(raw: &str, total: u64) -> Option<(u64, u64)> {
         return None;
     }
     let spec = raw.strip_prefix("bytes=")?;
-    let mut it = spec.splitn(2, '-');
-    let start_s = it.next()?;
-    let end_s = it.next()?;
+    let (start_s, end_s) = spec.split_once('-')?;
+
     if start_s.is_empty() {
         // suffix range: bytes=-N
         let n: u64 = end_s.parse().ok()?;
@@ -673,10 +672,10 @@ fn list_objects(state: &Arc<AppState>, bucket: &str, query: &HashMap<String, Str
             break;
         }
         let rel = &k[bucket_prefix.len()..];
-        if let Some(tok) = &start_after {
-            if rel <= tok.as_str() {
-                continue;
-            }
+        if let Some(tok) = &start_after
+            && rel <= tok.as_str()
+        {
+            continue;
         }
         if let Some(delim) = &delimiter {
             let after_prefix = &rel[prefix.len()..];
