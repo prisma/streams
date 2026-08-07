@@ -349,6 +349,18 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
         "telemetry_cache_capacity_bytes".into(),
         crate::billing::TELEMETRY_CACHE_CAPACITY.load(ord),
     );
+    // Telemetry-DB L0 posture (OOM review I3): the bounded settings
+    // must be OBSERVABLY holding, not just configured.
+    if let Some(sp) = state.read_spool.get() {
+        let (l0, l0b, _, _) = sp.l0_stats();
+        gauges.insert("spool_l0_ssts".into(), l0);
+        gauges.insert("spool_l0_bytes".into(), l0b);
+    }
+    if let Some(ru) = state.rollup.get() {
+        let (l0, l0b, _, _) = ru.l0_stats();
+        gauges.insert("rollup_l0_ssts".into(), l0);
+        gauges.insert("rollup_l0_bytes".into(), l0b);
+    }
     gauges.insert(
         "rollup_apply_duration_ms".into(),
         crate::billing::ROLLUP_APPLY_DURATION_MS.load(ord),

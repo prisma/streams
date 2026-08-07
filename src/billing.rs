@@ -1980,6 +1980,13 @@ impl ReadSpool {
         Ok(out)
     }
 
+    /// L0 posture of the spool DB itself (round-trip of the same
+    /// in-memory manifest probe the history partitions use): the
+    /// bounded-settings claim, observable.
+    pub fn l0_stats(&self) -> (u64, u64, u64, u64) {
+        crate::history::history_l0_stats(&self.db)
+    }
+
     /// Quarantined-row count (this boot + found at open). Nonzero is
     /// an open alert until the quarantine is cleared by an operator.
     pub fn quarantined_count(&self) -> u64 {

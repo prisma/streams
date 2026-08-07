@@ -126,9 +126,12 @@ Ops snapshot (`_ops_metrics`, 15 s): `history_l0_ssts_max`,
 mimalloc current/peak commit. Per-partition detail:
 `GET /v1/debug/absorb`. L0 facts come from each open partition's
 IN-MEMORY manifest snapshot (`Db::manifest()`) — no store requests.
-Not available at the current upstream pin: SlateDB-internal
-compaction-queue depth and unflushed-bytes counters (no public stats
-API); `history_flush_wait_ms_max` + the L0 gauges are the operative
+Telemetry DBs expose the same manifest-derived L0 posture
+(`spool_l0_ssts`/`rollup_l0_ssts` + bytes in the snapshot; full detail
+under `telemetry` in `/v1/debug/absorb`). Not available at the current
+upstream pin: SlateDB-internal compaction-queue depth and
+unflushed-bytes counters (no public stats API);
+`history_flush_wait_ms_max` + the L0 gauges are the operative
 substitutes, and a public stats surface is tracked as an upstream ask.
 
 ### Deterministic regression

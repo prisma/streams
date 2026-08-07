@@ -37,7 +37,7 @@ the isolation and blast-radius unit (COMPUTE-SPEC §2).
 | region | `ap-southeast-1` (SIN) | our warmest measurement base; the sinmax rig, single-region max-out and P2C validation all ran here |
 | server instances | 4 × 1 CPU / 1 GB, `FLEET_MIN=2`, `FLEET_MAX=6` | 4 is the validated cluster size (docs/SCALING.md §10); MIN=2 keeps an HA floor and avoids cold-start routing (§5); MAX=6 caps cost |
 | router tier | 2 × `pilot MODE=lb` | **required**, not optional — see §5 |
-| shards | `INITIAL_SHARDS=8` | matches the validated ladder/cluster topology; power of two, set at keyspace creation and immutable |
+| shards | `INITIAL_SHARDS=4                   # survival posture (OOM review); fresh namespace required to change` | matches the validated ladder/cluster topology; power of two, set at keyspace creation and immutable |
 | prefixes | `PATH_PREFIX=stg1`, `FLEET_PREFIX=stg1-fleet` | a fresh prefix is how we get a clean environment; keep the name versioned so `stg2` can exist alongside |
 
 Client entry point is the **LB domain only**. Server instance domains are
@@ -131,17 +131,19 @@ CELL_ID=<cell tag>
 ROLLUP=1                            # exactly one instance per cell
 
 # --- memory survival posture (OOM review, 2026-08-07)
-INITIAL_SHARDS=4                    # 16 shards multiplied absorber exposure 16x
+# Each knob appears exactly ONCE in this file (env application is
+# last-one-wins; a stale duplicate silently restores the pre-review
+# posture). The values live in their sections: INITIAL_SHARDS=4 under
+# placement; SLATEDB_RT_THREADS=4, ADMIT_RSS_SHED_MB=500 and the
+# explicit cache bounds under engine/admission below.
 ABSORB_GATHER_MAX_BYTES=8388608     # per-gather packing cap (8 MiB)
 ABSORB_GLOBAL_BUDGET_BYTES=67108864 # PROCESS-WIDE gather budget (64 MiB)
 ABSORB_GLOBAL_GATHERS=2             # concurrent gathers, process-wide
-SLATEDB_RT_THREADS=4                # telemetry flushers must not starve history compaction
 TELEMETRY_CACHE_BYTES=16777216      # spool+rollup DBs share ONE bounded cache
-ADMIT_RSS_SHED_MB=500               # 600 was too close to the ~740 MB kill line
 # ROLLUP placement: on multi-instance cells, ROLLUP=1 goes on a
 # designated NON-INGEST instance (it must not compete with history
 # compaction on an ingestion VM); a single-instance cell accepts the
-# co-location with the bounded caches + RT_THREADS=4 above.
+# co-location with the bounded caches + RT_THREADS=4 below.
 
 # --- engine (1 GB discipline, RUNBOOK 3.2/3.3)
 FLUSH_INTERVAL_MS=25
@@ -155,7 +157,9 @@ MANIFEST_POLL_MS=1000
 COMPACTOR_POLL_MS=500
 COMPACTOR_MAX_CONCURRENT=2
 SHARED_CACHE_BYTES=67108864
-SLATEDB_RT_THREADS=2
+HISTORY_CACHE_BYTES=33554432        # all cache bounds explicit (OOM review)
+POSTINGS_CACHE_BYTES=67108864
+SLATEDB_RT_THREADS=4                # OOM review: telemetry flushers must not starve history compaction
 ABSORB_BYTES=4194304
 ABSORB_AGE_SECS=60
 ABSORB_PASS_BYTES=67108864
@@ -165,7 +169,7 @@ TRIM_GLOBAL_BUDGET=65536            # global per-commit trim-delete cap; TRIM_PE
 # --- admission (ON in production, RUNBOOK 3.6)
 ADMIT_MAX_INFLIGHT=512
 ADMIT_MAX_INFLIGHT_PER_STREAM=256
-ADMIT_RSS_SHED_MB=600               # kill line ~750; never raise past ~650
+ADMIT_RSS_SHED_MB=500               # OOM review: 600 was too close to the ~750 kill line for inter-sample SST spikes; shed = RSS + reserved absorber bytes
 
 # --- limits (per stream segment)
 LIMIT_BYTES_PER_SEC=5000000

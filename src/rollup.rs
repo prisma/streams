@@ -899,6 +899,12 @@ impl UsageRollup {
         }
     }
 
+    /// L0 posture of the rollup DB (same in-memory manifest probe as
+    /// the history partitions and the read spool).
+    pub fn l0_stats(&self) -> (u64, u64, u64, u64) {
+        crate::history::history_l0_stats(&self.db)
+    }
+
     // ---- point reads (the customer API) ------------------------------
 
     pub async fn month_row(

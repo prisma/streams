@@ -953,10 +953,24 @@ pub fn router(state: Arc<AppState>) -> Router {
                     }
                     let spool = state.read_spool.get().map(|sp| {
                         let (rows, bytes) = sp.resident();
+                        let (l0, l0b, runs, mid) = sp.l0_stats();
                         serde_json::json!({
                             "pendingRows": rows,
                             "pendingBytes": bytes,
                             "quarantined": sp.quarantined_count(),
+                            "l0SstCount": l0,
+                            "l0BytesEst": l0b,
+                            "compactedRuns": runs,
+                            "manifestId": mid,
+                        })
+                    });
+                    let rollup_db = state.rollup.get().map(|ru| {
+                        let (l0, l0b, runs, mid) = ru.l0_stats();
+                        serde_json::json!({
+                            "l0SstCount": l0,
+                            "l0BytesEst": l0b,
+                            "compactedRuns": runs,
+                            "manifestId": mid,
                         })
                     });
                     axum::Json(serde_json::json!({
@@ -974,6 +988,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                         },
                         "telemetry": {
                             "spool": spool,
+                            "rollupDb": rollup_db,
                             "cacheCapacityBytes":
                                 crate::billing::TELEMETRY_CACHE_CAPACITY.load(ord),
                             "sweepResidentEngines":
