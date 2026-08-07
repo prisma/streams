@@ -80,13 +80,18 @@ Updated: 2026-08-07 (post round-22 boundary review).
 ## OOM review (2026-08-07): preview.7 kill — mechanisms landed
 
 The ab21 A/B campaign killed preview.7 under load (both conc 128 and
-192, each after ≈1 GiB accepted payload). The review's diagnosis —
-history-L0/absorber backpressure amplified by process-wide memory
-budgeting failures — is supported by the recorded facts: the failed
-run's preserved bucket shows **16 physical shards** (16 × 32 MiB
-nominal gather exposure = 512 MiB), and both telemetry SlateDB DBs
-(read spool; rollup under ROLLUP=1) opened with SlateDB per-DB
-defaults instead of bounded caches.
+192, each after ≈1 GiB accepted payload). CORRECTED CAUSALITY (per the
+completed experiment matrix): the cloud death was a PRE-EXISTING
+cumulative-work history/absorber memory failure caused by the absence
+of a process-wide gather bound — the freeze4 control also dies on the
+identical harness. Sixteen shards amplified the exposure (the
+preserved bucket shows 16 physical shards = 16 × 32 MiB nominal) but
+were neither necessary nor sufficient: the 4-shard arm died too.
+Telemetry was disabled in the failing cloud arm and was therefore NOT
+the immediate cause; the telemetry SlateDB DBs' inherited per-DB
+defaults were an independent LATENT hazard, fixed in the same round.
+Preview.7 died ~40% earlier than freeze4 — a real partial regression,
+not yet isolated (follow-up, not a blocker for the structural fix).
 
 ### Claim correction (supersedes earlier wording)
 
@@ -147,15 +152,36 @@ soak-scale injected-slowdown leg is part of the acceptance gate below.
 
 ### Acceptance gate before preview.7-class builds are restored
 
-At least THREE consecutive full-telemetry soaks, each: ≥5 GiB accepted
-payload; concurrency 128 and 192; zero process exits/restarts;
-client-visible errors limited to deliberate 429/503 shedding; cgroup
-peak comfortably below the platform kill line; flat post-warm-up RSS
-trend; absorber lag bounded and recovering; history L0 bounded (no
-monotonic climb); spool/rollup backlog bounded; exact acked-operation
-reconciliation. PLUS one injected history-compactor slowdown run
-proving: admission sheds, memory stays bounded, the absorber catches
-up after healing, the process never dies.
+Survival-profile campaign (deploy/profiles/compute-1g.env; full
+telemetry; rollup on its designated instance):
+- THREE consecutive soaks at concurrency 128, ≥5 GiB accepted each, AND
+- THREE consecutive soaks at concurrency 192, ≥5 GiB accepted each.
+
+Per-run acceptance: zero process exits/restarts; zero platform-zombie
+transitions; client-visible errors limited to deliberate retryable
+shedding; exact acknowledged-operation reconciliation; no monotonic
+RSS, history-L0, spool, or rollup growth; absorber lag returns to
+baseline after each load plateau; cgroup peak at least 100 MiB below
+the observed kill line.
+
+Hard-mode leg: at least ONE run at 16 shards, full telemetry, the same
+global budget, ≥5 GiB — proving the budget stays process-wide under
+maximal shard fan-out.
+
+Slow-compactor leg (real mechanism, driven via
+POST /v1/debug/history-stall?ms= — the stall sits on the actual gather
+flush path with the reservation held): with ingest continuing, prove
+(1) reservations reach but never exceed the configured envelope,
+(2) admission sheds before memory crosses the high watermark, (3) no
+gather build starts without a reservation, (4) the process stays
+alive, (5) history L0 decreases after release, (6) absorber lag
+returns toward zero, (7) appends resume without restart.
+
+The budget PRIMITIVE regression
+(`absorb_budget_blocks_waiters_and_recovers_after_release`, plus the
+cancellation and worst-frame-floor tests) proves the semaphore
+mechanics only; the review's X3 real-mechanism claim is closed by the
+slow-compactor leg above, not by the unit tests.
 
 ### Separate platform blocker
 
@@ -189,3 +215,42 @@ serializing gathers at the 64 MiB cap while history flushes stalled at
 ~2.5 s. Survival margin at stock knobs is thin (RSS peak 702 MB
 sampled): the survival posture stays the deploy stance until the
 acceptance-gate soaks run.
+
+
+### Reviewer disposition round (2026-08-07, post-matrix)
+
+Approved: budget architecture, stagger, bounded telemetry DBs, batched
+spool persistence, sweep-scoped residency, causal instrumentation,
+survival posture, matrix conclusions. Five fixes required before the
+OOM issue is called closed — all landed:
+
+1. `AbsorbBudget::reserve` is cancellation-safe: RAII
+   `SemaphorePermit`s (no forget/add_permits); a reservation future
+   dropped at any await point returns what it held. Test:
+   `cancelled_reservation_releases_its_gather_slot`.
+2. Oversized-record posture: the budget FLOORS its capacity at the
+   worst-frame transient (MAX_BODY_BYTES 32 MiB × build multiplier 3 =
+   96 MiB) and every gather's estimate is at least that — the declared
+   envelope always covers the real transient of the one-oversized-
+   frame liveness path; oversized-class gathers serialize (arm X
+   field-proved that concurrency is adequate). `GATHER_LAST_RESERVED`
+   reports the GRANTED (post-clamp) value. Test:
+   `worst_frame_floor_serializes_oversized_gathers_without_starvation`.
+   The through-history oversized stress run belongs to the acceptance
+   campaign.
+3. One checked-in memory profile (deploy/profiles/compute-1g.env)
+   sourced by every active deploy script (bench/soak/deploy-region.sh,
+   bench/fleet/deploy-fleet.sh, scripts/bench-fra-ab.sh); opt-out only
+   via UNSAFE_LEGACY_MEMORY_PROFILE=1 with a loud warning; the server
+   logs ONE startup budget summary and warns when fixed budgets leave
+   <100 MiB below the shed line.
+4. Causality wording corrected here and in RUNBOOK.md (pre-existing
+   failure; 16 shards amplifying but neither necessary nor sufficient;
+   telemetry not the immediate cloud cause; latent cache hazard fixed;
+   ~40% partial regression unisolated).
+5. The budget primitive test renamed to what it proves
+   (`absorb_budget_blocks_waiters_and_recovers_after_release`); the
+   real-mechanism claim moved to the slow-compactor acceptance leg,
+   now drivable via POST /v1/debug/history-stall.
+
+Still open (release gate, unchanged): the acceptance campaign above.

@@ -26,7 +26,7 @@ use crate::offsets::Offset;
 use crate::registry::{Registry, StreamDesc, shard_for_hash};
 use crate::shard::{AppendErr, AppendReq, ShardEngine, now_ms, read_frames};
 
-const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
+pub(crate) const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
 const MAX_READ_BYTES: usize = 8 * 1024 * 1024;
 
 /// Budget for a read that was WOKEN by a long-poll wait — the live-tail
@@ -917,6 +917,30 @@ pub fn router(state: Arc<AppState>) -> Router {
             ),
         )
         .route("/v1/debug/sleep", get(debug_sleep))
+        // Injected history-flush slowdown (OOM review acceptance
+        // campaign): stalls the REAL gather flush path by ?ms= per
+        // flush, with the process-wide reservation held — the
+        // mechanism the slow-compactor campaign drives. 0 clears.
+        .route(
+            "/v1/debug/history-stall",
+            post(
+                |State(state): State<Arc<AppState>>,
+                 headers: HeaderMap,
+                 Query(q): Query<std::collections::HashMap<String, String>>| async move {
+                    if !authorized(&state, &headers) {
+                        return err_resp(
+                            StatusCode::UNAUTHORIZED,
+                            "unauthorized",
+                            "bearer token required",
+                        );
+                    }
+                    let ms: u64 = q.get("ms").and_then(|v| v.parse().ok()).unwrap_or(0);
+                    crate::history::HISTORY_FLUSH_STALL_MS
+                        .store(ms, std::sync::atomic::Ordering::Relaxed);
+                    axum::Json(serde_json::json!({"historyFlushStallMs": ms})).into_response()
+                },
+            ),
+        )
         // OOM-review causal detail: per-partition history L0 posture,
         // the process-wide absorber budget, last-gather phases, and
         // telemetry-plane residency — the exact signals needed to prove

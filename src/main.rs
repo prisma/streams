@@ -1041,6 +1041,50 @@ async fn async_main() -> anyhow::Result<()> {
                 })?;
         }
     }
+    // ONE startup budget summary (OOM review): every fixed memory
+    // bound in a single log line, plus a headroom warning when their
+    // sum leaves less than 100 MiB below the shed line — posture
+    // mistakes surface at boot, not at the kill line. Env reads mirror
+    // each knob's own default.
+    {
+        let genv = |k: &str, d: usize| -> usize {
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d)
+        };
+        let shared = args.shared_cache_bytes as usize;
+        let history = genv("HISTORY_CACHE_BYTES", 32 * 1024 * 1024);
+        let postings = genv("POSTINGS_CACHE_BYTES", 64 * 1024 * 1024);
+        let telemetry = genv("TELEMETRY_CACHE_BYTES", 16 * 1024 * 1024);
+        let absorb_budget = crate::history::floored_budget_capacity(genv(
+            "ABSORB_GLOBAL_BUDGET_BYTES",
+            64 * 1024 * 1024,
+        ));
+        let gathers = genv("ABSORB_GLOBAL_GATHERS", 2);
+        let rt_threads = genv("SLATEDB_RT_THREADS", 2);
+        let mib = |b: usize| b / (1024 * 1024);
+        tracing::info!(
+            "memory budget: caches shared={}MiB history={}MiB postings={}MiB telemetry={}MiB;              unflushed/db={}MiB; absorb budget={}MiB (worst-frame build={}MiB, gathers<={});              slatedb rt threads={}; shed line={}MB (RSS + reserved absorber bytes)",
+            mib(shared),
+            mib(history),
+            mib(postings),
+            mib(telemetry),
+            mib(args.max_unflushed_bytes),
+            mib(absorb_budget),
+            mib(crate::history::ABSORB_WORST_FRAME_TRANSIENT),
+            gathers,
+            rt_threads,
+            args.admit_rss_shed_mb,
+        );
+        let fixed_mb = mib(shared + history + postings + telemetry + absorb_budget) as u64;
+        if args.admit_rss_shed_mb > 0 && fixed_mb + 100 > args.admit_rss_shed_mb {
+            tracing::warn!(
+                "fixed memory budgets ({fixed_mb} MiB) leave <100 MiB below the shed line                  ({} MB) — this posture does not fit the instance class",
+                args.admit_rss_shed_mb,
+            );
+        }
+    }
     crate::billing::spawn_telemetry(state.clone());
     if args.rollup == "1" {
         crate::billing::spawn_rollup(state.clone(), args.path_prefix.clone().unwrap_or_default());

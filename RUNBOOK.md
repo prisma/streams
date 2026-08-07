@@ -701,17 +701,27 @@ owner) is open.
 
 ## Memory survival posture (OOM review, 2026-08-07)
 
-The preview.7 kill (ab21 campaign) was history-L0/absorber backpressure
-amplified by process-wide budgeting failures: 16 shards x 32 MiB
-per-shard gather budget (512 MiB nominal) plus two telemetry SlateDB
-DBs on default (512 MB-class) caches, all sharing a two-thread SlateDB
-runtime with the history compactor. Deploy posture until the fleet
-acceptance campaign clears a looser one:
+The ab21 cloud death was a PRE-EXISTING cumulative-work
+history/absorber memory failure caused by the absence of a
+process-wide gather bound (the freeze4 control also dies on the same
+harness). Sixteen shards amplified the exposure but were neither
+necessary nor sufficient (the 4-shard arm also died). Telemetry was
+disabled in the failing cloud arm and was therefore NOT the immediate
+cause; the telemetry DBs independently inherited unsafe cache defaults
+— a latent additional hazard fixed in the same round. Preview.7 died
+~40% earlier than freeze4, so a partial regression exists but is not
+yet isolated. Deploy posture until the acceptance campaign clears a
+looser one (canonical file: deploy/profiles/compute-1g.env, sourced by
+every active deploy script; opt-out only via
+UNSAFE_LEGACY_MEMORY_PROFILE=1):
 
 ```text
-INITIAL_SHARDS=4                    # fresh namespace required to change
+INITIAL_SHARDS=4                    # topology, per-script; fresh namespace required to change
 ABSORB_GATHER_MAX_BYTES=8388608
-ABSORB_GLOBAL_BUDGET_BYTES=67108864 # the hard process-wide bound
+ABSORB_GLOBAL_BUDGET_BYTES=100663296 # hard process-wide bound; the binary FLOORS this
+                                     # at the worst-frame transient (32 MiB frame x3 =
+                                     # 96 MiB) so one oversized frame's real build cost
+                                     # is always covered; 192 MiB restores 2-way gathers
 ABSORB_GLOBAL_GATHERS=2
 SLATEDB_RT_THREADS=4
 TELEMETRY_CACHE_BYTES=16777216

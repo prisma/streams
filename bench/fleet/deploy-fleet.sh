@@ -10,6 +10,17 @@
 #   bench/fleet/deploy-fleet.sh gen       # starts the ramp IMMEDIATELY
 set -euo pipefail
 S=${SOAK_HOME:?set SOAK_HOME}
+# Memory-survival profile (OOM review): every deploy sources the ONE
+# checked-in profile so no script can silently restore the unsafe
+# posture. Opt out only with UNSAFE_LEGACY_MEMORY_PROFILE=1.
+MEMPROFILE="$(cd "$(dirname "$0")/../.." && pwd)/deploy/profiles/compute-1g.env"
+if [ "${UNSAFE_LEGACY_MEMORY_PROFILE:-0}" = "1" ]; then
+  echo "WARNING: UNSAFE_LEGACY_MEMORY_PROFILE=1 — deploying WITHOUT the compute-1g memory profile" >&2
+  MEMFLAGS=""
+else
+  MEMFLAGS=$(awk -F= '!/^[[:space:]]*#/ && NF>=2 {printf "--env %s=%s ", $1, $2}' "$MEMPROFILE")
+fi
+
 STEP=${1:?servers|lb|urls|gen}
 P=$(cat "$S/proj-fleet.txt")
 [ -s "$S/platform-token.txt" ] && export PRISMA_API_TOKEN=$(cat "$S/platform-token.txt")
@@ -81,14 +92,12 @@ if [ "$STEP" = servers ]; then
       --env SCALE_EVAL_SECS=5 --env SCALE_RATE_WINDOW_SECS=10 \
       --env WAL_GROUP_COMMIT=1 --env WAL_FLUSH_GAP_MS=10 --env FLUSH_INTERVAL_MS=25 \
       --env WAL_POST_ACK_GATHER_MS=6 --env FRAME_COMPRESS=1 \
-      --env L0_SST_SIZE_BYTES=16777216 --env MAX_UNFLUSHED_BYTES=33554432 \
-      --env L0_MAX_SSTS=64 --env COMPACTOR_MAX_CONCURRENT=2 \
-      --env SHARED_CACHE_BYTES=67108864 --env SLATEDB_RT_THREADS=2 \
+      --env COMPACTOR_MAX_CONCURRENT=2 \
       --env ADMIT_MAX_INFLIGHT=512 --env ADMIT_MAX_INFLIGHT_PER_STREAM=256 \
-      --env ADMIT_RSS_SHED_MB=600 \
       --env ABSORB_BYTES=4194304 --env ABSORB_AGE_SECS=60 \
       --env ABSORB_PASS_BYTES=67108864 --env TRIM_PER_OP=65536 \
       --env POOL_IDLE_SECS=4 \
+      $MEMFLAGS \
       ${KA[@]+"${KA[@]}"} \
       --env RESOLV_OVERRIDE="$RESOLV" 2>&1 | grep -viE 'resolving|resolved|saved' | tail -2
     record_svc "fleet-s$i"

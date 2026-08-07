@@ -29,6 +29,17 @@ R=${1:?region}; ROLE=${2:?role: server|gen}
 # Absolute script dir: the deploy cd's into the app directory, which
 # breaks any later $(dirname "$0") relative lookup.
 HERE=$(cd "$(dirname "$0")" && pwd)
+# Memory-survival profile (OOM review): every deploy sources the ONE
+# checked-in profile so no script can silently restore the unsafe
+# posture. Opt out only with UNSAFE_LEGACY_MEMORY_PROFILE=1.
+MEMPROFILE="$(cd "$HERE/../.." && pwd)/deploy/profiles/compute-1g.env"
+if [ "${UNSAFE_LEGACY_MEMORY_PROFILE:-0}" = "1" ]; then
+  echo "WARNING: UNSAFE_LEGACY_MEMORY_PROFILE=1 — deploying WITHOUT the compute-1g memory profile" >&2
+  MEMFLAGS=""
+else
+  MEMFLAGS=$(awk -F= '!/^[[:space:]]*#/ && NF>=2 {printf "--env %s=%s ", $1, $2}' "$MEMPROFILE")
+fi
+
 S=${SOAK_HOME:?set SOAK_HOME to a scratch dir outside the repo}
 BENCH_TIERS=${BENCH_TIERS:-1,2,4,8,12,16,24,32,48,64}
 BENCH_SECS=${BENCH_SECS:-180}
@@ -115,14 +126,12 @@ if [ "$ROLE" = server ]; then
     --env TAIL_RING_BYTES="${TAIL_RING_BYTES:-0}" \
     --env STREAMS_DEBUG_TIMING="${STREAMS_DEBUG_TIMING:-0}" \
     --env FRAME_COMPRESS=1 \
-    --env L0_SST_SIZE_BYTES=16777216 --env MAX_UNFLUSHED_BYTES=33554432 \
-    --env L0_MAX_SSTS=64 --env COMPACTOR_MAX_CONCURRENT=2 \
-    --env SHARED_CACHE_BYTES=67108864 --env SLATEDB_RT_THREADS=2 \
+    --env COMPACTOR_MAX_CONCURRENT=2 \
     --env ADMIT_MAX_INFLIGHT=512 --env ADMIT_MAX_INFLIGHT_PER_STREAM=256 \
-    --env ADMIT_RSS_SHED_MB=600 \
     --env ABSORB_BYTES=4194304 --env ABSORB_AGE_SECS=60 \
     --env ABSORB_PASS_BYTES=67108864 --env TRIM_PER_OP=65536 \
     --env POOL_IDLE_SECS=4 --env KEEP_AWAKE=1 \
+    $MEMFLAGS \
     ${SCALEARG[@]+"${SCALEARG[@]}"} \
     ${RESOLVARG[@]+"${RESOLVARG[@]}"} \
     2>&1 | grep -viE 'resolving|resolved|saved')

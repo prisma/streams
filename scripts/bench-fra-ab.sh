@@ -32,6 +32,17 @@
 #   bench-fra-ab.sh stop        # stop load (gen scales to zero)
 set -e
 HERE=$(dirname "$0")
+# Memory-survival profile (OOM review): every deploy sources the ONE
+# checked-in profile so no script can silently restore the unsafe
+# posture. Opt out only with UNSAFE_LEGACY_MEMORY_PROFILE=1.
+MEMPROFILE="$(cd "$HERE/.." && pwd)/deploy/profiles/compute-1g.env"
+if [ "${UNSAFE_LEGACY_MEMORY_PROFILE:-0}" = "1" ]; then
+  echo "WARNING: UNSAFE_LEGACY_MEMORY_PROFILE=1 — deploying WITHOUT the compute-1g memory profile" >&2
+  MEMFLAGS=""
+else
+  MEMFLAGS=$(awk -F= '!/^[[:space:]]*#/ && NF>=2 {printf "--env %s=%s ", $1, $2}' "$MEMPROFILE")
+fi
+
 BUCKET_JSON=$HERE/../bench/bucket-$BENCH_RUN.json
 
 case $1 in
@@ -65,14 +76,11 @@ server)
     --env SLATE_S3_ACCESS_KEY_ID=$(j accessKeyId) --env SLATE_S3_SECRET_ACCESS_KEY="$(j secretAccessKey)" \
     --env AUTH_TOKEN="$(cat $AUTH_TOKEN_FILE)" \
     --env PATH_PREFIX=bench --env INSTANCE_NAME=bench-server \
-    --env FLUSH_INTERVAL_MS=50 --env L0_SST_SIZE_BYTES=8388608 --env MAX_UNFLUSHED_BYTES=16777216 \
-    --env SHARED_CACHE_BYTES=134217728 \
-    --env L0_MAX_SSTS=32 --env L0_MAX_SSTS_PER_KEY=0 --env MANIFEST_POLL_MS=1000 \
-    --env INITIAL_SHARDS=4 --env ADMIT_MAX_INFLIGHT=256 --env ADMIT_RSS_SHED_MB=500 \
+    --env FLUSH_INTERVAL_MS=50 --env L0_MAX_SSTS_PER_KEY=0 --env MANIFEST_POLL_MS=1000 \
+    --env INITIAL_SHARDS=4 --env ADMIT_MAX_INFLIGHT=256 \
     --env ABSORB_BYTES=4194304 --env ABSORB_AGE_SECS=300 --env ABSORB_PASS_BYTES=33554432 --env TRIM_PER_OP=8192 \
-    --env ABSORB_GATHER_MAX_BYTES=8388608 --env ABSORB_GLOBAL_BUDGET_BYTES=67108864 --env ABSORB_GLOBAL_GATHERS=2 \
-    --env SLATEDB_RT_THREADS=4 --env TELEMETRY_CACHE_BYTES=16777216 --env HISTORY_CACHE_BYTES=33554432 --env POSTINGS_CACHE_BYTES=67108864 \
     --env KEEP_AWAKE=1 \
+    $MEMFLAGS \
     2>&1 | grep -E 'New version|error'
   ;;
 gen)

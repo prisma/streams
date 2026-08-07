@@ -166,17 +166,67 @@ pub struct AbsorbBudget {
 /// die between RSS samples.
 pub const ABSORB_BUILD_MULTIPLIER: usize = 3;
 
+/// Worst-case transient for ONE legal oversized frame: the packer
+/// deliberately lets a single frame proceed alone (liveness — bodies
+/// can reach the API cap), so the DECLARED envelope must cover its
+/// full build cost or the budget's bound is a fiction. The budget
+/// floors its capacity here and every gather reserves at least this,
+/// so the reservation always covers the real transient; concurrency
+/// degrades (budget/this many gathers at once) instead of the bound
+/// lying. Field note: arm X survived with exactly this effective
+/// one-gather concurrency.
+pub const ABSORB_WORST_FRAME_TRANSIENT: usize =
+    crate::http::MAX_BODY_BYTES * ABSORB_BUILD_MULTIPLIER;
+
+/// Injected history-flush slowdown, ms per gather flush (0 = off).
+/// Set via POST /v1/debug/history-stall?ms= — the slow-compactor
+/// acceptance campaign's real-mechanism lever: the stall happens on
+/// the actual gather flush path WITH the reservation held.
+pub static HISTORY_FLUSH_STALL_MS: AtomicU64 = AtomicU64::new(0);
+
+/// The budget floor as a pure function (tested directly): a configured
+/// capacity below one worst-case frame build is raised to it.
+pub fn floored_budget_capacity(configured: usize) -> usize {
+    configured.max(ABSORB_WORST_FRAME_TRANSIENT)
+}
+
 pub fn absorb_budget() -> &'static AbsorbBudget {
     static B: std::sync::OnceLock<AbsorbBudget> = std::sync::OnceLock::new();
     B.get_or_init(|| {
-        let bytes: usize = std::env::var("ABSORB_GLOBAL_BUDGET_BYTES")
+        // The test binary runs MANY independent DST engines in one
+        // process; a production-sized global budget would serialize
+        // their gathers ACROSS TESTS and turn timing-sensitive
+        // scenarios flaky. Budget semantics are pinned by dedicated
+        // unit tests on local AbsorbBudget instances; the global gets
+        // ample capacity under cfg(test) unless a test opts in via
+        // env.
+        #[cfg(test)]
+        let default_bytes: usize = 4 * 1024 * 1024 * 1024;
+        #[cfg(not(test))]
+        let default_bytes: usize = 64 * 1024 * 1024;
+        #[cfg(test)]
+        let default_gathers: usize = 64;
+        #[cfg(not(test))]
+        let default_gathers: usize = 2;
+        let configured: usize = std::env::var("ABSORB_GLOBAL_BUDGET_BYTES")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(64 * 1024 * 1024);
+            .unwrap_or(default_bytes);
+        // The floor makes the envelope claim TRUE for oversized
+        // frames: capacity always covers one worst-case build.
+        let bytes = floored_budget_capacity(configured);
+        if bytes > configured {
+            tracing::warn!(
+                "ABSORB_GLOBAL_BUDGET_BYTES raised {configured} -> {bytes}: the budget \
+                 must cover one worst-case frame build ({} B frame x{})",
+                crate::http::MAX_BODY_BYTES,
+                ABSORB_BUILD_MULTIPLIER,
+            );
+        }
         let gathers: usize = std::env::var("ABSORB_GLOBAL_GATHERS")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(2)
+            .unwrap_or(default_gathers)
             .max(1);
         AbsorbBudget::new(bytes, gathers)
     })
@@ -193,6 +243,14 @@ pub fn memory_pressure_mb(rss_mb: u64, reserved_bytes: u64) -> u64 {
 pub struct AbsorbReservation {
     bytes: usize,
     budget: &'static AbsorbBudget,
+    // RAII permits (review: cancellation safety). If reserve() is
+    // cancelled mid-acquire — engine shutdown aborting the absorber, a
+    // timed-out test dropping the future, a future select! — the
+    // already-held permit drops and returns to its semaphore on its
+    // own. forget()/add_permits bookkeeping leaked a gather slot
+    // permanently in exactly that window.
+    _gather: tokio::sync::SemaphorePermit<'static>,
+    _bytes: tokio::sync::SemaphorePermit<'static>,
 }
 
 impl AbsorbBudget {
@@ -209,25 +267,24 @@ impl AbsorbBudget {
     /// Reserve BEFORE any frame is read. Blocks until the process-wide
     /// bytes AND a concurrent-gather slot are available — that wait IS
     /// the backpressure that keeps N shards from building N batches at
-    /// once on a 1 GiB instance. The reservation releases to the budget
-    /// it came from on drop, whatever happened to the gather.
+    /// once on a 1 GiB instance. Cancellation-safe: permits are RAII,
+    /// so a reservation future dropped at ANY await point returns
+    /// whatever it already held.
     pub async fn reserve(&'static self, estimate: usize) -> AbsorbReservation {
         let want = estimate.clamp(1, self.capacity);
         // Semaphore permits are u32-bounded per acquire_many; the
         // capacity clamp keeps `want` far below that for any sane
         // budget (u32::MAX = 4 GiB).
-        let g = self
+        let gather = self
             .gathers
             .acquire()
             .await
             .expect("absorb budget semaphore closed");
-        g.forget();
-        let b = self
+        let bytes = self
             .bytes
             .acquire_many(want as u32)
             .await
             .expect("absorb budget semaphore closed");
-        b.forget();
         self.reserved
             .fetch_add(want as u64, std::sync::atomic::Ordering::Relaxed);
         self.inflight
@@ -235,22 +292,37 @@ impl AbsorbBudget {
         AbsorbReservation {
             bytes: want,
             budget: self,
+            _gather: gather,
+            _bytes: bytes,
         }
     }
 
     pub fn reserved_bytes(&self) -> u64 {
         self.reserved.load(std::sync::atomic::Ordering::Relaxed)
     }
+
+    #[cfg(test)]
+    pub fn gather_slots_free(&self) -> usize {
+        self.gathers.available_permits()
+    }
+}
+
+impl AbsorbReservation {
+    /// Bytes actually GRANTED (post-clamp) — what the gauges report.
+    pub fn granted(&self) -> usize {
+        self.bytes
+    }
 }
 
 impl Drop for AbsorbReservation {
     fn drop(&mut self) {
-        let b = self.budget;
-        b.bytes.add_permits(self.bytes);
-        b.gathers.add_permits(1);
-        b.reserved
+        // Permits return themselves; only the observability counters
+        // need bookkeeping here.
+        self.budget
+            .reserved
             .fetch_sub(self.bytes as u64, std::sync::atomic::Ordering::Relaxed);
-        b.inflight
+        self.budget
+            .inflight
             .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
 }
@@ -914,10 +986,13 @@ impl Absorber {
                             let est = absorber
                                 .cfg
                                 .gather_max_bytes
-                                .saturating_mul(ABSORB_BUILD_MULTIPLIER);
+                                .saturating_mul(ABSORB_BUILD_MULTIPLIER)
+                                .max(ABSORB_WORST_FRAME_TRANSIENT);
                             let _reservation = absorb_budget().reserve(est).await;
-                            GATHER_LAST_RESERVED
-                                .store(est as u64, std::sync::atomic::Ordering::Relaxed);
+                            GATHER_LAST_RESERVED.store(
+                                _reservation.granted() as u64,
+                                std::sync::atomic::Ordering::Relaxed,
+                            );
                             if absorber.shard.is_closed() {
                                 continue; // fenced while waiting for budget
                             }
@@ -1206,6 +1281,12 @@ impl Absorber {
         part.write_with_options(wb, &WriteOptions::default())
             .await?;
         GATHER_LAST_WRITE_MS.store(t_write.elapsed().as_millis() as u64, ord);
+        let stall = HISTORY_FLUSH_STALL_MS.load(std::sync::atomic::Ordering::Relaxed);
+        if stall > 0 {
+            // Slow-compactor campaign lever: the stall sits ON the real
+            // flush path with the reservation held.
+            tokio::time::sleep(Duration::from_millis(stall)).await;
+        }
         let t_flush = Instant::now();
         part.flush().await?; // wal off => memtable -> L0, manifest published
         // Flush wait is the review's leading indicator: when history L0
@@ -1738,20 +1819,19 @@ mod tests {
             .unwrap();
     }
 
-    /// OOM review item 1, forced mechanism (no timing dependence): a
-    /// gather stalled in its history flush — the "compaction fell
-    /// behind" shape — HOLDS its process-wide reservation, so (a) the
-    /// aggregate reserved bytes can never exceed the budget no matter
-    /// how many shards want to gather, (b) the next gather WAITS
-    /// instead of building a second resident batch, and (c) healing
-    /// (the stalled flush completing) hands the budget to the waiter —
-    /// the absorber catches up instead of the process dying.
+    /// Budget PRIMITIVE test (review: named for what it proves, no
+    /// more): a held reservation blocks further reservations past the
+    /// declared capacity, the shed expression trips on RSS+reserved,
+    /// and releasing hands the budget to the waiter. The real-history
+    /// stalled-flush scenario (flush held, ingest continuing, shed,
+    /// heal, catch-up, survival) is the acceptance campaign's
+    /// slow-compactor leg, driven via /v1/debug/history-stall — this
+    /// test does NOT claim it.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn stalled_flush_keeps_gather_memory_bounded_then_recovers() {
+    async fn absorb_budget_blocks_waiters_and_recovers_after_release() {
         let budget: &'static AbsorbBudget = Box::leak(Box::new(AbsorbBudget::new(100, 2)));
-        // Sixteen shards all want 32-MiB-class gathers (scaled here):
-        // estimates clamp to the whole budget, so the FIRST holds
-        // everything — exactly "one oversized gather serializes".
+        // Two reservations that cannot coexist (scaled units): the
+        // first holds the budget, the second must WAIT.
         let stalled = budget.reserve(60).await;
         assert_eq!(budget.reserved_bytes(), 60);
         let second = budget.reserve(60); // 60+60 > 100: must wait
@@ -1762,20 +1842,18 @@ mod tests {
                 .is_err(),
             "a second gather must NOT proceed while the stall holds the budget"
         );
-        // The bound is the invariant the review demanded: reserved can
-        // never exceed capacity — "32 MiB x open shards" is impossible
-        // by construction, not by convention.
+        // The DECLARED reservation can never exceed capacity — "32 MiB
+        // x open shards" of declared reservation is impossible by
+        // construction. (Coverage of the real transient is the floor's
+        // job, tested separately below.)
         assert!(budget.reserved_bytes() <= 100);
-        // While stalled, admission pressure includes the reservation
-        // (review P2): a 500 MB RSS instance with 60 B reserved playing
-        // at MiB scale — use real numbers: 500 MB RSS + 128 MiB
-        // reserved trips a 600 MB line even though sampled RSS alone
-        // would not.
+        // While the budget is held, admission pressure includes the
+        // reservation (review P2): 500 MB RSS + 128 MiB reserved trips
+        // a 600 MB line even though sampled RSS alone would not.
         assert_eq!(memory_pressure_mb(500, 128 * 1024 * 1024), 628);
         assert!(memory_pressure_mb(500, 128 * 1024 * 1024) > 600);
         assert!(memory_pressure_mb(500, 0) <= 600);
-        // HEAL: the stalled flush completes, its reservation drops, and
-        // the waiter proceeds — recovery without restart.
+        // Release: the holder drops and the waiter proceeds.
         drop(stalled);
         let recovered = tokio::time::timeout(Duration::from_secs(5), second)
             .await
@@ -1806,6 +1884,85 @@ mod tests {
             .expect("slot handoff");
         drop(b);
         drop(c);
+        assert_eq!(budget.reserved_bytes(), 0);
+    }
+
+    /// Review (disposition item 1): cancelling a reservation mid-
+    /// acquire must not leak a gather slot. The waiter has taken its
+    /// gather permit and is parked on bytes when it is aborted; RAII
+    /// permits return BOTH resources, and after the holder releases,
+    /// fresh reservations fill every slot again. Deterministic via
+    /// available-permit observation, no sleeps as conditions.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn cancelled_reservation_releases_its_gather_slot() {
+        let budget: &'static AbsorbBudget = Box::leak(Box::new(AbsorbBudget::new(100, 2)));
+        let holder = budget.reserve(100).await; // slot 1 + ALL bytes
+        assert_eq!(budget.gather_slots_free(), 1);
+        // The victim takes slot 2, then parks waiting for bytes.
+        let victim = tokio::spawn(async { budget.reserve(50).await });
+        while budget.gather_slots_free() != 0 {
+            tokio::task::yield_now().await;
+        }
+        victim.abort(); // cancelled while awaiting byte permits
+        let _ = victim.await; // join the aborted task
+        // The aborted waiter's gather permit must have returned.
+        while budget.gather_slots_free() != 1 {
+            tokio::task::yield_now().await;
+        }
+        drop(holder);
+        // FULL capacity restored: two fresh reservations coexist.
+        let a = budget.reserve(40).await;
+        let b = budget.reserve(40).await;
+        assert_eq!(budget.gather_slots_free(), 0);
+        drop(a);
+        drop(b);
+        assert_eq!(budget.gather_slots_free(), 2);
+        assert_eq!(budget.reserved_bytes(), 0);
+    }
+
+    /// Review (disposition item 2): the budget floor covers one
+    /// worst-case frame build, every gather's estimate is at least
+    /// that, and oversized-class reservations SERIALIZE without
+    /// starvation — the declared envelope covers the real transient.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn worst_frame_floor_serializes_oversized_gathers_without_starvation() {
+        assert_eq!(
+            ABSORB_WORST_FRAME_TRANSIENT,
+            crate::http::MAX_BODY_BYTES * ABSORB_BUILD_MULTIPLIER
+        );
+        // A too-small configured budget floors up to the worst frame.
+        assert_eq!(
+            floored_budget_capacity(64 * 1024 * 1024),
+            ABSORB_WORST_FRAME_TRANSIENT
+        );
+        // A generous budget is untouched.
+        assert_eq!(
+            floored_budget_capacity(256 * 1024 * 1024),
+            256 * 1024 * 1024
+        );
+        // At exactly the floor, worst-frame reservations run one at a
+        // time and ALL complete (no deadlock, no starvation).
+        let budget: &'static AbsorbBudget =
+            Box::leak(Box::new(AbsorbBudget::new(floored_budget_capacity(0), 4)));
+        let done = std::sync::Arc::new(AtomicU64::new(0));
+        let mut handles = Vec::new();
+        for _ in 0..3 {
+            let done = done.clone();
+            handles.push(tokio::spawn(async move {
+                let r = budget.reserve(ABSORB_WORST_FRAME_TRANSIENT).await;
+                assert_eq!(r.granted(), ABSORB_WORST_FRAME_TRANSIENT);
+                // Serialized by bytes: nothing else can be reserved.
+                assert_eq!(budget.reserved_bytes(), ABSORB_WORST_FRAME_TRANSIENT as u64);
+                done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }));
+        }
+        for h in handles {
+            tokio::time::timeout(Duration::from_secs(10), h)
+                .await
+                .expect("oversized gathers must not starve")
+                .unwrap();
+        }
+        assert_eq!(done.load(std::sync::atomic::Ordering::Relaxed), 3);
         assert_eq!(budget.reserved_bytes(), 0);
     }
 

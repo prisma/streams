@@ -7392,6 +7392,12 @@ async fn product_sse_controls_carry_signed_cursors() {
         );
         data_n.clear();
         cursor_tok = None;
+        // Every data event is PAIRED with a control event, so controls
+        // for record 0 (cursor offset 1) and record 1 (offset 2) both
+        // arrive. Only a control that follows BOTH data events proves
+        // the final cursor — grabbing whichever control happens to be
+        // in the buffer raced the pair flush (latent flake surfaced by
+        // unrelated scheduling shifts).
         for chunk in text.split("\n\n") {
             let mut is_control = false;
             for line in chunk.lines() {
@@ -7400,10 +7406,11 @@ async fn product_sse_controls_carry_signed_cursors() {
                 }
                 if let Some(d) = line.strip_prefix("data:") {
                     if is_control {
-                        if let Ok(v) = serde_json::from_str::<serde_json::Value>(d) {
-                            if let Some(c) = v["nextCursor"].as_str() {
-                                cursor_tok = Some(c.to_string());
-                            }
+                        if data_n.len() >= 2
+                            && let Ok(v) = serde_json::from_str::<serde_json::Value>(d)
+                            && let Some(c) = v["nextCursor"].as_str()
+                        {
+                            cursor_tok = Some(c.to_string());
                         }
                     } else if let Ok(v) = serde_json::from_str::<serde_json::Value>(d) {
                         let rec = if v.is_array() { v[0].clone() } else { v };
