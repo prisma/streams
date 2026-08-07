@@ -165,12 +165,27 @@ platform process-supervision/health-removal defect, tracked separately
 from the app's memory behavior. A durability service cannot depend on
 an operator noticing a silent zombie.
 
-### Campaign state
+### Campaign state (matrix COMPLETE, 2026-08-07)
 
-Recorded in the soak results (ab21 FINDINGS): failed-run topology facts,
-the exoneration correction, and the A/B fairness note (slate accepted
-~26× Bun's work per wall-clock; the decisive comparison is preview.4 vs
-preview.7 slate at equal accepted bytes/topology). Experiment-matrix
-arms (B: full telemetry off; D: forced 4 shards; then E/F) run on
-Compute with fresh namespaces at conc 192 to a fixed ≥2 GiB accepted
-target; results land in the same FINDINGS file.
+Recorded in the soak results (ab21 FINDINGS): failed-run topology facts
+(16 shards from the preserved bucket), the exoneration correction, the
+A/B fairness note, and the full experiment matrix at conc 192 with a
+fresh namespace per arm:
+
+| arm | binary | shards | telemetry | outcome |
+|---|---|---|---|---|
+| A2 ≡ B | preview.7 | 16 | verifiably off | DEAD @ 330,676 ok |
+| D | preview.7 | 4 | off | DEAD @ 210,950 ok |
+| F4 control | freeze4 (pre-billing) | 16 | — | DEAD @ 534,332 ok |
+| X | FIXED build | 16 | ON (ROLLUP=1) | **SURVIVED** @ 671,623 ok (~2.15 GiB target) |
+
+Conclusions: the cumulative-work kill PRE-EXISTS the telemetry window
+(freeze4 dies too); preview.7 made it ~40% earlier (real partial
+regression; bisect is follow-up, not a blocker for the fix); neither
+telemetry nor shard count alone flips preview.7; the ONLY surviving
+arm is the fixed build — with strictly more work (full telemetry) on
+the killer topology — whose causal gauges showed the budget
+serializing gathers at the 64 MiB cap while history flushes stalled at
+~2.5 s. Survival margin at stock knobs is thin (RSS peak 702 MB
+sampled): the survival posture stays the deploy stance until the
+acceptance-gate soaks run.
