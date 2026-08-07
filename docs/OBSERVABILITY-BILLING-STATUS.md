@@ -139,16 +139,19 @@ unflushed-bytes counters (no public stats API);
 `history_flush_wait_ms_max` + the L0 gauges are the operative
 substitutes, and a public stats surface is tracked as an upstream ask.
 
-### Deterministic regression
+### Deterministic regression (semaphore mechanics ONLY)
 
-`stalled_flush_keeps_gather_memory_bounded_then_recovers`: a gather
-stalled in its history flush holds the budget → aggregate reserved
-bytes can never exceed capacity (the 16×32 MiB shape is impossible by
-construction), the next gather WAITS (backpressure) while the shed
-expression trips on RSS+reserved, and healing hands the budget to the
-waiter (recovery without restart). Plus `gather_concurrency_cap_holds`
-and `absorber_phase_stagger_is_prefix_seeded`. Timing-independent; the
-soak-scale injected-slowdown leg is part of the acceptance gate below.
+`absorb_budget_blocks_waiters_and_recovers_after_release` proves the
+budget PRIMITIVE: a held reservation blocks further reservations past
+the declared capacity, the shed expression trips on RSS+reserved, and
+release hands the budget to the waiter. Companions:
+`cancelled_reservation_releases_its_gather_slot` (RAII permits under
+abort), `worst_frame_floor_serializes_oversized_gathers_without_starvation`
+(floor + serialization + liveness), `gather_concurrency_cap_holds`,
+and `absorber_phase_stagger_is_prefix_seeded`. These do NOT claim the
+real stalled-flush mechanism — that claim belongs exclusively to the
+slow-compactor acceptance leg below (driven via
+POST /v1/debug/history-stall on the real gather flush path).
 
 ### Acceptance gate before preview.7-class builds are restored
 
