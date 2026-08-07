@@ -423,10 +423,31 @@ pub struct UsageCorrection {
     pub identity: BillingIdentity,
     pub month: String,
     pub reason: String,
+    /// Round-22 item 8: corrections are auditable financial records —
+    /// deterministic id (dedupe key + artifact name), schema version,
+    /// the source event that produced the delta, and when it applied.
+    #[serde(default)]
+    pub correction_id: String,
+    #[serde(default)]
+    pub correction_version: u32,
+    #[serde(default)]
+    pub source_event_id: String,
+    #[serde(default)]
+    pub created_at_ms: i64,
     #[serde(default)]
     pub ingest_payload_bytes_delta: i64,
     #[serde(default)]
+    pub ingest_records_delta: i64,
+    #[serde(default)]
     pub read_payload_bytes_delta: i64,
+    #[serde(default)]
+    pub read_records_delta: i64,
+    #[serde(default)]
+    pub read_operations_delta: i64,
+    #[serde(default)]
+    pub queue_operations_delta: i64,
+    #[serde(default)]
+    pub append_requests_delta: i64,
     /// i128 as string.
     #[serde(default)]
     pub storage_byte_ms_delta: String,
@@ -1438,9 +1459,20 @@ pub async fn ops_rollup_step(
     Ok(snaps.len())
 }
 
-/// Publish pending monthly artifacts (blocker 7, phase 2): create-only
-/// PUT of each frozen row to its immutable path; AlreadyExists counts
-/// as published (an earlier successful attempt); anything else stays
+/// Monthly-artifact content mismatches observed at publication (an
+/// AlreadyExists object whose bytes differ from the frozen row). Any
+/// nonzero value is a standing operator alert: an immutable invoice
+/// path holds content we did not stage.
+pub static ARTIFACT_MISMATCHES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Publish pending monthly + correction artifacts (blocker 7 phase 2,
+/// hardened by round-22 item 8): create-only PUT of each staged body
+/// to its immutable path. AlreadyExists is trusted ONLY after reading
+/// the object back and verifying its bytes equal what we staged — an
+/// equal body is an earlier successful attempt; a different body is a
+/// financial-integrity alarm and the row stays pending for an
+/// operator, never silently marked published. Anything else stays
 /// pending and retries next tick and after restart.
 pub async fn publish_artifacts(
     rollup: &crate::rollup::UsageRollup,
@@ -1448,37 +1480,94 @@ pub async fn publish_artifacts(
     prefix: &str,
 ) -> Result<usize, String> {
     use object_store::{ObjectStoreExt, PutMode, PutOptions, PutPayload};
+    async fn create_verified(
+        store: &std::sync::Arc<dyn object_store::ObjectStore>,
+        path: &str,
+        body: &[u8],
+    ) -> bool {
+        let opath = object_store::path::Path::from(path.to_string());
+        match store
+            .put_opts(
+                &opath,
+                PutPayload::from(body.to_vec()),
+                PutOptions::from(PutMode::Create),
+            )
+            .await
+        {
+            Ok(_) => true,
+            Err(object_store::Error::AlreadyExists { .. }) => {
+                match store.get(&opath).await {
+                    Ok(r) => match r.bytes().await {
+                        Ok(existing) if existing.as_ref() == body => true,
+                        Ok(existing) => {
+                            ARTIFACT_MISMATCHES
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            tracing::error!(
+                                "artifact CONTENT MISMATCH at {path}: existing {}B != staged {}B — \
+                                 refusing to mark published; operator must reconcile",
+                                existing.len(),
+                                body.len()
+                            );
+                            false
+                        }
+                        Err(e) => {
+                            tracing::warn!("artifact verify read {path}: {e}");
+                            false
+                        }
+                    },
+                    Err(e) => {
+                        tracing::warn!("artifact verify get {path}: {e}");
+                        false
+                    }
+                }
+            }
+            Err(e) => {
+                tracing::warn!("artifact PUT {path}: {e}");
+                false
+            }
+        }
+    }
     let pending = rollup
         .pending_artifacts(64)
         .await
         .map_err(|e| e.to_string())?;
     let mut published = 0usize;
     for (pkey, month, project, stream_id, row) in pending {
+        // `project` here is "{account}/{project}" — the artifact path
+        // carries the account dimension (doc item D2).
         let path = if prefix.is_empty() {
             format!("telemetry/usage-monthly/{project}/{stream_id}/{month}.json")
         } else {
             format!("{prefix}/telemetry/usage-monthly/{project}/{stream_id}/{month}.json")
         };
         let body = serde_json::to_vec(&row).map_err(|e| e.to_string())?;
-        let opath = object_store::path::Path::from(path.clone());
-        let res = store
-            .put_opts(
-                &opath,
-                PutPayload::from(body),
-                PutOptions::from(PutMode::Create),
-            )
-            .await;
-        let ok = match res {
-            Ok(_) => true,
-            Err(object_store::Error::AlreadyExists { .. }) => true,
-            Err(e) => {
-                tracing::warn!("artifact PUT {path}: {e}");
-                false
-            }
-        };
-        if ok {
+        if create_verified(store, &path, &body).await {
             rollup
                 .mark_artifact_published(&pkey, &path)
+                .await
+                .map_err(|e| e.to_string())?;
+            published += 1;
+        }
+    }
+    // Correction artifacts (round-22 item 8): each correction applied
+    // to a finalized month is its own immutable object next to the
+    // monthly artifact.
+    let corr = rollup
+        .pending_correction_artifacts(64)
+        .await
+        .map_err(|e| e.to_string())?;
+    for (pkey, month, acct_proj, stream_id, cid, body) in corr {
+        let safe = cid.replace('/', "~");
+        let path = if prefix.is_empty() {
+            format!("telemetry/usage-monthly/{acct_proj}/{stream_id}/{month}.corrections/{safe}.json")
+        } else {
+            format!(
+                "{prefix}/telemetry/usage-monthly/{acct_proj}/{stream_id}/{month}.corrections/{safe}.json"
+            )
+        };
+        if create_verified(store, &path, &body).await {
+            rollup
+                .mark_correction_published(&pkey, &path)
                 .await
                 .map_err(|e| e.to_string())?;
             published += 1;
@@ -1529,8 +1618,6 @@ pub fn spawn_rollup(state: std::sync::Arc<crate::http::AppState>, prefix: String
             let now = crate::shard::now_ms();
             if now - last_close > 3_600_000 {
                 last_close = now;
-                let (cy, cm) = utc_year_month(now);
-                let (py, pm) = if cm == 1 { (cy - 1, 12) } else { (cy, cm - 1) };
                 let rollup2 = state.rollup.get().unwrap().clone();
                 let store2 = state.data_store.clone();
                 let pfx = prefix.clone();
@@ -1539,9 +1626,19 @@ pub fn spawn_rollup(state: std::sync::Arc<crate::http::AppState>, prefix: String
                         tracing::info!("ops raw retention: {n} points expired");
                     }
                 }
-                match rollup2.close_month(py, pm, grace_ms).await {
-                    Ok(n) if n > 0 => tracing::info!("month {py}-{pm:02} closed: {n} streams"),
-                    Ok(_) => {}
+                // Round-22 item 8: missed months catch up IN ORDER from
+                // the persisted oldest-unfinalized marker — a rollup
+                // that was down over one or more boundaries closes
+                // every overdue month, oldest first, before touching
+                // the newest.
+                match rollup2.close_months_due(grace_ms).await {
+                    Ok(closed) => {
+                        for (mstr, n) in closed {
+                            if n > 0 {
+                                tracing::info!("month {mstr} closed: {n} streams");
+                            }
+                        }
+                    }
                     Err(e) => tracing::warn!("month close: {e}"),
                 }
                 // Two-phase artifact publication (round-21 blocker 7):

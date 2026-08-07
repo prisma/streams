@@ -127,8 +127,72 @@ pub struct MonthRow {
     pub frozen: Option<FrozenTotals>,
     #[serde(default)]
     pub corrections: Vec<UsageCorrection>,
+    /// Materialized sums over `corrections` (round-22 item 8).
+    #[serde(default)]
+    pub corr: CorrTotals,
     #[serde(default)]
     pub updated_ms: i64,
+}
+
+/// Materialized correction sums (round-22 item 8): effective totals
+/// = base + these, served by the usage API without walking the
+/// corrections list. Kept on month rows AND on name/project
+/// aggregates so aggregate answers stay invoice-consistent.
+#[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
+pub struct CorrTotals {
+    #[serde(default)]
+    pub ingest_payload_bytes_delta: i64,
+    #[serde(default)]
+    pub ingest_records_delta: i64,
+    #[serde(default)]
+    pub read_payload_bytes_delta: i64,
+    #[serde(default)]
+    pub read_records_delta: i64,
+    #[serde(default)]
+    pub read_operations_delta: i64,
+    #[serde(default)]
+    pub queue_operations_delta: i64,
+    #[serde(default)]
+    pub append_requests_delta: i64,
+    /// i128 as string.
+    #[serde(default)]
+    pub storage_byte_ms_delta: String,
+    #[serde(default)]
+    pub count: u32,
+}
+
+impl CorrTotals {
+    pub fn absorb(&mut self, c: &UsageCorrection) {
+        self.ingest_payload_bytes_delta += c.ingest_payload_bytes_delta;
+        self.ingest_records_delta += c.ingest_records_delta;
+        self.read_payload_bytes_delta += c.read_payload_bytes_delta;
+        self.read_records_delta += c.read_records_delta;
+        self.read_operations_delta += c.read_operations_delta;
+        self.queue_operations_delta += c.queue_operations_delta;
+        self.append_requests_delta += c.append_requests_delta;
+        let cur: i128 = self.storage_byte_ms_delta.parse().unwrap_or(0);
+        let d: i128 = c.storage_byte_ms_delta.parse().unwrap_or(0);
+        self.storage_byte_ms_delta = (cur + d).to_string();
+        self.count += 1;
+    }
+}
+
+/// base + signed delta, floored at zero (a correction can subtract).
+pub fn eff_u64(base: u64, delta: i64) -> u64 {
+    if delta >= 0 {
+        base.saturating_add(delta as u64)
+    } else {
+        base.saturating_sub(delta.unsigned_abs())
+    }
+}
+
+pub fn eff_u128(base: u128, delta_str: &str) -> u128 {
+    let d: i128 = delta_str.parse().unwrap_or(0);
+    if d >= 0 {
+        base.saturating_add(d as u128)
+    } else {
+        base.saturating_sub(d.unsigned_abs())
+    }
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
@@ -190,6 +254,43 @@ impl MonthRow {
     pub fn owned_bytes_now(&self) -> u64 {
         self.segments.values().map(|s| s.gauge_bytes).sum()
     }
+    /// Effective (invoice) totals: the frozen base when finalized,
+    /// live accumulators otherwise, plus materialized corrections.
+    pub fn effective(&self) -> serde_json::Value {
+        let (ib, irec, sbm, rpb, rrec, rop, qop, areq) = match &self.frozen {
+            Some(f) => (
+                f.ingest_bytes,
+                f.ingest_records,
+                f.storage_byte_ms.parse::<u128>().unwrap_or(0),
+                f.read_payload_bytes,
+                f.read_records,
+                f.read_operations,
+                f.queue_operations,
+                f.append_requests,
+            ),
+            None => (
+                self.ingest_bytes(),
+                self.ingest_records(),
+                self.storage_byte_ms(),
+                self.read_payload_bytes,
+                self.read_records,
+                self.read_operations,
+                self.queue_operations,
+                self.append_requests,
+            ),
+        };
+        serde_json::json!({
+            "ingestPayloadBytes": eff_u64(ib, self.corr.ingest_payload_bytes_delta),
+            "ingestRecords": eff_u64(irec, self.corr.ingest_records_delta),
+            "readPayloadBytes": eff_u64(rpb, self.corr.read_payload_bytes_delta),
+            "readRecords": eff_u64(rrec, self.corr.read_records_delta),
+            "readOperations": eff_u64(rop, self.corr.read_operations_delta),
+            "queueOperations": eff_u64(qop, self.corr.queue_operations_delta),
+            "appendRequests": eff_u64(areq, self.corr.append_requests_delta),
+            "storageByteSeconds": (eff_u128(sbm, &self.corr.storage_byte_ms_delta) / 1000).to_string(),
+            "correctionCount": self.corr.count,
+        })
+    }
 }
 
 /// Aggregate across a project's streams for one month (also the shape
@@ -217,6 +318,10 @@ pub struct AggRow {
     /// Name rows: the incarnations that contributed this month.
     #[serde(default)]
     pub incarnations: Vec<String>,
+    /// Correction sums carried at the aggregate level too (round-22
+    /// item 8): project/name answers include late-data effects.
+    #[serde(default)]
+    pub corr: CorrTotals,
 }
 
 impl AggRow {
@@ -299,17 +404,32 @@ impl UsageRollup {
         let mut segs: std::collections::HashMap<Vec<u8>, SegmentState> = Default::default();
         let mut names: std::collections::HashMap<Vec<u8>, AggRow> = Default::default();
         let mut projects: std::collections::HashMap<Vec<u8>, AggRow> = Default::default();
+        let mut extra: Vec<(Vec<u8>, Vec<u8>)> = Vec::new();
         let now = crate::shard::now_ms();
 
         for env in envelopes {
             match &env.payload {
                 UsagePayload::ReadBatch(rb) => {
-                    self.apply_read_batch(rb, &mut sources, &mut months, &mut names, &mut projects)
-                        .await;
+                    self.apply_read_batch(
+                        rb,
+                        &mut sources,
+                        &mut months,
+                        &mut names,
+                        &mut projects,
+                        &mut extra,
+                    )
+                    .await;
                 }
                 UsagePayload::SegmentSnapshot(snap) => {
-                    self.apply_snapshot(snap, &mut months, &mut segs, &mut names, &mut projects)
-                        .await;
+                    self.apply_snapshot(
+                        snap,
+                        &mut months,
+                        &mut segs,
+                        &mut names,
+                        &mut projects,
+                        &mut extra,
+                    )
+                    .await;
                 }
                 UsagePayload::StreamLifecycle(_) => {
                     // Informational in v1: recreation isolation is
@@ -326,7 +446,23 @@ impl UsageRollup {
                         Some(r) => r.clone(),
                         None => get_json(&self.db, &key).await,
                     };
-                    row.corrections.push(c.clone());
+                    // Round-22 item 8: fill provenance for envelope-
+                    // supplied corrections from the envelope itself.
+                    let mut c = c.clone();
+                    if c.correction_id.is_empty() {
+                        c.correction_id = env.event_id.clone();
+                    }
+                    if c.correction_version == 0 {
+                        c.correction_version = 1;
+                    }
+                    if c.source_event_id.is_empty() {
+                        c.source_event_id = env.event_id.clone();
+                    }
+                    if c.created_at_ms == 0 {
+                        c.created_at_ms = env.emitted_ms;
+                    }
+                    self.push_correction(&mut row, c, &mut names, &mut projects, &mut extra)
+                        .await;
                     row.updated_ms = now;
                     months.insert(key, row);
                 }
@@ -348,9 +484,75 @@ impl UsageRollup {
         for (k, agg) in &projects {
             wb.put(k.clone(), serde_json::to_vec(agg)?);
         }
+        for (k, v) in &extra {
+            wb.put(k.clone(), v.clone());
+        }
         wb.put(K_CURSOR, next_cursor.as_bytes());
         self.db.write(wb).await?;
         Ok(())
+    }
+
+    /// Append ONE correction to a month row: dedupe by correction_id
+    /// (a replayed correction applies exactly once), materialize its
+    /// sums on the row AND on both aggregates (round-22 item 8f), and
+    /// stage its immutable artifact when the month is finalized (8e).
+    async fn push_correction(
+        &self,
+        mr: &mut MonthRow,
+        c: UsageCorrection,
+        names: &mut std::collections::HashMap<Vec<u8>, AggRow>,
+        projects: &mut std::collections::HashMap<Vec<u8>, AggRow>,
+        extra: &mut Vec<(Vec<u8>, Vec<u8>)>,
+    ) {
+        if !c.correction_id.is_empty()
+            && mr
+                .corrections
+                .iter()
+                .any(|x| x.correction_id == c.correction_id)
+        {
+            return;
+        }
+        mr.corr.absorb(&c);
+        for (key, is_name) in [
+            (
+                k_name(
+                    &c.month,
+                    &c.identity.account_id,
+                    &c.identity.project_id,
+                    &c.identity.stream_name,
+                ),
+                true,
+            ),
+            (
+                k_project(&c.month, &c.identity.account_id, &c.identity.project_id),
+                false,
+            ),
+        ] {
+            let mut a: AggRow = match names.get(&key).or_else(|| projects.get(&key)) {
+                Some(r) => r.clone(),
+                None => get_json(&self.db, &key).await,
+            };
+            a.corr.absorb(&c);
+            if is_name {
+                names.insert(key, a);
+            } else {
+                projects.insert(key, a);
+            }
+        }
+        if mr.finalized_at_ms.is_some() {
+            let pk = format!(
+                "corr-pending/{}/{}/{}/{}/{}",
+                c.month,
+                c.identity.account_id,
+                c.identity.project_id,
+                c.identity.stream_id,
+                c.correction_id.replace('/', "~"),
+            );
+            if let Ok(v) = serde_json::to_vec(&c) {
+                extra.push((pk.into_bytes(), v));
+            }
+        }
+        mr.corrections.push(c);
     }
 
     async fn apply_read_batch(
@@ -360,6 +562,7 @@ impl UsageRollup {
         months: &mut std::collections::HashMap<Vec<u8>, MonthRow>,
         names: &mut std::collections::HashMap<Vec<u8>, AggRow>,
         projects: &mut std::collections::HashMap<Vec<u8>, AggRow>,
+        extra: &mut Vec<(Vec<u8>, Vec<u8>)>,
     ) {
         let boot = rb.source.boot.clone();
         let floor = match sources.get(&boot) {
@@ -391,7 +594,7 @@ impl UsageRollup {
         // intermediate months too.
         let spans = month_spans(rb.from_ms, rb.to_ms);
         if spans.len() == 1 {
-            self.apply_read_rows(rb, &spans[0].0, months, names, projects)
+            self.apply_read_rows(rb, &spans[0].0, months, names, projects, extra)
                 .await;
         } else {
             let total: i64 = spans.iter().map(|(_, d)| *d).sum::<i64>().max(1);
@@ -438,7 +641,7 @@ impl UsageRollup {
                         })
                         .collect(),
                 };
-                self.apply_read_rows(&scaled, month, months, names, projects)
+                self.apply_read_rows(&scaled, month, months, names, projects, extra)
                     .await;
             }
         }
@@ -451,6 +654,7 @@ impl UsageRollup {
         months: &mut std::collections::HashMap<Vec<u8>, MonthRow>,
         names: &mut std::collections::HashMap<Vec<u8>, AggRow>,
         projects: &mut std::collections::HashMap<Vec<u8>, AggRow>,
+        extra: &mut Vec<(Vec<u8>, Vec<u8>)>,
     ) {
         let scale = |v: u64| -> u64 { v };
         for row in &rb.rows {
@@ -465,19 +669,33 @@ impl UsageRollup {
                 None => get_json(&self.db, &mkey).await,
             };
             if mr.finalized_at_ms.is_some() {
-                // Late reads after finalization: explicit correction,
+                // Late reads after finalization: explicit correction
+                // carrying EVERY read dimension (round-22 item 8),
                 // frozen base untouched (round-21 blocker 8).
-                mr.corrections.push(UsageCorrection {
+                let c = UsageCorrection {
                     identity: row.identity.clone(),
                     month: month.to_string(),
                     reason: format!(
                         "late read batch {}#{} after finalization",
                         rb.source.boot, rb.seq
                     ),
+                    correction_id: format!(
+                        "corr/read/{}/{}/{}/{}",
+                        rb.source.boot, rb.seq, month, row.identity.stream_id
+                    ),
+                    correction_version: 1,
+                    source_event_id: format!("read/{}/{}", rb.source.boot, rb.seq),
+                    created_at_ms: crate::billing::billing_now_ms(),
                     ingest_payload_bytes_delta: 0,
+                    ingest_records_delta: 0,
                     read_payload_bytes_delta: scale(row.read_payload_bytes) as i64,
+                    read_records_delta: scale(row.read_records) as i64,
+                    read_operations_delta: scale(row.read_operations) as i64,
+                    queue_operations_delta: scale(row.queue_operations) as i64,
+                    append_requests_delta: scale(row.append_requests) as i64,
                     storage_byte_ms_delta: "0".into(),
-                });
+                };
+                self.push_correction(&mut mr, c, names, projects, extra).await;
                 months.insert(mkey, mr);
                 continue;
             }
@@ -532,6 +750,7 @@ impl UsageRollup {
         segs: &mut std::collections::HashMap<Vec<u8>, SegmentState>,
         names: &mut std::collections::HashMap<Vec<u8>, AggRow>,
         projects: &mut std::collections::HashMap<Vec<u8>, AggRow>,
+        extra: &mut Vec<(Vec<u8>, Vec<u8>)>,
     ) {
         let id = &snap.identity;
         let skey = k_segment(
@@ -571,26 +790,45 @@ impl UsageRollup {
             let d_bytes = snap
                 .ingest_payload_bytes_month
                 .saturating_sub(sm.ingest_bytes);
+            let d_recs = snap.ingest_records_month.saturating_sub(sm.ingest_records);
             let new_ms: u128 = snap.storage_byte_ms_month.parse().unwrap_or(0);
             let old_ms: u128 = sm.storage_byte_ms.parse().unwrap_or(0);
             let d_ms = new_ms.saturating_sub(old_ms);
-            if d_bytes > 0 || d_ms > 0 {
-                mr.corrections.push(UsageCorrection {
+            // Advance the floors FIRST (ends the segment borrow), so a
+            // replay corrects exactly once; the deltas are already in
+            // locals.
+            sm.usage_version = snap.usage_version.max(sm.usage_version);
+            sm.ingest_bytes = snap.ingest_payload_bytes_month.max(sm.ingest_bytes);
+            sm.ingest_records = snap.ingest_records_month.max(sm.ingest_records);
+            sm.storage_byte_ms = new_ms.max(old_ms).to_string();
+            sm.final_seen = true;
+            if d_bytes > 0 || d_ms > 0 || d_recs > 0 {
+                let c = UsageCorrection {
                     identity: id.clone(),
                     month: snap.month.clone(),
                     reason: format!(
                         "late segment snapshot v{} after finalization",
                         snap.usage_version
                     ),
+                    correction_id: format!(
+                        "corr/snap/{}/{}",
+                        snap.deterministic_event_id(),
+                        snap.month
+                    ),
+                    correction_version: 1,
+                    source_event_id: snap.deterministic_event_id(),
+                    created_at_ms: crate::billing::billing_now_ms(),
                     ingest_payload_bytes_delta: d_bytes as i64,
+                    ingest_records_delta: d_recs as i64,
                     read_payload_bytes_delta: 0,
+                    read_records_delta: 0,
+                    read_operations_delta: 0,
+                    queue_operations_delta: 0,
+                    append_requests_delta: 0,
                     storage_byte_ms_delta: d_ms.to_string(),
-                });
+                };
+                self.push_correction(&mut mr, c, names, projects, extra).await;
             }
-            sm.usage_version = snap.usage_version.max(sm.usage_version);
-            sm.ingest_bytes = snap.ingest_payload_bytes_month.max(sm.ingest_bytes);
-            sm.storage_byte_ms = new_ms.max(old_ms).to_string();
-            sm.final_seen = true;
             months.insert(mkey, mr);
             return;
         }
@@ -770,6 +1008,120 @@ impl UsageRollup {
         );
         self.db.write(wb).await?;
         Ok(())
+    }
+
+    /// Pending correction artifacts (round-22 item 8): (pending key,
+    /// month, "account/project", stream-id, correction id, body).
+    pub async fn pending_correction_artifacts(
+        &self,
+        max: usize,
+    ) -> anyhow::Result<Vec<(Vec<u8>, String, String, String, String, Vec<u8>)>> {
+        let mut out = Vec::new();
+        let mut iter = self.db.scan_prefix(&b"corr-pending/"[..], ..).await?;
+        while let Some(kv) = iter.next().await? {
+            let k = std::str::from_utf8(&kv.key).unwrap_or("").to_string();
+            let parts: Vec<&str> = k.splitn(6, '/').collect();
+            if parts.len() == 6 {
+                let cid = serde_json::from_slice::<UsageCorrection>(&kv.value)
+                    .map(|c| c.correction_id)
+                    .unwrap_or_else(|_| parts[5].to_string());
+                out.push((
+                    kv.key.to_vec(),
+                    parts[1].to_string(),
+                    format!("{}/{}", parts[2], parts[3]),
+                    parts[4].to_string(),
+                    cid,
+                    kv.value.to_vec(),
+                ));
+            }
+            if out.len() >= max {
+                break;
+            }
+        }
+        Ok(out)
+    }
+
+    pub async fn mark_correction_published(
+        &self,
+        pending_key: &[u8],
+        object_path: &str,
+    ) -> anyhow::Result<()> {
+        let mut wb = WriteBatch::new();
+        wb.delete(pending_key.to_vec());
+        let done_key = {
+            let mut k = b"corr-done/".to_vec();
+            k.extend_from_slice(&pending_key[b"corr-pending/".len()..]);
+            k
+        };
+        wb.put(
+            done_key,
+            serde_json::to_vec(&serde_json::json!({
+                "path": object_path,
+                "published_ms": crate::billing::billing_now_ms(),
+            }))?,
+        );
+        self.db.write(wb).await?;
+        Ok(())
+    }
+
+    /// Round-22 item 8: close every overdue month IN ORDER from the
+    /// persisted oldest-unclosed marker. A rollup that was down across
+    /// one or more boundaries catches up oldest-first; the marker
+    /// advances only after that month's close completed, so a crash
+    /// resumes at the same month. Returns (month, streams closed).
+    pub async fn close_months_due(
+        &self,
+        grace_ms: i64,
+    ) -> anyhow::Result<Vec<(String, usize)>> {
+        const MARKER: &[u8] = b"meta/oldest-unclosed-month";
+        fn prev_month(y: i32, m: u32) -> (i32, u32) {
+            if m == 1 { (y - 1, 12) } else { (y, m - 1) }
+        }
+        let now = crate::billing::billing_now_ms();
+        let (cy, cm) = crate::billing::utc_year_month(now);
+        let (mut y, mut m) = match self.db.get(MARKER).await? {
+            Some(v) => {
+                let s = String::from_utf8_lossy(&v).to_string();
+                match parse_month(&s) {
+                    Some(x) => x,
+                    None => prev_month(cy, cm),
+                }
+            }
+            None => {
+                // First run: start at the OLDEST month with data — a
+                // fresh marker must not skip a backlog that predates
+                // it. `month/` keys sort by month string, so the first
+                // key names the oldest.
+                let mut it = self.db.scan_prefix(&b"month/"[..], ..).await?;
+                match it.next().await? {
+                    Some(kv) => String::from_utf8_lossy(&kv.key)
+                        .split('/')
+                        .nth(1)
+                        .and_then(parse_month)
+                        .unwrap_or_else(|| prev_month(cy, cm)),
+                    None => prev_month(cy, cm),
+                }
+            }
+        };
+        let mut out = Vec::new();
+        // Safety cap far above any real backlog; the loop also stops
+        // at the current (never-closeable) month.
+        for _ in 0..600 {
+            if (y, m) >= (cy, cm) {
+                break;
+            }
+            let (ny, nm) = next_month(y, m);
+            if now < month_start_ms(ny, nm) + grace_ms {
+                break; // grace not yet met; younger months even less so
+            }
+            let n = self.close_month(y, m, grace_ms).await?;
+            out.push((crate::billing::month_str(y, m), n));
+            let mut wb = WriteBatch::new();
+            wb.put(MARKER, crate::billing::month_str(ny, nm).as_bytes());
+            self.db.write(wb).await?;
+            (y, m) = (ny, nm);
+        }
+        Ok(out)
     }
 
     // ---- month close (§9.4/§9.5/§9.6) --------------------------------
@@ -1301,6 +1653,74 @@ mod tests {
         assert_eq!(sums, [1_000_003, 77, 13, 5, 9], "sum preserved per dimension");
     }
 
+    /// Round-22 item 8: a rollup that was down across several
+    /// boundaries closes every overdue month IN ORDER from the
+    /// persisted oldest-unclosed marker, and the marker survives so
+    /// the next tick starts where this one stopped.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn missed_months_catch_up_in_order() {
+        let _xw = crate::billing::billing_clock_lock().write().await;
+        struct Reset;
+        impl Drop for Reset {
+            fn drop(&mut self) {
+                crate::billing::BILLING_CLOCK_OVERRIDE
+                    .store(0, std::sync::atomic::Ordering::Relaxed);
+            }
+        }
+        let _r = Reset;
+        crate::billing::BILLING_CLOCK_OVERRIDE.store(
+            crate::billing::month_start_ms(2026, 12),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        let r = UsageRollup::open(mem_store(), "catchup").await.unwrap();
+        let jul15 = crate::billing::month_start_ms(2026, 7) + 14 * 86_400_000;
+        let s = SegmentSnapshot {
+            identity: id(),
+            segment_id: 0,
+            usage_version: 1,
+            month: "2026-07".into(),
+            month_final: false,
+            ingest_payload_bytes_month: 10,
+            ingest_records_month: 1,
+            owned_frame_bytes_current: 100,
+            storage_byte_ms_month: "0".into(),
+            storage_accounted_through_ms: jul15,
+            retained_by_forks: false,
+        };
+        let env = UsageEnvelope {
+            v: 1,
+            event_id: s.deterministic_event_id(),
+            event_time_ms: jul15,
+            emitted_ms: jul15,
+            cell: "c".into(),
+            payload: UsagePayload::SegmentSnapshot(s),
+        };
+        r.apply_page(&[env], "c1").await.unwrap();
+        // The rollup "was down" July..November: one catch-up call at
+        // Dec 1 closes Jul, Aug, Sep, Oct, Nov — in that order.
+        let closed = r.close_months_due(0).await.unwrap();
+        let months: Vec<&str> = closed.iter().map(|(m, _)| m.as_str()).collect();
+        assert_eq!(
+            months,
+            vec!["2026-07", "2026-08", "2026-09", "2026-10", "2026-11"],
+            "oldest first, no gaps"
+        );
+        assert!(closed.iter().all(|(_, n)| *n == 1), "every month closed the stream");
+        let day = 86_400_000u128;
+        let nov = r
+            .month_row("2026-11", "acct", "proj", &id().stream_id)
+            .await
+            .unwrap();
+        assert_eq!(nov.storage_byte_ms(), 30 * day * 100, "idle November billed");
+        assert_eq!(
+            r.pending_artifacts(64).await.unwrap().len(),
+            5,
+            "one artifact per closed month"
+        );
+        // Marker advanced: nothing further due.
+        assert!(r.close_months_due(0).await.unwrap().is_empty());
+    }
+
     /// Round-21 blocker 2, the reviewer's exact scenario: one July
     /// write, then TOTAL silence. July, August and September must each
     /// accrue the correct storage byte-time, each produce one artifact,
@@ -1491,8 +1911,17 @@ mod tests {
                 identity: id(),
                 month: "2026-07".into(),
                 reason: "late read batch".into(),
+                correction_id: String::new(), // filled from the envelope
+                correction_version: 0,
+                source_event_id: String::new(),
+                created_at_ms: 0,
                 ingest_payload_bytes_delta: 0,
+                ingest_records_delta: 0,
                 read_payload_bytes_delta: 12,
+                read_records_delta: 0,
+                read_operations_delta: 0,
+                queue_operations_delta: 0,
+                append_requests_delta: 0,
                 storage_byte_ms_delta: "0".into(),
             }),
         };
@@ -1582,8 +2011,12 @@ mod tests {
         let n = crate::billing::publish_artifacts(&r, &store, "t1")
             .await
             .unwrap();
-        assert_eq!(n, 1);
+        assert_eq!(n, 4, "1 monthly + 3 correction artifacts");
         assert!(r.pending_artifacts(64).await.unwrap().is_empty());
+        assert!(
+            r.pending_correction_artifacts(64).await.unwrap().is_empty(),
+            "correction artifacts drained"
+        );
         assert_eq!(
             crate::billing::publish_artifacts(&r, &store, "t1")
                 .await
@@ -1600,6 +2033,73 @@ mod tests {
         let body = got.bytes().await.unwrap();
         let art: MonthRow = serde_json::from_slice(&body).unwrap();
         assert!(art.frozen.is_some(), "the artifact is the frozen row");
+
+        // Round-22 item 8: corrections carry full provenance, the
+        // materialized sums cover every dimension, aggregates carry
+        // the same sums, effective = frozen + corrections, and each
+        // correction is its own immutable object.
+        let row = r
+            .month_row("2026-07", "acct", "proj", &id().stream_id)
+            .await
+            .unwrap();
+        for c in &row.corrections {
+            assert!(!c.correction_id.is_empty(), "correction_id set");
+            assert_eq!(c.correction_version, 1);
+            assert!(!c.source_event_id.is_empty(), "source event recorded");
+        }
+        assert_eq!(row.corr.read_payload_bytes_delta, 12 + 9);
+        assert_eq!(row.corr.ingest_payload_bytes_delta, 50);
+        assert_eq!(row.corr.count, 3);
+        let eff = row.effective();
+        let frozen_b = row.frozen.as_ref().unwrap().read_payload_bytes;
+        assert_eq!(
+            eff["readPayloadBytes"].as_u64().unwrap(),
+            frozen_b + 12 + 9,
+            "effective = frozen base + corrections"
+        );
+        let agg = r.project_row("2026-07", "acct", "proj").await.unwrap();
+        assert_eq!(
+            agg.corr.read_payload_bytes_delta,
+            12 + 9,
+            "project aggregate carries correction sums"
+        );
+        let cpath = object_store::path::Path::from(format!(
+            "t1/telemetry/usage-monthly/acct/proj/{}/2026-07.corrections/corr~1.json",
+            id().stream_id
+        ));
+        let cbody = store.get(&cpath).await.expect("correction artifact").bytes().await.unwrap();
+        let cart: crate::billing::UsageCorrection = serde_json::from_slice(&cbody).unwrap();
+        assert_eq!(cart.read_payload_bytes_delta, 12);
+
+        // Content verification (round-22 item 8a): an AlreadyExists
+        // whose bytes DIFFER is a mismatch — never marked published.
+        let clash = object_store::path::Path::from("t2/telemetry/usage-monthly/acct/proj/x/2026-01.json");
+        store
+            .put(&clash, object_store::PutPayload::from(b"tampered".to_vec()))
+            .await
+            .unwrap();
+        // Manufacture a pending row aimed at that path.
+        {
+            let mut wb = WriteBatch::new();
+            wb.put(
+                b"artifact-pending/2026-01/acct/proj/x".to_vec(),
+                serde_json::to_vec(&MonthRow::default()).unwrap(),
+            );
+            r.db.write(wb).await.unwrap();
+        }
+        let before = crate::billing::ARTIFACT_MISMATCHES.load(std::sync::atomic::Ordering::Relaxed);
+        let n2 = crate::billing::publish_artifacts(&r, &store, "t2").await.unwrap();
+        assert_eq!(n2, 0, "mismatched artifact must NOT publish");
+        assert_eq!(
+            crate::billing::ARTIFACT_MISMATCHES.load(std::sync::atomic::Ordering::Relaxed),
+            before + 1,
+            "mismatch counted for the alert"
+        );
+        assert_eq!(
+            r.pending_artifacts(64).await.unwrap().len(),
+            1,
+            "row stays pending for the operator"
+        );
     }
 }
 

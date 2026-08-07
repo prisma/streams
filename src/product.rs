@@ -6332,6 +6332,25 @@ async fn product_usage(state: Arc<AppState>, name: String, query: &str) -> Respo
         "updatedAt": row.updated_ms,
         "finalizedAt": row.finalized_at_ms,
         "corrections": row.corrections.len(),
+        // Round-22 item 8: base + materialized corrections = what the
+        // invoice will actually say, plus the audit trail itself.
+        "effective": row.effective(),
+        "correctionTotals": row.corr,
+        "correctionList": row.corrections.iter().map(|c| serde_json::json!({
+            "id": c.correction_id,
+            "version": c.correction_version,
+            "sourceEventId": c.source_event_id,
+            "reason": c.reason,
+            "createdAt": c.created_at_ms,
+            "ingestPayloadBytesDelta": c.ingest_payload_bytes_delta,
+            "ingestRecordsDelta": c.ingest_records_delta,
+            "readPayloadBytesDelta": c.read_payload_bytes_delta,
+            "readRecordsDelta": c.read_records_delta,
+            "readOperationsDelta": c.read_operations_delta,
+            "queueOperationsDelta": c.queue_operations_delta,
+            "appendRequestsDelta": c.append_requests_delta,
+            "storageByteMsDelta": c.storage_byte_ms_delta,
+        })).collect::<Vec<_>>(),
         "nameAggregate": name_agg.as_ref().map(|a| serde_json::json!({
             "ingestPayloadBytes": a.ingest_bytes,
             "readPayloadBytes": a.read_payload_bytes,
@@ -6342,6 +6361,79 @@ async fn product_usage(state: Arc<AppState>, name: String, query: &str) -> Respo
             "readFlushIntervalSeconds": crate::billing::READ_FLUSH_INTERVAL_MS / 1000,
             "possibleReadLossWindowSeconds": crate::billing::READ_FLUSH_INTERVAL_MS / 1000,
         }
+    }))
+}
+
+/// GET /v1/projects/{project}/usage[?month=YYYY-MM] (round-22 doc
+/// item D3): the project-level rollup answer — aggregate totals,
+/// correction sums, and effective values. Bearer-authenticated like
+/// every product control-plane read. Under the one-project-per-cell
+/// deployment contract the {project} segment must match this cell's
+/// configured project.
+pub async fn project_usage(state: Arc<AppState>, project: String, query: &str) -> Response {
+    let Some(rollup) = state.rollup.get() else {
+        return perr(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "usage_unavailable",
+            "the usage rollup is not running on this instance",
+            None,
+            true,
+        );
+    };
+    if project != state.project_id {
+        return perr(
+            StatusCode::NOT_FOUND,
+            "unknown_project",
+            "this cell serves a single project; the path does not name it",
+            None,
+            false,
+        );
+    }
+    let now = crate::shard::now_ms();
+    let (cy, cm) = crate::billing::utc_year_month(now);
+    let current = crate::billing::month_str(cy, cm);
+    let month = query
+        .split('&')
+        .find_map(|kv| kv.strip_prefix("month="))
+        .map(str::to_string)
+        .unwrap_or_else(|| current.clone());
+    if crate::billing::parse_month(&month).is_none() {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "invalid_month",
+            "month must be YYYY-MM",
+            None,
+            false,
+        );
+    }
+    let agg = rollup
+        .project_row(&month, &state.account_id, &project)
+        .await
+        .unwrap_or_default();
+    let byte_ms: u128 = agg.storage_byte_ms.parse().unwrap_or(0);
+    json_ok(json!({
+        "accountId": state.account_id,
+        "projectId": project,
+        "month": month,
+        "ingestPayloadBytes": agg.ingest_bytes,
+        "ingestRecords": agg.ingest_records,
+        "readPayloadBytes": agg.read_payload_bytes,
+        "readRecords": agg.read_records,
+        "readOperations": agg.read_operations,
+        "queueOperations": agg.queue_operations,
+        "appendRequests": agg.append_requests,
+        "storageByteSeconds": (byte_ms / 1000).to_string(),
+        "correctionTotals": agg.corr,
+        "effective": {
+            "ingestPayloadBytes": crate::rollup::eff_u64(agg.ingest_bytes, agg.corr.ingest_payload_bytes_delta),
+            "ingestRecords": crate::rollup::eff_u64(agg.ingest_records, agg.corr.ingest_records_delta),
+            "readPayloadBytes": crate::rollup::eff_u64(agg.read_payload_bytes, agg.corr.read_payload_bytes_delta),
+            "readRecords": crate::rollup::eff_u64(agg.read_records, agg.corr.read_records_delta),
+            "readOperations": crate::rollup::eff_u64(agg.read_operations, agg.corr.read_operations_delta),
+            "queueOperations": crate::rollup::eff_u64(agg.queue_operations, agg.corr.queue_operations_delta),
+            "appendRequests": crate::rollup::eff_u64(agg.append_requests, agg.corr.append_requests_delta),
+            "storageByteSeconds": (crate::rollup::eff_u128(byte_ms, &agg.corr.storage_byte_ms_delta) / 1000).to_string(),
+        },
     }))
 }
 
