@@ -74,3 +74,48 @@ except eu-west-3 (below). Statuses exactly as designed in all regions
 
 Infrastructure: 6 projects torn down post-run (verified). Method and
 probe app in the campaign workspace (census-b120c2eb).
+
+## Follow-up census — 2026-08-08 (census2-1b99d720, 02:54-02:58 UTC)
+
+Rerun after Tigris reported iad1 was "heavily loaded" and they would
+fix it. Identical method, fresh projects/buckets, same 3,000-request
+battery.
+
+**us-east-1 (iad) is fixed for practical purposes** — every op class
+dropped 3-4× and is now in-family with fra:
+
+| op (iad) | 08-06 | 08-08 | fra 08-08 (reference) |
+|---|---|---|---|
+| put_1k | 46 / 71 | **14 / 18** | 15 / 22 |
+| get_hit_1k | 24 / 32 | **5 / 8** | 6 / 8 |
+| list_1 | 23 / 38 | **6 / 8** | 7 / 9 |
+| cas_create_ok | 55 / 107 | **13 / 16** | 13 / 17 |
+| cas_conflict | 25 / 39 | **7 / 10** | 8 / 10 |
+| delete | 53 / 93 | **15 / 17** | 17 / 20 |
+| put_256k | 135 / 257 | **94 / 181** | 69 / 116 |
+| get_miss (404) | 27 / 65 | **14 / 17** | 7 / 9 |
+| head_miss (404) | 26 / 52 | **15 / 19** | 7 / 9 |
+
+Residuals worth naming:
+
+1. **iad 404s sit at ~14-15 ms internal vs 3-7 ms in every other
+   region** — hits, LISTs, CAS and deletes are all in-family now, but
+   the miss path is still ~2-4× peers. Same shape as the (fixed) SRC
+   fallback issue, iad-only; minor for us post-poll-stretch, worth a
+   mention to Tigris.
+2. One 503 on a 256 KiB PUT in iad (1 of 300 large writes this run;
+   the first 5xx in 6,000 census requests across both runs).
+3. **nrt's 256 KiB writes regressed this run**: 58/145 → 117/311 —
+   now the worst large-write tail in the fleet (sin 25/36 same
+   minute). Transient or trend, unknown from two points; the p50
+   doubling says it is not just a tail event.
+4. All other regions statistically unchanged run-over-run (±2 ms on
+   small ops) — the method is reproducible enough to trust deltas of
+   this size. served-from labels again 900/900 correct.
+
+us-east SLO consequence: with iad internal costs now ≈ fra's, the
+historical "us-east cannot meet 250 ms" attribution shifts back to
+compute↔storage distance and our pipeline — worth a fresh us-east
+streams soak before repeating that claim.
+
+Infrastructure: 6 census2 projects torn down post-run (verified).
