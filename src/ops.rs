@@ -314,6 +314,10 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
         "history_flush_wait_ms_max".into(),
         crate::history::HISTORY_FLUSH_WAIT_MS_MAX.swap(0, ord),
     );
+    gauges.insert(
+        "history_flush_injected_stall_ms".into(),
+        crate::history::HISTORY_FLUSH_STALL_MS.load(ord),
+    );
     counters.insert(
         "absorb_bytes_total".into(),
         crate::history::ABSORB_BYTES_TOTAL.load(ord),

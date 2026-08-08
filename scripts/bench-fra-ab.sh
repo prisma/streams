@@ -34,13 +34,19 @@ set -e
 HERE=$(dirname "$0")
 # Memory-survival profile (OOM review): every deploy sources the ONE
 # checked-in profile so no script can silently restore the unsafe
-# posture. Opt out only with UNSAFE_LEGACY_MEMORY_PROFILE=1.
+# posture. Flags are built as a REAL ARRAY — scalar expansion is
+# shell-dependent (zsh does not word-split unquoted scalars) and once
+# passed the whole profile as a single argument. Opt out only with
+# UNSAFE_LEGACY_MEMORY_PROFILE=1.
 MEMPROFILE="$(cd "$HERE/.." && pwd)/deploy/profiles/compute-1g.env"
+MEMFLAGS=()
 if [ "${UNSAFE_LEGACY_MEMORY_PROFILE:-0}" = "1" ]; then
   echo "WARNING: UNSAFE_LEGACY_MEMORY_PROFILE=1 — deploying WITHOUT the compute-1g memory profile" >&2
-  MEMFLAGS=""
 else
-  MEMFLAGS=$(awk -F= '!/^[[:space:]]*#/ && NF>=2 {printf "--env %s=%s ", $1, $2}' "$MEMPROFILE")
+  while IFS='=' read -r key value; do
+    case "$key" in ''|\#*) continue ;; esac
+    MEMFLAGS+=(--env "$key=$value")
+  done < "$MEMPROFILE"
 fi
 
 BUCKET_JSON=$HERE/../bench/bucket-$BENCH_RUN.json
@@ -80,7 +86,7 @@ server)
     --env INITIAL_SHARDS=4 --env ADMIT_MAX_INFLIGHT=256 \
     --env ABSORB_BYTES=4194304 --env ABSORB_AGE_SECS=300 --env ABSORB_PASS_BYTES=33554432 --env TRIM_PER_OP=8192 \
     --env KEEP_AWAKE=1 \
-    $MEMFLAGS \
+    ${MEMFLAGS[@]+"${MEMFLAGS[@]}"} \
     2>&1 | grep -E 'New version|error'
   ;;
 gen)

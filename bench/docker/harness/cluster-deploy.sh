@@ -1,4 +1,16 @@
 #!/bin/zsh
+# HISTORICAL (2026-07 sinmax campaign) — DO NOT DEPLOY FROM THIS FILE.
+# It predates the compute-1g memory profile (deploy/profiles/), carries
+# the pre-OOM-review posture (SLATEDB_RT_THREADS=2, shed 550, old
+# L0/cache values) and hard-codes a dead scratchpad path. Kept as the
+# campaign record only. Active Compute deploys: bench/soak/,
+# bench/fleet/, scripts/bench-fra-ab.sh — all of which source the
+# canonical memory profile.
+if [ "${UNSAFE_LEGACY_MEMORY_PROFILE:-0}" != "1" ]; then
+  echo "REFUSING: historical script with the pre-OOM-review memory posture." >&2
+  echo "Use the active deploy scripts, or set UNSAFE_LEGACY_MEMORY_PROFILE=1 deliberately." >&2
+  exit 1
+fi
 # 4-instance Compute cluster for SCALING.md's on-Compute validation.
 # One service per ordinal (the ring's ordinal set is streams-1..N).
 # usage: cluster-deploy.sh [up|status]

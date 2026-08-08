@@ -150,7 +150,7 @@ abort), `worst_frame_floor_serializes_oversized_gathers_without_starvation`
 (floor + serialization + liveness), `gather_concurrency_cap_holds`,
 and `absorber_phase_stagger_is_prefix_seeded`. These do NOT claim the
 real stalled-flush mechanism — that claim belongs exclusively to the
-slow-compactor acceptance leg below (driven via
+stalled-history-flush acceptance leg below (driven via
 POST /v1/debug/history-stall on the real gather flush path).
 
 ### Acceptance gate before preview.7-class builds are restored
@@ -171,7 +171,8 @@ Hard-mode leg: at least ONE run at 16 shards, full telemetry, the same
 global budget, ≥5 GiB — proving the budget stays process-wide under
 maximal shard fan-out.
 
-Slow-compactor leg (real mechanism, driven via
+Stalled-history-flush leg (real mechanism — it stalls the
+history gather flush, not the SlateDB compactor itself; driven via
 POST /v1/debug/history-stall?ms= — the stall sits on the actual gather
 flush path with the reservation held): with ingest continuing, prove
 (1) reservations reach but never exceed the configured envelope,
@@ -179,6 +180,21 @@ flush path with the reservation held): with ingest continuing, prove
 gather build starts without a reservation, (4) the process stays
 alive, (5) history L0 decreases after release, (6) absorber lag
 returns toward zero, (7) appends resume without restart.
+
+The injected stall is INSIDE the flush timing window, so
+`gather_last_flush_ms`/`history_flush_wait_ms_max` report it, and
+`history_flush_injected_stall_ms` names the active injection. The
+campaign driver (bench/soak/oom-acceptance.sh) VERIFIES the live
+budget posture against deploy/profiles/compute-1g.env before any leg
+starts load, preserves failed-leg namespaces/samples, and enforces the
+per-run checks (invariant, RSS trend, stall visibility).
+
+Under the 1-GiB profile EVERY gather reserves at least the worst-frame
+floor, so effective gather concurrency is ONE (configured slots vs
+effective concurrency both appear in the startup summary and
+`/v1/debug/absorb`). At startup the binary also clamps the gather
+PACKING limit so packing x multiplier always fits the budget — the
+envelope cannot be silently broken by configuration.
 
 The budget PRIMITIVE regression
 (`absorb_budget_blocks_waiters_and_recovers_after_release`, plus the
@@ -253,7 +269,7 @@ OOM issue is called closed — all landed:
    ~40% partial regression unisolated).
 5. The budget primitive test renamed to what it proves
    (`absorb_budget_blocks_waiters_and_recovers_after_release`); the
-   real-mechanism claim moved to the slow-compactor acceptance leg,
+   real-mechanism claim moved to the stalled-history-flush acceptance leg,
    now drivable via POST /v1/debug/history-stall.
 
 Still open (release gate, unchanged): the acceptance campaign above.

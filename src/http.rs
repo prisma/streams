@@ -997,8 +997,22 @@ pub fn router(state: Arc<AppState>) -> Router {
                             "manifestId": mid,
                         })
                     });
+                    let budget = crate::history::absorb_budget();
                     axum::Json(serde_json::json!({
                         "historyPartitions": parts,
+                        "budget": {
+                            "capacityBytes": budget.capacity(),
+                            "gatherSlots": budget.gather_slots(),
+                            "effectiveGatherConcurrency":
+                                (budget.capacity()
+                                    / crate::history::ABSORB_WORST_FRAME_TRANSIENT)
+                                    .clamp(1, budget.gather_slots()),
+                            "worstFrameTransientBytes":
+                                crate::history::ABSORB_WORST_FRAME_TRANSIENT,
+                            "injectedFlushStallMs": crate::history::HISTORY_FLUSH_STALL_MS
+                                .load(std::sync::atomic::Ordering::Relaxed),
+                            "shedLineMb": state.admit_rss_shed_mb,
+                        },
                         "absorber": {
                             "reservedBytes": crate::history::absorb_reserved_bytes(),
                             "gathersInflight": crate::history::absorb_gathers_inflight(),

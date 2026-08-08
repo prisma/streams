@@ -718,10 +718,13 @@ UNSAFE_LEGACY_MEMORY_PROFILE=1):
 ```text
 INITIAL_SHARDS=4                    # topology, per-script; fresh namespace required to change
 ABSORB_GATHER_MAX_BYTES=8388608
-ABSORB_GLOBAL_BUDGET_BYTES=100663296 # hard process-wide bound; the binary FLOORS this
-                                     # at the worst-frame transient (32 MiB frame x3 =
-                                     # 96 MiB) so one oversized frame's real build cost
-                                     # is always covered; 192 MiB restores 2-way gathers
+ABSORB_GLOBAL_BUDGET_BYTES=100859904 # hard process-wide bound; the binary FLOORS this
+                                     # at the worst-frame transient ((32 MiB + 64 KiB
+                                     # encoding allowance) x3 ≈ 96 MiB) so one oversized
+                                     # frame's modeled build cost is always covered.
+                                     # EVERY gather reserves >= the floor, so effective
+                                     # concurrency at this budget is ONE (~2x budget +
+                                     # ABSORB_GLOBAL_GATHERS=2 restores two-way)
 ABSORB_GLOBAL_GATHERS=2
 SLATEDB_RT_THREADS=4
 TELEMETRY_CACHE_BYTES=16777216

@@ -131,35 +131,31 @@ CELL_ID=<cell tag>
 ROLLUP=1                            # exactly one instance per cell
 
 # --- memory survival posture (OOM review, 2026-08-07)
-# Each knob appears exactly ONCE in this file (env application is
-# last-one-wins; a stale duplicate silently restores the pre-review
-# posture). The values live in their sections: INITIAL_SHARDS=4 under
-# placement; SLATEDB_RT_THREADS=4, ADMIT_RSS_SHED_MB=500 and the
-# explicit cache bounds under engine/admission below.
-ABSORB_GATHER_MAX_BYTES=8388608     # per-gather packing cap (8 MiB)
-ABSORB_GLOBAL_BUDGET_BYTES=67108864 # PROCESS-WIDE gather budget (64 MiB)
-ABSORB_GLOBAL_GATHERS=2             # concurrent gathers, process-wide
-TELEMETRY_CACHE_BYTES=16777216      # spool+rollup DBs share ONE bounded cache
+# ALL memory knobs come from the ONE canonical profile:
+#     deploy/profiles/compute-1g.env   (source it VERBATIM)
+# Values are deliberately NOT duplicated here — a stale copy silently
+# restores the pre-review posture under last-one-wins env application
+# (that exact failure shipped twice). Topology settings such as
+# INITIAL_SHARDS stay campaign-specific and live in this file.
+# Under the 1-GiB profile EVERY gather reserves the worst-frame floor,
+# so effective gather concurrency is ONE; the startup budget summary
+# prints configured slots vs effective concurrency.
 # ROLLUP placement: on multi-instance cells, ROLLUP=1 goes on a
 # designated NON-INGEST instance (it must not compete with history
 # compaction on an ingestion VM); a single-instance cell accepts the
-# co-location with the bounded caches + RT_THREADS=4 below.
+# co-location under the profile's bounds.
 
 # --- engine (1 GB discipline, RUNBOOK 3.2/3.3)
+# (memory-profile keys — caches, unflushed, L0 targets, RT threads,
+#  shed line — intentionally absent: they come from
+#  deploy/profiles/compute-1g.env)
 FLUSH_INTERVAL_MS=25
 WAL_GROUP_COMMIT=1
 WAL_FLUSH_GAP_MS=10
 FRAME_COMPRESS=1                    # removed a ~5-6x NIC amplification on sinmax
-L0_SST_SIZE_BYTES=16777216
-MAX_UNFLUSHED_BYTES=33554432
-L0_MAX_SSTS=64
 MANIFEST_POLL_MS=1000
 COMPACTOR_POLL_MS=500
 COMPACTOR_MAX_CONCURRENT=2
-SHARED_CACHE_BYTES=67108864
-HISTORY_CACHE_BYTES=33554432        # all cache bounds explicit (OOM review)
-POSTINGS_CACHE_BYTES=67108864
-SLATEDB_RT_THREADS=4                # OOM review: telemetry flushers must not starve history compaction
 ABSORB_BYTES=4194304
 ABSORB_AGE_SECS=60
 ABSORB_PASS_BYTES=67108864
@@ -169,7 +165,6 @@ TRIM_GLOBAL_BUDGET=65536            # global per-commit trim-delete cap; TRIM_PE
 # --- admission (ON in production, RUNBOOK 3.6)
 ADMIT_MAX_INFLIGHT=512
 ADMIT_MAX_INFLIGHT_PER_STREAM=256
-ADMIT_RSS_SHED_MB=500               # OOM review: 600 was too close to the ~750 kill line for inter-sample SST spikes; shed = RSS + reserved absorber bytes
 
 # --- limits (per stream segment)
 LIMIT_BYTES_PER_SEC=5000000

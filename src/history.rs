@@ -156,6 +156,7 @@ pub struct AbsorbBudget {
     bytes: tokio::sync::Semaphore,
     gathers: tokio::sync::Semaphore,
     capacity: usize,
+    gather_cap: usize,
     reserved: AtomicU64,
     inflight: AtomicU64,
 }
@@ -166,17 +167,25 @@ pub struct AbsorbBudget {
 /// die between RSS samples.
 pub const ABSORB_BUILD_MULTIPLIER: usize = 3;
 
-/// Worst-case transient for ONE legal oversized frame: the packer
-/// deliberately lets a single frame proceed alone (liveness — bodies
-/// can reach the API cap), so the DECLARED envelope must cover its
-/// full build cost or the budget's bound is a fiction. The budget
-/// floors its capacity here and every gather reserves at least this,
-/// so the reservation always covers the real transient; concurrency
-/// degrades (budget/this many gathers at once) instead of the bound
-/// lying. Field note: arm X survived with exactly this effective
-/// one-gather concurrency.
+/// Per-frame encoding overhead allowance on top of the raw body:
+/// frame header + maximum routing key + length fields + AEAD tag are
+/// all well under this; rounding the reservation UP is the safe
+/// direction.
+pub const FRAME_ENCODING_ALLOWANCE: usize = 64 * 1024;
+
+/// Worst-case MODELED transient for ONE legal oversized frame: the
+/// packer deliberately lets a single frame proceed alone (liveness —
+/// bodies can reach the API cap), so the DECLARED envelope must cover
+/// its modeled build cost (encoded frame × the build multiplier) or
+/// the budget's bound is a fiction. The budget floors its capacity
+/// here and every gather reserves at least this, so the reservation
+/// covers the modeled transient; concurrency degrades (budget ÷ this
+/// per gather — ONE at the floor) instead of the bound lying. Field
+/// note: arm X survived at exactly that effective one-gather
+/// concurrency. The model is validated (not proven) by the
+/// acceptance campaign's oversized-frame leg.
 pub const ABSORB_WORST_FRAME_TRANSIENT: usize =
-    crate::http::MAX_BODY_BYTES * ABSORB_BUILD_MULTIPLIER;
+    (crate::http::MAX_BODY_BYTES + FRAME_ENCODING_ALLOWANCE) * ABSORB_BUILD_MULTIPLIER;
 
 /// Injected history-flush slowdown, ms per gather flush (0 = off).
 /// Set via POST /v1/debug/history-stall?ms= — the slow-compactor
@@ -255,13 +264,27 @@ pub struct AbsorbReservation {
 
 impl AbsorbBudget {
     pub fn new(bytes: usize, gathers: usize) -> Self {
+        // Permits are addressed as u32 (acquire_many); cap the byte
+        // capacity there so conversions are total, never truncating.
+        let capacity = bytes.clamp(1, u32::MAX as usize);
         AbsorbBudget {
-            bytes: tokio::sync::Semaphore::new(bytes.max(1)),
+            bytes: tokio::sync::Semaphore::new(capacity),
             gathers: tokio::sync::Semaphore::new(gathers.max(1)),
-            capacity: bytes.max(1),
+            capacity,
+            gather_cap: gathers.max(1),
             reserved: AtomicU64::new(0),
             inflight: AtomicU64::new(0),
         }
+    }
+
+    /// The effective (floored, clamped) byte capacity — startup
+    /// invariants and the campaign's verify-before-load read this.
+    pub fn capacity(&self) -> usize {
+        self.capacity
+    }
+
+    pub fn gather_slots(&self) -> usize {
+        self.gather_cap
     }
 
     /// Reserve BEFORE any frame is read. Blocks until the process-wide
@@ -272,9 +295,8 @@ impl AbsorbBudget {
     /// whatever it already held.
     pub async fn reserve(&'static self, estimate: usize) -> AbsorbReservation {
         let want = estimate.clamp(1, self.capacity);
-        // Semaphore permits are u32-bounded per acquire_many; the
-        // capacity clamp keeps `want` far below that for any sane
-        // budget (u32::MAX = 4 GiB).
+        // capacity <= u32::MAX by construction, so this is total.
+        let want_permits = u32::try_from(want).expect("capacity clamped to u32 range");
         let gather = self
             .gathers
             .acquire()
@@ -282,7 +304,7 @@ impl AbsorbBudget {
             .expect("absorb budget semaphore closed");
         let bytes = self
             .bytes
-            .acquire_many(want as u32)
+            .acquire_many(want_permits)
             .await
             .expect("absorb budget semaphore closed");
         self.reserved
@@ -1281,13 +1303,17 @@ impl Absorber {
         part.write_with_options(wb, &WriteOptions::default())
             .await?;
         GATHER_LAST_WRITE_MS.store(t_write.elapsed().as_millis() as u64, ord);
+        let t_flush = Instant::now();
         let stall = HISTORY_FLUSH_STALL_MS.load(std::sync::atomic::Ordering::Relaxed);
         if stall > 0 {
-            // Slow-compactor campaign lever: the stall sits ON the real
-            // flush path with the reservation held.
+            // Stalled-history-flush campaign lever: the stall sits ON
+            // the real flush path with the reservation held, and it is
+            // INSIDE the flush timing window — the flush-wait metrics
+            // must report the delay the campaign injects, or the gate
+            // could stall the path while its primary metric shows
+            // nothing.
             tokio::time::sleep(Duration::from_millis(stall)).await;
         }
-        let t_flush = Instant::now();
         part.flush().await?; // wal off => memtable -> L0, manifest published
         // Flush wait is the review's leading indicator: when history L0
         // approaches its cap, THIS is what starts blocking.
@@ -1928,7 +1954,7 @@ mod tests {
     async fn worst_frame_floor_serializes_oversized_gathers_without_starvation() {
         assert_eq!(
             ABSORB_WORST_FRAME_TRANSIENT,
-            crate::http::MAX_BODY_BYTES * ABSORB_BUILD_MULTIPLIER
+            (crate::http::MAX_BODY_BYTES + FRAME_ENCODING_ALLOWANCE) * ABSORB_BUILD_MULTIPLIER
         );
         // A too-small configured budget floors up to the worst frame.
         assert_eq!(

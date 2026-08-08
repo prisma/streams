@@ -12,13 +12,19 @@ set -euo pipefail
 S=${SOAK_HOME:?set SOAK_HOME}
 # Memory-survival profile (OOM review): every deploy sources the ONE
 # checked-in profile so no script can silently restore the unsafe
-# posture. Opt out only with UNSAFE_LEGACY_MEMORY_PROFILE=1.
+# posture. Flags are built as a REAL ARRAY — scalar expansion is
+# shell-dependent (zsh does not word-split unquoted scalars) and once
+# passed the whole profile as a single argument. Opt out only with
+# UNSAFE_LEGACY_MEMORY_PROFILE=1.
 MEMPROFILE="$(cd "$(dirname "$0")/../.." && pwd)/deploy/profiles/compute-1g.env"
+MEMFLAGS=()
 if [ "${UNSAFE_LEGACY_MEMORY_PROFILE:-0}" = "1" ]; then
   echo "WARNING: UNSAFE_LEGACY_MEMORY_PROFILE=1 — deploying WITHOUT the compute-1g memory profile" >&2
-  MEMFLAGS=""
 else
-  MEMFLAGS=$(awk -F= '!/^[[:space:]]*#/ && NF>=2 {printf "--env %s=%s ", $1, $2}' "$MEMPROFILE")
+  while IFS='=' read -r key value; do
+    case "$key" in ''|\#*) continue ;; esac
+    MEMFLAGS+=(--env "$key=$value")
+  done < "$MEMPROFILE"
 fi
 
 STEP=${1:?servers|lb|urls|gen}
@@ -97,7 +103,7 @@ if [ "$STEP" = servers ]; then
       --env ABSORB_BYTES=4194304 --env ABSORB_AGE_SECS=60 \
       --env ABSORB_PASS_BYTES=67108864 --env TRIM_PER_OP=65536 \
       --env POOL_IDLE_SECS=4 \
-      $MEMFLAGS \
+      ${MEMFLAGS[@]+"${MEMFLAGS[@]}"} \
       ${KA[@]+"${KA[@]}"} \
       --env RESOLV_OVERRIDE="$RESOLV" 2>&1 | grep -viE 'resolving|resolved|saved' | tail -2
     record_svc "fleet-s$i"

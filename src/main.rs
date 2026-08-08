@@ -759,7 +759,28 @@ async fn async_main() -> anyhow::Result<()> {
         let absorb_concurrency = args.absorb_concurrency;
         let absorb_small_bytes = args.absorb_small_bytes;
         let absorb_min_bytes_for_age = args.absorb_min_bytes_for_age;
-        let absorb_gather_max_bytes = args.absorb_gather_max_bytes;
+        // Startup invariant (OOM disposition 2): the per-gather packing
+        // cap must fit the process budget after the build multiplier,
+        // or the envelope claim quietly breaks via reservation
+        // clamping. Clamp the PACKING LIMIT (not the reservation) and
+        // say so loudly.
+        let absorb_gather_max_bytes = {
+            let budget = crate::history::absorb_budget().capacity();
+            let max_allowed = budget / crate::history::ABSORB_BUILD_MULTIPLIER;
+            if args.absorb_gather_max_bytes > max_allowed {
+                tracing::warn!(
+                    "ABSORB_GATHER_MAX_BYTES {} x{} exceeds the process budget {} — \
+                     clamping the gather packing limit to {}",
+                    args.absorb_gather_max_bytes,
+                    crate::history::ABSORB_BUILD_MULTIPLIER,
+                    budget,
+                    max_allowed,
+                );
+                max_allowed
+            } else {
+                args.absorb_gather_max_bytes
+            }
+        };
         let handle_idle_evict_secs = args.handle_idle_evict_secs;
         let handle_max_resident = args.handle_max_resident;
         let trim_per_op = args.trim_per_op;
@@ -1057,15 +1078,19 @@ async fn async_main() -> anyhow::Result<()> {
         let history = genv("HISTORY_CACHE_BYTES", 32 * 1024 * 1024);
         let postings = genv("POSTINGS_CACHE_BYTES", 64 * 1024 * 1024);
         let telemetry = genv("TELEMETRY_CACHE_BYTES", 16 * 1024 * 1024);
-        let absorb_budget = crate::history::floored_budget_capacity(genv(
-            "ABSORB_GLOBAL_BUDGET_BYTES",
-            64 * 1024 * 1024,
-        ));
-        let gathers = genv("ABSORB_GLOBAL_GATHERS", 2);
+        let budget = crate::history::absorb_budget();
+        let absorb_budget = budget.capacity();
+        let gathers = budget.gather_slots();
+        // Every gather reserves at least the worst-frame transient, so
+        // the EFFECTIVE concurrency is the byte budget divided by that
+        // floor — 1 under the 1-GiB profile regardless of configured
+        // slots. Print both so nobody reads two slots as two-way.
+        let effective_gathers =
+            (absorb_budget / crate::history::ABSORB_WORST_FRAME_TRANSIENT).clamp(1, gathers);
         let rt_threads = genv("SLATEDB_RT_THREADS", 2);
         let mib = |b: usize| b / (1024 * 1024);
         tracing::info!(
-            "memory budget: caches shared={}MiB history={}MiB postings={}MiB telemetry={}MiB;              unflushed/db={}MiB; absorb budget={}MiB (worst-frame build={}MiB, gathers<={});              slatedb rt threads={}; shed line={}MB (RSS + reserved absorber bytes)",
+            "memory budget: caches shared={}MiB history={}MiB postings={}MiB telemetry={}MiB; unflushed/db={}MiB; absorb budget={}MiB (worst-frame build={}MiB, configured gather slots={}, EFFECTIVE gather concurrency={}); slatedb rt threads={}; shed line={}MB (RSS + reserved absorber bytes)",
             mib(shared),
             mib(history),
             mib(postings),
@@ -1074,6 +1099,7 @@ async fn async_main() -> anyhow::Result<()> {
             mib(absorb_budget),
             mib(crate::history::ABSORB_WORST_FRAME_TRANSIENT),
             gathers,
+            effective_gathers,
             rt_threads,
             args.admit_rss_shed_mb,
         );
