@@ -200,7 +200,7 @@ The budget PRIMITIVE regression
 (`absorb_budget_blocks_waiters_and_recovers_after_release`, plus the
 cancellation and worst-frame-floor tests) proves the semaphore
 mechanics only; the review's X3 real-mechanism claim is closed by the
-slow-compactor leg above, not by the unit tests.
+stalled-history-flush leg above, not by the unit tests.
 
 ### Separate platform blocker
 
