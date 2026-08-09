@@ -3122,14 +3122,46 @@ async fn product_read(
             }
         },
     };
-    let max_bytes = q
-        .get("maxBytes")
-        .and_then(|v| v.parse::<usize>().ok())
-        .map(|v| v.clamp(4096, READ_MAX_BYTES_CAP));
-    let timeout = q
-        .get("waitMs")
-        .and_then(|v| v.parse::<u64>().ok())
-        .map(|n| format!("{n}ms"));
+    // CHAOS-4: a value we cannot parse is a client mistake, not a
+    // request for the default. Silently substituting the 8 MiB default
+    // for `maxBytes=-5` hands back up to 8 MiB to a caller that asked
+    // for a small page, and dropping an unparseable `waitMs` turns a
+    // long poll into a hot retry loop. `deliver` and `routingKey`
+    // already answer 400 here; these two now agree.
+    //
+    // A parseable-but-tiny maxBytes still clamps up to the 4 KiB floor:
+    // a budget below one record cannot be honoured and every read must
+    // make progress.
+    let max_bytes = match q.get("maxBytes") {
+        None => None,
+        Some(v) => match v.parse::<usize>() {
+            Ok(n) => Some(n.clamp(4096, READ_MAX_BYTES_CAP)),
+            Err(_) => {
+                return perr(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_max_bytes",
+                    "maxBytes must be a non-negative integer",
+                    None,
+                    false,
+                );
+            }
+        },
+    };
+    let timeout = match q.get("waitMs") {
+        None => None,
+        Some(v) => match v.parse::<u64>() {
+            Ok(n) => Some(format!("{n}ms")),
+            Err(_) => {
+                return perr(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_wait_ms",
+                    "waitMs must be a non-negative integer",
+                    None,
+                    false,
+                );
+            }
+        },
+    };
 
     let params = crate::http::ReadParams {
         offset,
