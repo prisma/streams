@@ -188,9 +188,10 @@ pub const ABSORB_WORST_FRAME_TRANSIENT: usize =
     (crate::http::MAX_BODY_BYTES + FRAME_ENCODING_ALLOWANCE) * ABSORB_BUILD_MULTIPLIER;
 
 /// Injected history-flush slowdown, ms per gather flush (0 = off).
-/// Set via POST /v1/debug/history-stall?ms= — the slow-compactor
-/// acceptance campaign's real-mechanism lever: the stall happens on
-/// the actual gather flush path WITH the reservation held.
+/// Set via POST /v1/debug/history-stall?ms= — the STALLED-HISTORY-
+/// FLUSH acceptance leg's lever: it stalls the actual gather flush
+/// path WITH the reservation held (it does not pause the SlateDB
+/// compactor itself).
 pub static HISTORY_FLUSH_STALL_MS: AtomicU64 = AtomicU64::new(0);
 
 /// The budget floor as a pure function (tested directly): a configured
@@ -198,6 +199,14 @@ pub static HISTORY_FLUSH_STALL_MS: AtomicU64 = AtomicU64::new(0);
 pub fn floored_budget_capacity(configured: usize) -> usize {
     configured.max(ABSORB_WORST_FRAME_TRANSIENT)
 }
+
+/// The RESOLVED memory posture, captured once at startup from the same
+/// values the budget summary logs — the acceptance campaign's
+/// verify-before-load reads this via /v1/debug/absorb and requires
+/// EXACT equality with deploy/profiles/compute-1g.env. A verifier that
+/// checks four of twelve knobs proves nothing about the other eight.
+pub static RESOLVED_MEMORY_CONFIG: std::sync::OnceLock<serde_json::Value> =
+    std::sync::OnceLock::new();
 
 pub fn absorb_budget() -> &'static AbsorbBudget {
     static B: std::sync::OnceLock<AbsorbBudget> = std::sync::OnceLock::new();

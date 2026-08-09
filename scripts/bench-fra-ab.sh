@@ -65,14 +65,13 @@ provision)
 server)
   j() { python3 -c "import json;print(json.load(open('$BUCKET_JSON'))['data']['$1'])" }
   # SURVIVAL POSTURE (OOM review): 4 shards (the 16-shard topology
-  # multiplied absorber exposure 16x and killed preview.7), 8 MiB
-  # per-gather cap under a 64 MiB PROCESS-WIDE budget with 2 concurrent
-  # gathers, 4 SlateDB runtime threads (telemetry flushers must not
-  # starve the history compactor), shed at 500 MB (600 was too close to
-  # the ~740 MB platform kill line for inter-sample SST spikes), and
-  # EVERY cache bound explicit. NOTE: a fresh namespace is REQUIRED for
-  # a shard-count change — existing topology.json wins over
-  # INITIAL_SHARDS.
+  # multiplied absorber exposure 16x and killed preview.7); ALL memory
+  # knobs come from deploy/profiles/compute-1g.env ($MEMFLAGS below):
+  # 8 MiB packing cap under the ~96.2 MiB worst-frame-floored process
+  # budget with ONE effective gather, 4 SlateDB runtime threads, shed
+  # at 500 MB, every cache bound explicit. NOTE: a fresh namespace is
+  # REQUIRED for a shard-count change — existing topology.json wins
+  # over INITIAL_SHARDS.
   bunx --bun @prisma/compute-cli deploy --project $BENCH_PROJECT --service $BENCH_SVC_SERVER \
     --region $BENCH_REGION --path $HERE/../deploy/app-server --http-port 8080 \
     --env SERVER_BINARY_S3_KEY=$BENCH_BIN_KEY \
@@ -92,7 +91,7 @@ server)
 gen)
   bunx --bun @prisma/compute-cli deploy --project $BENCH_PROJECT --service $BENCH_SVC_GEN \
     --region $BENCH_REGION --path $HERE/../deploy/app-gen --http-port 8080 \
-    --env GEN_BINARY_S3_KEY=$GEN_BIN_KEY --env MODE=gen \
+    --env AWSBENCH_S3_KEY="$GEN_BIN_KEY" --env MODE=gen \
     --env S3_ENDPOINT=$BIN_S3_ENDPOINT --env S3_BUCKET=$BIN_S3_BUCKET --env S3_REGION=auto \
     --env S3_ACCESS_KEY_ID=$BIN_S3_ACCESS_KEY_ID --env S3_SECRET_ACCESS_KEY="$BIN_S3_SECRET_ACCESS_KEY" \
     --env AUTH_TOKEN="$(cat $AUTH_TOKEN_FILE)" --env STREAM_KEY="$(cat $STREAM_KEY_FILE)" \
@@ -105,7 +104,10 @@ gen)
 sample)
   MIN=${2:-16}; OUT=${3:-bench/samples-$BENCH_RUN.jsonl}
   AUTH=$(cat $AUTH_TOKEN_FILE)
-  GENURL=$(echo $BENCH_SVC_GEN | sed "s/^cps_//"); GENURL="https://$GENURL.${BENCH_URL_SERVER#*.}"
+  # Compute preview domains are VERSION-specific: resolve the running
+  # version's URL after every deploy instead of deriving from the
+  # service id (which points at a stopped version after redeploys).
+  GENURL=$(bunx --bun @prisma/compute-cli versions list --project $BENCH_PROJECT --service $BENCH_SVC_GEN 2>/dev/null | awk '$2 == "running" {print "https://"$3; exit}')
   for i in $(seq 1 $(( MIN * 3 ))); do
     ts=$(date +%s)
     g=$(curl -s --max-time 15 $GENURL/ || echo '{}')

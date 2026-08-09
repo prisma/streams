@@ -230,8 +230,11 @@ regression; bisect is follow-up, not a blocker for the fix); neither
 telemetry nor shard count alone flips preview.7; the ONLY surviving
 arm is the fixed build — with strictly more work (full telemetry) on
 the killer topology — whose causal gauges showed the budget
-serializing gathers at the 64 MiB cap while history flushes stalled at
-~2.5 s. Survival margin at stock knobs is thin (RSS peak 702 MB
+serializing gathers at its cap while history flushes stalled at
+~2.5 s (HISTORICAL NOTE: arm X ran the round's original 64 MiB budget;
+the current survival profile carries the worst-frame-floored
+~96.2 MiB budget with one effective gather — strictly more headroom
+per gather than the surviving arm had). Survival margin at stock knobs is thin (RSS peak 702 MB
 sampled): the survival posture stays the deploy stance until the
 acceptance-gate soaks run.
 

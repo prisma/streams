@@ -1103,6 +1103,23 @@ async fn async_main() -> anyhow::Result<()> {
             rt_threads,
             args.admit_rss_shed_mb,
         );
+        let _ = crate::history::RESOLVED_MEMORY_CONFIG.set(serde_json::json!({
+            "gatherPackingLimitBytes": args
+                .absorb_gather_max_bytes
+                .min(absorb_budget / crate::history::ABSORB_BUILD_MULTIPLIER),
+            "absorbBudgetBytes": absorb_budget,
+            "gatherSlots": gathers,
+            "effectiveGatherConcurrency": effective_gathers,
+            "slatedbRuntimeThreads": rt_threads,
+            "sharedCacheBytes": shared,
+            "historyCacheBytes": history,
+            "postingsCacheBytes": postings,
+            "telemetryCacheBytes": telemetry,
+            "maxUnflushedBytes": args.max_unflushed_bytes,
+            "l0SstSizeBytes": args.l0_sst_size_bytes,
+            "l0MaxSsts": args.l0_max_ssts,
+            "shedLineMb": args.admit_rss_shed_mb,
+        }));
         let fixed_mb = mib(shared + history + postings + telemetry + absorb_budget) as u64;
         if args.admit_rss_shed_mb > 0 && fixed_mb + 100 > args.admit_rss_shed_mb {
             tracing::warn!(

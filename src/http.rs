@@ -1032,8 +1032,16 @@ pub fn router(state: Arc<AppState>) -> Router {
                             "sweepResidentEngines":
                                 crate::billing::sweep_resident_engines(),
                         },
+                        "config": crate::history::RESOLVED_MEMORY_CONFIG.get(),
                         "process": {
                             "rssMb": state.rss_mb_cached.load(ord),
+                            "cgroupCurrentMb": std::fs::read_to_string("/sys/fs/cgroup/memory.current")
+                                .ok().and_then(|s| s.trim().parse::<u64>().ok()).map(|v| v / 1048576),
+                            "cgroupPeakMb": std::fs::read_to_string("/sys/fs/cgroup/memory.peak")
+                                .ok().and_then(|s| s.trim().parse::<u64>().ok()).map(|v| v / 1048576),
+                            "oomKillTotal": std::fs::read_to_string("/sys/fs/cgroup/memory.events")
+                                .ok().and_then(|s| s.lines().find_map(|l|
+                                    l.strip_prefix("oom_kill ").and_then(|v| v.trim().parse::<u64>().ok()))),
                         },
                     }))
                     .into_response()

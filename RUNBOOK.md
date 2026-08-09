@@ -724,7 +724,8 @@ ABSORB_GLOBAL_BUDGET_BYTES=100859904 # hard process-wide bound; the binary FLOOR
                                      # frame's modeled build cost is always covered.
                                      # EVERY gather reserves >= the floor, so effective
                                      # concurrency at this budget is ONE (~2x budget +
-                                     # ABSORB_GLOBAL_GATHERS=2 restores two-way)
+                                     # ABSORB_GLOBAL_GATHERS=1             # EVERY gather reserves >= the worst-frame floor,
+                                     # so effective concurrency at this budget is ONE restores two-way)
 ABSORB_GLOBAL_GATHERS=2
 SLATEDB_RT_THREADS=4
 TELEMETRY_CACHE_BYTES=16777216
