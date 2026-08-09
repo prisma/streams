@@ -6,8 +6,8 @@ Tigris; the attack surface work ran locally against the same binary on
 the 1 GiB posture (`deploy/profiles/compute-1g.env`).
 
 **Four defects found and fixed, two of them P0**, plus a fifth finding —
-a capacity limit — root-caused in the field and resolvable by
-configuration. Both P0s were silent: the system reported itself healthy
+a capacity limit whose root cause is identified but whose obvious remedy
+was disproved in the field by an OOM kill, so it stays open. Both P0s were silent: the system reported itself healthy
 while being permanently broken. No data-loss defect was found —
 durability held under every attack, including four SIGKILLs.
 
@@ -17,7 +17,7 @@ durability held under every attack, including four SIGKILLs.
 | CHAOS-2 | P0 | Invalid engine config accepted — and the shipped defaults *were* invalid; `/health` said `ok` while every append 500'd | `3e701c34` |
 | CHAOS-3 | P1 | 96.2 MiB of the 500 MB shed line reserved per gather for a record size the deployment may never accept | `c00b19ae` |
 | CHAOS-4 | P2 | `maxBytes` / `waitMs` silently defaulted instead of rejecting values they could not parse | `204ac19c` |
-| CHAOS-5 | P1 | Absorption ran ~2.3× *below* ingest, so the hot tier grew without bound — root-caused to gather concurrency and resolved by configuration | capacity finding, posture left to the owner |
+| CHAOS-5 | P1 | Absorption runs ~2.3× *below* ingest, so the hot tier grows without bound. Root cause is gather concurrency — but raising it to 4 OOM-killed the instance (exit 137), so **no safe fix is known yet** | open |
 
 ---
 
@@ -226,7 +226,7 @@ No data is at risk: everything is durable in the shard log the whole
 time, and reads serve correctly from it. The exposure is cost and
 recovery time.
 
-### Resolved: the bottleneck was gather concurrency
+### Root cause: gather concurrency — but 4 slots OOMs the instance
 
 Redeployed Singapore with `MAX_REQUEST_BODY_BYTES=1048576` **and**
 `ABSORB_GLOBAL_GATHERS=4`, which reports `effectiveConc=4` — a value the
@@ -236,25 +236,49 @@ old build could not reach at any setting. Measured at the same
 | slots | gathers in flight | absorption | ingest | verdict |
 |---|---|---|---|---|
 | 1 | 1 | ~136 KB/s | ~310 KB/s | backlog grows 5.5 MB / 30 s |
-| 4 | 2–4 | **~660 KB/s** | ~346 KB/s | backlog **drains** |
+| 4 | 2–4 | **~660 KB/s** | ~346 KB/s | backlog drains — **then the process died** |
 
-Absorption improved ~4.9× and the regime inverted from unbounded growth
-to draining, with `absorb_lag_max_secs` falling as the accumulated
-backlog is consumed. RSS 362 MB, 114 sheds, no errors beyond the usual
-408s.
+Absorption did improve ~4.9× and the regime did invert from growth to
+draining. Then, roughly fifteen minutes in, the instance was **killed by
+the OOM killer**:
 
-**This configuration was impossible before CHAOS-3.** With the 32 MiB
-pin the reservation equalled the whole budget, so effective concurrency
-was clamped to 1 no matter what `ABSORB_GLOBAL_GATHERS` said. Lowering
-the body ceiling is what makes the slot count mean anything.
+```
+GET /health -> 500
+{"error":"binary_exited","binary":"/tmp/streams-slate","exitCode":137}
+```
 
-The tradeoff is explicit and must not be glossed: four gathers in flight
-reserve 4 × 24 MiB = 96 MiB, which is the same shed-line pressure the
-single 96.2 MiB reservation used to apply. The reclaimed budget buys
-**either** admission headroom **or** absorber concurrency, not both. On
-a 1 GiB instance that is a real choice, and this campaign does not make
-it — `compute-1g.env` is left as it was. What changed is that the choice
-now exists and both ends of it are measured.
+Exit 137 is SIGKILL from the kernel. The 4-slot configuration is
+**not survivable on the 1 GiB posture** and must not be recommended.
+The throughput numbers above are real — the system genuinely absorbed at
+660 KB/s — but it bought that rate with memory it did not have.
+
+This is the sharpest lesson of the campaign, and it is a lesson about
+the reservation model, not just about a knob. Four gathers reserve
+4 × 24 MiB = 96 MiB, which the admission shed accounts for exactly; RSS
+was last observed at 362 MB, well inside the 500 MB line. The process
+still died. So the **reservation materially understates the real
+transient cost of a concurrent gather** — the accounting that made
+`ADMIT_RSS_SHED_MB` trustworthy at one gather does not hold at four.
+Until that model is re-derived and re-validated, raising
+`ABSORB_GLOBAL_GATHERS` on a 1 GiB instance trades a bounded,
+observable backlog for an unbounded, fatal one.
+
+What stands:
+
+- The absorption deficit at 1 slot is real and reproduced three times
+  independently (~126–140 KB/s absorbed against ~238–325 KB/s ingested).
+- Gather concurrency, not the reservation size, is what gates absorption
+  throughput.
+- CHAOS-3's knob is what makes concurrency reachable at all — but
+  reachable is not the same as safe.
+- **The fix for CHAOS-5 is not yet known.** Raising concurrency is
+  disqualified on this instance class until the transient-cost model is
+  corrected. The remaining candidates are the read path (`lastReadMs`
+  21–42 s dominates every cycle), a larger instance, or absorbing on
+  dedicated capacity rather than in the serving process.
+
+`deploy/profiles/compute-1g.env` is unchanged, and after this run the
+region was redeployed back to the single-slot configuration.
 
 ---
 
