@@ -644,6 +644,15 @@ pub(crate) struct GatherOutcome {
     pub(crate) advanced: Vec<([u8; 16], u64, u64)>,
     pub(crate) no_work: Vec<[u8; 16]>,
     pub(crate) deferred_budget: Vec<[u8; 16]>,
+    /// Streams whose gather ADVANCED but did not reach the stream's
+    /// durable end — the per-stream byte cap truncated the chunk, so
+    /// data remains. `(hash, remaining offsets)`. These MUST stay
+    /// pending: retiring them (they are also in `advanced`) strands the
+    /// remainder until some unrelated event re-discovers it, and for a
+    /// stream whose next record exceeds the cap that is effectively
+    /// never — 8x100 KiB behind a 64 KiB cap absorbed exactly one
+    /// record and then stopped forever (chaos campaign, 2026-08-09).
+    pub(crate) partial: Vec<([u8; 16], u64)>,
 }
 
 /// Fence-class absorb errors mean this engine lost the shard to a new owner:
@@ -1041,9 +1050,37 @@ impl Absorber {
                                     // removing them silently stranded
                                     // their backlog for up to a minute and
                                     // blinded the fleet lag view).
+                                    let partial: std::collections::HashMap<[u8; 16], u64> =
+                                        outcome.partial.iter().copied().collect();
                                     for (h, _, _) in &outcome.advanced {
+                                        // A PARTIAL advance is progress, not
+                                        // completion: keep it pending so the
+                                        // next tick continues immediately.
+                                        if partial.contains_key(h) {
+                                            continue;
+                                        }
                                         pending.remove(h);
                                         crate::usage::clear_absorb_lag(crate::crypto::SegmentHash(*h));
+                                    }
+                                    for (h, remaining) in &partial {
+                                        let est = remaining.saturating_mul(1024);
+                                        pending
+                                            .entry(*h)
+                                            .and_modify(|p| {
+                                                p.bytes = p.bytes.max(est);
+                                                // Progress clears the failure
+                                                // backoff; the age is left
+                                                // alone so age-based due keeps
+                                                // its original meaning.
+                                                p.failures = 0;
+                                                p.retry_after = None;
+                                            })
+                                            .or_insert(PendingAbsorb {
+                                                bytes: est,
+                                                since: Instant::now(),
+                                                failures: 0,
+                                                retry_after: None,
+                                            });
                                     }
                                     for h in &outcome.no_work {
                                         pending.remove(h);
@@ -1301,6 +1338,11 @@ impl Absorber {
             CANONICAL_BYTES_WRITTEN.fetch_add(chunk_raw, std::sync::atomic::Ordering::Relaxed);
             warm_installs.push((inc, from, last + 1, chunk_runs.into_iter().collect()));
             out.advanced.push((*hash, last + 1, chunk_raw));
+            // Truncated by the per-stream cap: more durable data sits
+            // below `upto`. The caller must keep this stream pending.
+            if last + 1 < upto {
+                out.partial.push((*hash, upto - (last + 1)));
+            }
         }
         if out.advanced.is_empty() {
             return Ok(out);

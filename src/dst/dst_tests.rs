@@ -1144,6 +1144,129 @@ async fn absorber_sweep_recovers_streams_whose_signals_were_lost() {
     absorber.abort();
 }
 
+/// CHAOS 2026-08-09: a gather TRUNCATED by the per-stream byte cap
+/// reported its stream as `advanced` — fully drained — and the tick
+/// loop retired it from the pending set. Nothing re-drove the
+/// remainder: 8x100 KiB behind a 64 KiB cap absorbed exactly ONE
+/// record and then stopped forever (field repro: 3x32 MiB frames left
+/// 67 MB parked in the shard log across sweeps, rescans, restarts and
+/// fresh append signals — one record per process boot). Reads stayed
+/// correct (they merge the shard log), so the damage is unbounded hot-
+/// tier growth and a trim boundary that can never advance, which is
+/// precisely the cost/memory failure the absorber exists to prevent.
+/// The gather now reports a PARTIAL advance and the caller keeps such
+/// streams pending, so absorption CONVERGES.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn absorber_drains_records_larger_than_the_per_stream_gather_cap() {
+    let inner = mem();
+    let store = FaultStore::uniform(inner.clone(), 77, FaultPlan::CLEAN);
+    let key = skey();
+    let hash = [77u8; 16];
+
+    let db = slatedb::Db::builder("dst-bigrec", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (engine_tx, engine_rx) = crate::history::absorber_channel();
+    let engine = crate::shard::ShardEngine::start(
+        "dst-bigrec".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        engine_tx,
+        None,
+    );
+    let keys = Arc::new(crate::history::KeyCache::default());
+    keys.put(hash, key.clone(), hash);
+    // 64 KiB gather cap: EVERY record below is bigger, so every gather
+    // is truncated after exactly one record.
+    let absorber = crate::history::Absorber::start(
+        store.clone(),
+        engine.clone(),
+        keys,
+        crate::history::AbsorberConfig {
+            threshold_bytes: 1,
+            min_age_bytes: 1,
+            threshold_age: std::time::Duration::from_millis(1),
+            tick: std::time::Duration::from_millis(20),
+            gather_max_bytes: 64 * 1024,
+            sweep_every: 100_000, // the sweep must NOT be what saves us
+            ..Default::default()
+        },
+        engine_rx,
+    );
+
+    // ONE batched append carrying SIX oversized records: one signal,
+    // six gathers needed. (Six separate appends would emit six signals
+    // and mask the wedge — each fresh signal re-adds the stream to the
+    // pending set, which is exactly why the field only saw this with
+    // few-appends/much-data.)
+    const RECORDS: usize = 6;
+    const SIZE: usize = 100 * 1024;
+    {
+        let subkey = crate::crypto::derive_subkey(&key, &hash, "k", 0);
+        let (tx, rx) = tokio::sync::oneshot::channel();
+        let req = crate::shard::AppendReq {
+            enqueued_at: std::time::Instant::now(),
+            hash,
+            route: hash,
+            entries: (0..RECORDS)
+                .map(|i| bytes::Bytes::from(vec![b'a' + i as u8; SIZE]))
+                .collect(),
+            usage: crate::usage::counters(&hash),
+            routing_key: "k".to_string(),
+            key_hash: crate::crypto::stream_hash("k"),
+            producer_lineage: Vec::new(),
+            key_version: 0,
+            subkey,
+            ts_hint_ms: None,
+            seq: None,
+            bytes: 0,
+            close: false,
+            producer: None,
+            deferred_error: None,
+            sealed_reject_new: None,
+            touch: None,
+            seal_gen: None,
+            seal_fence_to: None,
+            billing: None,
+            resp: tx,
+        };
+        assert!(engine.try_enqueue(req).is_ok(), "enqueue rejected");
+        rx.await.expect("ack channel").expect("append acked");
+    }
+
+    // Convergence: absorbed must REACH next. Before the fix this stuck
+    // one record in and never moved again.
+    let mut drained = false;
+    let mut last_seen = (0u64, 0u64);
+    for _ in 0..400 {
+        if let Ok(h) = engine.stream_handle(hash).await {
+            let st = h.state.lock().unwrap();
+            last_seen = (st.durable.absorbed, st.durable.next);
+            if st.durable.next > 0 && st.durable.absorbed == st.durable.next {
+                drained = true;
+            }
+        }
+        if drained {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(
+        drained,
+        "absorption stalled with records larger than the gather cap: \
+         absorbed={} next={} (a truncated gather must keep the stream pending)",
+        last_seen.0, last_seen.1
+    );
+    absorber.abort();
+}
+
 /// History v2's headline property: absorption WITHOUT the customer key.
 /// The gather lane copies raw encrypted frames into the shared
 /// partition, so an absorber whose KeyCache is EMPTY must still absorb
