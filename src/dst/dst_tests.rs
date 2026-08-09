@@ -2863,6 +2863,64 @@ async fn idle_engine_store_traffic_is_bounded_by_the_poll_cadence() {
     }
 }
 
+/// CHAOS-2: an instance whose shards can NEVER open must stop calling
+/// itself healthy. Invalid engine config, a wrong bucket, bad
+/// credentials and an unreachable endpoint all land here — the process
+/// binds, `/health` says `ok`, and every append 500s forever while the
+/// load balancer keeps sending traffic.
+#[tokio::test(flavor = "current_thread", start_paused = true)]
+async fn health_reports_unready_when_no_shard_has_ever_opened() {
+    use crate::sharddir::{unready_reason, OpenGate};
+    let _serial = gate_lock().lock().await;
+    OpenGate::reset_counters_for_tests();
+    assert!(unready_reason().is_none(), "a fresh process is ready");
+
+    let shards = Arc::new(std::sync::RwLock::new(HashMap::new()));
+    let gate = OpenGate::new(
+        shards.clone(),
+        Box::new(move |_prefix: String| {
+            Box::pin(async move {
+                anyhow::bail!(
+                    "invalid configuration: max_unflushed_bytes (16777216) must be \
+                     greater than l0_sst_size_bytes (33554432)"
+                )
+            })
+        }),
+    );
+
+    // Distinct prefixes: this is the whole data plane failing, not one
+    // poison stream.
+    for (i, prefix) in ["shards/root", "shards/1", "shards/2"].iter().enumerate() {
+        loop {
+            match gate
+                .get_or_open(prefix, std::time::Duration::from_secs(30))
+                .await
+            {
+                crate::sharddir::OpenOutcome::Failed(_) => break,
+                crate::sharddir::OpenOutcome::Wait {
+                    retry_after_secs, ..
+                } => tokio::time::sleep(std::time::Duration::from_secs(retry_after_secs + 1)).await,
+                crate::sharddir::OpenOutcome::Ready(_) => panic!("open must not succeed"),
+            }
+        }
+        // Below the strike line the instance stays in rotation: a
+        // single failure is a store blip, not a broken deploy.
+        if i < 2 {
+            assert!(
+                unready_reason().is_none(),
+                "evicted from rotation after only {} failure(s)",
+                i + 1
+            );
+        }
+    }
+
+    let reason = unready_reason().expect("three failures, zero successes => unready");
+    assert!(
+        reason.contains("max_unflushed_bytes"),
+        "readiness must carry the diagnosis, got: {reason}"
+    );
+}
+
 /// An engine that keeps dying young must meet an escalating holdoff, not
 /// an eager reopen: rapid open→die cycles against a sick store ARE the
 /// storm, whatever kills the engine.

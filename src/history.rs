@@ -417,7 +417,7 @@ pub(crate) fn history2_settings() -> Settings {
     }
 }
 
-fn history_settings() -> Settings {
+pub(crate) fn history_settings() -> Settings {
     // Bench-only escape hatch: HISTORY_COMPACTOR=off disables the embedded
     // compactor (and lifts the L0 caps so flushes never block on it). Used
     // with the s3lite --discard-substr mode, where history SST bodies are

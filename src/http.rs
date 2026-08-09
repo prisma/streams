@@ -1289,6 +1289,16 @@ async fn product_list_axum(
 /// opened synchronously at startup, so a 503 here means startup-order
 /// bugs or a lost OnceLock, and the platform should not route yet.
 async fn health_axum(State(state): State<Arc<AppState>>) -> Response {
+    // A process that has never opened a shard cannot serve a single
+    // append; answering `ok` keeps it in the load balancer forever
+    // (CHAOS-2). Report unready so rollouts halt and traffic drains.
+    if let Some(reason) = crate::sharddir::unready_reason() {
+        return (
+            StatusCode::SERVICE_UNAVAILABLE,
+            format!("shard storage unavailable: {reason}"),
+        )
+            .into_response();
+    }
     if crate::billing::billing_required() {
         let spool_ok = state.read_spool.get().is_some();
         let rollup_ok = std::env::var("ROLLUP").map(|v| v != "1").unwrap_or(true)

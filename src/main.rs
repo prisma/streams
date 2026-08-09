@@ -146,7 +146,15 @@ struct Args {
     #[arg(long, env = "TAIL_RING_BYTES", default_value_t = 0)]
     tail_ring_bytes: usize,
 
-    #[arg(long, env = "L0_SST_SIZE_BYTES", default_value_t = 32 * 1024 * 1024)]
+    /// Target L0 SST size per shard DB. MUST stay below
+    /// --max-unflushed-bytes: SlateDB rejects the pair at engine-open
+    /// time, and shard engines open lazily, so an invalid pair used to
+    /// surface only as a permanent 500 per append (CHAOS-2). The old
+    /// default here was 32 MiB against a 16 MiB unflushed cap, which
+    /// made a bare `streams-slate` with no environment unbootable in
+    /// exactly that silent way. 8 MiB is the field-validated 1 GiB
+    /// posture (deploy/profiles/compute-1g.env).
+    #[arg(long, env = "L0_SST_SIZE_BYTES", default_value_t = 8 * 1024 * 1024)]
     l0_sst_size_bytes: usize,
 
     /// Byte-backpressure cap per shard DB (§1.1). SlateDB's default is
@@ -644,6 +652,87 @@ fn shard_settings(args: &Args) -> Settings {
     }
 }
 
+#[cfg(test)]
+mod config_validation_tests {
+    use super::*;
+    use clap::Parser;
+
+    /// CHAOS-2: the shipped defaults must be openable. The old
+    /// L0_SST_SIZE_BYTES default (32 MiB) exceeded the
+    /// MAX_UNFLUSHED_BYTES default (16 MiB), so a bare `streams-slate`
+    /// with no environment booted, reported `/health` ok, accepted
+    /// stream creation, and then failed EVERY append with a 500 for as
+    /// long as the process lived.
+    #[test]
+    fn shipped_defaults_are_a_valid_engine_configuration() {
+        let args = Args::parse_from(["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"]);
+        validate_engine_settings("shard", &shard_settings(&args))
+            .expect("default shard settings must open");
+        validate_engine_settings("history", &crate::history::history_settings())
+            .expect("default history settings must open");
+    }
+
+    #[test]
+    fn unflushed_at_or_below_l0_is_rejected_before_any_engine_opens() {
+        let mut args = Args::parse_from(["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"]);
+        args.l0_sst_size_bytes = 32 * 1024 * 1024;
+        args.max_unflushed_bytes = 16 * 1024 * 1024;
+        let err = validate_engine_settings("shard", &shard_settings(&args))
+            .expect_err("l0 above unflushed must be refused at startup");
+        let msg = format!("{err}");
+        assert!(msg.contains("max_unflushed_bytes"), "unhelpful: {msg}");
+        assert!(msg.contains("L0_SST_SIZE_BYTES"), "no remedy named: {msg}");
+
+        // Equality is just as fatal as inversion — SlateDB requires a
+        // strict inequality.
+        args.max_unflushed_bytes = args.l0_sst_size_bytes;
+        validate_engine_settings("shard", &shard_settings(&args))
+            .expect_err("equal sizes must be refused too");
+    }
+}
+
+/// Cross-knob validation of a SlateDB `Settings` before any engine opens.
+///
+/// CHAOS-2 (2026-08-09): SlateDB validates `max_unflushed_bytes >
+/// l0_sst_size_bytes` at OPEN time, and a shard engine opens lazily on
+/// first use. An invalid combination therefore boots cleanly, logs a
+/// healthy memory budget, answers `/health` with `ok`, accepts stream
+/// CREATION (the registry DB has its own valid settings) — and then
+/// fails EVERY append with a 500, forever, with the only evidence a
+/// `WARN` line per attempt. The shipped defaults were themselves
+/// invalid (l0 32 MiB vs unflushed 16 MiB), so a bare `streams-slate`
+/// with no environment was a permanently broken data plane that
+/// reported itself healthy.
+///
+/// Refuse to start instead. This is deliberately fail-fast rather than
+/// clamp-and-continue: the memory posture is an operator declaration
+/// that the acceptance campaign verifies knob-for-knob against
+/// `deploy/profiles/compute-1g.env`, so silently substituting a
+/// different value would make that verification a lie. A crash-loop is
+/// loud, greppable, and stops a bad rollout at the first instance.
+fn validate_engine_settings(what: &str, s: &Settings) -> anyhow::Result<()> {
+    if s.max_unflushed_bytes <= s.l0_sst_size_bytes {
+        anyhow::bail!(
+            "{what} settings are invalid: max_unflushed_bytes ({}) must be GREATER than \
+             l0_sst_size_bytes ({}) — SlateDB rejects this at every engine open, which \
+             would leave this process answering /health with `ok` while failing every \
+             append. Raise MAX_UNFLUSHED_BYTES above L0_SST_SIZE_BYTES, or lower \
+             L0_SST_SIZE_BYTES below it (the field-validated 1 GiB posture is \
+             L0_SST_SIZE_BYTES=8388608 with MAX_UNFLUSHED_BYTES=16777216; see \
+             deploy/profiles/compute-1g.env).",
+            s.max_unflushed_bytes,
+            s.l0_sst_size_bytes,
+        );
+    }
+    if s.l0_sst_size_bytes == 0 {
+        anyhow::bail!("{what} settings are invalid: l0_sst_size_bytes must be > 0");
+    }
+    if s.l0_max_ssts == 0 {
+        anyhow::bail!("{what} settings are invalid: l0_max_ssts must be > 0");
+    }
+    Ok(())
+}
+
 fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -675,6 +764,14 @@ fn main() -> anyhow::Result<()> {
 
 async fn async_main() -> anyhow::Result<()> {
     let args = Args::parse();
+
+    // Before anything opens a store: a configuration that SlateDB will
+    // reject at open time must stop the process here, not turn into a
+    // permanently-500 data plane behind an `ok` health check (CHAOS-2).
+    // Both engine tiers go through the same check so a future edit to
+    // either one cannot reintroduce the hole.
+    validate_engine_settings("shard", &shard_settings(&args))?;
+    validate_engine_settings("history", &crate::history::history_settings())?;
 
     let ops_store = args.store_for(&args.ops_bucket)?;
     let shard_store = args.store_for(&args.shard_bucket)?;

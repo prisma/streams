@@ -72,6 +72,48 @@ static OPENS_DEADLINED: AtomicU64 = AtomicU64::new(0);
 /// reaper instead of installed.
 static OPENS_REAPED: AtomicU64 = AtomicU64::new(0);
 
+/// Message from the most recent open failure, for the readiness surface.
+static LAST_OPEN_ERROR: Mutex<Option<String>> = Mutex::new(None);
+
+/// Open failures tolerated before an instance that has NEVER served a
+/// shard declares itself unready. Three failures with zero successes is
+/// not a flaky store — it is a broken instance.
+const NEVER_OPENED_STRIKES: u64 = 3;
+
+/// Readiness verdict for `/health`: `Some(reason)` when this process has
+/// never successfully opened a single shard while repeatedly failing to.
+///
+/// CHAOS-2 (2026-08-09): every "this data plane cannot work at all"
+/// cause — invalid engine config, wrong bucket, bad credentials,
+/// unreachable endpoint, missing permissions — presents identically at
+/// the edge: the process boots, binds, answers `/health` with `ok`, and
+/// returns 500 to every append forever. A load balancer keeps such an
+/// instance in rotation indefinitely, because the only evidence is one
+/// WARN line per attempt in the logs.
+///
+/// The condition is deliberately narrow — ZERO lifetime successes — so
+/// that one poison stream cannot evict a healthy instance from rotation,
+/// and a store blip mid-life cannot cascade a whole fleet out of
+/// service. It catches the broken-from-boot class exactly, which is the
+/// class that never self-heals. An instance that opened shards and later
+/// started failing stays ready and is diagnosed through
+/// `/v1/debug/store`, where `started` climbing against a flat
+/// `completed` is the documented signature.
+pub fn unready_reason() -> Option<String> {
+    let failed = OPENS_FAILED.load(Ordering::Relaxed);
+    if OPENS_COMPLETED.load(Ordering::Relaxed) > 0 || failed < NEVER_OPENED_STRIKES {
+        return None;
+    }
+    let last = LAST_OPEN_ERROR
+        .lock()
+        .ok()
+        .and_then(|g| g.clone())
+        .unwrap_or_else(|| "unknown".into());
+    Some(format!(
+        "no shard has ever opened ({failed} failed attempts); last error: {last}"
+    ))
+}
+
 pub fn stats_json() -> serde_json::Value {
     serde_json::json!({
         "started": OPENS_STARTED.load(Ordering::Relaxed),
@@ -266,6 +308,9 @@ impl OpenGate {
                             inner.c_failed.fetch_add(1, Ordering::Relaxed);
                             let msg = format!("{e:#}");
                             tracing::warn!(prefix = %p, "shard open failed: {msg}");
+                            if let Ok(mut slot) = LAST_OPEN_ERROR.lock() {
+                                *slot = Some(format!("{p}: {msg}"));
+                            }
                             let mut st = inner.st.lock().unwrap();
                             let g = st.entry(p.clone()).or_default();
                             g.inflight = None;
@@ -284,6 +329,12 @@ impl OpenGate {
                                  abandoning under supervision",
                                 inner.open_deadline
                             );
+                            if let Ok(mut slot) = LAST_OPEN_ERROR.lock() {
+                                *slot = Some(format!(
+                                    "{p}: open exceeded deadline {:?}",
+                                    inner.open_deadline
+                                ));
+                            }
                             {
                                 let mut st = inner.st.lock().unwrap();
                                 let g = st.entry(p.clone()).or_default();
@@ -378,6 +429,9 @@ impl OpenGate {
         OPENS_FAILED.store(0, Ordering::Relaxed);
         OPENS_COALESCED.store(0, Ordering::Relaxed);
         OPENS_IN_FLIGHT.store(0, Ordering::Relaxed);
+        if let Ok(mut slot) = LAST_OPEN_ERROR.lock() {
+            *slot = None;
+        }
     }
 
     /// This gate's OWN counters — immune to other tests' engine opens.
