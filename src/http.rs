@@ -26,7 +26,48 @@ use crate::offsets::Offset;
 use crate::registry::{Registry, StreamDesc, shard_for_hash};
 use crate::shard::{AppendErr, AppendReq, ShardEngine, now_ms, read_frames};
 
+/// Protocol ceiling on a request body. This is the pinned maximum — a
+/// deployment may lower its effective limit (see [`max_body_bytes`]) but
+/// never raise it above this.
 pub(crate) const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
+
+/// Effective request-body ceiling, set once at startup from
+/// MAX_REQUEST_BODY_BYTES.
+///
+/// CHAOS-3 (2026-08-09): this number is not only an input validator — it
+/// sizes the absorber's worst-case frame-build reservation
+/// ([`crate::history::absorb_worst_frame_transient`]), which every
+/// gather holds against the admission shed line. At the pinned 32 MiB
+/// ceiling that reservation is 96.2 MiB, or 19% of the 1 GiB posture's
+/// 500 MB shed line, held whenever a gather is in flight — measured in
+/// Singapore against gathers whose ACTUAL size averaged 6 MB. A
+/// deployment that caps bodies at 1 MiB reserves ~3 MiB instead and
+/// buys back ~93 MiB of admission headroom.
+static MAX_BODY_LIMIT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(MAX_BODY_BYTES);
+
+pub(crate) fn max_body_bytes() -> usize {
+    MAX_BODY_LIMIT.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// Lower the effective body ceiling. Rejects anything above the pinned
+/// protocol maximum (the limit may only be tightened) or below a floor
+/// that keeps the product surface usable.
+pub(crate) fn set_max_body_bytes(v: usize) -> anyhow::Result<()> {
+    const FLOOR: usize = 64 * 1024;
+    if v > MAX_BODY_BYTES {
+        anyhow::bail!(
+            "MAX_REQUEST_BODY_BYTES ({v}) exceeds the pinned protocol ceiling \
+             ({MAX_BODY_BYTES}); the limit may only be lowered"
+        );
+    }
+    if v < FLOOR {
+        anyhow::bail!("MAX_REQUEST_BODY_BYTES ({v}) is below the {FLOOR}-byte floor");
+    }
+    MAX_BODY_LIMIT.store(v, std::sync::atomic::Ordering::Relaxed);
+    Ok(())
+}
+
 const MAX_READ_BYTES: usize = 8 * 1024 * 1024;
 
 /// Budget for a read that was WOKEN by a long-poll wait — the live-tail
@@ -1005,10 +1046,10 @@ pub fn router(state: Arc<AppState>) -> Router {
                             "gatherSlots": budget.gather_slots(),
                             "effectiveGatherConcurrency":
                                 (budget.capacity()
-                                    / crate::history::ABSORB_WORST_FRAME_TRANSIENT)
+                                    / crate::history::absorb_worst_frame_transient())
                                     .clamp(1, budget.gather_slots()),
                             "worstFrameTransientBytes":
-                                crate::history::ABSORB_WORST_FRAME_TRANSIENT,
+                                crate::history::absorb_worst_frame_transient(),
                             "injectedFlushStallMs": crate::history::HISTORY_FLUSH_STALL_MS
                                 .load(std::sync::atomic::Ordering::Relaxed),
                             "shedLineMb": state.admit_rss_shed_mb,
@@ -1430,7 +1471,7 @@ async fn product_entry_axum(
             false,
         ));
     }
-    let body = match axum::body::to_bytes(req.into_body(), MAX_BODY_BYTES).await {
+    let body = match axum::body::to_bytes(req.into_body(), max_body_bytes()).await {
         Ok(b) => b,
         Err(_) => {
             return crate::product::with_product_cors(crate::product::perr(
@@ -1505,7 +1546,7 @@ async fn stream_entry_inner(
     }
     match method {
         Method::PUT => {
-            let body = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
+            let body = match axum::body::to_bytes(body, max_body_bytes()).await {
                 Ok(b) => b,
                 Err(_) => {
                     return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large");
@@ -4055,7 +4096,7 @@ pub(crate) async fn append(
         )
         .await;
     }
-    let body_bytes = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
+    let body_bytes = match axum::body::to_bytes(body, max_body_bytes()).await {
         Ok(b) => b,
         Err(_) => return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large"),
     };
@@ -4305,7 +4346,7 @@ async fn append_core(
         p.request_hash = Some(h);
     }
     let close = want_close(&headers);
-    let body = match axum::body::to_bytes(body, MAX_BODY_BYTES).await {
+    let body = match axum::body::to_bytes(body, max_body_bytes()).await {
         Ok(b) => b,
         Err(_) => return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large"),
     };

@@ -163,6 +163,20 @@ struct Args {
     #[arg(long, env = "MAX_UNFLUSHED_BYTES", default_value_t = 16 * 1024 * 1024)]
     max_unflushed_bytes: usize,
 
+    /// Effective request-body ceiling. May only LOWER the pinned 32 MiB
+    /// protocol maximum, never raise it.
+    ///
+    /// This is a capacity knob as much as a validator: the absorber
+    /// reserves (limit + overhead) × 3 against the admission shed line
+    /// for every gather, because one legal oversized frame must be able
+    /// to proceed alone. At the 32 MiB pin that is 96.2 MiB — 19% of the
+    /// 1 GiB posture's 500 MB line — held while a gather runs, measured
+    /// in Singapore against gathers averaging 6 MB of actual work
+    /// (CHAOS-3). A deployment whose records are small should say so
+    /// here and get the difference back as admitted traffic.
+    #[arg(long, env = "MAX_REQUEST_BODY_BYTES", default_value_t = 32 * 1024 * 1024)]
+    max_request_body_bytes: usize,
+
     /// L0 SST count that triggers write backpressure. More L0s = more burst
     /// headroom before compaction must catch up (throughput tuning).
     #[arg(long, env = "L0_MAX_SSTS", default_value_t = 8)]
@@ -672,6 +686,48 @@ mod config_validation_tests {
             .expect("default history settings must open");
     }
 
+    /// CHAOS-3: the body ceiling is a capacity knob. Lowering it must
+    /// shrink the absorber reservation that every gather holds against
+    /// the shed line, and it must never be raisable above the pin.
+    #[test]
+    fn body_ceiling_sizes_the_absorber_reservation_and_only_lowers() {
+        use crate::history::worst_frame_transient_for;
+        let pinned = crate::http::MAX_BODY_BYTES;
+        let at_pin = worst_frame_transient_for(pinned);
+        assert!(
+            at_pin > 96 * 1024 * 1024,
+            "the pinned reservation is the ~96 MiB measured in the field, got {at_pin}"
+        );
+        let lowered = worst_frame_transient_for(1024 * 1024);
+        assert!(
+            lowered * 25 < at_pin,
+            "a 1 MiB ceiling must shrink the reservation by more than 25x: \
+             {lowered} vs {at_pin}"
+        );
+
+        // The live wiring reads the same rule, so the freed bytes are
+        // real admission headroom and not a floor that clamps back.
+        assert_eq!(
+            crate::history::absorb_worst_frame_transient(),
+            worst_frame_transient_for(crate::http::max_body_bytes())
+        );
+        assert_eq!(
+            crate::history::floored_budget_capacity(0),
+            crate::history::absorb_worst_frame_transient()
+        );
+
+        assert!(
+            crate::http::set_max_body_bytes(pinned + 1).is_err(),
+            "the protocol ceiling must not be raisable"
+        );
+        assert!(crate::http::set_max_body_bytes(1024).is_err(), "floor holds");
+        assert_eq!(
+            crate::http::max_body_bytes(),
+            pinned,
+            "a rejected setting must not have taken effect"
+        );
+    }
+
     #[test]
     fn unflushed_at_or_below_l0_is_rejected_before_any_engine_opens() {
         let mut args = Args::parse_from(["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"]);
@@ -764,6 +820,11 @@ fn main() -> anyhow::Result<()> {
 
 async fn async_main() -> anyhow::Result<()> {
     let args = Args::parse();
+
+    // FIRST: the body ceiling sizes the absorber's worst-frame
+    // reservation, which floors the process-wide budget. It must be
+    // fixed before anything reads either (CHAOS-3).
+    crate::http::set_max_body_bytes(args.max_request_body_bytes)?;
 
     // Before anything opens a store: a configuration that SlateDB will
     // reject at open time must stop the process here, not turn into a
@@ -1183,7 +1244,7 @@ async fn async_main() -> anyhow::Result<()> {
         // floor — 1 under the 1-GiB profile regardless of configured
         // slots. Print both so nobody reads two slots as two-way.
         let effective_gathers =
-            (absorb_budget / crate::history::ABSORB_WORST_FRAME_TRANSIENT).clamp(1, gathers);
+            (absorb_budget / crate::history::absorb_worst_frame_transient()).clamp(1, gathers);
         let rt_threads = genv("SLATEDB_RT_THREADS", 2);
         let mib = |b: usize| b / (1024 * 1024);
         tracing::info!(
@@ -1194,7 +1255,7 @@ async fn async_main() -> anyhow::Result<()> {
             mib(telemetry),
             mib(args.max_unflushed_bytes),
             mib(absorb_budget),
-            mib(crate::history::ABSORB_WORST_FRAME_TRANSIENT),
+            mib(crate::history::absorb_worst_frame_transient()),
             gathers,
             effective_gathers,
             rt_threads,

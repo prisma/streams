@@ -184,8 +184,23 @@ pub const FRAME_ENCODING_ALLOWANCE: usize = 64 * 1024;
 /// note: arm X survived at exactly that effective one-gather
 /// concurrency. The model is validated (not proven) by the
 /// acceptance campaign's oversized-frame leg.
-pub const ABSORB_WORST_FRAME_TRANSIENT: usize =
-    (crate::http::MAX_BODY_BYTES + FRAME_ENCODING_ALLOWANCE) * ABSORB_BUILD_MULTIPLIER;
+/// CHAOS-3 (2026-08-09): this scales with the EFFECTIVE body ceiling,
+/// not the pinned protocol maximum. At the 32 MiB pin it is 96.2 MiB —
+/// 19% of the 1 GiB posture's 500 MB shed line, held whenever a gather
+/// is in flight, measured in Singapore against gathers whose actual
+/// size averaged 6 MB. A deployment that lowers MAX_REQUEST_BODY_BYTES
+/// shrinks this proportionally and buys the difference back as
+/// admission headroom.
+pub fn absorb_worst_frame_transient() -> usize {
+    worst_frame_transient_for(crate::http::max_body_bytes())
+}
+
+/// The sizing rule as a pure function of the body ceiling, so it can be
+/// asserted without mutating process-wide state under a parallel test
+/// harness.
+pub fn worst_frame_transient_for(body_limit: usize) -> usize {
+    (body_limit + FRAME_ENCODING_ALLOWANCE) * ABSORB_BUILD_MULTIPLIER
+}
 
 /// Injected history-flush slowdown, ms per gather flush (0 = off).
 /// Set via POST /v1/debug/history-stall?ms= — the STALLED-HISTORY-
@@ -197,7 +212,7 @@ pub static HISTORY_FLUSH_STALL_MS: AtomicU64 = AtomicU64::new(0);
 /// The budget floor as a pure function (tested directly): a configured
 /// capacity below one worst-case frame build is raised to it.
 pub fn floored_budget_capacity(configured: usize) -> usize {
-    configured.max(ABSORB_WORST_FRAME_TRANSIENT)
+    configured.max(absorb_worst_frame_transient())
 }
 
 /// The RESOLVED memory posture, captured once at startup from the same
@@ -1027,7 +1042,7 @@ impl Absorber {
                                 .cfg
                                 .gather_max_bytes
                                 .saturating_mul(ABSORB_BUILD_MULTIPLIER)
-                                .max(ABSORB_WORST_FRAME_TRANSIENT);
+                                .max(absorb_worst_frame_transient());
                             let _reservation = absorb_budget().reserve(est).await;
                             GATHER_LAST_RESERVED.store(
                                 _reservation.granted() as u64,
@@ -2004,13 +2019,13 @@ mod tests {
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn worst_frame_floor_serializes_oversized_gathers_without_starvation() {
         assert_eq!(
-            ABSORB_WORST_FRAME_TRANSIENT,
+            absorb_worst_frame_transient(),
             (crate::http::MAX_BODY_BYTES + FRAME_ENCODING_ALLOWANCE) * ABSORB_BUILD_MULTIPLIER
         );
         // A too-small configured budget floors up to the worst frame.
         assert_eq!(
             floored_budget_capacity(64 * 1024 * 1024),
-            ABSORB_WORST_FRAME_TRANSIENT
+            absorb_worst_frame_transient()
         );
         // A generous budget is untouched.
         assert_eq!(
@@ -2026,10 +2041,10 @@ mod tests {
         for _ in 0..3 {
             let done = done.clone();
             handles.push(tokio::spawn(async move {
-                let r = budget.reserve(ABSORB_WORST_FRAME_TRANSIENT).await;
-                assert_eq!(r.granted(), ABSORB_WORST_FRAME_TRANSIENT);
+                let r = budget.reserve(absorb_worst_frame_transient()).await;
+                assert_eq!(r.granted(), absorb_worst_frame_transient());
                 // Serialized by bytes: nothing else can be reserved.
-                assert_eq!(budget.reserved_bytes(), ABSORB_WORST_FRAME_TRANSIENT as u64);
+                assert_eq!(budget.reserved_bytes(), absorb_worst_frame_transient() as u64);
                 done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }));
         }
