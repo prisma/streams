@@ -5,7 +5,8 @@ fix what breaks, report. Load ran on Prisma Compute in Singapore against
 Tigris; the attack surface work ran locally against the same binary on
 the 1 GiB posture (`deploy/profiles/compute-1g.env`).
 
-**Four defects found and fixed, two of them P0.** Both P0s were silent:
+**Four defects found and fixed, two of them P0**, plus one capacity
+limit measured and left open with a recommended experiment. Both P0s were silent:
 the system reported itself healthy while being permanently broken. No
 data-loss defect was found — durability held under every attack,
 including four SIGKILLs.
@@ -16,6 +17,7 @@ including four SIGKILLs.
 | CHAOS-2 | P0 | Invalid engine config accepted — and the shipped defaults *were* invalid; `/health` said `ok` while every append 500'd | `3e701c34` |
 | CHAOS-3 | P1 | 96.2 MiB of the 500 MB shed line reserved per gather for a record size the deployment may never accept | `c00b19ae` |
 | CHAOS-4 | P2 | `maxBytes` / `waitMs` silently defaulted instead of rejecting values they could not parse | `204ac19c` |
+| CHAOS-5 | P1 | Absorption ran ~2.3× *below* ingest, so the hot tier grew without bound — root-caused to gather concurrency and resolved by configuration | capacity finding, posture left to the owner |
 
 ---
 
@@ -116,17 +118,34 @@ accept, with no way to say otherwise.
 
 `MAX_REQUEST_BODY_BYTES` makes the ceiling configurable, lowering-only,
 so the pinned protocol maximum and the default are unchanged. Measured on
-the release binary:
+the release binary with only store settings (no profile), where the
+budget defaults apply:
 
 ```
 MAX_REQUEST_BODY_BYTES=33554432   worstFrame=96.2MiB capacity=96.2MiB gatherConc=1
 MAX_REQUEST_BODY_BYTES=1048576    worstFrame= 3.2MiB capacity=64.0MiB gatherConc=2
 ```
 
-Two wins: 93 MiB returns as admission headroom, and the budget stops
-being floored up to a single worst frame, so effective gather
-concurrency goes 1 → 2. The one-gather serialization documented in the
-OOM campaign was a consequence of the 32 MiB pin, not a law.
+and in Singapore, under the actual 1 GiB profile:
+
+```
+MAX_REQUEST_BODY_BYTES=1048576    worstFrame= 3.2MiB capacity=96.2MiB
+                                  gatherSlots=1  effectiveConc=1
+```
+
+**The concurrency win does not transfer to the profile, and saying it
+did would be wrong.** The 1 → 2 above comes from the bare defaults
+(64 MiB budget, 2 slots). `compute-1g.env` pins
+`ABSORB_GLOBAL_GATHERS=1`, so effective concurrency stays 1 whatever the
+frame size — it is now clamped by the configured slot count rather than
+by the worst frame.
+
+What the knob delivers under the profile is the reservation itself:
+96.2 MiB → 3.2 MiB per gather, i.e. ~93 MiB of shed line returned to
+admission. Raising concurrency is a *separate* decision that is now
+merely possible: at a 3.2 MiB worst frame the 96.2 MiB budget could
+support ~30 concurrent gathers, so `ABSORB_GLOBAL_GATHERS` becomes a
+real knob instead of a value the worst-frame floor would override.
 
 ## CHAOS-4 — parameters that were silently defaulted instead of refused
 
@@ -148,6 +167,88 @@ answer 400.
 A parseable-but-tiny `maxBytes` still clamps up to the 4 KiB floor — a
 budget below one record cannot be honoured and every read must make
 progress. That clamp is deliberate and documented, not a defect.
+
+## CHAOS-5 — absorption cannot keep up with ingest at this load
+
+Not a code defect: a capacity limit, measured because the injection
+campaign made it visible. After a deliberate three-minute absorber
+pause, the backlog never recovered. Three samples 30 s apart on the
+post-fix Singapore build under the standard chaos load:
+
+```
+absorbed  240,022,292 -> 244,216,816 -> 248,411,340   (~140 KB/s)
+ingest    340,174,236 -> 349,780,412 -> 359,709,266   (~325 KB/s)
+backlog   100,151,944 -> 105,563,596 -> 111,297,926   (+5.5 MB / 30 s)
+```
+
+Ingest is running at roughly **2.3× the absorption rate**, so the hot
+tier grows without bound and `absorb_lag_max_secs` climbs monotonically
+(183 s at baseline, 717 s by the end of the injection sequence). Each
+gather moved ~4 MiB per pass with `lastReadMs` of 21–28 s: the read
+phase dominates, and with one gather in flight that caps absorption near
+140 KB/s.
+
+This is the same shape as CHAOS-1 in its effect (hot tier grows, storage
+cost climbs, restart replay lengthens) but a different cause: CHAOS-1
+was a correctness bug that stranded data permanently, this is throughput.
+
+**The obvious hypothesis was tested and refuted.** I expected the
+CHAOS-3 reservation to be throttling absorption, so Singapore was
+redeployed with `MAX_REQUEST_BODY_BYTES=1048576`. The reservation did
+drop as designed — 96.2 MiB → 24 MiB per gather, since the reservation
+is `max(gather_cap × build_multiplier, worst_frame)` and the profile's
+8 MiB gather cap now dominates — but absorption throughput did not move:
+
+```
+                    reservation   absorption   ingest    ratio
+32 MiB ceiling        96.2 MiB     ~140 KB/s   ~325 KB/s  2.3x
+ 1 MiB ceiling          24 MiB     ~132 KB/s   ~298 KB/s  2.3x
+```
+
+Same deficit, measured at the same 128-concurrency load. The reservation
+costs real shed-line headroom, and reclaiming 72 MiB of it is worth
+doing, but it is **not** the absorption bottleneck. The remaining
+suspects are the read phase (`lastReadMs` 21–42 s, which dominates every
+gather cycle) and the single gather slot.
+
+What CHAOS-3 does buy here is that the concurrency experiment becomes
+possible at all: at a 96.2 MiB reservation against a 96.2 MiB budget
+only one gather could ever run, so raising `ABSORB_GLOBAL_GATHERS` was
+futile. At 24 MiB the same budget admits four.
+
+No data is at risk: everything is durable in the shard log the whole
+time, and reads serve correctly from it. The exposure is cost and
+recovery time.
+
+### Resolved: the bottleneck was gather concurrency
+
+Redeployed Singapore with `MAX_REQUEST_BODY_BYTES=1048576` **and**
+`ABSORB_GLOBAL_GATHERS=4`, which reports `effectiveConc=4` — a value the
+old build could not reach at any setting. Measured at the same
+128-concurrency load:
+
+| slots | gathers in flight | absorption | ingest | verdict |
+|---|---|---|---|---|
+| 1 | 1 | ~136 KB/s | ~310 KB/s | backlog grows 5.5 MB / 30 s |
+| 4 | 2–4 | **~660 KB/s** | ~346 KB/s | backlog **drains** |
+
+Absorption improved ~4.9× and the regime inverted from unbounded growth
+to draining, with `absorb_lag_max_secs` falling as the accumulated
+backlog is consumed. RSS 362 MB, 114 sheds, no errors beyond the usual
+408s.
+
+**This configuration was impossible before CHAOS-3.** With the 32 MiB
+pin the reservation equalled the whole budget, so effective concurrency
+was clamped to 1 no matter what `ABSORB_GLOBAL_GATHERS` said. Lowering
+the body ceiling is what makes the slot count mean anything.
+
+The tradeoff is explicit and must not be glossed: four gathers in flight
+reserve 4 × 24 MiB = 96 MiB, which is the same shed-line pressure the
+single 96.2 MiB reservation used to apply. The reclaimed budget buys
+**either** admission headroom **or** absorber concurrency, not both. On
+a 1 GiB instance that is a real choice, and this campaign does not make
+it — `compute-1g.env` is left as it was. What changed is that the choice
+now exists and both ends of it are measured.
 
 ---
 
@@ -194,6 +295,15 @@ hard boundary: zero appends succeeded after the seal returned, zero
 succeeded more than 0.5 s after the first refusal, no 5xx. Re-sealing is
 idempotent, and reads still work on a sealed collection.
 
+**Create/delete contention.** Twelve threads racing create, delete,
+append and read against ONE name for 25 s: 15,726 creates, 465 deletes,
+8,450 appends, 14,935 reads — zero 5xx, zero transport failures, and
+every response a coherent 200/201/204/404. Afterwards the name is fully
+usable: create 200, append 200, and a read returns exactly the post-race
+record. (`PUT` is an idempotent upsert — 201 when new, 200 when it
+already exists — which is why the race shows 15,726 200s next to 155
+201s.)
+
 **Delete.** `DELETE` under load returned 204 with no 5xx; strictly after
 it, appends and reads return 404. Recreating the name succeeds and reads
 back empty — no resurrection of the prior incarnation. Concurrent
@@ -227,10 +337,18 @@ line) but the run does not isolate that cause. Treat the table as
 directional.
 
 Deliberate fault injections against the post-fix build
-(`chaos-inject.sh`: stalled history flush with the reservation held,
-absorber fully paused, then both together) drove absorb lag from 183 s to
-353 s and RSS from 315 MB to 357 MB while health stayed 200 and shed
-stayed 0 — the system degraded and kept serving rather than failing.
+(`chaos-inject.sh`). A 2.5 s stalled history flush held for three
+minutes drove absorb lag 183 s → 321 s with RSS bounded at 312–333 MB,
+health 200 and **zero** sheds throughout. A full three-minute absorber
+pause then advanced lag by exactly +30 s per 30 s of wall clock — zero
+absorption, as designed — while RSS stayed within 320–364 MB, confirming
+the paused backlog accumulates in the shard log rather than in memory.
+
+The final combined-injection phase of that run is **invalid data**: I
+redeployed the server mid-campaign to test CHAOS-3, which retired the
+domain the injector was sampling, so its last eight samples read
+`0 0 0`. The stall and pause phases completed before the redeploy and
+stand.
 
 ## An environment failure worth recording
 
