@@ -5,11 +5,11 @@ fix what breaks, report. Load ran on Prisma Compute in Singapore against
 Tigris; the attack surface work ran locally against the same binary on
 the 1 GiB posture (`deploy/profiles/compute-1g.env`).
 
-**Four defects found and fixed, two of them P0**, plus one capacity
-limit measured and left open with a recommended experiment. Both P0s were silent:
-the system reported itself healthy while being permanently broken. No
-data-loss defect was found — durability held under every attack,
-including four SIGKILLs.
+**Four defects found and fixed, two of them P0**, plus a fifth finding —
+a capacity limit — root-caused in the field and resolvable by
+configuration. Both P0s were silent: the system reported itself healthy
+while being permanently broken. No data-loss defect was found —
+durability held under every attack, including four SIGKILLs.
 
 | # | Severity | Defect | Commit |
 |---|---|---|---|
@@ -140,12 +140,18 @@ did would be wrong.** The 1 → 2 above comes from the bare defaults
 frame size — it is now clamped by the configured slot count rather than
 by the worst frame.
 
-What the knob delivers under the profile is the reservation itself:
-96.2 MiB → 3.2 MiB per gather, i.e. ~93 MiB of shed line returned to
-admission. Raising concurrency is a *separate* decision that is now
-merely possible: at a 3.2 MiB worst frame the 96.2 MiB budget could
-support ~30 concurrent gathers, so `ABSORB_GLOBAL_GATHERS` becomes a
-real knob instead of a value the worst-frame floor would override.
+What the knob delivers under the profile is the reservation itself, and
+the number is 24 MiB rather than 3.2 MiB: a gather reserves
+`max(gather_cap × build_multiplier, worst_frame)`, so once the worst
+frame drops below it the profile's 8 MiB gather cap × 3 becomes the
+binding term. Measured `reservedBytes` in Singapore confirms it —
+25,165,824 bytes exactly.
+
+So the shed line gets **72 MiB** back (96.2 → 24 MiB), not 93. Raising
+concurrency is a separate decision that this makes possible for the
+first time: at 24 MiB per gather the 96.2 MiB budget admits four, where
+before it admitted exactly one. See CHAOS-5, where that turns out to
+matter a great deal.
 
 ## CHAOS-4 — parameters that were silently defaulted instead of refused
 
@@ -279,7 +285,20 @@ counter 100 reaches the server before the one holding 101. The real
 guarantee is per-producer FIFO, so payloads now carry `(writer, seq)` and
 each writer's subsequence is checked alone.
 
-**Hostile HTTP surface** — 42/42 (`bench/chaos/hostile-surface.sh`):
+**Hostile HTTP surface** — 42/42 locally
+(`bench/chaos/hostile-surface.sh`), and 35/42 against Singapore where
+the five remaining failures are exactly the CHAOS-4 checks, because the
+deployed binary predates that fix. The gate detecting a real defect on a
+build that lacks the fix is the demonstration that it works.
+
+The first Singapore run reported **19** failures, all bogus: setup drew
+a single 429 under full generator load, so the victim stream was never
+created and every dependent check hit 404. Setup is now a precondition
+that retries retryable codes and aborts the whole run with a distinct
+exit status rather than reporting a cascade. A gate that cries wolf once
+is a gate nobody reads.
+
+Checks:
 rejected credentials never reach the data plane (401/403); path traversal,
 encoded traversal, NUL and newline in names, 4000-byte names, empty
 names all 400/404 with no 5xx; reserved system ledgers (`_usage`,

@@ -44,9 +44,32 @@ chk() {
   fi
 }
 
-chk 201 "setup: create"   -X PUT -H "$A" -H "$K" -H 'content-type: application/json' \
+# Setup is a PRECONDITION, not a check. Against a server under load it
+# can legitimately answer 429, and treating that as a failure is how one
+# transient shed turned into 19 bogus "failures" on the first Singapore
+# run — every later check hit 404 on a stream that was never created.
+# Retry the retryable codes, then refuse to report anything at all.
+setup() {
+  local label="$1" want="$2"; shift 2
+  local code i
+  for i in 1 2 3 4 5 6 7 8 9 10; do
+    code=$(curl -s --max-time 30 -o /dev/null -w '%{http_code}' "$@" 2>/dev/null)
+    case "$code" in
+      "$want") printf 'ok    %-34s %s\n' "$label" "$code"; return 0 ;;
+      429|503|502|504) sleep $(( i < 5 ? i : 5 )) ;;
+      *) break ;;
+    esac
+  done
+  printf 'ABORT %-34s got %s want %s after retries\n' "$label" "$code" "$want"
+  echo
+  echo "hostile-surface: SETUP FAILED — no checks were run. The target must" >&2
+  echo "be reachable and admitting writes before the battery means anything." >&2
+  exit 2
+}
+
+setup "setup: create" 201 -X PUT -H "$A" -H "$K" -H 'content-type: application/json' \
     -d '{"format":{"kind":"bytes"}}' "$U/v1/streams/$S"
-chk 200 "setup: append"   -X POST -H "$A" -H "$K" --data-binary 'r0' "$U/v1/streams/$S/records"
+setup "setup: append" 200 -X POST -H "$A" -H "$K" --data-binary 'r0' "$U/v1/streams/$S/records"
 
 echo "-- auth: a rejected credential must never reach the data plane"
 chk 401 "no bearer"          -X POST -H "$K" --data-binary 'x' "$U/v1/streams/$S/records"
