@@ -365,19 +365,34 @@ The campaign ran two Singapore builds against real Tigris storage.
 
 | | pre-fix build | post-fix build |
 |---|---|---|
-| requests ok | 288,926 | 55,771 |
-| errors | 298 | 53 |
-| throttled | 16,917 | 111 |
-| admission shed | 16,500 | 0 |
-| RSS | 371–378 MB | 300–357 MB |
-| absorb lag | 898–950 s | 183 s baseline |
+| continuous window | 67 min (247 samples) | ~7 min (41 samples) |
+| requests ok | 1,241 → 355,306 | 175 → 31,909 |
+| errors | 298 | 87 |
+| throttled | 22,895 | — |
+| admission shed | 22,065 | 164 |
+| RSS | 46 → 426 MB, **peak 596 MB** | 103 → 348 MB |
+| absorb lag | 0 → 569 s, peak 973 s | 63 → 514 s |
+| absorbed / ingested | 254 / 300 KB/s | 126 / 238 KB/s |
+| final backlog | 195.7 MB | growing |
 
-**This is not a controlled A/B.** The post-fix build ran on a fresh store
-with a fresh generator and less accumulated state, and for less wall
-time. The shed and RSS differences are consistent with CHAOS-1 (a wedged
-absorber grows the hot tier, which drives memory pressure into the shed
-line) but the run does not isolate that cause. Treat the table as
-directional.
+Two things in that table deserve to be called out rather than skimmed.
+
+**RSS peaked at 596 MB against a 500 MB shed line.** The line is not a
+ceiling on resident memory — it is the point at which admission starts
+shedding, and the process still climbed ~96 MB past it without dying.
+That is the same accounting looseness the 4-slot OOM later exposed, and
+it was visible here an hour earlier if anyone had been reading.
+
+**The absorption deficit is not new to the fixed build.** Pre-fix
+absorbed 254 KB/s against 300 KB/s ingested and finished the window
+195.7 MB behind. CHAOS-5 predates every change in this campaign; the
+fixes did not cause it and did not cure it.
+
+**This is still not a controlled A/B.** The two windows differ in length
+(67 min vs 7 min), store age, and generator run — the post-fix column is
+short because a redeploy retired the domain its sampler was pinned to.
+Nothing here isolates the effect of any single fix. Treat the table as
+two independent observations, not a comparison.
 
 Deliberate fault injections against the post-fix build
 (`chaos-inject.sh`). A 2.5 s stalled history flush held for three
@@ -396,11 +411,17 @@ stand.
 ## An environment failure worth recording
 
 Mid-campaign the host filled its disk (971 GB volume at 100%, ~500 MB
-free). The first sampler died instantly and *silently*: it built each
-sample with a Python here-document, and bash could not create the
-here-doc temp file, so every sample was lost with only `cannot create
-temp file` in a log nobody was reading. The load generator kept running,
-so the run looked alive.
+free). The first sampler built each sample with a Python here-document,
+and bash could not create the here-doc temp file, so those samples were
+lost with only `cannot create temp file` in a log nobody was reading.
+The load generator kept running, so the run looked alive.
+
+**Correction to an earlier draft of this document, which claimed every
+sample was lost.** They were not: the run wrote 2,871 samples and lost
+9 to ENOSPC. I inferred total loss from the three error lines at the
+head of the output file and did not check the JSONL until the task
+finally exited. The mistake mattered, because those samples turned out
+to hold the campaign's only continuous pre-fix dataset (below).
 
 `chaos-sample.sh` now passes payloads as argv (no temp files) and checks
 free space each tick, aborting loudly under 256 MB. 6.4 GB was reclaimed
