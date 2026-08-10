@@ -109,7 +109,9 @@ chk 400 "waitMs=-1"          -H "$A" -H "$K" "$U/v1/streams/$S/records?waitMs=-1
 chk 400 "routingKey > 1KiB"  -H "$A" -H "$K" "$U/v1/streams/$S/records?routingKey=$(printf 'k%.0s' $(seq 1 1025))"
 chk 200 "maxBytes below floor clamps up" -H "$A" -H "$K" "$U/v1/streams/$S/records?maxBytes=1"
 chk 400 "cursor: garbage"    -H "$A" -H "$K" "$U/v1/streams/$S/records?cursor=AAAAAAAAAAAAAAAA"
-chk 400 "cursor: not base64" -H "$A" -H "$K" "$U/v1/streams/$S/records?cursor=%%%%"
+# NOT %%%%: an edge proxy normalizes malformed percent-escapes away, so
+# that check passes locally and silently becomes a no-op over the WAN.
+chk 400 "cursor: not base64" -H "$A" -H "$K" "$U/v1/streams/$S/records?cursor=not_base64_at_all!!"
 
 echo "-- R23-4: the SAME bug class on every other public route"
 # The first fix only covered the records read handler; scan, watch and
@@ -126,9 +128,24 @@ echo "-- R23-4: an oversized body is REFUSED, not reset"
 # A body far over the ceiling used to draw a connection reset, so a
 # client could not tell refusal from a broken network and retried
 # forever. curl exit 0 with a 413 is the whole point of this check.
-chk 413 "declared oversized body" -X POST -H "$A" -H "$K" \
-    -H "content-length: 67108864" --data-binary "@/dev/null" \
-    "$U/v1/streams/$S/records"
+# A REAL oversized upload must get 413, not a transport reset. Measured
+# over the WAN at 2, 9 and 64 MiB — all 413.
+#
+# NOT tested here: declaring a huge Content-Length and then sending
+# nothing. That request is malformed (the framing is never completed), we
+# close on it, and the platform edge reports 502. Asserting 413 there
+# would be asserting behaviour we do not control and no real client
+# produces.
+# The one that regressed in the field: big enough to exceed the ceiling,
+# small enough that the client does NOT negotiate 100-continue, so the
+# server must drain before refusing or the edge turns it into a 502.
+BIGFILE=$(mktemp); head -c 2097152 /dev/zero | tr '\0' 'x' > "$BIGFILE"
+# No Expect: 100-continue, so the refusal must arrive AFTER the client
+# has streamed its body — the case that returned 502 in Singapore until
+# the server learned to drain before answering.
+chk 413 "oversized body, no 100-continue" -X POST -H "$A" -H "$K" \
+    -H "Expect:" --data-binary "@$BIGFILE" "$U/v1/streams/$S/records"
+rm -f "$BIGFILE"
 
 echo "-- bodies and methods"
 chk 405 "TRACE"              -X TRACE -H "$A" "$U/v1/streams/$S/records"

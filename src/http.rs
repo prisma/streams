@@ -553,6 +553,37 @@ async fn track_inflight(
         .and_then(|v| v.parse::<usize>().ok())
         && declared > max_body_bytes()
     {
+        // Answering while the client is still uploading closes the
+        // connection mid-stream, and an edge proxy reports that as 502.
+        // Measured in Singapore: a 2 MiB body against a 1 MiB ceiling
+        // returned 502, while 8 MiB and 64 MiB returned a clean 413 —
+        // the large ones only worked because curl negotiates
+        // `Expect: 100-continue` above ~1 MiB, so the refusal lands
+        // before the upload begins. Without that negotiation the client
+        // sees a SERVER error for what is squarely a client error, and
+        // 502 invites a retry that can never succeed.
+        //
+        // So drain first, up to a bound, then answer. The bound matters:
+        // reading an unbounded oversized body is the very memory
+        // exhaustion this check exists to prevent, so past it we accept
+        // the ugly close rather than let a hostile client stream forever.
+        const DRAIN_CAP: usize = 8 * 1024 * 1024;
+        if declared <= DRAIN_CAP {
+            use futures_util::StreamExt;
+            let mut stream = req.into_body().into_data_stream();
+            let mut seen = 0usize;
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(b) => {
+                        seen += b.len();
+                        if seen > DRAIN_CAP {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
         return (
             StatusCode::PAYLOAD_TOO_LARGE,
             [("content-type", "application/json")],
