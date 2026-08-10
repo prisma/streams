@@ -175,11 +175,102 @@ pub fn dirty_key(hash: &[u8; 16]) -> Vec<u8> {
     k
 }
 
-fn dirty_value(absorbed: u64, next: u64) -> [u8; 8 + 8] {
-    let mut v = [0u8; 16];
-    v[..8].copy_from_slice(&absorbed.to_le_bytes());
-    v[8..].copy_from_slice(&next.to_le_bytes());
+/// Durable maintenance summary for one stream.
+///
+/// R24-A. Maintenance backpressure previously derived its backlog from
+/// two process-lifetime atomics (`INGEST_BYTES_TOTAL - ABSORB_BYTES_TOTAL`),
+/// which is wrong in four independent ways:
+///
+///   * the ingest counter is bumped while the batch is being ASSEMBLED,
+///     so a failed group write leaves phantom backlog the absorber can
+///     never retire — a permanent, fictional 503;
+///   * both counters reset on restart, so a shard holding hundreds of MB
+///     of durable unabsorbed data reports zero backlog and accepts
+///     writes, and `saturating_sub` then keeps reporting zero until new
+///     ingest catches up with the historical absorbed count;
+///   * they are process-wide, so after an ownership move the old owner
+///     keeps shedding for a shard it no longer holds while the new owner
+///     inherits the data with no history and admits freely;
+///   * the "per-shard" figure actually read policy-DEFERRED bytes, which
+///     is a sparse-absorption decision, not the eligible backlog.
+///
+/// The fix is to make the DURABLE row the source of truth. These bytes
+/// ride in the existing dirty-stream index, which is already written in
+/// the same committer batch as the tail it describes — so it commits if
+/// and only if the append commits, survives restart, and moves with the
+/// shard because it lives in the shard's own DB.
+///
+/// `oldest_unabsorbed_ms` is deliberately conservative: it is only ever
+/// carried forward or cleared, never made younger, so a restart may
+/// overstate age but can never reset it.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct StreamMaintenance {
+    pub absorbed: u64,
+    pub next: u64,
+    pub unabsorbed_bytes: u64,
+    pub oldest_unabsorbed_ms: i64,
+}
+
+/// v2 layout: absorbed, next, unabsorbed_bytes, oldest_unabsorbed_ms.
+/// v1 rows (16 bytes) decode with zero bytes/age — an old row is still a
+/// valid "this stream has outstanding maintenance" marker, it just
+/// contributes nothing to the byte bound until its next commit.
+fn dirty_value(m: &StreamMaintenance) -> [u8; 32] {
+    let mut v = [0u8; 32];
+    v[..8].copy_from_slice(&m.absorbed.to_le_bytes());
+    v[8..16].copy_from_slice(&m.next.to_le_bytes());
+    v[16..24].copy_from_slice(&m.unabsorbed_bytes.to_le_bytes());
+    v[24..].copy_from_slice(&m.oldest_unabsorbed_ms.to_le_bytes());
     v
+}
+
+/// The one durable maintenance row per physical shard.
+///
+/// Sits beside the dirty-stream index under the same sentinel, with tag
+/// `M`. Written in the SAME committer batch as the appends it accounts
+/// for, and in the same absorbed batch that retires them — so it commits
+/// if and only if the work it describes commits, and a failed group
+/// write leaves it untouched.
+pub fn shard_maint_key() -> Vec<u8> {
+    let mut k = Vec::with_capacity(17);
+    k.extend_from_slice(&DIRTY_SENTINEL);
+    k.push(b'M');
+    k
+}
+
+pub fn encode_shard_maint(m: &StreamMaintenance) -> [u8; 16] {
+    let mut v = [0u8; 16];
+    v[..8].copy_from_slice(&m.unabsorbed_bytes.to_le_bytes());
+    v[8..].copy_from_slice(&m.oldest_unabsorbed_ms.to_le_bytes());
+    v
+}
+
+pub fn decode_shard_maint(v: &[u8]) -> Option<StreamMaintenance> {
+    if v.len() < 16 {
+        return None;
+    }
+    Some(StreamMaintenance {
+        unabsorbed_bytes: u64::from_le_bytes(v[..8].try_into().unwrap()),
+        oldest_unabsorbed_ms: i64::from_le_bytes(v[8..16].try_into().unwrap()),
+        ..Default::default()
+    })
+}
+
+pub fn decode_dirty_value(v: &[u8]) -> Option<StreamMaintenance> {
+    if v.len() < 16 {
+        return None;
+    }
+    let g8 = |o: usize| u64::from_le_bytes(v[o..o + 8].try_into().unwrap());
+    Some(StreamMaintenance {
+        absorbed: g8(0),
+        next: g8(8),
+        unabsorbed_bytes: if v.len() >= 24 { g8(16) } else { 0 },
+        oldest_unabsorbed_ms: if v.len() >= 32 {
+            i64::from_le_bytes(v[24..32].try_into().unwrap())
+        } else {
+            0
+        },
+    })
 }
 
 #[derive(Clone, Debug, Default)]
@@ -1585,6 +1676,18 @@ impl ShardEngine {
             }
         }
         Ok(None)
+    }
+
+    /// Read the durable per-shard maintenance row (R24-A).
+    ///
+    /// `Ok(None)` for a shard that has never written one — a shard with
+    /// no backlog history, which correctly contributes nothing.
+    pub async fn load_maintenance_row(&self) -> anyhow::Result<Option<StreamMaintenance>> {
+        Ok(self
+            .db
+            .get(shard_maint_key())
+            .await?
+            .and_then(|v| decode_shard_maint(&v)))
     }
 
     pub async fn scan_dirty_streams(&self) -> anyhow::Result<Vec<([u8; 16], u64, u64)>> {
@@ -3663,6 +3766,8 @@ impl ShardEngine {
         let mut ring_pub: Vec<(Arc<StreamHandle>, Vec<(u64, Bytes)>)> = Vec::new();
         let mut signals = Vec::new();
         let mut changed = false;
+        // R24-A: bytes this group adds to the shard's durable backlog.
+        let mut group_appended_bytes: u64 = 0;
         for (hash, local) in &locals {
             if !local.ring_recs.is_empty() {
                 ring_pub.push((local.handle.clone(), local.ring_recs.clone()));
@@ -3687,7 +3792,14 @@ impl ShardEngine {
                 let was_marked = b.absorbed < b.next || b.trimmed < b.trim_safe_to;
                 let is_marked = f.absorbed < f.next || f.trimmed < f.trim_safe_to;
                 if is_marked {
-                    wb.put(dirty_key(hash), dirty_value(f.absorbed, f.next));
+                    wb.put(
+                        dirty_key(hash),
+                        dirty_value(&StreamMaintenance {
+                            absorbed: f.absorbed,
+                            next: f.next,
+                            ..Default::default()
+                        }),
+                    );
                 } else if was_marked {
                     wb.delete(dirty_key(hash));
                 }
@@ -3722,6 +3834,13 @@ impl ShardEngine {
             if local.appended_bytes > 0 {
                 crate::history::INGEST_BYTES_TOTAL
                     .fetch_add(local.appended_bytes, std::sync::atomic::Ordering::Relaxed);
+                // R24-A: accumulate this group's bytes for the durable
+                // per-shard maintenance row. Deliberately NOT applied to
+                // the admission mirror here — that happens only after
+                // write_with_options() succeeds below, so a failed group
+                // write can never leave phantom backlog that the
+                // absorber has no work to retire.
+                group_appended_bytes = group_appended_bytes.saturating_add(local.appended_bytes);
                 signals.push(AbsorbSignal {
                     hash: *hash,
                     appended_bytes: local.appended_bytes,
@@ -3817,6 +3936,25 @@ impl ShardEngine {
                 return;
             }
         }
+        // R24-A: the durable per-shard maintenance row rides in THIS
+        // batch, so it commits if and only if the appends it accounts
+        // for commit. The in-memory admission mirror is updated only
+        // after the write returns Ok below — that ordering is the whole
+        // fix for phantom backlog.
+        if group_appended_bytes > 0 {
+            let cur = crate::maintenance::for_shard(&self.prefix);
+            let row = StreamMaintenance {
+                unabsorbed_bytes: cur.unabsorbed_bytes.saturating_add(group_appended_bytes),
+                oldest_unabsorbed_ms: if cur.oldest_unabsorbed_ms > 0 {
+                    cur.oldest_unabsorbed_ms
+                } else {
+                    now_ms()
+                },
+                ..Default::default()
+            };
+            wb.put(shard_maint_key(), encode_shard_maint(&row));
+        }
+
         let write_t0 = std::time::Instant::now();
         // Publish the write start so admission can observe a blocked commit
         // pipeline (L0-full / unflushed-full backpressure blocks this await;
@@ -3833,6 +3971,18 @@ impl ShardEngine {
 
         match res {
             Ok(handle) => {
+                // The batch is durable: only now may the admission
+                // mirror grow. A failed write skips this entirely, so
+                // backlog can never be manufactured for records that
+                // were never committed.
+                if group_appended_bytes > 0 {
+                    crate::maintenance::apply_delta(
+                        &self.prefix,
+                        group_appended_bytes,
+                        0,
+                        now_ms(),
+                    );
+                }
                 for local in locals.values() {
                     let mut st = local.handle.state.lock().unwrap();
                     st.applied = local.fields.clone();

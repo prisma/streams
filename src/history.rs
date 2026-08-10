@@ -841,6 +841,12 @@ impl Absorber {
                     // instance rollup reports phantom backlog, and
                     // wide-report treats that rollup as its drain proof.
                     crate::usage::clear_absorb_pending_summary(&absorber.shard.prefix);
+                    // R24-A: and drop this shard's maintenance
+                    // contribution. A former owner must stop answering
+                    // for backlog it handed away — otherwise it keeps
+                    // shedding appends for streams it no longer holds
+                    // while the new owner admits freely.
+                    crate::maintenance::remove(&absorber.shard.prefix);
                     return;
                 }
                 tokio::select! {
@@ -1187,6 +1193,15 @@ impl Absorber {
         &self,
         pending: &mut HashMap<[u8; 16], PendingAbsorb>,
     ) -> anyhow::Result<usize> {
+        // R24-A: restore this shard's DURABLE maintenance row into the
+        // admission mirror before seeding streams. This is what makes
+        // restart and ownership handoff honest — a shard carrying
+        // hundreds of MB of unabsorbed data must report that backlog
+        // from the first admission decision, not zero until fresh
+        // ingest happens to overtake a reset counter.
+        if let Ok(Some(m)) = self.shard.load_maintenance_row().await {
+            crate::maintenance::install(&self.shard.prefix, m);
+        }
         let dirty = self.shard.scan_dirty_streams().await?;
         let mut absorb_seeded = 0usize;
         for (h, absorbed, next) in dirty {
@@ -1450,7 +1465,20 @@ impl Absorber {
         let flush_ms = t_flush.elapsed().as_millis() as u64;
         GATHER_LAST_FLUSH_MS.store(flush_ms, ord);
         HISTORY_FLUSH_WAIT_MS_MAX.fetch_max(flush_ms, ord);
-        ABSORB_BYTES_TOTAL.fetch_add(out.advanced.iter().map(|(_, _, b)| *b).sum::<u64>(), ord);
+        let absorbed_bytes = out.advanced.iter().map(|(_, _, b)| *b).sum::<u64>();
+        ABSORB_BYTES_TOTAL.fetch_add(absorbed_bytes, ord);
+        // R24-A: retire those bytes from the shard's durable maintenance
+        // row. The history partition is flushed above, so the work is
+        // genuinely gone from the backlog by the time this runs — the
+        // same commit-then-account ordering the append path uses.
+        if absorbed_bytes > 0 {
+            crate::maintenance::apply_delta(
+                &self.shard.prefix,
+                0,
+                absorbed_bytes,
+                crate::shard::now_ms(),
+            );
+        }
         // The pages are durable: warm the slice cache with the runs we
         // just wrote. Readers clip to their own durable boundary, so an
         // install racing the boundary advance can never over-serve.

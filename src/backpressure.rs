@@ -205,26 +205,30 @@ pub fn apply(s: &Snapshot, l: &Limits) -> bool {
     now
 }
 
-/// Read the live counters into a snapshot.
+/// Read the DURABLE, ownership-scoped backlog into a snapshot.
+///
+/// R24-A: this used to be `INGEST_BYTES_TOTAL - ABSORB_BYTES_TOTAL`,
+/// two process-lifetime atomics. That could manufacture backlog for
+/// records that were never committed (the ingest counter is bumped
+/// before the group write succeeds), hide real backlog across a restart
+/// (both counters reset to zero), and misinform both sides of an
+/// ownership move (the counters are process-wide, not shard-keyed).
+///
+/// Every field now derives from the per-shard durable maintenance rows
+/// of the shards this instance CURRENTLY OWNS.
 pub fn observe() -> Snapshot {
-    let ingest = crate::history::INGEST_BYTES_TOTAL.load(Ordering::Relaxed);
-    let absorbed = crate::history::ABSORB_BYTES_TOTAL.load(Ordering::Relaxed);
-    let unabsorbed = ingest.saturating_sub(absorbed);
-    let lag = crate::usage::absorb_lag_all()
-        .into_iter()
-        .map(|(_, s)| s)
-        .max()
-        .unwrap_or(0);
+    let now_ms = crate::shard::now_ms();
+    let (total, max_shard, age_secs) = crate::maintenance::aggregate(now_ms);
     Snapshot {
-        unabsorbed_bytes_instance: unabsorbed,
-        // Per-shard attribution uses the absorber's own pending summary
-        // where it exists; the instance total is the conservative
-        // fallback, since one shard can never hold more than all of them.
-        unabsorbed_bytes_max_shard: crate::usage::max_shard_deferred_bytes().max(0),
-        absorb_lag_secs: lag,
-        // Replay cost is dominated by what must be re-read from the
-        // shard log on open, which is exactly the unabsorbed tail.
-        replay_bytes: unabsorbed,
+        unabsorbed_bytes_instance: total,
+        unabsorbed_bytes_max_shard: max_shard,
+        absorb_lag_secs: age_secs,
+        // Replay cost on reopen is dominated by re-reading the
+        // unabsorbed tail, which is exactly this figure. It is a
+        // separate threshold rather than a separate measurement, and
+        // the doc comment says so instead of implying an independent
+        // estimate exists.
+        replay_bytes: total,
     }
 }
 
