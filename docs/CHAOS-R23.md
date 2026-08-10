@@ -162,6 +162,65 @@ Amplification decides where the fix belongs: high means the read path
 1× means latency rather than volume, and the answer is a two-stage
 pipeline separating I/O concurrency from the memory-heavy build.
 
+## Field results (R23 build, Singapore)
+
+**Hostile surface, live edge: 48/48.** The rerun the review asked for.
+It found two failures on the first pass that local testing could not
+produce, both now fixed — see R23-9 below.
+
+**SIGKILL durability on the final binary: 2 rounds, 3,590 acked records,
+zero lost, zero duplicated, zero phantom, per-producer FIFO intact.**
+
+**Capacity gate (R23-8), 17 min of steady-state soak so far:**
+
+```
+absorbed 353 KB/s   ingest 338 KB/s   absorb/ingest = 1.04
+lag 0-365 s         RSS 83-401 MB (500 MB shed line)
+health non-200: 0   backpressure engagements: 0
+```
+
+Absorption is keeping up at this load, where the pre-R23 measurement was
+~136 KB/s against ~310 KB/s. **Two things stop that being a clean
+before/after.** The offered load differs (this generator settled around
+46-68 rps against 122 earlier), and more importantly this is a FRESH
+namespace: history-tier depth drives read cost, so a young LSM reads
+faster than the accumulated one the earlier numbers came from. The
+honest reading is "no deficit observed at this load on this namespace",
+not "the deficit is fixed".
+
+The pause/resume legs and the catch-up verdict were still running when
+this was written; `$SOAK_HOME/results/chaos/capacity-gate.jsonl` carries
+the full series.
+
+**Read amplification has no field data yet.** The deployed binary
+predates the R23-6 instrumentation fix, so `lastReadGets` is 0 in every
+sample above. The fix is in the code and tested; it needs one more
+deploy to produce numbers.
+
+## R23-9 — the WAN rerun found what local testing could not
+
+Two failures on the first live pass, both real:
+
+**A 2 MiB body returned 502 while 8 MiB and 64 MiB returned 413.** The
+large ones only passed because curl negotiates `Expect: 100-continue`
+above ~1 MiB, so the refusal lands before the upload starts. Below that,
+the client is still streaming when the server answers and closes, and
+the edge proxy reports the truncated exchange as 502 — a server error
+for a client error, and one that invites an impossible retry. The server
+now drains the body (bounded at 8 MiB) before answering. Re-measured:
+real 2, 9 and 64 MiB uploads all return 413.
+
+**`cursor=%%%%` returned 200 over the WAN and 400 locally.** An edge
+proxy normalizes malformed percent-escapes away, so that check silently
+became a no-op in the environment where it mattered. The gate now uses a
+malformed cursor that survives proxies.
+
+One check was dropped rather than fixed: declaring a 64 MiB
+Content-Length and then sending nothing. That framing is never
+completed, the server closes, and the edge reports 502. Asserting 413
+there would assert behaviour we do not control and no real client
+produces.
+
 ## CHAOS-5 remains open
 
 Unchanged from the review's position, and reinforced by it:
