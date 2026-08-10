@@ -7,9 +7,11 @@ the 1 GiB posture (`deploy/profiles/compute-1g.env`).
 
 **Four defects found and fixed, two of them P0**, plus a fifth finding —
 a capacity limit whose root cause is identified but whose obvious remedy
-was disproved in the field by an OOM kill, so it stays open. Both P0s were silent: the system reported itself healthy
-while being permanently broken. No data-loss defect was found —
-durability held under every attack, including four SIGKILLs.
+was disproved in the field by an OOM kill, so it stays open.
+
+Both P0s were silent: the system reported itself healthy while being
+permanently broken. No data-loss defect was found — durability held
+under every attack, including four SIGKILLs.
 
 | # | Severity | Defect | Commit |
 |---|---|---|---|
@@ -322,12 +324,12 @@ that retries retryable codes and aborts the whole run with a distinct
 exit status rather than reporting a cascade. A gate that cries wolf once
 is a gate nobody reads.
 
-Checks:
-rejected credentials never reach the data plane (401/403); path traversal,
-encoded traversal, NUL and newline in names, 4000-byte names, empty
-names all 400/404 with no 5xx; reserved system ledgers (`_usage`,
-`_ops_metrics`) refuse create/append/read/delete with 403; TRACE and
-PATCH 405; malformed creation documents 400 including unknown fields.
+What it checks: rejected credentials never reach the data plane
+(401/403); path traversal, encoded traversal, NUL and newline in names,
+4000-byte names and empty names all answer 400/404 with no 5xx; reserved
+system ledgers (`_usage`, `_ops_metrics`) refuse create/append/read/
+delete with 403; TRACE and PATCH 405; malformed creation documents 400,
+including unknown fields.
 
 **Signed cursors.** A valid cursor replays. A one-character flip,
 truncation, extension, and — the one that matters — **reuse against a
@@ -441,6 +443,13 @@ campaign's.
 
 ## Still open
 
+- **CHAOS-5, and the reservation model underneath it.** Absorption runs
+  ~2.3× below ingest at one gather slot; raising the slot count fixes
+  the throughput and kills the process. Before anything is changed here,
+  the per-gather transient-cost model needs re-deriving — two
+  independent observations now show `ADMIT_RSS_SHED_MB` is not a ceiling
+  on RSS (596 MB peak against a 500 MB line pre-fix; an OOM kill at
+  362 MB observed with four gathers reserved).
 - The post-fix Singapore build has not been run long enough for a
   like-for-like comparison against the pre-fix numbers. A controlled A/B
   (same store age, same generator run length) would settle the CHAOS-1
