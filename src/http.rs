@@ -991,6 +991,12 @@ async fn internal_telemetry_append(
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health_axum))
+        // R23-5: separate the two questions a platform actually asks.
+        // /livez  — is the process alive? (restart me if not)
+        // /readyz — is storage usable? (route traffic to me if so)
+        // /health stays as the readiness answer for existing probes.
+        .route("/livez", get(|| async { "alive" }))
+        .route("/readyz", get(health_axum))
         .route("/operator/billing.json", get(billing_readiness_axum))
         .route("/v1/segments/{*name}", get(get_segments))
         // Fleet-internal segment fan-out target (bearer-gated): a keyed,

@@ -75,33 +75,68 @@ static OPENS_REAPED: AtomicU64 = AtomicU64::new(0);
 /// Message from the most recent open failure, for the readiness surface.
 static LAST_OPEN_ERROR: Mutex<Option<String>> = Mutex::new(None);
 
-/// Open failures tolerated before an instance that has NEVER served a
-/// shard declares itself unready. Three failures with zero successes is
-/// not a flaky store — it is a broken instance.
+/// DISTINCT shard prefixes that have failed to open, and never opened.
+///
+/// R23-5: readiness previously counted failed ATTEMPTS, so one poison
+/// shard retried three times could evict a whole never-used instance
+/// from rotation — contradicting the "one poison stream must not evict a
+/// healthy instance" property the code claimed. Counting distinct
+/// prefixes makes the claim true: three DIFFERENT shards failing with
+/// zero lifetime successes is a broken data plane; one shard failing
+/// three times is one broken shard.
+static FAILED_PREFIXES: Mutex<Option<std::collections::BTreeSet<String>>> = Mutex::new(None);
+
+fn note_failed_prefix(prefix: &str) {
+    if let Ok(mut g) = FAILED_PREFIXES.lock() {
+        g.get_or_insert_with(Default::default)
+            .insert(prefix.to_string());
+    }
+}
+
+fn distinct_failed_prefixes() -> u64 {
+    FAILED_PREFIXES
+        .lock()
+        .ok()
+        .and_then(|g| g.as_ref().map(|s| s.len() as u64))
+        .unwrap_or(0)
+}
+
+/// DISTINCT shards that must fail before an instance which has NEVER
+/// served a shard declares itself unready. Three different shards
+/// failing with zero successes is not a flaky store — it is a broken
+/// instance.
 const NEVER_OPENED_STRIKES: u64 = 3;
 
-/// Readiness verdict for `/health`: `Some(reason)` when this process has
-/// never successfully opened a single shard while repeatedly failing to.
+/// Readiness verdict: `Some(reason)` when this process has never
+/// successfully opened a single shard while THREE DISTINCT shards have
+/// failed to open.
 ///
-/// CHAOS-2 (2026-08-09): every "this data plane cannot work at all"
-/// cause — invalid engine config, wrong bucket, bad credentials,
-/// unreachable endpoint, missing permissions — presents identically at
-/// the edge: the process boots, binds, answers `/health` with `ok`, and
-/// returns 500 to every append forever. A load balancer keeps such an
-/// instance in rotation indefinitely, because the only evidence is one
-/// WARN line per attempt in the logs.
+/// CHAOS-2 (2026-08-09): a broken-from-boot data plane presents
+/// identically at the edge whatever the cause — the process boots,
+/// binds, answers `/health` with `ok`, and returns 500 to every append
+/// forever, with one WARN per attempt as the only evidence. A load
+/// balancer keeps such an instance in rotation indefinitely.
 ///
-/// The condition is deliberately narrow — ZERO lifetime successes — so
-/// that one poison stream cannot evict a healthy instance from rotation,
-/// and a store blip mid-life cannot cascade a whole fleet out of
-/// service. It catches the broken-from-boot class exactly, which is the
-/// class that never self-heals. An instance that opened shards and later
-/// started failing stays ready and is diagnosed through
-/// `/v1/debug/store`, where `started` climbing against a flat
-/// `completed` is the documented signature.
+/// **R23-5 scope correction.** An earlier version of this comment (and
+/// of the campaign report) claimed the check covers "every" such cause
+/// including wrong bucket and bad credentials. It does not. This signal
+/// only fires for failures that REACH A SHARD OPEN. A registry or
+/// control-plane storage failure refuses the request earlier, leaving
+/// `started == 0` and this check silent — verified in the field by
+/// killing the object store after boot. The startup storage canary is
+/// what covers that class; this is the runtime half of the pair.
+///
+/// Two conditions, both required, and both deliberately narrow:
+///   * ZERO lifetime successful opens — an instance that has served
+///     shards and later starts failing stays ready, so a mid-life store
+///     blip cannot cascade a whole fleet out of rotation.
+///   * THREE DISTINCT shard prefixes failed — counting attempts instead
+///     would let one poison shard, retried three times, evict a
+///     never-used instance. That was the actual behaviour before R23-5,
+///     and it contradicted the property this comment claimed.
 pub fn unready_reason() -> Option<String> {
-    let failed = OPENS_FAILED.load(Ordering::Relaxed);
-    if OPENS_COMPLETED.load(Ordering::Relaxed) > 0 || failed < NEVER_OPENED_STRIKES {
+    let distinct = distinct_failed_prefixes();
+    if OPENS_COMPLETED.load(Ordering::Relaxed) > 0 || distinct < NEVER_OPENED_STRIKES {
         return None;
     }
     let last = LAST_OPEN_ERROR
@@ -110,12 +145,61 @@ pub fn unready_reason() -> Option<String> {
         .and_then(|g| g.clone())
         .unwrap_or_else(|| "unknown".into());
     Some(format!(
-        "no shard has ever opened ({failed} failed attempts); last error: {last}"
+        "no shard has ever opened ({distinct} distinct shards failed); last error: {last}"
     ))
+}
+
+/// How long a never-ready instance may stay unready before it exits.
+///
+/// R23-5: once readiness reports 503 the load balancer stops sending the
+/// requests that would trigger another open attempt, so the instance can
+/// sit unready forever even after the store heals — a zombie holding a
+/// slot. Exiting is strictly better: the platform restarts it, the
+/// startup canary re-runs against the healed store, and a genuinely
+/// broken deployment crash-loops visibly instead of idling in an
+/// ambiguous state. 0 disables.
+pub fn unready_exit_after() -> Duration {
+    std::env::var("UNREADY_EXIT_AFTER_SECS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .map(Duration::from_secs)
+        .unwrap_or(Duration::from_secs(300))
+}
+
+/// Watchdog: exit if this instance has been unready for too long without
+/// ever having opened a shard.
+pub fn spawn_unready_watchdog() {
+    let limit = unready_exit_after();
+    if limit.is_zero() {
+        return;
+    }
+    tokio::spawn(async move {
+        let mut since: Option<Instant> = None;
+        loop {
+            tokio::time::sleep(Duration::from_secs(10)).await;
+            match unready_reason() {
+                None => since = None,
+                Some(reason) => {
+                    let t = *since.get_or_insert_with(Instant::now);
+                    if t.elapsed() >= limit {
+                        tracing::error!(
+                            "unready for {:?} and no shard has ever opened ({reason}); \
+                             exiting so the platform restarts this instance rather than \
+                             leaving it in rotation-limbo",
+                            t.elapsed(),
+                        );
+                        std::process::exit(1);
+                    }
+                }
+            }
+        }
+    });
 }
 
 pub fn stats_json() -> serde_json::Value {
     serde_json::json!({
+        "unready": unready_reason(),
+        "distinct_failed_prefixes": distinct_failed_prefixes(),
         "started": OPENS_STARTED.load(Ordering::Relaxed),
         "completed": OPENS_COMPLETED.load(Ordering::Relaxed),
         "failed": OPENS_FAILED.load(Ordering::Relaxed),
@@ -311,6 +395,7 @@ impl OpenGate {
                             if let Ok(mut slot) = LAST_OPEN_ERROR.lock() {
                                 *slot = Some(format!("{p}: {msg}"));
                             }
+                            note_failed_prefix(&p);
                             let mut st = inner.st.lock().unwrap();
                             let g = st.entry(p.clone()).or_default();
                             g.inflight = None;
@@ -335,6 +420,7 @@ impl OpenGate {
                                     inner.open_deadline
                                 ));
                             }
+                            note_failed_prefix(&p);
                             {
                                 let mut st = inner.st.lock().unwrap();
                                 let g = st.entry(p.clone()).or_default();
@@ -431,6 +517,9 @@ impl OpenGate {
         OPENS_IN_FLIGHT.store(0, Ordering::Relaxed);
         if let Ok(mut slot) = LAST_OPEN_ERROR.lock() {
             *slot = None;
+        }
+        if let Ok(mut g) = FAILED_PREFIXES.lock() {
+            *g = None;
         }
     }
 

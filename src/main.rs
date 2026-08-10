@@ -38,7 +38,7 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use anyhow::Context;
 use clap::Parser;
-use object_store::ObjectStore;
+use object_store::{ObjectStore, ObjectStoreExt};
 use object_store::aws::{AmazonS3, AmazonS3Builder, S3ConditionalPut};
 use slatedb::Db;
 use slatedb::config::Settings;
@@ -838,6 +838,63 @@ async fn async_main() -> anyhow::Result<()> {
     let ops_store = args.store_for(&args.ops_bucket)?;
     let shard_store = args.store_for(&args.shard_bucket)?;
     let data_store = args.store_for(&args.data_bucket)?;
+
+    // R23-5: a synchronous storage canary, BEFORE we bind.
+    //
+    // The /health readiness signal only fires for failures that reach a
+    // shard open. A registry or control-plane storage failure refuses
+    // requests earlier, so `shard_opens.started` stays 0 and readiness
+    // stays silent — verified in the field by killing the object store
+    // after boot. This closes that gap at the only moment it is cheap:
+    // prove each bucket is usable, and refuse to start if it is not.
+    //
+    // Deliberately a write AND a read-back on every bucket we depend on.
+    // Credentials that can read but not write are a real and silent
+    // failure mode that would otherwise surface as a 500 per append
+    // forever — which is the whole CHAOS-2 disease.
+    let canary_prefix = args.path_prefix.clone().unwrap_or_default();
+    for (label, store) in [
+        ("ops", ops_store.clone()),
+        ("shard", shard_store.clone()),
+        ("data", data_store.clone()),
+    ] {
+        let store: Arc<dyn ObjectStore> = store;
+        let probe = object_store::path::Path::from(format!(
+            "{}_canary/{}",
+            canary_prefix.trim_end_matches('/'),
+            std::process::id()
+        ));
+        let payload = b"streams-startup-canary".to_vec();
+        store
+            .put(&probe, object_store::PutPayload::from(payload.clone()))
+            .await
+            .with_context(|| {
+                format!(
+                    "startup canary: cannot WRITE to the {label} bucket — this process \
+                     would have booted, answered /health with ok, and failed every append"
+                )
+            })?;
+        let got = store
+            .get(&probe)
+            .await
+            .with_context(|| format!("startup canary: cannot READ BACK from the {label} bucket"))?
+            .bytes()
+            .await
+            .with_context(|| format!("startup canary: {label} read-back body failed"))?;
+        if got.as_ref() != payload.as_slice() {
+            anyhow::bail!(
+                "startup canary: {label} bucket returned {} bytes, expected {} — \
+                 this store is not durable for this process",
+                got.len(),
+                payload.len()
+            );
+        }
+        let _ = store.delete(&probe).await; // best effort
+    }
+    tracing::info!("startup canary: ops/shard/data buckets readable and writable");
+    // R23-5: and if we ever DO end up unready with no shard ever opened,
+    // exit rather than sit in rotation-limbo (see spawn_unready_watchdog).
+    crate::sharddir::spawn_unready_watchdog();
 
     let registry = Registry::new(ops_store.clone());
     // Only relevant when no topology exists yet; an existing topology wins.
