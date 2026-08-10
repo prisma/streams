@@ -394,7 +394,8 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
         // 0.14 routes the ext-method `head()` through get_opts(head: true).
         let _p = permit().await;
-        let g = OpGuard::new(if options.head { 3 } else { 2 }, location);
+        let is_head = options.head;
+        let g = OpGuard::new(if is_head { 3 } else { 2 }, location);
         let r = self.inner.get_opts(location, options).await;
         // GetResult still streams the body afterwards; timing to first byte
         // is what the egress path gates on, and it keeps the guard simple.
@@ -402,6 +403,17 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         // registry's TTL refresh), not an error.
         let ok = r.is_ok() || matches!(&r, Err(object_store::Error::NotModified { .. }));
         g.finish(ok);
+        // R23-6: whole-object GETs are where the absorber's read volume
+        // actually lands. The first version of this instrumentation only
+        // counted get_ranges and reported readGets=0 in the field — a
+        // metric that measured nothing. Count the object size here; the
+        // body streams afterwards, so use the reported payload length.
+        if !is_head
+            && let Ok(res) = &r
+        {
+            GET_COUNT.fetch_add(1, Ordering::Relaxed);
+            GET_BYTES.fetch_add(res.meta.size, Ordering::Relaxed);
+        }
         r
     }
 
