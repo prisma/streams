@@ -1005,10 +1005,23 @@ async fn internal_telemetry_append(
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health_axum))
-        // R23-5: separate the two questions a platform actually asks.
+        // R23-5 / R24-E: separate the two questions a platform asks.
+        //
         // /livez  — is the process alive? (restart me if not)
-        // /readyz — is storage usable? (route traffic to me if so)
-        // /health stays as the readiness answer for existing probes.
+        // /readyz — INITIAL data-plane dependencies validated, and this
+        //           instance is not in a never-ready failure state.
+        //
+        // Deliberately narrower than "is storage usable?", which is what
+        // this comment used to claim. After one successful shard open,
+        // mid-life registry or storage failures do NOT unready the
+        // instance — that is intentional fleet behaviour (a store blip
+        // must not cascade every instance out of rotation), but it means
+        // /readyz is a BOOT readiness signal, not a live dependency
+        // probe. The startup canary behind it validates PUT and GET on
+        // the ops/shard/data buckets; it does not validate delete
+        // permission, LIST or range semantics, conditional puts, or
+        // every prefix the fleet and telemetry paths use. Mid-life
+        // degradation is surfaced through /v1/debug/store instead.
         .route("/livez", get(|| async { "alive" }))
         .route("/readyz", get(health_axum))
         .route("/operator/billing.json", get(billing_readiness_axum))

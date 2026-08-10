@@ -3147,7 +3147,13 @@ async fn product_read(
             false,
         );
     };
-    let q = parse_query(query);
+    // R24-D: strict on this route too. The first pass only made
+    // malformed NUMERIC values fail; unknown keys and duplicated
+    // scalars were still silently accepted here.
+    let q = match strict_query(query, &["cursor", "deliver", "maxBytes", "routingKey", "waitMs"]) {
+        Ok(q) => q,
+        Err(r) => return r,
+    };
     let rk = q.get("routingKey").cloned().unwrap_or_default();
     if rk.len() > 1024 {
         return perr(
@@ -3470,7 +3476,10 @@ async fn product_scan(
             false,
         );
     };
-    let q = parse_query(query);
+    let q = match strict_query(query, &["cursor", "maxBytes"]) {
+        Ok(q) => q,
+        Err(r) => return r,
+    };
     let desc = match state.registry.get(&name).await {
         Ok(Some(d)) if crate::http::desc_alive(&d) => {
             if crate::http::initializing(&d) {
@@ -6168,7 +6177,10 @@ async fn product_watch_wait(
             false,
         );
     }
-    let q = parse_query(query);
+    let q = match strict_query(query, &["cursor", "sig", "timeoutMs"]) {
+        Ok(q) => q,
+        Err(r) => return r,
+    };
     let Some(epoch) = desc.epoch_bytes() else {
         return perr(
             StatusCode::INTERNAL_SERVER_ERROR,

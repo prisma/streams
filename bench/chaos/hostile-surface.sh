@@ -124,6 +124,18 @@ chk 400 "catalog unknown key"   -H "$A" "$U/v1/streams?nosuchparam=1"
 chk 400 "catalog duplicate key" -H "$A" "$U/v1/streams?limit=10&limit=20"
 chk 2xx "catalog limit=10"      -H "$A" "$U/v1/streams?limit=10"
 
+echo "-- R24-D: unknown and duplicate params on EVERY public route"
+# The R23 pass wired strict_query to the catalog route only, so unknown
+# keys and duplicate scalars stayed silently accepted (last-wins) on
+# records/scan/watch. A malformed value and an unknown key are the same
+# class of client mistake and must answer the same way.
+chk 400 "records unknown key"    -H "$A" -H "$K" "$U/v1/streams/$S/records?unknown=1"
+chk 400 "records dup cursor"     -H "$A" -H "$K" "$U/v1/streams/$S/records?cursor=A&cursor=B"
+chk 400 "records dup maxBytes"   -H "$A" -H "$K" "$U/v1/streams/$S/records?maxBytes=100&maxBytes=200"
+chk 400 "scan unknown key"       -H "$A" -H "$K" "$U/v1/streams/$S:scan?unknown=1"
+chk 400 "scan dup maxBytes"      -H "$A" -H "$K" "$U/v1/streams/$S:scan?maxBytes=100&maxBytes=200"
+chk 2xx "records deliver=durable still ok" -H "$A" -H "$K" "$U/v1/streams/$S/records?deliver=durable"
+
 echo "-- R23-4: an oversized body is REFUSED, not reset"
 # A body far over the ceiling used to draw a connection reset, so a
 # client could not tell refusal from a broken network and retried
