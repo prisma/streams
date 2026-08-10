@@ -166,13 +166,74 @@ pub static SHED_COUNT: AtomicU64 = AtomicU64::new(0);
 pub static LAST_UNABSORBED: AtomicU64 = AtomicU64::new(0);
 pub static LAST_LAG_SECS: AtomicU64 = AtomicU64::new(0);
 
-/// Cheap hot-path read: `Some(cause)` when appends must be refused.
+/// Instance-wide latch: `Some(cause)` when the WHOLE instance is over a
+/// process-level bound. Only the instance aggregate, lag, and replay
+/// bounds set this — never a single shard's byte bound.
 pub fn engaged() -> Option<Cause> {
     if !ENGAGED.load(Ordering::Relaxed) {
         return None;
     }
-    Cause::from_code(CAUSE.load(Ordering::Relaxed))
+    let c = Cause::from_code(CAUSE.load(Ordering::Relaxed));
+    // R24-B: a single hot shard must NOT latch every append on the
+    // process. One noisy tenant rejecting every other customer's writes
+    // is a poor multitenant failure boundary, so ShardBytes is decided
+    // per shard in `admit_shard` instead of here.
+    match c {
+        Some(Cause::ShardBytes) => None,
+        other => other,
+    }
 }
+
+/// Per-shard admission, evaluated AFTER the request's owner and shard are
+/// resolved (R24-B).
+///
+/// Two properties this placement buys, which a global middleware check
+/// could not:
+///
+///   * A NON-OWNER never sheds. The maintenance mirror only holds shards
+///     this instance currently owns, so a shard we do not hold reports no
+///     backlog and the request falls through to the normal ownership
+///     replay — instead of a stale 503 about a backlog that belongs to
+///     someone else.
+///   * Only the OFFENDING shard's appends are refused. Streams on other
+///     shards of the same instance keep being served.
+pub fn admit_shard(prefix: &str, l: &Limits) -> Option<Cause> {
+    // The instance-wide latch still applies to everything we own.
+    if let Some(c) = engaged() {
+        return Some(c);
+    }
+    if l.unabsorbed_bytes_shard == 0 {
+        return None;
+    }
+    let m = crate::maintenance::for_shard(prefix);
+    // Hysteresis, same as the instance latch: engage over the limit,
+    // release under release_pct of it.
+    let release = l
+        .unabsorbed_bytes_shard
+        .saturating_mul(l.release_pct)
+        / 100;
+    let was = SHED_SHARDS
+        .lock()
+        .map(|g| g.contains(prefix))
+        .unwrap_or(false);
+    let now = if was {
+        m.unabsorbed_bytes > release
+    } else {
+        m.unabsorbed_bytes > l.unabsorbed_bytes_shard
+    };
+    if let Ok(mut g) = SHED_SHARDS.lock() {
+        if now {
+            g.insert(prefix.to_string());
+        } else {
+            g.remove(prefix);
+        }
+    }
+    now.then_some(Cause::ShardBytes)
+}
+
+/// Shards currently latched by the per-shard bound.
+static SHED_SHARDS: std::sync::Mutex<std::collections::BTreeSet<String>> =
+    std::sync::Mutex::new(std::collections::BTreeSet::new());
 
 pub fn note_shed() {
     SHED_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -230,6 +291,12 @@ pub fn observe() -> Snapshot {
         // estimate exists.
         replay_bytes: total,
     }
+}
+
+/// The process's configured limits, resolved once at startup.
+pub fn limits() -> Limits {
+    static L: std::sync::OnceLock<Limits> = std::sync::OnceLock::new();
+    *L.get_or_init(Limits::from_env)
 }
 
 pub fn stats_json() -> serde_json::Value {

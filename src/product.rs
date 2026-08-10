@@ -447,6 +447,34 @@ pub(crate) enum WorkClass {
     ControlPlane,
 }
 
+/// Maintenance admission for one resolved stream (R24-B).
+///
+/// Called AFTER the descriptor is resolved, so the shard is known. A
+/// shard this instance does not own is absent from the maintenance
+/// mirror and therefore never sheds here — the request continues to the
+/// normal ownership replay, which is the correct answer for a
+/// non-owner.
+pub(crate) fn maintenance_gate(state: &AppState, desc: &crate::registry::StreamDesc) -> Option<Response> {
+    let limits = crate::backpressure::limits();
+    let prefix =
+        crate::registry::shard_for_hash(&state.shard_prefixes, &desc.storage_hash());
+    let cause = crate::backpressure::admit_shard(&prefix, &limits)?;
+    crate::backpressure::note_shed();
+    let mut r = perr(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "maintenance_backpressure",
+        &format!(
+            "{} exceeds its bound; appends to this stream are paused while the backlog drains",
+            cause.as_str()
+        ),
+        None,
+        true,
+    );
+    r.headers_mut()
+        .insert("retry-after", axum::http::HeaderValue::from_static("5"));
+    Some(r)
+}
+
 impl ProductRoute {
     /// Classify a parsed product route plus its method.
     pub(crate) fn work_class(&self, method: &Method, verb: Option<&str>) -> WorkClass {
@@ -2537,6 +2565,13 @@ async fn product_append_inner(
             );
         }
     };
+    // R24-B: maintenance admission, now that the stream (and therefore
+    // its shard) is resolved. A shard we do not own is absent from the
+    // mirror, so a non-owner falls through to ownership replay instead
+    // of answering 503 about someone else's backlog.
+    if let Some(r) = maintenance_gate(&state, &desc) {
+        return r;
+    }
     if let Some(r) = refuse_if_sealed(&desc, seal_after) {
         return r;
     }
