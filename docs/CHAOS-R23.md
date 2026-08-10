@@ -1,5 +1,18 @@
 # R23 — closing the chaos review
 
+> **Superseded on R23-1 by [CHAOS-R24.md](CHAOS-R24.md).** The hard
+> backlog bound described below was built on process-lifetime counters.
+> A later review showed that is a process-local heuristic, not a durable
+> safety boundary — it could manufacture backlog for records that were
+> never committed, hide real backlog across a restart, and misinform both
+> sides of an ownership move. R24 rebuilt it on durable, ownership-scoped
+> per-shard state. Read R23-1 below as "the mechanism and its intent";
+> R24 is the implementation that can be relied on.
+>
+> Evidence in this document is labelled: **mechanism** (code exists),
+> **local proof** (deterministic test), **field proof** (measured on a
+> real edge), **open** (not yet established).
+
 Response to the review of `32d4b880` (`docs/CHAOS-CAMPAIGN.md`). The
 review's verdict was that the campaign was productive but three findings
 were not fully closed, one bug class survived outside the route it was
@@ -69,7 +82,10 @@ the overload unrecoverable at exactly the moment an operator needs to
 delete a stream, move ownership, or run cleanup. `is_append_request()`
 is a tested classifier over the real route grammar, not a prefix guess.
 
-`bench/chaos/backpressure-gate.sh`, 8/8 on the 1 GiB posture:
+`bench/chaos/backpressure-gate.sh`, 8/8 on the 1 GiB posture — **local
+proof of the mechanism only**. It exercised the process-local counters
+this bound was later rebuilt off, so a green result here proved the
+latch and the blast radius, NOT that the backlog figure was trustworthy:
 
 ```
 ok  appends refused once the backlog bound was passed (503)
@@ -126,6 +142,12 @@ transport error, unable to distinguish refusal from a broken network.
 
 `bench/chaos/hostile-surface.sh` grew 42 → 48 checks. 48/48 locally.
 
+**Scope correction (R24-D):** this section overstated the result.
+`strict_query()` was wired to the CATALOG route only. Malformed numeric
+values were strict everywhere, but unknown keys and duplicate scalars
+stayed silently accepted on records/scan/watch until R24-D. The gate is
+54 checks now.
+
 ## R23-5 — readiness hardening
 
 Distinct failed prefixes (not attempts) now back the unready verdict. A
@@ -148,7 +170,16 @@ never-ready instance **exits** after `UNREADY_EXIT_AFTER_SECS` (default
 the load balancer stops sending the traffic that would trigger another
 open, so it cannot recover on its own even after the store heals.
 
-## R23-6 — measuring the read, before optimizing it
+## R23-6 — measuring the read, before optimizing it — **EXPERIMENTAL**
+
+> Not decision-grade. The counters are process-global deltas snapshotted
+> around a gather, so they include concurrent customer reads, registry,
+> billing and fleet traffic; the denominator uses batch accounting that
+> includes keys and WriteBatch overhead rather than raw frame bytes
+> advanced; and GET_BYTES uses object metadata size, so a ranged read
+> bills the whole object. Do NOT choose read-ahead, tail-ring, or
+> two-stage fetch/build architecture off these numbers. Making the
+> accounting operation-local is open work.
 
 The review's sharpest diagnostic point: gather concurrency is the knob
 that *compensated* for CHAOS-5, not the deepest cause. The underlying
