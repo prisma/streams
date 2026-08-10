@@ -60,6 +60,17 @@ pub struct StoreStats {
     pub inflight_peak: AtomicI64,
 }
 
+/// Cumulative object-store GET count and bytes fetched.
+///
+/// R23-6: the deepest CHAOS-5 fact is that reading ~4 MiB of absorbable
+/// data takes 21-42 s. Concurrency only overlapped those slow reads
+/// while multiplying unmodelled memory, so the number that actually
+/// explains the ceiling is READ AMPLIFICATION — bytes fetched from the
+/// object store per useful frame byte returned. The absorber snapshots
+/// these around its read phase; the delta is that gather's cost.
+pub static GET_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub static GET_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
 /// Optional instance-wide cap on concurrent object-store ops
 /// (STORE_MAX_CONCURRENT, 0/unset = off). Run-12 found ack excursions are
 /// broad client-side slowdowns: HTTP/1.1 to Tigris + 4 s pool pruning means
@@ -399,6 +410,15 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         let g = OpGuard::new(2, location);
         let r = self.inner.get_ranges(location, ranges).await;
         g.finish(r.is_ok());
+        // R23-6: range reads are how the absorber pulls frames out of the
+        // object-store-backed LSM, so this is where amplification shows.
+        if let Ok(parts) = &r {
+            GET_COUNT.fetch_add(parts.len() as u64, Ordering::Relaxed);
+            GET_BYTES.fetch_add(
+                parts.iter().map(|b| b.len() as u64).sum::<u64>(),
+                Ordering::Relaxed,
+            );
+        }
         r
     }
 
