@@ -1198,6 +1198,19 @@ pub struct Topology {
     /// Complete binary prefix code over the stream-hash bit space. "" = one
     /// shard covering everything.
     pub shards: Vec<String>,
+    /// The request-body ceiling this namespace was created with.
+    ///
+    /// R23-2: the absorber sizes its worst-frame reservation from the
+    /// CURRENT process setting, so a deployment that lowers
+    /// MAX_REQUEST_BODY_BYTES on a namespace already holding a large
+    /// unabsorbed record would under-reserve for it — reintroducing
+    /// exactly the under-reservation the process-wide budget exists to
+    /// prevent. Recording it here lets startup refuse the mismatch.
+    ///
+    /// `None` on topologies written before this field existed; those
+    /// namespaces were created at the 32 MiB protocol pin.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub max_request_body_bytes: Option<usize>,
 }
 
 const TOPOLOGY_PATH: &str = "topology.json";
@@ -1205,6 +1218,7 @@ const TOPOLOGY_PATH: &str = "topology.json";
 pub async fn load_or_init_topology(
     store: &Arc<dyn ObjectStore>,
     initial_shards: usize,
+    body_ceiling: usize,
 ) -> Result<Topology, object_store::Error> {
     let path = ObjPath::from(TOPOLOGY_PATH);
     match store.get(&path).await {
@@ -1234,7 +1248,11 @@ pub async fn load_or_init_topology(
             .map(|i| format!("{:0width$b}", i, width = bits))
             .collect()
     };
-    let topo = Topology { version: 1, shards };
+    let topo = Topology {
+        version: 1,
+        shards,
+        max_request_body_bytes: Some(body_ceiling),
+    };
     let raw = serde_json::to_vec(&topo).expect("topology json");
     match store
         .put_opts(
@@ -1717,7 +1735,11 @@ mod tests {
             )
             .await
             .unwrap();
-        assert!(load_or_init_topology(&store, 4).await.is_err());
+        assert!(
+            load_or_init_topology(&store, 4, crate::http::MAX_BODY_BYTES)
+                .await
+                .is_err()
+        );
         // The corrupt object must still be there — not replaced by a fresh
         // initialization.
         let raw = store

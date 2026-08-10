@@ -474,6 +474,40 @@ fn acquire_stream_slot(
     }
 }
 
+/// Is this request an APPEND of new records?
+///
+/// Maintenance backpressure refuses exactly this set and nothing else.
+/// Getting the boundary wrong in either direction is harmful: too wide
+/// and an overloaded instance cannot be repaired (no delete, no
+/// ownership move, no consumer drain); too narrow and the backlog keeps
+/// growing through whatever path was missed.
+///
+///   POST /v1/streams/{name}/records   product append
+///   POST /v1/streams/{name}:batch     product appendMany
+///   POST /v1/stream/{name}            raw Durable Streams append
+///
+/// Everything else — creates, deletes, seals, pull/settle, watches,
+/// scans, reads, operator and debug surfaces — is admitted.
+pub(crate) fn is_append_request(method: &axum::http::Method, path: &str) -> bool {
+    if method != axum::http::Method::POST {
+        return false;
+    }
+    if let Some(rest) = path.strip_prefix("/v1/streams/") {
+        // A colon verb is a control operation except for :batch.
+        if let Some((_, verb)) = rest.rsplit_once(':') {
+            if !verb.contains('/') {
+                return verb == "batch";
+            }
+        }
+        return rest.ends_with("/records");
+    }
+    // Raw route: POST /v1/stream/{name} with no further path segment.
+    if let Some(rest) = path.strip_prefix("/v1/stream/") {
+        return !rest.is_empty() && !rest.contains('/');
+    }
+    false
+}
+
 async fn track_inflight(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     req: axum::extract::Request,
@@ -504,6 +538,34 @@ async fn track_inflight(
         )
             .into_response();
     }
+    // Maintenance backpressure (R23-1). When unabsorbed work passes its
+    // hard bound, NEW APPENDS are refused with a retryable 503 until the
+    // backlog drains below the low watermark. This is the bound that
+    // stops the instance accepting writes faster than it can absorb
+    // them for an unbounded stretch — the CHAOS-5 condition.
+    //
+    // Deliberately narrower than the RSS shed above: only record
+    // appends. Reads, consumer pull/settle, and every control-plane
+    // operation stay admitted, because shedding a consumer would stop
+    // the drain and shedding the control plane would make the overload
+    // unrecoverable at exactly the moment an operator needs to delete a
+    // stream, move ownership, or run cleanup.
+    if let Some(cause) = crate::backpressure::engaged() {
+        if is_append_request(req.method(), req.uri().path()) {
+            crate::backpressure::note_shed();
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                [("retry-after", "5"), ("content-type", "application/json")],
+                format!(
+                    r#"{{"error":{{"code":"maintenance_backpressure","message":"{} exceeds its bound; appends are paused while the backlog drains","retryable":true}}}}"#,
+                    cause.as_str()
+                ),
+            )
+                .into_response();
+        }
+    }
+
     // RSS shed: writes only — reads don't grow memtables, and rejecting
     // them would hide the instance from its own operators.
     // OOM review P2: the guard considers sampled RSS PLUS the absorber
@@ -685,6 +747,7 @@ async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
         "inflight_peak": peak,
         "rss_mb": crate::fleet::rss_bytes() as f64 / 1048576.0,
         "admit_shed": state.admit_shed.load(std::sync::atomic::Ordering::Relaxed),
+        "maintenance_backpressure": crate::backpressure::stats_json(),
         "stream_shed": state.stream_shed.load(std::sync::atomic::Ordering::Relaxed),
         "wedge_shed": state.wedge_shed.load(std::sync::atomic::Ordering::Relaxed),
         "streams_tracked": state.stream_inflight.lock().unwrap().len(),
@@ -1045,9 +1108,9 @@ pub fn router(state: Arc<AppState>) -> Router {
                             "capacityBytes": budget.capacity(),
                             "gatherSlots": budget.gather_slots(),
                             "effectiveGatherConcurrency":
-                                (budget.capacity()
-                                    / crate::history::absorb_worst_frame_transient())
-                                    .clamp(1, budget.gather_slots()),
+                                crate::history::effective_gather_concurrency(),
+                            "perGatherReservationBytes":
+                                crate::history::per_gather_reservation_bytes(),
                             "worstFrameTransientBytes":
                                 crate::history::absorb_worst_frame_transient(),
                             "injectedFlushStallMs": crate::history::HISTORY_FLUSH_STALL_MS

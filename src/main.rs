@@ -1,3 +1,4 @@
+mod backpressure;
 mod billing;
 mod crypto;
 #[cfg(test)]
@@ -877,13 +878,41 @@ async fn async_main() -> anyhow::Result<()> {
         None if fleet_mode => (4 * args.fleet_max as usize).next_power_of_two(),
         None => 1,
     };
-    let topology = load_or_init_topology(&ops_store, initial_shards)
+    let topology = load_or_init_topology(&ops_store, initial_shards, args.max_request_body_bytes)
         .await
         .context("load topology")?;
+    // R23-2: the body ceiling is a property of the NAMESPACE, not of the
+    // process. The absorber sizes its worst-frame reservation from the
+    // running setting, so starting against a namespace created with a
+    // different ceiling would either under-reserve for records already
+    // written — the exact under-reservation the process-wide budget
+    // exists to prevent — or silently move the product limit customers
+    // were told about. Refuse either way.
+    //
+    // A topology written before this field existed carries None; those
+    // namespaces were created at the 32 MiB protocol pin and are held
+    // to it.
+    let stored_ceiling = topology
+        .max_request_body_bytes
+        .unwrap_or(crate::http::MAX_BODY_BYTES);
+    if stored_ceiling != args.max_request_body_bytes {
+        anyhow::bail!(
+            "MAX_REQUEST_BODY_BYTES is {} but this namespace was created with {} — \
+             the ceiling sizes the absorber's worst-frame reservation, so changing it \
+             on an existing namespace would under-reserve for records already written \
+             (or silently move the published product limit). Set \
+             MAX_REQUEST_BODY_BYTES={} to start against this namespace, or point \
+             PATH_PREFIX at a fresh one.",
+            args.max_request_body_bytes,
+            stored_ceiling,
+            stored_ceiling,
+        );
+    }
     tracing::info!(
-        "topology v{}: {} shard(s)",
+        "topology v{}: {} shard(s), body ceiling {} bytes (namespace-pinned)",
         topology.version,
-        topology.shards.len()
+        topology.shards.len(),
+        stored_ceiling,
     );
 
     let keys = Arc::new(KeyCache::default());
@@ -925,6 +954,10 @@ async fn async_main() -> anyhow::Result<()> {
         let absorb_gather_max_bytes = {
             let budget = crate::history::absorb_budget().capacity();
             let max_allowed = budget / crate::history::ABSORB_BUILD_MULTIPLIER;
+            crate::history::RESOLVED_GATHER_PACKING_BYTES.store(
+                crate::history::resolved_gather_packing_bytes(args.absorb_gather_max_bytes),
+                std::sync::atomic::Ordering::Relaxed,
+            );
             if args.absorb_gather_max_bytes > max_allowed {
                 tracing::warn!(
                     "ABSORB_GATHER_MAX_BYTES {} x{} exceeds the process budget {} — \
@@ -1131,8 +1164,18 @@ async fn async_main() -> anyhow::Result<()> {
         // instance is already shedding writes when this runs.
         let st = state.clone();
         let shed_line_mb = args.admit_rss_shed_mb;
+        let bp_limits = crate::backpressure::Limits::from_env();
+        tracing::info!(
+            unabsorbed_instance = bp_limits.unabsorbed_bytes_instance,
+            unabsorbed_shard = bp_limits.unabsorbed_bytes_shard,
+            lag_secs = bp_limits.absorb_lag_secs,
+            replay_bytes = bp_limits.replay_bytes,
+            release_pct = bp_limits.release_pct,
+            "maintenance backpressure bounds",
+        );
         tokio::spawn(async move {
             let mut last_purge: Option<std::time::Instant> = None;
+            let mut ticks: u64 = 0;
             loop {
                 let mut mb = crate::fleet::rss_bytes() / 1048576;
                 let purge_due = shed_line_mb > 0
@@ -1151,6 +1194,15 @@ async fn async_main() -> anyhow::Result<()> {
                 // Peak-since-scrape for the ops snapshot (OOM review I4):
                 // 250 ms sampling, max-held until the scrape drains it.
                 crate::ops::RSS_PEAK_MB.fetch_max(mb, std::sync::atomic::Ordering::Relaxed);
+                // Maintenance backpressure re-evaluates on the same tick
+                // (R23-1). Doing it here keeps the request path to a
+                // single atomic read — walking the lag map per append
+                // would put the overload on the hot path.
+                if ticks % 8 == 0 {
+                    let snap = crate::backpressure::observe();
+                    crate::backpressure::apply(&snap, &bp_limits);
+                }
+                ticks = ticks.wrapping_add(1);
                 tokio::time::sleep(Duration::from_millis(250)).await;
             }
         });
@@ -1243,12 +1295,20 @@ async fn async_main() -> anyhow::Result<()> {
         // the EFFECTIVE concurrency is the byte budget divided by that
         // floor — 1 under the 1-GiB profile regardless of configured
         // slots. Print both so nobody reads two slots as two-way.
-        let effective_gathers =
-            (absorb_budget / crate::history::absorb_worst_frame_transient()).clamp(1, gathers);
+        // R23-3: use the SHARED accounting so the log, the debug
+        // surface, and the campaign verification cannot disagree. A
+        // gather reserves max(packing x multiplier, worst_frame), not
+        // the worst frame alone.
+        crate::history::RESOLVED_GATHER_PACKING_BYTES.store(
+            crate::history::resolved_gather_packing_bytes(args.absorb_gather_max_bytes),
+            std::sync::atomic::Ordering::Relaxed,
+        );
+        let per_gather = crate::history::per_gather_reservation_bytes();
+        let effective_gathers = crate::history::effective_gather_concurrency();
         let rt_threads = genv("SLATEDB_RT_THREADS", 2);
         let mib = |b: usize| b / (1024 * 1024);
         tracing::info!(
-            "memory budget: caches shared={}MiB history={}MiB postings={}MiB telemetry={}MiB; unflushed/db={}MiB; absorb budget={}MiB (worst-frame build={}MiB, configured gather slots={}, EFFECTIVE gather concurrency={}); slatedb rt threads={}; shed line={}MB (RSS + reserved absorber bytes)",
+            "memory budget: caches shared={}MiB history={}MiB postings={}MiB telemetry={}MiB; unflushed/db={}MiB; absorb budget={}MiB (worst-frame build={}MiB, per-gather reservation={}MiB, configured gather slots={}, EFFECTIVE gather concurrency={}); slatedb rt threads={}; shed line={}MB (RSS + reserved absorber bytes)",
             mib(shared),
             mib(history),
             mib(postings),
@@ -1256,6 +1316,7 @@ async fn async_main() -> anyhow::Result<()> {
             mib(args.max_unflushed_bytes),
             mib(absorb_budget),
             mib(crate::history::absorb_worst_frame_transient()),
+            mib(per_gather),
             gathers,
             effective_gathers,
             rt_threads,

@@ -202,6 +202,42 @@ pub fn worst_frame_transient_for(body_limit: usize) -> usize {
     (body_limit + FRAME_ENCODING_ALLOWANCE) * ABSORB_BUILD_MULTIPLIER
 }
 
+/// The gather packing limit AS RESOLVED at startup — after the clamp to
+/// `capacity / ABSORB_BUILD_MULTIPLIER`. Published so the concurrency
+/// arithmetic below matches what the absorber actually does.
+pub static RESOLVED_GATHER_PACKING_BYTES: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+
+/// The startup clamp, as one function so the absorber config, the
+/// startup log, and the debug surface cannot disagree about it.
+pub fn resolved_gather_packing_bytes(configured: usize) -> usize {
+    configured.min(absorb_budget().capacity() / ABSORB_BUILD_MULTIPLIER)
+}
+
+/// What ONE gather actually reserves.
+///
+/// R23-3: the reservation is `max(packing x multiplier, worst_frame)`
+/// clamped to capacity — NOT the worst frame alone. Reporting
+/// `capacity / worst_frame` as the concurrency (as the debug surface and
+/// the first chaos report did) overstates it whenever the packing term
+/// dominates, which is the common case: at bare defaults the packing
+/// limit clamps to capacity/3, so `packing x 3` IS the whole capacity
+/// and only one gather can ever run.
+pub fn per_gather_reservation_bytes() -> usize {
+    let cap = absorb_budget().capacity();
+    let packing = RESOLVED_GATHER_PACKING_BYTES.load(std::sync::atomic::Ordering::Relaxed);
+    let by_packing = packing.saturating_mul(ABSORB_BUILD_MULTIPLIER);
+    by_packing.max(absorb_worst_frame_transient()).clamp(1, cap)
+}
+
+/// Gathers that can genuinely run at once: the configured slot count,
+/// bounded by how many whole reservations fit in the budget.
+pub fn effective_gather_concurrency() -> usize {
+    let cap = absorb_budget().capacity();
+    let per = per_gather_reservation_bytes().max(1);
+    absorb_budget().gather_slots().min((cap / per).max(1))
+}
+
 /// Injected history-flush slowdown, ms per gather flush (0 = off).
 /// Set via POST /v1/debug/history-stall?ms= — the STALLED-HISTORY-
 /// FLUSH acceptance leg's lever: it stalls the actual gather flush
@@ -2016,6 +2052,41 @@ mod tests {
     /// worst-case frame build, every gather's estimate is at least
     /// that, and oversized-class reservations SERIALIZE without
     /// starvation — the declared envelope covers the real transient.
+    /// R23-3: the REPORTED concurrency must equal what the budget will
+    /// actually admit. The old formula divided capacity by the worst
+    /// frame and ignored the packing term, so it could report 2 where
+    /// the semaphore allows 1 — a telemetry artifact that reached the
+    /// first chaos report as if it were a measured result.
+    #[test]
+    fn reported_concurrency_matches_what_the_budget_admits() {
+        let cap = absorb_budget().capacity();
+        let per = per_gather_reservation_bytes();
+        let reported = effective_gather_concurrency();
+
+        assert!(per <= cap, "a reservation may never exceed capacity");
+        assert!(reported >= 1, "at least one gather must always run");
+        assert!(
+            reported <= absorb_budget().gather_slots(),
+            "cannot exceed configured slots"
+        );
+        // The defining identity: this many reservations fit at once.
+        assert!(
+            per.saturating_mul(reported) <= cap,
+            "{reported} x {per} exceeds capacity {cap} — the budget would block"
+        );
+
+        // The sizing rule itself, independent of live process state:
+        // under the 1 GiB profile the 8 MiB packing cap dominates a
+        // 1 MiB worst frame, which is why lowering the body ceiling
+        // alone cannot raise concurrency.
+        let packing_term = (8 * 1024 * 1024usize) * ABSORB_BUILD_MULTIPLIER;
+        assert_eq!(packing_term, 24 * 1024 * 1024);
+        assert!(
+            packing_term > worst_frame_transient_for(1024 * 1024),
+            "packing term must dominate here; if not, the rule changed"
+        );
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn worst_frame_floor_serializes_oversized_gathers_without_starvation() {
         assert_eq!(

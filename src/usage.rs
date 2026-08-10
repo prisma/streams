@@ -482,6 +482,22 @@ pub fn absorb_pending_summary_for(shard_prefix: &str) -> Option<(u64, u64, u64, 
         .copied()
 }
 
+/// Largest single shard's deferred (budget-blocked) byte count.
+///
+/// Maintenance backpressure bounds work PER SHARD as well as per
+/// instance: one shard far behind is an unbounded replay on that shard's
+/// next open even while the instance total still looks tolerable.
+pub fn max_shard_deferred_bytes() -> u64 {
+    PENDING_SUMMARY
+        .get_or_init(|| Mutex::new(HashMap::new()))
+        .lock()
+        .unwrap()
+        .values()
+        .map(|v| v.3)
+        .max()
+        .unwrap_or(0)
+}
+
 /// Instance-wide rollup: sums across shards, max for the oldest age.
 pub fn absorb_pending_summary() -> (u64, u64, u64, u64) {
     PENDING_SUMMARY
