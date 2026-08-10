@@ -2831,6 +2831,79 @@ const READ_MAX_BYTES_CAP: usize = 8 << 20;
 
 /// Query-string map with one-shot percent-decoding of values. Product
 /// SDKs percent-encode routing keys; '+' is NOT treated as a space.
+/// Strict query validation for a public route: the query-string
+/// equivalent of `deny_unknown_fields` on the creation document.
+///
+/// R23-4. The first pass of this fix only taught the records read
+/// handler to refuse values it could not parse; the same
+/// `.and_then(parse).ok()` pattern survived on scan, watch and catalog,
+/// where a malformed `maxBytes` / `timeoutMs` / `limit` still collapsed
+/// into the route default. Three failure shapes are refused here:
+///
+///   unknown key      the caller believes a parameter works that does
+///                    not, and silently gets default behaviour
+///   duplicate key    ?maxBytes=10&maxBytes=99999 — last-wins is a
+///                    silent choice between two stated intents
+///   unparseable      handled per-value by [`q_num`]
+fn strict_query(
+    query: &str,
+    allowed: &[&str],
+) -> Result<std::collections::HashMap<String, String>, Response> {
+    let mut seen: std::collections::HashMap<String, u32> = std::collections::HashMap::new();
+    for pair in query.split('&').filter(|p| !p.is_empty()) {
+        let key = pair.split('=').next().unwrap_or("");
+        if key.is_empty() {
+            continue;
+        }
+        *seen.entry(key.to_string()).or_insert(0) += 1;
+    }
+    for (key, count) in &seen {
+        if !allowed.contains(&key.as_str()) {
+            return Err(perr(
+                StatusCode::BAD_REQUEST,
+                "unknown_parameter",
+                &format!(
+                    "unknown query parameter \"{key}\"; this route accepts: {}",
+                    allowed.join(", ")
+                ),
+                None,
+                false,
+            ));
+        }
+        if *count > 1 {
+            return Err(perr(
+                StatusCode::BAD_REQUEST,
+                "duplicate_parameter",
+                &format!("query parameter \"{key}\" given {count} times"),
+                None,
+                false,
+            ));
+        }
+    }
+    Ok(parse_query(query))
+}
+
+/// Parse one numeric query value strictly: a value we cannot read is a
+/// client mistake, never a request for the default.
+fn q_num<T: std::str::FromStr>(
+    q: &std::collections::HashMap<String, String>,
+    key: &str,
+    code: &'static str,
+) -> Result<Option<T>, Response> {
+    match q.get(key) {
+        None => Ok(None),
+        Some(v) => v.parse::<T>().map(Some).map_err(|_| {
+            perr(
+                StatusCode::BAD_REQUEST,
+                code,
+                &format!("{key} must be a non-negative integer"),
+                None,
+                false,
+            )
+        }),
+    }
+}
+
 fn parse_query(query: &str) -> std::collections::HashMap<String, String> {
     fn pct(v: &str) -> String {
         let b = v.as_bytes();
@@ -3507,11 +3580,12 @@ async fn product_scan(
         }
     };
 
-    let max = q
-        .get("maxBytes")
-        .and_then(|v| v.parse::<usize>().ok())
-        .map(|v| v.clamp(4096, READ_MAX_BYTES_CAP))
-        .unwrap_or(SCAN_DEFAULT_BYTES);
+    let max = match q_num::<usize>(&q, "maxBytes", "invalid_max_bytes") {
+        Ok(v) => v
+            .map(|v| v.clamp(4096, READ_MAX_BYTES_CAP))
+            .unwrap_or(SCAN_DEFAULT_BYTES),
+        Err(r) => return r,
+    };
     let is_json = crate::registry::media_type(&desc.content_type) == "application/json";
 
     let mut idx = sc.current_index as usize;
@@ -6076,12 +6150,13 @@ async fn product_watch_wait(
         .map(String::as_str)
         .unwrap_or("now")
         .to_string();
-    let timeout = q
-        .get("timeoutMs")
-        .and_then(|v| v.parse::<u64>().ok())
-        .map(std::time::Duration::from_millis)
-        .unwrap_or(std::time::Duration::from_secs(25))
-        .min(std::time::Duration::from_secs(25));
+    let timeout = match q_num::<u64>(&q, "timeoutMs", "invalid_timeout_ms") {
+        Ok(v) => v
+            .map(std::time::Duration::from_millis)
+            .unwrap_or(std::time::Duration::from_secs(25))
+            .min(std::time::Duration::from_secs(25)),
+        Err(r) => return r,
+    };
     let key_id = crate::touch_keys::key_id_of(&key_hex);
     let out = journal.wait(&cursor, vec![key_id], timeout).await;
 
@@ -6157,12 +6232,14 @@ pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMa
             false,
         );
     }
-    let q = parse_query(&query);
-    let limit = q
-        .get("limit")
-        .and_then(|v| v.parse::<usize>().ok())
-        .unwrap_or(100)
-        .clamp(1, 1000);
+    let q = match strict_query(&query, &["limit", "cursor", "prefix"]) {
+        Ok(q) => q,
+        Err(r) => return r,
+    };
+    let limit = match q_num::<usize>(&q, "limit", "invalid_limit") {
+        Ok(v) => v.unwrap_or(100).clamp(1, 1000),
+        Err(r) => return r,
+    };
     // Opaque cursor (audit P0): the wire form is not an editable stream
     // name. It encodes the position to continue from.
     let after: Option<String> = match q.get("cursor").filter(|c| !c.is_empty()) {

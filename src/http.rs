@@ -538,6 +538,33 @@ async fn track_inflight(
         )
             .into_response();
     }
+    // R23-4: refuse a declared oversized body BEFORE reading it. Without
+    // this, a body far above the ceiling (64 MiB in the campaign) draws
+    // a connection reset — the server stops reading mid-stream and the
+    // peer sees a transport error rather than a decision, so a client
+    // cannot tell "you refused me" from "the network broke" and retries
+    // a request that can never succeed. Chunked bodies with no declared
+    // length still fall through to the body-limit check, which produces
+    // a real 413.
+    if let Some(declared) = req
+        .headers()
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok())
+        && declared > max_body_bytes()
+    {
+        return (
+            StatusCode::PAYLOAD_TOO_LARGE,
+            [("content-type", "application/json")],
+            format!(
+                r#"{{"error":{{"code":"body_too_large","message":"request body {} exceeds the {}-byte limit","retryable":false}}}}"#,
+                declared,
+                max_body_bytes()
+            ),
+        )
+            .into_response();
+    }
+
     // Maintenance backpressure (R23-1). When unabsorbed work passes its
     // hard bound, NEW APPENDS are refused with a retryable 503 until the
     // backlog drains below the low watermark. This is the bound that

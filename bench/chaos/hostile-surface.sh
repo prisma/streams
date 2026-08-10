@@ -111,6 +111,25 @@ chk 200 "maxBytes below floor clamps up" -H "$A" -H "$K" "$U/v1/streams/$S/recor
 chk 400 "cursor: garbage"    -H "$A" -H "$K" "$U/v1/streams/$S/records?cursor=AAAAAAAAAAAAAAAA"
 chk 400 "cursor: not base64" -H "$A" -H "$K" "$U/v1/streams/$S/records?cursor=%%%%"
 
+echo "-- R23-4: the SAME bug class on every other public route"
+# The first fix only covered the records read handler; scan, watch and
+# catalog kept collapsing a malformed value into the route default.
+chk 400 "scan maxBytes=abc"     -H "$A" -H "$K" "$U/v1/streams/$S:scan?maxBytes=abc"
+chk 400 "scan maxBytes=-5"      -H "$A" -H "$K" "$U/v1/streams/$S:scan?maxBytes=-5"
+chk 400 "catalog limit=abc"     -H "$A" "$U/v1/streams?limit=abc"
+chk 400 "catalog limit=-1"      -H "$A" "$U/v1/streams?limit=-1"
+chk 400 "catalog unknown key"   -H "$A" "$U/v1/streams?nosuchparam=1"
+chk 400 "catalog duplicate key" -H "$A" "$U/v1/streams?limit=10&limit=20"
+chk 2xx "catalog limit=10"      -H "$A" "$U/v1/streams?limit=10"
+
+echo "-- R23-4: an oversized body is REFUSED, not reset"
+# A body far over the ceiling used to draw a connection reset, so a
+# client could not tell refusal from a broken network and retried
+# forever. curl exit 0 with a 413 is the whole point of this check.
+chk 413 "declared oversized body" -X POST -H "$A" -H "$K" \
+    -H "content-length: 67108864" --data-binary "@/dev/null" \
+    "$U/v1/streams/$S/records"
+
 echo "-- bodies and methods"
 chk 405 "TRACE"              -X TRACE -H "$A" "$U/v1/streams/$S/records"
 chk 405 "PATCH records"      -X PATCH -H "$A" -H "$K" --data-binary 'x' "$U/v1/streams/$S/records"
