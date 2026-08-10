@@ -1,5 +1,12 @@
 # Chaos campaign — 2026-08-09, Singapore (ap-southeast-1)
 
+> **Superseded in part by [CHAOS-R23.md](CHAOS-R23.md).** This document
+> records the campaign as it ran. A later review found three claims here
+> overstated — the `gatherConc=2` line was a telemetry artifact, the
+> readiness check does not cover every storage failure, and CHAOS-4 was
+> fixed only on the records read route. Each is corrected in place below
+> and closed in R23. Where the two disagree, R23 is current.
+
 Adversarial session against `streams-slate`: break it any way possible,
 fix what breaks, report. Load ran on Prisma Compute in Singapore against
 Tigris; the attack surface work ran locally against the same binary on
@@ -18,7 +25,7 @@ under every attack, including four SIGKILLs.
 | CHAOS-1 | P0 | Absorber wedge: a truncated gather stranded data in the hot tier forever | `506039dd` |
 | CHAOS-2 | P0 | Invalid engine config accepted — and the shipped defaults *were* invalid; `/health` said `ok` while every append 500'd | `3e701c34` |
 | CHAOS-3 | P1 | 96.2 MiB of the 500 MB shed line reserved per gather for a record size the deployment may never accept | `c00b19ae` |
-| CHAOS-4 | P2 | `maxBytes` / `waitMs` silently defaulted instead of rejecting values they could not parse | `204ac19c` |
+| CHAOS-4 | P2 | `maxBytes` / `waitMs` silently defaulted — fixed on the records read route only; the same class survived on scan/watch/catalog until R23-4 | `204ac19c`, `94e4fab2` |
 | CHAOS-5 | P1 | Absorption runs ~2.3× *below* ingest, so the hot tier grows without bound. Root cause is gather concurrency — but raising it to 4 OOM-killed the instance (exit 137), so **no safe fix is known yet** | open |
 
 ---
@@ -128,7 +135,22 @@ MAX_REQUEST_BODY_BYTES=33554432   worstFrame=96.2MiB capacity=96.2MiB gatherConc
 MAX_REQUEST_BODY_BYTES=1048576    worstFrame= 3.2MiB capacity=64.0MiB gatherConc=2
 ```
 
-and in Singapore, under the actual 1 GiB profile:
+**That second line was wrong — it was a telemetry artifact, not a
+measurement (corrected in R23-3).** The surface computed
+`capacity / worst_frame` and ignored the packing term, but a gather
+reserves `min(capacity, max(packing x 3, worst_frame))`. The packing
+limit clamps to `capacity / 3`, so `packing x 3` IS the whole capacity
+and only one gather could ever run. Re-measured on the corrected binary:
+
+```
+MAX_REQUEST_BODY_BYTES=33554432  worstFrame 96.2MiB  perGatherReservation 96.2MiB  slots 2  effectiveConc 1
+MAX_REQUEST_BODY_BYTES=1048576   worstFrame  3.2MiB  perGatherReservation 64.0MiB  slots 2  effectiveConc 1
+```
+
+Lowering the body ceiling never raised concurrency anywhere. It lowers
+the RESERVATION, which is a separate and real benefit.
+
+And in Singapore, under the actual 1 GiB profile:
 
 ```
 MAX_REQUEST_BODY_BYTES=1048576    worstFrame= 3.2MiB capacity=96.2MiB
