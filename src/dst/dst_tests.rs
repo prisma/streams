@@ -5123,6 +5123,8 @@ async fn http_rig_auth(
         crate::shard::ShardConfig::default(),
         0,
         Some(token.to_string()),
+        None,
+        None,
     )
     .await
 }
@@ -5133,7 +5135,47 @@ async fn http_rig_full(
     shard_cfg: crate::shard::ShardConfig,
     per_segment_slots: i64,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
-    http_rig_inner(store, prefixes, shard_cfg, per_segment_slots, None).await
+    http_rig_inner(store, prefixes, shard_cfg, per_segment_slots, None, None, None).await
+}
+
+/// A rig with a NAMED instance so ring ownership is real: setting
+/// `state.ring_active` afterward makes rendezvous routing live, and
+/// shards the ring assigns elsewhere answer 409 + Streams-Replay-To.
+async fn http_rig_named(
+    store: Arc<dyn ObjectStore>,
+    instance: &str,
+) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+    http_rig_inner(
+        store,
+        vec!["00".to_string()],
+        crate::shard::ShardConfig::default(),
+        0,
+        None,
+        Some(instance.to_string()),
+        None,
+    )
+    .await
+}
+
+/// A rig whose shard OPENER parks on the given lock right before
+/// maintenance restoration (R26-5): the test holds the lock, fires a
+/// request, proves nothing is answered from unrestored state, then
+/// releases. Mirrors the production open order exactly — db build →
+/// load_or_rebuild_maintenance → engine start.
+async fn http_rig_park(
+    store: Arc<dyn ObjectStore>,
+    park: Arc<tokio::sync::Mutex<()>>,
+) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+    http_rig_inner(
+        store,
+        vec!["00".to_string()],
+        crate::shard::ShardConfig::default(),
+        0,
+        None,
+        None,
+        Some(park),
+    )
+    .await
 }
 
 async fn http_rig_inner(
@@ -5142,6 +5184,8 @@ async fn http_rig_inner(
     shard_cfg: crate::shard::ShardConfig,
     per_segment_slots: i64,
     auth: Option<String>,
+    instance_name: Option<String>,
+    open_park: Option<Arc<tokio::sync::Mutex<()>>>,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
     let registry = crate::registry::Registry::new(store.clone());
     let keys = Arc::new(crate::history::KeyCache::default());
@@ -5157,6 +5201,7 @@ async fn http_rig_inner(
             let store = store.clone();
             let keys = keys.clone();
             let shard_cfg = shard_cfg.clone();
+            let open_park = open_park.clone();
             let fut: futures_util::future::BoxFuture<
                 'static,
                 anyhow::Result<Arc<crate::shard::ShardEngine>>,
@@ -5170,6 +5215,11 @@ async fn http_rig_inner(
                     .build()
                     .await?;
                 let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+                // R26-5 park point: BEFORE restoration, exactly where a
+                // slow durable-state load sits in production.
+                if let Some(park) = &open_park {
+                    let _p = park.lock().await;
+                }
                 // R25-A: tests use the REAL load path — a fresh DB rebuilds to
                 // zero; a reopened DB restores its durable backlog, exactly as
                 // the production opener does.
@@ -5220,7 +5270,7 @@ async fn http_rig_inner(
         stream_inflight: std::sync::Mutex::new(std::collections::HashMap::new()),
         stream_shed: std::sync::atomic::AtomicU64::new(0),
         wedge_shed: std::sync::atomic::AtomicU64::new(0),
-        instance_name: String::new(),
+        instance_name: instance_name.unwrap_or_default(),
         ring_active: std::sync::RwLock::new(Vec::new()),
         ring_overrides: std::sync::RwLock::new(std::collections::HashMap::new()),
         peer_urls: std::sync::RwLock::new(std::collections::HashMap::new()),
@@ -20681,4 +20731,332 @@ fn reserved_system_streams_are_recognized() {
         );
     }
     assert!(!crate::billing::is_reserved_stream("customers/acme"));
+}
+
+// ---- R26-5: the maintenance gate through the PRODUCTION surfaces ----
+// The R25-D coverage proved the local primitive (backpressure::admit on
+// two engines); these five prove the ROUTES — raw wildcard names,
+// product split children, ownership replay, open-time restoration, and
+// the reserved-stream skip — through real HTTP against real engines.
+
+/// Inflate an engine's published ledger far over the default per-shard
+/// bound (256 MiB) so its latch engages on the next admission check.
+/// Per-engine state: no other test's engine is affected.
+fn inflate_ledger(engine: &crate::shard::ShardEngine) {
+    engine.publish_maintenance(crate::shard::ShardMaintenance {
+        version: 1,
+        unabsorbed_frame_bytes: 300 * 1024 * 1024,
+        backlog_started_ms: 1,
+        last_progress_ms: 1,
+    });
+}
+
+/// R26-5a: a RAW append to a hierarchical wildcard name receives the
+/// typed refusal — 503, code `maintenance_backpressure`, retry-after —
+/// while reads stay admitted, and recovery readmits.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn raw_hierarchical_append_sheds_typed_503_under_backlog() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let name = "acme/prod/orders";
+    let (st, _, _) = hreq(addr, "PUT", &format!("/v1/stream/{name}"), &ct, b"").await;
+    assert!(st == 200 || st == 201);
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        &format!("/v1/stream/{name}"),
+        &ct,
+        br#"[{"n":1}]"#,
+    )
+    .await;
+    assert!(st == 200 || st == 204, "baseline append through the wildcard route, got {st}");
+
+    let desc = state.registry.get(name).await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let engine = state.engine_for_scaler(&seg.shard_route).await.expect("engine");
+    inflate_ledger(&engine);
+    let (st, hdrs, body) = hreq(
+        addr,
+        "POST",
+        &format!("/v1/stream/{name}"),
+        &ct,
+        br#"[{"n":2}]"#,
+    )
+    .await;
+    assert_eq!(st, 503, "over-bound shard must shed the raw append");
+    let body = String::from_utf8_lossy(&body).to_string();
+    assert!(
+        body.contains("maintenance_backpressure"),
+        "typed code required, got: {body}"
+    );
+    assert_eq!(
+        hdrs.get("retry-after").map(String::as_str),
+        Some("5"),
+        "shed must carry a retry hint"
+    );
+    // Reads stay admitted — shedding a consumer would stop the drain.
+    let (st, _, _) = hreq(addr, "GET", &format!("/v1/stream/{name}"), &[], b"").await;
+    assert_eq!(st, 200, "reads must not shed");
+
+    engine.publish_maintenance(crate::shard::ShardMaintenance::default());
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        &format!("/v1/stream/{name}"),
+        &ct,
+        br#"[{"n":3}]"#,
+    )
+    .await;
+    assert!(st == 200 || st == 204, "drained shard must readmit, got {st}");
+}
+
+/// R26-5b: after a product split, child A's engine over the bound sheds
+/// ONLY child A's keys; the sibling child keeps accepting. The per-shard
+/// latch is the multitenant failure boundary — through the product
+/// append route, not admit() called by hand.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn split_child_sheds_while_sibling_child_admits() {
+    let _l = gap_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig_opts(
+        store,
+        vec!["00".into(), "01".into(), "02".into(), "03".into()],
+        crate::shard::ShardConfig::default(),
+    )
+    .await;
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/shed-split",
+        &[("content-type", "application/json")],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 201);
+    let keys = ["ga", "gb", "gc", "gd", "ge", "gf", "gg", "gh"];
+    for k in &keys {
+        let body = format!("{{\"k\":\"{k}\"}}");
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/shed-split/records",
+            &[("prisma-encryption-key", PRISMA_KEY), ("prisma-routing-key", k)],
+            body.as_bytes(),
+        )
+        .await;
+        assert!(st == 200 || st == 204);
+    }
+    assert!(
+        crate::scaler3::execute_split(&state, "shed-split", 0, 0x8000_0000_0000_0000).await,
+        "split executes"
+    );
+    state.registry.invalidate("shed-split");
+    let desc = state.registry.get("shed-split").await.unwrap().unwrap();
+    let map = desc.segments.as_ref().expect("map");
+    let live: Vec<_> = map.segments.iter().filter(|s| s.is_live()).collect();
+    assert_eq!(live.len(), 2);
+    let r0 = desc.segment_route(live[0]);
+    let r1 = desc.segment_route(live[1]);
+    let e0 = state.engine_for_scaler(&r0).await.expect("engine 0");
+    let e1 = state.engine_for_scaler(&r1).await.expect("engine 1");
+    assert!(!Arc::ptr_eq(&e0, &e1), "children on distinct engines");
+    // One key per child.
+    let key_for = |route: [u8; 16]| {
+        keys.iter()
+            .find(|k| {
+                let seg = desc.resolve_segment(k);
+                desc.segment_route_by_id(seg.seg_id) == route
+            })
+            .copied()
+            .expect("a key routing to this child")
+    };
+    let (ka, kb) = (key_for(r0), key_for(r1));
+
+    inflate_ledger(&e0);
+    let (st, _, body) = preq(
+        addr,
+        "POST",
+        "/v1/streams/shed-split/records",
+        &[("prisma-encryption-key", PRISMA_KEY), ("prisma-routing-key", ka)],
+        format!("{{\"k\":\"{ka}\"}}").as_bytes(),
+    )
+    .await;
+    assert_eq!(st, 503, "child A must shed");
+    assert!(
+        String::from_utf8_lossy(&body).contains("maintenance_backpressure"),
+        "the product surface must keep the typed code"
+    );
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/shed-split/records",
+        &[("prisma-encryption-key", PRISMA_KEY), ("prisma-routing-key", kb)],
+        format!("{{\"k\":\"{kb}\"}}").as_bytes(),
+    )
+    .await;
+    assert!(st == 200 || st == 204, "sibling child must keep admitting, got {st}");
+
+    e0.publish_maintenance(crate::shard::ShardMaintenance::default());
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/shed-split/records",
+        &[("prisma-encryption-key", PRISMA_KEY), ("prisma-routing-key", ka)],
+        format!("{{\"k\":\"{ka}\"}}").as_bytes(),
+    )
+    .await;
+    assert!(st == 200 || st == 204, "drained child must readmit, got {st}");
+}
+
+/// R26-5c: ownership replay OUTRANKS a locally latched engine. When the
+/// ring reassigns the shard, a request must get 409 + Streams-Replay-To
+/// pointing at the owner — never a stale 503 about a backlog that now
+/// belongs to someone else. (R25-C placed admission after engine_for
+/// precisely for this; here is the route-level proof.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ownership_replay_wins_over_a_latched_local_engine() {
+    let store = mem();
+    let (state, addr) = http_rig_named(store, "inst-a").await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/replay-x", &ct, b"").await;
+    assert!(st == 200 || st == 201);
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/replay-x", &ct, br#"[{"n":1}]"#).await;
+    assert!(st == 200 || st == 204);
+
+    // Latch the local engine.
+    let name = "replay-x";
+    let desc = state.registry.get(name).await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let engine = state.engine_for_scaler(&seg.shard_route).await.expect("engine");
+    inflate_ledger(&engine);
+    let (st, _, body) = hreq(addr, "POST", "/v1/stream/replay-x", &ct, br#"[{"n":2}]"#).await;
+    assert_eq!(st, 503);
+    assert!(String::from_utf8_lossy(&body).contains("maintenance_backpressure"));
+
+    // The ring moves the shard to inst-b. The SAME request must now be
+    // redirected — the resident latched engine yields, it does not
+    // answer with its own backlog.
+    *state.ring_active.write().unwrap() = vec!["inst-b".to_string()];
+    let (st, hdrs, body) = hreq(addr, "POST", "/v1/stream/replay-x", &ct, br#"[{"n":3}]"#).await;
+    assert_eq!(st, 409, "non-owner must redirect, got {st}");
+    let body = String::from_utf8_lossy(&body).to_string();
+    assert!(body.contains("not_ring_owner"), "got: {body}");
+    assert_eq!(
+        hdrs.get("streams-replay-to").map(String::as_str),
+        Some("inst-b"),
+        "replay target must name the owner"
+    );
+    assert!(
+        !body.contains("maintenance_backpressure"),
+        "a stale local latch must never answer for a shard we do not own"
+    );
+}
+
+/// R26-5d: the first request CANNOT pass while backlog restoration is
+/// parked — and when restoration completes, admission sees the restored
+/// ledger, not a default. Rig 1 persists an over-bound durable row;
+/// rig 2 opens the same namespace with restoration parked: the request
+/// stays unanswered while parked, then gets the typed 503 from the
+/// restored state. At no point does an append slip through against an
+/// unknown backlog.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn first_request_waits_for_restoration_then_sees_the_restored_ledger() {
+    let store = mem();
+    let ct = [("content-type", "application/json")];
+
+    // Rig 1: create the stream, then persist a fat durable row through
+    // the engine's own DB and hand the namespace over.
+    let (state1, addr1) = http_rig(store.clone()).await;
+    let (st, _, _) = hreq(addr1, "PUT", "/v1/stream/restore-x", &ct, b"").await;
+    assert!(st == 200 || st == 201);
+    let (st, _, _) = hreq(addr1, "POST", "/v1/stream/restore-x", &ct, br#"[{"n":1}]"#).await;
+    assert!(st == 200 || st == 204);
+    let desc = state1.registry.get("restore-x").await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let prefix = crate::registry::shard_for_hash(&state1.shard_prefixes, &seg.shard_route);
+    let engine1 = state1.engine_for_scaler(&seg.shard_route).await.expect("engine");
+    let fat = crate::shard::ShardMaintenance {
+        version: 99,
+        unabsorbed_frame_bytes: 300 * 1024 * 1024,
+        backlog_started_ms: 1,
+        last_progress_ms: 1,
+    };
+    let mut wb = slatedb::WriteBatch::new();
+    wb.put(crate::shard::shard_maint_key(), crate::shard::encode_shard_maint(&fat));
+    engine1
+        .db
+        .write_with_options(wb, &slatedb::config::WriteOptions::default())
+        .await
+        .unwrap();
+    engine1.db.flush().await.unwrap();
+    {
+        state1.shards.write().unwrap().remove(&prefix);
+    }
+    engine1.begin_close();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // Rig 2: fresh gate over the same store, restoration parked.
+    let park = Arc::new(tokio::sync::Mutex::new(()));
+    let held = park.clone().lock_owned().await;
+    let (_state2, addr2) = http_rig_park(store, park.clone()).await;
+    let req = tokio::spawn(async move {
+        hreq(addr2, "POST", "/v1/stream/restore-x", &ct, br#"[{"n":2}]"#).await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    assert!(
+        !req.is_finished(),
+        "a request must not be answered while the durable backlog is unrestored"
+    );
+    drop(held);
+    let (st, _, body) = req.await.unwrap();
+    assert_eq!(st, 503, "restored over-bound ledger must shed, got {st}");
+    assert!(
+        String::from_utf8_lossy(&body).contains("maintenance_backpressure"),
+        "admission must have used the RESTORED ledger"
+    );
+}
+
+/// R26-5e: reserved system streams stay writable THROUGH THE APPEND
+/// PATH while the same engine sheds customers. Overload recovery cannot
+/// deadlock on its own system-of-record writes — proved via the
+/// fleet-internal telemetry-append route, which funnels into the same
+/// append_core as everything else.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn reserved_streams_append_through_a_latched_engine() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/cust-r", &ct, b"").await;
+    assert!(st == 200 || st == 201);
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/cust-r", &ct, br#"[{"n":1}]"#).await;
+    assert!(st == 200 || st == 204);
+
+    let name = "cust-r";
+    let desc = state.registry.get(name).await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let engine = state.engine_for_scaler(&seg.shard_route).await.expect("engine");
+    inflate_ledger(&engine);
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/cust-r", &ct, br#"[{"n":2}]"#).await;
+    assert_eq!(st, 503, "customer stream on the latched engine must shed");
+
+    // The system stream lands on the SAME latched engine (single
+    // prefix) and must still be admitted.
+    let (st, _, body) = hreq(
+        addr,
+        "POST",
+        "/v1/internal/telemetry-append/_usage",
+        &[
+            ("content-type", "application/json"),
+            ("authorization", "Bearer dst-internal-token"),
+        ],
+        br#"[{"ev":"probe"}]"#,
+    )
+    .await;
+    let body = String::from_utf8_lossy(&body).to_string();
+    assert!(
+        !body.contains("maintenance_backpressure"),
+        "reserved stream shed by the maintenance gate: {body}"
+    );
+    assert!(st == 200 || st == 204, "system-of-record write must pass the latch, got {st}: {body}");
 }
