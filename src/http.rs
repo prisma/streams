@@ -526,64 +526,6 @@ async fn track_inflight(
         )
             .into_response();
     }
-    // R23-4: refuse a declared oversized body BEFORE reading it. Without
-    // this, a body far above the ceiling (64 MiB in the campaign) draws
-    // a connection reset — the server stops reading mid-stream and the
-    // peer sees a transport error rather than a decision, so a client
-    // cannot tell "you refused me" from "the network broke" and retries
-    // a request that can never succeed. Chunked bodies with no declared
-    // length still fall through to the body-limit check, which produces
-    // a real 413.
-    if let Some(declared) = req
-        .headers()
-        .get(axum::http::header::CONTENT_LENGTH)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<usize>().ok())
-        && declared > max_body_bytes()
-    {
-        // Answering while the client is still uploading closes the
-        // connection mid-stream, and an edge proxy reports that as 502.
-        // Measured in Singapore: a 2 MiB body against a 1 MiB ceiling
-        // returned 502, while 8 MiB and 64 MiB returned a clean 413 —
-        // the large ones only worked because curl negotiates
-        // `Expect: 100-continue` above ~1 MiB, so the refusal lands
-        // before the upload begins. Without that negotiation the client
-        // sees a SERVER error for what is squarely a client error, and
-        // 502 invites a retry that can never succeed.
-        //
-        // So drain first, up to a bound, then answer. The bound matters:
-        // reading an unbounded oversized body is the very memory
-        // exhaustion this check exists to prevent, so past it we accept
-        // the ugly close rather than let a hostile client stream forever.
-        const DRAIN_CAP: usize = 8 * 1024 * 1024;
-        if declared <= DRAIN_CAP {
-            use futures_util::StreamExt;
-            let mut stream = req.into_body().into_data_stream();
-            let mut seen = 0usize;
-            while let Some(chunk) = stream.next().await {
-                match chunk {
-                    Ok(b) => {
-                        seen += b.len();
-                        if seen > DRAIN_CAP {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
-                }
-            }
-        }
-        return (
-            StatusCode::PAYLOAD_TOO_LARGE,
-            [("content-type", "application/json")],
-            format!(
-                r#"{{"error":{{"code":"body_too_large","message":"request body {} exceeds the {}-byte limit","retryable":false}}}}"#,
-                declared,
-                max_body_bytes()
-            ),
-        )
-            .into_response();
-    }
-
     // R24-B: maintenance backpressure is NO LONGER decided here.
     //
     // A global middleware check runs before descriptor resolution and
@@ -594,33 +536,13 @@ async fn track_inflight(
     // the instance. The decision now happens in the append path, once
     // the stream's shard is known. See product::maintenance_gate.
 
-    // RSS shed: writes only — reads don't grow memtables, and rejecting
-    // them would hide the instance from its own operators.
-    // OOM review P2: the guard considers sampled RSS PLUS the absorber
-    // bytes already reserved — a gather can allocate tens of MiB
-    // between RSS samples, and the reservation is visible the moment it
-    // is granted, so the shed line moves BEFORE the memory does.
-    if state.admit_rss_shed_mb > 0
-        && path_is_stream
-        && req.method() != axum::http::Method::GET
-        && crate::history::memory_pressure_mb(
-            state
-                .rss_mb_cached
-                .load(std::sync::atomic::Ordering::Relaxed),
-            crate::history::absorb_reserved_bytes(),
-        ) > state.admit_rss_shed_mb
-    {
-        state
-            .admit_shed
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        return (
-            StatusCode::TOO_MANY_REQUESTS,
-            [("retry-after", "2"), ("content-type", "application/json")],
-            r#"{"error":{"code":"overloaded","message":"instance memory pressure; retry"}}"#,
-        )
-            .into_response();
-    }
+    // R25-E: the oversized-body 413 (with its bounded drain) and the
+    // RSS write-shed both MOVED into append_core, after route-specific
+    // authentication and ownership resolution. Running them here — in
+    // pre-auth middleware — let an unauthenticated caller force up to
+    // 8 MiB of body drain and receive capacity answers (429/503) where
+    // the contract requires 401: authenticate before buffering or
+    // materially consuming the request body.
     next.run(req).await
 }
 
@@ -4462,6 +4384,71 @@ async fn append_core(
         p.request_hash = Some(h);
     }
     let close = want_close(&headers);
+    // R25-E: oversized-body refusal, now AFTER bearer + stream-key auth.
+    // Answering mid-upload closes the connection and the edge reports
+    // 502 (measured in Singapore: 2 MiB vs a 1 MiB ceiling), so we drain
+    // a BOUNDED amount before answering — but only for callers who have
+    // already authenticated; an unauthenticated caller got its 401 above
+    // without the server reading a byte.
+    if let Some(declared) = headers
+        .get(axum::http::header::CONTENT_LENGTH)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.parse::<usize>().ok())
+        && declared > max_body_bytes()
+    {
+        const DRAIN_CAP: usize = 8 * 1024 * 1024;
+        if declared <= DRAIN_CAP {
+            use futures_util::StreamExt;
+            let mut stream = body.into_data_stream();
+            let mut seen = 0usize;
+            while let Some(chunk) = stream.next().await {
+                match chunk {
+                    Ok(b) => {
+                        seen += b.len();
+                        if seen > DRAIN_CAP {
+                            break;
+                        }
+                    }
+                    Err(_) => break,
+                }
+            }
+        }
+        return err_resp(
+            StatusCode::PAYLOAD_TOO_LARGE,
+            "body_too_large",
+            &format!(
+                "request body {} exceeds the {}-byte limit",
+                declared,
+                max_body_bytes()
+            ),
+        );
+    }
+    // R25-E: RSS write-shed, moved from pre-auth middleware. Writes
+    // only — reads don't grow memtables, and shedding them would hide
+    // the instance from its own operators. The guard considers sampled
+    // RSS PLUS reserved absorber bytes so the line moves BEFORE the
+    // memory does.
+    if state.admit_rss_shed_mb > 0
+        && crate::history::memory_pressure_mb(
+            state
+                .rss_mb_cached
+                .load(std::sync::atomic::Ordering::Relaxed),
+            crate::history::absorb_reserved_bytes(),
+        ) > state.admit_rss_shed_mb
+    {
+        state
+            .admit_shed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        let mut r = err_resp(
+            StatusCode::TOO_MANY_REQUESTS,
+            "overloaded",
+            "instance memory pressure; retry",
+        );
+        r.headers_mut()
+            .insert("retry-after", axum::http::HeaderValue::from_static("2"));
+        return r;
+    }
     let body = match axum::body::to_bytes(body, max_body_bytes()).await {
         Ok(b) => b,
         Err(_) => return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large"),

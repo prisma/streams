@@ -6328,6 +6328,14 @@ pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMa
 /// Control-plane metadata: bearer-authorized, NO record key required,
 /// answered from the rollup with a point read (never a ledger scan).
 async fn product_usage(state: Arc<AppState>, name: String, query: &str) -> Response {
+    // R25-E: validate the query BEFORE availability checks — a
+    // malformed request is the CLIENT's error whatever this instance's
+    // billing posture, and a 503 for a typo'd parameter teaches callers
+    // to retry requests that can never succeed.
+    let q = match strict_query(query, &["month", "streamId"]) {
+        Ok(q) => q,
+        Err(r) => return r,
+    };
     let Some(rollup) = state.rollup.get() else {
         return perr(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -6361,11 +6369,7 @@ async fn product_usage(state: Arc<AppState>, name: String, query: &str) -> Respo
     let now = crate::shard::now_ms();
     let (cy, cm) = crate::billing::utc_year_month(now);
     let current = crate::billing::month_str(cy, cm);
-    let month = query
-        .split('&')
-        .find_map(|kv| kv.strip_prefix("month="))
-        .map(str::to_string)
-        .unwrap_or_else(|| current.clone());
+    let month = q.get("month").cloned().unwrap_or_else(|| current.clone());
     if crate::billing::parse_month(&month).is_none() {
         return perr(
             StatusCode::BAD_REQUEST,
@@ -6379,7 +6383,7 @@ async fn product_usage(state: Arc<AppState>, name: String, query: &str) -> Respo
     // Historical incarnation lookup (round-21 dashboard gap): after a
     // delete/recreate, ?streamId= addresses a PRIOR incarnation's rows
     // directly — invoice history survives the live resource.
-    if let Some(sid) = query.split('&').find_map(|kv| kv.strip_prefix("streamId=")) {
+    if let Some(sid) = q.get("streamId").map(String::as_str) {
         id.stream_id = sid.to_string();
     }
     let row: crate::rollup::MonthRow = rollup
@@ -6494,6 +6498,11 @@ async fn product_usage(state: Arc<AppState>, name: String, query: &str) -> Respo
 /// deployment contract the {project} segment must match this cell's
 /// configured project.
 pub async fn project_usage(state: Arc<AppState>, project: String, query: &str) -> Response {
+    let q = match strict_query(query, &["month"]) {
+        Ok(q) => q,
+        Err(r) => return r,
+    };
+
     let Some(rollup) = state.rollup.get() else {
         return perr(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -6515,11 +6524,7 @@ pub async fn project_usage(state: Arc<AppState>, project: String, query: &str) -
     let now = crate::shard::now_ms();
     let (cy, cm) = crate::billing::utc_year_month(now);
     let current = crate::billing::month_str(cy, cm);
-    let month = query
-        .split('&')
-        .find_map(|kv| kv.strip_prefix("month="))
-        .map(str::to_string)
-        .unwrap_or_else(|| current.clone());
+    let month = q.get("month").cloned().unwrap_or_else(|| current.clone());
     if crate::billing::parse_month(&month).is_none() {
         return perr(
             StatusCode::BAD_REQUEST,

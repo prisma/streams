@@ -136,6 +136,18 @@ chk 400 "scan unknown key"       -H "$A" -H "$K" "$U/v1/streams/$S:scan?unknown=
 chk 400 "scan dup maxBytes"      -H "$A" -H "$K" "$U/v1/streams/$S:scan?maxBytes=100&maxBytes=200"
 chk 2xx "records deliver=durable still ok" -H "$A" -H "$K" "$U/v1/streams/$S/records?deliver=durable"
 
+echo "-- R25-E: authentication precedes ALL body work"
+# An unauthenticated caller must get 401 — never a 413 or a capacity
+# answer — and the server must not drain its body. Pre-R25 the global
+# middleware answered 413/503 before any auth ran.
+chk 401 "unauth + huge declared body" -X POST -H "content-length: 67108864" \
+    --data-binary "@/dev/null" "$U/v1/streams/$S/records"
+chk 401 "unauth + big real body" -X POST -H "Expect:" \
+    --data-binary "@$([ -f /tmp/hostile-big ] || head -c 2097152 /dev/zero | tr '\0' x > /tmp/hostile-big; echo /tmp/hostile-big)" \
+    "$U/v1/streams/$S/records"
+chk 400 "usage unknown key"      -H "$A" "$U/v1/streams/$S/usage?nosuch=1"
+chk 400 "usage duplicate month"  -H "$A" "$U/v1/streams/$S/usage?month=2026-01&month=2026-02"
+
 echo "-- R23-4: an oversized body is REFUSED, not reset"
 # A body far over the ceiling used to draw a connection reset, so a
 # client could not tell refusal from a broken network and retried
