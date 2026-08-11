@@ -481,6 +481,16 @@ fn maintenance_shards_json(state: &AppState) -> serde_json::Value {
     let now = crate::shard::now_ms();
     serde_json::json!({
         "owned_shards": engines.len(),
+        // R26-7: the exact cumulative frame-byte totals (actual
+        // quantities per R26-2 — a mixed group counts both sides), so a
+        // campaign can compute the corrected absorption ratio from the
+        // field instead of a payload-unit artifact. Committed and
+        // retired here are the SAME unit as unabsorbed_frame_bytes:
+        // encoded frame bytes.
+        "ingest_frame_bytes_total": crate::shard::INGEST_FRAME_BYTES_TOTAL
+            .load(std::sync::atomic::Ordering::Relaxed),
+        "absorbed_frame_bytes_total": crate::shard::ABSORBED_FRAME_BYTES_TOTAL
+            .load(std::sync::atomic::Ordering::Relaxed),
         "shards": engines.iter().map(|e| {
             let m = e.maintenance_snapshot();
             serde_json::json!({
@@ -699,6 +709,9 @@ async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
         "admit_shed": state.admit_shed.load(std::sync::atomic::Ordering::Relaxed),
         "maintenance_backpressure": crate::backpressure::stats_json(),
         "maintenance_shards": maintenance_shards_json(&state),
+        // R26-7: the ORDINARY per-stream limiter's refusals, by code —
+        // so a throughput plateau is attributed to the right mechanism.
+        "rate_limit_refusals": crate::usage::limit_refusals_json(),
         "stream_shed": state.stream_shed.load(std::sync::atomic::Ordering::Relaxed),
         "wedge_shed": state.wedge_shed.load(std::sync::atomic::Ordering::Relaxed),
         "streams_tracked": state.stream_inflight.lock().unwrap().len(),
@@ -4772,6 +4785,7 @@ async fn append_core(
     let usage_c = if !close_only && deferred.is_none() {
         match crate::usage::admit_append(&name_hash, body.len() as u64, entries.len() as u64) {
             Err(hit) => {
+                crate::usage::note_limit_refusal(&hit);
                 let l = crate::usage::limits();
                 if matches!(hit, crate::usage::LimitHit::Bytes { .. })
                     && body.len() as f64 > l.bytes_per_sec * l.burst_secs

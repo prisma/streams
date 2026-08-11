@@ -203,6 +203,35 @@ fn map() -> &'static Mutex<HashMap<[u8; 16], StreamUsage>> {
     M.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
+/// Cumulative per-code rate-limit refusals (R26-7). A campaign must be
+/// able to separate the ordinary per-stream limiter from maintenance
+/// shedding — the 2026-08-11 soak's ~4,900 rec/s plateau was exactly
+/// explained by LIMIT_RECS_PER_SEC=5,000 while the report credited the
+/// maintenance gate, because nothing recorded WHICH refusal fired.
+pub static LIMIT_REFUSALS_BYTES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub static LIMIT_REFUSALS_REQUESTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub static LIMIT_REFUSALS_RECORDS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+pub fn note_limit_refusal(hit: &LimitHit) {
+    let c = match hit {
+        LimitHit::Bytes { .. } => &LIMIT_REFUSALS_BYTES,
+        LimitHit::Requests { .. } => &LIMIT_REFUSALS_REQUESTS,
+        LimitHit::Records { .. } => &LIMIT_REFUSALS_RECORDS,
+    };
+    c.fetch_add(1, Ordering::Relaxed);
+}
+
+pub fn limit_refusals_json() -> serde_json::Value {
+    serde_json::json!({
+        "limit_bytes_per_sec": LIMIT_REFUSALS_BYTES.load(Ordering::Relaxed),
+        "limit_requests_per_sec": LIMIT_REFUSALS_REQUESTS.load(Ordering::Relaxed),
+        "limit_records_per_sec": LIMIT_REFUSALS_RECORDS.load(Ordering::Relaxed),
+    })
+}
+
 /// Which limit an append violated, with a suggested retry delay.
 pub enum LimitHit {
     Bytes { retry_ms: u64 },

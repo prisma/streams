@@ -96,6 +96,14 @@ struct Stats {
     rearm_win: Mutex<Histogram<u64>>,
     last_err: Mutex<String>,
     lines: Mutex<Vec<String>>,
+    /// R26-7: cumulative throttles split by the server's typed error
+    /// code and by HTTP status. One merged "throttled" number cannot
+    /// distinguish the ordinary per-stream limiter (429
+    /// limit_records_per_sec) from maintenance shedding (503
+    /// maintenance_backpressure) — the 2026-08-11 soak plateau was
+    /// misattributed for exactly this reason.
+    throttled_by_code: Mutex<std::collections::HashMap<String, u64>>,
+    throttled_by_status: Mutex<std::collections::HashMap<String, u64>>,
 }
 
 impl Stats {
@@ -118,6 +126,8 @@ impl Stats {
             rearm_win: Mutex::new(Histogram::new_with_bounds(1, 120_000_000, 3).unwrap()),
             last_err: Mutex::new(String::new()),
             lines: Mutex::new(Vec::new()),
+            throttled_by_code: Mutex::new(std::collections::HashMap::new()),
+            throttled_by_status: Mutex::new(std::collections::HashMap::new()),
         })
     }
     fn record_ok(&self, lat_us: u64, records: u64) {
@@ -128,10 +138,22 @@ impl Stats {
         let _ = self.hist.lock().unwrap().record(lat_us.max(1));
         let _ = self.hist_win.lock().unwrap().record(lat_us.max(1));
     }
-    fn record_throttle(&self, delivered: u64) {
+    fn record_throttle(&self, delivered: u64, status: u16, code: &str) {
         self.throttled.fetch_add(1, Ordering::Relaxed);
         self.records.fetch_add(delivered, Ordering::Relaxed);
         self.window_records.fetch_add(delivered, Ordering::Relaxed);
+        *self
+            .throttled_by_code
+            .lock()
+            .unwrap()
+            .entry(if code.is_empty() { "unknown".into() } else { code.to_string() })
+            .or_insert(0) += 1;
+        *self
+            .throttled_by_status
+            .lock()
+            .unwrap()
+            .entry(status.to_string())
+            .or_insert(0) += 1;
     }
     fn record_err(&self, msg: String) {
         self.errs.fetch_add(1, Ordering::Relaxed);
@@ -154,7 +176,7 @@ enum Outcome {
     /// All records accepted.
     Ok { records: u64 },
     /// Request throttled (possibly partially delivered — Kinesis).
-    Throttle { delivered: u64 },
+    Throttle { delivered: u64, status: u16, code: String },
     Err(String),
 }
 
@@ -183,7 +205,11 @@ impl Client {
                     Ok(out) => {
                         let failed = out.failed_record_count().unwrap_or(0) as u64;
                         if failed > 0 {
-                            Outcome::Throttle { delivered: batch as u64 - failed }
+                            Outcome::Throttle {
+                                delivered: batch as u64 - failed,
+                                status: 0,
+                                code: "kinesis_partial_throughput".into(),
+                            }
                         } else {
                             Outcome::Ok { records: batch as u64 }
                         }
@@ -200,7 +226,7 @@ impl Client {
                             || code.contains("Throttl")
                             || code.contains("LimitExceeded")
                         {
-                            Outcome::Throttle { delivered: 0 }
+                            Outcome::Throttle { delivered: 0, status: 0, code }
                         } else {
                             Outcome::Err(format!("{code}: {e}"))
                         }
@@ -235,7 +261,11 @@ impl Client {
                                 .iter()
                                 .any(|f| f.code().contains("Throttl") || f.code().contains("RequestThrottled"));
                             if throttle {
-                                Outcome::Throttle { delivered }
+                                Outcome::Throttle {
+                                    delivered,
+                                    status: 0,
+                                    code: failed[0].code().to_string(),
+                                }
                             } else {
                                 Outcome::Err(format!("batch failures: {}", failed[0].code()))
                             }
@@ -246,7 +276,7 @@ impl Client {
                             .unwrap_or_default()
                             .to_string();
                         if code.contains("Throttl") || code.contains("RequestThrottled") {
-                            Outcome::Throttle { delivered: 0 }
+                            Outcome::Throttle { delivered: 0, status: 0, code }
                         } else {
                             Outcome::Err(format!("{code}: {e}"))
                         }
@@ -273,13 +303,27 @@ impl Client {
                     .await
                 {
                     Ok(r) => {
-                        let code = r.status().as_u16();
-                        if (200..300).contains(&code) {
+                        let status = r.status().as_u16();
+                        if (200..300).contains(&status) {
                             Outcome::Ok { records: batch as u64 }
-                        } else if code == 429 || code == 503 {
-                            Outcome::Throttle { delivered: 0 }
+                        } else if status == 429 || status == 503 {
+                            // The server names WHICH limiter refused
+                            // (error.code): limit_records_per_sec vs
+                            // maintenance_backpressure vs overloaded...
+                            let code = r
+                                .text()
+                                .await
+                                .ok()
+                                .and_then(|b| serde_json::from_str::<serde_json::Value>(&b).ok())
+                                .and_then(|v| {
+                                    v.pointer("/error/code")
+                                        .and_then(|c| c.as_str())
+                                        .map(str::to_string)
+                                })
+                                .unwrap_or_default();
+                            Outcome::Throttle { delivered: 0, status, code }
                         } else {
-                            Outcome::Err(format!("status {code}"))
+                            Outcome::Err(format!("status {status}"))
                         }
                     }
                     Err(e) => Outcome::Err(e.to_string()),
@@ -316,7 +360,9 @@ async fn run_load(
                     Outcome::Ok { records } => {
                         stats.record_ok(t0.elapsed().as_micros() as u64, records)
                     }
-                    Outcome::Throttle { delivered } => stats.record_throttle(delivered),
+                    Outcome::Throttle { delivered, status, code } => {
+                        stats.record_throttle(delivered, status, &code)
+                    }
                     Outcome::Err(m) => stats.record_err(m),
                 }
             }
@@ -403,6 +449,8 @@ async fn run_load(
             "ok": stats.ok.load(Ordering::Relaxed),
             "errs": stats.errs.load(Ordering::Relaxed),
             "throttled": stats.throttled.load(Ordering::Relaxed),
+            "throttledByCode": &*stats.throttled_by_code.lock().unwrap(),
+            "throttledByStatus": &*stats.throttled_by_status.lock().unwrap(),
             "tailP50Ms": tail.map(|t| t.0),
             "tailP99Ms": tail.map(|t| t.1),
             "tailDecP50Ms": tail_dec.map(|t| t.0),

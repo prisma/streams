@@ -21060,3 +21060,66 @@ async fn reserved_streams_append_through_a_latched_engine() {
     );
     assert!(st == 200 || st == 204, "system-of-record write must pass the latch, got {st}: {body}");
 }
+
+/// R26-7: /v1/debug/load carries what a campaign needs to attribute a
+/// plateau — the exact cumulative frame-byte totals and the ordinary
+/// limiter's refusals BY CODE — and the per-stream limiter's refusal
+/// actually increments its own counter, distinct from maintenance shed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn debug_load_reports_typed_limiter_and_frame_totals() {
+    let store = mem();
+    let (_state, addr) = http_rig(store).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/load-t", &ct, b"").await;
+    assert!(st == 200 || st == 201);
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/load-t", &ct, br#"[{"n":1}]"#).await;
+    assert!(st == 200 || st == 204);
+
+    let load = |body: &[u8]| serde_json::from_slice::<serde_json::Value>(body).unwrap();
+    let (st, _, body) = hreq(addr, "GET", "/v1/debug/load", &[], b"").await;
+    assert_eq!(st, 200);
+    let before = load(&body);
+    let m = &before["maintenance_shards"];
+    assert!(
+        m["ingest_frame_bytes_total"].as_u64().unwrap() >= 1,
+        "cumulative committed frame bytes must be exported"
+    );
+    assert!(m["absorbed_frame_bytes_total"].is_u64());
+    let rl_before = before["rate_limit_refusals"]["limit_records_per_sec"]
+        .as_u64()
+        .expect("per-code refusal counters must be exported");
+
+    // One request over the record-bucket CAPACITY (5,000/s x 2 s burst)
+    // trips the ordinary limiter — the refusal must carry its own code
+    // and count under its own counter, never the maintenance one.
+    let over: Vec<serde_json::Value> =
+        (0..10_001).map(|n| serde_json::json!({"n": n})).collect();
+    let (st, _, body) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/load-t",
+        &ct,
+        serde_json::to_vec(&over).unwrap().as_slice(),
+    )
+    .await;
+    assert_eq!(st, 429, "over-capacity record burst must 429");
+    let refusal = String::from_utf8_lossy(&body).to_string();
+    assert!(
+        refusal.contains("limit_records_per_sec"),
+        "the limiter must name itself: {refusal}"
+    );
+    assert!(
+        !refusal.contains("maintenance_backpressure"),
+        "a limiter refusal must not masquerade as maintenance shed"
+    );
+    let (_, _, body) = hreq(addr, "GET", "/v1/debug/load", &[], b"").await;
+    let after = load(&body);
+    assert!(
+        after["rate_limit_refusals"]["limit_records_per_sec"].as_u64().unwrap() > rl_before,
+        "the refusal must count under its own code"
+    );
+    // (appends_shed equality is deliberately NOT asserted: the counter
+    // is process-global and the R26-5 shed gates run in this same
+    // parallel suite; `before` pins only the rl_before baseline.)
+    let _ = &before;
+}

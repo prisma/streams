@@ -1,10 +1,17 @@
 #!/usr/bin/env python3
 """Poll every soak generator; print progress and snapshot the servers.
 
-Two jobs, and the second one is not optional:
+Three jobs, and none is optional:
 
 1. print one progress line per region, so a stall is visible immediately;
-2. write a timestamped `/v1/debug/store` snapshot per region.
+2. write a timestamped `/v1/debug/store` snapshot per region;
+3. write a timestamped `/v1/debug/load` snapshot per region (R26-7):
+   maintenance engage/shed counters and transitions, per-shard latch
+   flags and no-progress clocks, the exact cumulative frame-byte totals,
+   and the ordinary rate limiter's refusals by code. Without this, a
+   campaign cannot attribute a throughput plateau to the right limiter —
+   the 2026-08-11 soak credited maintenance backpressure for what the
+   5,000 rec/s per-stream limiter fully explains.
 
 `/v1/debug/store` reports a **trailing 60 s window**. A snapshot taken
 after the run has drained is empty — the first version of this harness
@@ -72,6 +79,22 @@ def main():
             continue
         with open(f"{snapdir}/{r}-{stamp}.json", "w") as f:
             f.write(raw)
+
+        raw = get(url("server", r) + "/v1/debug/load", token=tok)
+        try:
+            load = json.loads(raw)
+        except Exception:
+            continue
+        with open(f"{snapdir}/{r}-load-{stamp}.json", "w") as f:
+            f.write(raw)
+        # Surface latch state inline so an engage is visible in the poll
+        # log the minute it happens, not at harvest.
+        bp = load.get("maintenance_backpressure", {})
+        rl = load.get("rate_limit_refusals", {})
+        if bp.get("engaged") or bp.get("appends_shed", 0) or any(rl.values()):
+            print(f"{'':16s} maint: engaged={bp.get('engaged')} "
+                  f"cause={bp.get('cause')} shed={bp.get('appends_shed')} "
+                  f"rate_limited={rl}")
 
 
 if __name__ == "__main__":
