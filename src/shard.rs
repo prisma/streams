@@ -1014,6 +1014,8 @@ pub struct ShardEngine {
     consumer_fences: Mutex<HashMap<([u8; 16], String), u64>>,
     #[cfg(test)]
     fail_group_tripped: std::sync::atomic::AtomicUsize,
+    #[cfg(test)]
+    fail_next_absorbed_group: std::sync::atomic::AtomicBool,
     /// Pump telemetry: flushes issued, requests acked at the pump's own
     /// barrier, gather windows taken. acked/flushes is the requests-per-
     /// WAL figure the flush-scheduling change is judged by.
@@ -1183,6 +1185,8 @@ impl ShardEngine {
             consumer_fences: Mutex::new(HashMap::new()),
             #[cfg(test)]
             fail_group_tripped: std::sync::atomic::AtomicUsize::new(0),
+            #[cfg(test)]
+            fail_next_absorbed_group: std::sync::atomic::AtomicBool::new(false),
             tx,
             in_flight: Mutex::new(Vec::new()),
             dispatch_gate: tokio::sync::Mutex::new(()),
@@ -2270,6 +2274,11 @@ impl ShardEngine {
     }
 
     async fn commit_group(&self, ops: Vec<CommitOp>, cfg: &ShardConfig) {
+        // R25-D: did this group ADVANCE an absorbed boundary? Drives the
+        // AbsorbedBatch-class failpoint arm.
+        #[cfg(test)]
+        #[allow(unused_mut)]
+        let mut group_has_absorbed = false;
         // Expand gather batches into per-stream ops INSIDE this group, so
         // one gather's boundary advances share one write batch by
         // construction. TrimTick expands into a bounded round-robin
@@ -3062,6 +3071,10 @@ impl ShardEngine {
                     // stale absorbed snapshot depend on (2026-07-27
                     // boundary-race DST failure).
                     if lane_ok && upto > prev_absorbed {
+                        #[cfg(test)]
+                        {
+                            group_has_absorbed = true;
+                        }
                         local.fields.absorbed = upto.min(local.fields.next);
                         local.fields.unabsorbed_bytes =
                             local.fields.unabsorbed_bytes.saturating_sub(bytes);
@@ -4130,6 +4143,14 @@ impl ShardEngine {
                     None => false,
                 }
             };
+            // R25-D: the AbsorbedBatch-class arm. The client-append
+            // selector cannot prove the atomic-retirement property —
+            // the group that retires backlog carries no client append.
+            let tripped = tripped
+                || (group_has_absorbed
+                    && self
+                        .fail_next_absorbed_group
+                        .swap(false, std::sync::atomic::Ordering::SeqCst));
             if tripped {
                 self.fail_group_tripped
                     .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
@@ -4490,6 +4511,15 @@ impl ShardEngine {
     fn take_config_scan_failure(&self) -> bool {
         self.fail_config_scan
             .swap(false, std::sync::atomic::Ordering::SeqCst)
+    }
+
+    /// Arm a one-shot failure for the next commit group that ADVANCES
+    /// an absorbed boundary (R25-D): proves retirement is atomic with
+    /// the boundary, which the client-append selector cannot reach.
+    #[cfg(test)]
+    pub fn fail_next_absorbed_group(&self) {
+        self.fail_next_absorbed_group
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     #[cfg(test)]

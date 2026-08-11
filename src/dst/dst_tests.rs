@@ -20030,3 +20030,314 @@ async fn maintenance_uses_frame_bytes_not_payload_bytes() {
          mismatch manufactured the soak's 9.4% absorption artifact"
     );
 }
+
+/// R25-D: a FAILED append group leaves the durable maintenance row and
+/// the engine's published state untouched. This is phantom backlog's
+/// mechanism-level test — through the real committer and the real
+/// group-failure path, not a mirror unit.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn maintenance_failed_append_group_is_noop() {
+    let store = mem();
+    let engine = open_engine(store.clone(), "dst-mnoop").await;
+    let key = skey();
+    let hash = [21u8; 16];
+    let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();
+    let w = Workload::new(cov);
+
+    // One committed append establishes a nonzero baseline.
+    let out = w
+        .attempt_with_deadline(&engine, hash, &key, "k", "baseline", None, None)
+        .await;
+    assert!(matches!(out, Outcome::Acked { .. }));
+    let before_row = crate::shard::decode_shard_maint(
+        &engine.db.get(crate::shard::shard_maint_key()).await.unwrap().unwrap(),
+    )
+    .unwrap();
+    let before_snap = engine.maintenance_snapshot();
+    assert!(before_snap.unabsorbed_frame_bytes > 0);
+
+    // Arm the failpoint; the append must FAIL through the production
+    // group-failure path.
+    engine.fail_next_group_for(hash);
+    let out = w
+        .attempt_with_deadline(&engine, hash, &key, "k", &"y".repeat(4096), None, None)
+        .await;
+    assert!(
+        !matches!(out, Outcome::Acked { .. }),
+        "armed group write must fail, got {out:?}"
+    );
+    assert_eq!(engine.group_failures_tripped(), 1, "failpoint must have fired");
+
+    // Neither the durable row nor the published state may have moved.
+    let after_row = crate::shard::decode_shard_maint(
+        &engine.db.get(crate::shard::shard_maint_key()).await.unwrap().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        after_row, before_row,
+        "failed group must not touch the durable maintenance row"
+    );
+    assert_eq!(
+        engine.maintenance_snapshot(),
+        before_snap,
+        "failed group must not touch the published state"
+    );
+    engine.begin_close();
+}
+
+/// R25-D: retirement is atomic with the absorbed boundary. The history
+/// copy can be durably flushed, but until the shard group carrying the
+/// AbsorbedBatch commits, the backlog must remain outstanding — and when
+/// that group is made to FAIL, boundary and maintenance must both stay
+/// put, then advance TOGETHER on the retry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn absorbed_boundary_and_maintenance_retire_atomically() {
+    let store = mem();
+    let db = slatedb::Db::builder("dst-matomic/shard", store.clone())
+        .build()
+        .await
+        .unwrap();
+    let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
+    let engine = crate::shard::ShardEngine::start(
+        "dst-matomic".into(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+        __maint,
+    );
+    let key = skey();
+    let hash = [22u8; 16];
+    let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();
+    let w = Workload::new(cov);
+    for i in 0..3 {
+        let out = w
+            .attempt_with_deadline(&engine, hash, &key, "k", &format!("r{i}"), None, None)
+            .await;
+        assert!(matches!(out, Outcome::Acked { .. }));
+    }
+    let outstanding = engine.maintenance_snapshot().unabsorbed_frame_bytes;
+    assert!(outstanding > 0);
+
+    // Arm the absorbed-group failpoint, then start the absorber. Its
+    // first boundary-advancing group must fail; the backlog must remain.
+    engine.fail_next_absorbed_group();
+    let _absorber = crate::history::Absorber::start(
+        store.clone(),
+        engine.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig {
+            threshold_bytes: 1,
+            threshold_age: std::time::Duration::from_millis(1),
+            tick: std::time::Duration::from_millis(20),
+            min_age_bytes: 0,
+            sweep_every: u32::MAX,
+            ..Default::default()
+        },
+        absorb_rx,
+    );
+
+    // Wait for the armed failure to fire.
+    let mut fired = false;
+    for _ in 0..500 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        if engine.group_failures_tripped() >= 1 {
+            fired = true;
+            break;
+        }
+    }
+    assert!(fired, "absorbed-group failpoint never fired");
+    // The history copy may exist by now — but the backlog is NOT retired.
+    assert_eq!(
+        engine.maintenance_snapshot().unabsorbed_frame_bytes,
+        outstanding,
+        "a failed absorbed-boundary group must leave the backlog outstanding"
+    );
+
+    // The absorber retries; boundary and maintenance retire TOGETHER.
+    let mut drained = false;
+    for i in 0..500 {
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+        if engine.maintenance_snapshot().unabsorbed_frame_bytes == 0 {
+            drained = true;
+            break;
+        }
+        let _ = i;
+    }
+    assert!(drained, "retry never retired the backlog");
+    let tail = engine.tail_fields(&hash).await.unwrap().unwrap();
+    assert_eq!(tail.absorbed, tail.next, "boundary must have advanced with retirement");
+    assert_eq!(tail.unabsorbed_bytes, 0, "tail gauge must be drained");
+    let row = crate::shard::decode_shard_maint(
+        &engine.db.get(crate::shard::shard_maint_key()).await.unwrap().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(row.unabsorbed_frame_bytes, 0, "durable row must be drained");
+
+    // R25-D: complete absorption survives restart at zero.
+    engine.begin_close();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    let db2 = slatedb::Db::builder("dst-matomic/shard", store.clone())
+        .build()
+        .await
+        .unwrap();
+    let m = crate::shard::load_or_rebuild_maintenance(&db2).await.unwrap();
+    assert_eq!(
+        m.unabsorbed_frame_bytes, 0,
+        "complete absorption must restart at zero backlog"
+    );
+    db2.close().await.unwrap();
+}
+
+/// R25-D: ownership handoff. B fences A and loads the durable backlog;
+/// A's late shutdown cannot damage B's state — structurally, because
+/// each engine OWNS its state and there is no global map for a stale
+/// task to delete from.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn ownership_handoff_moves_backlog_without_aba() {
+    let store = mem();
+    let engine_a = open_engine(store.clone(), "dst-handoff").await;
+    let key = skey();
+    let hash = [23u8; 16];
+    let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();
+    let w = Workload::new(cov);
+    let out = w
+        .attempt_with_deadline(&engine_a, hash, &key, "k", &"z".repeat(2048), None, None)
+        .await;
+    assert!(matches!(out, Outcome::Acked { .. }));
+    let backlog = engine_a.maintenance_snapshot().unabsorbed_frame_bytes;
+    assert!(backlog > 0);
+    // Make A's committed state durable for the fencing successor (the
+    // test config acks from the WAL/memtable; a real fleet handoff sees
+    // the same rows via WAL replay).
+    engine_a.db.flush().await.unwrap();
+
+    // B opens the same shard (fencing A at the slatedb layer) and loads
+    // the durable row — while A is STILL ALIVE: the ABA shape.
+    let db_b = slatedb::Db::builder("dst-handoff", store.clone())
+        .build()
+        .await
+        .unwrap();
+    let (absorb_tx_b, _rx_b) = crate::history::absorber_channel();
+    let maint_b = crate::shard::load_or_rebuild_maintenance(&db_b)
+        .await
+        .expect("B loads the durable backlog");
+    assert_eq!(
+        maint_b.unabsorbed_frame_bytes, backlog,
+        "the new owner inherits the durable backlog exactly"
+    );
+    let engine_b = crate::shard::ShardEngine::start(
+        "dst-handoff".into(),
+        Arc::new(db_b),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx_b,
+        None,
+        maint_b,
+    );
+
+    // A's LATE shutdown — after B is serving — must not move B's state.
+    engine_a.begin_close();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    assert_eq!(
+        engine_b.maintenance_snapshot().unabsorbed_frame_bytes,
+        backlog,
+        "old owner's late cleanup must not damage the new owner's state"
+    );
+    engine_b.begin_close();
+}
+
+/// R25-D: per-shard isolation at the admission mechanism — one engine
+/// over its bound sheds; a sibling under it admits. This is the
+/// split-children property at the level where it is decided: admit()
+/// consults only the resolved engine.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn overloaded_engine_sheds_while_sibling_admits() {
+    let store = mem();
+    let hot = open_engine(store.clone(), "dst-iso-hot").await;
+    let calm = open_engine(store.clone(), "dst-iso-calm").await;
+    let key = skey();
+    let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();
+    let w = Workload::new(cov);
+    let out = w
+        .attempt_with_deadline(&hot, [24u8; 16], &key, "k", &"h".repeat(8192), None, None)
+        .await;
+    assert!(matches!(out, Outcome::Acked { .. }));
+
+    let limits = crate::backpressure::Limits {
+        unabsorbed_bytes_shard: 1024, // hot is over; calm (0) is under
+        release_pct: 75,
+        ..Default::default()
+    };
+    assert_eq!(
+        crate::backpressure::admit(&hot, &limits),
+        Some(crate::backpressure::Cause::ShardBytes),
+        "the over-bound engine must shed"
+    );
+    assert_eq!(
+        crate::backpressure::admit(&calm, &limits),
+        None,
+        "a sibling engine under its own bound must admit"
+    );
+    // Hysteresis on the engine latch: once hot drains below release, it
+    // readmits.
+    hot.publish_maintenance(crate::shard::ShardMaintenance::default());
+    assert_eq!(crate::backpressure::admit(&hot, &limits), None);
+    assert!(
+        !hot.maintenance_shard_shed
+            .load(std::sync::atomic::Ordering::Relaxed),
+        "latch must clear when the backlog drains below release"
+    );
+    hot.begin_close();
+    calm.begin_close();
+}
+
+/// R25-D: the stall clock. Continuous durable progress keeps the
+/// no-progress age at bay; zero progress trips the lag bound.
+#[test]
+fn progress_clock_trips_only_without_progress() {
+    use crate::backpressure::{next_state, Limits, Snapshot};
+    let l = Limits {
+        absorb_lag_secs: 60,
+        release_pct: 75,
+        ..Default::default()
+    };
+    // Progress every tick: apply_delta refreshes last_progress_ms, so
+    // the derived stall stays near zero and never trips.
+    let mut m = crate::shard::ShardMaintenance::default();
+    let mut now = 0i64;
+    for _ in 0..100 {
+        now += 10_000;
+        m = m.apply_delta(1_000, 500, now).unwrap();
+        let stall = m.no_progress_secs(now + 5_000);
+        assert!(stall <= 5, "stall {stall}s despite continuous progress");
+        let snap = Snapshot { absorb_lag_secs: stall, ..Default::default() };
+        assert_eq!(next_state(false, &snap, &l), (false, None));
+    }
+    // No progress: the stall grows past the bound and trips.
+    let stall = m.no_progress_secs(now + 120_000);
+    assert!(stall > 60);
+    let snap = Snapshot { absorb_lag_secs: stall, ..Default::default() };
+    assert!(matches!(
+        next_state(false, &snap, &l),
+        (true, Some(crate::backpressure::Cause::LagSecs))
+    ));
+}
+
+/// R25-D: reserved system streams are never shed — the classifier the
+/// append-core skip consults. Overload recovery must not deadlock on
+/// its own system-of-record writes.
+#[test]
+fn reserved_system_streams_are_recognized() {
+    for name in ["_usage", "_ops_events", "_ops_metrics"] {
+        assert!(
+            crate::billing::is_reserved_stream(name),
+            "{name} must be reserved (and therefore never shed)"
+        );
+    }
+    assert!(!crate::billing::is_reserved_stream("customers/acme"));
+}

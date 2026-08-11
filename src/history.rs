@@ -1223,6 +1223,33 @@ impl Absorber {
             if recs == 0 {
                 continue;
             }
+            // R25-D: heal a stranded submitted-watermark. The gather
+            // records what it SUBMITTED (fire-and-forget) so an advance
+            // in flight to handle state is not re-sent — but if the
+            // committer group carrying that advance FAILED, the durable
+            // boundary never moved and the mark now fences the range
+            // off from every future gather: `from = max(mark, absorbed)
+            // >= upto` reads as no_work forever, and the backlog is
+            // stranded until a restart. The durable tail is the source
+            // of truth: a mark ahead of it at rescan time describes a
+            // submission that did not land, so roll it back. A genuine
+            // in-flight advance re-submitted after this is harmless —
+            // the committer ignores non-advancing boundaries and the
+            // history write is idempotent.
+            {
+                let mut submitted = self.submitted.lock().unwrap();
+                if let Some((mark, _v2)) = submitted.get(&h)
+                    && *mark > absorbed
+                {
+                    tracing::warn!(
+                        "rolling back stranded absorb mark for {}: submitted={} durable absorbed={}",
+                        crate::crypto::hex(&h[..4]),
+                        mark,
+                        absorbed,
+                    );
+                    submitted.remove(&h);
+                }
+            }
             // Backdate by the age threshold so recovered work is eligible
             // promptly rather than a full window later.
             let since = Instant::now()
