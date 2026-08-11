@@ -173,18 +173,22 @@ if [ "$ROLE" = server ]; then
     2>&1 | grep -viE 'resolving|resolved|saved')
 else
   TARGET=$(cat "$S/url-server-$R.txt")
+  # An empty BENCH_TIERS env still selects the (empty) tier ramp in
+  # awsbench and runs nothing — only pass the var when it has tiers.
+  TIERARG=(); [ -n "$BENCH_TIERS" ] && TIERARG=(--env "BENCH_TIERS=$BENCH_TIERS")
   cd "$S/app-gen-$R"
   OUT=$(bunx --bun @prisma/compute-cli@0.39.0 deploy --project "$P" ${SVCARG[@]+"${SVCARG[@]}"} \
     --region "$R" --path . --http-port 8080 --service-name "soak-gen-$R" \
     --env AWSBENCH_S3_KEY="bin/awsbench-$BIN_TAG-x64" \
     --env S3_ENDPOINT=$BINEP --env S3_BUCKET=$BINBKT --env S3_REGION=auto \
     --env S3_ACCESS_KEY_ID="$BINID" --env S3_SECRET_ACCESS_KEY="$BINSEC" \
-    --env BENCH_SYSTEM=prisma --env BENCH_SHAPE=tiers --env BENCH_TARGET="$TARGET" \
+    --env BENCH_SYSTEM=prisma --env BENCH_SHAPE="${SOAK_BENCH_SHAPE:-tiers}" --env BENCH_TARGET="$TARGET" \
+    --env BENCH_CONC="${SOAK_BENCH_CONC:-1}" \
     --env AUTH_TOKEN="$AUTH" --env STREAM_KEY="$KEY" \
     --env BENCH_STREAM="soak-$R" \
     --env BENCH_STREAMS_N="${SOAK_STREAMS_N:-32}" \
     --env BENCH_START_GATED="${SOAK_GATED:-true}" \
-    --env BENCH_TIERS="$BENCH_TIERS" --env BENCH_SECS="$BENCH_SECS" \
+    ${TIERARG[@]+"${TIERARG[@]}"} --env BENCH_SECS="$BENCH_SECS" \
     --env BENCH_BATCH=10 --env BENCH_RECORD_BYTES=1024 --env BENCH_CONSUME=true \
     --env BENCH_HOLD=1 --env KEEP_AWAKE=1 \
     ${RESOLVARG[@]+"${RESOLVARG[@]}"} \
