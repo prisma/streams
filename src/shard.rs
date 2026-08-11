@@ -123,6 +123,21 @@ fn decode_tail(v: &[u8]) -> Option<TailFields> {
     })
 }
 
+/// Test-only: encode a tail then STRIP the trailing exact-gauge field,
+/// producing the pre-gauge layout older builds wrote. DST uses this to
+/// prove the R26-4 open-time repair; production code never writes it.
+#[cfg(test)]
+pub fn encode_tail_without_gauge_for_tests(t: &TailFields) -> Vec<u8> {
+    let mut v = encode_tail(t);
+    v.truncate(v.len() - 8);
+    v
+}
+
+#[cfg(test)]
+pub fn decode_tail_for_tests(v: &[u8]) -> Option<TailFields> {
+    decode_tail(v)
+}
+
 /// Per-routing-key Stream-Seq row (ROUTING-V3 §3.6): seq is scoped to
 /// the KEY, not the segment — a segment carries many keys' lanes.
 pub fn seq_key(hash: &[u8; 16], key_hash: &[u8; 16]) -> Vec<u8> {
@@ -334,25 +349,41 @@ pub fn encode_shard_maint(m: &ShardMaintenance) -> [u8; 40] {
     v
 }
 
-/// Versioned decode. The R24 row was 16 untagged bytes; those cannot
-/// prove age or progress, so they decode to bytes only and the caller
-/// initializes the progress clock on open. NOTE the R24 bytes were
-/// PAYLOAD-unit and therefore overstate on compressible data — an
-/// overstated bound sheds early, which is the safe direction; the first
-/// maintenance-changing commit replaces the row with exact v2 state.
-pub fn decode_shard_maint(v: &[u8]) -> anyhow::Result<ShardMaintenance> {
+/// Row classification (R26-4). The R24 row was 16 untagged PAYLOAD-unit
+/// bytes: on compressible data it overstates the frame backlog, but on
+/// small incompressible frames the encoding overhead (headers, auth
+/// tag) makes frames LARGER than payload, so it can also understate —
+/// and an understated ledger makes the first exact retirement look like
+/// over-retirement, which the checked accounting refuses forever. The
+/// legacy value is therefore never trusted as frame bytes in either
+/// direction: the opener rebuilds from the durable tails instead.
+pub enum ShardMaintRow {
+    Exact(ShardMaintenance),
+    LegacyPayloadUnit,
+}
+
+pub fn decode_shard_maint_row(v: &[u8]) -> anyhow::Result<ShardMaintRow> {
     match v.len() {
-        16 => Ok(ShardMaintenance {
-            unabsorbed_frame_bytes: u64::from_le_bytes(v[0..8].try_into()?),
-            ..Default::default()
-        }),
-        40 if v[0] == SHARD_MAINT_V2 => Ok(ShardMaintenance {
+        16 => Ok(ShardMaintRow::LegacyPayloadUnit),
+        40 if v[0] == SHARD_MAINT_V2 => Ok(ShardMaintRow::Exact(ShardMaintenance {
             version: u64::from_le_bytes(v[8..16].try_into()?),
             unabsorbed_frame_bytes: u64::from_le_bytes(v[16..24].try_into()?),
             backlog_started_ms: i64::from_le_bytes(v[24..32].try_into()?),
             last_progress_ms: i64::from_le_bytes(v[32..40].try_into()?),
-        }),
+        })),
         _ => anyhow::bail!("unsupported shard maintenance row ({} bytes)", v.len()),
+    }
+}
+
+/// Strict v2 decode: rows written by THIS build. A legacy 16-byte row
+/// is an error here — callers that can meet one go through
+/// `decode_shard_maint_row` and the rebuild path.
+pub fn decode_shard_maint(v: &[u8]) -> anyhow::Result<ShardMaintenance> {
+    match decode_shard_maint_row(v)? {
+        ShardMaintRow::Exact(m) => Ok(m),
+        ShardMaintRow::LegacyPayloadUnit => {
+            anyhow::bail!("legacy payload-unit maintenance row; rebuild required")
+        }
     }
 }
 
@@ -372,26 +403,48 @@ pub fn decode_shard_maint(v: &[u8]) -> anyhow::Result<ShardMaintenance> {
 /// Translating either to "zero backlog" would silently disable the
 /// safety bound exactly when the shard's state is least understood.
 pub async fn load_or_rebuild_maintenance(db: &Db) -> anyhow::Result<ShardMaintenance> {
-    if let Some(v) = db.get(shard_maint_key()).await? {
-        let mut m = decode_shard_maint(&v)?;
-        if m.unabsorbed_frame_bytes > 0 && m.last_progress_ms == 0 {
-            // A v1 row (or a v2 row from before any progress) cannot
-            // prove age. Start the clock now: byte limits still protect
-            // the process, and the stall clock begins honestly.
-            let now = now_ms();
-            m.backlog_started_ms = now;
-            m.last_progress_ms = now;
-        }
-        return Ok(m);
+    match db.get(shard_maint_key()).await? {
+        Some(v) => match decode_shard_maint_row(&v)? {
+            ShardMaintRow::Exact(mut m) => {
+                if m.unabsorbed_frame_bytes > 0 && m.last_progress_ms == 0 {
+                    // A v2 row from before any progress cannot prove
+                    // age. Start the clock now: byte limits still
+                    // protect the process, and the stall clock begins
+                    // honestly.
+                    let now = now_ms();
+                    m.backlog_started_ms = now;
+                    m.last_progress_ms = now;
+                }
+                Ok(m)
+            }
+            // R26-4: the legacy value is PAYLOAD-unit — wrong in both
+            // directions against exact frame accounting — so it is
+            // ignored entirely and the ledger is rebuilt from the
+            // durable tails.
+            ShardMaintRow::LegacyPayloadUnit => rebuild_maintenance_from_tails(db).await,
+        },
+        None => rebuild_maintenance_from_tails(db).await,
     }
+}
 
-    // Recovery path: no shard row yet. A namespace running this build
-    // writes the row on the first maintenance-changing commit, so this
-    // scan is a one-time cost per pre-existing shard.
+/// Rebuild the shard ledger from the dirty index + durable tails and
+/// persist the exact v2 row. One-time cost per pre-existing shard.
+///
+/// R26-4 tail repair: a tail written before the exact gauge existed
+/// decodes `unabsorbed_bytes == 0` while genuinely holding
+/// `absorbed < next` — impossible for an exact tail (every encoded
+/// frame is nonzero bytes), so that shape identifies a legacy row. Its
+/// exact gauge is recomputed by summing the actual stored frames in
+/// `[absorbed, next)` and the repaired tail is staged in the SAME
+/// WriteBatch as the rebuilt shard row. Without this, the stream's
+/// first boundary advance retires real frame bytes against a zero
+/// ledger and the checked accounting (R26-3) refuses it forever.
+async fn rebuild_maintenance_from_tails(db: &Db) -> anyhow::Result<ShardMaintenance> {
     let mut pfx = Vec::with_capacity(17);
     pfx.extend_from_slice(&DIRTY_SENTINEL);
     pfx.push(b'D');
     let mut total = 0u64;
+    let mut repaired_tails: Vec<([u8; 16], TailFields)> = Vec::new();
     let mut iter = db.scan_prefix(&pfx[..], ..).await?;
     while let Some(kv) = iter.next().await? {
         if kv.key.len() != 33 {
@@ -402,9 +455,33 @@ pub async fn load_or_rebuild_maintenance(db: &Db) -> anyhow::Result<ShardMainten
         let Some(tail_raw) = db.get(tail_key(&h)).await? else {
             anyhow::bail!("dirty stream missing tail during maintenance rebuild");
         };
-        let Some(tail) = decode_tail(&tail_raw) else {
+        let Some(mut tail) = decode_tail(&tail_raw) else {
             anyhow::bail!("undecodable tail during maintenance rebuild");
         };
+        if tail.absorbed < tail.next && tail.unabsorbed_bytes == 0 {
+            let mut sum = 0u64;
+            let mut frames = db
+                .scan(record_key(&h, tail.absorbed)..record_key(&h, tail.next))
+                .await?;
+            let mut count = 0u64;
+            while let Some(rec) = frames.next().await? {
+                sum = sum
+                    .checked_add(rec.value.len() as u64)
+                    .ok_or_else(|| anyhow::anyhow!("tail repair overflow"))?;
+                count += 1;
+            }
+            // A missing frame row inside the unabsorbed range is
+            // corruption, and repairing over it would bake the hole
+            // into the ledger: fail the engine open instead.
+            anyhow::ensure!(
+                count == tail.next - tail.absorbed,
+                "tail repair found {count} frames for range [{}, {})",
+                tail.absorbed,
+                tail.next,
+            );
+            tail.unabsorbed_bytes = sum;
+            repaired_tails.push((h, tail.clone()));
+        }
         total = total
             .checked_add(tail.unabsorbed_bytes)
             .ok_or_else(|| anyhow::anyhow!("maintenance rebuild overflow"))?;
@@ -418,6 +495,9 @@ pub async fn load_or_rebuild_maintenance(db: &Db) -> anyhow::Result<ShardMainten
         last_progress_ms: if total > 0 { now } else { 0 },
     };
     let mut wb = WriteBatch::new();
+    for (h, tail) in &repaired_tails {
+        wb.put(tail_key(h), encode_tail(tail));
+    }
     wb.put(shard_maint_key(), encode_shard_maint(&rebuilt));
     db.write_with_options(wb, &WriteOptions::default()).await?;
     Ok(rebuilt)
@@ -5028,10 +5108,12 @@ mod maintenance_tests {
         );
     }
 
-    /// R25-A: the codec round-trips v2 and still reads the R24 16-byte
-    /// row (bytes only — those rows cannot prove age or progress).
+    /// R25-A/R26-4: the codec round-trips v2; the R24 16-byte row is
+    /// classified LEGACY — its payload-unit value is never surfaced as
+    /// frame bytes (it can under- OR overstate, and understatement makes
+    /// the first exact retirement read as over-retirement forever).
     #[test]
-    fn codec_roundtrips_v2_and_decodes_v1() {
+    fn codec_roundtrips_v2_and_refuses_v1_values() {
         let m = ShardMaintenance {
             version: 7,
             unabsorbed_frame_bytes: 123_456,
@@ -5045,9 +5127,14 @@ mod maintenance_tests {
         let mut v1 = [0u8; 16];
         v1[..8].copy_from_slice(&987_654u64.to_le_bytes());
         v1[8..].copy_from_slice(&42i64.to_le_bytes());
-        let got = decode_shard_maint(&v1).unwrap();
-        assert_eq!(got.unabsorbed_frame_bytes, 987_654);
-        assert_eq!(got.last_progress_ms, 0, "v1 cannot prove progress");
+        assert!(
+            matches!(decode_shard_maint_row(&v1), Ok(ShardMaintRow::LegacyPayloadUnit)),
+            "16-byte row must classify as legacy"
+        );
+        assert!(
+            decode_shard_maint(&v1).is_err(),
+            "the strict decode must never surface a payload-unit value"
+        );
 
         assert!(decode_shard_maint(&[0u8; 7]).is_err(), "corrupt row must error");
         let mut bad = [0u8; 40];
@@ -5077,16 +5164,41 @@ mod maintenance_tests {
         assert_eq!(load_or_rebuild_maintenance(&db).await.unwrap(), m);
         db.close().await.unwrap();
 
-        // 2. Present v1 row with backlog: loads bytes, starts the clock.
+        // 2. Present v1 row (payload-unit 777): the value is IGNORED and
+        // the ledger is rebuilt from the exact tails (R26-4). The
+        // persisted replacement is a v2 row.
         let db = Db::builder("m2/shard", store.clone()).build().await.unwrap();
         let mut v1 = [0u8; 16];
         v1[..8].copy_from_slice(&777u64.to_le_bytes());
+        let h0 = [9u8; 16];
         let mut wb = WriteBatch::new();
         wb.put(shard_maint_key(), v1.to_vec());
+        wb.put(
+            tail_key(&h0),
+            encode_tail(&TailFields {
+                next: 5,
+                absorbed: 2,
+                unabsorbed_bytes: 300,
+                ..Default::default()
+            }),
+        );
+        wb.put(
+            dirty_key(&h0),
+            dirty_value(&StreamMaintenance {
+                absorbed: 2,
+                next: 5,
+                ..Default::default()
+            }),
+        );
         db.write_with_options(wb, &WriteOptions::default()).await.unwrap();
         let got = load_or_rebuild_maintenance(&db).await.unwrap();
-        assert_eq!(got.unabsorbed_frame_bytes, 777);
-        assert!(got.last_progress_ms > 0, "v1 backlog must start the stall clock");
+        assert_eq!(
+            got.unabsorbed_frame_bytes, 300,
+            "legacy value must be rebuilt from tails, never converted"
+        );
+        assert!(got.last_progress_ms > 0, "rebuilt backlog must start the stall clock");
+        let raw = db.get(shard_maint_key()).await.unwrap().expect("row replaced");
+        assert_eq!(raw.len(), 40, "the legacy row must be replaced by v2");
         db.close().await.unwrap();
 
         // 3. Missing row: rebuild from dirty index + tails, then persist.

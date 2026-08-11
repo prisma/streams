@@ -20438,6 +20438,102 @@ async fn over_retirement_fails_the_group_and_preserves_the_boundary() {
     engine.begin_close();
 }
 
+/// R26-4: an engine opening over a LEGACY namespace — a 16-byte
+/// payload-unit maintenance row AND a tail written before the exact
+/// gauge existed — ignores the legacy value, repairs the tail by
+/// summing the actual stored frames, and persists exact v2 state. The
+/// follow-through matters as much as the numbers: with the repaired
+/// ledger, a full boundary advance retires cleanly through the CHECKED
+/// accounting (an unrepaired zero-gauge tail would make the first
+/// advance read as over-retirement and fail groups forever).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn legacy_rows_are_rebuilt_and_legacy_tails_repaired_on_open() {
+    let store = mem();
+    let prefix = "dst-legacy";
+    let key = skey();
+    let hash = [27u8; 16];
+    let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();
+
+    // A modern engine writes real records (real frames, exact tail).
+    let engine = open_engine(store.clone(), prefix).await;
+    let w = Workload::new(cov.clone());
+    for i in 0..3 {
+        let out = w
+            .attempt_with_deadline(&engine, hash, &key, "k", &format!("L{i}"), None, None)
+            .await;
+        assert!(matches!(out, Outcome::Acked { .. }));
+    }
+    let exact_tail = engine.tail_fields(&hash).await.unwrap().unwrap();
+    let exact_bytes = exact_tail.unabsorbed_bytes;
+    assert!(exact_bytes > 0);
+    // Downgrade the namespace in place: strip the tail's gauge field
+    // and replace the maintenance row with the R24 16-byte layout
+    // carrying a wildly wrong payload-unit number.
+    let mut wb = slatedb::WriteBatch::new();
+    wb.put(
+        crate::shard::tail_key(&hash),
+        crate::shard::encode_tail_without_gauge_for_tests(&exact_tail),
+    );
+    let mut v1 = [0u8; 16];
+    v1[..8].copy_from_slice(&999_999_999u64.to_le_bytes());
+    wb.put(crate::shard::shard_maint_key(), v1.to_vec());
+    engine
+        .db
+        .write_with_options(wb, &slatedb::config::WriteOptions::default())
+        .await
+        .unwrap();
+    engine.db.flush().await.unwrap();
+    engine.begin_close();
+    tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+
+    // Reopen: the loader must rebuild EXACT state from the frames.
+    let db = slatedb::Db::builder(prefix, store.clone())
+        .build()
+        .await
+        .unwrap();
+    let maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("legacy namespace must open via rebuild");
+    assert_eq!(
+        maint.unabsorbed_frame_bytes, exact_bytes,
+        "ledger must be the actual frame sum — not the legacy 999999999"
+    );
+    let raw_tail = db.get(crate::shard::tail_key(&hash)).await.unwrap().unwrap();
+    let repaired = crate::shard::decode_tail_for_tests(&raw_tail).unwrap();
+    assert_eq!(
+        repaired.unabsorbed_bytes, exact_bytes,
+        "the durable tail must be repaired to the exact gauge"
+    );
+    let raw_row = db.get(crate::shard::shard_maint_key()).await.unwrap().unwrap();
+    assert_eq!(raw_row.len(), 40, "legacy row must be replaced by v2");
+
+    // Follow-through: a full advance retires exactly under the checked
+    // accounting and drains the ledger to zero.
+    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    let engine2 = crate::shard::ShardEngine::start(
+        prefix.to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+        maint,
+    );
+    engine2
+        .submit_absorbed(hash, repaired.next, exact_bytes)
+        .await;
+    let mut drained = false;
+    for _ in 0..400 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        if engine2.maintenance_snapshot().unabsorbed_frame_bytes == 0 {
+            drained = true;
+            break;
+        }
+    }
+    assert!(drained, "repaired ledger never retired cleanly");
+    engine2.begin_close();
+}
+
 /// R25-D: ownership handoff. B fences A and loads the durable backlog;
 /// A's late shutdown cannot damage B's state — structurally, because
 /// each engine OWNS its state and there is no global map for a stale
