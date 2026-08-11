@@ -2791,6 +2791,16 @@ async fn translate_append_response(
                 false,
             ),
             Some("stream_closed") => ("sealed", "collection is sealed", None, false),
+            // R25-H: the maintenance refusal is a TYPED contract —
+            // clients key retry policy off this code, and the generic
+            // 503 translation was erasing it on the product surface
+            // while the raw surface kept it. One refusal, one name.
+            Some("maintenance_backpressure") => (
+                "maintenance_backpressure",
+                "maintenance backlog exceeds its bound; retry after it drains",
+                None,
+                true,
+            ),
             Some("content_type_mismatch") => (
                 "content_type_mismatch",
                 "content type mismatch",
