@@ -1109,6 +1109,16 @@ async fn async_main() -> anyhow::Result<()> {
                         .await
                         .with_context(|| format!("open shard log {path}"))?
                     };
+                    let db = Arc::new(db);
+                    // R25-A: load (or rebuild) the durable maintenance
+                    // state SYNCHRONOUSLY, before the engine exists.
+                    // Failure here is an engine-open failure — a shard
+                    // whose backlog cannot be established must not
+                    // serve, because "unknown" would be treated as
+                    // "zero" by every admission decision after it.
+                    let maintenance = crate::shard::load_or_rebuild_maintenance(&db)
+                        .await
+                        .with_context(|| format!("load maintenance state for shard {prefix}"))?;
                     let (absorb_tx, absorb_rx) = absorber_channel();
                     let on_close = {
                         let touch = touch.clone();
@@ -1123,7 +1133,7 @@ async fn async_main() -> anyhow::Result<()> {
                     };
                     let engine = ShardEngine::start(
                         prefix.clone(),
-                        Arc::new(db),
+                        db,
                         data_store.clone(),
                         ShardConfig {
                             max_trim_per_op: trim_per_op,
@@ -1141,6 +1151,7 @@ async fn async_main() -> anyhow::Result<()> {
                         },
                         absorb_tx,
                         Some(on_close),
+                        maintenance,
                     );
                     Absorber::start(
                         data_store,

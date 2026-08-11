@@ -237,13 +237,19 @@ async fn open_engine_cfg(
         .await
         .expect("open db");
     let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     crate::shard::ShardEngine::start(
         prefix.to_string(),
         Arc::new(db),
         store,
         cfg,
         absorb_tx,
-        None,
+        None,        __maint,
     )
 }
 
@@ -934,13 +940,19 @@ async fn open_engine_with_absorber_layout(
         .await
         .expect("open db");
     let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         prefix.to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     let keys = Arc::new(crate::history::KeyCache::default());
     // The absorber derives subkeys from (key, epoch); the workload uses the
@@ -1082,13 +1094,19 @@ async fn absorber_sweep_recovers_streams_whose_signals_were_lost() {
     // The engine's signal channel goes nowhere: rx dropped on the spot.
     let (engine_tx, engine_rx) = crate::history::absorber_channel();
     drop(engine_rx);
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-sweep".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         engine_tx,
-        None,
+        None,        __maint,
     );
     let keys = Arc::new(crate::history::KeyCache::default());
     keys.put(hash, key.clone(), hash);
@@ -1173,13 +1191,19 @@ async fn absorber_drains_records_larger_than_the_per_stream_gather_cap() {
         .await
         .expect("open db");
     let (engine_tx, engine_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-bigrec".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         engine_tx,
-        None,
+        None,        __maint,
     );
     let keys = Arc::new(crate::history::KeyCache::default());
     keys.put(hash, key.clone(), hash);
@@ -1291,13 +1315,19 @@ async fn v2_absorbs_without_customer_keys() {
         .await
         .expect("open db");
     let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-v2nokey".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     // NO keys.put: the v1 absorber would return key-missing forever.
     let keys = Arc::new(crate::history::KeyCache::default());
@@ -1437,13 +1467,19 @@ async fn sparse_streams_defer_absorption_until_they_have_volume() {
         .await
         .expect("open db");
     let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-defer".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     let keys = Arc::new(crate::history::KeyCache::default());
     keys.put(tiny, key.clone(), tiny);
@@ -2527,13 +2563,19 @@ async fn naive_get_or_open(
         match db {
             Ok(db) => {
                 let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+                // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+                // zero; a reopened DB restores its durable backlog, exactly as
+                // the production opener does.
+                let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+                    .await
+                    .expect("load maintenance");
                 let eng = crate::shard::ShardEngine::start(
                     p,
                     Arc::new(db),
                     st2,
                     crate::shard::ShardConfig::default(),
                     absorb_tx,
-                    None,
+                    None,                    __maint,
                 );
                 let _ = tx.send(eng);
             }
@@ -2767,6 +2809,12 @@ async fn idle_engine_store_traffic_is_bounded_by_the_poll_cadence() {
         .await
         .expect("open idle db");
     let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-idlepoll".to_string(),
         Arc::new(db),
@@ -2776,7 +2824,7 @@ async fn idle_engine_store_traffic_is_bounded_by_the_poll_cadence() {
             ..Default::default()
         },
         absorb_tx,
-        None,
+        None,        __maint,
     );
 
     // One acked append makes this a real, used instance (not a fresh-open
@@ -3175,13 +3223,19 @@ async fn v2_gather_packs_to_the_aggregate_budget() {
         .await
         .expect("open db");
     let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-budget".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     for h in &hashes {
         append_sized(&engine, *h, &key, "", 16 * 1024).await;
@@ -3248,13 +3302,19 @@ async fn an_oversized_chunk_gathers_alone() {
         .await
         .expect("open db");
     let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-oversize".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     append_sized(&engine, big, &key, "", 200 * 1024).await;
     append_sized(&engine, small_a, &key, "", 16 * 1024).await;
@@ -3305,13 +3365,19 @@ async fn keyed_frames_no_longer_count_twice_against_the_budget() {
         .await
         .expect("open db");
     let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-keyedbudget".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     for h in &hashes {
         append_sized(&engine, *h, &key, "k1", 16 * 1024).await;
@@ -3371,13 +3437,19 @@ async fn untouched_streams_absorb_after_restart() {
             .await
             .expect("open db A");
         let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+        // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+        // zero; a reopened DB restores its durable backlog, exactly as
+        // the production opener does.
+        let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+            .await
+            .expect("load maintenance");
         let engine_a = crate::shard::ShardEngine::start(
             "dst-restart".to_string(),
             Arc::new(db),
             store.clone(),
             crate::shard::ShardConfig::default(),
             absorb_tx,
-            None,
+            None,            __maint,
         );
         for _ in 0..5 {
             append_sized(&engine_a, hash, &key, "", 2 * 1024).await;
@@ -3401,13 +3473,19 @@ async fn untouched_streams_absorb_after_restart() {
         .await
         .expect("open db B");
     let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine_b = crate::shard::ShardEngine::start(
         "dst-restart".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     let _absorber = crate::history::Absorber::start(
         store.clone(),
@@ -3479,13 +3557,19 @@ async fn idle_stream_handles_evict_and_reload() {
         .await
         .expect("open db");
     let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-evict".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     let hashes: Vec<[u8; 16]> = (0u8..8).map(|i| [0xB0 + i; 16]).collect();
     for h in &hashes {
@@ -3587,6 +3671,12 @@ async fn a_second_absorption_wave_trims_under_a_global_budget() {
         .await
         .expect("open db");
     let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-maturewave".to_string(),
         Arc::new(db),
@@ -3601,7 +3691,7 @@ async fn a_second_absorption_wave_trims_under_a_global_budget() {
             ..Default::default()
         },
         absorb_tx,
-        None,
+        None,        __maint,
     );
     let _absorber = crate::history::Absorber::start(
         store.clone(),
@@ -3759,13 +3849,19 @@ async fn budget_deferred_streams_absorb_on_the_next_tick() {
         .await
         .expect("open db");
     let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-defer".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     // PRODUCTION pump (not direct gather calls): tiny budget packs ~2
     // streams per gather, so full convergence REQUIRES deferred streams
@@ -3840,13 +3936,19 @@ async fn a_large_record_absorbs_after_restart_under_default_policy() {
             .await
             .expect("open db A");
         let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+        // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+        // zero; a reopened DB restores its durable backlog, exactly as
+        // the production opener does.
+        let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+            .await
+            .expect("load maintenance");
         let engine_a = crate::shard::ShardEngine::start(
             "dst-bigrec".to_string(),
             Arc::new(db),
             store.clone(),
             crate::shard::ShardConfig::default(),
             absorb_tx,
-            None,
+            None,            __maint,
         );
         // One 5 MiB record: above the default 4 MiB byte threshold in
         // truth, 1 KiB in the old estimate.
@@ -3865,13 +3967,19 @@ async fn a_large_record_absorbs_after_restart_under_default_policy() {
         .await
         .expect("open db B");
     let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine_b = crate::shard::ShardEngine::start(
         "dst-bigrec".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     // THE POINT: pure AbsorberConfig::default() — production thresholds,
     // production tick, production sweep cadence. No requests arrive.
@@ -3926,13 +4034,19 @@ async fn dirty_scan_retries_until_it_succeeds() {
             .await
             .expect("open db A");
         let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+        // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+        // zero; a reopened DB restores its durable backlog, exactly as
+        // the production opener does.
+        let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+            .await
+            .expect("load maintenance");
         let engine_a = crate::shard::ShardEngine::start(
             "dst-scanretry".to_string(),
             Arc::new(db),
             store.clone(),
             crate::shard::ShardConfig::default(),
             absorb_tx,
-            None,
+            None,            __maint,
         );
         append_sized(&engine_a, hash, &key, "", 2 * 1024).await;
         engine_a.begin_close();
@@ -3952,13 +4066,19 @@ async fn dirty_scan_retries_until_it_succeeds() {
         .await
         .expect("open db B");
     let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine_b = crate::shard::ShardEngine::start(
         "dst-scanretry".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     let _absorber = crate::history::Absorber::start(
         store.clone(),
@@ -4024,13 +4144,19 @@ async fn sparse_records_stay_deferred_and_reported_after_restart() {
             .await
             .expect("open db A");
         let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+        // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+        // zero; a reopened DB restores its durable backlog, exactly as
+        // the production opener does.
+        let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+            .await
+            .expect("load maintenance");
         let engine_a = crate::shard::ShardEngine::start(
             "dst-sparse".to_string(),
             Arc::new(db),
             store.clone(),
             crate::shard::ShardConfig::default(),
             absorb_tx,
-            None,
+            None,            __maint,
         );
         append_sized(&engine_a, hash, &key, "", 512).await;
         engine_a.begin_close();
@@ -4047,13 +4173,19 @@ async fn sparse_records_stay_deferred_and_reported_after_restart() {
         .await
         .expect("open db B");
     let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine_b = crate::shard::ShardEngine::start(
         "dst-sparse".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     // Default thresholds (4 MiB / 256 KiB min-age bytes), fast tick so
     // the summary publishes quickly.
@@ -4116,13 +4248,19 @@ async fn pending_summary_clears_on_shard_close() {
         .await
         .expect("open db");
     let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-sumclear".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     let _absorber = crate::history::Absorber::start(
         store.clone(),
@@ -4183,13 +4321,19 @@ async fn handle_capacity_cap_evicts_oldest_first() {
         .await
         .expect("open db");
     let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-handlecap".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     let hashes: Vec<[u8; 16]> = (0u8..12).map(|i| [0xE0 + i; 16]).collect();
     for (i, h) in hashes.iter().enumerate() {
@@ -4250,13 +4394,19 @@ async fn the_first_advance_seals_the_history_layout() {
         .await
         .expect("open db");
     let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-seal".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
 
     async fn wait_absorbed(
@@ -4362,13 +4512,19 @@ async fn sparse_key_reads_page_with_bounded_spans() {
         .await
         .expect("open db");
     let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-sparsekey".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     let _absorber = crate::history::Absorber::start(
         store.clone(),
@@ -4467,13 +4623,19 @@ async fn corrupt_postings_fall_back_to_the_envelope() {
         .await
         .expect("open db");
     let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-corruptp".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     let _absorber = crate::history::Absorber::start(
         store.clone(),
@@ -4584,13 +4746,19 @@ async fn repeated_keyed_reads_hit_the_postings_cache() {
         .await
         .expect("open db");
     let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-pcache".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     let _absorber = crate::history::Absorber::start(
         store.clone(),
@@ -4708,13 +4876,19 @@ async fn stream_seq_is_scoped_to_the_routing_key() {
         .await
         .expect("open db");
     let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-keyseq".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     let send = |rk: &'static str, seq: &'static str| {
         let engine = engine.clone();
@@ -4786,13 +4960,19 @@ async fn producer_retries_across_a_split_commit_once() {
         .await
         .expect("open db");
     let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-splitprod".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     let send = |identity: [u8; 16], lineage: Vec<[u8; 16]>, seq: u64, close: bool| {
         let engine = engine.clone();
@@ -4963,13 +5143,19 @@ async fn http_rig_inner(
                     .build()
                     .await?;
                 let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+                // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+                // zero; a reopened DB restores its durable backlog, exactly as
+                // the production opener does.
+                let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+                    .await
+                    .expect("load maintenance");
                 let engine = crate::shard::ShardEngine::start(
                     prefix,
                     Arc::new(db),
                     store.clone(),
                     shard_cfg.clone(),
                     absorb_tx,
-                    None,
+                    None,                    __maint,
                 );
                 crate::history::Absorber::start(
                     store,
@@ -5678,13 +5864,19 @@ async fn oversized_keyed_record_pages_through() {
         .await
         .expect("open db");
     let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-bigrec".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     let _absorber = crate::history::Absorber::start(
         store.clone(),
@@ -5753,13 +5945,19 @@ async fn long_keyed_run_pages_with_progress() {
         .await
         .expect("open db");
     let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-bigrun".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     let _absorber = crate::history::Absorber::start(
         store.clone(),
@@ -5842,13 +6040,19 @@ async fn stream_seq_resolves_through_predecessors() {
         .await
         .expect("open db");
     let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-seqchain".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     let send = |identity: [u8; 16], lineage: Vec<[u8; 16]>, seq: Option<&str>, close: bool| {
         let engine = engine.clone();
@@ -5932,13 +6136,19 @@ async fn producer_lanes_scoped_per_routing_key() {
         .await
         .expect("open db");
     let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let engine = crate::shard::ShardEngine::start(
         "dst-prodkeys".to_string(),
         Arc::new(db),
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,
+        None,        __maint,
     );
     let send = |identity: [u8; 16], lineage: Vec<[u8; 16]>, rk: &str, seq: u64, close: bool| {
         let engine = engine.clone();
@@ -17395,6 +17605,12 @@ async fn a_lost_applied_suffix_rewinds_to_the_durable_frontier() {
         .await
         .expect("open db");
     let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+    // zero; a reopened DB restores its durable backlog, exactly as
+    // the production opener does.
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
     let e2 = crate::shard::ShardEngine::start(
         prefix.to_string(),
         Arc::new(db),
@@ -17404,7 +17620,7 @@ async fn a_lost_applied_suffix_rewinds_to_the_durable_frontier() {
             ..Default::default()
         },
         absorb_tx,
-        None,
+        None,        __maint,
     );
     // The engine's flush-ticker (5 s cadence, first tick immediate)
     // flushes the memtable whenever appends accumulated — WAL included.

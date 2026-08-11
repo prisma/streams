@@ -1193,15 +1193,12 @@ impl Absorber {
         &self,
         pending: &mut HashMap<[u8; 16], PendingAbsorb>,
     ) -> anyhow::Result<usize> {
-        // R24-A: restore this shard's DURABLE maintenance row into the
-        // admission mirror before seeding streams. This is what makes
-        // restart and ownership handoff honest — a shard carrying
-        // hundreds of MB of unabsorbed data must report that backlog
-        // from the first admission decision, not zero until fresh
-        // ingest happens to overtake a reset counter.
-        if let Ok(Some(m)) = self.shard.load_maintenance_row().await {
-            crate::maintenance::install(&self.shard.prefix, m);
-        }
+        // R25-A: maintenance state is loaded SYNCHRONOUSLY by the
+        // engine opener, before the engine is published. Restoring it
+        // here — asynchronously, after the engine is already serving —
+        // was the R24 defect: the first request after a restart could be
+        // admitted before the backlog was known, and a late restore
+        // could overwrite state a new append had already advanced.
         let dirty = self.shard.scan_dirty_streams().await?;
         let mut absorb_seeded = 0usize;
         for (h, absorbed, next) in dirty {
@@ -1467,18 +1464,13 @@ impl Absorber {
         HISTORY_FLUSH_WAIT_MS_MAX.fetch_max(flush_ms, ord);
         let absorbed_bytes = out.advanced.iter().map(|(_, _, b)| *b).sum::<u64>();
         ABSORB_BYTES_TOTAL.fetch_add(absorbed_bytes, ord);
-        // R24-A: retire those bytes from the shard's durable maintenance
-        // row. The history partition is flushed above, so the work is
-        // genuinely gone from the backlog by the time this runs — the
-        // same commit-then-account ordering the append path uses.
-        if absorbed_bytes > 0 {
-            crate::maintenance::apply_delta(
-                &self.shard.prefix,
-                0,
-                absorbed_bytes,
-                crate::shard::now_ms(),
-            );
-        }
+        // R25-B: NO maintenance retirement here. This task has proved
+        // the HISTORY COPY is durable — the backlog is not retired until
+        // the shard's absorbed boundary commits, which happens in the
+        // committer's common finalization when the AbsorbedBatch group
+        // lands (and stages the maintenance row in the same WriteBatch).
+        // Retiring here would claim progress a crash between this flush
+        // and that commit would revoke.
         // The pages are durable: warm the slice cache with the runs we
         // just wrote. Readers clip to their own durable boundary, so an
         // install racing the boundary advance can never over-serve.
@@ -1974,6 +1966,7 @@ mod tests {
             ShardConfig::default(),
             absorb_tx,
             None,
+            crate::shard::ShardMaintenance::default(),
         );
         let handle = Absorber::start(
             store.clone(),
@@ -2222,6 +2215,7 @@ mod tests {
             ShardConfig::default(),
             absorb_tx,
             None,
+            crate::shard::ShardMaintenance::default(),
         );
         assert_eq!(engine.commit_blocked_ms(), 0, "idle engine must read 0");
         engine.set_commit_write_started_ms(crate::shard::now_ms() - 5_000);
@@ -2265,6 +2259,7 @@ mod tests {
             ShardConfig::default(),
             absorb_tx,
             None,
+            crate::shard::ShardMaintenance::default(),
         );
 
         // Continuous feed: a LATER db.write must find the unflushed cap
@@ -2344,6 +2339,7 @@ mod tests {
             ShardConfig::default(),
             absorb_tx,
             None,
+            crate::shard::ShardMaintenance::default(),
         );
         for i in 0..8u64 {
             let (tx, _rx) = tokio::sync::oneshot::channel();

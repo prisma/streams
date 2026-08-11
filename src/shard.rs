@@ -228,9 +228,17 @@ fn dirty_value(m: &StreamMaintenance) -> [u8; 32] {
 ///
 /// Sits beside the dirty-stream index under the same sentinel, with tag
 /// `M`. Written in the SAME committer batch as the appends it accounts
-/// for, and in the same absorbed batch that retires them — so it commits
-/// if and only if the work it describes commits, and a failed group
-/// write leaves it untouched.
+/// for, and in the same absorbed-boundary batch that retires them — so
+/// it commits if and only if the work it describes commits, and a failed
+/// group write leaves it untouched.
+/// Exact frame-byte flow, in the maintenance unit (R25-B). These are
+/// process-lifetime observability counters, NOT admission inputs — the
+/// admission source of truth is each engine's durable row.
+pub static INGEST_FRAME_BYTES_TOTAL: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+pub static ABSORBED_FRAME_BYTES_TOTAL: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
 pub fn shard_maint_key() -> Vec<u8> {
     let mut k = Vec::with_capacity(17);
     k.extend_from_slice(&DIRTY_SENTINEL);
@@ -238,22 +246,181 @@ pub fn shard_maint_key() -> Vec<u8> {
     k
 }
 
-pub fn encode_shard_maint(m: &StreamMaintenance) -> [u8; 16] {
-    let mut v = [0u8; 16];
-    v[..8].copy_from_slice(&m.unabsorbed_bytes.to_le_bytes());
-    v[8..].copy_from_slice(&m.oldest_unabsorbed_ms.to_le_bytes());
+/// Engine-owned maintenance state for one physical shard (R25-A).
+///
+/// The unit is EXACT ENCODED FRAME BYTES in `[absorbed, next)` — the
+/// same unit `TailFields.unabsorbed_bytes` carries. The R24 version of
+/// this accounting added uncompressed PAYLOAD bytes on append while
+/// retiring compressed FRAME bytes on absorption; on the soak's all-`x`
+/// records with FRAME_COMPRESS=1 that manufactured a 9.4% "absorption
+/// ratio" and 3.87 GB of fictional backlog that were, in large part,
+/// the benchmark's compression ratio. One unit, both directions.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub struct ShardMaintenance {
+    pub version: u64,
+    /// Exact encoded frame bytes still present in the shard tier and
+    /// not covered by the durable absorbed boundary.
+    pub unabsorbed_frame_bytes: u64,
+    /// When the backlog moved 0 -> nonzero. Diagnostic only; it may
+    /// conservatively predate the current oldest record.
+    pub backlog_started_ms: i64,
+    /// Last successful durable retirement of backlog bytes. This is the
+    /// safe stall signal: unlike an "oldest record" approximation it
+    /// does not become permanently old while absorption keeps making
+    /// progress under continuous traffic.
+    pub last_progress_ms: i64,
+}
+
+impl ShardMaintenance {
+    /// Apply a committed delta. Retiring more than exists is an ERROR,
+    /// not a saturation: it means the two sides of the accounting have
+    /// diverged, and clamping would hide exactly the class of unit bug
+    /// this type exists to prevent.
+    pub fn apply_delta(
+        self,
+        added_frame_bytes: u64,
+        retired_frame_bytes: u64,
+        now_ms: i64,
+    ) -> anyhow::Result<Self> {
+        let available = self
+            .unabsorbed_frame_bytes
+            .checked_add(added_frame_bytes)
+            .ok_or_else(|| anyhow::anyhow!("maintenance byte overflow"))?;
+        anyhow::ensure!(
+            retired_frame_bytes <= available,
+            "maintenance retirement exceeds backlog: retire={} available={}",
+            retired_frame_bytes,
+            available,
+        );
+        let next = available - retired_frame_bytes;
+        let mut out = self;
+        out.version = out.version.saturating_add(1);
+        out.unabsorbed_frame_bytes = next;
+        if next == 0 {
+            out.backlog_started_ms = 0;
+            out.last_progress_ms = 0;
+        } else {
+            if self.unabsorbed_frame_bytes == 0 && added_frame_bytes > 0 {
+                out.backlog_started_ms = now_ms;
+                out.last_progress_ms = now_ms;
+            }
+            if retired_frame_bytes > 0 {
+                out.last_progress_ms = now_ms;
+            }
+        }
+        Ok(out)
+    }
+
+    /// Seconds since maintenance last made durable progress, while a
+    /// backlog is outstanding. Zero when there is nothing to do.
+    pub fn no_progress_secs(self, now_ms: i64) -> u64 {
+        if self.unabsorbed_frame_bytes == 0 || self.last_progress_ms <= 0 {
+            0
+        } else {
+            ((now_ms - self.last_progress_ms).max(0) / 1_000) as u64
+        }
+    }
+}
+
+const SHARD_MAINT_V2: u8 = 2;
+
+pub fn encode_shard_maint(m: &ShardMaintenance) -> [u8; 40] {
+    let mut v = [0u8; 40];
+    v[0] = SHARD_MAINT_V2;
+    v[8..16].copy_from_slice(&m.version.to_le_bytes());
+    v[16..24].copy_from_slice(&m.unabsorbed_frame_bytes.to_le_bytes());
+    v[24..32].copy_from_slice(&m.backlog_started_ms.to_le_bytes());
+    v[32..40].copy_from_slice(&m.last_progress_ms.to_le_bytes());
     v
 }
 
-pub fn decode_shard_maint(v: &[u8]) -> Option<StreamMaintenance> {
-    if v.len() < 16 {
-        return None;
+/// Versioned decode. The R24 row was 16 untagged bytes; those cannot
+/// prove age or progress, so they decode to bytes only and the caller
+/// initializes the progress clock on open. NOTE the R24 bytes were
+/// PAYLOAD-unit and therefore overstate on compressible data — an
+/// overstated bound sheds early, which is the safe direction; the first
+/// maintenance-changing commit replaces the row with exact v2 state.
+pub fn decode_shard_maint(v: &[u8]) -> anyhow::Result<ShardMaintenance> {
+    match v.len() {
+        16 => Ok(ShardMaintenance {
+            unabsorbed_frame_bytes: u64::from_le_bytes(v[0..8].try_into()?),
+            ..Default::default()
+        }),
+        40 if v[0] == SHARD_MAINT_V2 => Ok(ShardMaintenance {
+            version: u64::from_le_bytes(v[8..16].try_into()?),
+            unabsorbed_frame_bytes: u64::from_le_bytes(v[16..24].try_into()?),
+            backlog_started_ms: i64::from_le_bytes(v[24..32].try_into()?),
+            last_progress_ms: i64::from_le_bytes(v[32..40].try_into()?),
+        }),
+        _ => anyhow::bail!("unsupported shard maintenance row ({} bytes)", v.len()),
     }
-    Some(StreamMaintenance {
-        unabsorbed_bytes: u64::from_le_bytes(v[..8].try_into().unwrap()),
-        oldest_unabsorbed_ms: i64::from_le_bytes(v[8..16].try_into().unwrap()),
-        ..Default::default()
-    })
+}
+
+/// Load this shard's durable maintenance state, or rebuild it from the
+/// dirty index — synchronously, BEFORE the engine starts serving.
+///
+/// R25-A. The R24 restore ran asynchronously inside the absorber's
+/// seed scan, which left four holes: the first request after a restart
+/// could be admitted before the backlog was known; a late restore could
+/// overwrite state a new append had already advanced; an old owner's
+/// cleanup task could delete a new owner's entry; and process totals
+/// went stale after ownership movement. Loading here, on the open path,
+/// closes all four at once because the state cannot exist before the
+/// engine and cannot outlive it.
+///
+/// A corrupt row or a failed rebuild scan is an ENGINE-OPEN FAILURE.
+/// Translating either to "zero backlog" would silently disable the
+/// safety bound exactly when the shard's state is least understood.
+pub async fn load_or_rebuild_maintenance(db: &Db) -> anyhow::Result<ShardMaintenance> {
+    if let Some(v) = db.get(shard_maint_key()).await? {
+        let mut m = decode_shard_maint(&v)?;
+        if m.unabsorbed_frame_bytes > 0 && m.last_progress_ms == 0 {
+            // A v1 row (or a v2 row from before any progress) cannot
+            // prove age. Start the clock now: byte limits still protect
+            // the process, and the stall clock begins honestly.
+            let now = now_ms();
+            m.backlog_started_ms = now;
+            m.last_progress_ms = now;
+        }
+        return Ok(m);
+    }
+
+    // Recovery path: no shard row yet. A namespace running this build
+    // writes the row on the first maintenance-changing commit, so this
+    // scan is a one-time cost per pre-existing shard.
+    let mut pfx = Vec::with_capacity(17);
+    pfx.extend_from_slice(&DIRTY_SENTINEL);
+    pfx.push(b'D');
+    let mut total = 0u64;
+    let mut iter = db.scan_prefix(&pfx[..], ..).await?;
+    while let Some(kv) = iter.next().await? {
+        if kv.key.len() != 33 {
+            continue;
+        }
+        let mut h = [0u8; 16];
+        h.copy_from_slice(&kv.key[17..33]);
+        let Some(tail_raw) = db.get(tail_key(&h)).await? else {
+            anyhow::bail!("dirty stream missing tail during maintenance rebuild");
+        };
+        let Some(tail) = decode_tail(&tail_raw) else {
+            anyhow::bail!("undecodable tail during maintenance rebuild");
+        };
+        total = total
+            .checked_add(tail.unabsorbed_bytes)
+            .ok_or_else(|| anyhow::anyhow!("maintenance rebuild overflow"))?;
+    }
+
+    let now = now_ms();
+    let rebuilt = ShardMaintenance {
+        version: 1,
+        unabsorbed_frame_bytes: total,
+        backlog_started_ms: if total > 0 { now } else { 0 },
+        last_progress_ms: if total > 0 { now } else { 0 },
+    };
+    let mut wb = WriteBatch::new();
+    wb.put(shard_maint_key(), encode_shard_maint(&rebuilt));
+    db.write_with_options(wb, &WriteOptions::default()).await?;
+    Ok(rebuilt)
 }
 
 pub fn decode_dirty_value(v: &[u8]) -> Option<StreamMaintenance> {
@@ -779,6 +946,15 @@ struct InFlightGroup {
 pub struct ShardEngine {
     pub prefix: String,
     pub db: Arc<Db>,
+    /// Engine-owned maintenance state (R25-A). The durable row in this
+    /// shard's DB is authoritative; this is the published mirror,
+    /// updated ONLY after the write carrying the row succeeds. Owned by
+    /// the engine — not a process-global map — so restore-before-serve,
+    /// ownership handoff, and old-owner-task cleanup are all scoped to
+    /// the engine lifecycle automatically.
+    maintenance: std::sync::RwLock<ShardMaintenance>,
+    /// Per-shard backpressure latch (hysteresis lives with the shard).
+    pub maintenance_shard_shed: std::sync::atomic::AtomicBool,
     /// Object store the shard's DBs live on — held so the engine can
     /// lazily open its shared history v2 partition.
     data_store: Arc<dyn object_store::ObjectStore>,
@@ -978,6 +1154,7 @@ impl ShardEngine {
         cfg: ShardConfig,
         absorb_tx: mpsc::Sender<AbsorbSignal>,
         on_close: Option<Arc<dyn Fn() + Send + Sync>>,
+        initial_maintenance: ShardMaintenance,
     ) -> Arc<ShardEngine> {
         let (tx, rx) = mpsc::channel(cfg.queue_reqs);
         // Level-triggered close signal for the background tasks. The
@@ -989,6 +1166,8 @@ impl ShardEngine {
         let engine = Arc::new(ShardEngine {
             prefix,
             db,
+            maintenance: std::sync::RwLock::new(initial_maintenance),
+            maintenance_shard_shed: std::sync::atomic::AtomicBool::new(false),
             data_store,
             history2: tokio::sync::OnceCell::new(),
             streams: Mutex::new(HashMap::new()),
@@ -1678,16 +1857,16 @@ impl ShardEngine {
         Ok(None)
     }
 
-    /// Read the durable per-shard maintenance row (R24-A).
-    ///
-    /// `Ok(None)` for a shard that has never written one — a shard with
-    /// no backlog history, which correctly contributes nothing.
-    pub async fn load_maintenance_row(&self) -> anyhow::Result<Option<StreamMaintenance>> {
-        Ok(self
-            .db
-            .get(shard_maint_key())
-            .await?
-            .and_then(|v| decode_shard_maint(&v)))
+    /// Published maintenance state for admission decisions.
+    pub fn maintenance_snapshot(&self) -> ShardMaintenance {
+        *self.maintenance.read().unwrap()
+    }
+
+    /// Publish new maintenance state. Callers must only do this AFTER
+    /// the write carrying the durable row has succeeded — that ordering
+    /// is the entire fix for phantom backlog.
+    pub fn publish_maintenance(&self, m: ShardMaintenance) {
+        *self.maintenance.write().unwrap() = m;
     }
 
     pub async fn scan_dirty_streams(&self) -> anyhow::Result<Vec<([u8; 16], u64, u64)>> {
@@ -3766,14 +3945,34 @@ impl ShardEngine {
         let mut ring_pub: Vec<(Arc<StreamHandle>, Vec<(u64, Bytes)>)> = Vec::new();
         let mut signals = Vec::new();
         let mut changed = false;
-        // R24-A: bytes this group adds to the shard's durable backlog.
+        // R24-A (superseded unit; see below): payload bytes for the
+        // absorber signal. NOT used for maintenance accounting.
         let mut group_appended_bytes: u64 = 0;
+        // R25-B: the maintenance gauge moves by the EXACT net change in
+        // each stream's encoded-frame backlog, taken from the tail the
+        // group actually commits. One unit both directions — the R24
+        // version added uncompressed payload bytes here while the
+        // absorber retired compressed frame bytes, which manufactured
+        // the soak's 9.4% "absorption ratio" on compressible records.
+        let mut maintenance_added: u64 = 0;
+        let mut maintenance_retired: u64 = 0;
         for (hash, local) in &locals {
             if !local.ring_recs.is_empty() {
                 ring_pub.push((local.handle.clone(), local.ring_recs.clone()));
             }
             let f = &local.fields;
             let b = &local.base;
+            match f.unabsorbed_bytes.cmp(&b.unabsorbed_bytes) {
+                std::cmp::Ordering::Greater => {
+                    maintenance_added =
+                        maintenance_added.saturating_add(f.unabsorbed_bytes - b.unabsorbed_bytes);
+                }
+                std::cmp::Ordering::Less => {
+                    maintenance_retired =
+                        maintenance_retired.saturating_add(b.unabsorbed_bytes - f.unabsorbed_bytes);
+                }
+                std::cmp::Ordering::Equal => {}
+            }
             if f.next != b.next
                 || f.absorbed != b.absorbed
                 || f.trimmed != b.trimmed
@@ -3936,24 +4135,41 @@ impl ShardEngine {
                 return;
             }
         }
-        // R24-A: the durable per-shard maintenance row rides in THIS
-        // batch, so it commits if and only if the appends it accounts
-        // for commit. The in-memory admission mirror is updated only
-        // after the write returns Ok below — that ordering is the whole
-        // fix for phantom backlog.
-        if group_appended_bytes > 0 {
-            let cur = crate::maintenance::for_shard(&self.prefix);
-            let row = StreamMaintenance {
-                unabsorbed_bytes: cur.unabsorbed_bytes.saturating_add(group_appended_bytes),
-                oldest_unabsorbed_ms: if cur.oldest_unabsorbed_ms > 0 {
-                    cur.oldest_unabsorbed_ms
-                } else {
-                    now_ms()
-                },
-                ..Default::default()
-            };
-            wb.put(shard_maint_key(), encode_shard_maint(&row));
-        }
+        // R25-A/B: the durable per-shard maintenance row rides in THIS
+        // batch, so it commits if and only if the work it accounts for
+        // commits. This runs for Append, Absorbed, and AbsorbedBatch
+        // alike — every op that changes a tail passes this common
+        // finalization — so append additions and absorbed-boundary
+        // retirements are both atomic with the state they describe. The
+        // engine's published state is updated only after the write
+        // returns Ok below.
+        let maintenance_after = if maintenance_added > 0 || maintenance_retired > 0 {
+            match self
+                .maintenance_snapshot()
+                .apply_delta(maintenance_added, maintenance_retired, now_ms())
+            {
+                Ok(m) => {
+                    wb.put(shard_maint_key(), encode_shard_maint(&m));
+                    Some(m)
+                }
+                Err(e) => {
+                    // Retirement exceeding the ledger means the two
+                    // sides of the accounting have diverged — a
+                    // corruption-class bug. Failing the group is loud
+                    // and recoverable (clients retry); continuing to
+                    // count wrongly is neither.
+                    tracing::error!("maintenance accounting diverged: {e}");
+                    Self::send_group_failure(
+                        "maintenance accounting diverged",
+                        pending,
+                        queue_pending,
+                    );
+                    return;
+                }
+            }
+        } else {
+            None
+        };
 
         let write_t0 = std::time::Instant::now();
         // Publish the write start so admission can observe a blocked commit
@@ -3971,18 +4187,18 @@ impl ShardEngine {
 
         match res {
             Ok(handle) => {
-                // The batch is durable: only now may the admission
-                // mirror grow. A failed write skips this entirely, so
-                // backlog can never be manufactured for records that
-                // were never committed.
-                if group_appended_bytes > 0 {
-                    crate::maintenance::apply_delta(
-                        &self.prefix,
-                        group_appended_bytes,
-                        0,
-                        now_ms(),
-                    );
+                // The batch is durable: only now may the engine's
+                // published state move. A failed write skips this
+                // entirely, so backlog can never be manufactured for
+                // records that were never committed, and retirement can
+                // never be claimed for a boundary that did not advance.
+                if let Some(m) = maintenance_after {
+                    self.publish_maintenance(m);
                 }
+                INGEST_FRAME_BYTES_TOTAL
+                    .fetch_add(maintenance_added, std::sync::atomic::Ordering::Relaxed);
+                ABSORBED_FRAME_BYTES_TOTAL
+                    .fetch_add(maintenance_retired, std::sync::atomic::Ordering::Relaxed);
                 for local in locals.values() {
                     let mut st = local.handle.state.lock().unwrap();
                     st.applied = local.fields.clone();
@@ -4672,4 +4888,150 @@ pub async fn read_frames(
         }
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod maintenance_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    /// R25-A: the delta rule. Retirement past the ledger is an ERROR —
+    /// clamping would hide the exact unit-divergence class this type
+    /// exists to prevent.
+    #[test]
+    fn apply_delta_is_checked_and_tracks_progress() {
+        let m = ShardMaintenance::default();
+        let m = m.apply_delta(1000, 0, 5_000).unwrap();
+        assert_eq!(m.unabsorbed_frame_bytes, 1000);
+        assert_eq!(m.backlog_started_ms, 5_000);
+        assert_eq!(m.last_progress_ms, 5_000);
+        assert_eq!(m.version, 1);
+
+        // Later append: the backlog-start clock must NOT restart.
+        let m = m.apply_delta(500, 0, 9_000).unwrap();
+        assert_eq!(m.backlog_started_ms, 5_000, "backlog start must not reset");
+
+        // Retirement refreshes the PROGRESS clock — the stall signal is
+        // "time since durable progress", not "age of oldest record",
+        // which stays permanently old under continuous traffic.
+        let m = m.apply_delta(0, 600, 12_000).unwrap();
+        assert_eq!(m.unabsorbed_frame_bytes, 900);
+        assert_eq!(m.last_progress_ms, 12_000);
+        assert_eq!(m.no_progress_secs(20_000), 8);
+
+        // Full drain retires both clocks.
+        let m = m.apply_delta(0, 900, 15_000).unwrap();
+        assert_eq!(m.unabsorbed_frame_bytes, 0);
+        assert_eq!(m.backlog_started_ms, 0);
+        assert_eq!(m.no_progress_secs(99_000), 0);
+
+        // Over-retirement is a loud error, never a silent clamp.
+        assert!(
+            ShardMaintenance::default().apply_delta(10, 11, 1).is_err(),
+            "retiring more than exists must fail"
+        );
+    }
+
+    /// R25-A: the codec round-trips v2 and still reads the R24 16-byte
+    /// row (bytes only — those rows cannot prove age or progress).
+    #[test]
+    fn codec_roundtrips_v2_and_decodes_v1() {
+        let m = ShardMaintenance {
+            version: 7,
+            unabsorbed_frame_bytes: 123_456,
+            backlog_started_ms: 111,
+            last_progress_ms: 222,
+        };
+        let got = decode_shard_maint(&encode_shard_maint(&m)).unwrap();
+        assert_eq!(got, m);
+
+        // R24 layout: [bytes u64][oldest_ms i64], 16 untagged bytes.
+        let mut v1 = [0u8; 16];
+        v1[..8].copy_from_slice(&987_654u64.to_le_bytes());
+        v1[8..].copy_from_slice(&42i64.to_le_bytes());
+        let got = decode_shard_maint(&v1).unwrap();
+        assert_eq!(got.unabsorbed_frame_bytes, 987_654);
+        assert_eq!(got.last_progress_ms, 0, "v1 cannot prove progress");
+
+        assert!(decode_shard_maint(&[0u8; 7]).is_err(), "corrupt row must error");
+        let mut bad = [0u8; 40];
+        bad[0] = 99;
+        assert!(decode_shard_maint(&bad).is_err(), "unknown version must error");
+    }
+
+    /// R25-A: load semantics against a real DB — present row loads (with
+    /// the progress clock initialized for v1 rows), missing row rebuilds
+    /// from the dirty index + tails and PERSISTS the rebuilt row.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn load_or_rebuild_covers_present_missing_and_corrupt() {
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+
+        // 1. Present v2 row: loads exactly.
+        let db = Db::builder("m1/shard", store.clone()).build().await.unwrap();
+        let m = ShardMaintenance {
+            version: 3,
+            unabsorbed_frame_bytes: 555,
+            backlog_started_ms: 10,
+            last_progress_ms: 20,
+        };
+        let mut wb = WriteBatch::new();
+        wb.put(shard_maint_key(), encode_shard_maint(&m));
+        db.write_with_options(wb, &WriteOptions::default()).await.unwrap();
+        assert_eq!(load_or_rebuild_maintenance(&db).await.unwrap(), m);
+        db.close().await.unwrap();
+
+        // 2. Present v1 row with backlog: loads bytes, starts the clock.
+        let db = Db::builder("m2/shard", store.clone()).build().await.unwrap();
+        let mut v1 = [0u8; 16];
+        v1[..8].copy_from_slice(&777u64.to_le_bytes());
+        let mut wb = WriteBatch::new();
+        wb.put(shard_maint_key(), v1.to_vec());
+        db.write_with_options(wb, &WriteOptions::default()).await.unwrap();
+        let got = load_or_rebuild_maintenance(&db).await.unwrap();
+        assert_eq!(got.unabsorbed_frame_bytes, 777);
+        assert!(got.last_progress_ms > 0, "v1 backlog must start the stall clock");
+        db.close().await.unwrap();
+
+        // 3. Missing row: rebuild from dirty index + tails, then persist.
+        let db = Db::builder("m3/shard", store.clone()).build().await.unwrap();
+        let h1 = [1u8; 16];
+        let h2 = [2u8; 16];
+        let mut wb = WriteBatch::new();
+        for (h, bytes) in [(h1, 300u64), (h2, 400u64)] {
+            let t = TailFields {
+                next: 10,
+                absorbed: 4,
+                unabsorbed_bytes: bytes,
+                ..Default::default()
+            };
+            wb.put(tail_key(&h), encode_tail(&t));
+            wb.put(
+                dirty_key(&h),
+                dirty_value(&StreamMaintenance {
+                    absorbed: 4,
+                    next: 10,
+                    ..Default::default()
+                }),
+            );
+        }
+        db.write_with_options(wb, &WriteOptions::default()).await.unwrap();
+        let got = load_or_rebuild_maintenance(&db).await.unwrap();
+        assert_eq!(got.unabsorbed_frame_bytes, 700, "rebuild sums tail gauges");
+        // And it persisted: a second load takes the row path.
+        let raw = db.get(shard_maint_key()).await.unwrap().expect("row persisted");
+        assert_eq!(decode_shard_maint(&raw).unwrap().unabsorbed_frame_bytes, 700);
+        db.close().await.unwrap();
+
+        // 4. Corrupt row: an engine-open FAILURE, never zero backlog.
+        let db = Db::builder("m4/shard", store.clone()).build().await.unwrap();
+        let mut wb = WriteBatch::new();
+        wb.put(shard_maint_key(), vec![9u8; 11]);
+        db.write_with_options(wb, &WriteOptions::default()).await.unwrap();
+        assert!(
+            load_or_rebuild_maintenance(&db).await.is_err(),
+            "corrupt maintenance row must fail the open"
+        );
+        db.close().await.unwrap();
+    }
 }
