@@ -403,16 +403,40 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         // registry's TTL refresh), not an error.
         let ok = r.is_ok() || matches!(&r, Err(object_store::Error::NotModified { .. }));
         g.finish(ok);
-        // R23-6: whole-object GETs are where the absorber's read volume
-        // actually lands. The first version of this instrumentation only
-        // counted get_ranges and reported readGets=0 in the field — a
-        // metric that measured nothing. Count the object size here; the
-        // body streams afterwards, so use the reported payload length.
-        if !is_head
-            && let Ok(res) = &r
-        {
-            GET_COUNT.fetch_add(1, Ordering::Relaxed);
-            GET_BYTES.fetch_add(res.meta.size, Ordering::Relaxed);
+        // R25-F: count ACTUAL transferred bytes by wrapping the payload
+        // stream — the R23-6 version counted object METADATA size, so a
+        // ranged read billed the whole object. GET_BYTES is now the
+        // bytes that crossed the wire, whatever the range.
+        if !is_head {
+            return r.map(|res| {
+                GET_COUNT.fetch_add(1, Ordering::Relaxed);
+                let object_store::GetResult {
+                    payload,
+                    meta,
+                    range,
+                    attributes,
+                    extensions,
+                } = res;
+                use futures_util::StreamExt;
+                let counted = match payload {
+                    object_store::GetResultPayload::Stream(st) => {
+                        object_store::GetResultPayload::Stream(Box::pin(st.map(|chunk| {
+                            if let Ok(b) = &chunk {
+                                GET_BYTES.fetch_add(b.len() as u64, Ordering::Relaxed);
+                            }
+                            chunk
+                        })))
+                    }
+                    other => other,
+                };
+                object_store::GetResult {
+                    payload: counted,
+                    meta,
+                    range,
+                    attributes,
+                    extensions,
+                }
+            });
         }
         r
     }

@@ -1093,11 +1093,14 @@ pub fn router(state: Arc<AppState>) -> Router {
                             "lastReservedBytes": crate::history::GATHER_LAST_RESERVED.load(ord),
                             "lastActualBytes": crate::history::GATHER_LAST_ACTUAL.load(ord),
                             "lastReadMs": crate::history::GATHER_LAST_READ_MS.load(ord),
-                            "lastReadGets": crate::history::GATHER_LAST_GETS.load(ord),
-                            "lastReadFetchedBytes":
-                                crate::history::GATHER_LAST_FETCHED_BYTES.load(ord),
-                            "lastReadAmplificationX1000":
-                                crate::history::GATHER_LAST_READ_AMP_X1000.load(ord),
+                            // R25-F: per-gather amplification removed —
+                            // the global-delta attribution was
+                            // contaminated by concurrent traffic.
+                            // Process-wide TRANSFERRED bytes:
+                            "storeGetCount": crate::store_timing::GET_COUNT
+                                .load(std::sync::atomic::Ordering::Relaxed),
+                            "storeGetTransferredBytes": crate::store_timing::GET_BYTES
+                                .load(std::sync::atomic::Ordering::Relaxed),
                             "lastWriteMs": crate::history::GATHER_LAST_WRITE_MS.load(ord),
                             "lastFlushMs": crate::history::GATHER_LAST_FLUSH_MS.load(ord),
                             "absorbedBytesTotal": crate::history::ABSORB_BYTES_TOTAL.load(ord),

@@ -432,11 +432,6 @@ pub static INGEST_BYTES_TOTAL: AtomicU64 = AtomicU64::new(0);
 pub static GATHER_LAST_RESERVED: AtomicU64 = AtomicU64::new(0);
 pub static GATHER_LAST_ACTUAL: AtomicU64 = AtomicU64::new(0);
 pub static GATHER_LAST_READ_MS: AtomicU64 = AtomicU64::new(0);
-/// R23-6 read-amplification instrumentation for the last gather.
-pub static GATHER_LAST_GETS: AtomicU64 = AtomicU64::new(0);
-pub static GATHER_LAST_FETCHED_BYTES: AtomicU64 = AtomicU64::new(0);
-/// Fetched bytes per useful frame byte, x1000.
-pub static GATHER_LAST_READ_AMP_X1000: AtomicU64 = AtomicU64::new(0);
 pub static GATHER_LAST_WRITE_MS: AtomicU64 = AtomicU64::new(0);
 pub static GATHER_LAST_FLUSH_MS: AtomicU64 = AtomicU64::new(0);
 pub static HISTORY_FLUSH_WAIT_MS_MAX: AtomicU64 = AtomicU64::new(0);
@@ -1291,12 +1286,6 @@ impl Absorber {
         const ENTRY_OVERHEAD: usize = 64;
         let part = self.shard.history_partition().await?;
         let t_read = Instant::now();
-        // R23-6: snapshot object-store GETs so this gather's READ
-        // AMPLIFICATION (bytes fetched per useful frame byte) is
-        // measurable. The 21-42 s read phase is the real CHAOS-5
-        // ceiling; amplification is what explains it.
-        let get0 = crate::store_timing::GET_COUNT.load(std::sync::atomic::Ordering::Relaxed);
-        let bytes0 = crate::store_timing::GET_BYTES.load(std::sync::atomic::Ordering::Relaxed);
         let mut wb = WriteBatch::new();
         let mut out = GatherOutcome::default();
         let mut batch_bytes: usize = 0;
@@ -1448,23 +1437,15 @@ impl Absorber {
         let ord = std::sync::atomic::Ordering::Relaxed;
         GATHER_LAST_READ_MS.store(t_read.elapsed().as_millis() as u64, ord);
         GATHER_LAST_ACTUAL.store(batch_bytes as u64, ord);
-        let gets = crate::store_timing::GET_COUNT
-            .load(ord)
-            .saturating_sub(get0);
-        let fetched = crate::store_timing::GET_BYTES
-            .load(ord)
-            .saturating_sub(bytes0);
-        GATHER_LAST_GETS.store(gets, ord);
-        GATHER_LAST_FETCHED_BYTES.store(fetched, ord);
-        // x1000 so the ratio survives as an integer atomic.
-        GATHER_LAST_READ_AMP_X1000.store(
-            if batch_bytes > 0 {
-                fetched.saturating_mul(1000) / batch_bytes as u64
-            } else {
-                0
-            },
-            ord,
-        );
+        // R25-F: the per-gather read-amplification attribution was
+        // REMOVED. It snapshotted process-global GET deltas around the
+        // read phase, so concurrent customer/registry/billing/fleet
+        // traffic contaminated every sample — a number that looks like a
+        // measurement and is not is worse than no number. Operation-
+        // local attribution needs the metrics handle carried through
+        // SlateDB's scan and spawned fetch tasks (deferred fork patch);
+        // until then the process-wide transferred-byte counters in
+        // store_timing are the only honest read telemetry.
         let t_write = Instant::now();
         part.write_with_options(wb, &WriteOptions::default())
             .await?;
