@@ -53,7 +53,8 @@ def main():
     except OSError:
         tok = None
 
-    snapdir = f"{S}/store-snaps"
+    run_id = os.environ.get("SOAK_RUN_ID", "adhoc")
+    snapdir = f"{S}/results/{run_id}/store-snaps"
     os.makedirs(snapdir, exist_ok=True)
 
     for r in REGIONS:

@@ -137,6 +137,8 @@ for r in REGIONS:
     out["regions"][r] = entry
     print(f"harvested {r}: {len(tier_rows)} tiers", file=sys.stderr)
 
-with open(f"{S}/results.json", "w") as f:
+run_id = os.environ.get("SOAK_RUN_ID", "adhoc")
+os.makedirs(f"{S}/results/{run_id}", exist_ok=True)
+with open(f"{S}/results/{run_id}/results.json", "w") as f:
     json.dump(out, f, indent=2)
-print(f"wrote {S}/results.json", file=sys.stderr)
+print(f"wrote {S}/results/{run_id}/results.json", file=sys.stderr)

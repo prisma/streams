@@ -27,6 +27,14 @@ def provision(run_id, region):
     receipt_path = f"{S}/receipts/{region}.json"
     if os.path.exists(receipt_path):
         rc = json.load(open(receipt_path))
+        # R26-9: a receipt is reusable ONLY within its own run. A failed
+        # preserved campaign followed by a new SOAK_RUN_ID must not
+        # silently adopt the old project and namespace — that is how a
+        # "fresh" run reads a stale specimen's data.
+        if rc.get("runId") != run_id:
+            sys.exit(f"FATAL: receipt for {region} belongs to run "
+                     f"{rc.get('runId')!r}, not {run_id!r} — tear the old "
+                     f"campaign down (or delete the receipt) first")
         if rc.get("createdWithRegion") == region:
             print(f"  {region}: receipt exists (project {rc['projectId']}) — reusing")
             open(f"{S}/proj-{region}.txt", "w").write(rc["projectId"])
@@ -35,6 +43,14 @@ def provision(run_id, region):
                  f"{rc.get('createdWithRegion')!r} — refusing to reuse")
     proj = call("POST", "/projects",
         {"name": f"streams-{run_id}-{region}", "region": region})["data"]
+    # R26-9: record the project THE MOMENT it exists — a partial
+    # provisioning failure (bucket/key call dying) must leave enough
+    # state for teardown to find and delete the orphan project.
+    os.makedirs(f"{S}/receipts", exist_ok=True)
+    open(f"{S}/proj-{region}.txt", "w").write(proj["id"])
+    json.dump({"runId": run_id, "region": region, "projectId": proj["id"],
+               "partial": True, "createdWithRegion": region},
+              open(receipt_path, "w"), indent=1)
     bucket = call("POST", "/buckets",
         {"projectId": proj["id"], "name": f"{run_id}-{region}"})["data"]
     bkey = call("POST", f"/buckets/{bucket['id']}/keys",

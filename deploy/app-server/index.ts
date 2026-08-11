@@ -55,6 +55,14 @@ const serveDownloadFailure = (err: unknown) => {
 }
 }
 await chmod(bin, 0o755);
+// R26-9 build identity: hash the binary we actually downloaded and pass
+// it into the child's env; the server echoes it on /v1/debug/load and
+// verify-running compares it against the campaign's upload manifest.
+// An "R25 marker present" check alone admits ANY post-R25 binary.
+const hasher = new Bun.CryptoHasher("sha256");
+hasher.update(await Bun.file(bin).arrayBuffer());
+process.env.APP_BINARY_SHA256 = hasher.digest("hex");
+console.log(`binary sha256 ${process.env.APP_BINARY_SHA256}`);
 const port = process.env.PORT ?? "8080";
 console.log(`starting streams-slate on :${port}`);
 // superviseBinary never returns: if the binary exits it binds $PORT and

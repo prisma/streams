@@ -49,6 +49,18 @@ fi
 S=${SOAK_HOME:?set SOAK_HOME to a scratch dir outside the repo}
 BENCH_TIERS=${BENCH_TIERS:-1,2,4,8,12,16,24,32,48,64}
 BENCH_SECS=${BENCH_SECS:-180}
+# R26-9 campaign shape:
+#  SOAK_STREAMS_N          streams per region (default 32 — enough route
+#                          hashes to cover every physical shard; 1 stream
+#                          exercised exactly one segment of one shard)
+#  SOAK_LIMIT_RECS_PER_SEC per-stream record limiter for the campaign
+#                          (default 100000 — RAISED so the ordinary
+#                          limiter does not mask the maintenance bound;
+#                          the 2026-08-11 plateau was the 5k default,
+#                          not backpressure). Recorded in the report.
+#  SOAK_GATED              generators start parked and wait for the
+#                          campaign's synchronized POST /start (default
+#                          true; set false for ad-hoc single deploys)
 BIN_TAG=${BIN_TAG:-soak}
 # Keyspace prefix: override per run (soak2r1, soak2r2, ...) so repeated
 # runs start from a fresh keyspace without re-provisioning buckets.
@@ -151,6 +163,7 @@ if [ "$ROLE" = server ]; then
     --env FRAME_COMPRESS=1 \
     --env COMPACTOR_MAX_CONCURRENT=2 \
     --env ADMIT_MAX_INFLIGHT=512 --env ADMIT_MAX_INFLIGHT_PER_STREAM=256 \
+    --env LIMIT_RECS_PER_SEC="${SOAK_LIMIT_RECS_PER_SEC:-100000}" \
     --env ABSORB_BYTES=4194304 --env ABSORB_AGE_SECS=60 \
     --env ABSORB_PASS_BYTES=67108864 --env TRIM_PER_OP=65536 \
     --env POOL_IDLE_SECS=4 --env KEEP_AWAKE=1 \
@@ -169,6 +182,8 @@ else
     --env BENCH_SYSTEM=prisma --env BENCH_SHAPE=tiers --env BENCH_TARGET="$TARGET" \
     --env AUTH_TOKEN="$AUTH" --env STREAM_KEY="$KEY" \
     --env BENCH_STREAM="soak-$R" \
+    --env BENCH_STREAMS_N="${SOAK_STREAMS_N:-32}" \
+    --env BENCH_START_GATED="${SOAK_GATED:-true}" \
     --env BENCH_TIERS="$BENCH_TIERS" --env BENCH_SECS="$BENCH_SECS" \
     --env BENCH_BATCH=10 --env BENCH_RECORD_BYTES=1024 --env BENCH_CONSUME=true \
     --env BENCH_HOLD=1 --env KEEP_AWAKE=1 \

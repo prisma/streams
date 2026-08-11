@@ -31,6 +31,11 @@ for r in $REGIONS; do "$HERE/deploy-region.sh" "$r" server || fail "server-$r"; 
 for r in $REGIONS; do "$HERE/deploy-region.sh" "$r" gen    || fail "gen-$r"; done
 SOAK_REGIONS="$REGIONS" python3 "$HERE/verify-running.py" $REGIONS || fail verify
 
+# R26-9: generators deployed gated; release them together so every
+# region shares a common t0 and the recovery window is one controlled
+# measurement.
+SOAK_REGIONS="$REGIONS" python3 "$HERE/release.py" $REGIONS || fail release
+
 echo "== sampling for $SOAK_MINUTES minutes"
 END=$(( $(date +%s) + SOAK_MINUTES * 60 ))
 while [ "$(date +%s)" -lt "$END" ]; do
@@ -40,6 +45,9 @@ while [ "$(date +%s)" -lt "$END" ]; do
 done
 
 SOAK_REGIONS="$REGIONS" python3 "$HERE/harvest.py"    || fail harvest
+# R26-9: fixed post-ramp recovery window — every ramp proven finished,
+# then backlog + latches must clear within SOAK_RECOVERY_SECS.
+SOAK_REGIONS="$REGIONS" python3 "$HERE/recovery.py" $REGIONS || fail recovery
 SOAK_REGIONS="$REGIONS" python3 "$HERE/reconcile.py" $REGIONS || fail reconcile
 SOAK_REGIONS="$REGIONS" python3 "$HERE/mkreport.py" \
   > "$S/results/$SOAK_RUN_ID/report.md"               || fail report

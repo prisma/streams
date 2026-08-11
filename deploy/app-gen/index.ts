@@ -58,6 +58,12 @@ try {
   await serveDownloadFailure(e);
 }
 await chmod(bin, 0o755);
+// R26-9 build identity: hash the downloaded binary; awsbench echoes it
+// in every stats line ("binSha256") for verify-running.
+const hasher = new Bun.CryptoHasher("sha256");
+hasher.update(await Bun.file(bin).arrayBuffer());
+process.env.APP_BINARY_SHA256 = hasher.digest("hex");
+console.log(`binary sha256 ${process.env.APP_BINARY_SHA256}`);
 console.log(
   `starting awsbench system=${process.env.BENCH_SYSTEM} shape=${process.env.BENCH_SHAPE}`,
 );

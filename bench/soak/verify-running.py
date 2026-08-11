@@ -9,6 +9,14 @@ import json, os, sys, time, urllib.request
 
 S = os.environ["SOAK_HOME"]
 AUTH = open(f"{S}/auth.txt").read().strip()
+RUN_ID = os.environ.get("SOAK_RUN_ID", "")
+
+def manifest():
+    """The campaign's upload manifest (sha256 per S3 key), if present."""
+    try:
+        return json.load(open(f"{S}/results/{RUN_ID}/binaries.json"))
+    except Exception:
+        return {}
 
 def get(url, auth=False, timeout=30):
     req = urllib.request.Request(url, headers=(
@@ -25,10 +33,25 @@ def verify(region):
     d = json.loads(body)
     assert "maintenance_shards" in d, (
         f"{region}: no R25 marker — WRONG BUILD or stale URL")
+    # R26-9: the marker alone admits ANY post-R25 binary. The wrapper
+    # hashes what it actually downloaded; require the digest to match
+    # THIS campaign's upload manifest exactly.
+    man = manifest()
+    expected = {v["sha256"] for k, v in man.items() if "streams" in k}
+    got = d.get("binary_sha256", "unknown")
+    if expected:
+        assert got in expected, (
+            f"{region}: server binary sha {got[:16]} not in this "
+            f"campaign's manifest — a stale or foreign build is serving")
     st, body = get(f"{gen}/")
     g = json.loads(body)
     assert "ok" in g or isinstance(g, list), f"{region}: gen shape {body[:80]!r}"
-    print(f"  {region}: server live (R25 build), generator answering")
+    gen_expected = {v["sha256"] for k, v in man.items() if "awsbench" in k}
+    if gen_expected and isinstance(g, list) and g:
+        gsha = g[-1].get("binSha256", "")
+        assert gsha in gen_expected, (
+            f"{region}: generator binary sha {gsha[:16]} not in manifest")
+    print(f"  {region}: server live (build verified), generator answering")
 
 if __name__ == "__main__":
     failures = []

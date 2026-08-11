@@ -712,6 +712,12 @@ async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
         // R26-7: the ORDINARY per-stream limiter's refusals, by code —
         // so a throughput plateau is attributed to the right mechanism.
         "rate_limit_refusals": crate::usage::limit_refusals_json(),
+        // R26-9 build identity: the wrapper hashes the binary it
+        // actually downloaded and passes the digest in; verify-running
+        // compares it to the campaign's upload manifest. "unknown"
+        // outside wrapper-managed deployments.
+        "binary_sha256": std::env::var("APP_BINARY_SHA256")
+            .unwrap_or_else(|_| "unknown".into()),
         "stream_shed": state.stream_shed.load(std::sync::atomic::Ordering::Relaxed),
         "wedge_shed": state.wedge_shed.load(std::sync::atomic::Ordering::Relaxed),
         "streams_tracked": state.stream_inflight.lock().unwrap().len(),

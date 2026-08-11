@@ -62,9 +62,24 @@ struct Args {
     /// Prisma stream encryption key (system=prisma)
     #[arg(long, env = "STREAM_KEY", default_value = "")]
     stream_key: String,
-    /// Prisma stream name (system=prisma)
+    /// Prisma stream name (system=prisma). With --streams-n > 1 this
+    /// is the PREFIX: streams are "<stream>-0" .. "<stream>-{n-1}".
     #[arg(long, env = "BENCH_STREAM", default_value = "cmp-1")]
     stream: String,
+    /// R26-9: number of streams to spray (prisma only). One stream
+    /// exercises one segment of one shard; a multi-shard campaign needs
+    /// enough streams that route hashes cover every physical shard.
+    /// Records go to stream op %% n, so the reconciler can verify the
+    /// union without a per-op stream map.
+    #[arg(long, env = "BENCH_STREAMS_N", default_value_t = 1)]
+    streams_n: usize,
+    /// R26-9: hold BEFORE the first tier until the campaign POSTs
+    /// /start on the stats port. All regions deploy sequentially over
+    /// minutes; a synchronized release gives every generator a common
+    /// t0 so per-region windows are comparable and the recovery window
+    /// after the ramp is a controlled, shared measurement.
+    #[arg(long, env = "BENCH_START_GATED", default_value_t = false)]
+    start_gated: bool,
 }
 
 struct Stats {
@@ -117,6 +132,9 @@ struct Stats {
     /// not just within one run_load call, or the exactly-once check
     /// sees legitimate cross-tier duplicates.
     op_seq: AtomicU64,
+    /// R26-9: set by POST /start on the stats port; a gated run parks
+    /// until it flips.
+    released: AtomicU64,
 }
 
 impl Stats {
@@ -145,6 +163,7 @@ impl Stats {
             rejected_ops: Mutex::new(Vec::new()),
             ambiguous_ops: Mutex::new(Vec::new()),
             op_seq: AtomicU64::new(0),
+            released: AtomicU64::new(0),
         })
     }
     fn record_ok(&self, lat_us: u64, records: u64) {
@@ -207,8 +226,9 @@ enum Outcome {
 enum Client {
     Kinesis(aws_sdk_kinesis::Client, String),
     Sqs(aws_sdk_sqs::Client, String),
-    /// (http, base_url, stream_name, auth, key)
-    Prisma(reqwest::Client, String, String, String, String),
+    /// (http, base_url, stream_names, auth, key). Requests spray
+    /// streams by op id (op %% n); stream 0 is the consumer's target.
+    Prisma(reqwest::Client, String, Arc<Vec<String>>, String, String),
 }
 
 impl Client {
@@ -306,7 +326,8 @@ impl Client {
                     }
                 }
             }
-            Client::Prisma(http, base, stream, auth, key) => {
+            Client::Prisma(http, base, streams, auth, key) => {
+                let stream = &streams[(seq % streams.len() as u64) as usize];
                 let recs: Vec<serde_json::Value> = (0..batch)
                     .map(|b| {
                         serde_json::json!({
@@ -526,6 +547,7 @@ async fn run_load(
         "throttledByCode": &*stats.throttled_by_code.lock().unwrap(),
         "throttledByStatus": &*stats.throttled_by_status.lock().unwrap(),
         "ambiguous": stats.ambiguous_ops.lock().unwrap().len(),
+        "binSha256": std::env::var("APP_BINARY_SHA256").unwrap_or_default(),
         "recordsDecoded": stats.records_decoded.load(Ordering::Relaxed),
         "bodyFailures": stats.body_failures.load(Ordering::Relaxed),
         "lastErr": stats.last_err.lock().unwrap().clone(),
@@ -651,8 +673,11 @@ async fn run_consumer(client: Client, stats: Arc<Stats>, stop: Arc<AtomicU64>) {
                 }
             }
         }
-        Client::Prisma(http, base, stream, auth, key) => {
-            prisma_tail_loop(&http, &base, &stream, &auth, &key, &stats, &stop).await;
+        Client::Prisma(http, base, streams, auth, key) => {
+            // The chaser follows stream 0; with streams-n > 1 the
+            // roundtrip metric samples 1/n of the traffic — recorded in
+            // the campaign report, not silently.
+            prisma_tail_loop(&http, &base, &streams[0], &auth, &key, &stats, &stop).await;
         }
     }
 }
@@ -824,7 +849,10 @@ async fn stats_server(stats: Arc<Stats>) {
                 .nth(1)
                 .unwrap_or("/")
                 .to_string();
-            let body = if path.starts_with("/ledger") {
+            let body = if path.starts_with("/start") {
+                stats.released.store(1, Ordering::Relaxed);
+                "{\"started\":true}".to_string()
+            } else if path.starts_with("/ledger") {
                 // R26-8: the exact op ledger, as compressed ranges.
                 let acked = compress_ranges(&mut stats.acked_ops.lock().unwrap());
                 let rejected = compress_ranges(&mut stats.rejected_ops.lock().unwrap());
@@ -900,41 +928,49 @@ async fn main() -> anyhow::Result<()> {
             // failed the create, and every subsequent append 404'd for
             // the whole run while the generator looked merely unlucky
             // (soak2 run 1, ap-southeast-1, 2026-07-27).
-            let mut created = false;
-            for attempt in 0..30u32 {
-                match http
-                    .put(format!("{}/v1/stream/{}", args.target, args.stream))
-                    .header("authorization", format!("Bearer {}", args.auth))
-                    .header("stream-encryption-key", args.stream_key.clone())
-                    .header("content-type", "application/json")
-                    .send()
-                    .await
-                {
-                    // 2xx = created; 409 = already exists (a rerun) —
-                    // both mean appends will not 404.
-                    Ok(r) if r.status().is_success() || r.status().as_u16() == 409 => {
-                        created = true;
-                        break;
+            let names: Vec<String> = if args.streams_n <= 1 {
+                vec![args.stream.clone()]
+            } else {
+                (0..args.streams_n)
+                    .map(|i| format!("{}-{i}", args.stream))
+                    .collect()
+            };
+            for name in &names {
+                let mut created = false;
+                for attempt in 0..30u32 {
+                    match http
+                        .put(format!("{}/v1/stream/{}", args.target, name))
+                        .header("authorization", format!("Bearer {}", args.auth))
+                        .header("stream-encryption-key", args.stream_key.clone())
+                        .header("content-type", "application/json")
+                        .send()
+                        .await
+                    {
+                        // 2xx = created; 409 = already exists (a rerun) —
+                        // both mean appends will not 404.
+                        Ok(r) if r.status().is_success() || r.status().as_u16() == 409 => {
+                            created = true;
+                            break;
+                        }
+                        Ok(r) => eprintln!(
+                            "stream create attempt {attempt}: status {}",
+                            r.status()
+                        ),
+                        Err(e) => eprintln!("stream create attempt {attempt}: {e}"),
                     }
-                    Ok(r) => eprintln!(
-                        "stream create attempt {attempt}: status {}",
-                        r.status()
-                    ),
-                    Err(e) => eprintln!("stream create attempt {attempt}: {e}"),
+                    tokio::time::sleep(Duration::from_secs(2)).await;
                 }
-                tokio::time::sleep(Duration::from_secs(2)).await;
-            }
-            if !created {
-                anyhow::bail!(
-                    "stream {} could not be created after 30 attempts; refusing \
-                     to run a benchmark whose every append would 404",
-                    args.stream
-                );
+                if !created {
+                    anyhow::bail!(
+                        "stream {name} could not be created after 30 attempts; \
+                         refusing to run a benchmark whose every append would 404"
+                    );
+                }
             }
             Client::Prisma(
                 http,
                 args.target.clone(),
-                args.stream.clone(),
+                Arc::new(names),
                 args.auth.clone(),
                 args.stream_key.clone(),
             )
@@ -947,6 +983,14 @@ async fn main() -> anyhow::Result<()> {
         .append(true)
         .open(&args.out)
         .context("open out")?;
+
+    if args.start_gated {
+        eprintln!("BENCH_GATED: waiting for POST /start on the stats port");
+        while stats.released.load(Ordering::Relaxed) == 0 {
+            tokio::time::sleep(Duration::from_millis(250)).await;
+        }
+        eprintln!("BENCH_RELEASED");
+    }
 
     let consumer_stop = Arc::new(AtomicU64::new(0));
     let consumer = if args.consume {

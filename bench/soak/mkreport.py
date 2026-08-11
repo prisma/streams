@@ -3,7 +3,9 @@
 import json, os, sys
 
 S = os.environ.get("SOAK_HOME") or os.path.dirname(os.path.abspath(__file__))
-d = json.load(open(f"{S}/results.json"))
+RUN_ID = os.environ.get("SOAK_RUN_ID", "adhoc")
+RUNDIR = f"{S}/results/{RUN_ID}"
+d = json.load(open(f"{RUNDIR}/results.json"))
 R = d["regions"]
 ORDER = ["us-east-1", "us-west-1", "eu-central-1", "eu-west-3",
          "ap-southeast-1", "ap-northeast-1"]
@@ -79,17 +81,22 @@ for op in allops:
 W("")
 
 # ---------- 4. integrity ----------
-W("### Integrity: client-accepted vs server-durable\n")
-W("| region | client records (ok x batch) | server records | delta | shards |")
-W("|---|---|---|---|---|")
+# R26-9: sourced from the CANONICAL reconciliation output, not the
+# usage counters — usage counts at staging and is not an integrity
+# ledger under shed storms.
+W("### Integrity: reconciliation (canonical)\n")
+try:
+    rec = {row["region"]: row
+           for row in json.load(open(f"{RUNDIR}/reconcile.json"))}
+except Exception:
+    rec = {}
+W("| region | mode | acked records | durable records | walked | ambiguous landed | verdict |")
+W("|---|---|---|---|---|---|---|")
 for r in ORDER:
-    e = R[r]
-    cli = e.get("totals", {}).get("records")
-    us = e.get("usage", {})
-    streams = us.get("streams", []) if isinstance(us, dict) else []
-    srv = sum(s.get("records", 0) for s in streams)
-    delta = (srv - cli) if (cli is not None) else None
-    W(f"| {r} | {f(cli)} | {f(srv)} | {f(delta)} | {len(streams)} |")
+    row = rec.get(r, {})
+    W(f"| {r} | {row.get('mode', '—')} | {f(row.get('acked_records'))} | "
+      f"{f(row.get('durable_records'))} | {f(row.get('walked_records'))} | "
+      f"{f(row.get('landed_ambiguous'))} | {row.get('verdict', '—')} |")
 W("")
 
 print("\n".join(out))
