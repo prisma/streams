@@ -28,6 +28,8 @@ REOPEN_BOUND=${SOAK_CAP_REOPEN_BOUND:-300}
 export SOAK_REGIONS="$R"
 D="$S/results/$SOAK_RUN_ID"
 mkdir -p "$D"
+# A retried run id must not inherit a prior attempt's failure marker.
+rm -f "$D/FAILED"
 echo "$SOAK_RUN_ID" > "$S/current-run-id.txt"
 echo "== capacity gate $SOAK_RUN_ID region=$R conc=$CONC secs=$SECS pause@${PAUSE_AT}s"
 

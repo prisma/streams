@@ -47,7 +47,10 @@ else
 fi
 
 S=${SOAK_HOME:?set SOAK_HOME to a scratch dir outside the repo}
-BENCH_TIERS=${BENCH_TIERS:-1,2,4,8,12,16,24,32,48,64}
+# ${VAR-default} (no colon): an EXPLICITLY EMPTY BENCH_TIERS means
+# "no ramp" (the capacity gate's sustained shape) and must survive;
+# ${VAR:-default} would resurrect the ramp for empty values.
+BENCH_TIERS=${BENCH_TIERS-1,2,4,8,12,16,24,32,48,64}
 BENCH_SECS=${BENCH_SECS:-180}
 # R26-9 campaign shape:
 #  SOAK_STREAMS_N          streams per region (default 32 — enough route
