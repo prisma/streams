@@ -34,12 +34,27 @@
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
 
 /// Thresholds. Zero disables an individual bound.
+///
+/// SEMANTICS (R26-6, documented decision): these are RESIDENT-SAFETY
+/// bounds. The instance aggregate covers the engines this process
+/// currently has OPEN — the memory, commit pipelines, and replay work
+/// resident right now — because a closed shard consumes no process
+/// resources. An owned-but-cold shard with durable backlog is NOT in
+/// the aggregate; it is protected individually the moment anything
+/// opens it, because the engine loads its durable ledger before
+/// serving and the per-shard gate evaluates on first access. These
+/// limits are therefore not contractual bounds on total owned hot-tier
+/// storage or fleet-wide recovery backlog; ownership-wide accounting
+/// (an owned-shard index summing one-row maintenance reads without
+/// opening engines) is pre-fleet-GA work, tracked separately. The old
+/// MAX_REPLAY_BYTES bound was deleted for exactly this honesty: it was
+/// the same open-engine sum as the instance bound under a name that
+/// implied ownership-wide replay projection.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Limits {
     pub unabsorbed_bytes_instance: u64,
     pub unabsorbed_bytes_shard: u64,
     pub absorb_lag_secs: u64,
-    pub replay_bytes: u64,
     /// Release threshold as a percentage of the engage threshold.
     /// 75 means "engage at the limit, release at 75% of it".
     pub release_pct: u64,
@@ -60,7 +75,6 @@ impl Limits {
             unabsorbed_bytes_instance: v("MAX_UNABSORBED_BYTES_PER_INSTANCE", 512 * 1024 * 1024),
             unabsorbed_bytes_shard: v("MAX_UNABSORBED_BYTES_PER_SHARD", 256 * 1024 * 1024),
             absorb_lag_secs: v("MAX_ABSORB_LAG_SECS", 900),
-            replay_bytes: v("MAX_REPLAY_BYTES", 512 * 1024 * 1024),
             release_pct: v("MAINT_BACKPRESSURE_RELEASE_PCT", 75).min(100),
         }
     }
@@ -69,7 +83,6 @@ impl Limits {
         self.unabsorbed_bytes_instance > 0
             || self.unabsorbed_bytes_shard > 0
             || self.absorb_lag_secs > 0
-            || self.replay_bytes > 0
     }
 }
 
@@ -80,7 +93,6 @@ pub struct Snapshot {
     pub unabsorbed_bytes_instance: u64,
     pub unabsorbed_bytes_max_shard: u64,
     pub absorb_lag_secs: u64,
-    pub replay_bytes: u64,
 }
 
 /// Which bound tripped. Ordered by how actionable it is for an operator.
@@ -89,7 +101,6 @@ pub enum Cause {
     InstanceBytes,
     ShardBytes,
     LagSecs,
-    ReplayBytes,
 }
 
 impl Cause {
@@ -98,7 +109,6 @@ impl Cause {
             Cause::InstanceBytes => "unabsorbed bytes on this instance",
             Cause::ShardBytes => "unabsorbed bytes on one shard",
             Cause::LagSecs => "absorb lag",
-            Cause::ReplayBytes => "projected replay bytes",
         }
     }
     fn code(self) -> u8 {
@@ -106,7 +116,6 @@ impl Cause {
             Cause::InstanceBytes => 1,
             Cause::ShardBytes => 2,
             Cause::LagSecs => 3,
-            Cause::ReplayBytes => 4,
         }
     }
     fn from_code(c: u8) -> Option<Self> {
@@ -114,7 +123,6 @@ impl Cause {
             1 => Cause::InstanceBytes,
             2 => Cause::ShardBytes,
             3 => Cause::LagSecs,
-            4 => Cause::ReplayBytes,
             _ => return None,
         })
     }
@@ -133,7 +141,6 @@ pub fn next_state(engaged: bool, s: &Snapshot, l: &Limits) -> (bool, Option<Caus
         (Cause::InstanceBytes, s.unabsorbed_bytes_instance, l.unabsorbed_bytes_instance),
         (Cause::ShardBytes, s.unabsorbed_bytes_max_shard, l.unabsorbed_bytes_shard),
         (Cause::LagSecs, s.absorb_lag_secs, l.absorb_lag_secs),
-        (Cause::ReplayBytes, s.replay_bytes, l.replay_bytes),
     ];
     if !engaged {
         for (cause, got, limit) in pairs {
@@ -167,8 +174,8 @@ pub static LAST_UNABSORBED: AtomicU64 = AtomicU64::new(0);
 pub static LAST_LAG_SECS: AtomicU64 = AtomicU64::new(0);
 
 /// Instance-wide latch: `Some(cause)` when the WHOLE instance is over a
-/// process-level bound. Only the instance aggregate, lag, and replay
-/// bounds set this — never a single shard's byte bound.
+/// process-level bound. Only the instance aggregate and lag bounds set
+/// this — never a single shard's byte bound.
 pub fn engaged() -> Option<Cause> {
     if !ENGAGED.load(Ordering::Relaxed) {
         return None;
@@ -255,11 +262,17 @@ pub fn apply(s: &Snapshot, l: &Limits) -> bool {
     now
 }
 
-/// Snapshot the CURRENTLY OWNED engines' maintenance state (R25-C).
+/// Snapshot the RESIDENT engines' maintenance state (R25-C, semantics
+/// pinned in R26-6).
 ///
-/// Each engine's state was loaded from its durable row before it began
-/// serving, and it leaves this aggregate the moment the engine leaves
-/// `state.shards` — no process-global map to go stale.
+/// This iterates `state.shards` — the engines currently OPEN in this
+/// process — which is exactly the resident-safety scope the limits
+/// document: open engines are what consume this process's memory and
+/// pipelines. An owned-but-cold shard is absent here BY DESIGN; its
+/// durable ledger is loaded before it ever serves, so the per-shard
+/// gate covers it on first access. Each engine's state leaves this
+/// aggregate the moment the engine leaves `state.shards` — no
+/// process-global map to go stale.
 pub fn snapshot(state: &crate::http::AppState) -> Snapshot {
     let engines: Vec<std::sync::Arc<crate::shard::ShardEngine>> =
         state.shards.read().unwrap().values().cloned().collect();
@@ -280,7 +293,6 @@ pub fn snapshot(state: &crate::http::AppState) -> Snapshot {
         // age — under continuous traffic an oldest-record clock stays
         // permanently old even while absorption keeps up.
         absorb_lag_secs: max_stall,
-        replay_bytes: total,
     }
 }
 
@@ -319,7 +331,6 @@ mod tests {
             unabsorbed_bytes_instance: 1000,
             unabsorbed_bytes_shard: 800,
             absorb_lag_secs: 100,
-            replay_bytes: 0, // disabled
             release_pct: 75,
         }
     }
@@ -374,14 +385,12 @@ mod tests {
             unabsorbed_bytes_instance: 0,
             unabsorbed_bytes_shard: 0,
             absorb_lag_secs: 100,
-            replay_bytes: 0,
             release_pct: 75,
         };
         let huge = Snapshot {
             unabsorbed_bytes_instance: u64::MAX,
             unabsorbed_bytes_max_shard: u64::MAX,
             absorb_lag_secs: 1,
-            replay_bytes: u64::MAX,
             ..Default::default()
         };
         assert_eq!(

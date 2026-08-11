@@ -1244,7 +1244,6 @@ async fn async_main() -> anyhow::Result<()> {
             unabsorbed_instance = bp_limits.unabsorbed_bytes_instance,
             unabsorbed_shard = bp_limits.unabsorbed_bytes_shard,
             lag_secs = bp_limits.absorb_lag_secs,
-            replay_bytes = bp_limits.replay_bytes,
             release_pct = bp_limits.release_pct,
             "maintenance backpressure bounds",
         );

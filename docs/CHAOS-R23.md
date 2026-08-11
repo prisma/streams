@@ -70,7 +70,9 @@ rather than recognising it as a hole in my own claim.
 
 `src/backpressure.rs`. High/low hysteresis over
 `MAX_UNABSORBED_BYTES_PER_INSTANCE`, `MAX_UNABSORBED_BYTES_PER_SHARD`,
-`MAX_ABSORB_LAG_SECS`, `MAX_REPLAY_BYTES`. Past the high mark, new
+`MAX_ABSORB_LAG_SECS` (`MAX_REPLAY_BYTES` existed in this round and was
+deleted in R26-6: it was the same open-engine sum as the instance bound
+under a name implying ownership-wide replay projection). Past the high mark, new
 appends get a retryable `503 maintenance_backpressure`; admission
 reopens below the low mark.
 
