@@ -1,5 +1,17 @@
 # R24 — the backlog bound becomes a real boundary
 
+> **SUPERSEDED (2026-08-12) — historical record only.** The R24
+> implementation this document describes was replaced by R25/R26; read
+> `docs/MAINTENANCE-BACKPRESSURE.md` for the shipped system. Materially
+> stale claims below: `src/maintenance.rs` (the runtime mirror) was
+> DELETED — maintenance state is engine-owned and loaded synchronously
+> before serving; restoration is no longer asynchronous; accounting is
+> exact encoded FRAME bytes, not payload units (the R24 unit
+> manufactured the 9.4% "absorption ratio" artifact); the R24 tests
+> were superseded by the R25-D/R26 gates; and query strictness now
+> covers every public route. Evidence labels and review verifications
+> below describe the R24 snapshot, not the current binary.
+
 Response to the review of `0d87ea9b`. Its verdict on R23-1 was that the
 mechanism had the right architecture but the wrong source of truth:
 
