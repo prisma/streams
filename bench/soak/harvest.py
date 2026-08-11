@@ -70,8 +70,13 @@ for r in REGIONS:
     for label in sorted(tiers):
         ss = tiers[label]
         # drop the first window of each tier: it straddles the concurrency
-        # step-up and mixes the previous tier's in-flight requests.
+        # step-up and mixes the previous tier's in-flight requests. Also
+        # drop R26-8 final records from rate/latency medians — they carry
+        # exact cumulative counters but no window rates (ss[-1] below
+        # still reads them for the cumulative columns, which is exactly
+        # their job).
         body_ss = ss[1:] if len(ss) > 2 else ss
+        body_ss = [x for x in body_ss if not x.get("final")] or body_ss
         appends_p50 = [x["winP50Ms"] for x in body_ss if x.get("winP50Ms")]
         appends_p99 = [x["winP99Ms"] for x in body_ss if x.get("winP99Ms")]
         rt_p50 = [x["tailP50Ms"] for x in body_ss if x.get("tailP50Ms")]

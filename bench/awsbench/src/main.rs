@@ -104,6 +104,19 @@ struct Stats {
     /// misattributed for exactly this reason.
     throttled_by_code: Mutex<std::collections::HashMap<String, u64>>,
     throttled_by_status: Mutex<std::collections::HashMap<String, u64>>,
+    /// R26-8 exact op ledger. Every request carries its sequence number
+    /// in every record ({"op": seq, "b": batch_pos}); the outcome files
+    /// the op under exactly one disposition. `/ledger` serves the three
+    /// sets as compressed [start, end] ranges so the reconciler can
+    /// verify EXACT integrity: every acked op present exactly once with
+    /// all batch positions, rejected ops absent, ambiguous 0-or-1.
+    acked_ops: Mutex<Vec<u64>>,
+    rejected_ops: Mutex<Vec<u64>>,
+    ambiguous_ops: Mutex<Vec<u64>>,
+    /// Process-global op sequence: op ids must be unique across TIERS,
+    /// not just within one run_load call, or the exactly-once check
+    /// sees legitimate cross-tier duplicates.
+    op_seq: AtomicU64,
 }
 
 impl Stats {
@@ -128,6 +141,10 @@ impl Stats {
             lines: Mutex::new(Vec::new()),
             throttled_by_code: Mutex::new(std::collections::HashMap::new()),
             throttled_by_status: Mutex::new(std::collections::HashMap::new()),
+            acked_ops: Mutex::new(Vec::new()),
+            rejected_ops: Mutex::new(Vec::new()),
+            ambiguous_ops: Mutex::new(Vec::new()),
+            op_seq: AtomicU64::new(0),
         })
     }
     fn record_ok(&self, lat_us: u64, records: u64) {
@@ -177,7 +194,13 @@ enum Outcome {
     Ok { records: u64 },
     /// Request throttled (possibly partially delivered — Kinesis).
     Throttle { delivered: u64, status: u16, code: String },
+    /// Definitive refusal or failure: a PARSED server response says the
+    /// request did not commit.
     Err(String),
+    /// Transport failure after the request left (timeout, reset): the
+    /// server may have committed 0 or 1 times. The reconciler treats
+    /// these ops as allowed-but-not-required to appear.
+    Ambiguous(String),
 }
 
 #[derive(Clone)]
@@ -288,6 +311,9 @@ impl Client {
                     .map(|b| {
                         serde_json::json!({
                             "t": now_ms(),
+                            // R26-8 op identity: request sequence + batch
+                            // position, the exact-reconciliation key.
+                            "op": seq,
                             "b": b,
                             "pad": "x".repeat(record_bytes.saturating_sub(40).max(1)),
                         })
@@ -326,7 +352,7 @@ impl Client {
                             Outcome::Err(format!("status {status}"))
                         }
                     }
-                    Err(e) => Outcome::Err(e.to_string()),
+                    Err(e) => Outcome::Ambiguous(e.to_string()),
                 }
             }
         }
@@ -345,25 +371,32 @@ async fn run_load(
 ) -> anyhow::Result<()> {
     use std::io::Write;
     let stop = Arc::new(AtomicU64::new(0));
-    let seq = Arc::new(AtomicU64::new(0));
     let mut workers = Vec::new();
     for _ in 0..conc {
         let client = client.clone();
         let stats = stats.clone();
         let stop = stop.clone();
-        let seq = seq.clone();
         workers.push(tokio::spawn(async move {
             while stop.load(Ordering::Relaxed) == 0 {
-                let s = seq.fetch_add(1, Ordering::Relaxed);
+                let s = stats.op_seq.fetch_add(1, Ordering::Relaxed);
                 let t0 = Instant::now();
                 match client.send(batch, record_bytes, s).await {
                     Outcome::Ok { records } => {
-                        stats.record_ok(t0.elapsed().as_micros() as u64, records)
+                        stats.record_ok(t0.elapsed().as_micros() as u64, records);
+                        stats.acked_ops.lock().unwrap().push(s);
                     }
                     Outcome::Throttle { delivered, status, code } => {
-                        stats.record_throttle(delivered, status, &code)
+                        stats.record_throttle(delivered, status, &code);
+                        stats.rejected_ops.lock().unwrap().push(s);
                     }
-                    Outcome::Err(m) => stats.record_err(m),
+                    Outcome::Err(m) => {
+                        stats.record_err(m);
+                        stats.rejected_ops.lock().unwrap().push(s);
+                    }
+                    Outcome::Ambiguous(m) => {
+                        stats.record_err(m);
+                        stats.ambiguous_ops.lock().unwrap().push(s);
+                    }
                 }
             }
         }));
@@ -451,6 +484,7 @@ async fn run_load(
             "throttled": stats.throttled.load(Ordering::Relaxed),
             "throttledByCode": &*stats.throttled_by_code.lock().unwrap(),
             "throttledByStatus": &*stats.throttled_by_status.lock().unwrap(),
+            "ambiguous": stats.ambiguous_ops.lock().unwrap().len(),
             "tailP50Ms": tail.map(|t| t.0),
             "tailP99Ms": tail.map(|t| t.1),
             "tailDecP50Ms": tail_dec.map(|t| t.0),
@@ -473,7 +507,51 @@ async fn run_load(
     for w in workers {
         let _ = w.await;
     }
+    // R26-8: one FINAL record with post-join cumulative counters. The
+    // periodic lines are snapshots taken while workers were mid-flight;
+    // requests completing after the last window were invisible (exactly
+    // one per worker in the 2026-08-11 soak: the +640 excess). The
+    // reconciler reads the last line, which is now this one; rate and
+    // latency fields are deliberately null so harvest medians skip it.
+    let fin = serde_json::json!({
+        "ts": now_ms() / 1000,
+        "label": label,
+        "conc": conc,
+        "batch": batch,
+        "recordBytes": record_bytes,
+        "final": true,
+        "ok": stats.ok.load(Ordering::Relaxed),
+        "errs": stats.errs.load(Ordering::Relaxed),
+        "throttled": stats.throttled.load(Ordering::Relaxed),
+        "throttledByCode": &*stats.throttled_by_code.lock().unwrap(),
+        "throttledByStatus": &*stats.throttled_by_status.lock().unwrap(),
+        "ambiguous": stats.ambiguous_ops.lock().unwrap().len(),
+        "recordsDecoded": stats.records_decoded.load(Ordering::Relaxed),
+        "bodyFailures": stats.body_failures.load(Ordering::Relaxed),
+        "lastErr": stats.last_err.lock().unwrap().clone(),
+    })
+    .to_string();
+    writeln!(out, "{fin}")?;
+    out.flush()?;
+    eprintln!("{fin}");
+    stats.lines.lock().unwrap().push(fin);
     Ok(())
+}
+
+/// Sorted inclusive [start, end] ranges from raw op ids (R26-8): the
+/// ledger stays a few KB even at millions of ops because worker
+/// sequences are dense.
+fn compress_ranges(ids: &mut Vec<u64>) -> Vec<(u64, u64)> {
+    ids.sort_unstable();
+    ids.dedup();
+    let mut out: Vec<(u64, u64)> = Vec::new();
+    for &id in ids.iter() {
+        match out.last_mut() {
+            Some((_, e)) if *e + 1 == id => *e = id,
+            _ => out.push((id, id)),
+        }
+    }
+    out
 }
 
 /// Shape D consumer: read the ordered unit, extract producer timestamps,
@@ -732,17 +810,39 @@ async fn stats_server(stats: Arc<Stats>) {
     eprintln!("awsbench stats on :{port}");
     loop {
         let Ok((mut sock, _)) = listener.accept().await else { continue };
-        let lines = stats.lines.lock().unwrap().join(",");
-        let body = format!("[{lines}]");
-        let resp = format!(
-            "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
-            body.len(),
-            body
-        );
+        let stats = stats.clone();
         tokio::spawn(async move {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
             let mut buf = [0u8; 2048];
-            let _ = tokio::time::timeout(Duration::from_secs(2), sock.read(&mut buf)).await;
+            let n = match tokio::time::timeout(Duration::from_secs(2), sock.read(&mut buf)).await {
+                Ok(Ok(n)) => n,
+                _ => 0,
+            };
+            let req = String::from_utf8_lossy(&buf[..n]);
+            let path = req
+                .split_whitespace()
+                .nth(1)
+                .unwrap_or("/")
+                .to_string();
+            let body = if path.starts_with("/ledger") {
+                // R26-8: the exact op ledger, as compressed ranges.
+                let acked = compress_ranges(&mut stats.acked_ops.lock().unwrap());
+                let rejected = compress_ranges(&mut stats.rejected_ops.lock().unwrap());
+                let ambiguous = compress_ranges(&mut stats.ambiguous_ops.lock().unwrap());
+                serde_json::json!({
+                    "acked": acked,
+                    "rejected": rejected,
+                    "ambiguous": ambiguous,
+                })
+                .to_string()
+            } else {
+                format!("[{}]", stats.lines.lock().unwrap().join(","))
+            };
+            let resp = format!(
+                "HTTP/1.1 200 OK\r\ncontent-type: application/json\r\ncontent-length: {}\r\nconnection: close\r\n\r\n{}",
+                body.len(),
+                body
+            );
             let _ = sock.write_all(resp.as_bytes()).await;
             let _ = sock.shutdown().await;
         });
