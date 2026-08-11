@@ -629,17 +629,6 @@ pub struct AbsorberConfig {
     /// resident handles. Signals are the fast path; the sweep closes
     /// their gaps (bounded-channel drops under wide backlogs, restarts).
     pub sweep_every: u32,
-    /// Interim sparse-stream policy (cost review round 2 verdict): the
-    /// AGE trigger only fires for streams with at least this many
-    /// pending bytes. A one-record stream costs ~43 Class A requests to
-    /// move into per-stream history and its cold reads get SLOWER
-    /// (28 → 321 ms), so tiny streams stay in the shard log — already
-    /// durable there — until they accumulate real volume, the byte
-    /// threshold fires, or shared history (docs/HISTORY-V2.md) lands.
-    /// Deferred streams are counted separately from lag
-    /// (`deferred_sparse_*` in /v1/debug/usage) so an intentional cost
-    /// policy never reads as unhealthy absorption.
-    pub min_age_bytes: u64,
     /// Aggregate byte budget for ONE v2 gather WriteBatch (keys + frame
     /// values, keyed index duplicates counted twice). Without it the
     /// lane's nominal exposure is V2_LANE_PER_TICK x per-stream cap
@@ -668,7 +657,6 @@ impl Default for AbsorberConfig {
             small_pass_bytes: 1024 * 1024,
             concurrency: 6,
             sweep_every: 12,
-            min_age_bytes: 256 * 1024,
             gather_max_bytes: 32 * 1024 * 1024,
         }
     }
@@ -931,36 +919,30 @@ impl Absorber {
                                         .is_some_and(|a| a < v.0)
                             });
                         }
-                        // Publish absorption lag (scale-out signal) for
-                        // ELIGIBLE streams only: a stream the sparse
-                        // policy defers (under min_age_bytes) is a cost
-                        // decision, not unhealthy absorption, and must
-                        // not trip the rebalancer. Deferred streams are
-                        // counted separately.
+                        // Publish absorption lag (scale-out signal).
+                        // Every pending stream is eligible: the interim
+                        // sparse-deferral mode (age absorption gated on
+                        // min_age_bytes) was DELETED in R26-1 — shared
+                        // history v2 made absorb-all economical, and a
+                        // sub-threshold residual that never retired kept
+                        // the durable no-progress clock ticking until
+                        // the LagSecs latch shed the whole instance
+                        // while the residual could never grow eligible
+                        // (the 2026-08-11 soak measured 938 s of stall
+                        // on a 154 KiB residual — one tick from that
+                        // deadlock).
                         let mut eligible: u64 = 0;
                         let mut oldest_eligible: u64 = 0;
-                        let mut deferred: u64 = 0;
-                        let mut deferred_bytes: u64 = 0;
                         for (h, p) in pending.iter() {
                             let age = p.since.elapsed().as_secs();
-                            if p.bytes >= absorber.cfg.threshold_bytes
-                                || p.bytes >= absorber.cfg.min_age_bytes
-                            {
-                                eligible += 1;
-                                oldest_eligible = oldest_eligible.max(age);
-                                crate::usage::set_absorb_lag(crate::crypto::SegmentHash(*h), age);
-                            } else {
-                                deferred += 1;
-                                deferred_bytes += p.bytes;
-                                crate::usage::clear_absorb_lag(crate::crypto::SegmentHash(*h));
-                            }
+                            eligible += 1;
+                            oldest_eligible = oldest_eligible.max(age);
+                            crate::usage::set_absorb_lag(crate::crypto::SegmentHash(*h), age);
                         }
                         crate::usage::set_absorb_pending_summary(
                             &absorber.shard.prefix,
                             eligible,
                             oldest_eligible,
-                            deferred,
-                            deferred_bytes,
                         );
                         // Per-shard lag: the rebalancer picks its victim
                         // from THIS, keyed by the shard we actually serve.
@@ -974,15 +956,15 @@ impl Absorber {
                         if absorb_paused() {
                             continue;
                         }
-                        // Due = byte threshold, OR old enough AND fat
-                        // enough for age absorption (the interim sparse
-                        // policy: tiny streams stay in the shard log).
+                        // Due = byte threshold OR old enough. Age
+                        // absorbs EVERYTHING — no sparse floor (R26-1):
+                        // any durable residual left to sit forever is a
+                        // no-progress stall to the maintenance latch.
                         let mut due: Vec<([u8; 16], u64)> = pending
                             .iter()
                             .filter(|(_, p)| {
                                 (p.bytes >= absorber.cfg.threshold_bytes
-                                    || (p.bytes >= absorber.cfg.min_age_bytes
-                                        && p.since.elapsed() >= absorber.cfg.threshold_age))
+                                    || p.since.elapsed() >= absorber.cfg.threshold_age)
                                     && p.retry_after.map(|t| now >= t).unwrap_or(true)
                             })
                             .map(|(h, p)| (*h, p.bytes))

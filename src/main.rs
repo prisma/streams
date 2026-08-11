@@ -306,16 +306,6 @@ struct Args {
     #[arg(long, env = "ABSORB_SMALL_BYTES", default_value_t = 1024 * 1024)]
     absorb_small_bytes: u64,
 
-    /// Interim sparse policy (cost review round 2): AGE-triggered
-    /// absorption requires at least this many pending bytes. Tiny
-    /// streams stay in the shard log (durable, cheaper, and faster to
-    /// read than per-stream history) until they accumulate volume or
-    /// the byte threshold fires. 0 = age absorbs everything (the old
-    /// behavior). Deferred streams are reported as deferred_sparse in
-    /// /v1/debug/usage, never as absorb lag.
-    #[arg(long, env = "ABSORB_MIN_BYTES_FOR_AGE", default_value_t = 256 * 1024)]
-    absorb_min_bytes_for_age: u64,
-
     /// Evict resident per-stream handles idle at least this long
     /// (seconds; 0 = never). Handles reload from the shard DB on next
     /// touch; the durable dirty-stream index keeps unabsorbed evictees
@@ -1021,7 +1011,6 @@ async fn async_main() -> anyhow::Result<()> {
         let absorb_pass_bytes = args.absorb_pass_bytes;
         let absorb_concurrency = args.absorb_concurrency;
         let absorb_small_bytes = args.absorb_small_bytes;
-        let absorb_min_bytes_for_age = args.absorb_min_bytes_for_age;
         // Startup invariant (OOM disposition 2): the per-gather packing
         // cap must fit the process budget after the build multiplier,
         // or the envelope claim quietly breaks via reservation
@@ -1162,7 +1151,6 @@ async fn async_main() -> anyhow::Result<()> {
                             pass_bytes: absorb_pass_bytes,
                             concurrency: absorb_concurrency,
                             small_pass_bytes: absorb_small_bytes,
-                            min_age_bytes: absorb_min_bytes_for_age,
                             gather_max_bytes: absorb_gather_max_bytes,
                             ..Default::default()
                         },

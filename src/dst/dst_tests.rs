@@ -1219,7 +1219,6 @@ async fn absorber_drains_records_larger_than_the_per_stream_gather_cap() {
         keys,
         crate::history::AbsorberConfig {
             threshold_bytes: 1,
-            min_age_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
             tick: std::time::Duration::from_millis(20),
             gather_max_bytes: 64 * 1024,
@@ -1449,12 +1448,20 @@ async fn v2_history_survives_engine_handoff() {
     a.begin_close();
 }
 
-/// The interim sparse policy: AGE absorption requires min_age_bytes of
-/// pending data. A tiny stream must stay in the shard log (readable,
-/// durable, no per-stream history DB minted) while a fat-enough stream
-/// age-absorbs — and the deferred stream is reported as policy, not lag.
+/// R26-1 regression: age absorption takes EVERYTHING — there is no
+/// sparse floor. The deleted interim policy (age absorption gated on
+/// min_age_bytes) could permanently trap an instance: a sub-threshold
+/// residual never retires, the durable no-progress clock ages past
+/// MAX_ABSORB_LAG_SECS, the LagSecs latch sheds every append on the
+/// instance — and shed appends are the only way the residual could ever
+/// grow eligible. The 2026-08-11 soak measured a 154 KiB residual at
+/// 938 s of stall, one evaluator tick from that deadlock.
+///
+/// Gate: a tiny stream (far under the old 256 KiB floor) and a fat one
+/// BOTH age-absorb; the shard's durable maintenance ledger returns to
+/// zero, so the progress latch has nothing to trip on.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sparse_streams_defer_absorption_until_they_have_volume() {
+async fn tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch() {
     let inner = mem();
     let store = FaultStore::uniform(inner.clone(), 57, FaultPlan::CLEAN);
     let cov = store.coverage();
@@ -1495,74 +1502,72 @@ async fn sparse_streams_defer_absorption_until_they_have_volume() {
         engine.clone(),
         keys,
         crate::history::AbsorberConfig {
-            // Byte threshold out of reach; age immediate — so ONLY the
-            // min_age_bytes gate separates the two streams.
+            // Byte threshold out of reach; age immediate — absorption
+            // happens purely through the age trigger, which must take
+            // the 2-record stream exactly like the 60-record one.
             threshold_bytes: 64 * 1024 * 1024,
             threshold_age: std::time::Duration::from_millis(1),
             tick: std::time::Duration::from_millis(20),
             batch_puts: 256,
             pass_bytes: 8 * 1024 * 1024,
-            // DST workload frames are tiny (~40-90 B): 2 records sit far
-            // under this gate, 60 far over it.
-            min_age_bytes: 1024,
             ..Default::default()
         },
         absorb_rx,
     );
 
-    // Pause absorption while the workloads run: otherwise the fat
-    // stream's pending crosses the gate mid-workload, a pass absorbs the
-    // prefix, and the residue re-enters BELOW the gate — correct policy
-    // behavior (the residue stays readable in the shard log and defers
-    // until it has volume), but it makes "absorbed == next" racy here.
+    // Pause absorption while the workloads run so the final
+    // "absorbed == next" comparison is not racing a mid-workload pass.
     crate::history::absorb_pause_flag().store(true, Ordering::Relaxed);
     let mut tiny_log = OpLog::default();
     let mut w1 = Workload::new(cov.clone());
-    // ~2 small frames pending: under the 1 KiB min — must defer.
+    // ~2 small frames pending: far under the deleted 256 KiB floor —
+    // exactly the residual shape that used to defer forever.
     w1.run(&engine, tiny, &key, &["d"], 2, false, &mut tiny_log)
         .await;
     let mut fat_log = OpLog::default();
     let mut w2 = Workload::new(cov.clone());
-    // ~60 frames pending: over the min — must age-absorb.
     w2.run(&engine, fat, &key, &["d"], 60, false, &mut fat_log)
         .await;
+    assert!(
+        engine.maintenance_snapshot().unabsorbed_frame_bytes > 0,
+        "workloads committed but the durable ledger shows no backlog"
+    );
     crate::history::absorb_pause_flag().store(false, Ordering::Relaxed);
 
-    let mut fat_absorbed = false;
-    for _ in 0..400 {
-        let h = engine.stream_handle(fat).await.expect("handle");
-        {
-            let st = h.state.lock().unwrap();
-            if st.durable.absorbed > 0 && st.durable.absorbed == st.durable.next {
-                fat_absorbed = true;
+    // BOTH streams must age-absorb — the tiny one especially.
+    for (name, hash) in [("tiny", tiny), ("fat", fat)] {
+        let mut absorbed = false;
+        for _ in 0..400 {
+            let h = engine.stream_handle(hash).await.expect("handle");
+            {
+                let st = h.state.lock().unwrap();
+                if st.durable.absorbed > 0 && st.durable.absorbed == st.durable.next {
+                    absorbed = true;
+                }
             }
+            if absorbed {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         }
-        if fat_absorbed {
+        assert!(absorbed, "the {name} stream never age-absorbed");
+    }
+
+    // With everything retired the shard's durable maintenance ledger is
+    // zero — the no-progress latch has nothing to age on. THIS is the
+    // deadlock gate: a permanent residual here means an eventual
+    // instance-wide LagSecs shed that no append could ever clear.
+    let mut drained = false;
+    for _ in 0..400 {
+        if engine.maintenance_snapshot().unabsorbed_frame_bytes == 0 {
+            drained = true;
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
     }
-    assert!(fat_absorbed, "the fat stream never age-absorbed");
-
-    // The tiny stream had the same age and MORE ticks than it needed —
-    // it must still be un-absorbed, by policy, and counted as deferred.
-    let h = engine.stream_handle(tiny).await.expect("handle");
-    {
-        let st = h.state.lock().unwrap();
-        assert_eq!(
-            st.durable.absorbed, 0,
-            "the sparse policy absorbed a tiny stream into per-stream history"
-        );
-        assert!(st.durable.next > 0);
-    }
-    // (The deferred_sparse SUMMARY is a process-global gauge that other
-    // tests' absorbers overwrite in the parallel suite; the Arm B wide
-    // run asserts it in a single-server process. Here: the per-hash lag
-    // map, which is collision-free.)
-    assert_eq!(
-        crate::usage::absorb_lag(crate::crypto::SegmentHash(tiny)),
-        0,
-        "a policy-deferred stream must not read as absorb lag"
+    assert!(
+        drained,
+        "durable maintenance ledger kept a residual after full absorption"
     );
 
     // Both streams stay fully readable through the merged reader.
@@ -3506,7 +3511,6 @@ async fn untouched_streams_absorb_after_restart() {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
             tick: std::time::Duration::from_millis(20),
-            min_age_bytes: 0,
             // Disable the resident-handle sweep entirely: convergence in
             // this test must come from the durable index seed ALONE, and
             // the test itself must not materialize the handle early (the
@@ -3714,7 +3718,6 @@ async fn a_second_absorption_wave_trims_under_a_global_budget() {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
             tick: std::time::Duration::from_millis(20),
-            min_age_bytes: 0,
             sweep_every: u32::MAX,
             ..Default::default()
         },
@@ -3888,7 +3891,6 @@ async fn budget_deferred_streams_absorb_on_the_next_tick() {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
             tick: std::time::Duration::from_millis(20),
-            min_age_bytes: 0,
             sweep_every: u32::MAX,
             gather_max_bytes: 40 * 1024,
             ..Default::default()
@@ -4104,7 +4106,6 @@ async fn dirty_scan_retries_until_it_succeeds() {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
             tick: std::time::Duration::from_millis(50),
-            min_age_bytes: 0,
             sweep_every: u32::MAX,
             ..Default::default()
         },
@@ -4138,12 +4139,14 @@ async fn dirty_scan_retries_until_it_succeeds() {
     engine_b.begin_close();
 }
 
-/// Review round 4, P1 (companion): a tiny sparse record under the
-/// default policy must stay DEFERRED after restart — and be REPORTED as
-/// deferred in the shard's pending summary, not silently dropped and
-/// not absorbed against the sparse-cost policy.
+/// R26-1 (rewritten from the round-4 deferral companion): a tiny record
+/// REDISCOVERED after restart must be reported in the shard's pending
+/// summary and then AGE-ABSORB like anything else. The old assertion —
+/// that it stays deferred under the sparse policy — is the exact
+/// behavior R26-1 deleted, because a permanently deferred residual
+/// stalls the durable no-progress clock into the instance latch.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn sparse_records_stay_deferred_and_reported_after_restart() {
+async fn sparse_records_rediscovered_after_restart_are_absorbed() {
     let inner = mem();
     let store = FaultStore::uniform(inner.clone(), 100, FaultPlan::new(0, 0, 0));
     let key = skey();
@@ -4204,44 +4207,45 @@ async fn sparse_records_stay_deferred_and_reported_after_restart() {
         None,
         __maint,
     );
-    // Default thresholds (4 MiB / 256 KiB min-age bytes), fast tick so
-    // the summary publishes quickly.
+    // Byte threshold out of reach (the 512 B record must go through the
+    // AGE trigger), age immediate, fast tick.
     let _absorber = crate::history::Absorber::start(
         store.clone(),
         engine_b.clone(),
         Arc::new(crate::history::KeyCache::default()),
         crate::history::AbsorberConfig {
+            threshold_age: std::time::Duration::from_millis(1),
             tick: std::time::Duration::from_millis(50),
             sweep_every: u32::MAX,
             ..Default::default()
         },
         absorb_rx,
     );
-    // The seed must land it in pending AND the tick must classify it as
-    // policy-deferred in this shard's summary row.
-    let mut reported = false;
+    // The rediscovered record must AGE-ABSORB: its durable dirty mark
+    // clears instead of sitting as a permanent residual feeding the
+    // no-progress latch.
+    let mut absorbed = false;
     for _ in 0..200 {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        if let Some((_eligible, _oldest, deferred, dbytes)) =
-            crate::usage::absorb_pending_summary_for("dst-sparse")
-        {
-            if deferred >= 1 && dbytes > 0 {
-                reported = true;
-                break;
-            }
+        let Ok(dirty) = engine_b.scan_dirty_streams().await else {
+            continue;
+        };
+        if !dirty.iter().any(|(h, _, _)| *h == hash) {
+            absorbed = true;
+            break;
         }
     }
     assert!(
-        reported,
-        "a rediscovered sparse record must be visible as policy-deferred"
+        absorbed,
+        "a rediscovered tiny record must age-absorb, not defer forever"
     );
-    // And it must NOT absorb (the deferral is the intended policy).
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    let dirty = engine_b.scan_dirty_streams().await.unwrap();
-    assert!(
-        dirty.iter().any(|(h, _, _)| *h == hash),
-        "sparse stream must remain durably marked (not absorbed, not dropped)"
-    );
+    // And the durable tail must agree it fully absorbed (the v2 gather
+    // lane is keyless, so the empty KeyCache above is no obstacle).
+    let h = engine_b.stream_handle(hash).await.expect("handle");
+    {
+        let st = h.state.lock().unwrap();
+        assert!(st.durable.absorbed > 0 && st.durable.absorbed == st.durable.next);
+    }
     engine_b.begin_close();
 }
 
@@ -4291,8 +4295,9 @@ async fn pending_summary_clears_on_shard_close() {
         },
         absorb_rx,
     );
-    // A sparse record deferred by the default policy keeps the row
-    // populated for as long as we need it.
+    // A record under the default age threshold (300 s — far past this
+    // test's horizon) stays pending, keeping the row populated for as
+    // long as we need it.
     append_sized(&engine, hash, &key, "", 512).await;
     let mut published = false;
     for _ in 0..200 {
@@ -4555,7 +4560,6 @@ async fn sparse_key_reads_page_with_bounded_spans() {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
             tick: std::time::Duration::from_millis(20),
-            min_age_bytes: 0,
             sweep_every: u32::MAX,
             ..Default::default()
         },
@@ -4667,7 +4671,6 @@ async fn corrupt_postings_fall_back_to_the_envelope() {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
             tick: std::time::Duration::from_millis(20),
-            min_age_bytes: 0,
             sweep_every: u32::MAX,
             ..Default::default()
         },
@@ -4791,7 +4794,6 @@ async fn repeated_keyed_reads_hit_the_postings_cache() {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
             tick: std::time::Duration::from_millis(20),
-            min_age_bytes: 0,
             sweep_every: u32::MAX,
             ..Default::default()
         },
@@ -5190,7 +5192,6 @@ async fn http_rig_inner(
                         threshold_bytes: 1,
                         threshold_age: std::time::Duration::from_millis(1),
                         tick: std::time::Duration::from_millis(20),
-                        min_age_bytes: 0,
                         sweep_every: u32::MAX,
                         ..Default::default()
                     },
@@ -5912,7 +5913,6 @@ async fn oversized_keyed_record_pages_through() {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
             tick: std::time::Duration::from_millis(20),
-            min_age_bytes: 0,
             sweep_every: u32::MAX,
             ..Default::default()
         },
@@ -5994,7 +5994,6 @@ async fn long_keyed_run_pages_with_progress() {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
             tick: std::time::Duration::from_millis(20),
-            min_age_bytes: 0,
             sweep_every: u32::MAX,
             ..Default::default()
         },
@@ -20134,7 +20133,6 @@ async fn absorbed_boundary_and_maintenance_retire_atomically() {
             threshold_bytes: 1,
             threshold_age: std::time::Duration::from_millis(1),
             tick: std::time::Duration::from_millis(20),
-            min_age_bytes: 0,
             sweep_every: u32::MAX,
             ..Default::default()
         },

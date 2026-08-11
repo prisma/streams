@@ -183,7 +183,10 @@ settled = 0
 while time.time() < deadline:
     u = debug("/v1/debug/usage")
     b = u["absorb_backlog"]
-    if b["streams"] == 0 and b["eligible"] == 0 and u["deferred_sparse"]["streams"] == 0:
+    # deferred_sparse was removed with the sparse-deferral mode (R26-1);
+    # tolerate both server generations.
+    if (b["streams"] == 0 and b["eligible"] == 0
+            and u.get("deferred_sparse", {}).get("streams", 0) == 0):
         settled += 1
         if settled >= 3:
             break

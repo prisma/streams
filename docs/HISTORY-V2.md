@@ -58,8 +58,19 @@ lifecycle per stream:
    state for sparse readers. This item folds INTO v2; it is not a
    separate cache project.
 
-Interim policy until v2 ships (landed 2026-07-29):
-`ABSORB_MIN_BYTES_FOR_AGE` (default 256 KiB) keeps tiny streams in the
+> **DELETED (R26-1, 2026-08-11).** The interim policy below shipped
+> 2026-07-29 *for the v1 per-stream layout* and was removed once v2 was
+> the production layout: age absorption now takes everything. Under the
+> durable maintenance latch (R25), a sub-threshold residual that never
+> retires ages the no-progress clock into an instance-wide `LagSecs`
+> shed — and shed appends are the only way the residual could ever grow
+> eligible, so the instance can trap itself permanently (the 2026-08-11
+> soak measured a 154 KiB residual at 938 s of stall, one evaluator tick
+> from that deadlock). The v2 shared partition removes the per-stream
+> cost that motivated deferral. The Arm B numbers below are historical.
+
+Interim policy until v2 ships (landed 2026-07-29, **deleted R26-1**):
+`ABSORB_MIN_BYTES_FOR_AGE` (default 256 KiB) kept tiny streams in the
 shard log — already durable there, cheaper, and faster to read — with
 `deferred_sparse_{streams,bytes}` reported separately from lag. Field
 deployments on 1 GiB instances: `ABSORB_CONCURRENCY=2`.

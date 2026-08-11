@@ -436,27 +436,18 @@ pub fn absorb_backlog_summary() -> (usize, u64) {
 /// SHARD (one absorber per shard engine — a single global gauge would
 /// be last-writer-wins across shards and report one shard's quarter of
 /// the truth, which is exactly how the first version shipped):
-/// (eligible streams, oldest eligible age secs, policy-deferred sparse
-/// streams, their pending bytes). "Deferred" is the interim sparse
-/// policy (age absorption requires min_age_bytes) — an intentional
-/// cost decision that must never read as absorption lag.
-static PENDING_SUMMARY: OnceLock<Mutex<HashMap<String, (u64, u64, u64, u64)>>> = OnceLock::new();
+/// (eligible streams, oldest eligible age secs). Every pending stream
+/// is eligible — the interim sparse-deferral policy was deleted in
+/// R26-1 because an ineligible residual stalls the durable no-progress
+/// clock into the instance-wide maintenance latch.
+static PENDING_SUMMARY: OnceLock<Mutex<HashMap<String, (u64, u64)>>> = OnceLock::new();
 
-pub fn set_absorb_pending_summary(
-    shard_prefix: &str,
-    eligible: u64,
-    oldest_eligible_secs: u64,
-    deferred: u64,
-    deferred_bytes: u64,
-) {
+pub fn set_absorb_pending_summary(shard_prefix: &str, eligible: u64, oldest_eligible_secs: u64) {
     PENDING_SUMMARY
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap()
-        .insert(
-            shard_prefix.to_string(),
-            (eligible, oldest_eligible_secs, deferred, deferred_bytes),
-        );
+        .insert(shard_prefix.to_string(), (eligible, oldest_eligible_secs));
 }
 
 /// Remove one shard's pending-summary row. MUST run when an absorber
@@ -473,7 +464,7 @@ pub fn clear_absorb_pending_summary(shard_prefix: &str) {
 }
 
 /// One shard's pending-summary row (None once cleared/never published).
-pub fn absorb_pending_summary_for(shard_prefix: &str) -> Option<(u64, u64, u64, u64)> {
+pub fn absorb_pending_summary_for(shard_prefix: &str) -> Option<(u64, u64)> {
     PENDING_SUMMARY
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
@@ -482,32 +473,14 @@ pub fn absorb_pending_summary_for(shard_prefix: &str) -> Option<(u64, u64, u64, 
         .copied()
 }
 
-/// Largest single shard's deferred (budget-blocked) byte count.
-///
-/// Maintenance backpressure bounds work PER SHARD as well as per
-/// instance: one shard far behind is an unbounded replay on that shard's
-/// next open even while the instance total still looks tolerable.
-pub fn max_shard_deferred_bytes() -> u64 {
-    PENDING_SUMMARY
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap()
-        .values()
-        .map(|v| v.3)
-        .max()
-        .unwrap_or(0)
-}
-
 /// Instance-wide rollup: sums across shards, max for the oldest age.
-pub fn absorb_pending_summary() -> (u64, u64, u64, u64) {
+pub fn absorb_pending_summary() -> (u64, u64) {
     PENDING_SUMMARY
         .get_or_init(|| Mutex::new(HashMap::new()))
         .lock()
         .unwrap()
         .values()
-        .fold((0, 0, 0, 0), |acc, v| {
-            (acc.0 + v.0, acc.1.max(v.1), acc.2 + v.2, acc.3 + v.3)
-        })
+        .fold((0, 0), |acc, v| (acc.0 + v.0, acc.1.max(v.1)))
 }
 
 pub fn absorb_lag(hash: SegmentHash) -> u64 {

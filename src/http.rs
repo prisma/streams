@@ -818,8 +818,7 @@ async fn debug_usage(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
         })
         .collect();
     let (backlog_streams, backlog_max) = crate::usage::absorb_backlog_summary();
-    let (eligible, oldest_eligible, deferred, deferred_bytes) =
-        crate::usage::absorb_pending_summary();
+    let (eligible, oldest_eligible) = crate::usage::absorb_pending_summary();
     let (overflow_admits, overflow_requests, overflow_records, overflow_bytes) =
         crate::usage::overflow_stats();
     axum::Json(serde_json::json!({
@@ -837,9 +836,6 @@ async fn debug_usage(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
             "eligible": eligible,
             "oldest_eligible_secs": oldest_eligible,
         },
-        // The interim sparse policy's ledger: streams intentionally held
-        // in the shard log (pending < ABSORB_MIN_BYTES_FOR_AGE), NOT lag.
-        "deferred_sparse": { "streams": deferred, "bytes": deferred_bytes },
         // Past-cap visibility (never fail open): admissions routed
         // through the shared conservative overflow bucket, plus the
         // aggregate counters those streams accrue. `streams` below is
