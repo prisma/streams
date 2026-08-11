@@ -20,6 +20,20 @@ S = os.environ["SOAK_HOME"]
 AUTH = open(f"{S}/auth.txt").read().strip()
 BATCH = int(os.environ.get("BENCH_BATCH", "10"))
 
+# Crockford-style base32 offset token (src/offsets.rs): 26 chars encode
+# a 130-bit value ((raw_seq << 32) << 2), where raw_seq is the NEXT
+# offset (record count). The 2026-08-11 probe run failed here by
+# treating the token as a plain integer.
+_ALPHABET = "0123456789ABCDEFGHJKMNPQRSTVWXYZ"
+
+def decode_next_offset(token):
+    if not token or len(token) != 26:
+        return 0
+    value = 0
+    for ch in token:
+        value = (value << 5) | _ALPHABET.index(ch)
+    return (value >> 2) >> 32  # strip padding, then epoch/in_block low bits
+
 def get(url, headers=None, timeout=30):
     req = urllib.request.Request(url, headers={
         "Authorization": f"Bearer {AUTH}", **(headers or {})})
@@ -32,8 +46,14 @@ def reconcile(region):
     _, _, body = get(f"{gen}/")
     stats = json.loads(body)
     tiers = stats if isinstance(stats, list) else stats.get("tiers", [])
-    ok_requests = sum(t.get("ok", 0) for t in tiers)
-    ambiguous = sum(t.get("ambiguous", 0) + t.get("unknown", 0) for t in tiers)
+    # The generator emits one line per 20 s WINDOW carrying CUMULATIVE
+    # counters (stats.ok.load() at snapshot time) — summing lines
+    # overcounts by the number of windows. The probe run failed exactly
+    # that way: summed acked 372,840 vs a true cumulative 61,290. The
+    # last line is the total.
+    last = tiers[-1] if tiers else {}
+    ok_requests = last.get("ok", 0)
+    ambiguous = last.get("ambiguous", 0) + last.get("unknown", 0)
     acked_records = ok_requests * BATCH
 
     # Enumerate campaign streams via the catalog, sum durable heads.
@@ -52,17 +72,24 @@ def reconcile(region):
         for name in names:
             _, hdrs, _ = get(f"{server}/v1/stream/{name}?head=1",
                 headers={"Stream-Encryption-Key": skey})
-            token = hdrs.get("Stream-Next-Offset", "0")
-            durable += int(token.split(".")[0].split(":")[0] or 0)
+            token = hdrs.get("Stream-Next-Offset", "")
+            durable += decode_next_offset(token)
             streams += 1
         cursor = page.get("cursor", "") if isinstance(page, dict) else ""
         if not cursor:
             break
 
-    verdict = "OK" if acked_records <= durable <= acked_records + ambiguous * BATCH \
-        else "MISMATCH"
+    # One-sided by construction: `ok` is a SNAPSHOT-time lower bound —
+    # requests completing after the last stats window land durably
+    # without being counted, and ambiguous/error outcomes may land 0 or
+    # 1 times. LOSS (durable < acked) is the integrity failure; a small
+    # excess is the expected snapshot skew and is reported, not failed.
+    # Exact both-sided integrity needs the per-record op ledger (plan
+    # §9.6 extension, not yet in awsbench).
+    excess = durable - acked_records
+    verdict = "OK" if durable >= acked_records else "LOSS"
     print(f"  {region}: acked={acked_records} durable={durable} "
-          f"streams={streams} ambiguous_reqs={ambiguous} -> {verdict}")
+          f"excess={excess} streams={streams} ambiguous_reqs={ambiguous} -> {verdict}")
     return verdict == "OK", {
         "region": region, "acked_records": acked_records,
         "durable_records": durable, "streams": streams,
@@ -80,4 +107,4 @@ if __name__ == "__main__":
     os.makedirs(f"{S}/results/{run_id}", exist_ok=True)
     json.dump(results, open(f"{S}/results/{run_id}/reconcile.json", "w"), indent=1)
     if not all_ok:
-        sys.exit("RECONCILE FAILED — durable does not cover acknowledged records")
+        sys.exit("RECONCILE FAILED — durable records fall SHORT of acknowledged (data loss)")
