@@ -85,18 +85,35 @@ j() { python3 -c "import json;print(json.load(open('$S/bkey-$R.json'))['data']['
 # Reuse the service across redeploys when we already know its id. Note the
 # id must come from `services list` or a previous run of this script --
 # `deploy` prints a VERSION id (cpv_), not a service id (cps_).
-SVCFILE=$S/svc-$ROLE-$R.txt
+# R25-G: service caches are PROJECT-scoped. The flat cache matched a
+# service BY NAME across projects, so a superseded campaign's cps_ id
+# was fed to a new project's deploy — "App cps_... belongs to project
+# proj_OLD" — which permanently blocked us-east-1 and eu-central-1 on
+# the 2026-08-11 run.
+mkdir -p "$S/projects/$P"
+SVCFILE=$S/projects/$P/svc-$ROLE-$R.txt
 # Resolve the service id BEFORE deploying when we don't have it cached:
 # `deploy` prints a VERSION id (cpv_), never a service id, and deploying
 # by --service-name a second time fails with "already exists". `services
 # list` is the only source of truth (deploy/README.md footgun).
 if [ ! -f "$SVCFILE" ]; then
-  EXISTING=$(bunx --bun @prisma/compute-cli services list --project "$P" 2>/dev/null \
+  EXISTING=$(bunx --bun @prisma/compute-cli@0.39.0 services list --project "$P" 2>/dev/null \
              | awk -v n="soak-$ROLE-$R" '$2==n {print $1; exit}') || true
   [ -n "$EXISTING" ] && echo "$EXISTING" > "$SVCFILE"
 fi
 # ${arr[@]+...} form: macOS bash 3.2 treats an empty array as unbound
 # under `set -u`, so a plain expansion aborts the whole deploy.
+# Revalidate: a cached id must appear in THIS project's list with the
+# expected name, else drop it and re-resolve.
+if [ -f "$SVCFILE" ]; then
+  CACHED=$(cat "$SVCFILE")
+  LISTED=$(bunx --bun @prisma/compute-cli@0.39.0 services list --project "$P" 2>/dev/null \
+           | awk -v id="$CACHED" -v n="soak-$ROLE-$R" '$1==id && $2==n {print $1}')
+  if [ -z "$LISTED" ]; then
+    echo "stale service cache for $ROLE-$R (id $CACHED not in $P); re-resolving" >&2
+    rm -f "$SVCFILE"
+  fi
+fi
 SVCARG=(); [ -f "$SVCFILE" ] && SVCARG=(--service "$(cat "$SVCFILE")")
 # Empty --env values are rejected by the CLI; only pass when set.
 RESOLVARG=(); [ -n "$RESOLV_OVERRIDE" ] && RESOLVARG=(--env "RESOLV_OVERRIDE=$RESOLV_OVERRIDE")
@@ -115,7 +132,7 @@ if [ "$ROLE" = server ]; then
   # binary defaults (2000/2500) ARE the field idle-cost posture
   # (docs/TIGRIS-404-COST.md); overriding them here re-arms the idle
   # 404-probe tax the stretch removed.
-  OUT=$(bunx --bun @prisma/compute-cli deploy --project "$P" ${SVCARG[@]+"${SVCARG[@]}"} \
+  OUT=$(bunx --bun @prisma/compute-cli@0.39.0 deploy --project "$P" ${SVCARG[@]+"${SVCARG[@]}"} \
     --region "$R" --path . --http-port 8080 --service-name "soak-server-$R" \
     --env SERVER_BINARY_S3_KEY="bin/streams-$BIN_TAG-x64" \
     --env BIN_S3_ENDPOINT=$BINEP --env BIN_S3_BUCKET=$BINBKT --env BIN_S3_REGION=auto \
@@ -144,7 +161,7 @@ if [ "$ROLE" = server ]; then
 else
   TARGET=$(cat "$S/url-server-$R.txt")
   cd "$S/app-gen-$R"
-  OUT=$(bunx --bun @prisma/compute-cli deploy --project "$P" ${SVCARG[@]+"${SVCARG[@]}"} \
+  OUT=$(bunx --bun @prisma/compute-cli@0.39.0 deploy --project "$P" ${SVCARG[@]+"${SVCARG[@]}"} \
     --region "$R" --path . --http-port 8080 --service-name "soak-gen-$R" \
     --env AWSBENCH_S3_KEY="bin/awsbench-$BIN_TAG-x64" \
     --env S3_ENDPOINT=$BINEP --env S3_BUCKET=$BINBKT --env S3_REGION=auto \
@@ -163,7 +180,7 @@ echo "$OUT" | grep -E 'New version|error' | sed "s/^/$ROLE-$R: /" || true
 # `deploy` prints a VERSION id (cpv_), not a service id — the id we need
 # comes from `services list`, matched by name (deploy/README.md footgun).
 if [ ! -f "$SVCFILE" ]; then
-  SVC=$(bunx --bun @prisma/compute-cli services list --project "$P" 2>/dev/null         | awk -v n="soak-$ROLE-$R" '$2==n {print $1; exit}')
+  SVC=$(bunx --bun @prisma/compute-cli@0.39.0 services list --project "$P" 2>/dev/null         | awk -v n="soak-$ROLE-$R" '$2==n {print $1; exit}')
   [ -n "$SVC" ] && echo "$SVC" > "$SVCFILE"
 fi
 

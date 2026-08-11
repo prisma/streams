@@ -31,8 +31,32 @@ if (process.env.RESOLV_OVERRIDE) {
 const bin = "/tmp/awsbench";
 import("./downloader").catch(() => null); // static hint for the bundler
 const { downloadBinary } = await import("./downloader");
+// R25-G: a failed download must be DIAGNOSABLE from outside. Exiting
+// here leaves a platform 404 indistinguishable from an edge-routing
+// failure — which cost the 2026-08-11 campaign its longest debugging
+// detour. Serve the failure instead.
+const serveDownloadFailure = (err: unknown) => {
+  const body = JSON.stringify({
+    stage: "binary_download",
+    key: process.env.SERVER_BINARY_S3_KEY ?? process.env.AWSBENCH_S3_KEY ?? "",
+    error: String(err),
+  }, null, 2);
+  console.error(`binary download failed; serving diagnostic: ${body}`);
+  Bun.serve({
+    port: Number(process.env.PORT ?? 8080),
+    fetch: () => new Response(body, {
+      status: 500,
+      headers: { "content-type": "application/json" },
+    }),
+  });
+  return new Promise<never>(() => {});
+};
 // ALWAYS download: warm instances keep /tmp across versions (2026-07-19).
-await downloadBinary(process.env.AWSBENCH_S3_KEY ?? "", bin, console.log);
+try {
+  await downloadBinary(process.env.AWSBENCH_S3_KEY ?? "", bin, console.log);
+} catch (e) {
+  await serveDownloadFailure(e);
+}
 await chmod(bin, 0o755);
 console.log(
   `starting awsbench system=${process.env.BENCH_SYSTEM} shape=${process.env.BENCH_SHAPE}`,

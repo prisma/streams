@@ -12,4 +12,4 @@ S=${SOAK_HOME:?set SOAK_HOME}
 if [ -s "$S/platform-token.txt" ]; then
   export PRISMA_API_TOKEN=$(cat "$S/platform-token.txt")
 fi
-exec bunx --bun @prisma/compute-cli "$@"
+exec bunx --bun @prisma/compute-cli@0.39.0 "$@"

@@ -21,10 +21,16 @@ REGIONS=${1:-${SOAK_REGIONS:-us-east-1 us-west-1 eu-central-1 eu-west-3 ap-south
 ROLES=${2:-"server gen"}
 for r in $REGIONS; do
   for role in $ROLES; do
-    [ -f "$S/svc-$role-$r.txt" ] || continue
-    d=$(bunx --bun @prisma/compute-cli versions list \
-          --project "$(cat "$S/proj-$r.txt")" \
-          --service "$(cat "$S/svc-$role-$r.txt")" 2>/dev/null \
+    # R25-G: PROJECT-scoped cache, matching deploy-region.sh. The old
+    # flat path silently resolved a superseded campaign's service and
+    # wrote that campaign's URL — which is how the 2026-08-11 run read
+    # health=200 from a retired build through a stale URL file.
+    P=$(cat "$S/proj-$r.txt")
+    SVCFILE="$S/projects/$P/svc-$role-$r.txt"
+    [ -f "$SVCFILE" ] || continue
+    d=$(bunx --bun @prisma/compute-cli@0.39.0 versions list \
+          --project "$P" \
+          --service "$(cat "$SVCFILE")" 2>/dev/null \
         | awk '$2=="running"{print $3; exit}')
     if [ -n "$d" ]; then
       echo "https://$d" > "$S/url-$role-$r.txt"

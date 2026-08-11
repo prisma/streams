@@ -44,16 +44,22 @@ for r in $REGIONS; do
     continue
   fi
 
-  for role in gen server; do
-    SV=$(cat "$S/svc-$role-$r.txt" 2>/dev/null || true)
-    [ -z "$SV" ] && continue
-    say "  service $role: $SV"
+  # R25-G: resolve services from `services list` — the authoritative
+  # source — never from a cache file. The flat cache this used to read
+  # could name a DIFFERENT campaign's service (the cross-project id bug)
+  # or, once cleaned, silently skip destruction and leak the services.
+  # These are campaign-created projects gated by the run-id stamp above,
+  # so everything listed in them belongs to this campaign.
+  SVCS=$(bunx --bun @prisma/compute-cli@0.39.0 services list --project "$P" 2>/dev/null \
+         | awk '/^cps_/ {print $1}')
+  for SV in $SVCS; do
+    say "  service: $SV"
     # `services delete` refuses while versions are running, and the project
     # then refuses to delete because "active deployments exist". `destroy`
     # stops and deletes the versions first. Do not swallow its output: the
     # first version of this script hid the failure behind >/dev/null and
     # reported a clean teardown that had deleted nothing.
-    run "bunx --bun @prisma/compute-cli services destroy '$SV' --project '$P' 2>&1 | grep -viE 'resolving|resolved|saved lockfile'"
+    run "bunx --bun @prisma/compute-cli@0.39.0 services destroy '$SV' --project '$P' 2>&1 | grep -viE 'resolving|resolved|saved lockfile'"
   done
 
   # bkey-<r>.json holds the *key* id, not the bucket id -- resolve the
@@ -69,6 +75,9 @@ for r in $REGIONS; do
 
   say "  project: $P"
   run "curl -s -w '\\n    project delete: %{http_code}\\n' -X DELETE -H 'Authorization: Bearer $TOKEN' 'https://api.prisma.io/v1/projects/$P'"
+  # R25-G: retire the creation receipt with the project — a receipt for
+  # a deleted project would make a later provision "reuse" a ghost.
+  rm -f "$S/receipts/$r.json"
 done
 
 [ "$GO" = "--yes" ] || say "
