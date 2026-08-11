@@ -34,8 +34,8 @@ def decode_next_offset(token):
         value = (value << 5) | _ALPHABET.index(ch)
     return (value >> 2) >> 32  # strip padding, then epoch/in_block low bits
 
-def get(url, headers=None, timeout=30):
-    req = urllib.request.Request(url, headers={
+def get(url, headers=None, timeout=30, method="GET"):
+    req = urllib.request.Request(url, method=method, headers={
         "Authorization": f"Bearer {AUTH}", **(headers or {})})
     with urllib.request.urlopen(req, timeout=timeout) as r:
         return r.status, dict(r.headers), r.read()
@@ -70,8 +70,14 @@ def reconcile(region):
         names = [s["name"] if isinstance(s, dict) else s
                  for s in page.get("streams", page if isinstance(page, list) else [])]
         for name in names:
-            _, hdrs, _ = get(f"{server}/v1/stream/{name}?head=1",
-                headers={"Stream-Encryption-Key": skey})
+            # HTTP HEAD is the tail probe: Stream-Next-Offset = the
+            # durable tail's next offset, no body. A GET with `?head=1`
+            # is NOT that — the raw route ignores the unknown param and
+            # serves a full page from the horizon, so Stream-Next-Offset
+            # is merely the end of that page (the 2026-08-11 campaign
+            # "lost" 97% of records to exactly this misread).
+            _, hdrs, _ = get(f"{server}/v1/stream/{name}",
+                headers={"Stream-Encryption-Key": skey}, method="HEAD")
             token = hdrs.get("Stream-Next-Offset", "")
             durable += decode_next_offset(token)
             streams += 1
