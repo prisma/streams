@@ -3996,6 +3996,10 @@ impl ShardEngine {
                         dirty_value(&StreamMaintenance {
                             absorbed: f.absorbed,
                             next: f.next,
+                            // R25-B: recovery/audit tools read this row;
+                            // it must carry the exact frame-byte gauge,
+                            // not zero.
+                            unabsorbed_bytes: f.unabsorbed_bytes,
                             ..Default::default()
                         }),
                     );
@@ -4031,18 +4035,20 @@ impl ShardEngine {
             }
             tails.push((local.handle.clone(), f.clone()));
             if local.appended_bytes > 0 {
+                // Observability counter: logical PAYLOAD bytes accepted.
                 crate::history::INGEST_BYTES_TOTAL
                     .fetch_add(local.appended_bytes, std::sync::atomic::Ordering::Relaxed);
-                // R24-A: accumulate this group's bytes for the durable
-                // per-shard maintenance row. Deliberately NOT applied to
-                // the admission mirror here — that happens only after
-                // write_with_options() succeeds below, so a failed group
-                // write can never leave phantom backlog that the
-                // absorber has no work to retire.
                 group_appended_bytes = group_appended_bytes.saturating_add(local.appended_bytes);
+                // R25-B: the absorber signal carries FRAME bytes — the
+                // absorber's byte policy (ABSORB_BYTES) and the tail
+                // gauge are storage-byte policies, and mixing units here
+                // is the same class of bug the maintenance gauge had.
                 signals.push(AbsorbSignal {
                     hash: *hash,
-                    appended_bytes: local.appended_bytes,
+                    appended_bytes: local
+                        .fields
+                        .unabsorbed_bytes
+                        .saturating_sub(local.base.unabsorbed_bytes),
                 });
             }
         }

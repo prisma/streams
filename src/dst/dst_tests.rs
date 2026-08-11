@@ -249,7 +249,8 @@ async fn open_engine_cfg(
         store,
         cfg,
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     )
 }
 
@@ -952,7 +953,8 @@ async fn open_engine_with_absorber_layout(
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     let keys = Arc::new(crate::history::KeyCache::default());
     // The absorber derives subkeys from (key, epoch); the workload uses the
@@ -1106,7 +1108,8 @@ async fn absorber_sweep_recovers_streams_whose_signals_were_lost() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         engine_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     let keys = Arc::new(crate::history::KeyCache::default());
     keys.put(hash, key.clone(), hash);
@@ -1203,7 +1206,8 @@ async fn absorber_drains_records_larger_than_the_per_stream_gather_cap() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         engine_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     let keys = Arc::new(crate::history::KeyCache::default());
     keys.put(hash, key.clone(), hash);
@@ -1327,7 +1331,8 @@ async fn v2_absorbs_without_customer_keys() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     // NO keys.put: the v1 absorber would return key-missing forever.
     let keys = Arc::new(crate::history::KeyCache::default());
@@ -1479,7 +1484,8 @@ async fn sparse_streams_defer_absorption_until_they_have_volume() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     let keys = Arc::new(crate::history::KeyCache::default());
     keys.put(tiny, key.clone(), tiny);
@@ -2824,7 +2830,8 @@ async fn idle_engine_store_traffic_is_bounded_by_the_poll_cadence() {
             ..Default::default()
         },
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
 
     // One acked append makes this a real, used instance (not a fresh-open
@@ -3235,7 +3242,8 @@ async fn v2_gather_packs_to_the_aggregate_budget() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     for h in &hashes {
         append_sized(&engine, *h, &key, "", 16 * 1024).await;
@@ -3314,7 +3322,8 @@ async fn an_oversized_chunk_gathers_alone() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     append_sized(&engine, big, &key, "", 200 * 1024).await;
     append_sized(&engine, small_a, &key, "", 16 * 1024).await;
@@ -3377,7 +3386,8 @@ async fn keyed_frames_no_longer_count_twice_against_the_budget() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     for h in &hashes {
         append_sized(&engine, *h, &key, "k1", 16 * 1024).await;
@@ -3485,7 +3495,8 @@ async fn untouched_streams_absorb_after_restart() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     let _absorber = crate::history::Absorber::start(
         store.clone(),
@@ -3569,7 +3580,8 @@ async fn idle_stream_handles_evict_and_reload() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     let hashes: Vec<[u8; 16]> = (0u8..8).map(|i| [0xB0 + i; 16]).collect();
     for h in &hashes {
@@ -3691,7 +3703,8 @@ async fn a_second_absorption_wave_trims_under_a_global_budget() {
             ..Default::default()
         },
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     let _absorber = crate::history::Absorber::start(
         store.clone(),
@@ -3861,7 +3874,8 @@ async fn budget_deferred_streams_absorb_on_the_next_tick() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     // PRODUCTION pump (not direct gather calls): tiny budget packs ~2
     // streams per gather, so full convergence REQUIRES deferred streams
@@ -3979,7 +3993,8 @@ async fn a_large_record_absorbs_after_restart_under_default_policy() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     // THE POINT: pure AbsorberConfig::default() — production thresholds,
     // production tick, production sweep cadence. No requests arrive.
@@ -4078,7 +4093,8 @@ async fn dirty_scan_retries_until_it_succeeds() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     let _absorber = crate::history::Absorber::start(
         store.clone(),
@@ -4185,7 +4201,8 @@ async fn sparse_records_stay_deferred_and_reported_after_restart() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     // Default thresholds (4 MiB / 256 KiB min-age bytes), fast tick so
     // the summary publishes quickly.
@@ -4260,7 +4277,8 @@ async fn pending_summary_clears_on_shard_close() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     let _absorber = crate::history::Absorber::start(
         store.clone(),
@@ -4333,7 +4351,8 @@ async fn handle_capacity_cap_evicts_oldest_first() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     let hashes: Vec<[u8; 16]> = (0u8..12).map(|i| [0xE0 + i; 16]).collect();
     for (i, h) in hashes.iter().enumerate() {
@@ -4406,7 +4425,8 @@ async fn the_first_advance_seals_the_history_layout() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
 
     async fn wait_absorbed(
@@ -4524,7 +4544,8 @@ async fn sparse_key_reads_page_with_bounded_spans() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     let _absorber = crate::history::Absorber::start(
         store.clone(),
@@ -4635,7 +4656,8 @@ async fn corrupt_postings_fall_back_to_the_envelope() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     let _absorber = crate::history::Absorber::start(
         store.clone(),
@@ -4758,7 +4780,8 @@ async fn repeated_keyed_reads_hit_the_postings_cache() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     let _absorber = crate::history::Absorber::start(
         store.clone(),
@@ -4888,7 +4911,8 @@ async fn stream_seq_is_scoped_to_the_routing_key() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     let send = |rk: &'static str, seq: &'static str| {
         let engine = engine.clone();
@@ -4972,7 +4996,8 @@ async fn producer_retries_across_a_split_commit_once() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     let send = |identity: [u8; 16], lineage: Vec<[u8; 16]>, seq: u64, close: bool| {
         let engine = engine.clone();
@@ -5876,7 +5901,8 @@ async fn oversized_keyed_record_pages_through() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     let _absorber = crate::history::Absorber::start(
         store.clone(),
@@ -5957,7 +5983,8 @@ async fn long_keyed_run_pages_with_progress() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     let _absorber = crate::history::Absorber::start(
         store.clone(),
@@ -6052,7 +6079,8 @@ async fn stream_seq_resolves_through_predecessors() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     let send = |identity: [u8; 16], lineage: Vec<[u8; 16]>, seq: Option<&str>, close: bool| {
         let engine = engine.clone();
@@ -6148,7 +6176,8 @@ async fn producer_lanes_scoped_per_routing_key() {
         store.clone(),
         crate::shard::ShardConfig::default(),
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     let send = |identity: [u8; 16], lineage: Vec<[u8; 16]>, rk: &str, seq: u64, close: bool| {
         let engine = engine.clone();
@@ -17620,7 +17649,8 @@ async fn a_lost_applied_suffix_rewinds_to_the_durable_frontier() {
             ..Default::default()
         },
         absorb_tx,
-        None,        __maint,
+        None,
+        __maint,
     );
     // The engine's flush-ticker (5 s cadence, first tick immediate)
     // flushes the memtable whenever appends accumulated — WAL included.
@@ -19936,4 +19966,67 @@ async fn expiry_closes_the_storage_gauge() {
     }
     assert!(closed, "expiry never closed the storage gauge");
     engine_shutdown(&state).await;
+}
+
+/// R25-B: the maintenance gauge is EXACT ENCODED FRAME BYTES — the same
+/// unit as the tail's `unabsorbed_bytes` — and never the logical payload
+/// total. This is the regression that invalidates the 2026-08-11 soak
+/// headline: the R24 accounting added uncompressed payload bytes while
+/// retiring encoded frame bytes, so with FRAME_COMPRESS=1 and all-`x`
+/// records a healthy absorber read as "9.4% absorption" with 3.87 GB of
+/// fictional backlog. Whatever the compression setting, encoding means
+/// frame bytes != payload bytes, so asserting exact equality with the
+/// tail gauge and inequality with the payload total kills the class.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn maintenance_uses_frame_bytes_not_payload_bytes() {
+    let store = mem();
+    let engine = open_engine(store.clone(), "dst-frameunit").await;
+    let key = skey();
+    let hash = [7u8; 16];
+    let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();
+    let w = Workload::new(cov);
+
+    // Large, highly compressible payloads — the shape the soak generator
+    // produced.
+    let body = "x".repeat(64 * 1024);
+    let mut payload_total = 0u64;
+    for _ in 0..4 {
+        let out = w
+            .attempt_with_deadline(&engine, hash, &key, "k", &body, None, None)
+            .await;
+        assert!(matches!(out, Outcome::Acked { .. }), "append must ack: {out:?}");
+        payload_total += body.len() as u64;
+    }
+
+    // The three views must agree EXACTLY: the stream tail gauge, the
+    // durable shard row, and the engine's published snapshot.
+    let tail = engine
+        .tail_fields(&hash)
+        .await
+        .unwrap()
+        .expect("tail exists after acked appends");
+    assert!(tail.unabsorbed_bytes > 0, "appends must create backlog");
+
+    let raw = engine
+        .db
+        .get(crate::shard::shard_maint_key())
+        .await
+        .unwrap()
+        .expect("durable maintenance row staged with the commit group");
+    let row = crate::shard::decode_shard_maint(&raw).unwrap();
+    let snap = engine.maintenance_snapshot();
+
+    assert_eq!(
+        row.unabsorbed_frame_bytes, tail.unabsorbed_bytes,
+        "durable row must equal the tail's encoded-frame gauge exactly"
+    );
+    assert_eq!(
+        snap.unabsorbed_frame_bytes, tail.unabsorbed_bytes,
+        "published snapshot must equal the durable row"
+    );
+    assert_ne!(
+        row.unabsorbed_frame_bytes, payload_total,
+        "the gauge must NOT be the logical payload total — that unit \
+         mismatch manufactured the soak's 9.4% absorption artifact"
+    );
 }
