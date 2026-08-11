@@ -2380,6 +2380,18 @@ impl ShardEngine {
             /// durable, on failure they never existed.
             queue_configs: std::collections::HashMap<String, crate::queue::ConsumerRecord>,
             appended_bytes: u64,
+            /// R26-2: exact encoded frame bytes this group's appends put
+            /// into the stream's unabsorbed range. The maintenance gauge
+            /// and the process ingest/retire totals move by ACTUAL work,
+            /// not the net base-vs-final tail delta: a mixed
+            /// append+absorb group's net collapses one direction to
+            /// zero, silently dropping real absorb progress (and with it
+            /// the progress-clock refresh) whenever appends outpace
+            /// retirement inside a single group.
+            appended_frame_bytes: u64,
+            /// R26-2: exact frame bytes retired by absorbed-boundary
+            /// advances in this group.
+            retired_frame_bytes: u64,
             /// Frames written by this group, retained for the durable-tail
             /// ring (empty when the ring is off). Offsets are contiguous
             /// per stream: every append path assigns at fields.next.
@@ -2433,6 +2445,13 @@ impl ShardEngine {
         // the group's WriteBatch delete count is bounded no matter how
         // many streams one gather covered (the unbounded-trim P0).
         let mut trim_budget: u64 = cfg.trim_global_budget;
+        // R26-3: set when the group's byte accounting diverges (an
+        // absorbed-boundary retirement exceeding the stream's ledger, or
+        // actuals failing to reconcile with the net tail movement). The
+        // whole group fails loudly BEFORE the write, preserving the old
+        // durable boundary — saturating/clamping here is how a unit bug
+        // stays invisible until a soak measures fiction.
+        let mut accounting_diverged: Option<String> = None;
 
         for op in ops {
             let hash = match &op {
@@ -2459,6 +2478,8 @@ impl ShardEngine {
                             queue: None,
                             queue_configs: HashMap::new(),
                             appended_bytes: 0,
+                            appended_frame_bytes: 0,
+                            retired_frame_bytes: 0,
                             ring_recs: Vec::new(),
                             billing: None,
                             billing_dirty: false,
@@ -2928,6 +2949,7 @@ impl ShardEngine {
                             local.ring_recs.push((offset, frame.clone()));
                         }
                         local.fields.unabsorbed_bytes += frame.len() as u64;
+                        local.appended_frame_bytes += frame.len() as u64;
                         wb.put(record_key(&hash, offset), frame);
                         local.fields.logical += payload.len() as u64;
                         local.appended_bytes += payload.len() as u64;
@@ -3070,14 +3092,30 @@ impl ShardEngine {
                     // the one-pass lag that in-flight readers holding a
                     // stale absorbed snapshot depend on (2026-07-27
                     // boundary-race DST failure).
+                    // R26-3: checked, not saturating. The absorber's
+                    // submitted byte count retiring more than the
+                    // stream's exact ledger holds means the two sides of
+                    // the accounting have diverged — fail the group and
+                    // keep the old durable boundary rather than clamp
+                    // the gauge onto fiction.
                     if lane_ok && upto > prev_absorbed {
+                        let Some(remaining) = local.fields.unabsorbed_bytes.checked_sub(bytes)
+                        else {
+                            accounting_diverged = Some(format!(
+                                "absorbed-boundary retirement exceeds the stream ledger: \
+                                 stream={} upto={upto} retire_bytes={bytes} ledger={}",
+                                crate::crypto::hex(&hash[..4]),
+                                local.fields.unabsorbed_bytes,
+                            ));
+                            continue;
+                        };
                         #[cfg(test)]
                         {
                             group_has_absorbed = true;
                         }
                         local.fields.absorbed = upto.min(local.fields.next);
-                        local.fields.unabsorbed_bytes =
-                            local.fields.unabsorbed_bytes.saturating_sub(bytes);
+                        local.fields.unabsorbed_bytes = remaining;
+                        local.retired_frame_bytes += bytes;
                         if v2 {
                             local.fields.history_v2 = true;
                         }
@@ -3961,12 +3999,19 @@ impl ShardEngine {
         // R24-A (superseded unit; see below): payload bytes for the
         // absorber signal. NOT used for maintenance accounting.
         let mut group_appended_bytes: u64 = 0;
-        // R25-B: the maintenance gauge moves by the EXACT net change in
-        // each stream's encoded-frame backlog, taken from the tail the
-        // group actually commits. One unit both directions — the R24
-        // version added uncompressed payload bytes here while the
-        // absorber retired compressed frame bytes, which manufactured
-        // the soak's 9.4% "absorption ratio" on compressible records.
+        // R25-B/R26-2: the maintenance gauge and the process totals move
+        // by the ACTUAL frame bytes each op moved — appends counted at
+        // encrypt time, retirements counted at the boundary advance —
+        // in the same exact unit the stream tails carry. The R25 version
+        // derived one NET direction per stream from base-vs-final tails,
+        // which collapsed a mixed append+absorb group: append 100 /
+        // absorb 80 recorded +20 with zero retirement, so the durable
+        // progress clock never refreshed and the totals undercounted
+        // both sides; a perfectly balanced group vanished entirely and
+        // could ride a false LagSecs latch into an instance-wide shed
+        // while the absorber was keeping pace. (The R24 version had the
+        // worse unit bug: payload bytes in, frame bytes out — the
+        // manufactured 9.4% "absorption ratio".)
         let mut maintenance_added: u64 = 0;
         let mut maintenance_retired: u64 = 0;
         for (hash, local) in &locals {
@@ -3975,16 +4020,22 @@ impl ShardEngine {
             }
             let f = &local.fields;
             let b = &local.base;
-            match f.unabsorbed_bytes.cmp(&b.unabsorbed_bytes) {
-                std::cmp::Ordering::Greater => {
-                    maintenance_added =
-                        maintenance_added.saturating_add(f.unabsorbed_bytes - b.unabsorbed_bytes);
-                }
-                std::cmp::Ordering::Less => {
-                    maintenance_retired =
-                        maintenance_retired.saturating_add(b.unabsorbed_bytes - f.unabsorbed_bytes);
-                }
-                std::cmp::Ordering::Equal => {}
+            maintenance_added = maintenance_added.saturating_add(local.appended_frame_bytes);
+            maintenance_retired = maintenance_retired.saturating_add(local.retired_frame_bytes);
+            // Reconciliation invariant: the actuals must explain the net
+            // tail movement exactly. A mismatch means some path mutated
+            // unabsorbed_bytes without being counted — corruption-class,
+            // fail the group before anything commits.
+            let net = f.unabsorbed_bytes as i128 - b.unabsorbed_bytes as i128;
+            let actual = local.appended_frame_bytes as i128 - local.retired_frame_bytes as i128;
+            if net != actual && accounting_diverged.is_none() {
+                accounting_diverged = Some(format!(
+                    "maintenance actuals do not reconcile with the tail: stream={} \
+                     net={net} appended={} retired={}",
+                    crate::crypto::hex(&hash[..4]),
+                    local.appended_frame_bytes,
+                    local.retired_frame_bytes,
+                ));
             }
             if f.next != b.next
                 || f.absorbed != b.absorbed
@@ -4052,18 +4103,27 @@ impl ShardEngine {
                 crate::history::INGEST_BYTES_TOTAL
                     .fetch_add(local.appended_bytes, std::sync::atomic::Ordering::Relaxed);
                 group_appended_bytes = group_appended_bytes.saturating_add(local.appended_bytes);
-                // R25-B: the absorber signal carries FRAME bytes — the
-                // absorber's byte policy (ABSORB_BYTES) and the tail
-                // gauge are storage-byte policies, and mixing units here
-                // is the same class of bug the maintenance gauge had.
+            }
+            if local.appended_frame_bytes > 0 {
+                // R25-B/R26-2: the absorber signal carries the ACTUAL
+                // frame bytes this group appended — the absorber's byte
+                // policy (ABSORB_BYTES) and the tail gauge are
+                // storage-byte policies, and the old net tail delta
+                // under-signaled whenever the same group also retired.
                 signals.push(AbsorbSignal {
                     hash: *hash,
-                    appended_bytes: local
-                        .fields
-                        .unabsorbed_bytes
-                        .saturating_sub(local.base.unabsorbed_bytes),
+                    appended_bytes: local.appended_frame_bytes,
                 });
             }
+        }
+        // R26-3: a diverged group commits NOTHING — not the appends it
+        // carried, not the boundary it tried to move. This runs before
+        // the no-change early returns so a group whose only op was the
+        // bad retirement still fails loudly instead of evaporating.
+        if let Some(msg) = accounting_diverged {
+            tracing::error!("maintenance accounting diverged: {msg}");
+            Self::send_group_failure("maintenance accounting diverged", pending, queue_pending);
+            return;
         }
         // Fence responses join the barrier that actually covers them:
         // a group with writes carries them itself; a fence-only group

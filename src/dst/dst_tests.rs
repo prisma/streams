@@ -20191,6 +20191,253 @@ async fn absorbed_boundary_and_maintenance_retire_atomically() {
     db2.close().await.unwrap();
 }
 
+/// R26-2: a MIXED append+absorb commit group records BOTH sides. The
+/// R25 net-delta accounting collapsed such a group to one direction:
+/// append 100 / absorb 80 became "+20 added, 0 retired", so the durable
+/// progress clock never refreshed while the absorber was keeping pace —
+/// sustained ingest slightly above retirement would ride a false
+/// LagSecs latch into an instance-wide shed. Composed deterministically
+/// with the commit gate: one group carrying a client append AND an
+/// absorbed-boundary advance.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn mixed_append_absorb_group_refreshes_the_progress_clock() {
+    let store = mem();
+    let engine = open_engine(store.clone(), "dst-mixed").await;
+    let key = skey();
+    let hash = [24u8; 16];
+    let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();
+
+    // Group A: two plain appends establish backlog L0.
+    let w = Workload::new(cov.clone());
+    for i in 0..2 {
+        let out = w
+            .attempt_with_deadline(&engine, hash, &key, "k", &format!("m{i}"), None, None)
+            .await;
+        assert!(matches!(out, Outcome::Acked { .. }));
+    }
+    let tail0 = engine.tail_fields(&hash).await.unwrap().unwrap();
+    let backlog0 = tail0.unabsorbed_bytes;
+    assert!(backlog0 > 0);
+    let row_before = crate::shard::decode_shard_maint(
+        &engine.db.get(crate::shard::shard_maint_key()).await.unwrap().unwrap(),
+    )
+    .unwrap();
+    let ingest0 =
+        crate::shard::INGEST_FRAME_BYTES_TOTAL.load(std::sync::atomic::Ordering::Relaxed);
+    let absorbed0 =
+        crate::shard::ABSORBED_FRAME_BYTES_TOTAL.load(std::sync::atomic::Ordering::Relaxed);
+    // A millisecond clock needs real separation to prove a refresh.
+    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+
+    // ONE group: a client append (adds frame bytes) + an absorbed
+    // advance retiring ALL of the pre-group backlog. Net grows, yet the
+    // group made real durable absorb progress.
+    let hold = engine.test_hold_commit().await;
+    let base = engine.appends_enqueued();
+    let e2 = engine.clone();
+    let w2 = Workload::new(cov.clone());
+    let k2 = key.clone();
+    let rider = tokio::spawn(async move {
+        w2.attempt_with_deadline(&e2, hash, &k2, "k", &"n".repeat(512), None, None)
+            .await
+    });
+    while engine.appends_enqueued() < base + 1 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    engine.submit_absorbed(hash, tail0.next, backlog0).await;
+    drop(hold);
+    let out = rider.await.unwrap();
+    assert!(matches!(out, Outcome::Acked { .. }), "rider append: {out:?}");
+
+    let tail1 = engine.tail_fields(&hash).await.unwrap().unwrap();
+    assert_eq!(tail1.absorbed, tail0.next, "boundary must have advanced");
+    let appended_new = tail1.unabsorbed_bytes;
+    assert!(appended_new > 0, "the rider's frames are the new backlog");
+    let row_after = crate::shard::decode_shard_maint(
+        &engine.db.get(crate::shard::shard_maint_key()).await.unwrap().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(
+        engine.maintenance_snapshot().unabsorbed_frame_bytes,
+        appended_new,
+        "published ledger must equal the tail gauge"
+    );
+    // THE regression: net-delta accounting left last_progress_ms at the
+    // group-A value because the mixed group's net was positive.
+    assert!(
+        row_after.last_progress_ms > row_before.last_progress_ms,
+        "a mixed group that retired backlog must refresh the durable \
+         progress clock (before={} after={})",
+        row_before.last_progress_ms,
+        row_after.last_progress_ms,
+    );
+    // Process totals move by ACTUAL work, not net: the group retired
+    // backlog0 and ingested the rider's frames ("grew by at least" —
+    // the totals are process-global and the suite runs in parallel).
+    let ingest1 =
+        crate::shard::INGEST_FRAME_BYTES_TOTAL.load(std::sync::atomic::Ordering::Relaxed);
+    let absorbed1 =
+        crate::shard::ABSORBED_FRAME_BYTES_TOTAL.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        absorbed1 - absorbed0 >= backlog0,
+        "retired frame bytes must count even in a net-positive group"
+    );
+    assert!(
+        ingest1 - ingest0 >= appended_new,
+        "appended frame bytes must count in full, not net of retirement"
+    );
+    engine.begin_close();
+}
+
+/// R26-2 (companion): a perfectly BALANCED group — append and retire the
+/// same byte count — has zero net movement and still must write the
+/// durable row and refresh the progress clock. Under net accounting it
+/// vanished entirely: no row, no refresh, a false stall while absorption
+/// was keeping exact pace with ingest.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn balanced_append_absorb_group_still_writes_progress() {
+    let store = mem();
+    let engine = open_engine(store.clone(), "dst-balanced").await;
+    let key = skey();
+    let hash = [25u8; 16];
+    let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();
+
+    // One append; its frame bytes are the whole ledger.
+    let w = Workload::new(cov.clone());
+    let out = w
+        .attempt_with_deadline(&engine, hash, &key, "k", &"b".repeat(256), None, None)
+        .await;
+    assert!(matches!(out, Outcome::Acked { .. }));
+    let tail0 = engine.tail_fields(&hash).await.unwrap().unwrap();
+    let backlog0 = tail0.unabsorbed_bytes;
+    assert!(backlog0 > 0);
+    let row_before = crate::shard::decode_shard_maint(
+        &engine.db.get(crate::shard::shard_maint_key()).await.unwrap().unwrap(),
+    )
+    .unwrap();
+    tokio::time::sleep(std::time::Duration::from_millis(40)).await;
+
+    // ONE group: append an identical-length payload (equal frame bytes —
+    // the cipher is length-preserving for equal plaintext lengths) while
+    // retiring the first record's bytes. added == retired, net == 0.
+    let hold = engine.test_hold_commit().await;
+    let base = engine.appends_enqueued();
+    let e2 = engine.clone();
+    let w2 = Workload::new(cov.clone());
+    let k2 = key.clone();
+    let rider = tokio::spawn(async move {
+        w2.attempt_with_deadline(&e2, hash, &k2, "k", &"b".repeat(256), None, None)
+            .await
+    });
+    while engine.appends_enqueued() < base + 1 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    engine.submit_absorbed(hash, tail0.next, backlog0).await;
+    drop(hold);
+    let out = rider.await.unwrap();
+    assert!(matches!(out, Outcome::Acked { .. }), "rider append: {out:?}");
+
+    let tail1 = engine.tail_fields(&hash).await.unwrap().unwrap();
+    assert_eq!(tail1.absorbed, tail0.next);
+    assert_eq!(
+        tail1.unabsorbed_bytes, backlog0,
+        "identical payload lengths encode to identical frame bytes"
+    );
+    let row_after = crate::shard::decode_shard_maint(
+        &engine.db.get(crate::shard::shard_maint_key()).await.unwrap().unwrap(),
+    )
+    .unwrap();
+    assert!(
+        row_after.version > row_before.version,
+        "a balanced group must still write the durable row"
+    );
+    assert!(
+        row_after.last_progress_ms > row_before.last_progress_ms,
+        "a balanced group made real absorb progress and must say so"
+    );
+    engine.begin_close();
+}
+
+/// R26-3: retiring more bytes than the stream's exact ledger holds is a
+/// divergence, not a clamp. The whole group fails — including a client
+/// append riding in it — the durable boundary and row stay put, and the
+/// engine keeps serving afterward.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn over_retirement_fails_the_group_and_preserves_the_boundary() {
+    let store = mem();
+    let engine = open_engine(store.clone(), "dst-overret").await;
+    let key = skey();
+    let hash = [26u8; 16];
+    let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();
+
+    let w = Workload::new(cov.clone());
+    let out = w
+        .attempt_with_deadline(&engine, hash, &key, "k", "base", None, None)
+        .await;
+    assert!(matches!(out, Outcome::Acked { .. }));
+    let tail0 = engine.tail_fields(&hash).await.unwrap().unwrap();
+    let backlog0 = tail0.unabsorbed_bytes;
+    let row_before = crate::shard::decode_shard_maint(
+        &engine.db.get(crate::shard::shard_maint_key()).await.unwrap().unwrap(),
+    )
+    .unwrap();
+
+    // ONE group: a client append + an absorbed advance claiming MORE
+    // bytes than the ledger holds. saturating_sub would clamp silently;
+    // the checked ledger fails everything together.
+    let hold = engine.test_hold_commit().await;
+    let base = engine.appends_enqueued();
+    let e2 = engine.clone();
+    let k2 = key.clone();
+    let mut w2 = Workload::new(cov.clone());
+    w2.max_attempts = 1;
+    let rider = tokio::spawn(async move {
+        w2.attempt_with_deadline(&e2, hash, &k2, "k", "doomed", None, None)
+            .await
+    });
+    while engine.appends_enqueued() < base + 1 {
+        tokio::time::sleep(std::time::Duration::from_millis(2)).await;
+    }
+    engine.submit_absorbed(hash, tail0.next, backlog0 + 999).await;
+    drop(hold);
+    let out = rider.await.unwrap();
+    assert!(
+        !matches!(out, Outcome::Acked { .. }),
+        "a diverged group must commit NOTHING, but the rider acked: {out:?}"
+    );
+
+    let tail1 = engine.tail_fields(&hash).await.unwrap().unwrap();
+    assert_eq!(tail1.absorbed, tail0.absorbed, "boundary must not move");
+    assert_eq!(tail1.next, tail0.next, "the rider append must not commit");
+    assert_eq!(tail1.unabsorbed_bytes, backlog0, "ledger must not move");
+    let row_after = crate::shard::decode_shard_maint(
+        &engine.db.get(crate::shard::shard_maint_key()).await.unwrap().unwrap(),
+    )
+    .unwrap();
+    assert_eq!(row_after, row_before, "durable row must not move");
+
+    // The engine is not wedged: a fresh append acks, and an EXACT
+    // retirement drains the ledger to zero.
+    let out = w
+        .attempt_with_deadline(&engine, hash, &key, "k", "alive", None, None)
+        .await;
+    assert!(matches!(out, Outcome::Acked { .. }), "engine wedged: {out:?}");
+    let tail2 = engine.tail_fields(&hash).await.unwrap().unwrap();
+    engine
+        .submit_absorbed(hash, tail2.next, tail2.unabsorbed_bytes)
+        .await;
+    let mut drained = false;
+    for _ in 0..400 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        if engine.maintenance_snapshot().unabsorbed_frame_bytes == 0 {
+            drained = true;
+            break;
+        }
+    }
+    assert!(drained, "exact retirement after the refusal never drained");
+    engine.begin_close();
+}
+
 /// R25-D: ownership handoff. B fences A and loads the durable backlog;
 /// A's late shutdown cannot damage B's state — structurally, because
 /// each engine OWNS its state and there is no global map for a stale
