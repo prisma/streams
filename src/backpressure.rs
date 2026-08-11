@@ -177,7 +177,7 @@ pub fn engaged() -> Option<Cause> {
     // R24-B: a single hot shard must NOT latch every append on the
     // process. One noisy tenant rejecting every other customer's writes
     // is a poor multitenant failure boundary, so ShardBytes is decided
-    // per shard in `admit_shard` instead of here.
+    // per shard in `admit` instead of here.
     match c {
         Some(Cause::ShardBytes) => None,
         other => other,
@@ -197,43 +197,32 @@ pub fn engaged() -> Option<Cause> {
 ///     someone else.
 ///   * Only the OFFENDING shard's appends are refused. Streams on other
 ///     shards of the same instance keep being served.
-pub fn admit_shard(prefix: &str, l: &Limits) -> Option<Cause> {
-    // The instance-wide latch still applies to everything we own.
+pub fn admit(engine: &crate::shard::ShardEngine, l: &Limits) -> Option<Cause> {
+    // The instance-wide latch applies to everything we own.
     if let Some(c) = engaged() {
         return Some(c);
     }
     if l.unabsorbed_bytes_shard == 0 {
         return None;
     }
-    let m = crate::maintenance::for_shard(prefix);
-    // Hysteresis, same as the instance latch: engage over the limit,
-    // release under release_pct of it.
-    let release = l
-        .unabsorbed_bytes_shard
-        .saturating_mul(l.release_pct)
-        / 100;
-    let was = SHED_SHARDS
-        .lock()
-        .map(|g| g.contains(prefix))
-        .unwrap_or(false);
+    // R25-C: the per-shard latch lives ON THE ENGINE, with the same
+    // high/low hysteresis as the instance latch. No prefix-keyed global
+    // map: ownership removal is automatic when the engine leaves
+    // state.shards, and a former owner cannot latch a shard it no
+    // longer holds.
+    let m = engine.maintenance_snapshot();
+    let release = l.unabsorbed_bytes_shard.saturating_mul(l.release_pct) / 100;
+    let was = engine.maintenance_shard_shed.load(Ordering::Relaxed);
     let now = if was {
-        m.unabsorbed_bytes > release
+        m.unabsorbed_frame_bytes > release
     } else {
-        m.unabsorbed_bytes > l.unabsorbed_bytes_shard
+        m.unabsorbed_frame_bytes > l.unabsorbed_bytes_shard
     };
-    if let Ok(mut g) = SHED_SHARDS.lock() {
-        if now {
-            g.insert(prefix.to_string());
-        } else {
-            g.remove(prefix);
-        }
+    if now != was {
+        engine.maintenance_shard_shed.store(now, Ordering::Relaxed);
     }
     now.then_some(Cause::ShardBytes)
 }
-
-/// Shards currently latched by the per-shard bound.
-static SHED_SHARDS: std::sync::Mutex<std::collections::BTreeSet<String>> =
-    std::sync::Mutex::new(std::collections::BTreeSet::new());
 
 pub fn note_shed() {
     SHED_COUNT.fetch_add(1, Ordering::Relaxed);
@@ -266,29 +255,31 @@ pub fn apply(s: &Snapshot, l: &Limits) -> bool {
     now
 }
 
-/// Read the DURABLE, ownership-scoped backlog into a snapshot.
+/// Snapshot the CURRENTLY OWNED engines' maintenance state (R25-C).
 ///
-/// R24-A: this used to be `INGEST_BYTES_TOTAL - ABSORB_BYTES_TOTAL`,
-/// two process-lifetime atomics. That could manufacture backlog for
-/// records that were never committed (the ingest counter is bumped
-/// before the group write succeeds), hide real backlog across a restart
-/// (both counters reset to zero), and misinform both sides of an
-/// ownership move (the counters are process-wide, not shard-keyed).
-///
-/// Every field now derives from the per-shard durable maintenance rows
-/// of the shards this instance CURRENTLY OWNS.
-pub fn observe() -> Snapshot {
-    let now_ms = crate::shard::now_ms();
-    let (total, max_shard, age_secs) = crate::maintenance::aggregate(now_ms);
+/// Each engine's state was loaded from its durable row before it began
+/// serving, and it leaves this aggregate the moment the engine leaves
+/// `state.shards` — no process-global map to go stale.
+pub fn snapshot(state: &crate::http::AppState) -> Snapshot {
+    let engines: Vec<std::sync::Arc<crate::shard::ShardEngine>> =
+        state.shards.read().unwrap().values().cloned().collect();
+    let now = crate::shard::now_ms();
+    let mut total = 0u64;
+    let mut max_shard = 0u64;
+    let mut max_stall = 0u64;
+    for engine in engines {
+        let m = engine.maintenance_snapshot();
+        total = total.saturating_add(m.unabsorbed_frame_bytes);
+        max_shard = max_shard.max(m.unabsorbed_frame_bytes);
+        max_stall = max_stall.max(m.no_progress_secs(now));
+    }
     Snapshot {
         unabsorbed_bytes_instance: total,
         unabsorbed_bytes_max_shard: max_shard,
-        absorb_lag_secs: age_secs,
-        // Replay cost on reopen is dominated by re-reading the
-        // unabsorbed tail, which is exactly this figure. It is a
-        // separate threshold rather than a separate measurement, and
-        // the doc comment says so instead of implying an independent
-        // estimate exists.
+        // Time since durable maintenance PROGRESS, not oldest-record
+        // age — under continuous traffic an oldest-record clock stays
+        // permanently old even while absorption keeps up.
+        absorb_lag_secs: max_stall,
         replay_bytes: total,
     }
 }
@@ -409,44 +400,6 @@ mod tests {
             (false, None),
             "turning every bound off must release, not latch forever"
         );
-    }
-
-    /// The blast radius of backpressure. Shedding the wrong request
-    /// class turns a recoverable overload into an unrecoverable one:
-    /// no consumer drain, no delete, no ownership move.
-    #[test]
-    fn only_record_appends_are_refused() {
-        use axum::http::Method;
-        let is = crate::http::is_append_request;
-
-        // Refused: the three ways to append new records.
-        assert!(is(&Method::POST, "/v1/streams/orders/records"));
-        assert!(is(&Method::POST, "/v1/streams/orders:batch"));
-        assert!(is(&Method::POST, "/v1/stream/orders"));
-        assert!(is(&Method::POST, "/v1/streams/a.b-c_d/records"));
-
-        // Admitted: consumers must keep draining.
-        assert!(!is(&Method::POST, "/v1/streams/orders:pull"));
-        assert!(!is(&Method::POST, "/v1/streams/orders:settle"));
-
-        // Admitted: control plane must stay reachable to REPAIR the
-        // overload — this is the property that keeps it recoverable.
-        assert!(!is(&Method::PUT, "/v1/streams/orders"));
-        assert!(!is(&Method::DELETE, "/v1/streams/orders"));
-        assert!(!is(&Method::POST, "/v1/streams/orders:seal"));
-
-        // Admitted: reads, scans, operator and platform surfaces.
-        assert!(!is(&Method::GET, "/v1/streams/orders/records"));
-        assert!(!is(&Method::GET, "/v1/streams/orders:scan"));
-        assert!(!is(&Method::GET, "/health"));
-        assert!(!is(&Method::POST, "/v1/segments"));
-        assert!(!is(&Method::POST, "/operator/anything"));
-        assert!(!is(&Method::POST, "/v1/debug/absorb"));
-
-        // A colon name inside a stream name must not read as a verb.
-        assert!(is(&Method::POST, "/v1/streams/a:b/records"));
-        // Raw route with a sub-path is not the raw append.
-        assert!(!is(&Method::POST, "/v1/stream/orders/records"));
     }
 
     #[test]

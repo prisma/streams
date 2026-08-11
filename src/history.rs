@@ -841,12 +841,9 @@ impl Absorber {
                     // instance rollup reports phantom backlog, and
                     // wide-report treats that rollup as its drain proof.
                     crate::usage::clear_absorb_pending_summary(&absorber.shard.prefix);
-                    // R24-A: and drop this shard's maintenance
-                    // contribution. A former owner must stop answering
-                    // for backlog it handed away — otherwise it keeps
-                    // shedding appends for streams it no longer holds
-                    // while the new owner admits freely.
-                    crate::maintenance::remove(&absorber.shard.prefix);
+                    // R25-C: no global maintenance map to clear — the
+                    // engine owns its state, and it leaves the instance
+                    // aggregate the moment it leaves state.shards.
                     return;
                 }
                 tokio::select! {

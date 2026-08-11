@@ -1,5 +1,4 @@
 mod backpressure;
-mod maintenance;
 mod billing;
 mod crypto;
 #[cfg(test)]
@@ -1287,7 +1286,7 @@ async fn async_main() -> anyhow::Result<()> {
                 // single atomic read — walking the lag map per append
                 // would put the overload on the hot path.
                 if ticks % 8 == 0 {
-                    let snap = crate::backpressure::observe();
+                    let snap = crate::backpressure::snapshot(&st);
                     crate::backpressure::apply(&snap, &bp_limits);
                 }
                 ticks = ticks.wrapping_add(1);

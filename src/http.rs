@@ -474,38 +474,26 @@ fn acquire_stream_slot(
     }
 }
 
-/// Is this request an APPEND of new records?
-///
-/// Maintenance backpressure refuses exactly this set and nothing else.
-/// Getting the boundary wrong in either direction is harmful: too wide
-/// and an overloaded instance cannot be repaired (no delete, no
-/// ownership move, no consumer drain); too narrow and the backlog keeps
-/// growing through whatever path was missed.
-///
-///   POST /v1/streams/{name}/records   product append
-///   POST /v1/streams/{name}:batch     product appendMany
-///   POST /v1/stream/{name}            raw Durable Streams append
-///
-/// Everything else — creates, deletes, seals, pull/settle, watches,
-/// scans, reads, operator and debug surfaces — is admitted.
-pub(crate) fn is_append_request(method: &axum::http::Method, path: &str) -> bool {
-    if method != axum::http::Method::POST {
-        return false;
-    }
-    if let Some(rest) = path.strip_prefix("/v1/streams/") {
-        // A colon verb is a control operation except for :batch.
-        if let Some((_, verb)) = rest.rsplit_once(':') {
-            if !verb.contains('/') {
-                return verb == "batch";
-            }
-        }
-        return rest.ends_with("/records");
-    }
-    // Raw route: POST /v1/stream/{name} with no further path segment.
-    if let Some(rest) = path.strip_prefix("/v1/stream/") {
-        return !rest.is_empty() && !rest.contains('/');
-    }
-    false
+/// Per-engine maintenance state for /v1/debug/load (R25-C).
+fn maintenance_shards_json(state: &AppState) -> serde_json::Value {
+    let engines: Vec<Arc<ShardEngine>> =
+        state.shards.read().unwrap().values().cloned().collect();
+    let now = crate::shard::now_ms();
+    serde_json::json!({
+        "owned_shards": engines.len(),
+        "shards": engines.iter().map(|e| {
+            let m = e.maintenance_snapshot();
+            serde_json::json!({
+                "prefix": e.prefix,
+                "unabsorbed_frame_bytes": m.unabsorbed_frame_bytes,
+                "backlog_started_ms": m.backlog_started_ms,
+                "last_progress_ms": m.last_progress_ms,
+                "no_progress_secs": m.no_progress_secs(now),
+                "shard_shed": e.maintenance_shard_shed
+                    .load(std::sync::atomic::Ordering::Relaxed),
+            })
+        }).collect::<Vec<_>>(),
+    })
 }
 
 async fn track_inflight(
@@ -788,7 +776,7 @@ async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
         "rss_mb": crate::fleet::rss_bytes() as f64 / 1048576.0,
         "admit_shed": state.admit_shed.load(std::sync::atomic::Ordering::Relaxed),
         "maintenance_backpressure": crate::backpressure::stats_json(),
-        "maintenance_shards": crate::maintenance::snapshot_json(),
+        "maintenance_shards": maintenance_shards_json(&state),
         "stream_shed": state.stream_shed.load(std::sync::atomic::Ordering::Relaxed),
         "wedge_shed": state.wedge_shed.load(std::sync::atomic::Ordering::Relaxed),
         "streams_tracked": state.stream_inflight.lock().unwrap().len(),
@@ -4967,6 +4955,7 @@ async fn append_core(
         fork_failpoints::pause_close_before_enqueue(&name).await;
     }
     let (tx, rx) = oneshot::channel();
+    let has_entries = !entries.is_empty();
     let req = AppendReq {
         enqueued_at: std::time::Instant::now(),
         hash,
@@ -5015,6 +5004,33 @@ async fn append_core(
         Ok(e) => e,
         Err(r) => return r,
     };
+    // R25-C: THE maintenance admission point — one, in the shared append
+    // core, after `engine_for` resolved ownership. A non-owner already
+    // received its Streams-Replay-To above and never reaches this, so a
+    // stale local latch cannot answer for someone else's backlog. Both
+    // public append surfaces converge here (raw /v1/stream/{*name}
+    // including hierarchical names, product append and appendMany, every
+    // routing key, split children on their own shard routes), so there
+    // is no second copy of the route grammar to drift.
+    //
+    // Skips: close-only operations carry no entries and must stay
+    // admitted (an operator closing a stream is REDUCING future work),
+    // and reserved system streams stay admitted because overload
+    // recovery must not deadlock on its own system-of-record writes.
+    if !close_only && has_entries && !crate::billing::is_reserved_stream(&name) {
+        let limits = crate::backpressure::limits();
+        if let Some(cause) = crate::backpressure::admit(&engine, &limits) {
+            crate::backpressure::note_shed();
+            let mut r = err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "maintenance_backpressure",
+                &format!("{}; retry after maintenance catches up", cause.as_str()),
+            );
+            r.headers_mut()
+                .insert("retry-after", axum::http::HeaderValue::from_static("5"));
+            return r;
+        }
+    }
     // Wedge shed: if the shard's durability pipeline is stalled — either
     // the commit db.write is blocked (unflushed-full) or committed groups
     // have waited on the durable watermark beyond the threshold (WAL flush

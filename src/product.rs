@@ -416,88 +416,7 @@ pub(crate) enum ProductRoute {
     },
 }
 
-/// What kind of work a request represents, for admission decisions.
-///
-/// R24-C. The previous classifier was a string predicate in the HTTP
-/// middleware that re-derived the route grammar by hand, and it got the
-/// raw route wrong: `/v1/stream/{*name}` is a WILDCARD that matches
-/// slashes, so `POST /v1/stream/customers/acme` is a genuine append that
-/// the predicate rejected as a subresource — it bypassed maintenance
-/// backpressure entirely. Worse, the unit test pinned that wrong
-/// assumption as if it were the contract.
-///
-/// The lesson generalizes: route grammar must be derived ONCE, from the
-/// parser the handlers actually dispatch on. A second copy in a
-/// predicate is a copy that will drift.
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub(crate) enum WorkClass {
-    /// Appending new records — the only class maintenance backpressure
-    /// may refuse, because it is the only one that GROWS the backlog.
-    RecordAppend,
-    /// Reads and scans: they do not grow the backlog, and refusing them
-    /// would hide an overloaded instance from its own operators.
-    Read,
-    /// Consumer pull/settle. Never shed: consumers DRAIN the backlog,
-    /// so refusing them removes the only thing that ends the overload.
-    ConsumerProgress,
-    /// Create, delete, seal, fork, config. Never shed: an operator must
-    /// be able to repair the condition that is shedding.
-    Lifecycle,
-    /// Watches, usage, catalog, operator and debug surfaces.
-    ControlPlane,
-}
 
-/// Maintenance admission for one resolved stream (R24-B).
-///
-/// Called AFTER the descriptor is resolved, so the shard is known. A
-/// shard this instance does not own is absent from the maintenance
-/// mirror and therefore never sheds here — the request continues to the
-/// normal ownership replay, which is the correct answer for a
-/// non-owner.
-pub(crate) fn maintenance_gate(state: &AppState, desc: &crate::registry::StreamDesc) -> Option<Response> {
-    let limits = crate::backpressure::limits();
-    let prefix =
-        crate::registry::shard_for_hash(&state.shard_prefixes, &desc.storage_hash());
-    let cause = crate::backpressure::admit_shard(&prefix, &limits)?;
-    crate::backpressure::note_shed();
-    let mut r = perr(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "maintenance_backpressure",
-        &format!(
-            "{} exceeds its bound; appends to this stream are paused while the backlog drains",
-            cause.as_str()
-        ),
-        None,
-        true,
-    );
-    r.headers_mut()
-        .insert("retry-after", axum::http::HeaderValue::from_static("5"));
-    Some(r)
-}
-
-impl ProductRoute {
-    /// Classify a parsed product route plus its method.
-    pub(crate) fn work_class(&self, method: &Method, verb: Option<&str>) -> WorkClass {
-        match self {
-            ProductRoute::Records { .. } => match (method, verb) {
-                // POST with no verb is an append; `:batch` is appendMany.
-                (&Method::POST, None) | (&Method::POST, Some("batch")) => WorkClass::RecordAppend,
-                _ => WorkClass::Read,
-            },
-            ProductRoute::Collection { .. } => match (method, verb) {
-                (&Method::GET, _) => WorkClass::Read,
-                // scan is a read; every other collection verb is lifecycle.
-                (_, Some("scan")) => WorkClass::Read,
-                _ => WorkClass::Lifecycle,
-            },
-            ProductRoute::Consumer { .. } => WorkClass::ConsumerProgress,
-            ProductRoute::Watches { .. }
-            | ProductRoute::Watch { .. }
-            | ProductRoute::WatchWait { .. }
-            | ProductRoute::Usage { .. } => WorkClass::ControlPlane,
-        }
-    }
-}
 
 /// Split a trailing `:verb` off the final segment. Only the known verbs
 /// count — a colon is legal inside a collection name.
@@ -2565,13 +2484,6 @@ async fn product_append_inner(
             );
         }
     };
-    // R24-B: maintenance admission, now that the stream (and therefore
-    // its shard) is resolved. A shard we do not own is absent from the
-    // mirror, so a non-owner falls through to ownership replay instead
-    // of answering 503 about someone else's backlog.
-    if let Some(r) = maintenance_gate(&state, &desc) {
-        return r;
-    }
     if let Some(r) = refuse_if_sealed(&desc, seal_after) {
         return r;
     }
