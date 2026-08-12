@@ -5125,6 +5125,7 @@ async fn http_rig_auth(
         Some(token.to_string()),
         None,
         None,
+        None,
     )
     .await
 }
@@ -5135,7 +5136,7 @@ async fn http_rig_full(
     shard_cfg: crate::shard::ShardConfig,
     per_segment_slots: i64,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
-    http_rig_inner(store, prefixes, shard_cfg, per_segment_slots, None, None, None).await
+    http_rig_inner(store, prefixes, shard_cfg, per_segment_slots, None, None, None, None).await
 }
 
 /// A rig with a NAMED instance so ring ownership is real: setting
@@ -5152,6 +5153,7 @@ async fn http_rig_named(
         0,
         None,
         Some(instance.to_string()),
+        None,
         None,
     )
     .await
@@ -5174,6 +5176,34 @@ async fn http_rig_park(
         None,
         None,
         Some(park),
+        None,
+    )
+    .await
+}
+
+/// A rig whose absorbers are NEVER DUE (huge byte + age thresholds):
+/// durable maintenance backlog stays put, which is what the R27-2
+/// sweep-policy tests need — the subject is the sweep's retention
+/// decision, not absorber timing.
+async fn http_rig_cold_absorb(
+    store: Arc<dyn ObjectStore>,
+    prefixes: Vec<String>,
+) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+    http_rig_inner(
+        store,
+        prefixes,
+        crate::shard::ShardConfig::default(),
+        0,
+        None,
+        None,
+        None,
+        Some(crate::history::AbsorberConfig {
+            threshold_bytes: u64::MAX,
+            threshold_age: std::time::Duration::from_secs(1_000_000),
+            tick: std::time::Duration::from_millis(50),
+            sweep_every: u32::MAX,
+            ..Default::default()
+        }),
     )
     .await
 }
@@ -5186,6 +5216,7 @@ async fn http_rig_inner(
     auth: Option<String>,
     instance_name: Option<String>,
     open_park: Option<Arc<tokio::sync::Mutex<()>>>,
+    absorber_cfg: Option<crate::history::AbsorberConfig>,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
     let registry = crate::registry::Registry::new(store.clone());
     let keys = Arc::new(crate::history::KeyCache::default());
@@ -5197,11 +5228,13 @@ async fn http_rig_inner(
         let store = store.clone();
         let keys = keys.clone();
         let shard_cfg = shard_cfg.clone();
+        let absorber_cfg = absorber_cfg.clone();
         Box::new(move |prefix: String| {
             let store = store.clone();
             let keys = keys.clone();
             let shard_cfg = shard_cfg.clone();
             let open_park = open_park.clone();
+            let absorber_cfg = absorber_cfg.clone();
             let fut: futures_util::future::BoxFuture<
                 'static,
                 anyhow::Result<Arc<crate::shard::ShardEngine>>,
@@ -5238,13 +5271,13 @@ async fn http_rig_inner(
                     store,
                     engine.clone(),
                     keys,
-                    crate::history::AbsorberConfig {
+                    absorber_cfg.clone().unwrap_or(crate::history::AbsorberConfig {
                         threshold_bytes: 1,
                         threshold_age: std::time::Duration::from_millis(1),
                         tick: std::time::Duration::from_millis(20),
                         sweep_every: u32::MAX,
                         ..Default::default()
-                    },
+                    }),
                     absorb_rx,
                 );
                 Ok(engine)
@@ -21162,4 +21195,172 @@ async fn debug_load_reports_typed_limiter_and_frame_totals() {
     // is process-global and the R26-5 shed gates run in this same
     // parallel suite; `before` pins only the rl_before baseline.)
     let _ = &before;
+}
+
+// ---- R27-2: cold owned shards with maintenance debt must drain ------
+
+/// The billing sweep and my tests share one process-global marks set
+/// and one rotation counter; serialize the sweep-policy tests.
+fn sweep_lock() -> &'static tokio::sync::Mutex<()> {
+    static L: std::sync::OnceLock<tokio::sync::Mutex<()>> = std::sync::OnceLock::new();
+    L.get_or_init(|| tokio::sync::Mutex::new(()))
+}
+
+/// Drain billing debt until the sweep's own probes read clean, so the
+/// retention decision under test is the MAINTENANCE one.
+async fn drain_billing_clean(
+    state: &Arc<crate::http::AppState>,
+    prefixes: &[&str],
+) {
+    for _ in 0..200 {
+        let _ = crate::billing::drain_once(state).await;
+        let mut clean = true;
+        for p in prefixes {
+            let Some(e) = state.shards.read().unwrap().get(*p).cloned() else {
+                continue;
+            };
+            let dirty = e.usage_dirty_scan().await.map(|d| !d.is_empty()).unwrap_or(true);
+            let finals = e.usage_month_finals().await.map(|f| !f.is_empty()).unwrap_or(true);
+            if dirty || finals {
+                clean = false;
+            }
+        }
+        if clean {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    panic!("billing debt never drained clean");
+}
+
+/// R27-2a: a restart leaves durable maintenance backlog on a shard no
+/// customer touches. The sweep must open it, see the backlog, KEEP the
+/// engine resident (its absorber is what drains cold debt), and close
+/// it on a later sweep once the ledger reaches zero. Before this fix
+/// the sweep closed it as "debt-free" after checking only billing rows,
+/// and the backlog sat until customer traffic happened to reopen it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn cold_shard_maintenance_debt_survives_the_sweep_and_drains() {
+    let _serial = sweep_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig_cold_absorb(store, vec!["00".into()]).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/cold-x", &ct, b"").await;
+    assert!(st == 200 || st == 201);
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/cold-x", &ct, br#"[{"n":1}]"#).await;
+    assert!(st == 200 || st == 204);
+    drain_billing_clean(&state, &["00"]).await;
+    let engine = state.shards.read().unwrap().get("00").cloned().unwrap();
+    let ledger = engine.maintenance_snapshot().unabsorbed_frame_bytes;
+    assert!(ledger > 0, "backlog must exist before the cold phase");
+
+    // Go cold: the production sweep-close pattern (remove + close).
+    {
+        state.shards.write().unwrap().remove("00");
+    }
+    engine.begin_close();
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    // Sweep: reopens the owned shard, sees maintenance debt with clean
+    // billing, and must keep it resident.
+    crate::billing::sweep_owned_outboxes(&state).await;
+    let kept = state.shards.read().unwrap().get("00").cloned();
+    let kept = kept.expect("sweep must keep a maintenance-indebted shard resident");
+    assert_eq!(
+        kept.maintenance_snapshot().unabsorbed_frame_bytes,
+        ledger,
+        "the reopened engine restored the durable ledger"
+    );
+
+    // The debt drains (deterministically, via an exact retirement — the
+    // absorber path is proven elsewhere; the subject here is the sweep
+    // policy)...
+    // Retire via the durable dirty index — the engine's own record of
+    // which stream carries the backlog (identity-derivation-free).
+    let dirty = kept.scan_dirty_streams().await.unwrap();
+    assert_eq!(dirty.len(), 1, "exactly one indebted stream expected");
+    let hash = dirty[0].0;
+    let tail = kept.tail_fields(&hash).await.unwrap().unwrap();
+    kept.submit_absorbed(hash, tail.next, tail.unabsorbed_bytes).await;
+    let mut drained = false;
+    for _ in 0..400 {
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        if kept.maintenance_snapshot().unabsorbed_frame_bytes == 0 {
+            drained = true;
+            break;
+        }
+    }
+    assert!(drained, "retirement never drained the kept engine");
+
+    // ...and the NEXT sweep closes the now debt-free shard.
+    crate::billing::sweep_owned_outboxes(&state).await;
+    assert!(
+        !state.shards.read().unwrap().contains_key("00"),
+        "a drained sweep-opened shard must close"
+    );
+}
+
+/// R27-2b: many cold indebted shards must not all stay resident — the
+/// bound (SWEEP_MAINT_RESIDENT=2) holds, and the rotation gives a
+/// DIFFERENT residency window on the next sweep so no shard starves.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sweep_residency_bound_rotates_over_many_indebted_shards() {
+    let _serial = sweep_lock().lock().await;
+    let store = mem();
+    let prefixes = vec!["00".to_string(), "01".to_string(), "10".to_string(), "11".to_string()];
+    let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
+    let ct = [("content-type", "application/json")];
+    // Streams covering every physical shard.
+    let mut covered: std::collections::HashSet<String> = Default::default();
+    for i in 0..64 {
+        if covered.len() == 4 {
+            break;
+        }
+        let name = format!("cold-m{i}");
+        let (st, _, _) = hreq(addr, "PUT", &format!("/v1/stream/{name}"), &ct, b"").await;
+        assert!(st == 200 || st == 201);
+        let desc = state.registry.get(&name).await.unwrap().unwrap();
+        let seg = desc.resolve_segment("");
+        let p = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
+        if covered.insert(p) {
+            let (st, _, _) =
+                hreq(addr, "POST", &format!("/v1/stream/{name}"), &ct, br#"[{"n":1}]"#).await;
+            assert!(st == 200 || st == 204);
+        }
+    }
+    assert_eq!(covered.len(), 4, "could not cover all four shards");
+    let pref_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
+    drain_billing_clean(&state, &pref_refs).await;
+
+    // All four go cold with durable backlog.
+    let engines: Vec<_> = {
+        let mut m = state.shards.write().unwrap();
+        prefixes.iter().filter_map(|p| m.remove(p)).collect()
+    };
+    assert_eq!(engines.len(), 4);
+    for e in engines {
+        assert!(e.maintenance_snapshot().unabsorbed_frame_bytes > 0);
+        e.begin_close();
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    let resident = |state: &Arc<crate::http::AppState>| -> Vec<String> {
+        let mut v: Vec<String> = state.shards.read().unwrap().keys().cloned().collect();
+        v.sort();
+        v
+    };
+    crate::billing::sweep_owned_outboxes(&state).await;
+    let kept1 = resident(&state);
+    assert_eq!(
+        kept1.len(),
+        2,
+        "residency bound must hold: got {kept1:?} (bound 2 of 4 indebted)"
+    );
+    crate::billing::sweep_owned_outboxes(&state).await;
+    let kept2 = resident(&state);
+    assert_eq!(kept2.len(), 2, "bound must hold on every sweep: {kept2:?}");
+    assert_ne!(
+        kept1, kept2,
+        "rotation must move the residency window between sweeps"
+    );
 }

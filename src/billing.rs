@@ -2122,7 +2122,32 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
             }
         }
     }
-    let marked: Vec<String> = sweep_opened().lock().unwrap().iter().cloned().collect();
+    // R27-2: the close decision must consider EVERY kind of debt the
+    // engine carries, not only billing rows. A sweep-opened shard with
+    // durable unabsorbed maintenance backlog (or pending physical-trim
+    // debt) that got closed here would sit indefinitely until customer
+    // traffic happened to reopen it — cold owned debt must drain
+    // without requiring a customer request. Retention is BOUNDED
+    // (SWEEP_MAINT_RESIDENT, default 2): keeping every indebted cold
+    // shard open at once would reintroduce the residency pressure the
+    // sweep close exists to prevent, so surplus indebted shards close
+    // now and the rotation below guarantees each one a resident turn on
+    // later sweeps, its absorber draining while it stays open.
+    let maint_resident_bound: usize = std::env::var("SWEEP_MAINT_RESIDENT")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(2);
+    static SWEEP_CYCLE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+    let cycle = SWEEP_CYCLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let mut marked: Vec<String> = sweep_opened().lock().unwrap().iter().cloned().collect();
+    marked.sort();
+    let n = marked.len();
+    if n > 0 {
+        // Deterministic rotation: a different residency window each
+        // sweep, so no indebted shard is starved by set ordering.
+        marked.rotate_left(cycle % n);
+    }
+    let mut maint_kept = 0usize;
     for prefix in marked {
         if let Some(owner) = state.effective_owner(&prefix)
             && owner != state.instance_name
@@ -2145,12 +2170,33 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
             tracing::info!("outbox sweep keeps {prefix} resident (billing debt pending)");
             continue;
         }
+        let maint = engine.maintenance_snapshot().unabsorbed_frame_bytes;
+        let trim_debt = engine.trim_stats().0;
+        if maint > 0 || trim_debt > 0 {
+            if maint_kept < maint_resident_bound {
+                maint_kept += 1;
+                tracing::info!(
+                    unabsorbed_frame_bytes = maint,
+                    trim_debt_streams = trim_debt,
+                    "outbox sweep keeps {prefix} resident (maintenance debt; absorber draining)"
+                );
+                continue;
+            }
+            // Over the residency bound: close — the debt is DURABLE and
+            // the rotation reaches this shard on a later cycle.
+            tracing::info!(
+                unabsorbed_frame_bytes = maint,
+                trim_debt_streams = trim_debt,
+                "outbox sweep closes {prefix} despite maintenance debt \
+                 (residency bound {maint_resident_bound}); rotation returns to it"
+            );
+        }
         let eng = state.shards.write().unwrap().remove(&prefix);
         if let Some(e) = eng {
             e.begin_close();
         }
         sweep_opened().lock().unwrap().remove(&prefix);
-        tracing::info!("outbox sweep closed debt-free shard {prefix}");
+        tracing::info!("outbox sweep closed shard {prefix}");
     }
 }
 

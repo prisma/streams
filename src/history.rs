@@ -601,6 +601,7 @@ impl KeyCache {
 
 // ---- absorber ----
 
+#[derive(Clone)]
 pub struct AbsorberConfig {
     pub threshold_bytes: u64,
     pub threshold_age: Duration,
