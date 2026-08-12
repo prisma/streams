@@ -3525,7 +3525,11 @@ async fn untouched_streams_absorb_after_restart() {
     // that brings absorbed up to next, and polling it does not touch the
     // stream.
     let mut cleared = false;
-    for _ in 0..500 {
+    // 30 s budget: under the fully-parallel release suite this box
+    // saturates every core and 10 s starves legitimately converging
+    // absorbers (~50% flake rate measured 2026-08-12); a real seed
+    // wedge hangs forever, so the longer deadline loses no signal.
+    for _ in 0..1500 {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         let dirty = engine_b.scan_dirty_streams().await.unwrap();
         if !dirty.iter().any(|(h, _, _)| *h == hash) {
@@ -3742,7 +3746,8 @@ async fn a_second_absorption_wave_trims_under_a_global_budget() {
         append_sized(&engine, *h, &key, "", 512).await;
     }
     let mut ok = false;
-    for _ in 0..500 {
+    // 30 s: same suite-saturation allowance as the restart-seed test.
+    for _ in 0..1500 {
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
         let mut all = true;
         for h in &hashes {

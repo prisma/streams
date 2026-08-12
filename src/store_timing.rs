@@ -103,6 +103,136 @@ async fn permit() -> Option<tokio::sync::SemaphorePermit<'static>> {
     }
 }
 
+/// R27-4: instance-wide byte bound on in-flight BULK store transfers.
+///
+/// The SIN incompressible campaign OOM-killed (exit 137) with the
+/// maintenance ledger healthy at 50-86 MB: RSS jumped ~250 MB in one
+/// 5 s window exactly as concurrent store ops burst 14→22 (peak 53).
+/// The latency-injected local repro shows the same wave. The driver is
+/// SST-class transfers — flush + compaction across EVERY resident
+/// SlateDB (4 shard DBs + history + telemetry + registry…) each buffer
+/// MB-scale payloads, and per-DB compactor limits do not compose: at
+/// WAN RTT every DB's compaction lives long enough to overlap all the
+/// others', so the instance-wide buffered-byte peak scales with store
+/// latency. This wrapper is the only point all DBs share, so the
+/// global admission bound lives here.
+///
+/// Rules (deadlock-freedom): a permit is held ONLY across the leaf
+/// await of the inner store call — never across stream consumption —
+/// so every waiter is eventually satisfied by ops that complete on
+/// pure network I/O. WAL/manifest/fleet classes NEVER wait (ack path
+/// and cluster liveness); only sst-class ops are gated. An op larger
+/// than the cap clamps to the whole cap (serializes, never starves).
+pub struct BulkGate {
+    sem: tokio::sync::Semaphore,
+    cap: u32,
+    pub inflight_bytes: AtomicI64,
+    pub waits: std::sync::atomic::AtomicU64,
+    pub wait_ms: std::sync::atomic::AtomicU64,
+}
+
+impl BulkGate {
+    pub fn new(cap_bytes: u32) -> Self {
+        BulkGate {
+            sem: tokio::sync::Semaphore::new(cap_bytes as usize),
+            cap: cap_bytes,
+            inflight_bytes: AtomicI64::new(0),
+            waits: std::sync::atomic::AtomicU64::new(0),
+            wait_ms: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    /// Acquire `bytes` worth of the gate (clamped to the cap). Counts a
+    /// wait only when the fast path fails, so steady-state overhead is
+    /// one try_acquire. The returned hold decrements the inflight gauge
+    /// and returns capacity on drop.
+    pub async fn acquire(&self, bytes: u64) -> BulkHold<'_> {
+        let w = bytes.min(self.cap as u64).max(1) as u32;
+        let p = match self.sem.try_acquire_many(w) {
+            Ok(p) => p,
+            Err(_) => {
+                self.waits.fetch_add(1, Ordering::Relaxed);
+                let t0 = Instant::now();
+                // only errs on close; we never close it
+                let p = self.sem.acquire_many(w).await.expect("gate never closed");
+                self.wait_ms
+                    .fetch_add(t0.elapsed().as_millis() as u64, Ordering::Relaxed);
+                p
+            }
+        };
+        self.inflight_bytes.fetch_add(w as i64, Ordering::Relaxed);
+        BulkHold {
+            _p: p,
+            gate: self,
+            w: w as i64,
+        }
+    }
+
+    pub fn stats_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "cap_bytes": self.cap,
+            "inflight_bytes": self.inflight_bytes.load(Ordering::Relaxed),
+            "waits_total": self.waits.load(Ordering::Relaxed),
+            "wait_ms_total": self.wait_ms.load(Ordering::Relaxed),
+        })
+    }
+}
+
+/// Nominal weight for an sst GET whose length we cannot know up front
+/// (full-object or open-ended range): one L0 SST at the survival
+/// profile. Exact for the dominant case, harmless elsewhere — the
+/// gate bounds a wave, it is not an accountant.
+const BULK_NOMINAL_GET: u64 = 8 * 1024 * 1024;
+
+fn bulk_gate() -> Option<&'static BulkGate> {
+    static G: OnceLock<Option<BulkGate>> = OnceLock::new();
+    G.get_or_init(|| {
+        let n: u64 = std::env::var("STORE_BULK_INFLIGHT_MAX_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(0);
+        if n == 0 {
+            None
+        } else {
+            Some(BulkGate::new(n.min(u32::MAX as u64) as u32))
+        }
+    })
+    .as_ref()
+}
+
+/// RAII hold on gate capacity: semaphore permits + inflight gauge,
+/// both returned on drop.
+pub struct BulkHold<'a> {
+    _p: tokio::sync::SemaphorePermit<'a>,
+    gate: &'a BulkGate,
+    w: i64,
+}
+
+impl Drop for BulkHold<'_> {
+    fn drop(&mut self) {
+        self.gate.inflight_bytes.fetch_sub(self.w, Ordering::Relaxed);
+    }
+}
+
+/// Permit for an sst-class transfer of `bytes`; None when the gate is
+/// off or the class is exempt.
+async fn bulk_permit(class: u8, bytes: u64) -> Option<BulkHold<'static>> {
+    // sst only: WAL is the ack path, manifest is CAS liveness, fleet is
+    // cluster liveness — none of them may queue behind compaction.
+    if class != 2 {
+        return None;
+    }
+    let g = bulk_gate()?;
+    Some(g.acquire(bytes).await)
+}
+
+pub fn bulk_gate_stats() -> serde_json::Value {
+    match bulk_gate() {
+        Some(g) => g.stats_json(),
+        None => serde_json::json!({"cap_bytes": 0}),
+    }
+}
+
 pub fn stats() -> &'static StoreStats {
     static S: OnceLock<StoreStats> = OnceLock::new();
     S.get_or_init(|| StoreStats {
@@ -365,6 +495,11 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         payload: PutPayload,
         opts: PutOptions,
     ) -> Result<PutResult> {
+        let _b = bulk_permit(
+            classify(location.as_ref()),
+            payload.content_length() as u64,
+        )
+        .await;
         let _p = permit().await;
         let g = OpGuard::new(0, location);
         let r = self.inner.put_opts(location, payload, opts).await;
@@ -379,10 +514,12 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
     ) -> Result<Box<dyn MultipartUpload>> {
         let _p = permit().await;
         let g = OpGuard::new(1, location);
+        let class = classify(location.as_ref());
         match self.inner.put_multipart_opts(location, opts).await {
             Ok(up) => Ok(Box::new(TimedMpu {
                 inner: up,
                 guard: Some(g),
+                class,
             })),
             Err(e) => {
                 g.finish(false);
@@ -393,6 +530,18 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
 
     async fn get_opts(&self, location: &Path, options: GetOptions) -> Result<GetResult> {
         // 0.14 routes the ext-method `head()` through get_opts(head: true).
+        // Bulk gate: weight by the requested range when it is bounded, a
+        // nominal SST otherwise; held for the call only (time to first
+        // byte), never across body streaming — see BulkGate.
+        let _b = if options.head {
+            None
+        } else {
+            let w = match &options.range {
+                Some(object_store::GetRange::Bounded(r)) => r.end.saturating_sub(r.start),
+                _ => BULK_NOMINAL_GET,
+            };
+            bulk_permit(classify(location.as_ref()), w).await
+        };
         let _p = permit().await;
         let is_head = options.head;
         let g = OpGuard::new(if is_head { 3 } else { 2 }, location);
@@ -442,6 +591,13 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
     }
 
     async fn get_ranges(&self, location: &Path, ranges: &[Range<u64>]) -> Result<Vec<Bytes>> {
+        // Bulk gate: the buffers materialize inside this call, so the
+        // exact requested byte total is the honest weight.
+        let _b = bulk_permit(
+            classify(location.as_ref()),
+            ranges.iter().map(|r| r.end.saturating_sub(r.start)).sum(),
+        )
+        .await;
         let _p = permit().await;
         let g = OpGuard::new(2, location);
         let r = self.inner.get_ranges(location, ranges).await;
@@ -575,6 +731,7 @@ impl Drop for TimedDeleteStream {
 struct TimedMpu {
     inner: Box<dyn MultipartUpload>,
     guard: Option<OpGuard>,
+    class: u8,
 }
 
 impl std::fmt::Debug for TimedMpu {
@@ -586,7 +743,20 @@ impl std::fmt::Debug for TimedMpu {
 #[async_trait]
 impl MultipartUpload for TimedMpu {
     fn put_part(&mut self, data: PutPayload) -> UploadPart {
-        self.inner.put_part(data)
+        // Bulk gate per part: WriteMultipart pipelines several parts per
+        // upload, each one a fully-buffered payload — exactly the wave
+        // the gate exists to flatten. Weight is acquired inside the
+        // returned future so pipelined parts queue, not the caller.
+        let bytes = data.content_length() as u64;
+        let class = self.class;
+        let inner = self.inner.put_part(data);
+        if class != 2 {
+            return inner;
+        }
+        Box::pin(async move {
+            let _b = bulk_permit(class, bytes).await;
+            inner.await
+        })
     }
     async fn complete(&mut self) -> Result<PutResult> {
         let r = self.inner.complete().await;
@@ -739,6 +909,7 @@ pub fn snapshot(window_secs: u64, swap_peak: bool) -> serde_json::Value {
         "window_secs": window_secs,
         "out_inflight_now": inflight_now,
         "out_inflight_peak": peak,
+        "bulk_gate": bulk_gate_stats(),
         "timer_thread": drift_stats(&drift().thread, cutoff),
         "timer_tokio": drift_stats(&drift().tokio, cutoff),
         "steal_pct": steal_pct,
@@ -1058,5 +1229,106 @@ mod tests {
         assert_eq!(http_op("GET", Some("list-type=2&prefix=a")), 5);
         assert_eq!(http_op("GET", None), 2);
         assert_eq!(http_op("DELETE", None), 4);
+    }
+
+    // ---- R27-4 bulk gate ---------------------------------------------------
+    // Tests construct BulkGate directly (the process-wide instance is
+    // env-configured through a OnceLock and can't vary per test).
+
+    /// N tasks each transfer `op_bytes` through the gate; the observed
+    /// peak of concurrently-held bytes must never exceed the cap.
+    #[tokio::test]
+    async fn bulk_gate_bounds_concurrent_bytes() {
+        use std::sync::Arc;
+        use std::sync::atomic::AtomicI64;
+        let cap: u32 = 16 << 20;
+        let op: u64 = 8 << 20;
+        let gate = Arc::new(BulkGate::new(cap));
+        let cur = Arc::new(AtomicI64::new(0));
+        let peak = Arc::new(AtomicI64::new(0));
+        let mut js = Vec::new();
+        for _ in 0..12 {
+            let (g, c, p) = (gate.clone(), cur.clone(), peak.clone());
+            js.push(tokio::spawn(async move {
+                let _permit = g.acquire(op).await;
+                let now = c.fetch_add(op as i64, Ordering::SeqCst) + op as i64;
+                p.fetch_max(now, Ordering::SeqCst);
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                c.fetch_sub(op as i64, Ordering::SeqCst);
+            }));
+        }
+        for j in js {
+            j.await.unwrap();
+        }
+        assert!(
+            peak.load(Ordering::SeqCst) <= cap as i64,
+            "peak {} exceeded cap {}",
+            peak.load(Ordering::SeqCst),
+            cap
+        );
+        assert!(gate.waits.load(Ordering::Relaxed) > 0, "12 ops of 8MiB through a 16MiB gate must have queued");
+        assert_eq!(gate.inflight_bytes.load(Ordering::Relaxed), 0);
+    }
+
+    /// An op larger than the whole cap clamps to the cap: it serializes
+    /// against everything else but always completes (no starvation, no
+    /// arithmetic overflow of the semaphore).
+    #[tokio::test]
+    async fn bulk_gate_oversized_op_clamps_and_completes() {
+        let gate = BulkGate::new(4 << 20);
+        {
+            let _p = gate.acquire(64 << 20).await; // 16x the cap
+            assert_eq!(gate.inflight_bytes.load(Ordering::Relaxed), 4 << 20);
+        }
+        assert_eq!(gate.inflight_bytes.load(Ordering::Relaxed), 0);
+        // and again, proving the full capacity was returned
+        let _p2 = gate.acquire(64 << 20).await;
+    }
+
+    /// Only sst-class ops are gated: WAL (ack path), manifest (CAS
+    /// liveness), fleet and other must return no permit even when a
+    /// gate is configured — they can never queue behind compaction.
+    #[tokio::test]
+    async fn bulk_gate_exempts_non_sst_classes() {
+        // The process-wide gate is off in tests (env unset), so
+        // bulk_permit returns None for both reasons; assert the class
+        // check alone by exercising classify against the gate rule.
+        for (path, gated) in [
+            ("pilot/shards/root-3/wal/00000042.sst", false), // class wal
+            ("pilot/manifest/00000007.manifest", false),
+            ("pilot/shards/root-3/compacted/ulid.sst", true),
+            ("pilot/fleet/owners/streams-1", false),
+            ("pilot/registry/doc.json", false),
+        ] {
+            let class = classify(path);
+            assert_eq!(class == 2, gated, "path {path} class {class}");
+            if !gated {
+                assert!(
+                    bulk_permit(class, 8 << 20).await.is_none(),
+                    "non-sst class {class} must never take a permit"
+                );
+            }
+        }
+    }
+
+    /// Liveness: a waiter blocked on a full gate proceeds as soon as the
+    /// holder finishes its leaf op — permits are never held across
+    /// stream consumption, so this is the whole deadlock argument.
+    #[tokio::test]
+    async fn bulk_gate_waiter_proceeds_when_holder_releases() {
+        use std::sync::Arc;
+        let gate = Arc::new(BulkGate::new(8 << 20));
+        let held = gate.acquire(8 << 20).await;
+        let g2 = gate.clone();
+        let waiter = tokio::spawn(async move {
+            let _p = g2.acquire(8 << 20).await;
+        });
+        tokio::time::sleep(std::time::Duration::from_millis(30)).await;
+        assert!(!waiter.is_finished(), "gate full: waiter must be parked");
+        drop(held);
+        tokio::time::timeout(std::time::Duration::from_secs(2), waiter)
+            .await
+            .expect("waiter must run once capacity frees")
+            .unwrap();
     }
 }
