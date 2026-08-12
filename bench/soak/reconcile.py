@@ -127,6 +127,16 @@ def reconcile(region):
         # verified locally: prefix=soak-local-2 returned soak-local-1
         # too. Filter client-side; trust nothing.
         page_names = [n for n in page_names if n.startswith(f"soak-{region}")]
+        # Multi-stream campaigns write ONLY the -N suffixed streams; a
+        # bare-base stream alongside them is residue from an earlier
+        # (pre-ledger) writer in the same namespace and would fail the
+        # op-identity check for records this campaign never wrote.
+        # Excluded LOUDLY, never silently.
+        if any(n.startswith(f"soak-{region}-") for n in page_names):
+            bare = [n for n in page_names if n == f"soak-{region}"]
+            for n in bare:
+                print(f"  {region}: EXCLUDING pre-campaign residue stream {n!r}")
+            page_names = [n for n in page_names if n != f"soak-{region}"]
         for name in page_names:
             _, hdrs, _ = get(f"{server}/v1/stream/{name}",
                 headers={"Stream-Encryption-Key": skey}, method="HEAD")
