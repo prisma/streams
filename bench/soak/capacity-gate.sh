@@ -25,6 +25,13 @@ SECS=${SOAK_CAP_SECS:-7200}          # >= 2h sustained
 PAUSE_AT=${SOAK_CAP_PAUSE_AT:-5400}  # pause deep into the run
 PAUSE_SECS=${SOAK_CAP_PAUSE_SECS:-180}
 REOPEN_BOUND=${SOAK_CAP_REOPEN_BOUND:-300}
+# R27-3 legs: RESTART=0 for the incompressible pause/recovery run (its
+# acceptance includes "no process exit"); INCOMPRESSIBLE=1 switches the
+# generator to PRF pads so encoded-frame intensity actually reaches the
+# configured bound.
+RESTART=${SOAK_CAP_RESTART:-1}
+export SOAK_INCOMPRESSIBLE=${SOAK_CAP_INCOMPRESSIBLE:-false}
+export SOAK_RECORD_BYTES=${SOAK_CAP_RECORD_BYTES:-1024}
 export SOAK_REGIONS="$R"
 D="$S/results/$SOAK_RUN_ID"
 mkdir -p "$D"
@@ -66,30 +73,53 @@ while :; do
     # Dense sampling through the pause: the backlog growth curve and
     # any typed shed onset are the point of the exercise.
     END_P=$(( $(date +%s) + PAUSE_SECS ))
+    KEY=$(cat "$S/skey.txt")
     while [ "$(date +%s)" -lt "$END_P" ]; do
       python3 "$HERE/poll.py" >> "$D/poll.log" 2>&1 || true
+      # R27-3 availability probes: reads and the control plane must
+      # stay admitted while appends shed. Recorded per sample; the
+      # evaluator report includes them and any non-200 fails the gate.
+      RC=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+            -H "Authorization: Bearer $AUTH" -H "Stream-Encryption-Key: $KEY" \
+            "$SRV/v1/stream/soak-$R-0")
+      CC=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+            -H "Authorization: Bearer $AUTH" "$SRV/v1/streams?limit=10")
+      echo "$(date +%s) read=$RC catalog=$CC" >> "$D/probes.log"
+      case "$RC$CC" in *5*|*4*) echo "PROBE FAILURE read=$RC catalog=$CC" | tee -a "$D/events.log";; esac
       sleep 15
     done
     curl -s --max-time 15 -o /dev/null -X POST -H "Authorization: Bearer $AUTH" \
       "$SRV/v1/debug/absorb-pause?on=0"
     date +%s >> "$D/pause-end.ts"
-    echo "== absorber resumed; RESTART at max backlog" | tee -a "$D/events.log"
-    # Restart leg: redeploy (same version) forces a process replacement
-    # while the durable backlog is at its maximum. Reopen time =
-    # deploy-complete -> serving with the R26 marker + build identity.
-    date +%s >> "$D/restart-start.ts"
-    "$HERE/deploy-region.sh" "$R" server || fail restart-deploy
-    date +%s >> "$D/restart-deployed.ts"
-    SRV=$(cat "$S/url-server-$R.txt")
-    RE_T0=$(date +%s)
-    until curl -s --max-time 10 "$SRV/livez" 2>/dev/null | grep -q alive \
-        && bp "$SRV" | grep -q maintenance_shards; do
-      [ $(( $(date +%s) - RE_T0 )) -gt "$REOPEN_BOUND" ] && fail reopen-bound
-      sleep 5
-    done
-    REOPEN=$(( $(date +%s) - RE_T0 ))
-    echo "$REOPEN" > "$D/reopen-secs.txt"
-    echo "== reopened in ${REOPEN}s (bound ${REOPEN_BOUND}s)" | tee -a "$D/events.log"
+    if [ "$RESTART" = 1 ]; then
+      echo "== absorber resumed; RESTART at max backlog" | tee -a "$D/events.log"
+      # Restart leg: redeploy (same version) forces a process replacement
+      # while the durable backlog is at its maximum. Reopen time =
+      # deploy-complete -> serving with the R26 marker + build identity.
+      date +%s >> "$D/restart-start.ts"
+      "$HERE/deploy-region.sh" "$R" server || fail restart-deploy
+      date +%s >> "$D/restart-deployed.ts"
+      SRV=$(cat "$S/url-server-$R.txt")
+      RE_T0=$(date +%s)
+      until curl -s --max-time 10 "$SRV/livez" 2>/dev/null | grep -q alive \
+          && bp "$SRV" | grep -q maintenance_shards; do
+        [ $(( $(date +%s) - RE_T0 )) -gt "$REOPEN_BOUND" ] && fail reopen-bound
+        sleep 5
+      done
+      REOPEN=$(( $(date +%s) - RE_T0 ))
+      echo "$REOPEN" > "$D/reopen-secs.txt"
+      echo "== reopened in ${REOPEN}s (bound ${REOPEN_BOUND}s)" | tee -a "$D/events.log"
+      # R27-3: repoint the generator at the replacement version so the
+      # post-restart offered load CONTINUES (the R26 run collapsed to
+      # ~25 req/s against the retired version-scoped domain). The op
+      # ledger survives — same generator process.
+      GEN=$(cat "$S/url-gen-$R.txt")
+      ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$SRV")
+      curl -s --max-time 15 -X POST "$GEN/retarget?url=$ENC" | tee -a "$D/events.log"
+      echo >> "$D/events.log"
+    else
+      echo "== absorber resumed; no restart leg this run (catch-up under FULL load)" | tee -a "$D/events.log"
+    fi
     RESTARTED=1
   fi
   [ "$NOW" -ge $(( SECS + 120 )) ] && break
@@ -100,7 +130,7 @@ done
 python3 "$HERE/harvest.py"                       || fail harvest
 python3 "$HERE/recovery.py" "$R"                 || fail recovery
 python3 "$HERE/reconcile.py" "$R"                || fail reconcile
-python3 "$HERE/evaluate-capacity.py" "$R"        || fail evaluate
+SOAK_CAP_RESTART=$RESTART python3 "$HERE/evaluate-capacity.py" "$R" || fail evaluate
 python3 "$HERE/mkreport.py" > "$D/report.md"     || true
 
 if [ "${PRESERVE_SOAK:-0}" != 1 ]; then

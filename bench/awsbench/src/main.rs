@@ -73,6 +73,11 @@ struct Args {
     /// union without a per-op stream map.
     #[arg(long, env = "BENCH_STREAMS_N", default_value_t = 1)]
     streams_n: usize,
+    // R27-3: BENCH_INCOMPRESSIBLE ("1"/"true") switches record padding
+    // to base64 of a splitmix64 stream keyed by (op, batch position) —
+    // reproducible byte-for-byte, no structure for frame compression to
+    // exploit. Read directly from env in send() (clap's bool parser
+    // rejects "1", which killed the first local validation instantly).
     /// R26-9: hold BEFORE the first tier until the campaign POSTs
     /// /start on the stats port. All regions deploy sequentially over
     /// minutes; a synchronized release gives every generator a common
@@ -195,6 +200,49 @@ impl Stats {
         self.errs.fetch_add(1, Ordering::Relaxed);
         *self.last_err.lock().unwrap() = msg;
     }
+}
+
+/// R27-3: the Prisma target, swappable at runtime via POST
+/// /retarget?url=... on the stats port. A single-instance restart leg
+/// replaces the platform VERSION, and version-scoped preview domains
+/// die with their version — the R26 run's post-restart offered load
+/// collapsed to ~25 req/s against the retired domain. Swapping the
+/// target keeps the op ledger intact (same process) while restoring
+/// full offered load.
+fn target() -> &'static std::sync::RwLock<String> {
+    static T: std::sync::OnceLock<std::sync::RwLock<String>> = std::sync::OnceLock::new();
+    T.get_or_init(|| std::sync::RwLock::new(String::new()))
+}
+
+/// Deterministic incompressible pad: splitmix64 keyed by (op, b),
+/// base64-encoded to stay JSON-safe. ~6 bits/char of entropy defeats
+/// zstd (measured locally; the exact achieved frame ratio is read off
+/// the server's exact frame-byte counters during the campaign).
+fn incompressible_pad(op: u64, b: usize, len: usize) -> String {
+    const B64: &[u8; 64] = b"ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    let mut state = op
+        .wrapping_mul(0x9E3779B97F4A7C15)
+        .wrapping_add((b as u64).wrapping_mul(0xBF58476D1CE4E5B9))
+        .wrapping_add(0x94D049BB133111EB);
+    let mut next = move || {
+        state = state.wrapping_add(0x9E3779B97F4A7C15);
+        let mut z = state;
+        z = (z ^ (z >> 30)).wrapping_mul(0xBF58476D1CE4E5B9);
+        z = (z ^ (z >> 27)).wrapping_mul(0x94D049BB133111EB);
+        z ^ (z >> 31)
+    };
+    let mut out = String::with_capacity(len);
+    while out.len() < len {
+        let mut v = next();
+        for _ in 0..10 {
+            out.push(B64[(v & 63) as usize] as char);
+            v >>= 6;
+            if out.len() == len {
+                break;
+            }
+        }
+    }
+    out
 }
 
 fn now_ms() -> u64 {
@@ -326,20 +374,29 @@ impl Client {
                     }
                 }
             }
-            Client::Prisma(http, base, streams, auth, key) => {
+            Client::Prisma(http, _base, streams, auth, key) => {
                 let stream = &streams[(seq % streams.len() as u64) as usize];
+                let incompressible = std::env::var("BENCH_INCOMPRESSIBLE")
+                    .map(|v| v == "1" || v == "true")
+                    .unwrap_or(false);
                 let recs: Vec<serde_json::Value> = (0..batch)
                     .map(|b| {
+                        let padlen = record_bytes.saturating_sub(40).max(1);
                         serde_json::json!({
                             "t": now_ms(),
                             // R26-8 op identity: request sequence + batch
                             // position, the exact-reconciliation key.
                             "op": seq,
                             "b": b,
-                            "pad": "x".repeat(record_bytes.saturating_sub(40).max(1)),
+                            "pad": if incompressible {
+                                incompressible_pad(seq, b, padlen)
+                            } else {
+                                "x".repeat(padlen)
+                            },
                         })
                     })
                     .collect();
+                let base = target().read().unwrap().clone();
                 match http
                     .post(format!("{base}/v1/stream/{stream}"))
                     .header("authorization", format!("Bearer {auth}"))
@@ -351,9 +408,21 @@ impl Client {
                 {
                     Ok(r) => {
                         let status = r.status().as_u16();
+                        // R27-3: a refusal is DEFINITIVE only when a
+                        // Streams process said it (prisma-streams-origin
+                        // stamped on every server response). A 5xx/429/
+                        // 408 without the origin header is the platform
+                        // edge talking — the request may or may not have
+                        // reached a Streams process, so the op is
+                        // AMBIGUOUS (allowed 0-or-1 in the exact
+                        // reconciliation), never assumed rejected. The
+                        // R26 restart leg produced 484k origin-less 503s
+                        // that happened to be true rejections; the
+                        // harness must not assume that in advance.
+                        let from_streams = r.headers().contains_key("prisma-streams-origin");
                         if (200..300).contains(&status) {
                             Outcome::Ok { records: batch as u64 }
-                        } else if status == 429 || status == 503 {
+                        } else if (status == 429 || status == 503) && from_streams {
                             // The server names WHICH limiter refused
                             // (error.code): limit_records_per_sec vs
                             // maintenance_backpressure vs overloaded...
@@ -369,6 +438,9 @@ impl Client {
                                 })
                                 .unwrap_or_default();
                             Outcome::Throttle { delivered: 0, status, code }
+                        } else if !from_streams && (status >= 500 || status == 429 || status == 408)
+                        {
+                            Outcome::Ambiguous(format!("infrastructure status {status}"))
                         } else {
                             Outcome::Err(format!("status {status}"))
                         }
@@ -673,10 +745,13 @@ async fn run_consumer(client: Client, stats: Arc<Stats>, stop: Arc<AtomicU64>) {
                 }
             }
         }
-        Client::Prisma(http, base, streams, auth, key) => {
+        Client::Prisma(http, _base, streams, auth, key) => {
             // The chaser follows stream 0; with streams-n > 1 the
             // roundtrip metric samples 1/n of the traffic — recorded in
-            // the campaign report, not silently.
+            // the campaign report, not silently. Reads the LIVE target
+            // so a /retarget mid-run moves the consumer with the
+            // producers.
+            let base = target().read().unwrap().clone();
             prisma_tail_loop(&http, &base, &streams[0], &auth, &key, &stats, &stop).await;
         }
     }
@@ -852,6 +927,19 @@ async fn stats_server(stats: Arc<Stats>) {
             let body = if path.starts_with("/start") {
                 stats.released.store(1, Ordering::Relaxed);
                 "{\"started\":true}".to_string()
+            } else if path.starts_with("/retarget") {
+                // R27-3: swap the Prisma base URL in place — the restart
+                // leg's replacement version gets full offered load and
+                // the op ledger survives (same process).
+                match path.split_once("url=").map(|(_, u)| u.to_string()) {
+                    Some(u) if u.starts_with("http") => {
+                        let decoded = u.replace("%3A", ":").replace("%2F", "/");
+                        *target().write().unwrap() = decoded.clone();
+                        eprintln!("RETARGET -> {decoded}");
+                        format!("{{\"target\":\"{decoded}\"}}")
+                    }
+                    _ => "{\"error\":\"url= required\"}".to_string(),
+                }
             } else if path.starts_with("/ledger") {
                 // R26-8: the exact op ledger, as compressed ranges.
                 let acked = compress_ranges(&mut stats.acked_ops.lock().unwrap());
@@ -967,6 +1055,7 @@ async fn main() -> anyhow::Result<()> {
                     );
                 }
             }
+            *target().write().unwrap() = args.target.clone();
             Client::Prisma(
                 http,
                 args.target.clone(),

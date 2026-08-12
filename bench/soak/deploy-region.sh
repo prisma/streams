@@ -190,9 +190,10 @@ else
     --env AUTH_TOKEN="$AUTH" --env STREAM_KEY="$KEY" \
     --env BENCH_STREAM="soak-$R" \
     --env BENCH_STREAMS_N="${SOAK_STREAMS_N:-32}" \
+    --env BENCH_INCOMPRESSIBLE="${SOAK_INCOMPRESSIBLE:-false}" \
     --env BENCH_START_GATED="${SOAK_GATED:-true}" \
     ${TIERARG[@]+"${TIERARG[@]}"} --env BENCH_SECS="$BENCH_SECS" \
-    --env BENCH_BATCH=10 --env BENCH_RECORD_BYTES=1024 --env BENCH_CONSUME=true \
+    --env BENCH_BATCH=10 --env BENCH_RECORD_BYTES="${SOAK_RECORD_BYTES:-1024}" --env BENCH_CONSUME=true \
     --env BENCH_HOLD=1 --env KEEP_AWAKE=1 \
     ${RESOLVARG[@]+"${RESOLVARG[@]}"} \
     2>&1 | grep -viE 'resolving|resolved|saved')
