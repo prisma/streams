@@ -48,12 +48,18 @@ fail() {
 AUTH=$(cat "$S/auth.txt")
 bp() { curl -s --max-time 20 -H "Authorization: Bearer $AUTH" "$1/v1/debug/load"; }
 
-"$HERE/build-upload.sh"                                   || fail build-upload
-python3 "$HERE/provision.py" --run-id "$SOAK_RUN_ID" "$R" || fail provision
-"$HERE/deploy-region.sh" "$R" server                      || fail server
-# Sustained fixed-concurrency shape; the ramp knobs stay off.
-SOAK_BENCH_SHAPE=cap SOAK_BENCH_CONC=$CONC BENCH_TIERS="" BENCH_SECS=$SECS \
-  "$HERE/deploy-region.sh" "$R" gen                       || fail gen
+# SOAK_SKIP_DEPLOY=1 resumes against an already-deployed cell (edge
+# routing for a fresh version can wedge; a redeploy re-rolls it — the
+# 2026-08-12 gen version 404'd at the edge indefinitely while its
+# sibling server version routed fine).
+if [ "${SOAK_SKIP_DEPLOY:-0}" != 1 ]; then
+  "$HERE/build-upload.sh"                                   || fail build-upload
+  python3 "$HERE/provision.py" --run-id "$SOAK_RUN_ID" "$R" || fail provision
+  "$HERE/deploy-region.sh" "$R" server                      || fail server
+  # Sustained fixed-concurrency shape; the ramp knobs stay off.
+  SOAK_BENCH_SHAPE=cap SOAK_BENCH_CONC=$CONC BENCH_TIERS="" BENCH_SECS=$SECS \
+    "$HERE/deploy-region.sh" "$R" gen                       || fail gen
+fi
 python3 "$HERE/verify-running.py" "$R"                    || fail verify
 python3 "$HERE/release.py" "$R"                           || fail release
 T0=$(date +%s)
