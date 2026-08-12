@@ -154,6 +154,10 @@ pub struct AppState {
     pub stream_shed: std::sync::atomic::AtomicU64,
     /// 429s issued because a shard's commit pipeline was blocked (wedge).
     pub wedge_shed: std::sync::atomic::AtomicU64,
+    /// R27-1: the instance-wide maintenance latch, ONE per AppState —
+    /// the global machine of the two-machine split (the per-shard
+    /// machine lives on each engine's `maintenance_shard_shed`).
+    pub maint_latch: crate::backpressure::GlobalLatch,
     /// Fleet-coordination store (heartbeats/desired.json) for the operator
     /// dashboard's cell view; None when running standalone.
     pub fleet_store: Option<Arc<dyn object_store::ObjectStore>>,
@@ -479,8 +483,18 @@ fn maintenance_shards_json(state: &AppState) -> serde_json::Value {
     let engines: Vec<Arc<ShardEngine>> =
         state.shards.read().unwrap().values().cloned().collect();
     let now = crate::shard::now_ms();
+    let shards_engaged = engines
+        .iter()
+        .filter(|e| {
+            e.maintenance_shard_shed
+                .load(std::sync::atomic::Ordering::Relaxed)
+        })
+        .count();
     serde_json::json!({
         "owned_shards": engines.len(),
+        // R27-1: the per-shard machine's engaged count, reported next
+        // to (not merged with) the instance machine's state.
+        "shards_engaged": shards_engaged,
         // R26-7: the exact cumulative frame-byte totals (actual
         // quantities per R26-2 — a mixed group counts both sides), so a
         // campaign can compute the corrected absorption ratio from the
@@ -707,7 +721,7 @@ async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
         "inflight_peak": peak,
         "rss_mb": crate::fleet::rss_bytes() as f64 / 1048576.0,
         "admit_shed": state.admit_shed.load(std::sync::atomic::Ordering::Relaxed),
-        "maintenance_backpressure": crate::backpressure::stats_json(),
+        "maintenance_backpressure": state.maint_latch.stats_json(),
         "maintenance_shards": maintenance_shards_json(&state),
         // R26-7: the ORDINARY per-stream limiter's refusals, by code —
         // so a throughput plateau is attributed to the right mechanism.
@@ -5025,8 +5039,8 @@ async fn append_core(
     // recovery must not deadlock on its own system-of-record writes.
     if !close_only && has_entries && !crate::billing::is_reserved_stream(&name) {
         let limits = crate::backpressure::limits();
-        if let Some(cause) = crate::backpressure::admit(&engine, &limits) {
-            crate::backpressure::note_shed();
+        if let Some(cause) = crate::backpressure::admit(&engine, &state.maint_latch, &limits) {
+            state.maint_latch.note_shed();
             let mut r = err_resp(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "maintenance_backpressure",

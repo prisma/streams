@@ -88,14 +88,19 @@ impl Limits {
 
 /// What the evaluator saw. Kept as plain data so the decision is a pure
 /// function that can be tested without an engine.
+///
+/// R27-1: deliberately NO per-shard field. The global machine and the
+/// per-engine shard machine are separate; a shard quantity in this
+/// struct is how the masking bug happened (see `next_state`).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct Snapshot {
     pub unabsorbed_bytes_instance: u64,
-    pub unabsorbed_bytes_max_shard: u64,
     pub absorb_lag_secs: u64,
 }
 
 /// Which bound tripped. Ordered by how actionable it is for an operator.
+/// `ShardBytes` is produced ONLY by the per-engine latch in `admit()`;
+/// the global machine can never store it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum Cause {
     InstanceBytes,
@@ -128,18 +133,28 @@ impl Cause {
     }
 }
 
-/// The state machine, as a pure function.
+/// The GLOBAL state machine, as a pure function — instance bytes and
+/// no-progress lag ONLY (R27-1).
 ///
 /// Engage when ANY enabled bound is exceeded. Release only when EVERY
 /// enabled bound is back under its release threshold — a backlog that
 /// drains on one axis while another stays pinned is still a backlog.
+///
+/// Shard bytes were REMOVED from this machine: when one shard was over
+/// its byte line while the instance was over its lag line, the single
+/// cause slot stored ShardBytes, and the read side filtered ShardBytes
+/// out (a hot shard must not shed the whole process) — which silently
+/// disabled the LagSecs bound for every other shard. The same slot
+/// also pinned RELEASE: a shard above its own release line kept the
+/// global cause at ShardBytes while the public state read "released".
+/// Two conditions, two machines: this one, and the per-engine latch in
+/// `admit()`.
 pub fn next_state(engaged: bool, s: &Snapshot, l: &Limits) -> (bool, Option<Cause>) {
     if !l.any_enabled() {
         return (false, None);
     }
     let pairs = [
         (Cause::InstanceBytes, s.unabsorbed_bytes_instance, l.unabsorbed_bytes_instance),
-        (Cause::ShardBytes, s.unabsorbed_bytes_max_shard, l.unabsorbed_bytes_shard),
         (Cause::LagSecs, s.absorb_lag_secs, l.absorb_lag_secs),
     ];
     if !engaged {
@@ -163,31 +178,90 @@ pub fn next_state(engaged: bool, s: &Snapshot, l: &Limits) -> (bool, Option<Caus
     (false, None)
 }
 
-static ENGAGED: AtomicBool = AtomicBool::new(false);
-static CAUSE: AtomicU8 = AtomicU8::new(0);
-/// Times the latch went from released to engaged (not per-request).
-pub static ENGAGE_COUNT: AtomicU64 = AtomicU64::new(0);
-/// Appends refused while engaged.
-pub static SHED_COUNT: AtomicU64 = AtomicU64::new(0);
-/// Last observed snapshot fields, for /v1/debug/load.
-pub static LAST_UNABSORBED: AtomicU64 = AtomicU64::new(0);
-pub static LAST_LAG_SECS: AtomicU64 = AtomicU64::new(0);
+/// The instance-wide latch (R27-1): one INSTANCE per AppState instead
+/// of process statics, so every test rig owns an isolated latch and no
+/// global-engagement test can shed an unrelated rig's appends. Holds
+/// exactly the global machine's state — the per-shard machine lives on
+/// each engine (`maintenance_shard_shed`).
+#[derive(Default)]
+pub struct GlobalLatch {
+    engaged: AtomicBool,
+    cause: AtomicU8,
+    /// Times the latch went from released to engaged (not per-request).
+    pub engage_count: AtomicU64,
+    /// Appends refused while engaged (global + per-shard sheds alike).
+    pub shed_count: AtomicU64,
+    /// Last observed snapshot fields, for /v1/debug/load.
+    last_unabsorbed: AtomicU64,
+    last_lag_secs: AtomicU64,
+}
 
-/// Instance-wide latch: `Some(cause)` when the WHOLE instance is over a
-/// process-level bound. Only the instance aggregate and lag bounds set
-/// this — never a single shard's byte bound.
-pub fn engaged() -> Option<Cause> {
-    if !ENGAGED.load(Ordering::Relaxed) {
-        return None;
+impl GlobalLatch {
+    pub fn new() -> Self {
+        Self::default()
     }
-    let c = Cause::from_code(CAUSE.load(Ordering::Relaxed));
-    // R24-B: a single hot shard must NOT latch every append on the
-    // process. One noisy tenant rejecting every other customer's writes
-    // is a poor multitenant failure boundary, so ShardBytes is decided
-    // per shard in `admit` instead of here.
-    match c {
-        Some(Cause::ShardBytes) => None,
-        other => other,
+
+    /// `Some(cause)` when the WHOLE instance is over a process-level
+    /// bound. Only InstanceBytes and LagSecs can appear here — the
+    /// global machine no longer evaluates shard quantities, so the old
+    /// read-side ShardBytes filter (which masked a simultaneous global
+    /// violation) is structurally unnecessary.
+    pub fn engaged(&self) -> Option<Cause> {
+        if !self.engaged.load(Ordering::Relaxed) {
+            return None;
+        }
+        Cause::from_code(self.cause.load(Ordering::Relaxed))
+    }
+
+    pub fn note_shed(&self) {
+        self.shed_count.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// Apply an evaluated snapshot. Returns the new engaged state.
+    pub fn apply(&self, s: &Snapshot, l: &Limits) -> bool {
+        let was = self.engaged.load(Ordering::Relaxed);
+        let (now, cause) = next_state(was, s, l);
+        self.last_unabsorbed
+            .store(s.unabsorbed_bytes_instance, Ordering::Relaxed);
+        self.last_lag_secs.store(s.absorb_lag_secs, Ordering::Relaxed);
+        self.cause
+            .store(cause.map(Cause::code).unwrap_or(0), Ordering::Relaxed);
+        self.engaged.store(now, Ordering::Relaxed);
+        if now && !was {
+            self.engage_count.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                unabsorbed = s.unabsorbed_bytes_instance,
+                lag_secs = s.absorb_lag_secs,
+                "maintenance backpressure ENGAGED ({}); new appends will be \
+                 refused with a retryable 503 until the backlog drains",
+                cause.map(Cause::as_str).unwrap_or("unknown"),
+            );
+        } else if !now && was {
+            tracing::info!(
+                unabsorbed = s.unabsorbed_bytes_instance,
+                lag_secs = s.absorb_lag_secs,
+                "maintenance backpressure released; accepting appends again",
+            );
+        }
+        now
+    }
+
+    pub fn stats_json(&self) -> serde_json::Value {
+        let cause = self.engaged();
+        serde_json::json!({
+            // Instance-machine state. `engaged`/`cause` keep their names
+            // for existing scripts; the instance_* aliases make the
+            // two-machine split explicit next to shards_engaged (which
+            // /v1/debug/load emits from the per-engine flags).
+            "engaged": cause.is_some(),
+            "cause": cause.map(Cause::as_str),
+            "instance_engaged": cause.is_some(),
+            "instance_cause": cause.map(Cause::as_str),
+            "engage_count": self.engage_count.load(Ordering::Relaxed),
+            "appends_shed": self.shed_count.load(Ordering::Relaxed),
+            "unabsorbed_bytes": self.last_unabsorbed.load(Ordering::Relaxed),
+            "absorb_lag_secs": self.last_lag_secs.load(Ordering::Relaxed),
+        })
     }
 }
 
@@ -204,9 +278,19 @@ pub fn engaged() -> Option<Cause> {
 ///     someone else.
 ///   * Only the OFFENDING shard's appends are refused. Streams on other
 ///     shards of the same instance keep being served.
-pub fn admit(engine: &crate::shard::ShardEngine, l: &Limits) -> Option<Cause> {
+///
+/// R27-1: two INDEPENDENT machines compose here — the caller's global
+/// latch (instance bytes / lag) first, then this engine's shard latch.
+/// A shard over its byte line can therefore never mask a simultaneous
+/// global violation, and a shard holding above its release line cannot
+/// pin the global state.
+pub fn admit(
+    engine: &crate::shard::ShardEngine,
+    global: &GlobalLatch,
+    l: &Limits,
+) -> Option<Cause> {
     // The instance-wide latch applies to everything we own.
-    if let Some(c) = engaged() {
+    if let Some(c) = global.engaged() {
         return Some(c);
     }
     if l.unabsorbed_bytes_shard == 0 {
@@ -231,37 +315,6 @@ pub fn admit(engine: &crate::shard::ShardEngine, l: &Limits) -> Option<Cause> {
     now.then_some(Cause::ShardBytes)
 }
 
-pub fn note_shed() {
-    SHED_COUNT.fetch_add(1, Ordering::Relaxed);
-}
-
-/// Apply an evaluated snapshot. Returns the new engaged state.
-pub fn apply(s: &Snapshot, l: &Limits) -> bool {
-    let was = ENGAGED.load(Ordering::Relaxed);
-    let (now, cause) = next_state(was, s, l);
-    LAST_UNABSORBED.store(s.unabsorbed_bytes_instance, Ordering::Relaxed);
-    LAST_LAG_SECS.store(s.absorb_lag_secs, Ordering::Relaxed);
-    CAUSE.store(cause.map(Cause::code).unwrap_or(0), Ordering::Relaxed);
-    ENGAGED.store(now, Ordering::Relaxed);
-    if now && !was {
-        ENGAGE_COUNT.fetch_add(1, Ordering::Relaxed);
-        tracing::warn!(
-            unabsorbed = s.unabsorbed_bytes_instance,
-            lag_secs = s.absorb_lag_secs,
-            "maintenance backpressure ENGAGED ({}); new appends will be \
-             refused with a retryable 503 until the backlog drains",
-            cause.map(Cause::as_str).unwrap_or("unknown"),
-        );
-    } else if !now && was {
-        tracing::info!(
-            unabsorbed = s.unabsorbed_bytes_instance,
-            lag_secs = s.absorb_lag_secs,
-            "maintenance backpressure released; accepting appends again",
-        );
-    }
-    now
-}
-
 /// Snapshot the RESIDENT engines' maintenance state (R25-C, semantics
 /// pinned in R26-6).
 ///
@@ -278,17 +331,14 @@ pub fn snapshot(state: &crate::http::AppState) -> Snapshot {
         state.shards.read().unwrap().values().cloned().collect();
     let now = crate::shard::now_ms();
     let mut total = 0u64;
-    let mut max_shard = 0u64;
     let mut max_stall = 0u64;
     for engine in engines {
         let m = engine.maintenance_snapshot();
         total = total.saturating_add(m.unabsorbed_frame_bytes);
-        max_shard = max_shard.max(m.unabsorbed_frame_bytes);
         max_stall = max_stall.max(m.no_progress_secs(now));
     }
     Snapshot {
         unabsorbed_bytes_instance: total,
-        unabsorbed_bytes_max_shard: max_shard,
         // Time since durable maintenance PROGRESS, not oldest-record
         // age — under continuous traffic an oldest-record clock stays
         // permanently old even while absorption keeps up.
@@ -300,26 +350,6 @@ pub fn snapshot(state: &crate::http::AppState) -> Snapshot {
 pub fn limits() -> Limits {
     static L: std::sync::OnceLock<Limits> = std::sync::OnceLock::new();
     *L.get_or_init(Limits::from_env)
-}
-
-pub fn stats_json() -> serde_json::Value {
-    let cause = engaged();
-    serde_json::json!({
-        "engaged": cause.is_some(),
-        "cause": cause.map(Cause::as_str),
-        "engage_count": ENGAGE_COUNT.load(Ordering::Relaxed),
-        "appends_shed": SHED_COUNT.load(Ordering::Relaxed),
-        "unabsorbed_bytes": LAST_UNABSORBED.load(Ordering::Relaxed),
-        "absorb_lag_secs": LAST_LAG_SECS.load(Ordering::Relaxed),
-    })
-}
-
-#[cfg(test)]
-pub fn reset_for_tests() {
-    ENGAGED.store(false, Ordering::Relaxed);
-    CAUSE.store(0, Ordering::Relaxed);
-    ENGAGE_COUNT.store(0, Ordering::Relaxed);
-    SHED_COUNT.store(0, Ordering::Relaxed);
 }
 
 #[cfg(test)]
@@ -389,9 +419,7 @@ mod tests {
         };
         let huge = Snapshot {
             unabsorbed_bytes_instance: u64::MAX,
-            unabsorbed_bytes_max_shard: u64::MAX,
             absorb_lag_secs: 1,
-            ..Default::default()
         };
         assert_eq!(
             next_state(false, &huge, &l),
@@ -423,5 +451,82 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(next_state(true, &at, &l), (false, None));
+    }
+
+    /// R27-1 regression: the global machine evaluates ONLY the global
+    /// bounds. Before the split, a shard over its byte line while the
+    /// instance was over its LAG line stored ShardBytes in the single
+    /// cause slot, and the read side filtered ShardBytes to None — the
+    /// LagSecs violation was silently masked for every other shard.
+    /// With no shard quantity in the machine, the lag cause wins by
+    /// construction, and the latch (isolated per instance) reports it.
+    #[test]
+    fn shard_pressure_cannot_mask_a_global_violation() {
+        let l = limits();
+        let latch = GlobalLatch::new();
+        // Global lag violated. (In the old machine, a simultaneous
+        // shard-over-bytes condition produced ShardBytes here.)
+        let s = Snapshot {
+            unabsorbed_bytes_instance: 0,
+            absorb_lag_secs: 101,
+        };
+        assert!(latch.apply(&s, &l));
+        assert_eq!(
+            latch.engaged(),
+            Some(Cause::LagSecs),
+            "the global latch must report the GLOBAL cause, unmasked"
+        );
+        // Simultaneous instance-bytes violation: also never masked.
+        let latch2 = GlobalLatch::new();
+        let s2 = Snapshot {
+            unabsorbed_bytes_instance: 1001,
+            absorb_lag_secs: 0,
+        };
+        assert!(latch2.apply(&s2, &l));
+        assert_eq!(latch2.engaged(), Some(Cause::InstanceBytes));
+    }
+
+    /// R27-1 regression (release side): a shard holding above ITS OWN
+    /// release line must not pin the global latch. The global machine
+    /// releases on its own bounds alone; the shard's hysteresis lives
+    /// on the engine and is invisible here.
+    #[test]
+    fn release_is_not_pinned_by_shard_state() {
+        let l = limits();
+        let latch = GlobalLatch::new();
+        latch.apply(
+            &Snapshot {
+                absorb_lag_secs: 101,
+                ..Default::default()
+            },
+            &l,
+        );
+        assert!(latch.engaged().is_some());
+        // Lag drains under the release line. (Any shard-over-release
+        // condition has no representation here — that is the point.)
+        let cleared = Snapshot {
+            unabsorbed_bytes_instance: 0,
+            absorb_lag_secs: 10,
+        };
+        assert!(!latch.apply(&cleared, &l));
+        assert_eq!(latch.engaged(), None, "global latch pinned after its own bounds cleared");
+        // And the inverse: lag still high keeps it engaged regardless
+        // of anything shard-shaped happening elsewhere.
+        let latch2 = GlobalLatch::new();
+        latch2.apply(
+            &Snapshot {
+                absorb_lag_secs: 101,
+                ..Default::default()
+            },
+            &l,
+        );
+        assert!(latch2.apply(
+            &Snapshot {
+                unabsorbed_bytes_instance: 0,
+                absorb_lag_secs: 99, // under the limit, over the 75% release
+            },
+            &l
+        ));
+        assert_eq!(latch2.engaged(), Some(Cause::LagSecs));
     }
 }

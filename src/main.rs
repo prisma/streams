@@ -1184,6 +1184,7 @@ async fn async_main() -> anyhow::Result<()> {
         stream_inflight: std::sync::Mutex::new(HashMap::new()),
         stream_shed: std::sync::atomic::AtomicU64::new(0),
         wedge_shed: std::sync::atomic::AtomicU64::new(0),
+        maint_latch: crate::backpressure::GlobalLatch::new(),
         instance_name: args.instance_name.clone(),
         ring_active: std::sync::RwLock::new(Vec::new()),
         ring_overrides: std::sync::RwLock::new(std::collections::HashMap::new()),
@@ -1274,7 +1275,7 @@ async fn async_main() -> anyhow::Result<()> {
                 // would put the overload on the hot path.
                 if ticks % 8 == 0 {
                     let snap = crate::backpressure::snapshot(&st);
-                    crate::backpressure::apply(&snap, &bp_limits);
+                    st.maint_latch.apply(&snap, &bp_limits);
                 }
                 ticks = ticks.wrapping_add(1);
                 tokio::time::sleep(Duration::from_millis(250)).await;

@@ -5270,6 +5270,7 @@ async fn http_rig_inner(
         stream_inflight: std::sync::Mutex::new(std::collections::HashMap::new()),
         stream_shed: std::sync::atomic::AtomicU64::new(0),
         wedge_shed: std::sync::atomic::AtomicU64::new(0),
+        maint_latch: crate::backpressure::GlobalLatch::new(),
         instance_name: instance_name.unwrap_or_default(),
         ring_active: std::sync::RwLock::new(Vec::new()),
         ring_overrides: std::sync::RwLock::new(std::collections::HashMap::new()),
@@ -20661,23 +20662,62 @@ async fn overloaded_engine_sheds_while_sibling_admits() {
 
     let limits = crate::backpressure::Limits {
         unabsorbed_bytes_shard: 1024, // hot is over; calm (0) is under
+        absorb_lag_secs: 100,
         release_pct: 75,
         ..Default::default()
     };
+    // R27-1: admit() composes TWO independent machines — the caller's
+    // global latch and the engine's shard latch. The latch is a per-
+    // instance value now, so this test contaminates nothing.
+    let global = crate::backpressure::GlobalLatch::new();
     assert_eq!(
-        crate::backpressure::admit(&hot, &limits),
+        crate::backpressure::admit(&hot, &global, &limits),
         Some(crate::backpressure::Cause::ShardBytes),
         "the over-bound engine must shed"
     );
     assert_eq!(
-        crate::backpressure::admit(&calm, &limits),
+        crate::backpressure::admit(&calm, &global, &limits),
         None,
         "a sibling engine under its own bound must admit"
     );
+
+    // R27-1 regression: engage the GLOBAL latch (lag) while hot is
+    // ALSO over its shard bound — the simultaneous-cause shape that
+    // used to store ShardBytes in the single global slot, which the
+    // read side filtered to None, silently disabling the lag bound.
+    // Now: the offending engine sheds with the GLOBAL cause reported,
+    // and the unrelated calm engine sheds too.
+    global.apply(
+        &crate::backpressure::Snapshot {
+            unabsorbed_bytes_instance: 0,
+            absorb_lag_secs: 101,
+        },
+        &limits,
+    );
+    assert_eq!(
+        crate::backpressure::admit(&hot, &global, &limits),
+        Some(crate::backpressure::Cause::LagSecs),
+        "global cause must not be masked on the offending engine"
+    );
+    assert_eq!(
+        crate::backpressure::admit(&calm, &global, &limits),
+        Some(crate::backpressure::Cause::LagSecs),
+        "an unrelated local shard must shed under a global lag violation"
+    );
+    // Global clears; the shard machine keeps its own verdict — and the
+    // shard machine cannot pin the global one.
+    assert!(!global.apply(&crate::backpressure::Snapshot::default(), &limits));
+    assert_eq!(
+        crate::backpressure::admit(&hot, &global, &limits),
+        Some(crate::backpressure::Cause::ShardBytes),
+        "shard latch persists independently of the global release"
+    );
+    assert_eq!(crate::backpressure::admit(&calm, &global, &limits), None);
+
     // Hysteresis on the engine latch: once hot drains below release, it
     // readmits.
     hot.publish_maintenance(crate::shard::ShardMaintenance::default());
-    assert_eq!(crate::backpressure::admit(&hot, &limits), None);
+    assert_eq!(crate::backpressure::admit(&hot, &global, &limits), None);
     assert!(
         !hot.maintenance_shard_shed
             .load(std::sync::atomic::Ordering::Relaxed),
