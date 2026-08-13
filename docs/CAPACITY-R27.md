@@ -164,3 +164,22 @@ Both criteria, not just one:
   finished; pause wall 319 s.
 - Exact op-ledger reconciliation: verdict OK (exactly-once, ambiguous
   ops resolved 0-or-1-complete).
+
+## Post-verdict classification (R29 review items)
+
+**The six generator errors**, classified by origin and outcome: all six
+were origin-less HTTP 502s from the platform edge (`infrastructure
+status 502` — no `prisma-streams-origin` header, so never counted as a
+Streams response). The exact op-ledger reconcile proves none landed:
+walked records 9,461,360 == acked ops × batch exactly, zero
+unknown-op records, zero duplicates, zero landed-ambiguous. All 17
+pause-window availability probes served (0 failures).
+
+**cgroup memory.peak**: the binary now exports `cgroup_peak_bytes`
+(v2 `memory.peak`, v1 fallback) in /v1/debug/load, but Compute's
+sandbox does not expose cgroupfs to the workload — the field reads
+null in the field. Kernel-peak capture is therefore recorded as a
+PLATFORM dependency alongside the digest-verified-readiness contract;
+until then the margin evidence is the local cgroup-limited Docker rig
+(886→723 MB peak across the posture change) plus sampled RSS in the
+field.
