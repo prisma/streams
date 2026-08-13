@@ -12,6 +12,12 @@ S=${SOAK_HOME:?set SOAK_HOME}
 BIN_TAG=${BIN_TAG:?set BIN_TAG (campaign.sh exports it)}
 
 echo "== building streams-slate + awsbench (x86_64-musl)"
+# R29: pin the embedded build identity to the EXACT commit being
+# shipped (build.rs env override; also recorded in the manifest so
+# verify-running can compare /v1/debug/load and /readyz identity).
+export BUILD_GIT_COMMIT=$(cd "$ROOT" && git rev-parse HEAD)
+export BUILD_UNIX=$(date +%s)
+export STREAMS_GIT_COMMIT="$BUILD_GIT_COMMIT"
 (cd "$ROOT" && cargo zigbuild --release --target x86_64-unknown-linux-musl --bin streams-slate)
 (cd "$ROOT/bench/awsbench" && cargo zigbuild --release --target x86_64-unknown-linux-musl --bin awsbench)
 
@@ -44,7 +50,9 @@ for path, key in pairs:
     tail = c.get_object(Bucket=bucket, Key=key,
         Range=f"bytes={len(data)-16}-{len(data)-1}")["Body"].read()
     assert head == data[:16] and tail == data[-16:], f"ranged-GET mismatch for {key}"
-    manifest[key] = {"sha256": sha, "bytes": len(data)}
+    manifest[key] = {"sha256": sha, "bytes": len(data),
+                     "gitCommit": os.environ.get("BUILD_GIT_COMMIT", ""),
+                     "buildUnix": os.environ.get("BUILD_UNIX", "")}
     print(f"  uploaded+verified {key}  {len(data)} bytes  sha256 {sha[:16]}")
 run_id = os.environ.get("SOAK_RUN_ID", "adhoc")
 os.makedirs(f"{S}/results/{run_id}", exist_ok=True)

@@ -74,9 +74,16 @@ done
 [ -n "$TARGET" ] || { echo "no owner found"; exit 1; }
 hdr "target owner: s$TARGET ($TARGET_URL, ingest=$BEST)"
 
-# 3) pause its absorber; ledger climbs under continued LB load.
-curl -s -m 15 -X POST -H "Authorization: Bearer $AUTH" \
-  "$TARGET_URL/v1/debug/absorb-pause?on=1" | head -c 80; echo
+# 3) pause EVERY instance's absorber: the whole fleet's backlog
+# builds (4x faster than pausing one), and — critical for step 5 —
+# survivor gauges are FROZEN through the restore verification, so the
+# comparison is monotone: restored >= pre-kill exactly, with only
+# post-kill ingest on top, never absorption underneath (R29).
+for i in 1 2 3 4; do
+  U=$(cat "$S/url-fleet-s$i.txt")
+  curl -s -m 15 -X POST -H "Authorization: Bearer $AUTH" \
+    "$U/v1/debug/absorb-pause?on=1" -o /dev/null -w "  s$i absorb-pause: %{http_code}\n"
+done
 T0=$(date +%s)
 while :; do
   sleep 15
@@ -89,8 +96,8 @@ except Exception: print(-1)")
   echo "  +$(( $(date +%s) - T0 ))s target ledger ${LED}MB"
   [ "$LED" -ge "$PEAK_MB" ] && break
   if [ $(( $(date +%s) - T0 )) -gt "$BUILD_TIMEOUT" ]; then
-    echo "backlog build timed out below ${PEAK_MB}MB — proceeding at ${LED}MB"
-    break
+    echo "HANDOFF FAILED: backlog build timed out at ${LED}MB (< ${PEAK_MB}MB required)"
+    exit 1
   fi
 done
 
@@ -113,13 +120,20 @@ pre = json.load(open(f"{OUT}/prekill-shards.json"))
 pre_sum = sum(pre.values())
 survivors = [open(f"{S}/url-fleet-s{i}.txt").read().strip()
              for i in range(1, 5) if str(i) != dead]
+FAILS = {}
 def load(u):
+    # R29: a survivor that stops answering is a FAILURE, not zero
+    # backlog — three consecutive misses fail the gate.
     try:
         req = urllib.request.Request(f"{u}/v1/debug/load",
             headers={"Authorization": f"Bearer {auth}"})
         with urllib.request.urlopen(req, timeout=15) as r:
+            FAILS[u] = 0
             return json.load(r)
     except Exception:
+        FAILS[u] = FAILS.get(u, 0) + 1
+        if FAILS[u] >= 3:
+            sys.exit(f"HANDOFF FAILED: survivor telemetry lost: {u}")
         return {}
 t0 = time.time()
 best = {}
@@ -153,16 +167,25 @@ json.dump(verdict, open(f"{OUT}/restore-verdict.json", "w"), indent=1)
 # successor may legitimately retire debt between polls, so require the
 # max-observed restored sum to reach 70% of pre-kill. ZERO on any shard
 # that had debt is the failure the gate exists to catch.
-zeros = [k for k, v in best.items() if v == 0 and pre[k] > 0]
-if zeros:
-    sys.exit(f"HANDOFF FAILED: restored gauge ZERO on {zeros}")
-if pre_sum and sum(best.values()) < 0.7 * pre_sum:
-    sys.exit(f"HANDOFF WEAK: restored {sum(best.values())} < 70% of {pre_sum}")
-print("GAUGE RESTORE: OK", verdict["restored_over_prekill"])
+# R29: survivor absorbers are PAUSED through this window, so each
+# restored gauge is monotone — pre-kill value plus any post-kill
+# ingest. Anything below 100% per shard means durable state was lost.
+low = {k: (best.get(k, 0), pre[k]) for k in pre if best.get(k, 0) < pre[k]}
+if low:
+    sys.exit(f"HANDOFF FAILED: restored below pre-kill on {low}")
+print("GAUGE RESTORE: OK (every shard >= 100% of pre-kill)",
+      verdict["restored_over_prekill"])
 PY
 
-# 6) drain: all survivors' ledgers under 10MB.
-hdr "waiting for drain"
+# 6) restore verified: unpause the SURVIVORS so the debt drains
+# under the continuing generator load.
+for i in 1 2 3 4; do
+  [ "$i" = "$TARGET" ] && continue
+  U=$(cat "$S/url-fleet-s$i.txt")
+  curl -s -m 15 -X POST -H "Authorization: Bearer $AUTH" \
+    "$U/v1/debug/absorb-pause?on=0" -o /dev/null -w "  s$i absorb-resume: %{http_code}\n"
+done
+hdr "waiting for drain (generator still offering load)"
 T0=$(date +%s)
 while :; do
   sleep 15
@@ -174,7 +197,14 @@ while :; do
 try:
     m=json.loads(sys.stdin.read()).get('maintenance_shards',{})
     print(sum(x.get('unabsorbed_frame_bytes',0) for x in m.get('shards',[])))
-except Exception: print(0)")
+except Exception: print(-1)")
+    if [ "$L" = "-1" ]; then
+      MISS="s$i-$(date +%s)"
+      echo "  survivor s$i telemetry MISS ($MISS)"
+      MISSES=$((${MISSES:-0} + 1))
+      [ "$MISSES" -ge 5 ] && { echo "DRAIN FAILED: survivor telemetry lost"; exit 1; }
+      L=0
+    fi
     TOT=$((TOT + L))
   done
   echo "  +$(( $(date +%s) - T0 ))s fleet ledger $((TOT>>20))MB"
@@ -192,7 +222,18 @@ done
 hdr "reconciling through the LB"
 printf '%s' "$LB" > "$S/url-server-$RUN.txt"
 printf 'http://127.0.0.1:%s' "$GEN_PORT" > "$S/url-gen-$RUN.txt"
-SOAK_HOME="$S" SOAK_RUN_ID="handoff-$RUN" BENCH_BATCH=10 \
-  python3 "$REPO/bench/soak/reconcile.py" "$RUN"
+# R29: preview-domain DNS is transient; retry the whole reconcile up
+# to 4 times, 90s apart, before declaring failure. The generator stays
+# alive (its op ledger IS the acceptance input) until a verdict lands.
+RECON_OK=0
+for attempt in 1 2 3 4; do
+  if SOAK_HOME="$S" SOAK_RUN_ID="handoff-$RUN" BENCH_BATCH=10 \
+    python3 "$REPO/bench/soak/reconcile.py" "$RUN"; then
+    RECON_OK=1; break
+  fi
+  echo "reconcile attempt $attempt failed; retrying in 90s"
+  sleep 90
+done
 kill $GEN_PID 2>/dev/null || true
+[ "$RECON_OK" = "1" ] || { echo "HANDOFF FAILED: reconcile never passed"; exit 1; }
 hdr "HANDOFF GATE COMPLETE — artifacts in $OUT"

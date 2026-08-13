@@ -533,7 +533,15 @@ pub(crate) fn history_settings() -> Settings {
             // Embedded compactor kept for phase 1 so L0s consolidate while
             // the absorber has the DB open; the detached model arrives with
             // the compactor service.
-            Settings::default().compactor_options
+            //
+            // R29 release blocker: `Settings::default().compactor_options`
+            // silently ran the UPSTREAM worker profile (concurrency 4,
+            // 4 subcompactions, 4x2 MiB read-ahead, 256 MiB rolls) on
+            // every history and history-v2 partition — the exact
+            // defaults the R27-4 posture removes — while
+            // MEMPROFILE_CERT reported the process certified. Every
+            // production DB uses the ONE resolved profile.
+            Some(crate::resolved_compactor_options().clone())
         },
         ..Default::default()
     }

@@ -214,25 +214,13 @@ struct Args {
     #[arg(long, env = "COMPACTOR_MAX_CONCURRENT", default_value_t = 4)]
     compactor_max_concurrent: usize,
 
-    /// R27-4: the compaction worker's memory footprint, not its transfer
-    /// rate, is what killed the 1 GiB incompressible campaigns. Upstream
-    /// defaults are sized for big instances: 4 subcompactions x (inputs x
-    /// max_fetch_tasks x bytes_to_fetch) read-ahead let one 32-input L0
-    /// merge stage ~400 MB of completed prefetch buffers — the bulk gate
-    /// caps bytes IN TRANSIT but not buffers already fetched and queued.
-    /// These four expose CompactionWorkerOptions; the compute-1g profile
-    /// pins them small. Defaults match upstream.
-    #[arg(long, env = "COMPACT_MAX_SUBCOMPACTIONS", default_value_t = 4)]
-    compact_max_subcompactions: usize,
-
-    #[arg(long, env = "COMPACT_MAX_FETCH_TASKS", default_value_t = 4)]
-    compact_max_fetch_tasks: usize,
-
-    #[arg(long, env = "COMPACT_BYTES_TO_FETCH", default_value_t = 2 * 1024 * 1024)]
-    compact_bytes_to_fetch: usize,
-
-    #[arg(long, env = "COMPACT_MAX_SST_SIZE_BYTES", default_value_t = 256 * 1024 * 1024)]
-    compact_max_sst_size_bytes: usize,
+    // R27-4 compaction-worker memory knobs (COMPACT_MAX_SUBCOMPACTIONS,
+    // COMPACT_MAX_FETCH_TASKS, COMPACT_BYTES_TO_FETCH,
+    // COMPACT_MAX_SST_SIZE_BYTES) are ENV-ONLY, read by
+    // resolved_compactor_options() — the one source every DB family
+    // shares. R29 review: clap mirrors here parsed but were never read,
+    // so a CLI override silently did nothing; removed rather than
+    // duplicating the plumbing.
 
     #[arg(long, env = "WAL_GC_INTERVAL_SECS", default_value_t = 30)]
     wal_gc_interval_secs: u64,
@@ -627,6 +615,31 @@ pub fn compactor_profile_json() -> serde_json::Value {
     })
 }
 
+/// Every production Settings family and the worker options it will
+/// hand its DB builder. R29 release blocker: the certification used to
+/// validate only the env helper, while history_settings() passed
+/// UPSTREAM defaults to every history partition — the process logged
+/// "certified" with the exact unsafe profile running. Certification
+/// (and the structural test) now inspects what the builders receive.
+pub fn production_settings_families()
+-> Vec<(&'static str, Option<slatedb::config::CompactorOptions>)> {
+    vec![
+        ("shard", Some(resolved_compactor_options().clone())),
+        (
+            "history_v1",
+            crate::history::history_settings().compactor_options,
+        ),
+        (
+            "history_v2",
+            crate::history::history2_settings().compactor_options,
+        ),
+        (
+            "telemetry",
+            crate::billing::telemetry_settings().compactor_options,
+        ),
+    ]
+}
+
 fn assert_certified_memprofile() {
     if std::env::var("MEMPROFILE_CERT").as_deref() != Ok("compute-1g") {
         return;
@@ -651,7 +664,60 @@ fn assert_certified_memprofile() {
             std::process::exit(1);
         }
     }
-    tracing::info!(profile = %p, "memory profile certified: compute-1g");
+    // The env helper matching the certificate is necessary but not
+    // sufficient: every DB family's ACTUAL settings must carry the
+    // same worker profile.
+    let cert = resolved_compactor_options()
+        .worker
+        .clone()
+        .unwrap_or_default();
+    for (family, co) in production_settings_families() {
+        let Some(co) = co else {
+            eprintln!("Error: MEMPROFILE_CERT: {family} settings disable the compactor");
+            std::process::exit(1);
+        };
+        let w = co.worker.clone().unwrap_or_default();
+        if w.max_subcompactions != cert.max_subcompactions
+            || w.max_fetch_tasks != cert.max_fetch_tasks
+            || w.bytes_to_fetch != cert.bytes_to_fetch
+            || w.max_sst_size != cert.max_sst_size
+            || w.max_concurrent_compactions != cert.max_concurrent_compactions
+        {
+            eprintln!(
+                "Error: MEMPROFILE_CERT: {family} settings carry a different \
+                 compaction worker profile than the certified one; refusing to start"
+            );
+            std::process::exit(1);
+        }
+    }
+    tracing::info!(profile = %p, "memory profile certified: compute-1g (all DB families)");
+}
+
+#[cfg(test)]
+mod memprofile_tests {
+    /// Structural: every production settings family hands its builder
+    /// the ONE resolved worker profile — a family that regresses to
+    /// `Settings::default().compactor_options` (history, R29) or
+    /// `..Default::default()` (telemetry, R28) fails here.
+    #[test]
+    fn every_db_family_carries_the_resolved_compactor_profile() {
+        let cert = crate::resolved_compactor_options()
+            .worker
+            .clone()
+            .unwrap_or_default();
+        for (family, co) in crate::production_settings_families() {
+            let co = co.unwrap_or_else(|| panic!("{family}: compactor disabled"));
+            let w = co.worker.clone().unwrap_or_default();
+            assert_eq!(w.max_subcompactions, cert.max_subcompactions, "{family}");
+            assert_eq!(w.max_fetch_tasks, cert.max_fetch_tasks, "{family}");
+            assert_eq!(w.bytes_to_fetch, cert.bytes_to_fetch, "{family}");
+            assert_eq!(w.max_sst_size, cert.max_sst_size, "{family}");
+            assert_eq!(
+                w.max_concurrent_compactions, cert.max_concurrent_compactions,
+                "{family}"
+            );
+        }
+    }
 }
 
 pub fn slatedb_runtime() -> &'static tokio::runtime::Runtime {
@@ -1294,6 +1360,7 @@ async fn async_main() -> anyhow::Result<()> {
         stream_shed: std::sync::atomic::AtomicU64::new(0),
         wedge_shed: std::sync::atomic::AtomicU64::new(0),
         maint_latch: crate::backpressure::GlobalLatch::new(),
+        sweep_sched: crate::billing::SweepSched::default(),
         instance_name: args.instance_name.clone(),
         ring_active: std::sync::RwLock::new(Vec::new()),
         ring_overrides: std::sync::RwLock::new(std::collections::HashMap::new()),

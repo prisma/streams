@@ -2068,16 +2068,38 @@ impl ReadSpool {
 /// Prefixes the SWEEP (or the tombstone walk) opened solely for
 /// telemetry-debt discovery. Customer-opened engines never enter this
 /// set and are never closed here.
-fn sweep_opened() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
-    static S: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-        std::sync::OnceLock::new();
-    S.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
+/// R29 test-isolation fix: scheduler bookkeeping lives on the
+/// AppState, not in process statics — parallel DST rigs each hold
+/// their own budgeted residents, and a process-global gauge summed
+/// them into false bound violations.
+#[derive(Default)]
+pub struct SweepSched {
+    /// prefix -> custody value for engines this scheduler holds.
+    opened: std::sync::Mutex<std::collections::HashMap<String, u64>>,
+    /// prefix -> sweeps spent resident (quantum accounting).
+    cycles: std::sync::Mutex<std::collections::HashMap<String, usize>>,
+    /// Peak concurrently scheduler-held engines (per state).
+    peak: std::sync::atomic::AtomicUsize,
+    /// Sweep cycle counter (rotation).
+    cycle: std::sync::atomic::AtomicUsize,
 }
 
 /// Sweep-resident engine count (ops gauge): how many engines exist
-/// ONLY because billing debt discovery opened them.
-pub fn sweep_resident_engines() -> u64 {
-    sweep_opened().lock().unwrap().len() as u64
+/// ONLY because debt discovery opened them.
+pub fn sweep_resident_engines(state: &std::sync::Arc<crate::http::AppState>) -> u64 {
+    state.sweep_sched.opened.lock().unwrap().len() as u64
+}
+
+/// Engines whose custody the scheduler currently holds, DERIVED from
+/// the serving map (no counter to maintain or leak).
+pub fn scheduler_held(state: &std::sync::Arc<crate::http::AppState>) -> usize {
+    state
+        .shards
+        .read()
+        .unwrap()
+        .values()
+        .filter(|e| e.sweep_custody.load(std::sync::atomic::Ordering::Relaxed) != 0)
+        .count()
 }
 
 /// OOM review item 6: discovery must not mean PERMANENT residency. A
@@ -2092,11 +2114,10 @@ pub fn sweep_resident_engines() -> u64 {
 /// re-open on its next request.
 pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>) {
     let budget = sweep_resident_budget();
-    let cycle = {
-        static SWEEP_CYCLE: std::sync::atomic::AtomicUsize =
-            std::sync::atomic::AtomicUsize::new(0);
-        SWEEP_CYCLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-    };
+    let cycle = state
+        .sweep_sched
+        .cycle
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
 
     // Phase 1 — audit the scheduler's existing residents. An engine we
     // opened on an earlier cycle is ours to close ONLY while the
@@ -2111,7 +2132,8 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
     // can re-admit a just-evicted resident ahead of shards that have
     // never had a turn (fairness hole found by the rotation gate).
     let mut evicted_now: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut marked: Vec<String> = sweep_opened().lock().unwrap().iter().cloned().collect();
+    let mut marked: Vec<String> =
+        state.sweep_sched.opened.lock().unwrap().keys().cloned().collect();
     marked.sort();
     let n = marked.len();
     if n > 0 {
@@ -2121,21 +2143,21 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
         if let Some(owner) = state.effective_owner(&prefix)
             && owner != state.instance_name
         {
-            unmark(&prefix);
+            unmark(state, &prefix);
             continue;
         }
         let Some(engine) = state.shards.read().unwrap().get(&prefix).cloned() else {
-            unmark(&prefix);
+            unmark(state, &prefix);
             continue;
         };
-        if touched_since_mark(&prefix, &engine) {
+        if !custody_intact(state, &prefix, &engine) {
             // Customer traffic adopted it: no longer scheduler-owned.
-            unmark(&prefix);
+            unmark(state, &prefix);
             continue;
         }
         let debt = probe_debt(&engine).await;
         let cycles = {
-            let mut c = residence_cycles().lock().unwrap();
+            let mut c = state.sweep_sched.cycles.lock().unwrap();
             let e = c.entry(prefix.clone()).or_insert(0);
             *e += 1;
             *e
@@ -2184,7 +2206,7 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
         if let Some(owner) = state.effective_owner(&prefix)
             && owner != state.instance_name
         {
-            unmark(&prefix);
+            unmark(state, &prefix);
             continue;
         }
         if state.shards.read().unwrap().contains_key(&prefix) {
@@ -2204,11 +2226,16 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
             }
         }
         discovered += 1;
-        note_sweep_open_peak(retained + 1);
         let Some(engine) = state.shards.read().unwrap().get(&prefix).cloned() else {
             continue;
         };
         let debt = probe_debt(&engine).await;
+        if !mark(state, &prefix, &engine) {
+            // Custody declined: a customer resolved this engine already
+            // (possibly by coalescing into the open we just started).
+            // It is theirs; the normal drain covers any debt.
+            continue;
+        }
         if debt.any() {
             tracing::info!(
                 unabsorbed_frame_bytes = debt.maintenance,
@@ -2216,19 +2243,15 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
                 billing = debt.billing,
                 "sweep retains {prefix} (debt; drain runs while resident)"
             );
-            mark(&prefix, &engine);
             retained += 1;
         } else {
             close_scheduler_engine(state, &prefix);
         }
     }
 
-    // The tombstone walk opens engines on demand for terminal
-    // descriptors; bound its residency the same way, page by page.
-    let pre: std::collections::HashSet<String> =
-        state.shards.read().unwrap().keys().cloned().collect();
+    // The tombstone walk budgets its own opens (walk_engine_budgeted):
+    // over-budget descriptors defer to the next sweep's re-page.
     tombstone_walk(state).await;
-    bound_walk_residency(state, &pre, budget).await;
 }
 
 /// One residency budget for EVERY debt class the scheduler can retain
@@ -2275,25 +2298,65 @@ async fn probe_debt(engine: &std::sync::Arc<crate::shard::ShardEngine>) -> Debt 
     }
 }
 
-/// prefix -> external_touches at mark time. Any movement means a
-/// customer request resolved this engine since the scheduler opened
-/// it, which revokes the scheduler's right to close it.
-fn touch_baseline() -> &'static std::sync::Mutex<std::collections::HashMap<String, u64>> {
-    static B: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
-        std::sync::OnceLock::new();
-    B.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+/// R29 custody core. One global adoption sequence orders every
+/// external resolution against every custody install; the invariants:
+///
+///   * custody installs ONLY onto an engine with zero external
+///     history — a customer who resolved the engine before the sweep
+///     probed it (including one who coalesced into the sweep's own
+///     in-flight open) makes the install DECLINE, closing the
+///     pre-mark window the R28 baseline model left open;
+///   * an external resolution atomically revokes custody
+///     (stamp_external, called inside the request path's map guard);
+///   * internal paths (tombstone walk, scaler) never stamp, so
+///     maintenance cannot leak an engine out of the rotation;
+///   * a close succeeds only via compare_exchange on the installer's
+///     exact custody value — custody still present implies no
+///     external stamp since install.
+static ADOPTION_SEQ: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Called from every EXTERNAL engine resolution (http engine_for fast
+/// path and its gate Ready path). Held-count is DERIVED from custody
+/// flags in the serving map, so revocation is just the swap.
+pub fn stamp_external(engine: &std::sync::Arc<crate::shard::ShardEngine>) {
+    let seq = ADOPTION_SEQ.fetch_add(1, std::sync::atomic::Ordering::Relaxed) + 1;
+    engine
+        .last_external_seq
+        .store(seq, std::sync::atomic::Ordering::Relaxed);
+    engine
+        .sweep_custody
+        .swap(0, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// prefix -> sweeps spent resident. A resident whose debt outlives its
-/// quantum is closed (the debt is durable) so the rotation can admit
-/// the NEXT indebted shard — without this, phase 1 refills the budget
-/// with the same residents forever and discovery starves everyone
-/// else (caught by sweep_residency_bound_rotates_over_many_indebted_shards).
-fn residence_cycles() -> &'static std::sync::Mutex<std::collections::HashMap<String, usize>> {
-    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, usize>>> =
-        std::sync::OnceLock::new();
-    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+/// Install scheduler custody. Returns the custody value on success;
+/// None means the engine has external history (or gained it during
+/// the install race) and the scheduler must treat it as
+/// customer-resident.
+fn install_custody(engine: &std::sync::Arc<crate::shard::ShardEngine>) -> Option<u64> {
+    use std::sync::atomic::Ordering;
+    if engine.last_external_seq.load(Ordering::Relaxed) != 0 {
+        return None;
+    }
+    let seq = ADOPTION_SEQ.fetch_add(1, Ordering::Relaxed) + 1;
+    engine.sweep_custody.store(seq, Ordering::Relaxed);
+    // Re-check: a stamp that landed between the first read and the
+    // store has either already revoked (swap saw our value) or carries
+    // a newer last_external_seq; both mean decline.
+    if engine.last_external_seq.load(Ordering::Relaxed) != 0 {
+        if engine
+            .sweep_custody
+            .compare_exchange(seq, 0, Ordering::Relaxed, Ordering::Relaxed)
+            .is_ok()
+        {
+            // we still held it; release cleanly (no SCHED_HELD yet)
+        }
+        return None;
+    }
+    Some(seq)
 }
+
+
+
 
 fn residence_quantum() -> usize {
     std::env::var("SWEEP_RESIDENT_QUANTUM")
@@ -2303,48 +2366,60 @@ fn residence_quantum() -> usize {
         .max(1)
 }
 
-fn mark(prefix: &str, engine: &std::sync::Arc<crate::shard::ShardEngine>) {
-    sweep_opened().lock().unwrap().insert(prefix.to_string());
-    touch_baseline().lock().unwrap().insert(
-        prefix.to_string(),
-        engine
-            .external_touches
-            .load(std::sync::atomic::Ordering::Relaxed),
-    );
-}
-
-fn unmark(prefix: &str) {
-    sweep_opened().lock().unwrap().remove(prefix);
-    touch_baseline().lock().unwrap().remove(prefix);
-    residence_cycles().lock().unwrap().remove(prefix);
-}
-
-fn touched_since_mark(prefix: &str, engine: &std::sync::Arc<crate::shard::ShardEngine>) -> bool {
-    let base = touch_baseline().lock().unwrap().get(prefix).copied();
-    match base {
-        Some(b) => {
-            engine
-                .external_touches
-                .load(std::sync::atomic::Ordering::Relaxed)
-                != b
+/// Take scheduler custody of an engine and register it for rotation.
+/// False = external history; the engine belongs to customer traffic.
+fn mark(
+    state: &std::sync::Arc<crate::http::AppState>,
+    prefix: &str,
+    engine: &std::sync::Arc<crate::shard::ShardEngine>,
+) -> bool {
+    match install_custody(engine) {
+        Some(seq) => {
+            state
+                .sweep_sched
+                .opened
+                .lock()
+                .unwrap()
+                .insert(prefix.to_string(), seq);
+            note_peak(state);
+            true
         }
-        // No baseline recorded (marked by an older build or the walk
-        // helper): treat as touched — never close without proof of
-        // custody.
-        None => true,
+        None => false,
+    }
+}
+
+fn unmark(state: &std::sync::Arc<crate::http::AppState>, prefix: &str) {
+    state.sweep_sched.opened.lock().unwrap().remove(prefix);
+    state.sweep_sched.cycles.lock().unwrap().remove(prefix);
+}
+
+/// Still under the custody value we installed? Anything else —
+/// revoked by an external stamp, or no record — means adopted.
+fn custody_intact(
+    state: &std::sync::Arc<crate::http::AppState>,
+    prefix: &str,
+    engine: &std::sync::Arc<crate::shard::ShardEngine>,
+) -> bool {
+    let rec = state.sweep_sched.opened.lock().unwrap().get(prefix).copied();
+    match rec {
+        Some(seq) => engine.sweep_custody.load(std::sync::atomic::Ordering::Relaxed) == seq,
+        None => false,
     }
 }
 
 /// Peak concurrently scheduler-held engines, for the DST bound gate.
-pub fn sweep_open_peak() -> usize {
-    SWEEP_OPEN_PEAK.load(std::sync::atomic::Ordering::Relaxed)
+pub fn sweep_open_peak(state: &std::sync::Arc<crate::http::AppState>) -> usize {
+    state.sweep_sched.peak.load(std::sync::atomic::Ordering::Relaxed)
 }
-pub fn sweep_open_peak_reset() {
-    SWEEP_OPEN_PEAK.store(0, std::sync::atomic::Ordering::Relaxed);
+pub fn sweep_open_peak_reset(state: &std::sync::Arc<crate::http::AppState>) {
+    state.sweep_sched.peak.store(0, std::sync::atomic::Ordering::Relaxed);
 }
-static SWEEP_OPEN_PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-fn note_sweep_open_peak(now: usize) {
-    SWEEP_OPEN_PEAK.fetch_max(now, std::sync::atomic::Ordering::Relaxed);
+fn note_peak(state: &std::sync::Arc<crate::http::AppState>) {
+    let now = scheduler_held(state);
+    state
+        .sweep_sched
+        .peak
+        .fetch_max(now, std::sync::atomic::Ordering::Relaxed);
 }
 
 /// Close an engine the scheduler owns. Removal from the map happens
@@ -2357,57 +2432,89 @@ fn note_sweep_open_peak(now: usize) {
 /// window is the ownership-move window, which clients already survive
 /// by replay contract.
 fn close_scheduler_engine(state: &std::sync::Arc<crate::http::AppState>, prefix: &str) {
-    let engine = state.shards.write().unwrap().remove(prefix);
-    let Some(engine) = engine else {
-        unmark(prefix);
+    use std::sync::atomic::Ordering;
+    let Some(seq) = state.sweep_sched.opened.lock().unwrap().get(prefix).copied() else {
         return;
     };
-    if touched_since_mark(prefix, &engine) && sweep_opened().lock().unwrap().contains(prefix) {
-        // Adopted between probe and close: put it back untouched.
+    let engine = state.shards.write().unwrap().remove(prefix);
+    let Some(engine) = engine else {
+        unmark(state, prefix);
+        return;
+    };
+    // Map removal happened under the write lock; every external
+    // resolution stamps inside a read guard, so any adoption that
+    // could still hold this engine has already revoked custody by the
+    // time this CAS runs. Success == we still own it == zero external
+    // use since (and before) install.
+    if engine
+        .sweep_custody
+        .compare_exchange(seq, 0, Ordering::Relaxed, Ordering::Relaxed)
+        .is_err()
+    {
+        // Adopted: reinstate untouched, drop our claim.
         state
             .shards
             .write()
             .unwrap()
             .insert(prefix.to_string(), engine);
-        unmark(prefix);
+        unmark(state, prefix);
         return;
     }
     engine.begin_close();
-    unmark(prefix);
+    unmark(state, prefix);
     tracing::info!("sweep closed shard {prefix}");
 }
 
-/// The tombstone walk resolves engines through the general opener, so
-/// a page dense with terminal descriptors could otherwise accumulate
-/// unbounded residency. Engines that appeared during the walk and
-/// carry no debt close here; indebted ones are marked (they join the
-/// budgeted rotation next cycle, counted against the same budget).
-async fn bound_walk_residency(
+/// R29: the walk shares the scheduler budget BEFORE opening. An
+/// engine already resident is used quietly (no adoption stamp — an
+/// internal touch must not leak it out of the rotation). A cold route
+/// opens only while scheduler-held engines are under budget, takes
+/// custody like any discovery open, and is closed (or retained as an
+/// indebted resident) right after its closures are submitted. Over
+/// budget -> the descriptor is DEFERRED: the walk re-pages every
+/// sweep, which is the continuation.
+async fn walk_engine_budgeted(
     state: &std::sync::Arc<crate::http::AppState>,
-    pre: &std::collections::HashSet<String>,
+    route: &[u8; 16],
     budget: usize,
-) {
-    let now: Vec<String> = state.shards.read().unwrap().keys().cloned().collect();
-    let mut kept = sweep_opened().lock().unwrap().len();
-    for prefix in now {
-        if pre.contains(&prefix) || sweep_opened().lock().unwrap().contains(&prefix) {
-            continue;
-        }
-        let Some(engine) = state.shards.read().unwrap().get(&prefix).cloned() else {
-            continue;
-        };
-        let debt = probe_debt(&engine).await;
-        if debt.any() && kept < budget {
-            mark(&prefix, &engine);
-            kept += 1;
-            continue;
-        }
-        // Walk-opened, debt-free (or over budget): close via the same
-        // guarded path — mark first so the touch guard has a baseline.
-        mark(&prefix, &engine);
-        close_scheduler_engine(state, &prefix);
+) -> Option<(std::sync::Arc<crate::shard::ShardEngine>, bool)> {
+    let prefix = crate::registry::shard_for_hash(&state.shard_prefixes, route);
+    if let Some(e) = state.shards.read().unwrap().get(&prefix).cloned() {
+        return Some((e, false)); // resident: quiet use, not ours to close
+    }
+    if scheduler_held(state) >= budget {
+        WALK_DEFERRED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        return None;
+    }
+    let engine = state.engine_for_quiet(route).await.ok()?;
+    if mark(state, &prefix, &engine) {
+        Some((engine, true)) // scheduler-held: caller settles custody
+    } else {
+        // Custody declined (customer raced in): quiet use.
+        Some((engine, false))
     }
 }
+
+/// After the walk finishes with a scheduler-opened engine: keep it as
+/// a budgeted resident if it carries debt, close it otherwise.
+async fn walk_settle(state: &std::sync::Arc<crate::http::AppState>, prefix: &str) {
+    let Some(engine) = state.shards.read().unwrap().get(prefix).cloned() else {
+        unmark(state, prefix);
+        return;
+    };
+    if !custody_intact(state, prefix, &engine) {
+        unmark(state, prefix);
+        return;
+    }
+    if !probe_debt(&engine).await.any() {
+        close_scheduler_engine(state, prefix);
+    }
+    // Indebted: stays marked; phase 1 rotates it like any resident.
+}
+
+/// Descriptors skipped this sweep because the budget was full; the
+/// next sweep's walk retries them (ops gauge).
+pub static WALK_DEFERRED: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Round-22 item 7: the tombstone walk. Dirty-index reconciliation
 /// only sees rows that are DIRTY; a closure lost while the row sat
@@ -2453,7 +2560,9 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
                 let route = d.segment_route_by_id(sid);
                 // Foreign routes are skipped — every instance walks the
                 // same registry and closes what IT owns.
-                let Ok(engine) = state.engine_for(&route).await else {
+                let budget = sweep_resident_budget();
+                let Some((engine, ours)) = walk_engine_budgeted(state, &route, budget).await
+                else {
                     continue;
                 };
                 let hash = d.dynamic_segment_identity(sid);
@@ -2485,6 +2594,14 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
                     && let Err(e) = engine.submit_billing_retained(hash, true).await
                 {
                     tracing::warn!("tombstone-walk retain failed for {}: {e}", d.name);
+                }
+                if ours {
+                    // Scheduler-opened for this descriptor: close it or
+                    // keep it as an indebted budgeted resident NOW —
+                    // never accumulate walk opens across the page.
+                    let prefix =
+                        crate::registry::shard_for_hash(&state.shard_prefixes, &route);
+                    walk_settle(state, &prefix).await;
                 }
             }
         }

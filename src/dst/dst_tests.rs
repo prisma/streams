@@ -5309,6 +5309,7 @@ async fn http_rig_inner(
         stream_shed: std::sync::atomic::AtomicU64::new(0),
         wedge_shed: std::sync::atomic::AtomicU64::new(0),
         maint_latch: crate::backpressure::GlobalLatch::new(),
+        sweep_sched: crate::billing::SweepSched::default(),
         instance_name: instance_name.unwrap_or_default(),
         ring_active: std::sync::RwLock::new(Vec::new()),
         ring_overrides: std::sync::RwLock::new(std::collections::HashMap::new()),
@@ -21428,14 +21429,14 @@ async fn sweep_peak_open_never_exceeds_the_budget() {
     }
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
-    crate::billing::sweep_open_peak_reset();
+    crate::billing::sweep_open_peak_reset(&state);
     for _ in 0..8 {
         crate::billing::sweep_owned_outboxes(&state).await;
     }
     assert!(
-        crate::billing::sweep_open_peak() <= 2,
+        crate::billing::sweep_open_peak(&state) <= 2,
         "peak scheduler-held engines {} exceeded budget 2",
-        crate::billing::sweep_open_peak()
+        crate::billing::sweep_open_peak(&state)
     );
 }
 
@@ -21499,4 +21500,191 @@ async fn customer_race_into_a_sweep_opened_engine_prevents_its_close() {
     // And it still serves: the stream reads back.
     let (st, _, _) = hreq(addr, "GET", &format!("/v1/stream/{name}"), &[], b"").await;
     assert_eq!(st, 200, "adopted engine must keep serving reads");
+}
+
+/// R29 custody: an engine with ANY external history — including a
+/// customer who resolved it before the sweep could probe (the pre-mark
+/// window), or who coalesced into the sweep's own in-flight open —
+/// makes custody installation DECLINE. The scheduler never closes an
+/// engine it could not take custody of.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn custody_declines_on_prior_external_use() {
+    let _serial = sweep_lock().lock().await;
+    let store = mem();
+    let prefixes = vec!["00".to_string(), "01".to_string(), "10".to_string(), "11".to_string()];
+    let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/pre-mark-1", &ct, b"").await;
+    assert!(st == 200 || st == 201);
+    let (st, _, _) =
+        hreq(addr, "POST", "/v1/stream/pre-mark-1", &ct, br#"[{"n":1}]"#).await;
+    assert!(st == 200 || st == 204);
+    let desc = state.registry.get("pre-mark-1").await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let prefix = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
+    let pref_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
+    drain_billing_clean(&state, &pref_refs).await;
+    // Cold-close, then reproduce the reviewer's ordering EXACTLY: the
+    // open completes (engine publicly visible), a customer resolves it
+    // (external stamp), and only THEN would the sweep mark it.
+    let engines: Vec<_> = {
+        let mut m = state.shards.write().unwrap();
+        prefixes.iter().filter_map(|p| m.remove(p)).collect()
+    };
+    for e in engines {
+        e.begin_close();
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let crate::sharddir::OpenOutcome::Ready(engine) = state
+        .gate
+        .get_or_open(&prefix, std::time::Duration::from_secs(20))
+        .await
+    else {
+        panic!("open failed");
+    };
+    // The customer resolution (external): same stamping path a
+    // coalesced get_or_open Ready takes.
+    let _ = state.engine_for(&seg.shard_route).await.unwrap();
+    // Sweep now audits/discovers: custody must DECLINE and the engine
+    // must survive any number of sweeps.
+    for _ in 0..6 {
+        crate::billing::sweep_owned_outboxes(&state).await;
+    }
+    assert!(
+        state.shards.read().unwrap().contains_key(&prefix),
+        "engine with prior external use must never be sweep-closed"
+    );
+    assert_eq!(
+        engine.sweep_custody.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "custody must not be installed over external history"
+    );
+}
+
+/// R29 custody: INTERNAL resolutions (tombstone walk, scaler) never
+/// stamp adoption — a sweep-held engine touched by maintenance stays
+/// under scheduler control and still closes when its debt drains or
+/// its quantum expires, instead of leaking out of the rotation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn internal_touch_does_not_leak_an_engine_from_the_rotation() {
+    let _serial = sweep_lock().lock().await;
+    let store = mem();
+    let prefixes = vec!["00".to_string(), "01".to_string(), "10".to_string(), "11".to_string()];
+    let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/itouch-1", &ct, b"").await;
+    assert!(st == 200 || st == 201);
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/itouch-1", &ct, br#"[{"n":1}]"#).await;
+    assert!(st == 200 || st == 204);
+    let desc = state.registry.get("itouch-1").await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let prefix = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
+    let pref_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
+    drain_billing_clean(&state, &pref_refs).await;
+    let engines: Vec<_> = {
+        let mut m = state.shards.write().unwrap();
+        prefixes.iter().filter_map(|p| m.remove(p)).collect()
+    };
+    for e in engines {
+        e.begin_close();
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // One sweep opens + retains the indebted shard under custody.
+    crate::billing::sweep_owned_outboxes(&state).await;
+    let engine = state
+        .shards
+        .read()
+        .unwrap()
+        .get(&prefix)
+        .cloned()
+        .expect("sweep must retain the indebted shard");
+    let custody0 = engine.sweep_custody.load(std::sync::atomic::Ordering::Relaxed);
+    assert_ne!(custody0, 0, "sweep must hold custody of its resident");
+    // Maintenance-style internal touches: must NOT revoke custody.
+    for _ in 0..3 {
+        let _ = state.engine_for_quiet(&seg.shard_route).await.unwrap();
+    }
+    assert_eq!(
+        engine.sweep_custody.load(std::sync::atomic::Ordering::Relaxed),
+        custody0,
+        "internal resolution must not revoke scheduler custody"
+    );
+    // Let the debt drain while resident, then sweeps must CLOSE it —
+    // proof the engine never left the scheduler's rotation.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        crate::billing::sweep_owned_outboxes(&state).await;
+        if !state.shards.read().unwrap().contains_key(&prefix) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "sweep never reclaimed the internally-touched resident"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+}
+
+/// R29: the tombstone walk must consume the SAME scheduler budget
+/// BEFORE opening. Terminal (TTL-expired) descriptors spanning every
+/// physical shard used to open one engine per route for the whole
+/// page and only bound afterwards; now over-budget routes defer to
+/// the next sweep and the peak gauge covers walk opens too.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tombstone_walk_peak_residency_stays_under_the_budget() {
+    let _serial = sweep_lock().lock().await;
+    let store = mem();
+    let prefixes = vec!["00".to_string(), "01".to_string(), "10".to_string(), "11".to_string()];
+    let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
+    let ct = [
+        ("content-type", "application/json"),
+        ("stream-ttl", "1"),
+    ];
+    // TTL streams with data covering all four shards.
+    let mut covered: std::collections::HashSet<String> = Default::default();
+    let mut names = Vec::new();
+    for i in 0..64 {
+        if covered.len() == 4 {
+            break;
+        }
+        let name = format!("tomb-m{i}");
+        let (st, _, _) = hreq(addr, "PUT", &format!("/v1/stream/{name}"), &ct, b"").await;
+        assert!(st == 200 || st == 201);
+        let desc = state.registry.get(&name).await.unwrap().unwrap();
+        let seg = desc.resolve_segment("");
+        let p = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
+        if covered.insert(p) {
+            let (st, _, _) =
+                hreq(addr, "POST", &format!("/v1/stream/{name}"), &ct, br#"[{"n":1}]"#).await;
+            assert!(st == 200 || st == 204);
+            names.push(name);
+        }
+    }
+    assert_eq!(covered.len(), 4);
+    let pref_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
+    drain_billing_clean(&state, &pref_refs).await;
+    // Cold-close everything, let the TTL lapse so every descriptor is
+    // terminal, and force fresh registry reads.
+    let engines: Vec<_> = {
+        let mut m = state.shards.write().unwrap();
+        prefixes.iter().filter_map(|p| m.remove(p)).collect()
+    };
+    for e in engines {
+        e.begin_close();
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    for n in &names {
+        state.registry.invalidate(n);
+    }
+    crate::billing::sweep_open_peak_reset(&state);
+    // Several sweeps: the walk pages terminal descriptors on all four
+    // shards; deferred routes get their turn on later sweeps.
+    for _ in 0..8 {
+        crate::billing::sweep_owned_outboxes(&state).await;
+    }
+    assert!(
+        crate::billing::sweep_open_peak(&state) <= 2,
+        "walk drove scheduler-held engines to {} (budget 2)",
+        crate::billing::sweep_open_peak(&state)
+    );
 }

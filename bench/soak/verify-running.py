@@ -43,6 +43,24 @@ def verify(region):
         assert got in expected, (
             f"{region}: server binary sha {got[:16]} not in this "
             f"campaign's manifest — a stale or foreign build is serving")
+    # R29: compare the FULL identity, not just the digest — git commit
+    # and build timestamp from the manifest, /readyz identity headers,
+    # and a nonempty boot id.
+    commits = {v.get("gitCommit") for v in man.values() if v.get("gitCommit")}
+    if commits:
+        assert d.get("git_commit") in commits, (
+            f"{region}: git commit {d.get('git_commit','')[:12]} not in manifest")
+        builds = {str(v.get("buildUnix")) for v in man.values() if v.get("buildUnix")}
+        if builds:
+            assert str(d.get("build_unix")) in builds, (
+                f"{region}: build timestamp mismatch")
+        req = urllib.request.Request(f"{server}/readyz")
+        with urllib.request.urlopen(req, timeout=30) as r:
+            hdr_git = r.headers.get("x-streams-git", "")
+            hdr_boot = r.headers.get("x-streams-boot-id", "")
+        assert hdr_git in commits, f"{region}: /readyz header commit mismatch"
+        assert hdr_boot and hdr_boot == d.get("boot_id"), (
+            f"{region}: boot id missing or inconsistent between /readyz and debug/load")
     st, body = get(f"{gen}/")
     g = json.loads(body)
     assert "ok" in g or isinstance(g, list), f"{region}: gen shape {body[:80]!r}"

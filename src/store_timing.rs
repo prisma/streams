@@ -105,6 +105,14 @@ async fn permit() -> Option<tokio::sync::SemaphorePermit<'static>> {
 
 /// R27-4: instance-wide byte bound on in-flight BULK store transfers.
 ///
+/// SCOPE (R29 review): this is an SST LEAF-I/O OVERLAP LIMITER, not a
+/// complete memory budget. It bounds bytes concurrently inside store
+/// calls; it does NOT bound payloads already built and queued at the
+/// gate, completed read-ahead buffers, compactor merge state, or
+/// output builders — those are bounded by the compaction-worker
+/// profile (COMPACT_* knobs) and task-count posture. The full 1 GiB
+/// survival story is the COMBINATION, never this gate alone.
+///
 /// The SIN incompressible campaign OOM-killed (exit 137) with the
 /// maintenance ledger healthy at 50-86 MB: RSS jumped ~250 MB in one
 /// 5 s window exactly as concurrent store ops burst 14→22 (peak 53).
@@ -195,10 +203,19 @@ impl BulkGate {
 }
 
 /// Nominal weight for an sst GET whose length we cannot know up front
-/// (full-object or open-ended range): one L0 SST at the survival
-/// profile. Exact for the dominant case, harmless elsewhere — the
-/// gate bounds a wave, it is not an accountant.
-const BULK_NOMINAL_GET: u64 = 8 * 1024 * 1024;
+/// (full-object or open-ended range). R29: sized to the resolved
+/// compaction OUTPUT roll (COMPACT_MAX_SST_SIZE_BYTES) — the largest
+/// object compaction writes and may later re-read — instead of a
+/// fixed 8 MiB that understated the certified 32 MiB rolls.
+fn bulk_nominal_get() -> u64 {
+    static N: OnceLock<u64> = OnceLock::new();
+    *N.get_or_init(|| {
+        std::env::var("COMPACT_MAX_SST_SIZE_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(8 * 1024 * 1024)
+    })
+}
 
 fn bulk_gate() -> Option<&'static BulkGate> {
     static G: OnceLock<Option<BulkGate>> = OnceLock::new();
@@ -554,7 +571,7 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         } else {
             let w = match &options.range {
                 Some(object_store::GetRange::Bounded(r)) => r.end.saturating_sub(r.start),
-                _ => BULK_NOMINAL_GET,
+                _ => bulk_nominal_get(),
             };
             bulk_permit(classify(location.as_ref()), w).await
         };

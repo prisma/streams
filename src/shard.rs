@@ -1026,11 +1026,19 @@ struct InFlightGroup {
 pub struct ShardEngine {
     pub prefix: String,
     pub db: Arc<Db>,
-    /// R28: incremented by engine_for INSIDE the shards-map read guard
-    /// every time a request resolves this engine. The sweep scheduler
-    /// records a baseline at mark time; any movement revokes its right
-    /// to close the engine (customer adoption).
-    pub external_touches: std::sync::atomic::AtomicU64,
+    /// R29 custody model. `last_external_seq`: the global adoption
+    /// sequence value of the most recent EXTERNAL resolution of this
+    /// engine (customer request paths only — never the sweep, walk or
+    /// scaler). `sweep_custody`: 0 = not scheduler-held, otherwise the
+    /// adoption-sequence value at which the sweep installed custody.
+    /// Invariants enforced in billing.rs: custody installs only onto an
+    /// engine with last_external_seq == 0 (any earlier external use —
+    /// including a customer who coalesced into the sweep's own open —
+    /// declines custody), an external resolution atomically revokes
+    /// custody, and a close requires the installer's exact custody
+    /// value with no newer external stamp.
+    pub last_external_seq: std::sync::atomic::AtomicU64,
+    pub sweep_custody: std::sync::atomic::AtomicU64,
     /// Engine-owned maintenance state (R25-A). The durable row in this
     /// shard's DB is authoritative; this is the published mirror,
     /// updated ONLY after the write carrying the row succeeds. Owned by
@@ -1253,7 +1261,8 @@ impl ShardEngine {
         let engine = Arc::new(ShardEngine {
             prefix,
             db,
-            external_touches: std::sync::atomic::AtomicU64::new(0),
+            last_external_seq: std::sync::atomic::AtomicU64::new(0),
+            sweep_custody: std::sync::atomic::AtomicU64::new(0),
             maintenance: std::sync::RwLock::new(initial_maintenance),
             maintenance_shard_shed: std::sync::atomic::AtomicBool::new(false),
             data_store,

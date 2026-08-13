@@ -347,7 +347,7 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
     }
     gauges.insert(
         "sweep_resident_engines".into(),
-        crate::billing::sweep_resident_engines(),
+        crate::billing::sweep_resident_engines(state),
     );
     gauges.insert(
         "telemetry_cache_capacity_bytes".into(),

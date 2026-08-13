@@ -158,6 +158,10 @@ pub struct AppState {
     /// the global machine of the two-machine split (the per-shard
     /// machine lives on each engine's `maintenance_shard_shed`).
     pub maint_latch: crate::backpressure::GlobalLatch,
+    /// R29: per-state sweep scheduler bookkeeping (custody marks,
+    /// quantum cycles, peak gauge) — process statics summed parallel
+    /// test rigs into false bound violations.
+    pub sweep_sched: crate::billing::SweepSched,
     /// Fleet-coordination store (heartbeats/desired.json) for the operator
     /// dashboard's cell view; None when running standalone.
     pub fleet_store: Option<Arc<dyn object_store::ObjectStore>>,
@@ -279,12 +283,33 @@ impl AppState {
     /// held off for 3 s (anti-flap while the router converges) → 503.
     /// Response-free engine lookup for the unified scaler.
     pub async fn engine_for_scaler(self: &Arc<Self>, hash: &[u8; 16]) -> Option<Arc<ShardEngine>> {
-        self.engine_for(hash).await.ok()
+        // R29: the scaler is INTERNAL — it must not stamp external
+        // adoption, or its periodic scans would leak sweep-held
+        // engines out of the budgeted rotation.
+        self.engine_for_inner(hash, false).await.ok()
+    }
+
+    /// Internal (non-adopting) resolution: same ownership rules and
+    /// on-demand open as engine_for, but never stamps the adoption
+    /// sequence — for the tombstone walk and other maintenance.
+    pub(crate) async fn engine_for_quiet(
+        self: &Arc<Self>,
+        hash: &[u8; 16],
+    ) -> Result<Arc<ShardEngine>, Response> {
+        self.engine_for_inner(hash, false).await
     }
 
     pub(crate) async fn engine_for(
         self: &Arc<Self>,
         hash: &[u8; 16],
+    ) -> Result<Arc<ShardEngine>, Response> {
+        self.engine_for_inner(hash, true).await
+    }
+
+    async fn engine_for_inner(
+        self: &Arc<Self>,
+        hash: &[u8; 16],
+        external: bool,
     ) -> Result<Arc<ShardEngine>, Response> {
         let prefix = shard_for_hash(&self.shard_prefixes, hash);
         let owner = self.effective_owner(&prefix);
@@ -292,14 +317,13 @@ impl AppState {
         if let Some(e) = {
             let guard = self.shards.read().unwrap();
             let e = guard.get(&prefix).cloned();
-            // R28: adoption signal for the sweep scheduler, recorded
-            // INSIDE the read guard — the scheduler's close takes the
-            // write lock first, so every resolution that could still
-            // hold this engine has already incremented the counter by
-            // the time the close re-checks it.
-            if let Some(ref e) = e {
-                e.external_touches
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            // R29 custody: EXTERNAL resolution stamps the adoption
+            // sequence and revokes any sweep custody, INSIDE the read
+            // guard — the scheduler's close takes the write lock
+            // first, so every resolution that could still hold this
+            // engine is visible to the close's re-check.
+            if external && let Some(ref e) = e {
+                crate::billing::stamp_external(e);
             }
             e
         } {
@@ -344,7 +368,14 @@ impl AppState {
                 .unwrap_or(10_000),
         );
         match self.gate.get_or_open(&prefix, wait).await {
-            crate::sharddir::OpenOutcome::Ready(engine) => Ok(engine),
+            crate::sharddir::OpenOutcome::Ready(engine) => {
+                // R29: a customer who coalesced into (or raced) an open
+                // the sweep started still counts as external adoption.
+                if external {
+                    crate::billing::stamp_external(&engine);
+                }
+                Ok(engine)
+            }
             crate::sharddir::OpenOutcome::Wait {
                 code,
                 retry_after_secs,
@@ -751,6 +782,18 @@ async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
         "build_unix": env!("STREAMS_BUILD_UNIX"),
         "boot_id": crate::billing::boot_id(),
         "compactor_profile": crate::compactor_profile_json(),
+        // R29: the KERNEL's high-water mark, not sampled RSS — sampled
+        // peaks missed the 5 s kill waves entirely. cgroup v2 first,
+        // v1 fallback; null off-Linux.
+        "now_unix_ms": std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .map(|d| d.as_millis() as u64)
+            .unwrap_or(0),
+        "cgroup_peak_bytes": std::fs::read_to_string("/sys/fs/cgroup/memory.peak")
+            .or_else(|_| std::fs::read_to_string(
+                "/sys/fs/cgroup/memory/memory.max_usage_in_bytes"))
+            .ok()
+            .and_then(|v| v.trim().parse::<u64>().ok()),
         "stream_shed": state.stream_shed.load(std::sync::atomic::Ordering::Relaxed),
         "wedge_shed": state.wedge_shed.load(std::sync::atomic::Ordering::Relaxed),
         "streams_tracked": state.stream_inflight.lock().unwrap().len(),
@@ -1194,7 +1237,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                             "cacheCapacityBytes":
                                 crate::billing::TELEMETRY_CACHE_CAPACITY.load(ord),
                             "sweepResidentEngines":
-                                crate::billing::sweep_resident_engines(),
+                                crate::billing::sweep_resident_engines(&state),
                         },
                         "config": crate::history::RESOLVED_MEMORY_CONFIG.get(),
                         "process": {
