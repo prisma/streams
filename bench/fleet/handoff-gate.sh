@@ -74,6 +74,29 @@ done
 [ -n "$TARGET" ] || { echo "no owner found"; exit 1; }
 hdr "target owner: s$TARGET ($TARGET_URL, ingest=$BEST)"
 
+# 2b) steady-state fleet ledger baseline (pre-pause): the drain
+# criterion under continued load is RETURN TO THIS BAND — near-zero is
+# structurally unreachable while the generator offers load (the
+# absorber cycle keeps tens of MB of healthy in-flight backlog; run 3
+# oscillated 32-66MB forever against a 10MB bar).
+BASE=0
+for _ in 1 2 3; do
+  T=0
+  for i in 1 2 3 4; do
+    U=$(cat "$S/url-fleet-s$i.txt")
+    L=$(jload "$U" | python3 -c "import json,sys
+try:
+    m=json.loads(sys.stdin.read()).get('maintenance_shards',{})
+    print(sum(x.get('unabsorbed_frame_bytes',0) for x in m.get('shards',[])))
+except Exception: print(0)")
+    T=$((T + L))
+  done
+  [ "$T" -gt "$BASE" ] && BASE=$T
+  sleep 5
+done
+echo "  steady fleet-ledger baseline: $((BASE>>20))MB"
+BAND=$((BASE * 2 + 33554432))   # 2x baseline + 32MB slack
+
 # 3) pause EVERY instance's absorber: the whole fleet's backlog
 # builds (4x faster than pausing one), and — critical for step 5 —
 # survivor gauges are FROZEN through the restore verification, so the
@@ -207,18 +230,45 @@ except Exception: print(-1)")
     fi
     TOT=$((TOT + L))
   done
-  echo "  +$(( $(date +%s) - T0 ))s fleet ledger $((TOT>>20))MB"
-  [ "$TOT" -lt 10485760 ] && break
-  [ $(( $(date +%s) - T0 )) -gt 1800 ] && { echo "DRAIN TIMEOUT"; exit 1; }
+  echo "  +$(( $(date +%s) - T0 ))s fleet ledger $((TOT>>20))MB (band $((BAND>>20))MB)"
+  if [ "$TOT" -le "$BAND" ]; then
+    INBAND=$((${INBAND:-0} + 1))
+    [ "$INBAND" -ge 3 ] && break
+  else
+    INBAND=0
+  fi
+  [ $(( $(date +%s) - T0 )) -gt 1800 ] && { echo "DRAIN TIMEOUT (under load)"; exit 1; }
 done
 echo "$(( $(date +%s) - T0 ))" > "$OUT/drain-secs.txt"
+hdr "catch-up under load complete (back to steady band); stopping load for absolute drain"
 
-# 7) stop the generator (clean join -> final line + ledger), reconcile.
+# 7a) stop the generator (clean join -> final line + ledger).
 curl -s -m 10 "http://127.0.0.1:$GEN_PORT/stop" >/dev/null || true
 for _ in $(seq 1 30); do
   grep -q "BENCH_DONE" "$OUT/gen.log" 2>/dev/null && break
   sleep 2
 done
+
+# 7b) absolute drain with load stopped: the R27-4 recovery model.
+T0=$(date +%s)
+while :; do
+  sleep 10
+  TOT=0
+  for i in 1 2 3 4; do
+    [ "$i" = "$TARGET" ] && continue
+    U=$(cat "$S/url-fleet-s$i.txt")
+    L=$(jload "$U" | python3 -c "import json,sys
+try:
+    m=json.loads(sys.stdin.read()).get('maintenance_shards',{})
+    print(sum(x.get('unabsorbed_frame_bytes',0) for x in m.get('shards',[])))
+except Exception: print(0)")
+    TOT=$((TOT + L))
+  done
+  echo "  +$(( $(date +%s) - T0 ))s post-load ledger $((TOT>>20))MB"
+  [ "$TOT" -lt 10485760 ] && break
+  [ $(( $(date +%s) - T0 )) -gt 600 ] && { echo "ABSOLUTE DRAIN TIMEOUT"; exit 1; }
+done
+echo "$(( $(date +%s) - T0 ))" > "$OUT/absolute-drain-secs.txt" 
 hdr "reconciling through the LB"
 printf '%s' "$LB" > "$S/url-server-$RUN.txt"
 printf 'http://127.0.0.1:%s' "$GEN_PORT" > "$S/url-gen-$RUN.txt"
