@@ -183,3 +183,37 @@ PLATFORM dependency alongside the digest-verified-readiness contract;
 until then the margin evidence is the local cgroup-limited Docker rig
 (886→723 MB peak across the posture change) plus sampled RSS in the
 field.
+
+## R27-5: fleet handoff at peak backlog — PASS (handoff-fh185257)
+
+Four-instance fra fleet + rendezvous LB, R29 binary (503bc59f, commit
+5efc5790), identity-verified on every instance. Sequence and results:
+
+- All four absorbers paused; fleet backlog built under LB load until
+  the target owner (s4) held **365 MB of durable maintenance backlog**
+  (requirement: >= 250 MB; shortfall now FAILS the gate).
+- s4 killed with a real SIGABRT (`/v1/debug/abort` — no WAL flush, no
+  fencing handoff, no absorber drain).
+- Successors restored **every pre-kill shard at >= 100% of its exact
+  pre-kill gauge** (aggregate ratio 1.0017) within 37 s — survivor
+  absorbers stayed paused through verification, so the comparison is
+  monotone-exact, not a cross-time approximation.
+- Survivors resumed; catch-up under CONTINUED generator load returned
+  the fleet to its steady band; after `/stop`, absolute drain reached
+  3 MB in 73 s.
+- Exact op-ledger reconciliation through the LB: 17,080 acked ops ->
+  170,800 records walked exactly; **all 2,879 kill-window ambiguous
+  ops resolved to zero-landed**; zero duplicates, zero unknown-op
+  records.
+
+Also exercised on the way (runs 3-4): hard-kill diagnosis via the
+supervisor's `binary_exited` surface, and **kill-and-replace** — a dead
+ordinal deployed back (ONLY=1), urls re-published, LB refreshed, fleet
+healthy. A quarter-dead fleet degraded generator goodput ~10x through
+LB retry latency, which is itself useful operational data: a dead
+upstream must be replaced or removed from rotation promptly.
+
+Caveat recorded honestly: run 5's pre-pause baseline (575 MB) was
+inflated by residue from the two aborted prior attempts sharing the
+namespace, which made the under-load band generous; the rigorous drain
+evidence is the absolute post-load drain to 3 MB.
