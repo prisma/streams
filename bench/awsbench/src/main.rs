@@ -140,6 +140,10 @@ struct Stats {
     /// R26-9: set by POST /start on the stats port; a gated run parks
     /// until it flips.
     released: AtomicU64,
+    /// R27-5: remote end-of-load — /stop finishes the current shape
+    /// cleanly (workers join, final cumulative line emitted, ledger
+    /// preserved) without waiting out BENCH_SECS.
+    stop_requested: AtomicU64,
 }
 
 impl Stats {
@@ -169,6 +173,7 @@ impl Stats {
             ambiguous_ops: Mutex::new(Vec::new()),
             op_seq: AtomicU64::new(0),
             released: AtomicU64::new(0),
+            stop_requested: AtomicU64::new(0),
         })
     }
     fn record_ok(&self, lat_us: u64, records: u64) {
@@ -495,9 +500,16 @@ async fn run_load(
         }));
     }
     let t_end = Instant::now() + Duration::from_secs(secs);
-    while Instant::now() < t_end {
+    while Instant::now() < t_end && stats.stop_requested.load(Ordering::Relaxed) == 0 {
         let left = t_end - Instant::now();
-        tokio::time::sleep(Duration::from_secs(20).min(left)).await;
+        // 2 s ticks so a remote /stop lands promptly; report every 20 s.
+        let mut slept = Duration::ZERO;
+        let report_gap = Duration::from_secs(20).min(left);
+        while slept < report_gap && stats.stop_requested.load(Ordering::Relaxed) == 0 {
+            let step = Duration::from_secs(2).min(report_gap - slept);
+            tokio::time::sleep(step).await;
+            slept += step;
+        }
         let win_ok = stats.window_ok.swap(0, Ordering::Relaxed);
         let win_recs = stats.window_records.swap(0, Ordering::Relaxed);
         let (p50, p99, mean) = {
@@ -927,6 +939,9 @@ async fn stats_server(stats: Arc<Stats>) {
             let body = if path.starts_with("/start") {
                 stats.released.store(1, Ordering::Relaxed);
                 "{\"started\":true}".to_string()
+            } else if path.starts_with("/stop") {
+                stats.stop_requested.store(1, Ordering::Relaxed);
+                "{\"stopping\":true}".to_string()
             } else if path.starts_with("/retarget") {
                 // R27-3: swap the Prisma base URL in place — the restart
                 // leg's replacement version gets full offered load and

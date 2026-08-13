@@ -573,6 +573,87 @@ impl Args {
 /// tokio timer p99 848 ms vs 3.6 ms for a raw OS thread on the same box).
 /// On their own OS threads the kernel preempts them at timeslice
 /// granularity instead, so the ack path pays milliseconds, not bursts.
+/// R27-4 / R28 review: ONE resolved CompactorOptions for EVERY SlateDB
+/// this process opens — shard DBs, telemetry, rollup, spool. The first
+/// SIN fix missed the telemetry DBs because their Settings used
+/// `..Default::default()`, silently reinstating the upstream worker
+/// (concurrency 4, 4 subcompactions, 4x2 MiB read-ahead, 256 MiB
+/// rolls) beside the bounded shard DBs. Env-derived so the value is
+/// identical however the process is driven; clap args mirror the same
+/// env vars for --help discoverability.
+pub fn resolved_compactor_options() -> &'static slatedb::config::CompactorOptions {
+    static CO: std::sync::OnceLock<slatedb::config::CompactorOptions> =
+        std::sync::OnceLock::new();
+    CO.get_or_init(|| {
+        fn env_usize(k: &str, d: usize) -> usize {
+            std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+        }
+        fn env_u64(k: &str, d: u64) -> u64 {
+            std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+        }
+        let conc = env_usize("COMPACTOR_MAX_CONCURRENT", 4);
+        let mut co = slatedb::config::CompactorOptions::default();
+        co.poll_interval =
+            Duration::from_millis(env_u64("COMPACTOR_POLL_MS", crate::DEFAULT_COMPACTOR_POLL_MS));
+        co.max_concurrent_compactions = conc;
+        let mut w = co.worker.take().unwrap_or_default();
+        w.max_concurrent_compactions = conc;
+        w.max_subcompactions = env_usize("COMPACT_MAX_SUBCOMPACTIONS", 4);
+        w.max_fetch_tasks = env_usize("COMPACT_MAX_FETCH_TASKS", 4);
+        w.bytes_to_fetch = env_usize("COMPACT_BYTES_TO_FETCH", 2 * 1024 * 1024);
+        w.max_sst_size = env_usize("COMPACT_MAX_SST_SIZE_BYTES", 256 * 1024 * 1024);
+        co.worker = Some(w);
+        co
+    })
+}
+
+/// The resolved worker knobs as JSON (debug/load + startup log) and the
+/// certification check: with MEMPROFILE_CERT=compute-1g the process
+/// REFUSES to start unless the live resolved configuration matches the
+/// certified survival profile — a deploy that drops one env var must
+/// fail loudly at boot, not OOM at +28 minutes.
+pub fn compactor_profile_json() -> serde_json::Value {
+    let co = resolved_compactor_options();
+    let w = co.worker.clone().unwrap_or_default();
+    serde_json::json!({
+        "max_concurrent_compactions": co.max_concurrent_compactions,
+        "worker_max_concurrent_compactions": w.max_concurrent_compactions,
+        "max_subcompactions": w.max_subcompactions,
+        "max_fetch_tasks": w.max_fetch_tasks,
+        "bytes_to_fetch": w.bytes_to_fetch,
+        "max_sst_size": w.max_sst_size,
+        "store_bulk_inflight_max_bytes": std::env::var("STORE_BULK_INFLIGHT_MAX_BYTES")
+            .ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0),
+    })
+}
+
+fn assert_certified_memprofile() {
+    if std::env::var("MEMPROFILE_CERT").as_deref() != Ok("compute-1g") {
+        return;
+    }
+    let p = compactor_profile_json();
+    let expect = serde_json::json!({
+        "max_concurrent_compactions": 1,
+        "worker_max_concurrent_compactions": 1,
+        "max_subcompactions": 1,
+        "max_fetch_tasks": 1,
+        "bytes_to_fetch": 1048576,
+        "max_sst_size": 33554432,
+        "store_bulk_inflight_max_bytes": 33554432u64,
+    });
+    for (k, want) in expect.as_object().unwrap() {
+        let got = &p[k];
+        if got != want {
+            eprintln!(
+                "Error: MEMPROFILE_CERT=compute-1g but {k}={got} (certified {want}) — \
+                 the deploy dropped or overrode a survival knob; refusing to start"
+            );
+            std::process::exit(1);
+        }
+    }
+    tracing::info!(profile = %p, "memory profile certified: compute-1g");
+}
+
 pub fn slatedb_runtime() -> &'static tokio::runtime::Runtime {
     static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RT.get_or_init(|| {
@@ -627,24 +708,7 @@ fn shard_settings(args: &Args) -> Settings {
         // engine's periodic explicit memtable->L0 flush (ShardEngine ticker).
         // D23: fencing correctness comes from CAS write failures, not polls.
         manifest_poll_interval: Duration::from_millis(args.manifest_poll_ms),
-        compactor_options: {
-            let mut co = slatedb::config::CompactorOptions::default();
-            co.poll_interval = Duration::from_millis(args.compactor_poll_ms);
-            co.max_concurrent_compactions = args.compactor_max_concurrent;
-            // R27-4: the embedded worker has its OWN concurrency default
-            // (4) plus per-compaction read-ahead and subcompaction fans;
-            // on memory-tight instances those, not transfer rate, set the
-            // wave amplitude. Mirror the outer concurrency and expose the
-            // worker's memory knobs.
-            let mut w = co.worker.take().unwrap_or_default();
-            w.max_concurrent_compactions = args.compactor_max_concurrent;
-            w.max_subcompactions = args.compact_max_subcompactions;
-            w.max_fetch_tasks = args.compact_max_fetch_tasks;
-            w.bytes_to_fetch = args.compact_bytes_to_fetch;
-            w.max_sst_size = args.compact_max_sst_size_bytes;
-            co.worker = Some(w);
-            Some(co)
-        },
+        compactor_options: Some(resolved_compactor_options().clone()),
         garbage_collector_options: {
             let mut gc = Settings::default()
                 .garbage_collector_options
@@ -819,6 +883,9 @@ fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| "info,slatedb=warn".into()),
         )
         .init();
+    // R28: a certified survival deploy must fail at boot, not OOM at
+    // +28 min, if any memory knob was dropped or overridden.
+    assert_certified_memprofile();
     // Run 13: tokio timer drift of ~230 ms p50 (vs 4 ms for a raw thread)
     // proved the event loop is starved by inline blocking work. On a 1-vCPU
     // box #[tokio::main] means ONE worker — a single blocking poll freezes

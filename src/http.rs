@@ -732,6 +732,12 @@ async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
         // outside wrapper-managed deployments.
         "binary_sha256": std::env::var("APP_BINARY_SHA256")
             .unwrap_or_else(|_| "unknown".into()),
+        // R28: full build/boot identity — the campaign verifier compares
+        // ALL of these against its manifest (stale-build platform trap).
+        "git_commit": env!("STREAMS_GIT_COMMIT"),
+        "build_unix": env!("STREAMS_BUILD_UNIX"),
+        "boot_id": crate::billing::boot_id(),
+        "compactor_profile": crate::compactor_profile_json(),
         "stream_shed": state.stream_shed.load(std::sync::atomic::Ordering::Relaxed),
         "wedge_shed": state.wedge_shed.load(std::sync::atomic::Ordering::Relaxed),
         "streams_tracked": state.stream_inflight.lock().unwrap().len(),
@@ -1016,6 +1022,40 @@ pub fn router(state: Arc<AppState>) -> Router {
                     crate::history::absorb_pause_flag()
                         .store(on, std::sync::atomic::Ordering::Relaxed);
                     axum::Json(serde_json::json!({"absorb_paused": on})).into_response()
+                },
+            ),
+        )
+        // R27-5: remote crash for field handoff gates. abort() = SIGABRT
+        // — no WAL flush, no fencing handoff, no absorber drain; the
+        // successor must recover from durable state alone. Enabled only
+        // when the deploy sets STREAMS_DEBUG_EXIT=1 (campaign fleets),
+        // and auth-gated like every debug route. Platform `versions
+        // stop` is too graceful to prove crash recovery.
+        .route(
+            "/v1/debug/abort",
+            post(
+                |State(state): State<Arc<AppState>>, headers: HeaderMap| async move {
+                    if !authorized(&state, &headers) {
+                        return err_resp(
+                            StatusCode::UNAUTHORIZED,
+                            "unauthorized",
+                            "bearer token required",
+                        );
+                    }
+                    if std::env::var("STREAMS_DEBUG_EXIT").as_deref() != Ok("1") {
+                        return err_resp(
+                            StatusCode::FORBIDDEN,
+                            "disabled",
+                            "STREAMS_DEBUG_EXIT=1 not set on this deploy",
+                        );
+                    }
+                    tracing::error!("debug abort requested — dying WITHOUT cleanup");
+                    // Give the ack + log line a moment, then die hard.
+                    tokio::spawn(async {
+                        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+                        std::process::abort();
+                    });
+                    axum::Json(serde_json::json!({"aborting": true})).into_response()
                 },
             ),
         )
@@ -1422,7 +1462,18 @@ async fn health_axum(State(state): State<Arc<AppState>>) -> Response {
                 .into_response();
         }
     }
-    "ok".into_response()
+    // R28: identity headers so the campaign verifier can compare the
+    // running build against its manifest without auth (body stays "ok"
+    // for existing probes).
+    (
+        [
+            ("x-streams-git", env!("STREAMS_GIT_COMMIT")),
+            ("x-streams-build-unix", env!("STREAMS_BUILD_UNIX")),
+            ("x-streams-boot-id", crate::billing::boot_id()),
+        ],
+        "ok",
+    )
+        .into_response()
 }
 
 /// GET /operator/billing.json — the billing-readiness surface

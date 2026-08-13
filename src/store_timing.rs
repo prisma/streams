@@ -127,8 +127,12 @@ pub struct BulkGate {
     sem: tokio::sync::Semaphore,
     cap: u32,
     pub inflight_bytes: AtomicI64,
+    /// High-water mark of concurrently held bytes (non-destructive).
+    pub inflight_peak: AtomicI64,
     pub waits: std::sync::atomic::AtomicU64,
     pub wait_ms: std::sync::atomic::AtomicU64,
+    /// Ops whose weight clamped to the whole cap (larger than the gate).
+    pub oversized: std::sync::atomic::AtomicU64,
 }
 
 impl BulkGate {
@@ -137,8 +141,10 @@ impl BulkGate {
             sem: tokio::sync::Semaphore::new(cap_bytes as usize),
             cap: cap_bytes,
             inflight_bytes: AtomicI64::new(0),
+            inflight_peak: AtomicI64::new(0),
             waits: std::sync::atomic::AtomicU64::new(0),
             wait_ms: std::sync::atomic::AtomicU64::new(0),
+            oversized: std::sync::atomic::AtomicU64::new(0),
         }
     }
 
@@ -147,6 +153,9 @@ impl BulkGate {
     /// one try_acquire. The returned hold decrements the inflight gauge
     /// and returns capacity on drop.
     pub async fn acquire(&self, bytes: u64) -> BulkHold<'_> {
+        if bytes > self.cap as u64 {
+            self.oversized.fetch_add(1, Ordering::Relaxed);
+        }
         let w = bytes.min(self.cap as u64).max(1) as u32;
         let p = match self.sem.try_acquire_many(w) {
             Ok(p) => p,
@@ -160,7 +169,8 @@ impl BulkGate {
                 p
             }
         };
-        self.inflight_bytes.fetch_add(w as i64, Ordering::Relaxed);
+        let now = self.inflight_bytes.fetch_add(w as i64, Ordering::Relaxed) + w as i64;
+        self.inflight_peak.fetch_max(now, Ordering::Relaxed);
         BulkHold {
             _p: p,
             gate: self,
@@ -172,8 +182,14 @@ impl BulkGate {
         serde_json::json!({
             "cap_bytes": self.cap,
             "inflight_bytes": self.inflight_bytes.load(Ordering::Relaxed),
+            "inflight_peak_bytes": self.inflight_peak.load(Ordering::Relaxed),
             "waits_total": self.waits.load(Ordering::Relaxed),
             "wait_ms_total": self.wait_ms.load(Ordering::Relaxed),
+            "oversized_total": self.oversized.load(Ordering::Relaxed),
+            // Gated class set is fixed by design: sst only (WAL,
+            // manifest and fleet are ack/liveness paths and never
+            // queue behind compaction).
+            "classes": "sst",
         })
     }
 }

@@ -1765,6 +1765,16 @@ pub(crate) fn telemetry_settings() -> slatedb::config::Settings {
             ..slot.unwrap_or_default()
         });
     }
+    // R28 review: `..Default::default()` silently gave the telemetry
+    // DBs the UPSTREAM compaction worker (concurrency 4, 4
+    // subcompactions, 4x2 MiB read-ahead, 256 MiB rolls) beside the
+    // bounded shard DBs — the exact cross-DB working-set overlap the
+    // R27-4 posture exists to prevent. Every DB shares the one resolved
+    // compactor profile; only the poll cadence stays telemetry-slow
+    // (compactor polls read the manifest, and telemetry is billed to
+    // stay cheap).
+    let mut co = crate::resolved_compactor_options().clone();
+    co.poll_interval = std::time::Duration::from_secs(5);
     slatedb::config::Settings {
         wal_enabled: false,
         flush_interval: Some(std::time::Duration::from_millis(200)),
@@ -1775,6 +1785,7 @@ pub(crate) fn telemetry_settings() -> slatedb::config::Settings {
         l0_sst_size_bytes: 2 * 1024 * 1024,
         l0_max_ssts: 32,
         l0_max_ssts_per_key: 32,
+        compactor_options: Some(co),
         ..Default::default()
     }
 }

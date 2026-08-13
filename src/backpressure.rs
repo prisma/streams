@@ -31,7 +31,7 @@
 //!    snapshot; the request path reads one atomic. Walking the lag map
 //!    per request would put the overload on the hot path.
 
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
 
 /// Thresholds. Zero disables an individual bound.
 ///
@@ -185,8 +185,12 @@ pub fn next_state(engaged: bool, s: &Snapshot, l: &Limits) -> (bool, Option<Caus
 /// each engine (`maintenance_shard_shed`).
 #[derive(Default)]
 pub struct GlobalLatch {
-    engaged: AtomicBool,
-    cause: AtomicU8,
+    /// One word: 0 = released, otherwise the engaged Cause's code
+    /// (1 = instance bytes, 3 = lag). R28 review: two independent
+    /// relaxed atomics let a reader observe engaged=true with a stale
+    /// zero cause and misread an engaged latch as released; a single
+    /// state word makes that torn read structurally impossible.
+    state: AtomicU8,
     /// Times the latch went from released to engaged (not per-request).
     pub engage_count: AtomicU64,
     /// Appends refused while engaged (global + per-shard sheds alike).
@@ -207,10 +211,7 @@ impl GlobalLatch {
     /// read-side ShardBytes filter (which masked a simultaneous global
     /// violation) is structurally unnecessary.
     pub fn engaged(&self) -> Option<Cause> {
-        if !self.engaged.load(Ordering::Relaxed) {
-            return None;
-        }
-        Cause::from_code(self.cause.load(Ordering::Relaxed))
+        Cause::from_code(self.state.load(Ordering::Relaxed))
     }
 
     pub fn note_shed(&self) {
@@ -219,14 +220,15 @@ impl GlobalLatch {
 
     /// Apply an evaluated snapshot. Returns the new engaged state.
     pub fn apply(&self, s: &Snapshot, l: &Limits) -> bool {
-        let was = self.engaged.load(Ordering::Relaxed);
+        let was = self.state.load(Ordering::Relaxed) != 0;
         let (now, cause) = next_state(was, s, l);
         self.last_unabsorbed
             .store(s.unabsorbed_bytes_instance, Ordering::Relaxed);
         self.last_lag_secs.store(s.absorb_lag_secs, Ordering::Relaxed);
-        self.cause
-            .store(cause.map(Cause::code).unwrap_or(0), Ordering::Relaxed);
-        self.engaged.store(now, Ordering::Relaxed);
+        self.state.store(
+            if now { cause.map(Cause::code).unwrap_or(0) } else { 0 },
+            Ordering::Relaxed,
+        );
         if now && !was {
             self.engage_count.fetch_add(1, Ordering::Relaxed);
             tracing::warn!(
