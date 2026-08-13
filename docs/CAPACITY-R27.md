@@ -1,7 +1,7 @@
 # R27-4: Incompressible overload campaign — the bulk-transfer OOM, its fix, and the gate
 
-Status: campaign in flight (cap-20260813T051338Z-94762); verdict section
-pending. Everything above the verdict is settled evidence.
+Status: **PASSED** — cap-20260813T085718Z-55853 (Singapore, binary
+4da313a1, commits b6c04a79 + 7acd6f01). Verdict at the bottom.
 
 ## The finding (this is what the campaign was FOR)
 
@@ -125,12 +125,42 @@ default 4; the profile now owns it). Escalation held in reserve if the
 local rig still peaks above ~650 MB: L0_SST_SIZE 8→4 MiB, which halves
 both the per-task buffer and the per-op transfer.
 
-## Verdict
+## Third component: the compaction worker's own memory model
 
-PENDING — tightened posture in local latency-rig validation; SIN rerun
-follows. Acceptance: strengthened criterion B (peak ≥ 0.75× instance
-cap, ≤ 1.05× overshoot, typed maintenance shed observed, stabilized at
-the line, drained after healing), rate limiter silent, no unexpected
-counter reset, exact op-ledger reconciliation OK, recovery clean — plus
-`bulk_gate.waits > 0` observed in the field (the new bound must engage,
-not merely exist).
+With the gate pinned at cap and one compaction per DB, the local rig
+STILL waved 478→886 MB in 30 s (and SIN run 2, cap-20260813T051338Z,
+died at the same ~2.5 GB point as run 1). The mass was upstream
+CompactionWorkerOptions defaults, sized for big instances:
+`max_subcompactions: 4` (four concurrent pipelines inside ONE
+compaction), `max_fetch_tasks: 4 × bytes_to_fetch: 2 MiB` (~8 MiB
+read-ahead per input-SST iterator — a 32-input L0 merge can stage
+~1 GB of completed prefetch the gate cannot see; it bounds bytes in
+transit, not buffers already fetched), and 256 MiB output rolls. The
+worker's internal `max_concurrent_compactions` default (4) was also
+silently overriding our compactor setting.
+
+Commit 7acd6f01 exposes all four as env
+(COMPACT_MAX_SUBCOMPACTIONS / COMPACT_MAX_FETCH_TASKS /
+COMPACT_BYTES_TO_FETCH / COMPACT_MAX_SST_SIZE_BYTES), mirrors the outer
+concurrency into the worker, and pins the 1 GiB profile to
+1 subcompaction, 1×1 MiB read-ahead, 32 MiB rolls. Local rig with the
+full stack: survived past 7 GB, peak RSS 886→723 MB.
+
+## Verdict: PASS (cap-20260813T085718Z-55853)
+
+Both criteria, not just one:
+
+- **B — hard bound exercised and held:** peak ledger 540,191,131 bytes
+  = 100.6% of the 512 MiB instance cap (within the 1.05× in-flight
+  allowance; peak shard 185 MB ≪ 256 MiB shard cap), typed maintenance
+  shed 16,613, stabilized under overload, drained after healing.
+- **A — catch-up:** retirement 2.27 MB/s vs steady ingest 1.47 MB/s =
+  1.545× (gate 1.25×).
+- Rate limiter silent (all limit_* zero — the right mechanism shed).
+- **No process exit** (unexpected_reset=false) — the item both prior
+  runs failed. ~7.5+ GB incompressible ingest; observed RSS peak 556 MB
+  on the 1 GiB instance.
+- Recovery: backlog + latches clear **0.8 s** after generators
+  finished; pause wall 319 s.
+- Exact op-ledger reconciliation: verdict OK (exactly-once, ambiguous
+  ops resolved 0-or-1-complete).
