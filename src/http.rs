@@ -289,7 +289,20 @@ impl AppState {
         let prefix = shard_for_hash(&self.shard_prefixes, hash);
         let owner = self.effective_owner(&prefix);
         let not_mine = owner.as_ref().is_some_and(|o| *o != self.instance_name);
-        if let Some(e) = { self.shards.read().unwrap().get(&prefix).cloned() } {
+        if let Some(e) = {
+            let guard = self.shards.read().unwrap();
+            let e = guard.get(&prefix).cloned();
+            // R28: adoption signal for the sweep scheduler, recorded
+            // INSIDE the read guard — the scheduler's close takes the
+            // write lock first, so every resolution that could still
+            // hold this engine has already incremented the counter by
+            // the time the close re-checks it.
+            if let Some(ref e) = e {
+                e.external_touches
+                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
+            e
+        } {
             // Possession must yield to the ring. An instance that lost
             // a shard on a rendezvous redraw keeps its engine here, and
             // slatedb fencing only fails its next WRITE — with all

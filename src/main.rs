@@ -886,6 +886,16 @@ fn main() -> anyhow::Result<()> {
     // R28: a certified survival deploy must fail at boot, not OOM at
     // +28 min, if any memory knob was dropped or overridden.
     assert_certified_memprofile();
+    // R28: SWEEP_MAINT_RESIDENT=0 would silently starve every cold
+    // debt class (the rotation would open and immediately close each
+    // indebted engine, so no absorber lives long enough to drain).
+    if std::env::var("SWEEP_MAINT_RESIDENT").ok().and_then(|v| v.parse::<usize>().ok()) == Some(0) {
+        eprintln!(
+            "Error: SWEEP_MAINT_RESIDENT=0 starves all cold-debt drain; \
+             set >= 1 or unset (default 2)"
+        );
+        std::process::exit(1);
+    }
     // Run 13: tokio timer drift of ~230 ms p50 (vs 4 ms for a raw thread)
     // proved the event loop is starved by inline blocking work. On a 1-vCPU
     // box #[tokio::main] means ONE worker — a single blocking poll freezes

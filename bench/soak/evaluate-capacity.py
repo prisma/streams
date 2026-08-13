@@ -58,6 +58,7 @@ def main(region):
         rl = d.get("rate_limit_refusals", {})
         snaps.append({
             "t": ts_of(p),
+            "boot": d.get("boot_id"),
             "ingest": m.get("ingest_frame_bytes_total", 0),
             "absorbed": m.get("absorbed_frame_bytes_total", 0),
             "ledger": sum(sh.get("unabsorbed_frame_bytes", 0)
@@ -96,14 +97,19 @@ def main(region):
     steady_ingest = rate(steady, "ingest")
     steady_rate = sorted(steady_ingest)[len(steady_ingest) // 2] if steady_ingest else 0
 
-    # Catch-up window: after the pause, while the ledger is above the
-    # instance release line, retirement per interval.
+    # Catch-up window (R28): STRICTLY after pause_end — a pre-pause
+    # compaction burst must not satisfy criterion A — and a SUSTAINED
+    # statistic (median over >= 3 intervals), not the single best
+    # interval.
     release_line = INST_CAP * RELEASE_PCT // 100
     peak = max(s["ledger"] for s in snaps)
     peak_shard = max(s["max_shard"] for s in snaps)
-    tail = [s for s in snaps if s["ledger"] > min(release_line, peak // 2)]
+    day0 = pause_end - (pause_end % 86400)
+    tail = [s for s in snaps
+            if s["t"] + day0 >= pause_end
+            and s["ledger"] > min(release_line, peak // 2)]
     catch = rate(tail, "absorbed") if len(tail) >= 2 else []
-    catch_rate = max(catch) if catch else 0
+    catch_rate = sorted(catch)[len(catch) // 2] if len(catch) >= 3 else 0
 
     try:
         reopen = int(open(f"{D}/reopen-secs.txt").read().strip())
@@ -123,6 +129,23 @@ def main(region):
     # declared restart leg.
     resets = sum(1 for a, b in zip(snaps, snaps[1:]) if b["ingest"] < a["ingest"])
     unexpected_reset = resets > (1 if RESTART_LEG else 0)
+    # R28: tie the allowed reset to a BOOT IDENTITY transition, not a
+    # counter heuristic: exactly one boot-id change on a declared
+    # restart leg, zero otherwise (absent boot ids -> heuristic only).
+    boots = [s["boot"] for s in snaps if s.get("boot")]
+    boot_transitions = sum(1 for a, b in zip(boots, boots[1:]) if a != b)
+    if boots:
+        unexpected_reset = unexpected_reset or (
+            boot_transitions != (1 if RESTART_LEG else 0)
+        )
+    # R28: availability probes GATE the campaign — a pause window where
+    # reads or catalog stopped answering is a fail, not a log line.
+    probe_failures = 0
+    try:
+        with open(f"{D}/probes.log") as pf:
+            probe_failures = sum(1 for line in pf if "PROBE FAILURE" in line)
+    except OSError:
+        pass
 
     caps_held = (peak <= INST_CAP * OVERSHOOT_ALLOWANCE
                  and peak_shard <= SHARD_CAP * OVERSHOOT_ALLOWANCE)
@@ -133,7 +156,19 @@ def main(region):
     shed_in_band = any(
         snaps[j]["shed"] > snaps[j - 1]["shed"] for j in band if j > 0
     )
-    stabilized = len(band) >= 2 and shed_in_band and caps_held
+    # R28: "stabilized" must mean HELD AT the line, not passing through
+    # it on the way up: minimum overload residence + the backlog must
+    # not still be rising at the end of the band (net rise across the
+    # band's second half bounded to 5% of the cap).
+    overload_min_secs = int(os.environ.get("CAP_OVERLOAD_MIN_SECS", "300"))
+    band_span = (snaps[band[-1]]["t"] - snaps[band[0]]["t"]) if len(band) >= 2 else 0
+    end_slope_ok = True
+    if len(band) >= 4:
+        half = band[len(band) // 2:]
+        end_slope_ok = (snaps[half[-1]]["ledger"] - snaps[half[0]]["ledger"]
+                        ) <= 0.05 * INST_CAP
+    stabilized = (len(band) >= 2 and shed_in_band and caps_held
+                  and band_span >= overload_min_secs and end_slope_ok)
     drained = not recovery.get("failed")
 
     pass_a = steady_rate > 0 and ratio >= 1.25
@@ -158,11 +193,15 @@ def main(region):
         "reopen_secs": reopen,
         "recovery": recovery.get("cleared_after_secs", {}),
         "reconcile_verdict": rec.get(region, {}).get("verdict"),
+        "band_span_secs": band_span,
+        "boot_transitions": boot_transitions if boots else None,
+        "probe_failures": probe_failures,
         "pass_A_catchup_ratio": pass_a,
         "pass_B_bound_exercised_and_held": pass_b,
         "PASS": (pass_a or pass_b)
                 and rate_limited_total == 0
                 and not unexpected_reset
+                and probe_failures == 0
                 and drained
                 and rec.get(region, {}).get("verdict") == "OK",
     }

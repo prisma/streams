@@ -2091,123 +2091,321 @@ pub fn sweep_resident_engines() -> u64 {
 /// customer engine that raced into the mark window costs one benign
 /// re-open on its next request.
 pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>) {
-    let pre: std::collections::HashSet<String> =
-        state.shards.read().unwrap().keys().cloned().collect();
-    let prefixes: Vec<String> = state.shard_prefixes.clone();
-    for prefix in prefixes {
+    let budget = sweep_resident_budget();
+    let cycle = {
+        static SWEEP_CYCLE: std::sync::atomic::AtomicUsize =
+            std::sync::atomic::AtomicUsize::new(0);
+        SWEEP_CYCLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+    };
+
+    // Phase 1 — audit the scheduler's existing residents. An engine we
+    // opened on an earlier cycle is ours to close ONLY while the
+    // customer has not adopted it: any external_touches movement since
+    // our baseline revokes the scheduler's custody (the engine then
+    // belongs to normal traffic + the ownership-yield path). Debt-free
+    // residents close; indebted residents occupy budget slots in
+    // rotation order.
+    let mut retained = 0usize;
+    // Shards evicted THIS sweep (quantum expiry / over budget) are
+    // skipped by discovery below: without the cooldown the rotation
+    // can re-admit a just-evicted resident ahead of shards that have
+    // never had a turn (fairness hole found by the rotation gate).
+    let mut evicted_now: std::collections::HashSet<String> = std::collections::HashSet::new();
+    let mut marked: Vec<String> = sweep_opened().lock().unwrap().iter().cloned().collect();
+    marked.sort();
+    let n = marked.len();
+    if n > 0 {
+        marked.rotate_left(cycle % n);
+    }
+    for prefix in marked {
         if let Some(owner) = state.effective_owner(&prefix)
             && owner != state.instance_name
         {
-            sweep_opened().lock().unwrap().remove(&prefix);
+            unmark(&prefix);
             continue;
         }
-        let already = state.shards.read().unwrap().contains_key(&prefix);
-        if already {
+        let Some(engine) = state.shards.read().unwrap().get(&prefix).cloned() else {
+            unmark(&prefix);
+            continue;
+        };
+        if touched_since_mark(&prefix, &engine) {
+            // Customer traffic adopted it: no longer scheduler-owned.
+            unmark(&prefix);
             continue;
         }
-        // Opening registers the engine in state.shards; the normal
-        // drain covers it while it stays open.
+        let debt = probe_debt(&engine).await;
+        let cycles = {
+            let mut c = residence_cycles().lock().unwrap();
+            let e = c.entry(prefix.clone()).or_insert(0);
+            *e += 1;
+            *e
+        };
+        if debt.any() && retained < budget && cycles <= residence_quantum() {
+            retained += 1;
+            continue;
+        }
+        if debt.any() {
+            evicted_now.insert(prefix.clone());
+            tracing::info!(
+                unabsorbed_frame_bytes = debt.maintenance,
+                trim_debt_streams = debt.trim,
+                billing = debt.billing,
+                "sweep closes {prefix} over residency budget {budget}; \
+                 debt is durable and rotation returns to it"
+            );
+        }
+        close_scheduler_engine(state, &prefix);
+    }
+
+    // Phase 2 — bounded discovery, STRICTLY one open at a time and only
+    // while budget headroom remains. The R27-2 version opened every
+    // owned shard to look for debt and only then closed the surplus —
+    // reproducing exactly the cross-DB residency overlap the bound
+    // exists to prevent (R28 review). Peak scheduler-held engines is
+    // now retained + the single probe in flight, which never exceeds
+    // the budget because discovery stops at the budget line.
+    let discovery_cap: usize = std::env::var("SWEEP_DISCOVERY_MAX")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(8);
+    let mut discovered = 0usize;
+    let mut owned: Vec<String> = state.shard_prefixes.clone();
+    let n = owned.len();
+    if n > 0 {
+        owned.rotate_left(cycle % n);
+    }
+    for prefix in owned {
+        if retained >= budget || discovered >= discovery_cap {
+            break;
+        }
+        if evicted_now.contains(&prefix) {
+            continue;
+        }
+        if let Some(owner) = state.effective_owner(&prefix)
+            && owner != state.instance_name
+        {
+            unmark(&prefix);
+            continue;
+        }
+        if state.shards.read().unwrap().contains_key(&prefix) {
+            // Already resident (customer traffic or an earlier mark):
+            // the normal drain covers it; phase 1 audits marks.
+            continue;
+        }
         match state
             .gate
             .get_or_open(&prefix, std::time::Duration::from_secs(20))
             .await
         {
-            crate::sharddir::OpenOutcome::Ready(_) => {
-                tracing::info!("outbox sweep opened shard {prefix}");
-            }
+            crate::sharddir::OpenOutcome::Ready(_) => {}
             _ => {
-                tracing::debug!("outbox sweep could not open {prefix} (moving/contended)");
+                tracing::debug!("sweep discovery could not open {prefix} (moving/contended)");
+                continue;
             }
         }
+        discovered += 1;
+        note_sweep_open_peak(retained + 1);
+        let Some(engine) = state.shards.read().unwrap().get(&prefix).cloned() else {
+            continue;
+        };
+        let debt = probe_debt(&engine).await;
+        if debt.any() {
+            tracing::info!(
+                unabsorbed_frame_bytes = debt.maintenance,
+                trim_debt_streams = debt.trim,
+                billing = debt.billing,
+                "sweep retains {prefix} (debt; drain runs while resident)"
+            );
+            mark(&prefix, &engine);
+            retained += 1;
+        } else {
+            close_scheduler_engine(state, &prefix);
+        }
     }
+
+    // The tombstone walk opens engines on demand for terminal
+    // descriptors; bound its residency the same way, page by page.
+    let pre: std::collections::HashSet<String> =
+        state.shards.read().unwrap().keys().cloned().collect();
     tombstone_walk(state).await;
-    // Mark everything that appeared during this cycle (sweep opens +
-    // walk opens), then probe every marked engine and close the
-    // debt-free ones.
-    {
-        let now: Vec<String> = state.shards.read().unwrap().keys().cloned().collect();
-        let mut marks = sweep_opened().lock().unwrap();
-        for p in now {
-            if !pre.contains(&p) {
-                marks.insert(p);
-            }
-        }
-    }
-    // R27-2: the close decision must consider EVERY kind of debt the
-    // engine carries, not only billing rows. A sweep-opened shard with
-    // durable unabsorbed maintenance backlog (or pending physical-trim
-    // debt) that got closed here would sit indefinitely until customer
-    // traffic happened to reopen it — cold owned debt must drain
-    // without requiring a customer request. Retention is BOUNDED
-    // (SWEEP_MAINT_RESIDENT, default 2): keeping every indebted cold
-    // shard open at once would reintroduce the residency pressure the
-    // sweep close exists to prevent, so surplus indebted shards close
-    // now and the rotation below guarantees each one a resident turn on
-    // later sweeps, its absorber draining while it stays open.
-    let maint_resident_bound: usize = std::env::var("SWEEP_MAINT_RESIDENT")
+    bound_walk_residency(state, &pre, budget).await;
+}
+
+/// One residency budget for EVERY debt class the scheduler can retain
+/// an engine for — billing rows, month finals, maintenance backlog,
+/// physical-trim debt (R28 review: an unconditional billing-debt
+/// retention let a `_usage` outage keep every owned shard resident,
+/// bypassing the bound entirely). Validated at startup: zero would
+/// silently starve all cold-debt drain, so it is rejected there.
+pub fn sweep_resident_budget() -> usize {
+    std::env::var("SWEEP_MAINT_RESIDENT")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(2);
-    static SWEEP_CYCLE: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-    let cycle = SWEEP_CYCLE.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let mut marked: Vec<String> = sweep_opened().lock().unwrap().iter().cloned().collect();
-    marked.sort();
-    let n = marked.len();
-    if n > 0 {
-        // Deterministic rotation: a different residency window each
-        // sweep, so no indebted shard is starved by set ordering.
-        marked.rotate_left(cycle % n);
+        .unwrap_or(2)
+        .max(1)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct Debt {
+    billing: bool,
+    maintenance: u64,
+    trim: u64,
+}
+
+impl Debt {
+    fn any(&self) -> bool {
+        self.billing || self.maintenance > 0 || self.trim > 0
     }
-    let mut maint_kept = 0usize;
-    for prefix in marked {
-        if let Some(owner) = state.effective_owner(&prefix)
-            && owner != state.instance_name
-        {
-            sweep_opened().lock().unwrap().remove(&prefix);
+}
+
+/// Probe failures count as debt: discovery must not lose to a
+/// transient scan fault.
+async fn probe_debt(engine: &std::sync::Arc<crate::shard::ShardEngine>) -> Debt {
+    let billing = match engine.usage_dirty_scan().await {
+        Ok(d) => !d.is_empty(),
+        Err(_) => true,
+    } || match engine.usage_month_finals().await {
+        Ok(f) => !f.is_empty(),
+        Err(_) => true,
+    };
+    Debt {
+        billing,
+        maintenance: engine.maintenance_snapshot().unabsorbed_frame_bytes,
+        trim: engine.trim_stats().0 as u64,
+    }
+}
+
+/// prefix -> external_touches at mark time. Any movement means a
+/// customer request resolved this engine since the scheduler opened
+/// it, which revokes the scheduler's right to close it.
+fn touch_baseline() -> &'static std::sync::Mutex<std::collections::HashMap<String, u64>> {
+    static B: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, u64>>> =
+        std::sync::OnceLock::new();
+    B.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+/// prefix -> sweeps spent resident. A resident whose debt outlives its
+/// quantum is closed (the debt is durable) so the rotation can admit
+/// the NEXT indebted shard — without this, phase 1 refills the budget
+/// with the same residents forever and discovery starves everyone
+/// else (caught by sweep_residency_bound_rotates_over_many_indebted_shards).
+fn residence_cycles() -> &'static std::sync::Mutex<std::collections::HashMap<String, usize>> {
+    static C: std::sync::OnceLock<std::sync::Mutex<std::collections::HashMap<String, usize>>> =
+        std::sync::OnceLock::new();
+    C.get_or_init(|| std::sync::Mutex::new(std::collections::HashMap::new()))
+}
+
+fn residence_quantum() -> usize {
+    std::env::var("SWEEP_RESIDENT_QUANTUM")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(4)
+        .max(1)
+}
+
+fn mark(prefix: &str, engine: &std::sync::Arc<crate::shard::ShardEngine>) {
+    sweep_opened().lock().unwrap().insert(prefix.to_string());
+    touch_baseline().lock().unwrap().insert(
+        prefix.to_string(),
+        engine
+            .external_touches
+            .load(std::sync::atomic::Ordering::Relaxed),
+    );
+}
+
+fn unmark(prefix: &str) {
+    sweep_opened().lock().unwrap().remove(prefix);
+    touch_baseline().lock().unwrap().remove(prefix);
+    residence_cycles().lock().unwrap().remove(prefix);
+}
+
+fn touched_since_mark(prefix: &str, engine: &std::sync::Arc<crate::shard::ShardEngine>) -> bool {
+    let base = touch_baseline().lock().unwrap().get(prefix).copied();
+    match base {
+        Some(b) => {
+            engine
+                .external_touches
+                .load(std::sync::atomic::Ordering::Relaxed)
+                != b
+        }
+        // No baseline recorded (marked by an older build or the walk
+        // helper): treat as touched — never close without proof of
+        // custody.
+        None => true,
+    }
+}
+
+/// Peak concurrently scheduler-held engines, for the DST bound gate.
+pub fn sweep_open_peak() -> usize {
+    SWEEP_OPEN_PEAK.load(std::sync::atomic::Ordering::Relaxed)
+}
+pub fn sweep_open_peak_reset() {
+    SWEEP_OPEN_PEAK.store(0, std::sync::atomic::Ordering::Relaxed);
+}
+static SWEEP_OPEN_PEAK: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+fn note_sweep_open_peak(now: usize) {
+    SWEEP_OPEN_PEAK.fetch_max(now, std::sync::atomic::Ordering::Relaxed);
+}
+
+/// Close an engine the scheduler owns. Removal from the map happens
+/// FIRST (no new engine_for resolution can hand it out), then the
+/// touch counter is re-checked: engine_for increments it INSIDE the
+/// map read guard, so any resolution that predates our write lock is
+/// visible here — an adopted engine is reinstated instead of closed.
+/// The residual is a request that resolved before the MARK-time
+/// baseline and is still in flight a whole sweep cycle later; that
+/// window is the ownership-move window, which clients already survive
+/// by replay contract.
+fn close_scheduler_engine(state: &std::sync::Arc<crate::http::AppState>, prefix: &str) {
+    let engine = state.shards.write().unwrap().remove(prefix);
+    let Some(engine) = engine else {
+        unmark(prefix);
+        return;
+    };
+    if touched_since_mark(prefix, &engine) && sweep_opened().lock().unwrap().contains(prefix) {
+        // Adopted between probe and close: put it back untouched.
+        state
+            .shards
+            .write()
+            .unwrap()
+            .insert(prefix.to_string(), engine);
+        unmark(prefix);
+        return;
+    }
+    engine.begin_close();
+    unmark(prefix);
+    tracing::info!("sweep closed shard {prefix}");
+}
+
+/// The tombstone walk resolves engines through the general opener, so
+/// a page dense with terminal descriptors could otherwise accumulate
+/// unbounded residency. Engines that appeared during the walk and
+/// carry no debt close here; indebted ones are marked (they join the
+/// budgeted rotation next cycle, counted against the same budget).
+async fn bound_walk_residency(
+    state: &std::sync::Arc<crate::http::AppState>,
+    pre: &std::collections::HashSet<String>,
+    budget: usize,
+) {
+    let now: Vec<String> = state.shards.read().unwrap().keys().cloned().collect();
+    let mut kept = sweep_opened().lock().unwrap().len();
+    for prefix in now {
+        if pre.contains(&prefix) || sweep_opened().lock().unwrap().contains(&prefix) {
             continue;
         }
         let Some(engine) = state.shards.read().unwrap().get(&prefix).cloned() else {
-            sweep_opened().lock().unwrap().remove(&prefix);
             continue;
         };
-        let debt = match engine.usage_dirty_scan().await {
-            Ok(d) => !d.is_empty(),
-            Err(_) => true, // fail toward keeping discovery alive
-        } || match engine.usage_month_finals().await {
-            Ok(f) => !f.is_empty(),
-            Err(_) => true,
-        };
-        if debt {
-            tracing::info!("outbox sweep keeps {prefix} resident (billing debt pending)");
+        let debt = probe_debt(&engine).await;
+        if debt.any() && kept < budget {
+            mark(&prefix, &engine);
+            kept += 1;
             continue;
         }
-        let maint = engine.maintenance_snapshot().unabsorbed_frame_bytes;
-        let trim_debt = engine.trim_stats().0;
-        if maint > 0 || trim_debt > 0 {
-            if maint_kept < maint_resident_bound {
-                maint_kept += 1;
-                tracing::info!(
-                    unabsorbed_frame_bytes = maint,
-                    trim_debt_streams = trim_debt,
-                    "outbox sweep keeps {prefix} resident (maintenance debt; absorber draining)"
-                );
-                continue;
-            }
-            // Over the residency bound: close — the debt is DURABLE and
-            // the rotation reaches this shard on a later cycle.
-            tracing::info!(
-                unabsorbed_frame_bytes = maint,
-                trim_debt_streams = trim_debt,
-                "outbox sweep closes {prefix} despite maintenance debt \
-                 (residency bound {maint_resident_bound}); rotation returns to it"
-            );
-        }
-        let eng = state.shards.write().unwrap().remove(&prefix);
-        if let Some(e) = eng {
-            e.begin_close();
-        }
-        sweep_opened().lock().unwrap().remove(&prefix);
-        tracing::info!("outbox sweep closed shard {prefix}");
+        // Walk-opened, debt-free (or over budget): close via the same
+        // guarded path — mark first so the touch guard has a baseline.
+        mark(&prefix, &engine);
+        close_scheduler_engine(state, &prefix);
     }
 }
 

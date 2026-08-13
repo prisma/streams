@@ -1026,6 +1026,11 @@ struct InFlightGroup {
 pub struct ShardEngine {
     pub prefix: String,
     pub db: Arc<Db>,
+    /// R28: incremented by engine_for INSIDE the shards-map read guard
+    /// every time a request resolves this engine. The sweep scheduler
+    /// records a baseline at mark time; any movement revokes its right
+    /// to close the engine (customer adoption).
+    pub external_touches: std::sync::atomic::AtomicU64,
     /// Engine-owned maintenance state (R25-A). The durable row in this
     /// shard's DB is authoritative; this is the published mirror,
     /// updated ONLY after the write carrying the row succeeds. Owned by
@@ -1248,6 +1253,7 @@ impl ShardEngine {
         let engine = Arc::new(ShardEngine {
             prefix,
             db,
+            external_touches: std::sync::atomic::AtomicU64::new(0),
             maintenance: std::sync::RwLock::new(initial_maintenance),
             maintenance_shard_shed: std::sync::atomic::AtomicBool::new(false),
             data_store,

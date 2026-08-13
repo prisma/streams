@@ -21361,11 +21361,142 @@ async fn sweep_residency_bound_rotates_over_many_indebted_shards() {
         2,
         "residency bound must hold: got {kept1:?} (bound 2 of 4 indebted)"
     );
-    crate::billing::sweep_owned_outboxes(&state).await;
-    let kept2 = resident(&state);
-    assert_eq!(kept2.len(), 2, "bound must hold on every sweep: {kept2:?}");
-    assert_ne!(
-        kept1, kept2,
-        "rotation must move the residency window between sweeps"
+    // R28: residents hold their slot for SWEEP_RESIDENT_QUANTUM sweeps
+    // (default 4) so each gets real drain time, then expire so the
+    // rotation admits the others. Over quantum+2 further sweeps the
+    // bound must hold EVERY time and the window must both move and
+    // eventually cover all four indebted shards.
+    let mut seen: std::collections::BTreeSet<String> = kept1.iter().cloned().collect();
+    let mut moved = false;
+    for i in 0..12 {
+        crate::billing::sweep_owned_outboxes(&state).await;
+        let kept = resident(&state);
+        assert!(
+            kept.len() <= 2,
+            "bound must hold on sweep {i}: {kept:?}"
+        );
+        if kept != kept1 {
+            moved = true;
+        }
+        seen.extend(kept.into_iter());
+    }
+    assert!(moved, "residency window never moved off {kept1:?}");
+    assert_eq!(
+        seen.len(),
+        4,
+        "every indebted shard must get a residency turn: saw {seen:?}"
     );
+}
+
+/// R28: the scheduler's PEAK concurrently-held engine count must never
+/// exceed the budget — the R27-2 version opened every owned shard to
+/// discover debt and only bounded the post-sweep survivors, which
+/// reproduced the cross-DB residency overlap during the sweep itself.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn sweep_peak_open_never_exceeds_the_budget() {
+    let _serial = sweep_lock().lock().await;
+    let store = mem();
+    let prefixes = vec!["00".to_string(), "01".to_string(), "10".to_string(), "11".to_string()];
+    let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
+    let ct = [("content-type", "application/json")];
+    let mut covered: std::collections::HashSet<String> = Default::default();
+    for i in 0..64 {
+        if covered.len() == 4 {
+            break;
+        }
+        let name = format!("peak-m{i}");
+        let (st, _, _) = hreq(addr, "PUT", &format!("/v1/stream/{name}"), &ct, b"").await;
+        assert!(st == 200 || st == 201);
+        let desc = state.registry.get(&name).await.unwrap().unwrap();
+        let seg = desc.resolve_segment("");
+        let p = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
+        if covered.insert(p) {
+            let (st, _, _) =
+                hreq(addr, "POST", &format!("/v1/stream/{name}"), &ct, br#"[{"n":1}]"#).await;
+            assert!(st == 200 || st == 204);
+        }
+    }
+    assert_eq!(covered.len(), 4);
+    let pref_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
+    drain_billing_clean(&state, &pref_refs).await;
+    let engines: Vec<_> = {
+        let mut m = state.shards.write().unwrap();
+        prefixes.iter().filter_map(|p| m.remove(p)).collect()
+    };
+    for e in engines {
+        e.begin_close();
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+
+    crate::billing::sweep_open_peak_reset();
+    for _ in 0..8 {
+        crate::billing::sweep_owned_outboxes(&state).await;
+    }
+    assert!(
+        crate::billing::sweep_open_peak() <= 2,
+        "peak scheduler-held engines {} exceeded budget 2",
+        crate::billing::sweep_open_peak()
+    );
+}
+
+/// R28: a customer request that races into a sweep-opened engine
+/// revokes the scheduler's custody — the engine must NOT be closed
+/// out from under in-flight traffic. engine_for bumps the touch
+/// counter inside the shards-map read guard; the close re-checks
+/// after taking the write lock.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn customer_race_into_a_sweep_opened_engine_prevents_its_close() {
+    let _serial = sweep_lock().lock().await;
+    let store = mem();
+    let prefixes = vec!["00".to_string(), "01".to_string(), "10".to_string(), "11".to_string()];
+    let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
+    let ct = [("content-type", "application/json")];
+    // One stream with durable backlog on one shard.
+    let mut victim = None;
+    for i in 0..64 {
+        let name = format!("race-m{i}");
+        let (st, _, _) = hreq(addr, "PUT", &format!("/v1/stream/{name}"), &ct, b"").await;
+        assert!(st == 200 || st == 201);
+        let desc = state.registry.get(&name).await.unwrap().unwrap();
+        let seg = desc.resolve_segment("");
+        let p = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
+        let (st, _, _) =
+            hreq(addr, "POST", &format!("/v1/stream/{name}"), &ct, br#"[{"n":1}]"#).await;
+        assert!(st == 200 || st == 204);
+        victim = Some((name, p));
+        break;
+    }
+    let (name, prefix) = victim.unwrap();
+    let pref_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
+    drain_billing_clean(&state, &pref_refs).await;
+    // Cold: close every engine, then let ONE sweep re-open the debtor.
+    let engines: Vec<_> = {
+        let mut m = state.shards.write().unwrap();
+        prefixes.iter().filter_map(|p| m.remove(p)).collect()
+    };
+    for e in engines {
+        e.begin_close();
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    crate::billing::sweep_owned_outboxes(&state).await;
+    assert!(
+        state.shards.read().unwrap().contains_key(&prefix),
+        "sweep must have re-opened the indebted shard {prefix}"
+    );
+    // Customer traffic adopts the engine (append -> engine_for touch).
+    let (st, _, _) =
+        hreq(addr, "POST", &format!("/v1/stream/{name}"), &ct, br#"[{"n":2}]"#).await;
+    assert!(st == 200 || st == 204, "append through the sweep-opened engine: {st}");
+    // Many further sweeps (past budget churn AND the residence
+    // quantum): the adopted engine must survive them all.
+    for _ in 0..8 {
+        crate::billing::sweep_owned_outboxes(&state).await;
+    }
+    assert!(
+        state.shards.read().unwrap().contains_key(&prefix),
+        "adopted engine was closed out from under customer traffic"
+    );
+    // And it still serves: the stream reads back.
+    let (st, _, _) = hreq(addr, "GET", &format!("/v1/stream/{name}"), &[], b"").await;
+    assert_eq!(st, 200, "adopted engine must keep serving reads");
 }
