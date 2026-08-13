@@ -214,6 +214,26 @@ struct Args {
     #[arg(long, env = "COMPACTOR_MAX_CONCURRENT", default_value_t = 4)]
     compactor_max_concurrent: usize,
 
+    /// R27-4: the compaction worker's memory footprint, not its transfer
+    /// rate, is what killed the 1 GiB incompressible campaigns. Upstream
+    /// defaults are sized for big instances: 4 subcompactions x (inputs x
+    /// max_fetch_tasks x bytes_to_fetch) read-ahead let one 32-input L0
+    /// merge stage ~400 MB of completed prefetch buffers — the bulk gate
+    /// caps bytes IN TRANSIT but not buffers already fetched and queued.
+    /// These four expose CompactionWorkerOptions; the compute-1g profile
+    /// pins them small. Defaults match upstream.
+    #[arg(long, env = "COMPACT_MAX_SUBCOMPACTIONS", default_value_t = 4)]
+    compact_max_subcompactions: usize,
+
+    #[arg(long, env = "COMPACT_MAX_FETCH_TASKS", default_value_t = 4)]
+    compact_max_fetch_tasks: usize,
+
+    #[arg(long, env = "COMPACT_BYTES_TO_FETCH", default_value_t = 2 * 1024 * 1024)]
+    compact_bytes_to_fetch: usize,
+
+    #[arg(long, env = "COMPACT_MAX_SST_SIZE_BYTES", default_value_t = 256 * 1024 * 1024)]
+    compact_max_sst_size_bytes: usize,
+
     #[arg(long, env = "WAL_GC_INTERVAL_SECS", default_value_t = 30)]
     wal_gc_interval_secs: u64,
 
@@ -611,6 +631,18 @@ fn shard_settings(args: &Args) -> Settings {
             let mut co = slatedb::config::CompactorOptions::default();
             co.poll_interval = Duration::from_millis(args.compactor_poll_ms);
             co.max_concurrent_compactions = args.compactor_max_concurrent;
+            // R27-4: the embedded worker has its OWN concurrency default
+            // (4) plus per-compaction read-ahead and subcompaction fans;
+            // on memory-tight instances those, not transfer rate, set the
+            // wave amplitude. Mirror the outer concurrency and expose the
+            // worker's memory knobs.
+            let mut w = co.worker.take().unwrap_or_default();
+            w.max_concurrent_compactions = args.compactor_max_concurrent;
+            w.max_subcompactions = args.compact_max_subcompactions;
+            w.max_fetch_tasks = args.compact_max_fetch_tasks;
+            w.bytes_to_fetch = args.compact_bytes_to_fetch;
+            w.max_sst_size = args.compact_max_sst_size_bytes;
+            co.worker = Some(w);
             Some(co)
         },
         garbage_collector_options: {
