@@ -59,7 +59,14 @@ for r in $REGIONS; do
     # stops and deletes the versions first. Do not swallow its output: the
     # first version of this script hid the failure behind >/dev/null and
     # reported a clean teardown that had deleted nothing.
-    run "bunx --bun @prisma/compute-cli@0.39.0 services destroy '$SV' --project '$P' 2>&1 | grep -viE 'resolving|resolved|saved lockfile'"
+    # `|| say WARN`: one flaky destroy must not abort the whole loop
+    # under set -e — the 20260814 teardown died on a transient failure
+    # BEFORE reaching ap-southeast-1, left that region's receipt alive,
+    # and the next campaign's provision refused to start. A missed
+    # delete is an orphan to re-run teardown for; a dead loop is a
+    # wedged campaign pipeline.
+    run "bunx --bun @prisma/compute-cli@0.39.0 services destroy '$SV' --project '$P' 2>&1 | grep -viE 'resolving|resolved|saved lockfile'" \
+      || say "  WARN: service destroy failed for $SV (re-run teardown to retry)"
   done
 
   # bkey-<r>.json holds the *key* id, not the bucket id -- resolve the
@@ -69,15 +76,30 @@ for r in $REGIONS; do
         | python3 -c "import json,sys;print(' '.join(b['id'] for b in json.load(sys.stdin).get('data',[])))" 2>/dev/null || true)
   for b in $BKT; do
     say "  bucket: $b"
-    run "curl -s -o /dev/null -w '    bucket delete: %{http_code}\\n' -X DELETE -H 'Authorization: Bearer $TOKEN' 'https://api.prisma.io/v1/buckets/$b'"
+    run "curl -s -o /dev/null -w '    bucket delete: %{http_code}\\n' --retry 3 --retry-all-errors --retry-delay 4 -X DELETE -H 'Authorization: Bearer $TOKEN' 'https://api.prisma.io/v1/buckets/$b'" \
+      || say "  WARN: bucket delete failed for $b (re-run teardown to retry)"
   done
   [ -z "$BKT" ] && say "  bucket: none found for this project"
 
   say "  project: $P"
-  run "curl -s -w '\\n    project delete: %{http_code}\\n' -X DELETE -H 'Authorization: Bearer $TOKEN' 'https://api.prisma.io/v1/projects/$P'"
-  # R25-G: retire the creation receipt with the project — a receipt for
-  # a deleted project would make a later provision "reuse" a ghost.
-  rm -f "$S/receipts/$r.json"
+  # The receipt is retired ONLY when the project delete confirms 2xx or
+  # 404 (already gone): rm-ing it on a failed delete would let the next
+  # provision create a NEW project while this one still exists — the
+  # silent-orphan variant of the ghost-reuse problem the receipt guards
+  # against. On failure the receipt stays and provision keeps refusing,
+  # which is loud and correct: re-run teardown.
+  if [ "$GO" = "--yes" ]; then
+    PDC=$(curl -s -o /dev/null -w '%{http_code}' --retry 3 --retry-all-errors --retry-delay 4 \
+          -X DELETE -H "Authorization: Bearer $TOKEN" \
+          "https://api.prisma.io/v1/projects/$P") || PDC=000
+    say "    project delete: $PDC"
+    case "$PDC" in
+      2*|404) rm -f "$S/receipts/$r.json";;
+      *) say "  WARN: project delete returned $PDC; receipt kept (re-run teardown)";;
+    esac
+  else
+    say "  would run: project delete + receipt retire for $P"
+  fi
 done
 
 [ "$GO" = "--yes" ] || say "
