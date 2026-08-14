@@ -14,7 +14,8 @@ set -uo pipefail
 SERVER_BIN=${1:?server binary}; OUT=${2:?out dir}
 HERE=$(cd "$(dirname "$0")" && pwd)
 mkdir -p "$OUT"
-KEY=$(cat "$HERE/streamkey.txt")
+# Key lives OUTSIDE the tree (RUNBOOK §12); override with COSTAB_KEY_FILE.
+KEY=$(cat "${COSTAB_KEY_FILE:-${SOAK_HOME:-$HOME/.streams-soak}/costab-streamkey.txt}")
 AUTH=localsoak
 LOAD_SECS=${WEDGE_LOAD_SECS:-720}
 RECOVERY_SECS=${WEDGE_RECOVERY_SECS:-300}

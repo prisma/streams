@@ -217,3 +217,16 @@ Caveat recorded honestly: run 5's pre-pause baseline (575 MB) was
 inflated by residue from the two aborted prior attempts sharing the
 namespace, which made the under-load band generous; the rigorous drain
 evidence is the absolute post-load drain to 3 MB.
+
+## Cost regression on the final profile (R29 item 8)
+
+w10k wide regime, identical load, 600 s steady windows, s3lite request
+ledger; steady-window deltas (defaults -> certified 1 GiB profile):
+PUT 64,227 -> 67,870 (+5.7%), DELETE 57,411 -> 60,868 (+6.0%), LIST
+2,581 -> 2,596 (+0.6%), GET 45,252 -> 40,559 (-10.4%), get_bytes
+-3.5%, put_bytes +0.7%, multipart 0 -> 36 (the 32 MiB rolls). At a
+Class-A ~= 5x Class-B price weighting this is **+4.7% cost units**:
+smaller output rolls cost more compaction Class-A requests, partially
+offset by less read-ahead over-fetch. No monotone growth; the LIST
+economy from the cost review is preserved. Accepted as the price of
+the survival posture on the 1 GiB class.
