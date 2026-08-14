@@ -46,12 +46,31 @@ def decode_next_offset(token):
 def get(url, headers=None, timeout=120, method="GET"):
     req = urllib.request.Request(url, method=method, headers={
         "Authorization": f"Bearer {AUTH}", **(headers or {})})
-    with urllib.request.urlopen(req, timeout=timeout) as r:
-        # r.headers stays an email.message.Message: case-INSENSITIVE
-        # lookup. dict(r.headers) silently made every header read
-        # case-sensitive — fine against an edge that capitalizes,
-        # zero against a local HTTP/1.1 axum that lowercases.
-        return r.status, r.headers, r.read()
+    # R30: one fresh socket per request (urllib has no keep-alive)
+    # walks hundreds of thousands of records and can exhaust macOS
+    # ephemeral ports mid-walk (OSError 49, "Can't assign requested
+    # address") — the rc.1 handoff reconcile died here after every
+    # FIELD criterion had passed. Back off and let TIME_WAIT drain
+    # instead of failing the campaign on a client-local limit.
+    import time as _time
+    last = None
+    for attempt in range(12):
+        try:
+            with urllib.request.urlopen(req, timeout=timeout) as r:
+                # r.headers stays an email.message.Message:
+                # case-INSENSITIVE lookup. dict(r.headers) silently made
+                # every header read case-sensitive — fine against an
+                # edge that capitalizes, zero against a local HTTP/1.1
+                # axum that lowercases.
+                return r.status, r.headers, r.read()
+        except urllib.error.URLError as e:
+            root = getattr(e, "reason", None)
+            if isinstance(root, OSError) and root.errno in (48, 49, 24):
+                last = e
+                _time.sleep(5 + attempt * 5)
+                continue
+            raise
+    raise last
 
 def expand(ranges):
     out = set()

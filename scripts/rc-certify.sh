@@ -34,20 +34,31 @@ done
 echo "== 1/4 local gate =="
 ./scripts/release-gate.sh
 
-echo "== 2/4 release binary identity =="
-cargo zigbuild --release --target x86_64-unknown-linux-musl 2>&1 | tail -1
-RC_SHA=$(shasum -a 256 target/x86_64-unknown-linux-musl/release/streams-slate | cut -d' ' -f1)
-echo "RC binary sha256: $RC_SHA"
+echo "== 2/4 release identity: campaign artifact + commit provenance =="
+# The RC identity is the CAMPAIGN'S uploaded artifact (built by
+# build-upload.sh with STREAMS_GIT_COMMIT + SOURCE_DATE_EPOCH pinned);
+# certify that its manifest commit IS the tagged tree, then require
+# every other campaign to have run the identical sha.
+CAPD="$S/results/$CAP_RUN"
+HEAD_COMMIT=$(git rev-parse HEAD)
+RC_SHA=$(python3 - "$CAPD" "$HEAD_COMMIT" <<'PY'
+import json, sys
+d, head = sys.argv[1], sys.argv[2]
+bins = json.load(open(f"{d}/binaries.json"))
+srv = [(k, v) for k, v in bins.items() if "streams-" in k]
+assert srv, "no server binary in manifest"
+key, meta = srv[0]
+commit = meta.get("gitCommit", "")
+assert commit == head, f"manifest commit {commit[:12]} != HEAD {head[:12]} — campaign did not run this tree"
+print(meta["sha256"])
+PY
+)
+echo "RC binary sha256 (campaign artifact): $RC_SHA"
 
 echo "== 3/4 capacity manifest ($CAP_RUN) =="
-CAPD="$S/results/$CAP_RUN"
 python3 - "$CAPD" "$RC_SHA" <<'PY'
 import json, sys
 d, rc = sys.argv[1], sys.argv[2]
-bins = json.load(open(f"{d}/binaries.json"))
-srv = [v["sha256"] for k, v in bins.items() if "/streams-" in k or k.startswith("bin/streams-")]
-assert srv, "no server binary in manifest"
-assert srv[0] == rc, f"capacity ran {srv[0][:16]}, RC is {rc[:16]} — NOT the release binary"
 v = json.load(open(f"{d}/capacity-verdict.json"))
 assert v.get("PASS") is True, f"capacity verdict not PASS: {v}"
 rec = json.load(open(f"{d}/reconcile.json"))
