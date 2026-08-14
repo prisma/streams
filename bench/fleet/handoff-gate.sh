@@ -38,6 +38,20 @@ jload() { # instance url -> debug/load JSON (empty on failure)
 
 hdr "handoff-$RUN  LB=$LB  peak target=${PEAK_MB}MB"
 
+# 0a) fleet health: a PREVIOUS attempt's aborted owner is a corpse
+# (its supervisor serves the crash diagnostic) until revived with
+# deploy-fleet.sh ONLY=N + urls + lb. Fail here with the remedy
+# instead of dying mid-pause with a curl exit code (R30 attempt 3).
+for i in 1 2 3 4; do
+  U=$(cat "$S/url-fleet-s$i.txt")
+  L=$(curl -s -m 20 "$U/livez" 2>/dev/null | head -c 5 || true)
+  if [ "$L" != "alive" ]; then
+    echo "HANDOFF PRECHECK FAILED: fleet-s$i is not alive ('$L') — revive it:"
+    echo "  ONLY=$i deploy-fleet.sh servers && deploy-fleet.sh urls && deploy-fleet.sh lb"
+    exit 1
+  fi
+done
+
 # 0) readiness: a cold fleet 503s creates while instances claim shard
 # ownership under a fresh data prefix; the generator's create retries
 # are finite, so gate on a probe create succeeding first.
