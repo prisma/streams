@@ -147,7 +147,13 @@ if [ "$ROLE" = server ]; then
   # binary defaults (2000/2500) ARE the field idle-cost posture
   # (docs/TIGRIS-404-COST.md); overriding them here re-arms the idle
   # 404-probe tax the stretch removed.
-  OUT=$(bunx --bun @prisma/compute-cli@0.39.0 deploy --project "$P" ${SVCARG[@]+"${SVCARG[@]}"} \
+  # Transient CLI failures are a recorded platform trap, and under
+  # pipefail a failed deploy died SILENTLY here (the 20260814T133644Z
+  # campaign aborted at "stage: server" with zero diagnostic output).
+  # Retry the deploy a few times and always print what the CLI said.
+  DEPLOYED=0
+  for ATT in 1 2 3; do
+  if OUT=$(bunx --bun @prisma/compute-cli@0.39.0 deploy --project "$P" ${SVCARG[@]+"${SVCARG[@]}"} \
     --region "$R" --path . --http-port 8080 --service-name "soak-server-$R" \
     --env SERVER_BINARY_S3_KEY="bin/streams-$BIN_TAG-x64" \
     --env BIN_S3_ENDPOINT=$BINEP --env BIN_S3_BUCKET=$BINBKT --env BIN_S3_REGION=auto \
@@ -172,14 +178,22 @@ if [ "$ROLE" = server ]; then
     ${MEMFLAGS[@]+"${MEMFLAGS[@]}"} \
     ${SCALEARG[@]+"${SCALEARG[@]}"} \
     ${RESOLVARG[@]+"${RESOLVARG[@]}"} \
-    2>&1 | grep -viE 'resolving|resolved|saved')
+    2>&1 | grep -viE 'resolving|resolved|saved'); then DEPLOYED=1; break; fi
+  echo "deploy attempt $ATT failed for $ROLE-$R:" >&2
+  echo "$OUT" | tail -5 >&2
+  sleep 10
+  done
+  [ "$DEPLOYED" = 1 ] || { echo "deploy failed after 3 attempts for $ROLE-$R" >&2; exit 1; }
 else
   TARGET=$(cat "$S/url-server-$R.txt")
   # An empty BENCH_TIERS env still selects the (empty) tier ramp in
   # awsbench and runs nothing — only pass the var when it has tiers.
   TIERARG=(); [ -n "$BENCH_TIERS" ] && TIERARG=(--env "BENCH_TIERS=$BENCH_TIERS")
   cd "$S/app-gen-$R"
-  OUT=$(bunx --bun @prisma/compute-cli@0.39.0 deploy --project "$P" ${SVCARG[@]+"${SVCARG[@]}"} \
+  # Same retry-with-evidence contract as the server deploy above.
+  DEPLOYED=0
+  for ATT in 1 2 3; do
+  if OUT=$(bunx --bun @prisma/compute-cli@0.39.0 deploy --project "$P" ${SVCARG[@]+"${SVCARG[@]}"} \
     --region "$R" --path . --http-port 8080 --service-name "soak-gen-$R" \
     --env AWSBENCH_S3_KEY="bin/awsbench-$BIN_TAG-x64" \
     --env S3_ENDPOINT=$BINEP --env S3_BUCKET=$BINBKT --env S3_REGION=auto \
@@ -195,7 +209,12 @@ else
     --env BENCH_BATCH=10 --env BENCH_RECORD_BYTES="${SOAK_RECORD_BYTES:-1024}" --env BENCH_CONSUME=true \
     --env BENCH_HOLD=1 --env KEEP_AWAKE=1 \
     ${RESOLVARG[@]+"${RESOLVARG[@]}"} \
-    2>&1 | grep -viE 'resolving|resolved|saved')
+    2>&1 | grep -viE 'resolving|resolved|saved'); then DEPLOYED=1; break; fi
+  echo "deploy attempt $ATT failed for $ROLE-$R:" >&2
+  echo "$OUT" | tail -5 >&2
+  sleep 10
+  done
+  [ "$DEPLOYED" = 1 ] || { echo "deploy failed after 3 attempts for $ROLE-$R" >&2; exit 1; }
 fi
 
 echo "$OUT" | grep -E 'New version|error' | sed "s/^/$ROLE-$R: /" || true
