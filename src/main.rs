@@ -38,8 +38,8 @@ static GLOBAL: mimalloc::MiMalloc = mimalloc::MiMalloc;
 
 use anyhow::Context;
 use clap::Parser;
-use object_store::{ObjectStore, ObjectStoreExt};
 use object_store::aws::{AmazonS3, AmazonS3Builder, S3ConditionalPut};
+use object_store::{ObjectStore, ObjectStoreExt};
 use slatedb::Db;
 use slatedb::config::Settings;
 
@@ -221,7 +221,6 @@ struct Args {
     // shares. R29 review: clap mirrors here parsed but were never read,
     // so a CLI override silently did nothing; removed rather than
     // duplicating the plumbing.
-
     #[arg(long, env = "WAL_GC_INTERVAL_SECS", default_value_t = 30)]
     wal_gc_interval_secs: u64,
 
@@ -570,19 +569,26 @@ impl Args {
 /// identical however the process is driven; clap args mirror the same
 /// env vars for --help discoverability.
 pub fn resolved_compactor_options() -> &'static slatedb::config::CompactorOptions {
-    static CO: std::sync::OnceLock<slatedb::config::CompactorOptions> =
-        std::sync::OnceLock::new();
+    static CO: std::sync::OnceLock<slatedb::config::CompactorOptions> = std::sync::OnceLock::new();
     CO.get_or_init(|| {
         fn env_usize(k: &str, d: usize) -> usize {
-            std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d)
         }
         fn env_u64(k: &str, d: u64) -> u64 {
-            std::env::var(k).ok().and_then(|v| v.parse().ok()).unwrap_or(d)
+            std::env::var(k)
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .unwrap_or(d)
         }
         let conc = env_usize("COMPACTOR_MAX_CONCURRENT", 4);
         let mut co = slatedb::config::CompactorOptions::default();
-        co.poll_interval =
-            Duration::from_millis(env_u64("COMPACTOR_POLL_MS", crate::DEFAULT_COMPACTOR_POLL_MS));
+        co.poll_interval = Duration::from_millis(env_u64(
+            "COMPACTOR_POLL_MS",
+            crate::DEFAULT_COMPACTOR_POLL_MS,
+        ));
         co.max_concurrent_compactions = conc;
         let mut w = co.worker.take().unwrap_or_default();
         w.max_concurrent_compactions = conc;
@@ -873,7 +879,10 @@ mod config_validation_tests {
             crate::http::set_max_body_bytes(pinned + 1).is_err(),
             "the protocol ceiling must not be raisable"
         );
-        assert!(crate::http::set_max_body_bytes(1024).is_err(), "floor holds");
+        assert!(
+            crate::http::set_max_body_bytes(1024).is_err(),
+            "floor holds"
+        );
         assert_eq!(
             crate::http::max_body_bytes(),
             pinned,
@@ -955,7 +964,11 @@ fn main() -> anyhow::Result<()> {
     // R28: SWEEP_MAINT_RESIDENT=0 would silently starve every cold
     // debt class (the rotation would open and immediately close each
     // indebted engine, so no absorber lives long enough to drain).
-    if std::env::var("SWEEP_MAINT_RESIDENT").ok().and_then(|v| v.parse::<usize>().ok()) == Some(0) {
+    if std::env::var("SWEEP_MAINT_RESIDENT")
+        .ok()
+        .and_then(|v| v.parse::<usize>().ok())
+        == Some(0)
+    {
         eprintln!(
             "Error: SWEEP_MAINT_RESIDENT=0 starves all cold-debt drain; \
              set >= 1 or unset (default 2)"

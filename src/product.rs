@@ -416,8 +416,6 @@ pub(crate) enum ProductRoute {
     },
 }
 
-
-
 /// Split a trailing `:verb` off the final segment. Only the known verbs
 /// count — a colon is legal inside a collection name.
 pub(crate) fn strip_verb(path: &str) -> (&str, Option<&str>) {
@@ -3072,7 +3070,10 @@ async fn product_read(
     // R24-D: strict on this route too. The first pass only made
     // malformed NUMERIC values fail; unknown keys and duplicated
     // scalars were still silently accepted here.
-    let q = match strict_query(query, &["cursor", "deliver", "maxBytes", "routingKey", "waitMs"]) {
+    let q = match strict_query(
+        query,
+        &["cursor", "deliver", "maxBytes", "routingKey", "waitMs"],
+    ) {
         Ok(q) => q,
         Err(r) => return r,
     };

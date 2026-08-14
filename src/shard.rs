@@ -4326,10 +4326,11 @@ impl ShardEngine {
         // engine's published state is updated only after the write
         // returns Ok below.
         let maintenance_after = if maintenance_added > 0 || maintenance_retired > 0 {
-            match self
-                .maintenance_snapshot()
-                .apply_delta(maintenance_added, maintenance_retired, now_ms())
-            {
+            match self.maintenance_snapshot().apply_delta(
+                maintenance_added,
+                maintenance_retired,
+                now_ms(),
+            ) {
                 Ok(m) => {
                     wb.put(shard_maint_key(), encode_shard_maint(&m));
                     Some(m)
@@ -5143,7 +5144,10 @@ mod maintenance_tests {
         v1[..8].copy_from_slice(&987_654u64.to_le_bytes());
         v1[8..].copy_from_slice(&42i64.to_le_bytes());
         assert!(
-            matches!(decode_shard_maint_row(&v1), Ok(ShardMaintRow::LegacyPayloadUnit)),
+            matches!(
+                decode_shard_maint_row(&v1),
+                Ok(ShardMaintRow::LegacyPayloadUnit)
+            ),
             "16-byte row must classify as legacy"
         );
         assert!(
@@ -5151,10 +5155,16 @@ mod maintenance_tests {
             "the strict decode must never surface a payload-unit value"
         );
 
-        assert!(decode_shard_maint(&[0u8; 7]).is_err(), "corrupt row must error");
+        assert!(
+            decode_shard_maint(&[0u8; 7]).is_err(),
+            "corrupt row must error"
+        );
         let mut bad = [0u8; 40];
         bad[0] = 99;
-        assert!(decode_shard_maint(&bad).is_err(), "unknown version must error");
+        assert!(
+            decode_shard_maint(&bad).is_err(),
+            "unknown version must error"
+        );
     }
 
     /// R25-A: load semantics against a real DB — present row loads (with
@@ -5166,7 +5176,10 @@ mod maintenance_tests {
             Arc::new(object_store::memory::InMemory::new());
 
         // 1. Present v2 row: loads exactly.
-        let db = Db::builder("m1/shard", store.clone()).build().await.unwrap();
+        let db = Db::builder("m1/shard", store.clone())
+            .build()
+            .await
+            .unwrap();
         let m = ShardMaintenance {
             version: 3,
             unabsorbed_frame_bytes: 555,
@@ -5175,14 +5188,19 @@ mod maintenance_tests {
         };
         let mut wb = WriteBatch::new();
         wb.put(shard_maint_key(), encode_shard_maint(&m));
-        db.write_with_options(wb, &WriteOptions::default()).await.unwrap();
+        db.write_with_options(wb, &WriteOptions::default())
+            .await
+            .unwrap();
         assert_eq!(load_or_rebuild_maintenance(&db).await.unwrap(), m);
         db.close().await.unwrap();
 
         // 2. Present v1 row (payload-unit 777): the value is IGNORED and
         // the ledger is rebuilt from the exact tails (R26-4). The
         // persisted replacement is a v2 row.
-        let db = Db::builder("m2/shard", store.clone()).build().await.unwrap();
+        let db = Db::builder("m2/shard", store.clone())
+            .build()
+            .await
+            .unwrap();
         let mut v1 = [0u8; 16];
         v1[..8].copy_from_slice(&777u64.to_le_bytes());
         let h0 = [9u8; 16];
@@ -5205,19 +5223,31 @@ mod maintenance_tests {
                 ..Default::default()
             }),
         );
-        db.write_with_options(wb, &WriteOptions::default()).await.unwrap();
+        db.write_with_options(wb, &WriteOptions::default())
+            .await
+            .unwrap();
         let got = load_or_rebuild_maintenance(&db).await.unwrap();
         assert_eq!(
             got.unabsorbed_frame_bytes, 300,
             "legacy value must be rebuilt from tails, never converted"
         );
-        assert!(got.last_progress_ms > 0, "rebuilt backlog must start the stall clock");
-        let raw = db.get(shard_maint_key()).await.unwrap().expect("row replaced");
+        assert!(
+            got.last_progress_ms > 0,
+            "rebuilt backlog must start the stall clock"
+        );
+        let raw = db
+            .get(shard_maint_key())
+            .await
+            .unwrap()
+            .expect("row replaced");
         assert_eq!(raw.len(), 40, "the legacy row must be replaced by v2");
         db.close().await.unwrap();
 
         // 3. Missing row: rebuild from dirty index + tails, then persist.
-        let db = Db::builder("m3/shard", store.clone()).build().await.unwrap();
+        let db = Db::builder("m3/shard", store.clone())
+            .build()
+            .await
+            .unwrap();
         let h1 = [1u8; 16];
         let h2 = [2u8; 16];
         let mut wb = WriteBatch::new();
@@ -5238,19 +5268,33 @@ mod maintenance_tests {
                 }),
             );
         }
-        db.write_with_options(wb, &WriteOptions::default()).await.unwrap();
+        db.write_with_options(wb, &WriteOptions::default())
+            .await
+            .unwrap();
         let got = load_or_rebuild_maintenance(&db).await.unwrap();
         assert_eq!(got.unabsorbed_frame_bytes, 700, "rebuild sums tail gauges");
         // And it persisted: a second load takes the row path.
-        let raw = db.get(shard_maint_key()).await.unwrap().expect("row persisted");
-        assert_eq!(decode_shard_maint(&raw).unwrap().unabsorbed_frame_bytes, 700);
+        let raw = db
+            .get(shard_maint_key())
+            .await
+            .unwrap()
+            .expect("row persisted");
+        assert_eq!(
+            decode_shard_maint(&raw).unwrap().unabsorbed_frame_bytes,
+            700
+        );
         db.close().await.unwrap();
 
         // 4. Corrupt row: an engine-open FAILURE, never zero backlog.
-        let db = Db::builder("m4/shard", store.clone()).build().await.unwrap();
+        let db = Db::builder("m4/shard", store.clone())
+            .build()
+            .await
+            .unwrap();
         let mut wb = WriteBatch::new();
         wb.put(shard_maint_key(), vec![9u8; 11]);
-        db.write_with_options(wb, &WriteOptions::default()).await.unwrap();
+        db.write_with_options(wb, &WriteOptions::default())
+            .await
+            .unwrap();
         assert!(
             load_or_rebuild_maintenance(&db).await.is_err(),
             "corrupt maintenance row must fail the open"

@@ -524,8 +524,7 @@ fn acquire_stream_slot(
 
 /// Per-engine maintenance state for /v1/debug/load (R25-C).
 fn maintenance_shards_json(state: &AppState) -> serde_json::Value {
-    let engines: Vec<Arc<ShardEngine>> =
-        state.shards.read().unwrap().values().cloned().collect();
+    let engines: Vec<Arc<ShardEngine>> = state.shards.read().unwrap().values().cloned().collect();
     let now = crate::shard::now_ms();
     let shards_engaged = engines
         .iter()

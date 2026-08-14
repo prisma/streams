@@ -2586,7 +2586,8 @@ async fn naive_get_or_open(
                     st2,
                     crate::shard::ShardConfig::default(),
                     absorb_tx,
-                    None,                    __maint,
+                    None,
+                    __maint,
                 );
                 let _ = tx.send(eng);
             }
@@ -2930,7 +2931,7 @@ async fn idle_engine_store_traffic_is_bounded_by_the_poll_cadence() {
 /// load balancer keeps sending traffic.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn health_reports_unready_when_no_shard_has_ever_opened() {
-    use crate::sharddir::{unready_reason, OpenGate};
+    use crate::sharddir::{OpenGate, unready_reason};
     let _serial = gate_lock().lock().await;
     OpenGate::reset_counters_for_tests();
     assert!(unready_reason().is_none(), "a fresh process is ready");
@@ -3464,7 +3465,8 @@ async fn untouched_streams_absorb_after_restart() {
             store.clone(),
             crate::shard::ShardConfig::default(),
             absorb_tx,
-            None,            __maint,
+            None,
+            __maint,
         );
         for _ in 0..5 {
             append_sized(&engine_a, hash, &key, "", 2 * 1024).await;
@@ -3969,7 +3971,8 @@ async fn a_large_record_absorbs_after_restart_under_default_policy() {
             store.clone(),
             crate::shard::ShardConfig::default(),
             absorb_tx,
-            None,            __maint,
+            None,
+            __maint,
         );
         // One 5 MiB record: above the default 4 MiB byte threshold in
         // truth, 1 KiB in the old estimate.
@@ -4068,7 +4071,8 @@ async fn dirty_scan_retries_until_it_succeeds() {
             store.clone(),
             crate::shard::ShardConfig::default(),
             absorb_tx,
-            None,            __maint,
+            None,
+            __maint,
         );
         append_sized(&engine_a, hash, &key, "", 2 * 1024).await;
         engine_a.begin_close();
@@ -4180,7 +4184,8 @@ async fn sparse_records_rediscovered_after_restart_are_absorbed() {
             store.clone(),
             crate::shard::ShardConfig::default(),
             absorb_tx,
-            None,            __maint,
+            None,
+            __maint,
         );
         append_sized(&engine_a, hash, &key, "", 512).await;
         engine_a.begin_close();
@@ -5141,7 +5146,17 @@ async fn http_rig_full(
     shard_cfg: crate::shard::ShardConfig,
     per_segment_slots: i64,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
-    http_rig_inner(store, prefixes, shard_cfg, per_segment_slots, None, None, None, None).await
+    http_rig_inner(
+        store,
+        prefixes,
+        shard_cfg,
+        per_segment_slots,
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
 }
 
 /// A rig with a NAMED instance so ring ownership is real: setting
@@ -5270,19 +5285,22 @@ async fn http_rig_inner(
                     store.clone(),
                     shard_cfg.clone(),
                     absorb_tx,
-                    None,                    __maint,
+                    None,
+                    __maint,
                 );
                 crate::history::Absorber::start(
                     store,
                     engine.clone(),
                     keys,
-                    absorber_cfg.clone().unwrap_or(crate::history::AbsorberConfig {
-                        threshold_bytes: 1,
-                        threshold_age: std::time::Duration::from_millis(1),
-                        tick: std::time::Duration::from_millis(20),
-                        sweep_every: u32::MAX,
-                        ..Default::default()
-                    }),
+                    absorber_cfg
+                        .clone()
+                        .unwrap_or(crate::history::AbsorberConfig {
+                            threshold_bytes: 1,
+                            threshold_age: std::time::Duration::from_millis(1),
+                            tick: std::time::Duration::from_millis(20),
+                            sweep_every: u32::MAX,
+                            ..Default::default()
+                        }),
                     absorb_rx,
                 );
                 Ok(engine)
@@ -20083,7 +20101,10 @@ async fn maintenance_uses_frame_bytes_not_payload_bytes() {
         let out = w
             .attempt_with_deadline(&engine, hash, &key, "k", &body, None, None)
             .await;
-        assert!(matches!(out, Outcome::Acked { .. }), "append must ack: {out:?}");
+        assert!(
+            matches!(out, Outcome::Acked { .. }),
+            "append must ack: {out:?}"
+        );
         payload_total += body.len() as u64;
     }
 
@@ -20139,7 +20160,12 @@ async fn maintenance_failed_append_group_is_noop() {
         .await;
     assert!(matches!(out, Outcome::Acked { .. }));
     let before_row = crate::shard::decode_shard_maint(
-        &engine.db.get(crate::shard::shard_maint_key()).await.unwrap().unwrap(),
+        &engine
+            .db
+            .get(crate::shard::shard_maint_key())
+            .await
+            .unwrap()
+            .unwrap(),
     )
     .unwrap();
     let before_snap = engine.maintenance_snapshot();
@@ -20155,11 +20181,20 @@ async fn maintenance_failed_append_group_is_noop() {
         !matches!(out, Outcome::Acked { .. }),
         "armed group write must fail, got {out:?}"
     );
-    assert_eq!(engine.group_failures_tripped(), 1, "failpoint must have fired");
+    assert_eq!(
+        engine.group_failures_tripped(),
+        1,
+        "failpoint must have fired"
+    );
 
     // Neither the durable row nor the published state may have moved.
     let after_row = crate::shard::decode_shard_maint(
-        &engine.db.get(crate::shard::shard_maint_key()).await.unwrap().unwrap(),
+        &engine
+            .db
+            .get(crate::shard::shard_maint_key())
+            .await
+            .unwrap()
+            .unwrap(),
     )
     .unwrap();
     assert_eq!(
@@ -20258,10 +20293,18 @@ async fn absorbed_boundary_and_maintenance_retire_atomically() {
     }
     assert!(drained, "retry never retired the backlog");
     let tail = engine.tail_fields(&hash).await.unwrap().unwrap();
-    assert_eq!(tail.absorbed, tail.next, "boundary must have advanced with retirement");
+    assert_eq!(
+        tail.absorbed, tail.next,
+        "boundary must have advanced with retirement"
+    );
     assert_eq!(tail.unabsorbed_bytes, 0, "tail gauge must be drained");
     let row = crate::shard::decode_shard_maint(
-        &engine.db.get(crate::shard::shard_maint_key()).await.unwrap().unwrap(),
+        &engine
+            .db
+            .get(crate::shard::shard_maint_key())
+            .await
+            .unwrap()
+            .unwrap(),
     )
     .unwrap();
     assert_eq!(row.unabsorbed_frame_bytes, 0, "durable row must be drained");
@@ -20273,7 +20316,9 @@ async fn absorbed_boundary_and_maintenance_retire_atomically() {
         .build()
         .await
         .unwrap();
-    let m = crate::shard::load_or_rebuild_maintenance(&db2).await.unwrap();
+    let m = crate::shard::load_or_rebuild_maintenance(&db2)
+        .await
+        .unwrap();
     assert_eq!(
         m.unabsorbed_frame_bytes, 0,
         "complete absorption must restart at zero backlog"
@@ -20309,11 +20354,15 @@ async fn mixed_append_absorb_group_refreshes_the_progress_clock() {
     let backlog0 = tail0.unabsorbed_bytes;
     assert!(backlog0 > 0);
     let row_before = crate::shard::decode_shard_maint(
-        &engine.db.get(crate::shard::shard_maint_key()).await.unwrap().unwrap(),
+        &engine
+            .db
+            .get(crate::shard::shard_maint_key())
+            .await
+            .unwrap()
+            .unwrap(),
     )
     .unwrap();
-    let ingest0 =
-        crate::shard::INGEST_FRAME_BYTES_TOTAL.load(std::sync::atomic::Ordering::Relaxed);
+    let ingest0 = crate::shard::INGEST_FRAME_BYTES_TOTAL.load(std::sync::atomic::Ordering::Relaxed);
     let absorbed0 =
         crate::shard::ABSORBED_FRAME_BYTES_TOTAL.load(std::sync::atomic::Ordering::Relaxed);
     // A millisecond clock needs real separation to prove a refresh.
@@ -20337,14 +20386,22 @@ async fn mixed_append_absorb_group_refreshes_the_progress_clock() {
     engine.submit_absorbed(hash, tail0.next, backlog0).await;
     drop(hold);
     let out = rider.await.unwrap();
-    assert!(matches!(out, Outcome::Acked { .. }), "rider append: {out:?}");
+    assert!(
+        matches!(out, Outcome::Acked { .. }),
+        "rider append: {out:?}"
+    );
 
     let tail1 = engine.tail_fields(&hash).await.unwrap().unwrap();
     assert_eq!(tail1.absorbed, tail0.next, "boundary must have advanced");
     let appended_new = tail1.unabsorbed_bytes;
     assert!(appended_new > 0, "the rider's frames are the new backlog");
     let row_after = crate::shard::decode_shard_maint(
-        &engine.db.get(crate::shard::shard_maint_key()).await.unwrap().unwrap(),
+        &engine
+            .db
+            .get(crate::shard::shard_maint_key())
+            .await
+            .unwrap()
+            .unwrap(),
     )
     .unwrap();
     assert_eq!(
@@ -20364,8 +20421,7 @@ async fn mixed_append_absorb_group_refreshes_the_progress_clock() {
     // Process totals move by ACTUAL work, not net: the group retired
     // backlog0 and ingested the rider's frames ("grew by at least" —
     // the totals are process-global and the suite runs in parallel).
-    let ingest1 =
-        crate::shard::INGEST_FRAME_BYTES_TOTAL.load(std::sync::atomic::Ordering::Relaxed);
+    let ingest1 = crate::shard::INGEST_FRAME_BYTES_TOTAL.load(std::sync::atomic::Ordering::Relaxed);
     let absorbed1 =
         crate::shard::ABSORBED_FRAME_BYTES_TOTAL.load(std::sync::atomic::Ordering::Relaxed);
     assert!(
@@ -20402,7 +20458,12 @@ async fn balanced_append_absorb_group_still_writes_progress() {
     let backlog0 = tail0.unabsorbed_bytes;
     assert!(backlog0 > 0);
     let row_before = crate::shard::decode_shard_maint(
-        &engine.db.get(crate::shard::shard_maint_key()).await.unwrap().unwrap(),
+        &engine
+            .db
+            .get(crate::shard::shard_maint_key())
+            .await
+            .unwrap()
+            .unwrap(),
     )
     .unwrap();
     tokio::time::sleep(std::time::Duration::from_millis(40)).await;
@@ -20425,7 +20486,10 @@ async fn balanced_append_absorb_group_still_writes_progress() {
     engine.submit_absorbed(hash, tail0.next, backlog0).await;
     drop(hold);
     let out = rider.await.unwrap();
-    assert!(matches!(out, Outcome::Acked { .. }), "rider append: {out:?}");
+    assert!(
+        matches!(out, Outcome::Acked { .. }),
+        "rider append: {out:?}"
+    );
 
     let tail1 = engine.tail_fields(&hash).await.unwrap().unwrap();
     assert_eq!(tail1.absorbed, tail0.next);
@@ -20434,7 +20498,12 @@ async fn balanced_append_absorb_group_still_writes_progress() {
         "identical payload lengths encode to identical frame bytes"
     );
     let row_after = crate::shard::decode_shard_maint(
-        &engine.db.get(crate::shard::shard_maint_key()).await.unwrap().unwrap(),
+        &engine
+            .db
+            .get(crate::shard::shard_maint_key())
+            .await
+            .unwrap()
+            .unwrap(),
     )
     .unwrap();
     assert!(
@@ -20468,7 +20537,12 @@ async fn over_retirement_fails_the_group_and_preserves_the_boundary() {
     let tail0 = engine.tail_fields(&hash).await.unwrap().unwrap();
     let backlog0 = tail0.unabsorbed_bytes;
     let row_before = crate::shard::decode_shard_maint(
-        &engine.db.get(crate::shard::shard_maint_key()).await.unwrap().unwrap(),
+        &engine
+            .db
+            .get(crate::shard::shard_maint_key())
+            .await
+            .unwrap()
+            .unwrap(),
     )
     .unwrap();
 
@@ -20488,7 +20562,9 @@ async fn over_retirement_fails_the_group_and_preserves_the_boundary() {
     while engine.appends_enqueued() < base + 1 {
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
     }
-    engine.submit_absorbed(hash, tail0.next, backlog0 + 999).await;
+    engine
+        .submit_absorbed(hash, tail0.next, backlog0 + 999)
+        .await;
     drop(hold);
     let out = rider.await.unwrap();
     assert!(
@@ -20501,7 +20577,12 @@ async fn over_retirement_fails_the_group_and_preserves_the_boundary() {
     assert_eq!(tail1.next, tail0.next, "the rider append must not commit");
     assert_eq!(tail1.unabsorbed_bytes, backlog0, "ledger must not move");
     let row_after = crate::shard::decode_shard_maint(
-        &engine.db.get(crate::shard::shard_maint_key()).await.unwrap().unwrap(),
+        &engine
+            .db
+            .get(crate::shard::shard_maint_key())
+            .await
+            .unwrap()
+            .unwrap(),
     )
     .unwrap();
     assert_eq!(row_after, row_before, "durable row must not move");
@@ -20511,7 +20592,10 @@ async fn over_retirement_fails_the_group_and_preserves_the_boundary() {
     let out = w
         .attempt_with_deadline(&engine, hash, &key, "k", "alive", None, None)
         .await;
-    assert!(matches!(out, Outcome::Acked { .. }), "engine wedged: {out:?}");
+    assert!(
+        matches!(out, Outcome::Acked { .. }),
+        "engine wedged: {out:?}"
+    );
     let tail2 = engine.tail_fields(&hash).await.unwrap().unwrap();
     engine
         .submit_absorbed(hash, tail2.next, tail2.unabsorbed_bytes)
@@ -20588,13 +20672,21 @@ async fn legacy_rows_are_rebuilt_and_legacy_tails_repaired_on_open() {
         maint.unabsorbed_frame_bytes, exact_bytes,
         "ledger must be the actual frame sum — not the legacy 999999999"
     );
-    let raw_tail = db.get(crate::shard::tail_key(&hash)).await.unwrap().unwrap();
+    let raw_tail = db
+        .get(crate::shard::tail_key(&hash))
+        .await
+        .unwrap()
+        .unwrap();
     let repaired = crate::shard::decode_tail_for_tests(&raw_tail).unwrap();
     assert_eq!(
         repaired.unabsorbed_bytes, exact_bytes,
         "the durable tail must be repaired to the exact gauge"
     );
-    let raw_row = db.get(crate::shard::shard_maint_key()).await.unwrap().unwrap();
+    let raw_row = db
+        .get(crate::shard::shard_maint_key())
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(raw_row.len(), 40, "legacy row must be replaced by v2");
 
     // Follow-through: a full advance retires exactly under the checked
@@ -20770,7 +20862,7 @@ async fn overloaded_engine_sheds_while_sibling_admits() {
 /// no-progress age at bay; zero progress trips the lag bound.
 #[test]
 fn progress_clock_trips_only_without_progress() {
-    use crate::backpressure::{next_state, Limits, Snapshot};
+    use crate::backpressure::{Limits, Snapshot, next_state};
     let l = Limits {
         absorb_lag_secs: 60,
         release_pct: 75,
@@ -20785,13 +20877,19 @@ fn progress_clock_trips_only_without_progress() {
         m = m.apply_delta(1_000, 500, now).unwrap();
         let stall = m.no_progress_secs(now + 5_000);
         assert!(stall <= 5, "stall {stall}s despite continuous progress");
-        let snap = Snapshot { absorb_lag_secs: stall, ..Default::default() };
+        let snap = Snapshot {
+            absorb_lag_secs: stall,
+            ..Default::default()
+        };
         assert_eq!(next_state(false, &snap, &l), (false, None));
     }
     // No progress: the stall grows past the bound and trips.
     let stall = m.no_progress_secs(now + 120_000);
     assert!(stall > 60);
-    let snap = Snapshot { absorb_lag_secs: stall, ..Default::default() };
+    let snap = Snapshot {
+        absorb_lag_secs: stall,
+        ..Default::default()
+    };
     assert!(matches!(
         next_state(false, &snap, &l),
         (true, Some(crate::backpressure::Cause::LagSecs))
@@ -20849,11 +20947,17 @@ async fn raw_hierarchical_append_sheds_typed_503_under_backlog() {
         br#"[{"n":1}]"#,
     )
     .await;
-    assert!(st == 200 || st == 204, "baseline append through the wildcard route, got {st}");
+    assert!(
+        st == 200 || st == 204,
+        "baseline append through the wildcard route, got {st}"
+    );
 
     let desc = state.registry.get(name).await.unwrap().unwrap();
     let seg = desc.resolve_segment("");
-    let engine = state.engine_for_scaler(&seg.shard_route).await.expect("engine");
+    let engine = state
+        .engine_for_scaler(&seg.shard_route)
+        .await
+        .expect("engine");
     inflate_ledger(&engine);
     let (st, hdrs, body) = hreq(
         addr,
@@ -20887,7 +20991,10 @@ async fn raw_hierarchical_append_sheds_typed_503_under_backlog() {
         br#"[{"n":3}]"#,
     )
     .await;
-    assert!(st == 200 || st == 204, "drained shard must readmit, got {st}");
+    assert!(
+        st == 200 || st == 204,
+        "drained shard must readmit, got {st}"
+    );
 }
 
 /// R26-5b: after a product split, child A's engine over the bound sheds
@@ -20920,7 +21027,10 @@ async fn split_child_sheds_while_sibling_child_admits() {
             addr,
             "POST",
             "/v1/streams/shed-split/records",
-            &[("prisma-encryption-key", PRISMA_KEY), ("prisma-routing-key", k)],
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", k),
+            ],
             body.as_bytes(),
         )
         .await;
@@ -20957,7 +21067,10 @@ async fn split_child_sheds_while_sibling_child_admits() {
         addr,
         "POST",
         "/v1/streams/shed-split/records",
-        &[("prisma-encryption-key", PRISMA_KEY), ("prisma-routing-key", ka)],
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", ka),
+        ],
         format!("{{\"k\":\"{ka}\"}}").as_bytes(),
     )
     .await;
@@ -20970,22 +21083,34 @@ async fn split_child_sheds_while_sibling_child_admits() {
         addr,
         "POST",
         "/v1/streams/shed-split/records",
-        &[("prisma-encryption-key", PRISMA_KEY), ("prisma-routing-key", kb)],
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", kb),
+        ],
         format!("{{\"k\":\"{kb}\"}}").as_bytes(),
     )
     .await;
-    assert!(st == 200 || st == 204, "sibling child must keep admitting, got {st}");
+    assert!(
+        st == 200 || st == 204,
+        "sibling child must keep admitting, got {st}"
+    );
 
     e0.publish_maintenance(crate::shard::ShardMaintenance::default());
     let (st, _, _) = preq(
         addr,
         "POST",
         "/v1/streams/shed-split/records",
-        &[("prisma-encryption-key", PRISMA_KEY), ("prisma-routing-key", ka)],
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", ka),
+        ],
         format!("{{\"k\":\"{ka}\"}}").as_bytes(),
     )
     .await;
-    assert!(st == 200 || st == 204, "drained child must readmit, got {st}");
+    assert!(
+        st == 200 || st == 204,
+        "drained child must readmit, got {st}"
+    );
 }
 
 /// R26-5c: ownership replay OUTRANKS a locally latched engine. When the
@@ -21007,7 +21132,10 @@ async fn ownership_replay_wins_over_a_latched_local_engine() {
     let name = "replay-x";
     let desc = state.registry.get(name).await.unwrap().unwrap();
     let seg = desc.resolve_segment("");
-    let engine = state.engine_for_scaler(&seg.shard_route).await.expect("engine");
+    let engine = state
+        .engine_for_scaler(&seg.shard_route)
+        .await
+        .expect("engine");
     inflate_ledger(&engine);
     let (st, _, body) = hreq(addr, "POST", "/v1/stream/replay-x", &ct, br#"[{"n":2}]"#).await;
     assert_eq!(st, 503);
@@ -21054,7 +21182,10 @@ async fn first_request_waits_for_restoration_then_sees_the_restored_ledger() {
     let desc = state1.registry.get("restore-x").await.unwrap().unwrap();
     let seg = desc.resolve_segment("");
     let prefix = crate::registry::shard_for_hash(&state1.shard_prefixes, &seg.shard_route);
-    let engine1 = state1.engine_for_scaler(&seg.shard_route).await.expect("engine");
+    let engine1 = state1
+        .engine_for_scaler(&seg.shard_route)
+        .await
+        .expect("engine");
     let fat = crate::shard::ShardMaintenance {
         version: 99,
         unabsorbed_frame_bytes: 300 * 1024 * 1024,
@@ -21062,7 +21193,10 @@ async fn first_request_waits_for_restoration_then_sees_the_restored_ledger() {
         last_progress_ms: 1,
     };
     let mut wb = slatedb::WriteBatch::new();
-    wb.put(crate::shard::shard_maint_key(), crate::shard::encode_shard_maint(&fat));
+    wb.put(
+        crate::shard::shard_maint_key(),
+        crate::shard::encode_shard_maint(&fat),
+    );
     engine1
         .db
         .write_with_options(wb, &slatedb::config::WriteOptions::default())
@@ -21114,7 +21248,10 @@ async fn reserved_streams_append_through_a_latched_engine() {
     let name = "cust-r";
     let desc = state.registry.get(name).await.unwrap().unwrap();
     let seg = desc.resolve_segment("");
-    let engine = state.engine_for_scaler(&seg.shard_route).await.expect("engine");
+    let engine = state
+        .engine_for_scaler(&seg.shard_route)
+        .await
+        .expect("engine");
     inflate_ledger(&engine);
     let (st, _, _) = hreq(addr, "POST", "/v1/stream/cust-r", &ct, br#"[{"n":2}]"#).await;
     assert_eq!(st, 503, "customer stream on the latched engine must shed");
@@ -21137,7 +21274,10 @@ async fn reserved_streams_append_through_a_latched_engine() {
         !body.contains("maintenance_backpressure"),
         "reserved stream shed by the maintenance gate: {body}"
     );
-    assert!(st == 200 || st == 204, "system-of-record write must pass the latch, got {st}: {body}");
+    assert!(
+        st == 200 || st == 204,
+        "system-of-record write must pass the latch, got {st}: {body}"
+    );
 }
 
 /// R26-7: /v1/debug/load carries what a campaign needs to attribute a
@@ -21171,8 +21311,7 @@ async fn debug_load_reports_typed_limiter_and_frame_totals() {
     // One request over the record-bucket CAPACITY (5,000/s x 2 s burst)
     // trips the ordinary limiter — the refusal must carry its own code
     // and count under its own counter, never the maintenance one.
-    let over: Vec<serde_json::Value> =
-        (0..10_001).map(|n| serde_json::json!({"n": n})).collect();
+    let over: Vec<serde_json::Value> = (0..10_001).map(|n| serde_json::json!({"n": n})).collect();
     let (st, _, body) = hreq(
         addr,
         "POST",
@@ -21194,7 +21333,10 @@ async fn debug_load_reports_typed_limiter_and_frame_totals() {
     let (_, _, body) = hreq(addr, "GET", "/v1/debug/load", &[], b"").await;
     let after = load(&body);
     assert!(
-        after["rate_limit_refusals"]["limit_records_per_sec"].as_u64().unwrap() > rl_before,
+        after["rate_limit_refusals"]["limit_records_per_sec"]
+            .as_u64()
+            .unwrap()
+            > rl_before,
         "the refusal must count under its own code"
     );
     // (appends_shed equality is deliberately NOT asserted: the counter
@@ -21214,10 +21356,7 @@ fn sweep_lock() -> &'static tokio::sync::Mutex<()> {
 
 /// Drain billing debt until the sweep's own probes read clean, so the
 /// retention decision under test is the MAINTENANCE one.
-async fn drain_billing_clean(
-    state: &Arc<crate::http::AppState>,
-    prefixes: &[&str],
-) {
+async fn drain_billing_clean(state: &Arc<crate::http::AppState>, prefixes: &[&str]) {
     for _ in 0..200 {
         let _ = crate::billing::drain_once(state).await;
         let mut clean = true;
@@ -21225,8 +21364,16 @@ async fn drain_billing_clean(
             let Some(e) = state.shards.read().unwrap().get(*p).cloned() else {
                 continue;
             };
-            let dirty = e.usage_dirty_scan().await.map(|d| !d.is_empty()).unwrap_or(true);
-            let finals = e.usage_month_finals().await.map(|f| !f.is_empty()).unwrap_or(true);
+            let dirty = e
+                .usage_dirty_scan()
+                .await
+                .map(|d| !d.is_empty())
+                .unwrap_or(true);
+            let finals = e
+                .usage_month_finals()
+                .await
+                .map(|f| !f.is_empty())
+                .unwrap_or(true);
             if dirty || finals {
                 clean = false;
             }
@@ -21287,7 +21434,8 @@ async fn cold_shard_maintenance_debt_survives_the_sweep_and_drains() {
     assert_eq!(dirty.len(), 1, "exactly one indebted stream expected");
     let hash = dirty[0].0;
     let tail = kept.tail_fields(&hash).await.unwrap().unwrap();
-    kept.submit_absorbed(hash, tail.next, tail.unabsorbed_bytes).await;
+    kept.submit_absorbed(hash, tail.next, tail.unabsorbed_bytes)
+        .await;
     let mut drained = false;
     for _ in 0..400 {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -21313,7 +21461,12 @@ async fn cold_shard_maintenance_debt_survives_the_sweep_and_drains() {
 async fn sweep_residency_bound_rotates_over_many_indebted_shards() {
     let _serial = sweep_lock().lock().await;
     let store = mem();
-    let prefixes = vec!["00".to_string(), "01".to_string(), "10".to_string(), "11".to_string()];
+    let prefixes = vec![
+        "00".to_string(),
+        "01".to_string(),
+        "10".to_string(),
+        "11".to_string(),
+    ];
     let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
     let ct = [("content-type", "application/json")];
     // Streams covering every physical shard.
@@ -21329,8 +21482,14 @@ async fn sweep_residency_bound_rotates_over_many_indebted_shards() {
         let seg = desc.resolve_segment("");
         let p = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
         if covered.insert(p) {
-            let (st, _, _) =
-                hreq(addr, "POST", &format!("/v1/stream/{name}"), &ct, br#"[{"n":1}]"#).await;
+            let (st, _, _) = hreq(
+                addr,
+                "POST",
+                &format!("/v1/stream/{name}"),
+                &ct,
+                br#"[{"n":1}]"#,
+            )
+            .await;
             assert!(st == 200 || st == 204);
         }
     }
@@ -21372,10 +21531,7 @@ async fn sweep_residency_bound_rotates_over_many_indebted_shards() {
     for i in 0..12 {
         crate::billing::sweep_owned_outboxes(&state).await;
         let kept = resident(&state);
-        assert!(
-            kept.len() <= 2,
-            "bound must hold on sweep {i}: {kept:?}"
-        );
+        assert!(kept.len() <= 2, "bound must hold on sweep {i}: {kept:?}");
         if kept != kept1 {
             moved = true;
         }
@@ -21397,7 +21553,12 @@ async fn sweep_residency_bound_rotates_over_many_indebted_shards() {
 async fn sweep_peak_open_never_exceeds_the_budget() {
     let _serial = sweep_lock().lock().await;
     let store = mem();
-    let prefixes = vec!["00".to_string(), "01".to_string(), "10".to_string(), "11".to_string()];
+    let prefixes = vec![
+        "00".to_string(),
+        "01".to_string(),
+        "10".to_string(),
+        "11".to_string(),
+    ];
     let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
     let ct = [("content-type", "application/json")];
     let mut covered: std::collections::HashSet<String> = Default::default();
@@ -21412,8 +21573,14 @@ async fn sweep_peak_open_never_exceeds_the_budget() {
         let seg = desc.resolve_segment("");
         let p = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
         if covered.insert(p) {
-            let (st, _, _) =
-                hreq(addr, "POST", &format!("/v1/stream/{name}"), &ct, br#"[{"n":1}]"#).await;
+            let (st, _, _) = hreq(
+                addr,
+                "POST",
+                &format!("/v1/stream/{name}"),
+                &ct,
+                br#"[{"n":1}]"#,
+            )
+            .await;
             assert!(st == 200 || st == 204);
         }
     }
@@ -21449,7 +21616,12 @@ async fn sweep_peak_open_never_exceeds_the_budget() {
 async fn customer_race_into_a_sweep_opened_engine_prevents_its_close() {
     let _serial = sweep_lock().lock().await;
     let store = mem();
-    let prefixes = vec!["00".to_string(), "01".to_string(), "10".to_string(), "11".to_string()];
+    let prefixes = vec![
+        "00".to_string(),
+        "01".to_string(),
+        "10".to_string(),
+        "11".to_string(),
+    ];
     let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
     let ct = [("content-type", "application/json")];
     // One stream with durable backlog on one shard.
@@ -21461,8 +21633,14 @@ async fn customer_race_into_a_sweep_opened_engine_prevents_its_close() {
         let desc = state.registry.get(&name).await.unwrap().unwrap();
         let seg = desc.resolve_segment("");
         let p = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
-        let (st, _, _) =
-            hreq(addr, "POST", &format!("/v1/stream/{name}"), &ct, br#"[{"n":1}]"#).await;
+        let (st, _, _) = hreq(
+            addr,
+            "POST",
+            &format!("/v1/stream/{name}"),
+            &ct,
+            br#"[{"n":1}]"#,
+        )
+        .await;
         assert!(st == 200 || st == 204);
         victim = Some((name, p));
         break;
@@ -21485,9 +21663,18 @@ async fn customer_race_into_a_sweep_opened_engine_prevents_its_close() {
         "sweep must have re-opened the indebted shard {prefix}"
     );
     // Customer traffic adopts the engine (append -> engine_for touch).
-    let (st, _, _) =
-        hreq(addr, "POST", &format!("/v1/stream/{name}"), &ct, br#"[{"n":2}]"#).await;
-    assert!(st == 200 || st == 204, "append through the sweep-opened engine: {st}");
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        &format!("/v1/stream/{name}"),
+        &ct,
+        br#"[{"n":2}]"#,
+    )
+    .await;
+    assert!(
+        st == 200 || st == 204,
+        "append through the sweep-opened engine: {st}"
+    );
     // Many further sweeps (past budget churn AND the residence
     // quantum): the adopted engine must survive them all.
     for _ in 0..8 {
@@ -21511,13 +21698,17 @@ async fn customer_race_into_a_sweep_opened_engine_prevents_its_close() {
 async fn custody_declines_on_prior_external_use() {
     let _serial = sweep_lock().lock().await;
     let store = mem();
-    let prefixes = vec!["00".to_string(), "01".to_string(), "10".to_string(), "11".to_string()];
+    let prefixes = vec![
+        "00".to_string(),
+        "01".to_string(),
+        "10".to_string(),
+        "11".to_string(),
+    ];
     let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/pre-mark-1", &ct, b"").await;
     assert!(st == 200 || st == 201);
-    let (st, _, _) =
-        hreq(addr, "POST", "/v1/stream/pre-mark-1", &ct, br#"[{"n":1}]"#).await;
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/pre-mark-1", &ct, br#"[{"n":1}]"#).await;
     assert!(st == 200 || st == 204);
     let desc = state.registry.get("pre-mark-1").await.unwrap().unwrap();
     let seg = desc.resolve_segment("");
@@ -21555,7 +21746,9 @@ async fn custody_declines_on_prior_external_use() {
         "engine with prior external use must never be sweep-closed"
     );
     assert_eq!(
-        engine.sweep_custody.load(std::sync::atomic::Ordering::Relaxed),
+        engine
+            .sweep_custody
+            .load(std::sync::atomic::Ordering::Relaxed),
         0,
         "custody must not be installed over external history"
     );
@@ -21569,7 +21762,12 @@ async fn custody_declines_on_prior_external_use() {
 async fn internal_touch_does_not_leak_an_engine_from_the_rotation() {
     let _serial = sweep_lock().lock().await;
     let store = mem();
-    let prefixes = vec!["00".to_string(), "01".to_string(), "10".to_string(), "11".to_string()];
+    let prefixes = vec![
+        "00".to_string(),
+        "01".to_string(),
+        "10".to_string(),
+        "11".to_string(),
+    ];
     let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/itouch-1", &ct, b"").await;
@@ -21598,14 +21796,18 @@ async fn internal_touch_does_not_leak_an_engine_from_the_rotation() {
         .get(&prefix)
         .cloned()
         .expect("sweep must retain the indebted shard");
-    let custody0 = engine.sweep_custody.load(std::sync::atomic::Ordering::Relaxed);
+    let custody0 = engine
+        .sweep_custody
+        .load(std::sync::atomic::Ordering::Relaxed);
     assert_ne!(custody0, 0, "sweep must hold custody of its resident");
     // Maintenance-style internal touches: must NOT revoke custody.
     for _ in 0..3 {
         let _ = state.engine_for_quiet(&seg.shard_route).await.unwrap();
     }
     assert_eq!(
-        engine.sweep_custody.load(std::sync::atomic::Ordering::Relaxed),
+        engine
+            .sweep_custody
+            .load(std::sync::atomic::Ordering::Relaxed),
         custody0,
         "internal resolution must not revoke scheduler custody"
     );
@@ -21634,12 +21836,14 @@ async fn internal_touch_does_not_leak_an_engine_from_the_rotation() {
 async fn tombstone_walk_peak_residency_stays_under_the_budget() {
     let _serial = sweep_lock().lock().await;
     let store = mem();
-    let prefixes = vec!["00".to_string(), "01".to_string(), "10".to_string(), "11".to_string()];
-    let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
-    let ct = [
-        ("content-type", "application/json"),
-        ("stream-ttl", "1"),
+    let prefixes = vec![
+        "00".to_string(),
+        "01".to_string(),
+        "10".to_string(),
+        "11".to_string(),
     ];
+    let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
+    let ct = [("content-type", "application/json"), ("stream-ttl", "1")];
     // TTL streams with data covering all four shards.
     let mut covered: std::collections::HashSet<String> = Default::default();
     let mut names = Vec::new();
@@ -21654,8 +21858,14 @@ async fn tombstone_walk_peak_residency_stays_under_the_budget() {
         let seg = desc.resolve_segment("");
         let p = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
         if covered.insert(p) {
-            let (st, _, _) =
-                hreq(addr, "POST", &format!("/v1/stream/{name}"), &ct, br#"[{"n":1}]"#).await;
+            let (st, _, _) = hreq(
+                addr,
+                "POST",
+                &format!("/v1/stream/{name}"),
+                &ct,
+                br#"[{"n":1}]"#,
+            )
+            .await;
             assert!(st == 200 || st == 204);
             names.push(name);
         }

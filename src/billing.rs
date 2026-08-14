@@ -2132,8 +2132,14 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
     // can re-admit a just-evicted resident ahead of shards that have
     // never had a turn (fairness hole found by the rotation gate).
     let mut evicted_now: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut marked: Vec<String> =
-        state.sweep_sched.opened.lock().unwrap().keys().cloned().collect();
+    let mut marked: Vec<String> = state
+        .sweep_sched
+        .opened
+        .lock()
+        .unwrap()
+        .keys()
+        .cloned()
+        .collect();
     marked.sort();
     let n = marked.len();
     if n > 0 {
@@ -2355,9 +2361,6 @@ fn install_custody(engine: &std::sync::Arc<crate::shard::ShardEngine>) -> Option
     Some(seq)
 }
 
-
-
-
 fn residence_quantum() -> usize {
     std::env::var("SWEEP_RESIDENT_QUANTUM")
         .ok()
@@ -2400,19 +2403,36 @@ fn custody_intact(
     prefix: &str,
     engine: &std::sync::Arc<crate::shard::ShardEngine>,
 ) -> bool {
-    let rec = state.sweep_sched.opened.lock().unwrap().get(prefix).copied();
+    let rec = state
+        .sweep_sched
+        .opened
+        .lock()
+        .unwrap()
+        .get(prefix)
+        .copied();
     match rec {
-        Some(seq) => engine.sweep_custody.load(std::sync::atomic::Ordering::Relaxed) == seq,
+        Some(seq) => {
+            engine
+                .sweep_custody
+                .load(std::sync::atomic::Ordering::Relaxed)
+                == seq
+        }
         None => false,
     }
 }
 
 /// Peak concurrently scheduler-held engines, for the DST bound gate.
 pub fn sweep_open_peak(state: &std::sync::Arc<crate::http::AppState>) -> usize {
-    state.sweep_sched.peak.load(std::sync::atomic::Ordering::Relaxed)
+    state
+        .sweep_sched
+        .peak
+        .load(std::sync::atomic::Ordering::Relaxed)
 }
 pub fn sweep_open_peak_reset(state: &std::sync::Arc<crate::http::AppState>) {
-    state.sweep_sched.peak.store(0, std::sync::atomic::Ordering::Relaxed);
+    state
+        .sweep_sched
+        .peak
+        .store(0, std::sync::atomic::Ordering::Relaxed);
 }
 fn note_peak(state: &std::sync::Arc<crate::http::AppState>) {
     let now = scheduler_held(state);
@@ -2433,7 +2453,14 @@ fn note_peak(state: &std::sync::Arc<crate::http::AppState>) {
 /// by replay contract.
 fn close_scheduler_engine(state: &std::sync::Arc<crate::http::AppState>, prefix: &str) {
     use std::sync::atomic::Ordering;
-    let Some(seq) = state.sweep_sched.opened.lock().unwrap().get(prefix).copied() else {
+    let Some(seq) = state
+        .sweep_sched
+        .opened
+        .lock()
+        .unwrap()
+        .get(prefix)
+        .copied()
+    else {
         return;
     };
     let engine = state.shards.write().unwrap().remove(prefix);
@@ -2561,8 +2588,7 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
                 // Foreign routes are skipped — every instance walks the
                 // same registry and closes what IT owns.
                 let budget = sweep_resident_budget();
-                let Some((engine, ours)) = walk_engine_budgeted(state, &route, budget).await
-                else {
+                let Some((engine, ours)) = walk_engine_budgeted(state, &route, budget).await else {
                     continue;
                 };
                 let hash = d.dynamic_segment_identity(sid);
@@ -2599,8 +2625,7 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
                     // Scheduler-opened for this descriptor: close it or
                     // keep it as an indebted budgeted resident NOW —
                     // never accumulate walk opens across the page.
-                    let prefix =
-                        crate::registry::shard_for_hash(&state.shard_prefixes, &route);
+                    let prefix = crate::registry::shard_for_hash(&state.shard_prefixes, &route);
                     walk_settle(state, &prefix).await;
                 }
             }

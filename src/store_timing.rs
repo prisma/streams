@@ -243,7 +243,9 @@ pub struct BulkHold<'a> {
 
 impl Drop for BulkHold<'_> {
     fn drop(&mut self) {
-        self.gate.inflight_bytes.fetch_sub(self.w, Ordering::Relaxed);
+        self.gate
+            .inflight_bytes
+            .fetch_sub(self.w, Ordering::Relaxed);
     }
 }
 
@@ -528,11 +530,7 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         payload: PutPayload,
         opts: PutOptions,
     ) -> Result<PutResult> {
-        let _b = bulk_permit(
-            classify(location.as_ref()),
-            payload.content_length() as u64,
-        )
-        .await;
+        let _b = bulk_permit(classify(location.as_ref()), payload.content_length() as u64).await;
         let _p = permit().await;
         let g = OpGuard::new(0, location);
         let r = self.inner.put_opts(location, payload, opts).await;
@@ -1299,7 +1297,10 @@ mod tests {
             peak.load(Ordering::SeqCst),
             cap
         );
-        assert!(gate.waits.load(Ordering::Relaxed) > 0, "12 ops of 8MiB through a 16MiB gate must have queued");
+        assert!(
+            gate.waits.load(Ordering::Relaxed) > 0,
+            "12 ops of 8MiB through a 16MiB gate must have queued"
+        );
         assert_eq!(gate.inflight_bytes.load(Ordering::Relaxed), 0);
     }
 

@@ -2160,7 +2160,10 @@ mod tests {
                 let r = budget.reserve(absorb_worst_frame_transient()).await;
                 assert_eq!(r.granted(), absorb_worst_frame_transient());
                 // Serialized by bytes: nothing else can be reserved.
-                assert_eq!(budget.reserved_bytes(), absorb_worst_frame_transient() as u64);
+                assert_eq!(
+                    budget.reserved_bytes(),
+                    absorb_worst_frame_transient() as u64
+                );
                 done.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }));
         }

@@ -31,7 +31,7 @@
 //!    snapshot; the request path reads one atomic. Walking the lag map
 //!    per request would put the overload on the hot path.
 
-use std::sync::atomic::{AtomicU64, AtomicU8, Ordering};
+use std::sync::atomic::{AtomicU8, AtomicU64, Ordering};
 
 /// Thresholds. Zero disables an individual bound.
 ///
@@ -154,7 +154,11 @@ pub fn next_state(engaged: bool, s: &Snapshot, l: &Limits) -> (bool, Option<Caus
         return (false, None);
     }
     let pairs = [
-        (Cause::InstanceBytes, s.unabsorbed_bytes_instance, l.unabsorbed_bytes_instance),
+        (
+            Cause::InstanceBytes,
+            s.unabsorbed_bytes_instance,
+            l.unabsorbed_bytes_instance,
+        ),
         (Cause::LagSecs, s.absorb_lag_secs, l.absorb_lag_secs),
     ];
     if !engaged {
@@ -224,9 +228,14 @@ impl GlobalLatch {
         let (now, cause) = next_state(was, s, l);
         self.last_unabsorbed
             .store(s.unabsorbed_bytes_instance, Ordering::Relaxed);
-        self.last_lag_secs.store(s.absorb_lag_secs, Ordering::Relaxed);
+        self.last_lag_secs
+            .store(s.absorb_lag_secs, Ordering::Relaxed);
         self.state.store(
-            if now { cause.map(Cause::code).unwrap_or(0) } else { 0 },
+            if now {
+                cause.map(Cause::code).unwrap_or(0)
+            } else {
+                0
+            },
             Ordering::Relaxed,
         );
         if now && !was {
@@ -378,7 +387,10 @@ mod tests {
             unabsorbed_bytes_instance: 1001,
             ..Default::default()
         };
-        assert_eq!(next_state(false, &hot, &l), (true, Some(Cause::InstanceBytes)));
+        assert_eq!(
+            next_state(false, &hot, &l),
+            (true, Some(Cause::InstanceBytes))
+        );
         let laggy = Snapshot {
             absorb_lag_secs: 101,
             ..Default::default()
@@ -511,7 +523,11 @@ mod tests {
             absorb_lag_secs: 10,
         };
         assert!(!latch.apply(&cleared, &l));
-        assert_eq!(latch.engaged(), None, "global latch pinned after its own bounds cleared");
+        assert_eq!(
+            latch.engaged(),
+            None,
+            "global latch pinned after its own bounds cleared"
+        );
         // And the inverse: lag still high keeps it engaged regardless
         // of anything shard-shaped happening elsewhere.
         let latch2 = GlobalLatch::new();
