@@ -71,6 +71,12 @@ def main(region):
                               for sh in m.get("shards", [])] or [0]),
             "shed": d.get("maintenance_backpressure", {}).get("appends_shed", 0),
             "rate_limited": sum(rl.values()) if isinstance(rl, dict) else 0,
+            # Report-only: the RSS-admission shed (typed admit_shed
+            # counter). The 20260814 rerun refused 74k appends through
+            # this mechanism while the verdict showed zeros everywhere —
+            # the survival stack's pushback must be visible in the
+            # verdict even when it is not the criterion under test.
+            "admit": d.get("admit_shed", 0),
         })
     if len(snaps) < 8:
         sys.exit(f"EVALUATE FAILED: only {len(snaps)} load snapshots")
@@ -130,6 +136,9 @@ def main(region):
     shed_total = sum(max(0, b["shed"] - a["shed"]) for a, b in zip(snaps, snaps[1:]))
     rate_limited_total = sum(
         max(0, b["rate_limited"] - a["rate_limited"]) for a, b in zip(snaps, snaps[1:])
+    )
+    admit_shed_total = sum(
+        max(0, b["admit"] - a["admit"]) for a, b in zip(snaps, snaps[1:])
     )
     # Unexpected process exit: a cumulative-ingest reset with no
     # declared restart leg.
@@ -218,6 +227,7 @@ def main(region):
         "caps_held": caps_held,
         "maintenance_shed_total": shed_total,
         "rate_limited_total": rate_limited_total,
+        "admit_shed_total": admit_shed_total,
         "stabilized_under_overload": stabilized,
         "unexpected_reset": unexpected_reset,
         "pause_wall_secs": pause_wall,

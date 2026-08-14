@@ -128,6 +128,16 @@ while :; do
     else
       echo "== absorber resumed; no restart leg this run (catch-up under FULL load)" | tee -a "$D/events.log"
     fi
+    # Dense catch-up sampling: the resumed absorber clears a 300+MB
+    # backlog in ~2 minutes at full pass throughput, and 30s samples
+    # leave criterion A with fewer than the 3 qualifying intervals it
+    # needs (the 20260814 rerun measured catch_rate=0 for exactly this
+    # reason — the drain outran the sampler, not the other way around).
+    END_C=$(( $(date +%s) + ${SOAK_CAP_DENSE_SECS:-600} ))
+    while [ "$(date +%s)" -lt "$END_C" ]; do
+      python3 "$HERE/poll.py" >> "$D/poll.log" 2>&1 || true
+      sleep 10
+    done
     RESTARTED=1
   fi
   [ "$NOW" -ge $(( SECS + 120 )) ] && break
