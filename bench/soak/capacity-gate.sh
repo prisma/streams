@@ -47,6 +47,25 @@ fail() {
 }
 AUTH=$(cat "$S/auth.txt")
 bp() { curl -s --max-time 20 -H "Authorization: Bearer $AUTH" "$1/v1/debug/load"; }
+# Pause control must survive local transport blips: two campaigns died
+# at EXACTLY this step with curl exit 7 under set -e after an hour of
+# poll traffic (macOS ephemeral-port exhaustion — the same failure mode
+# reconcile.py's errno-49 backoff already covers; the server answered
+# 200 in <1s when probed minutes later). A bounded until-loop with real
+# sleeps lets TIME_WAIT sockets recycle; only ~3 minutes of continuous
+# failure aborts, and each attempt's curl stderr lands in
+# curl-errors.log so the next diagnosis starts from evidence.
+ctl() { # ctl <stage> <url> — POST until HTTP 200, else fail <stage>
+  local tries=0 code
+  until code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+        -X POST -H "Authorization: Bearer $AUTH" "$2" \
+        2>>"$D/curl-errors.log") && [ "$code" = 200 ]; do
+    tries=$((tries+1))
+    [ "$tries" -ge 30 ] && fail "$1"
+    echo "  $1: attempt $tries code=${code:-curlfail}; retrying in 6s" | tee -a "$D/events.log"
+    sleep 6
+  done
+}
 
 # SOAK_SKIP_DEPLOY=1 resumes against an already-deployed cell (edge
 # routing for a fresh version can wedge; a redeploy re-rolls it — the
@@ -74,9 +93,7 @@ while :; do
     PAUSED=1
     echo "== +${NOW}s ABSORBER PAUSE ($PAUSE_SECS s)" | tee -a "$D/events.log"
     date +%s >> "$D/pause-start.ts"
-    curl -s --max-time 15 --retry 5 --retry-all-errors --retry-delay 3 \
-      -o /dev/null -X POST -H "Authorization: Bearer $AUTH" \
-      "$SRV/v1/debug/absorb-pause?on=1"
+    ctl pause-on "$SRV/v1/debug/absorb-pause?on=1"
     # Dense sampling through the pause: the backlog growth curve and
     # any typed shed onset are the point of the exercise.
     END_P=$(( $(date +%s) + PAUSE_SECS ))
@@ -86,18 +103,21 @@ while :; do
       # R27-3 availability probes: reads and the control plane must
       # stay admitted while appends shed. Recorded per sample; the
       # evaluator report includes them and any non-200 fails the gate.
+      # `|| RC=000`: a probe curl that cannot CONNECT is local transport
+      # trouble, not a server refusal — record it (probes.log shows 000)
+      # but never let it kill the driver under set -e, and never count
+      # it as a PROBE FAILURE (only a server-sent 4xx/5xx gates; a dead
+      # server is separately caught by awsbench errors + reconcile).
       RC=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 --retry 2 --retry-delay 2 \
             -H "Authorization: Bearer $AUTH" -H "Stream-Encryption-Key: $KEY" \
-            "$SRV/v1/stream/soak-$R-0")
+            "$SRV/v1/stream/soak-$R-0") || RC=000
       CC=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 --retry 2 --retry-delay 2 \
-            -H "Authorization: Bearer $AUTH" "$SRV/v1/streams?limit=10")
+            -H "Authorization: Bearer $AUTH" "$SRV/v1/streams?limit=10") || CC=000
       echo "$(date +%s) read=$RC catalog=$CC" >> "$D/probes.log"
       case "$RC$CC" in *5*|*4*) echo "PROBE FAILURE read=$RC catalog=$CC" | tee -a "$D/events.log";; esac
       sleep 15
     done
-    curl -s --max-time 15 --retry 5 --retry-all-errors --retry-delay 3 \
-      -o /dev/null -X POST -H "Authorization: Bearer $AUTH" \
-      "$SRV/v1/debug/absorb-pause?on=0"
+    ctl pause-off "$SRV/v1/debug/absorb-pause?on=0"
     date +%s >> "$D/pause-end.ts"
     if [ "$RESTART" = 1 ]; then
       echo "== absorber resumed; RESTART at max backlog" | tee -a "$D/events.log"
@@ -123,7 +143,15 @@ while :; do
       # ledger survives — same generator process.
       GEN=$(cat "$S/url-gen-$R.txt")
       ENC=$(python3 -c "import urllib.parse,sys;print(urllib.parse.quote(sys.argv[1],safe=''))" "$SRV")
-      curl -s --max-time 15 -X POST "$GEN/retarget?url=$ENC" | tee -a "$D/events.log"
+      # Retarget MUST land (a stale generator target collapsed offered
+      # load to ~25 req/s in R26) — but transport blips get the same
+      # bounded tolerance as the pause controls, not instant set -e death.
+      RT=0
+      until OUT=$(curl -s --max-time 15 -X POST "$GEN/retarget?url=$ENC" 2>>"$D/curl-errors.log"); do
+        RT=$((RT+1)); [ "$RT" -ge 30 ] && fail retarget
+        sleep 6
+      done
+      echo "$OUT" | tee -a "$D/events.log"
       echo >> "$D/events.log"
     else
       echo "== absorber resumed; no restart leg this run (catch-up under FULL load)" | tee -a "$D/events.log"
