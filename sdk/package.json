@@ -1,6 +1,6 @@
 {
   "name": "@prisma/streams",
-  "version": "0.2.0-preview.8",
+  "version": "0.2.0-preview.9",
   "description": "Prisma Streams product SDK — encrypted, append-only collections with routing keys, consumers, and watches",
   "license": "Apache-2.0",
   "type": "module",

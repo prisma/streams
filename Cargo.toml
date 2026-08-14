@@ -1,6 +1,6 @@
 [package]
 name = "streams-slate"
-version = "0.2.0-preview.8"
+version = "0.2.0-preview.9"
 edition = "2024"
 
 [dependencies]
