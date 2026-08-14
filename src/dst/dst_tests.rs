@@ -21892,3 +21892,187 @@ async fn tombstone_walk_peak_residency_stays_under_the_budget() {
         crate::billing::sweep_open_peak(&state)
     );
 }
+
+/// R30: walk FAIRNESS, not just bounded peak. Two shards carry pinned
+/// maintenance debt (absorber paused) and occupy the residency budget;
+/// TTL-expired streams on the OTHER two shards still get their billing
+/// closures within bounded sweeps — the walk's continuation cursor
+/// resumes at the deferred page instead of restarting at the first
+/// descriptor, and the residence quantum rotates the occupants out.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn tombstone_walk_fairness_under_occupied_budget() {
+    let _serial = sweep_lock().lock().await;
+    let store = mem();
+    let prefixes = vec![
+        "00".to_string(),
+        "01".to_string(),
+        "10".to_string(),
+        "11".to_string(),
+    ];
+    let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
+    let ct = [("content-type", "application/json")];
+    let ttl = [("content-type", "application/json"), ("stream-ttl", "1")];
+    // Pin maintenance debt on two shards; TTL victims on the others.
+    let mut pinned: std::collections::HashSet<String> = Default::default();
+    let mut expired_shards: std::collections::HashSet<String> = Default::default();
+    let mut expired_names = Vec::new();
+    for i in 0..96 {
+        if pinned.len() == 2 && expired_shards.len() == 2 {
+            break;
+        }
+        let name = format!("fair-m{i}");
+        let (st, _, _) = hreq(addr, "PUT", &format!("/v1/stream/{name}"), &ct, b"").await;
+        assert!(st == 200 || st == 201);
+        let desc = state.registry.get(&name).await.unwrap().unwrap();
+        let seg = desc.resolve_segment("");
+        let p = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
+        if pinned.len() < 2 && !expired_shards.contains(&p) {
+            if pinned.insert(p.clone()) {
+                let (st, _, _) = hreq(
+                    addr,
+                    "POST",
+                    &format!("/v1/stream/{name}"),
+                    &ct,
+                    br#"[{"n":1}]"#,
+                )
+                .await;
+                assert!(st == 200 || st == 204);
+            }
+            continue;
+        }
+        if !pinned.contains(&p) && expired_shards.len() < 2 && expired_shards.insert(p.clone()) {
+            // Recreate WITH a TTL so the descriptor turns terminal.
+            let tname = format!("fair-t{i}");
+            let (st, _, _) = hreq(addr, "PUT", &format!("/v1/stream/{tname}"), &ttl, b"").await;
+            assert!(st == 200 || st == 201);
+            let (st, _, _) = hreq(
+                addr,
+                "POST",
+                &format!("/v1/stream/{tname}"),
+                &ttl,
+                br#"[{"n":1}]"#,
+            )
+            .await;
+            assert!(st == 200 || st == 204);
+            expired_names.push(tname);
+        }
+    }
+    assert_eq!(pinned.len(), 2);
+    assert_eq!(expired_shards.len(), 2);
+    let pref_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
+    drain_billing_clean(&state, &pref_refs).await;
+    // Pin the maintenance debt: paused absorbers never retire it.
+    crate::history::absorb_pause_flag().store(true, std::sync::atomic::Ordering::Relaxed);
+    let engines: Vec<_> = {
+        let mut m = state.shards.write().unwrap();
+        prefixes.iter().filter_map(|p| m.remove(p)).collect()
+    };
+    for e in engines {
+        e.begin_close();
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    for n in &expired_names {
+        state.registry.invalidate(n);
+    }
+    let submits0 = WALK_CLOSE_SUBMITS_SNAPSHOT();
+    // Bounded sweeps: quantum rotation + walk cursor must reach BOTH
+    // expired shards even while pinned debt keeps re-occupying slots.
+    let mut ok = false;
+    for _ in 0..14 {
+        crate::billing::sweep_owned_outboxes(&state).await;
+        if WALK_CLOSE_SUBMITS_SNAPSHOT() >= submits0 + 2 {
+            ok = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    crate::history::absorb_pause_flag().store(false, std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        ok,
+        "expired shards starved: walk close submits {} -> {}",
+        submits0,
+        WALK_CLOSE_SUBMITS_SNAPSHOT()
+    );
+}
+
+#[allow(non_snake_case)]
+fn WALK_CLOSE_SUBMITS_SNAPSHOT() -> u64 {
+    crate::billing::WALK_CLOSE_SUBMITS.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// R30: a custody-revoked close must be INVISIBLE — the identical
+/// engine Arc stays in the map with no empty-slot window (the close
+/// holds one write guard through remove -> CAS -> reinsert), so no
+/// second open can start.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn revoked_close_keeps_the_identical_engine_with_no_new_open() {
+    let _serial = sweep_lock().lock().await;
+    let store = mem();
+    let prefixes = vec![
+        "00".to_string(),
+        "01".to_string(),
+        "10".to_string(),
+        "11".to_string(),
+    ];
+    let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/noslot-1", &ct, b"").await;
+    assert!(st == 200 || st == 201);
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/noslot-1", &ct, br#"[{"n":1}]"#).await;
+    assert!(st == 200 || st == 204);
+    let desc = state.registry.get("noslot-1").await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let prefix = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
+    let pref_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
+    drain_billing_clean(&state, &pref_refs).await;
+    // Cold-close, reopen via the gate, take custody, then let a
+    // customer adopt (revoke) — the exact adopted-close shape.
+    let engines: Vec<_> = {
+        let mut m = state.shards.write().unwrap();
+        prefixes.iter().filter_map(|p| m.remove(p)).collect()
+    };
+    for e in engines {
+        e.begin_close();
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    crate::billing::sweep_owned_outboxes(&state).await;
+    let engine = state
+        .shards
+        .read()
+        .unwrap()
+        .get(&prefix)
+        .cloned()
+        .expect("sweep must retain the indebted shard");
+    assert_ne!(
+        engine
+            .sweep_custody
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0
+    );
+    // Customer adoption revokes custody.
+    let _ = state.engine_for(&seg.shard_route).await.unwrap();
+    crate::billing::sweep_owned_outboxes(&state).await;
+    let now = state
+        .shards
+        .read()
+        .unwrap()
+        .get(&prefix)
+        .cloned()
+        .expect("adopted engine must remain resident");
+    assert!(
+        std::sync::Arc::ptr_eq(&engine, &now),
+        "the SAME engine must survive a revoked close — a replacement          means an empty-slot window existed"
+    );
+    // Ptr-identity IS the no-second-open proof for this prefix: the
+    // gate's open task unconditionally inserts its fresh engine, so any
+    // second open would have REPLACED the map entry. (A global
+    // opens-started check is wrong here — the same sweep legitimately
+    // discovery-opens the other cold shards.)
+    assert_eq!(
+        now.sweep_custody.load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "scheduler must have dropped its claim"
+    );
+    let (st, _, _) = hreq(addr, "GET", "/v1/stream/noslot-1", &[], b"").await;
+    assert_eq!(st, 200, "adopted engine keeps serving");
+}

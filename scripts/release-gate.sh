@@ -1,8 +1,10 @@
 #!/bin/sh
-# The local half of the release gate (AWS-readyness.md §5, §7).
-# The other half — the single-instance saturation benchmark on Compute —
-# is scripts/bench-fra-ab.sh and is mandatory for any change that can touch
-# the serving path.
+# The LOCAL half of the release gate: fmt, clippy (fingerprint-gated),
+# the Rust/DST binary suite, and supply-chain checks. It does NOT run
+# the Durable Streams conformance corpus, SDK smoke, field/capacity/
+# handoff campaigns, or cross-owner fan-out — those produce artifacts
+# that scripts/rc-certify.sh verifies against the release binary. R30
+# review: this scope statement must match what the script runs.
 set -e
 cd "$(dirname "$0")/.."
 
@@ -10,23 +12,36 @@ echo "== fmt =="
 cargo fmt --check
 
 echo "== clippy (all targets) =="
-cargo clippy --all-targets 2>&1 | tee /tmp/clippy.out | tail -3
-# The branch carries a small pre-existing warning set; the gate is
-# "no NEW warnings": compare against the recorded count.
-# The baseline is a HIGH-WATER MARK for the whole tree, not a claim that
-# the tree is clean: it was stale at 114 through round 18 (the real count
-# was 345) and silently un-runnable. Measured against 93066698 and
-# refreshed whenever a change legitimately moves it DOWN.
-# 2026-08-14 (R29): re-measured COLD. The recorded 221 was a warm-cache
-# artifact — a clean worktree at 0f525ae6 counts 229, and a message-level
-# fingerprint diff shows the R28/R29 changes added ZERO warnings and
-# removed one ('items after a test module'). Baseline := 228 (cold).
-BASELINE=$(cat scripts/clippy-warning-baseline.txt)
-COUNT=$(grep -c '^warning' /tmp/clippy.out || true)
-if [ "$COUNT" -gt "$BASELINE" ]; then
-  echo "FAIL: clippy warnings grew $BASELINE -> $COUNT"; exit 1
+# R30: no pipeline — POSIX sh reports the LAST command's status, so
+# `cargo clippy | tee | tail` passed even when clippy itself failed to
+# compile (a genuine false-green in the release gate).
+if ! cargo clippy --all-targets > /tmp/clippy.out 2>&1; then
+  cat /tmp/clippy.out
+  echo "FAIL: clippy did not complete"
+  exit 1
 fi
-echo "clippy warnings: $COUNT (baseline $BASELINE)"
+tail -3 /tmp/clippy.out
+# R30: gate on exact warning FINGERPRINTS (message + file), not a
+# count. Counts were twice unsound: a stale-low baseline blocked clean
+# trees (round 18: recorded 114, real 345; R29: recorded 221 warm vs
+# 229 cold), and a count can stay flat while one warning disappears
+# and a NEW one appears. The baseline file is the reviewed allowlist;
+# refresh it only with a fingerprint diff in the commit message.
+python3 scripts/clippy-fingerprints.py /tmp/clippy.out > /tmp/clippy-fps.txt
+if ! NEW=$(comm -13 scripts/clippy-baseline-fingerprints.txt /tmp/clippy-fps.txt); then
+  echo "FAIL: fingerprint comparison failed"
+  exit 1
+fi
+if [ -n "$NEW" ]; then
+  echo "FAIL: NEW clippy warnings (not in the reviewed baseline):"
+  echo "$NEW"
+  exit 1
+fi
+GONE=$(comm -23 scripts/clippy-baseline-fingerprints.txt /tmp/clippy-fps.txt || true)
+if [ -n "$GONE" ]; then
+  echo "note: $(echo "$GONE" | wc -l | tr -d ' ') baseline warning(s) no longer fire; refresh the baseline"
+fi
+echo "clippy: no new warning fingerprints"
 
 echo "== tests =="
 cargo test --bin streams-slate

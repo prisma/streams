@@ -114,5 +114,10 @@ committer or real HTTP routes:
 - ownership: `ownership_handoff_moves_backlog_without_aba`
 - telemetry: `debug_load_reports_typed_limiter_and_frame_totals`
 
-Field evidence: `docs/SOAK-R25H-REPORT.md` (corrected six-region soak).
-The decisive pause/catch-up capacity gate is the remaining open item.
+Field evidence: `docs/SOAK-R25H-REPORT.md` (corrected six-region soak);
+`docs/CAPACITY-R27.md` — the decisive pause/catch-up capacity gate
+PASSED (cap-20260813T085718Z-55853: peak ledger at 100.6% of the
+instance cap, held, with typed shed and exact reconciliation) and the
+fleet handoff at peak backlog PASSED (handoff-fh185257). No open items
+remain in this mechanism; the authoritative status table is
+`docs/READINESS.md`.

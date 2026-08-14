@@ -2082,6 +2082,16 @@ pub struct SweepSched {
     peak: std::sync::atomic::AtomicUsize,
     /// Sweep cycle counter (rotation).
     cycle: std::sync::atomic::AtomicUsize,
+    /// R30: tombstone-walk continuation — the registry page token to
+    /// RESUME from next sweep. Set when the walk stops on a budget
+    /// deferral (resume at the deferred descriptor's page), cleared on
+    /// exhaustion (wrap to the beginning). Without it every sweep
+    /// restarted at the first descriptor, and two early routes with
+    /// persistent debt could starve every later terminal stream's
+    /// billing closure indefinitely. In-memory: a restart resumes from
+    /// the beginning, which costs one extra circle, never correctness
+    /// (the walk is idempotent).
+    walk_cursor: std::sync::Mutex<Option<String>>,
 }
 
 /// Sweep-resident engine count (ops gauge): how many engines exist
@@ -2464,33 +2474,45 @@ fn close_scheduler_engine(state: &std::sync::Arc<crate::http::AppState>, prefix:
     else {
         return;
     };
-    let engine = state.shards.write().unwrap().remove(prefix);
-    let Some(engine) = engine else {
-        unmark(state, prefix);
-        return;
+    // R30: ONE write guard held through remove -> custody CAS ->
+    // possible reinsertion. The previous version released the guard
+    // between removal and the CAS, so a request arriving in that gap
+    // observed an empty slot and could start a SECOND open while the
+    // first engine was about to be reinstated — a replacement engine,
+    // spurious fencing, and avoidable in-flight failures. With the
+    // guard held, external resolution (which stamps under the READ
+    // guard) is strictly ordered against this decision: whatever
+    // stamped before we acquired the write lock is visible to the
+    // CAS, and nothing can resolve or re-open the prefix until the
+    // slot's fate is settled. Only begin_close() runs after release.
+    let closing = {
+        let mut guard = state.shards.write().unwrap();
+        let Some(engine) = guard.remove(prefix) else {
+            drop(guard);
+            unmark(state, prefix);
+            return;
+        };
+        if engine
+            .sweep_custody
+            .compare_exchange(seq, 0, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            // Adopted: reinstate the SAME engine under the SAME guard —
+            // no observable empty-slot window exists.
+            guard.insert(prefix.to_string(), engine);
+            None
+        } else {
+            Some(engine)
+        }
     };
-    // Map removal happened under the write lock; every external
-    // resolution stamps inside a read guard, so any adoption that
-    // could still hold this engine has already revoked custody by the
-    // time this CAS runs. Success == we still own it == zero external
-    // use since (and before) install.
-    if engine
-        .sweep_custody
-        .compare_exchange(seq, 0, Ordering::Relaxed, Ordering::Relaxed)
-        .is_err()
-    {
-        // Adopted: reinstate untouched, drop our claim.
-        state
-            .shards
-            .write()
-            .unwrap()
-            .insert(prefix.to_string(), engine);
-        unmark(state, prefix);
-        return;
+    match closing {
+        Some(engine) => {
+            engine.begin_close();
+            unmark(state, prefix);
+            tracing::info!("sweep closed shard {prefix}");
+        }
+        None => unmark(state, prefix),
     }
-    engine.begin_close();
-    unmark(state, prefix);
-    tracing::info!("sweep closed shard {prefix}");
 }
 
 /// R29: the walk shares the scheduler budget BEFORE opening. An
@@ -2563,7 +2585,7 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
     if state.usage_key.is_none() {
         return;
     }
-    let mut after: Option<String> = None;
+    let mut after: Option<String> = state.sweep_sched.walk_cursor.lock().unwrap().clone();
     loop {
         let page = match state.registry.list_page_raw(after.as_deref(), 256).await {
             Ok(p) => p,
@@ -2590,7 +2612,12 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
                 // same registry and closes what IT owns.
                 let budget = sweep_resident_budget();
                 let Some((engine, ours)) = walk_engine_budgeted(state, &route, budget).await else {
-                    continue;
+                    // Deferred (budget full) or open-contended: STOP and
+                    // resume AT THIS PAGE next sweep — the continuation
+                    // is what makes deferral fair instead of starving
+                    // later terminal descriptors (R30).
+                    *state.sweep_sched.walk_cursor.lock().unwrap() = after.clone();
+                    return;
                 };
                 let hash = d.dynamic_segment_identity(sid);
                 let Some(meta) = engine.billing_meta(hash).await else {
@@ -2632,6 +2659,8 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
             }
         }
         if page.exhausted || page.next_after.is_none() {
+            // Full circle from wherever we started: wrap.
+            *state.sweep_sched.walk_cursor.lock().unwrap() = None;
             return;
         }
         after = page.next_after;

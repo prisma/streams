@@ -73,6 +73,11 @@ except Exception: print(0)")
 done
 [ -n "$TARGET" ] || { echo "no owner found"; exit 1; }
 hdr "target owner: s$TARGET ($TARGET_URL, ingest=$BEST)"
+# RC identity: record the binary this gate actually exercised
+# (rc-certify.sh compares it against the release build).
+jload "$TARGET_URL" | python3 -c "import json,sys
+print(json.loads(sys.stdin.read()).get('binary_sha256',''))" > "$OUT/binary.sha"
+echo "  fleet binary: $(cut -c1-16 "$OUT/binary.sha")"
 
 # 2b) steady-state fleet ledger baseline (pre-pause): the drain
 # criterion under continued load is RETURN TO THIS BAND — near-zero is
