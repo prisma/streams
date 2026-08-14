@@ -30,6 +30,19 @@ for TRY in $(seq 1 "$MAX"); do
   case "$STAGE" in
     provision|server|gen|verify|release)
       SOAK_RUN_ID=$RUN "$HERE/teardown.sh" --yes || true
+      # Provision refuses while any receipt from the failed try
+      # survives, and teardown deliberately KEEPS a receipt when it
+      # cannot confirm the project delete (2xx/404). Burning fresh
+      # tries against a known-blocked provision is how the 20260814
+      # wrapper run exhausted itself in 3 minutes — re-run teardown
+      # until this run's receipts actually clear, then proceed.
+      for TDT in 1 2 3 4 5; do
+        BLOCKED=$(grep -l "\"runId\": \"$RUN\"" "$S"/receipts/*.json 2>/dev/null | wc -l | tr -d ' ')
+        [ "$BLOCKED" = 0 ] && break
+        echo "CAPACITY RETRY: $BLOCKED receipt(s) of $RUN still present; teardown again ($TDT/5)"
+        sleep 30
+        SOAK_RUN_ID=$RUN "$HERE/teardown.sh" --yes || true
+      done
       sleep 20
       ;;
     *)
