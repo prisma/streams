@@ -74,7 +74,8 @@ while :; do
     PAUSED=1
     echo "== +${NOW}s ABSORBER PAUSE ($PAUSE_SECS s)" | tee -a "$D/events.log"
     date +%s >> "$D/pause-start.ts"
-    curl -s --max-time 15 -o /dev/null -X POST -H "Authorization: Bearer $AUTH" \
+    curl -s --max-time 15 --retry 5 --retry-all-errors --retry-delay 3 \
+      -o /dev/null -X POST -H "Authorization: Bearer $AUTH" \
       "$SRV/v1/debug/absorb-pause?on=1"
     # Dense sampling through the pause: the backlog growth curve and
     # any typed shed onset are the point of the exercise.
@@ -85,16 +86,17 @@ while :; do
       # R27-3 availability probes: reads and the control plane must
       # stay admitted while appends shed. Recorded per sample; the
       # evaluator report includes them and any non-200 fails the gate.
-      RC=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+      RC=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 --retry 2 --retry-delay 2 \
             -H "Authorization: Bearer $AUTH" -H "Stream-Encryption-Key: $KEY" \
             "$SRV/v1/stream/soak-$R-0")
-      CC=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 \
+      CC=$(curl -s -o /dev/null -w '%{http_code}' --max-time 15 --retry 2 --retry-delay 2 \
             -H "Authorization: Bearer $AUTH" "$SRV/v1/streams?limit=10")
       echo "$(date +%s) read=$RC catalog=$CC" >> "$D/probes.log"
       case "$RC$CC" in *5*|*4*) echo "PROBE FAILURE read=$RC catalog=$CC" | tee -a "$D/events.log";; esac
       sleep 15
     done
-    curl -s --max-time 15 -o /dev/null -X POST -H "Authorization: Bearer $AUTH" \
+    curl -s --max-time 15 --retry 5 --retry-all-errors --retry-delay 3 \
+      -o /dev/null -X POST -H "Authorization: Bearer $AUTH" \
       "$SRV/v1/debug/absorb-pause?on=0"
     date +%s >> "$D/pause-end.ts"
     if [ "$RESTART" = 1 ]; then
