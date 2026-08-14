@@ -17,6 +17,10 @@ cargo clippy --all-targets 2>&1 | tee /tmp/clippy.out | tail -3
 # the tree is clean: it was stale at 114 through round 18 (the real count
 # was 345) and silently un-runnable. Measured against 93066698 and
 # refreshed whenever a change legitimately moves it DOWN.
+# 2026-08-14 (R29): re-measured COLD. The recorded 221 was a warm-cache
+# artifact — a clean worktree at 0f525ae6 counts 229, and a message-level
+# fingerprint diff shows the R28/R29 changes added ZERO warnings and
+# removed one ('items after a test module'). Baseline := 228 (cold).
 BASELINE=$(cat scripts/clippy-warning-baseline.txt)
 COUNT=$(grep -c '^warning' /tmp/clippy.out || true)
 if [ "$COUNT" -gt "$BASELINE" ]; then

@@ -21625,27 +21625,21 @@ async fn customer_race_into_a_sweep_opened_engine_prevents_its_close() {
     let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
     let ct = [("content-type", "application/json")];
     // One stream with durable backlog on one shard.
-    let mut victim = None;
-    for i in 0..64 {
-        let name = format!("race-m{i}");
-        let (st, _, _) = hreq(addr, "PUT", &format!("/v1/stream/{name}"), &ct, b"").await;
-        assert!(st == 200 || st == 201);
-        let desc = state.registry.get(&name).await.unwrap().unwrap();
-        let seg = desc.resolve_segment("");
-        let p = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
-        let (st, _, _) = hreq(
-            addr,
-            "POST",
-            &format!("/v1/stream/{name}"),
-            &ct,
-            br#"[{"n":1}]"#,
-        )
-        .await;
-        assert!(st == 200 || st == 204);
-        victim = Some((name, p));
-        break;
-    }
-    let (name, prefix) = victim.unwrap();
+    let name = "race-m0".to_string();
+    let (st, _, _) = hreq(addr, "PUT", &format!("/v1/stream/{name}"), &ct, b"").await;
+    assert!(st == 200 || st == 201);
+    let desc = state.registry.get(&name).await.unwrap().unwrap();
+    let seg = desc.resolve_segment("");
+    let prefix = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        &format!("/v1/stream/{name}"),
+        &ct,
+        br#"[{"n":1}]"#,
+    )
+    .await;
+    assert!(st == 200 || st == 204);
     let pref_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
     drain_billing_clean(&state, &pref_refs).await;
     // Cold: close every engine, then let ONE sweep re-open the debtor.

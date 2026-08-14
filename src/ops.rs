@@ -350,6 +350,14 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
         crate::billing::sweep_resident_engines(state),
     );
     gauges.insert(
+        "sweep_open_peak".into(),
+        crate::billing::sweep_open_peak(state) as u64,
+    );
+    gauges.insert(
+        "walk_deferred_total".into(),
+        crate::billing::WALK_DEFERRED.load(ord),
+    );
+    gauges.insert(
         "telemetry_cache_capacity_bytes".into(),
         crate::billing::TELEMETRY_CACHE_CAPACITY.load(ord),
     );

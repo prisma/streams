@@ -2428,6 +2428,7 @@ pub fn sweep_open_peak(state: &std::sync::Arc<crate::http::AppState>) -> usize {
         .peak
         .load(std::sync::atomic::Ordering::Relaxed)
 }
+#[cfg(test)]
 pub fn sweep_open_peak_reset(state: &std::sync::Arc<crate::http::AppState>) {
     state
         .sweep_sched

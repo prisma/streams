@@ -30,10 +30,10 @@ fn main() {
     // resolved ref file and packed-refs too, and let a release builder
     // override via env.
     println!("cargo:rerun-if-changed=.git/HEAD");
-    if let Ok(head) = std::fs::read_to_string(".git/HEAD") {
-        if let Some(r) = head.strip_prefix("ref: ") {
-            println!("cargo:rerun-if-changed=.git/{}", r.trim());
-        }
+    if let Ok(head) = std::fs::read_to_string(".git/HEAD")
+        && let Some(r) = head.strip_prefix("ref: ")
+    {
+        println!("cargo:rerun-if-changed=.git/{}", r.trim());
     }
     println!("cargo:rerun-if-changed=.git/packed-refs");
     println!("cargo:rerun-if-env-changed=STREAMS_GIT_COMMIT");
