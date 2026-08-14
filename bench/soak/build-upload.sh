@@ -16,7 +16,11 @@ echo "== building streams-slate + awsbench (x86_64-musl)"
 # shipped (build.rs env override; also recorded in the manifest so
 # verify-running can compare /v1/debug/load and /readyz identity).
 export BUILD_GIT_COMMIT=$(cd "$ROOT" && git rev-parse HEAD)
+# ONE timestamp for the compile stamp AND the manifest (R30: the
+# upload clock could never equal the compile clock; SOURCE_DATE_EPOCH
+# threads the same value into build.rs).
 export BUILD_UNIX=$(date +%s)
+export SOURCE_DATE_EPOCH="$BUILD_UNIX"
 export STREAMS_GIT_COMMIT="$BUILD_GIT_COMMIT"
 (cd "$ROOT" && cargo zigbuild --release --target x86_64-unknown-linux-musl --bin streams-slate)
 (cd "$ROOT/bench/awsbench" && cargo zigbuild --release --target x86_64-unknown-linux-musl --bin awsbench)

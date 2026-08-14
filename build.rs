@@ -17,13 +17,22 @@ fn main() {
             .unwrap_or_else(|| "unknown".into())
     });
     println!("cargo:rustc-env=STREAMS_GIT_COMMIT={rev}");
-    println!(
-        "cargo:rustc-env=STREAMS_BUILD_UNIX={}",
-        std::time::SystemTime::now()
-            .duration_since(std::time::UNIX_EPOCH)
-            .map(|d| d.as_secs())
-            .unwrap_or(0)
-    );
+    // SOURCE_DATE_EPOCH (reproducible-builds convention): the release
+    // builder injects one timestamp and records the SAME value in the
+    // campaign manifest, so verify-running can require exact equality
+    // with the binary's /v1/debug/load build_unix. Without the
+    // override, manifest (upload clock) and binary (compile clock)
+    // could never match (R30: first rc.1 verify failed exactly here).
+    let ts = std::env::var("SOURCE_DATE_EPOCH")
+        .ok()
+        .and_then(|v| v.parse::<u64>().ok())
+        .unwrap_or_else(|| {
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .map(|d| d.as_secs())
+                .unwrap_or(0)
+        });
+    println!("cargo:rustc-env=STREAMS_BUILD_UNIX={ts}");
     // R29: `.git/HEAD` alone goes stale — on a branch it keeps saying
     // `ref: refs/heads/<branch>` while commits advance, so cargo never
     // reruns this script and the embedded commit lags. Watch the
@@ -37,4 +46,5 @@ fn main() {
     }
     println!("cargo:rerun-if-changed=.git/packed-refs");
     println!("cargo:rerun-if-env-changed=STREAMS_GIT_COMMIT");
+    println!("cargo:rerun-if-env-changed=SOURCE_DATE_EPOCH");
 }
