@@ -152,7 +152,7 @@ if [ "$ROLE" = server ]; then
   # campaign aborted at "stage: server" with zero diagnostic output).
   # Retry the deploy a few times and always print what the CLI said.
   DEPLOYED=0
-  for ATT in 1 2 3; do
+  for ATT in 1 2 3 4 5 6; do
   if OUT=$(bunx --bun @prisma/compute-cli@0.39.0 deploy --project "$P" ${SVCARG[@]+"${SVCARG[@]}"} \
     --region "$R" --path . --http-port 8080 --service-name "soak-server-$R" \
     --env SERVER_BINARY_S3_KEY="bin/streams-$BIN_TAG-x64" \
@@ -181,9 +181,9 @@ if [ "$ROLE" = server ]; then
     2>&1 | grep -viE 'resolving|resolved|saved'); then DEPLOYED=1; break; fi
   echo "deploy attempt $ATT failed for $ROLE-$R:" >&2
   echo "$OUT" | tail -5 >&2
-  sleep 10
+  sleep 30
   done
-  [ "$DEPLOYED" = 1 ] || { echo "deploy failed after 3 attempts for $ROLE-$R" >&2; exit 1; }
+  [ "$DEPLOYED" = 1 ] || { echo "deploy failed after 6 attempts for $ROLE-$R" >&2; exit 1; }
 else
   TARGET=$(cat "$S/url-server-$R.txt")
   # An empty BENCH_TIERS env still selects the (empty) tier ramp in
@@ -192,7 +192,7 @@ else
   cd "$S/app-gen-$R"
   # Same retry-with-evidence contract as the server deploy above.
   DEPLOYED=0
-  for ATT in 1 2 3; do
+  for ATT in 1 2 3 4 5 6; do
   if OUT=$(bunx --bun @prisma/compute-cli@0.39.0 deploy --project "$P" ${SVCARG[@]+"${SVCARG[@]}"} \
     --region "$R" --path . --http-port 8080 --service-name "soak-gen-$R" \
     --env AWSBENCH_S3_KEY="bin/awsbench-$BIN_TAG-x64" \
@@ -212,9 +212,9 @@ else
     2>&1 | grep -viE 'resolving|resolved|saved'); then DEPLOYED=1; break; fi
   echo "deploy attempt $ATT failed for $ROLE-$R:" >&2
   echo "$OUT" | tail -5 >&2
-  sleep 10
+  sleep 30
   done
-  [ "$DEPLOYED" = 1 ] || { echo "deploy failed after 3 attempts for $ROLE-$R" >&2; exit 1; }
+  [ "$DEPLOYED" = 1 ] || { echo "deploy failed after 6 attempts for $ROLE-$R" >&2; exit 1; }
 fi
 
 echo "$OUT" | grep -E 'New version|error' | sed "s/^/$ROLE-$R: /" || true

@@ -13,8 +13,30 @@
 set -uo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 S=${SOAK_HOME:?set SOAK_HOME}
-MAX=${CAP_RETRY_MAX:-4}
+MAX=${CAP_RETRY_MAX:-6}
+# The 20260814 network came in waves: minutes of dead connects, then
+# minutes of clean 200s. Launching a try into a bad wave wastes the
+# 4-minute build+provision spend, so gate each try on the platform API
+# answering twice, 20s apart (one success can be the edge of a wave).
+net_stable() {
+  local ok=0 t=0
+  while [ "$t" -lt 20 ]; do
+    if curl -s -o /dev/null --max-time 8 https://api.prisma.io; then
+      ok=$((ok+1))
+      [ "$ok" -ge 2 ] && return 0
+      sleep 20
+    else
+      ok=0
+      echo "CAPACITY RETRY: platform API unreachable; waiting 30s"
+      sleep 30
+    fi
+    t=$((t+1))
+  done
+  echo "CAPACITY RETRY: network never stabilized"
+  return 1
+}
 for TRY in $(seq 1 "$MAX"); do
+  net_stable || exit 1
   # Each try mints its own namespace: a retry must never adopt the
   # failed attempt's run id (R26-9).
   unset SOAK_RUN_ID SOAK_PREFIX BIN_TAG

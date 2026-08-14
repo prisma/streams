@@ -38,6 +38,7 @@ def provision(run_id, region):
         if rc.get("createdWithRegion") == region:
             print(f"  {region}: receipt exists (project {rc['projectId']}) — reusing")
             open(f"{S}/proj-{region}.txt", "w").write(rc["projectId"])
+            open(f"{S}/proj-{region}.txt.campaign", "w").write(run_id)
             return
         sys.exit(f"FATAL: receipt for {region} claims region "
                  f"{rc.get('createdWithRegion')!r} — refusing to reuse")
@@ -46,8 +47,14 @@ def provision(run_id, region):
     # R26-9: record the project THE MOMENT it exists — a partial
     # provisioning failure (bucket/key call dying) must leave enough
     # state for teardown to find and delete the orphan project.
+    # The campaign STAMP is written here too, not only at deploy:
+    # teardown refuses stamp mismatches, so a project that provisioned
+    # but never deployed was undeletable by its own run id (the
+    # 20260814 wave orphaned exactly such a project and wedged its
+    # region's receipt).
     os.makedirs(f"{S}/receipts", exist_ok=True)
     open(f"{S}/proj-{region}.txt", "w").write(proj["id"])
+    open(f"{S}/proj-{region}.txt.campaign", "w").write(run_id)
     json.dump({"runId": run_id, "region": region, "projectId": proj["id"],
                "partial": True, "createdWithRegion": region},
               open(receipt_path, "w"), indent=1)
