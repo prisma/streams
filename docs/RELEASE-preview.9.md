@@ -2,7 +2,7 @@
 
 ## Provenance
 - Tag commit: (this commit; see git tag v0.2.0-preview.9)
-- SlateDB pin: # sorenbs/slatedb (tags pin-014-final, and the final pin rev 323bc1b).
+- SlateDB pin: 0717cc1e4e9bad10a4773760f66bac4264ecf05e (upstream slatedb)
 - Release binary (x86_64-musl) sha256: 4e3e52acd3fb6aab88af018c1a0663969ec45130a012dc74c09000863b520d5f
 - Build identity embedded: STREAMS_GIT_COMMIT via build.rs; verified in
   the field by verify-running.py (binary sha + git commit + build time
