@@ -1441,7 +1441,11 @@ async function watchCapability(
     ["sign"],
   );
   const out = new Uint8Array(await subtle().sign("HMAC", mac, ab(input)));
-  return `${expiresUnix}.${toHex(out.subarray(0, 16))}`;
+  // Wire v2: the capability CARRIES the project so the server resolves
+  // which project's same-named stream it targets before any lookup.
+  // The signature input has always bound the project, so a swapped
+  // prefix cannot verify.
+  return `${project}.${expiresUnix}.${toHex(out.subarray(0, 16))}`;
 }
 
 // ---------------------------------------------------------------------

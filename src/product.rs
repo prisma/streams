@@ -3206,7 +3206,7 @@ async fn translate_append_response(
                     seg_id,
                     offset: next,
                 }
-                .encode(&k)
+                .encode(&desc.project_id, &k)
             }
             Err(_) => String::new(),
         };
@@ -3713,27 +3713,30 @@ async fn product_read(
             }
         }
         Some("now") => Some("now".to_string()),
-        Some(c) => match crate::product_cursor::KeyCursor::decode(c, &skey, &epoch, &kh) {
-            Ok(kc) => Some(cursor_to_raw_token(&desc, kc.seg_id, kc.offset)),
-            Err("wrong_cursor_kind") => {
-                return perr(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_cursor",
-                    "cursor is not a key cursor for this endpoint",
-                    None,
-                    false,
-                );
+        Some(c) => {
+            match crate::product_cursor::KeyCursor::decode(c, &desc.project_id, &skey, &epoch, &kh)
+            {
+                Ok(kc) => Some(cursor_to_raw_token(&desc, kc.seg_id, kc.offset)),
+                Err("wrong_cursor_kind") => {
+                    return perr(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_cursor",
+                        "cursor is not a key cursor for this endpoint",
+                        None,
+                        false,
+                    );
+                }
+                Err(_) => {
+                    return perr(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_cursor",
+                        "cursor does not belong to this stream and routing key",
+                        None,
+                        false,
+                    );
+                }
             }
-            Err(_) => {
-                return perr(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_cursor",
-                    "cursor does not belong to this stream and routing key",
-                    None,
-                    false,
-                );
-            }
-        },
+        }
     };
     // CHAOS-4: a value we cannot parse is a client mistake, not a
     // request for the default. Silently substituting the 8 MiB default
@@ -3844,7 +3847,7 @@ async fn product_read(
         seg_id,
         offset: next,
     }
-    .encode(&skey);
+    .encode(&desc.project_id, &skey);
     // deliver=applied: restate the durable-clamped resume position as a
     // signed product cursor, and pass the provisional-suffix marker
     // through. Absent in durable mode (the raw machine only emits these
@@ -3873,7 +3876,7 @@ async fn product_read(
             seg_id: dseg,
             offset: dnext,
         }
-        .encode(&skey);
+        .encode(&desc.project_id, &skey);
         r = r.header("Prisma-Durable-Cursor", dcur);
     }
     if let Some(pf) = pending_from {
@@ -3995,36 +3998,39 @@ async fn product_scan(
         .map(String::as_str)
         .filter(|c| !c.is_empty())
     {
-        Some(c) => match crate::product_cursor::ScanCursor::decode(c, &skey, &epoch, now) {
-            Ok(sc) => sc,
-            Err("scan_expired") => {
-                return perr(
-                    StatusCode::GONE,
-                    "scan_expired",
-                    "scan snapshot expired; start a new scan",
-                    None,
-                    false,
-                );
+        Some(c) => {
+            match crate::product_cursor::ScanCursor::decode(c, &desc.project_id, &skey, &epoch, now)
+            {
+                Ok(sc) => sc,
+                Err("scan_expired") => {
+                    return perr(
+                        StatusCode::GONE,
+                        "scan_expired",
+                        "scan snapshot expired; start a new scan",
+                        None,
+                        false,
+                    );
+                }
+                Err("wrong_cursor_kind") => {
+                    return perr(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_cursor",
+                        "cursor is not a scan cursor",
+                        None,
+                        false,
+                    );
+                }
+                Err(_) => {
+                    return perr(
+                        StatusCode::BAD_REQUEST,
+                        "invalid_cursor",
+                        "invalid scan cursor",
+                        None,
+                        false,
+                    );
+                }
             }
-            Err("wrong_cursor_kind") => {
-                return perr(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_cursor",
-                    "cursor is not a scan cursor",
-                    None,
-                    false,
-                );
-            }
-            Err(_) => {
-                return perr(
-                    StatusCode::BAD_REQUEST,
-                    "invalid_cursor",
-                    "invalid scan cursor",
-                    None,
-                    false,
-                );
-            }
-        },
+        }
         None => {
             // Snapshot creation: every segment in (creation, id) order
             // with its boundary frozen NOW — later appends and later
@@ -4291,7 +4297,10 @@ async fn product_scan(
             current_offset: off,
             expires_at_ms: sc.expires_at_ms,
         };
-        r = r.header("Prisma-Next-Scan-Cursor", next.encode(&skey));
+        r = r.header(
+            "Prisma-Next-Scan-Cursor",
+            next.encode(&desc.project_id, &skey),
+        );
     }
     // §4.2/§5: one scan operation, payload bytes only. Pages fetched
     // from peer owners are included HERE (this is the public delivery)
@@ -5905,7 +5914,7 @@ async fn dlq_and_settle(
                 seg_id,
                 offset: *off,
             }
-            .encode(skey);
+            .encode(&desc.project_id, skey);
             let value: serde_json::Value = if desc.is_json() {
                 serde_json::from_slice(payload).unwrap_or(serde_json::Value::Null)
             } else {
@@ -6216,10 +6225,10 @@ async fn product_consumer_pull(
                         )
                     };
                     messages.push(json!({
-                        "id": msg.encode(&skey),
+                        "id": msg.encode(&desc.project_id, &skey),
                         "routingKey": rkey,
                         "attempts": attempts,
-                        "leaseToken": lease.encode(&skey),
+                        "leaseToken": lease.encode(&desc.project_id, &skey),
                         "value": value,
                     }));
                 }
@@ -6319,7 +6328,7 @@ async fn product_consumer_settle(
     type SegOps = (Vec<(u64, u32)>, Vec<(u64, u32, u64)>, Vec<(u64, u32, u64)>);
     let mut per_seg: std::collections::HashMap<u32, SegOps> = Default::default();
     let mut tok = |t: &str| -> Option<(u32, u64, u32)> {
-        match crate::product_cursor::LeaseToken::decode(t, &skey, &epoch) {
+        match crate::product_cursor::LeaseToken::decode(t, &desc.project_id, &skey, &epoch) {
             // A token from a DELETED consumer generation is stale by
             // definition — even if the name has since been recreated,
             // this lease belongs to a dead incarnation (round 16).
@@ -6694,7 +6703,31 @@ async fn product_watch_wait(
             false,
         )
     };
-    let desc = match state.registry.get(&tenant.stream_ref(&name)).await {
+    // Review item 3: a capability CARRIES its project (wire v2), so a
+    // bearer-free observation resolves the right project's same-named
+    // stream BEFORE the registry lookup. Key-holder requests (no cap)
+    // stay on the request tenant. A cap whose project fails the ID
+    // grammar gets the uniform refusal, same as a forged signature.
+    let cap_early = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Prisma-Watch "))
+        .map(str::to_string)
+        .or_else(
+            || match strict_query(query, &["cursor", "cap", "timeoutMs"]) {
+                Ok(q) => q.get("cap").cloned(),
+                Err(_) => None,
+            },
+        );
+    let cap_tenant = match &cap_early {
+        Some(c) => match crate::crypto::watch_capability_project(c) {
+            Some(p) => Some(p),
+            None => return refuse(),
+        },
+        None => None,
+    };
+    let lookup_tenant = cap_tenant.as_ref().unwrap_or(tenant);
+    let desc = match state.registry.get(&lookup_tenant.stream_ref(&name)).await {
         Ok(Some(d)) if crate::http::desc_alive(&d) => d,
         _ => return refuse(),
     };
@@ -6844,7 +6877,7 @@ async fn product_watch_wait(
                 "streamCursor": state
                     .keys
                     .get(&desc.storage_hash())
-                    .map(|(k, _)| stream_cursor(end_offset).encode(&k)),
+                    .map(|(k, _)| stream_cursor(end_offset).encode(&desc.project_id, &k)),
             }),
         ),
         WaitOutcome::Stale { cursor } => (
@@ -6865,7 +6898,7 @@ async fn product_watch_wait(
                 "streamCursor": state
                     .keys
                     .get(&desc.storage_hash())
-                    .map(|(k, _)| stream_cursor(end_offset).encode(&k)),
+                    .map(|(k, _)| stream_cursor(end_offset).encode(&desc.project_id, &k)),
             }),
         ),
     };
@@ -6918,34 +6951,33 @@ pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMa
         Ok(v) => v.unwrap_or(100).clamp(1, 1000),
         Err(r) => return r,
     };
-    // Opaque cursor (audit P0): the wire form is not an editable stream
-    // name. It encodes the position to continue from.
-    let after: Option<String> = match q.get("cursor").filter(|c| !c.is_empty()) {
-        None => None,
-        Some(c) => {
-            use base64::Engine;
-            match base64::engine::general_purpose::URL_SAFE_NO_PAD
-                .decode(c.as_bytes())
-                .ok()
-                .and_then(|b| String::from_utf8(b).ok())
-            {
-                Some(n) => Some(n),
-                None => {
-                    return perr(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_cursor",
-                        "invalid catalog cursor",
-                        None,
-                        false,
-                    );
-                }
-            }
-        }
-    };
     let list_project = principal
         .as_ref()
         .map(|p| p.project_id.clone())
         .unwrap_or_else(|| state.tenant.clone());
+    // Review item 3: the cursor is versioned, PROJECT-BOUND and (when
+    // the deployment key is set) signed — a cursor from another
+    // project, another key posture, or the retired bare-base64 form is
+    // invalid_cursor, never a silent reposition.
+    let after: Option<String> = match q.get("cursor").filter(|c| !c.is_empty()) {
+        None => None,
+        Some(c) => match crate::product_cursor::CatalogCursor::decode(
+            c,
+            &list_project,
+            state.catalog_cursor_key.as_ref(),
+        ) {
+            Some(n) => Some(n),
+            None => {
+                return perr(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_cursor",
+                    "invalid catalog cursor",
+                    None,
+                    false,
+                );
+            }
+        },
+    };
     let page = match state
         .registry
         .list_page(&list_project, after.as_deref(), limit)
@@ -6992,9 +7024,13 @@ pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMa
     if !page.exhausted
         && let Some(n) = page.next_after
     {
-        use base64::Engine;
-        body["cursor"] =
-            json!(base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(n.as_bytes()));
+        body["cursor"] = json!(
+            crate::product_cursor::CatalogCursor {
+                project: list_project.clone(),
+                last_name: n,
+            }
+            .encode(state.catalog_cursor_key.as_ref())
+        );
     }
     Response::builder()
         .status(StatusCode::OK)

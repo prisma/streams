@@ -373,6 +373,11 @@ struct Args {
     streams_auth_grants_file: Option<std::path::PathBuf>,
     #[arg(long, env = "STREAMS_AUTH_REFRESH_SECS", default_value_t = 30)]
     streams_auth_refresh_secs: u64,
+    /// Base64 32-byte key signing catalog cursors (review item 3).
+    /// Set the SAME value fleet-wide so page walks verify on any
+    /// instance; optional on a single instance.
+    #[arg(long, env = "STREAMS_CURSOR_KEY")]
+    streams_cursor_key: Option<String>,
 
     /// Fleet-internal credential for /v1/internal/* peer RPCs. REQUIRED
     /// when fleet mode is on (startup refuses otherwise), MUST differ
@@ -1161,6 +1166,18 @@ async fn async_main() -> anyhow::Result<()> {
             crate::auth::POLICY_STALENESS_MAX_SECS
         );
     }
+    let catalog_cursor_key: Option<[u8; 32]> = match &args.streams_cursor_key {
+        None => None,
+        Some(b64) => {
+            use base64::Engine;
+            let raw = base64::engine::general_purpose::STANDARD
+                .decode(b64)
+                .map_err(|e| anyhow::anyhow!("STREAMS_CURSOR_KEY is not base64: {e}"))?;
+            Some(<[u8; 32]>::try_from(raw.as_slice()).map_err(|_| {
+                anyhow::anyhow!("STREAMS_CURSOR_KEY must decode to exactly 32 bytes")
+            })?)
+        }
+    };
     let auth_service = std::sync::Arc::new(crate::auth::AuthService::new(
         auth_mode,
         args.streams_auth_issuer.clone(),
@@ -1479,6 +1496,7 @@ async fn async_main() -> anyhow::Result<()> {
         cell_id: args.cell_id.clone(),
         region: args.telemetry_region.clone(),
         quotas: crate::quota::QuotaRegistry::default(),
+        catalog_cursor_key,
     });
     let _ = state_slot.set(Arc::downgrade(&state));
     // MULTITENANCY Stage 5: feed refresher — an immediate first fetch,

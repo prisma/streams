@@ -5405,6 +5405,7 @@ async fn http_rig_inner(
         cell_id: "cell_test".to_string(),
         region: "test".to_string(),
         quotas: crate::quota::QuotaRegistry::default(),
+        catalog_cursor_key: None,
     });
     let app = crate::http::router(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -7473,7 +7474,7 @@ async fn product_append_and_append_many() {
         .unwrap();
     let epoch = desc.epoch_bytes().unwrap();
     let kh = crate::crypto::stream_hash("customer-42");
-    let c = crate::product_cursor::KeyCursor::decode(&cursor1, &key, &epoch, &kh)
+    let c = crate::product_cursor::KeyCursor::decode(&cursor1, &state.tenant, &key, &epoch, &kh)
         .expect("cursor decodes");
     assert_eq!(c.offset, 1, "cursor after the first single append");
 
@@ -7736,7 +7737,7 @@ async fn product_read_pages_and_binds_cursors() {
         current_offset: 0,
         expires_at_ms: i64::MAX,
     }
-    .encode(&skey());
+    .encode(&state.tenant, &skey());
     let path = format!("/v1/streams/reads/records?routingKey=c1&cursor={sc}");
     let (st, _, _) = preq(
         addr,
@@ -8066,7 +8067,7 @@ async fn product_sse_controls_carry_signed_cursors() {
         .unwrap();
     let epoch = desc.epoch_bytes().unwrap();
     let kh = crate::crypto::stream_hash("s1");
-    let kc = crate::product_cursor::KeyCursor::decode(&tok, &skey(), &epoch, &kh)
+    let kc = crate::product_cursor::KeyCursor::decode(&tok, &state.tenant, &skey(), &epoch, &kh)
         .expect("signed cursor decodes");
     assert_eq!(kc.offset, 2, "cursor sits after the two records");
     drop(sck);
@@ -8234,7 +8235,7 @@ async fn product_scan_is_snapshot_exact() {
         current_offset: 0,
         expires_at_ms: 1,
     }
-    .encode(&skey());
+    .encode(&state.tenant, &skey());
     let path = format!("/v1/streams/scn:scan?cursor={expired}");
     let (st, _, b) = preq(
         addr,
@@ -8255,7 +8256,7 @@ async fn product_scan_is_snapshot_exact() {
         seg_id: 0,
         offset: 0,
     }
-    .encode(&skey());
+    .encode(&state.tenant, &skey());
     let path = format!("/v1/streams/scn:scan?cursor={kc}");
     let (st, _, _) = preq(
         addr,
@@ -8488,6 +8489,7 @@ async fn product_producer_hash_discipline() {
     let kh = crate::crypto::stream_hash("g");
     let kc = crate::product_cursor::KeyCursor::decode(
         v["cursor"].as_str().unwrap(),
+        &state.tenant,
         &skey(),
         &epoch,
         &kh,
@@ -8497,7 +8499,8 @@ async fn product_producer_hash_discipline() {
         kc.offset, 2,
         "duplicate cursor = original commit, not the tail"
     );
-    let kc0 = crate::product_cursor::KeyCursor::decode(&c0, &skey(), &epoch, &kh).unwrap();
+    let kc0 =
+        crate::product_cursor::KeyCursor::decode(&c0, &state.tenant, &skey(), &epoch, &kh).unwrap();
     assert_eq!(kc0.offset, 1, "first append's cursor");
 
     // Older-seq retry: still a duplicate (no reuse conflict).
@@ -9450,7 +9453,7 @@ async fn product_watch_wakes_on_matching_append() {
     let sk = crate::crypto::wait_sig_key(&tok, &epoch);
     let exp = crate::shard::now_ms() / 1000 + 120;
     let cap = format!(
-        "{exp}.{}",
+        "proj-test.{exp}.{}",
         crate::crypto::watch_capability_sig(
             &sk,
             &state.sref("wt"),
@@ -9494,7 +9497,7 @@ async fn product_watch_wakes_on_matching_append() {
     // A capability minted BEYOND the 5-minute maximum is refused too.
     let far = crate::shard::now_ms() / 1000 + 86_400;
     let long = format!(
-        "{far}.{}",
+        "proj-test.{far}.{}",
         crate::crypto::watch_capability_sig(
             &sk,
             &state.sref("wt"),
@@ -9943,7 +9946,7 @@ async fn watch_urls_verify_on_a_process_that_never_saw_the_key() {
     // absorbed a record, never issued this URL.
     let (state2, addr2) = http_rig(store).await;
     let cap = format!(
-        "{exp}.{}",
+        "proj-test.{exp}.{}",
         crate::crypto::watch_capability_sig(
             &crate::crypto::wait_sig_key(&tok, &epoch),
             &state2.sref("wsig"),
@@ -10281,7 +10284,7 @@ async fn only_the_exact_signed_watch_route_skips_the_token() {
     let tok = crate::crypto::touch_token(&key, &epoch);
     let exp = crate::shard::now_ms() / 1000 + 120;
     let cap = format!(
-        "{exp}.{}",
+        "proj-test.{exp}.{}",
         crate::crypto::watch_capability_sig(
             &crate::crypto::wait_sig_key(&tok, &epoch),
             &state.sref("wauth"),

@@ -15,10 +15,10 @@
 
 use crate::crypto::StreamKey;
 
-pub const KIND_KEY_V1: u8 = 0x11;
-pub const KIND_SCAN_V1: u8 = 0x21;
-pub const KIND_MSG_V1: u8 = 0x31;
-pub const KIND_LEASE_V1: u8 = 0x41;
+pub const KIND_KEY_V2: u8 = 0x12;
+pub const KIND_SCAN_V2: u8 = 0x22;
+pub const KIND_MSG_V2: u8 = 0x32;
+pub const KIND_LEASE_V2: u8 = 0x42;
 
 const MAC_LEN: usize = 16;
 
@@ -37,8 +37,20 @@ pub struct KeyCursor {
     pub offset: u64,
 }
 
-fn mac_key(key: &StreamKey, epoch: &[u8; 16]) -> [u8; 32] {
-    crate::crypto::derive_subkey(key, epoch, "\u{0}product-cursor\u{0}", 0)
+/// v2 (review item 3): the subkey binds the PROJECT as well as the
+/// stream key and epoch — a cursor minted for one project's stream
+/// can never authenticate against another project's same-named,
+/// same-keyed stream.
+fn mac_key(project: &crate::tenant::ProjectId, key: &StreamKey, epoch: &[u8; 16]) -> [u8; 32] {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let base = crate::crypto::derive_subkey(key, epoch, "\u{0}product-cursor-v2\u{0}", 0);
+    let mut m = <Hmac<Sha256> as Mac>::new_from_slice(&base).expect("hmac key");
+    m.update(project.as_str().as_bytes());
+    let full = m.finalize().into_bytes();
+    let mut out = [0u8; 32];
+    out.copy_from_slice(&full);
+    out
 }
 
 fn mac16(k: &[u8; 32], payload: &[u8]) -> [u8; MAC_LEN] {
@@ -65,14 +77,14 @@ fn unb64(s: &str) -> Option<Vec<u8>> {
 }
 
 impl KeyCursor {
-    pub fn encode(&self, key: &StreamKey) -> String {
+    pub fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
         let mut p = Vec::with_capacity(1 + 16 + 16 + 4 + 8 + MAC_LEN);
-        p.push(KIND_KEY_V1);
+        p.push(KIND_KEY_V2);
         p.extend_from_slice(&self.epoch);
         p.extend_from_slice(&self.key_hash);
         p.extend_from_slice(&self.seg_id.to_le_bytes());
         p.extend_from_slice(&self.offset.to_le_bytes());
-        let mac = mac16(&mac_key(key, &self.epoch), &p);
+        let mac = mac16(&mac_key(project, key, &self.epoch), &p);
         p.extend_from_slice(&mac);
         b64(&p)
     }
@@ -83,12 +95,13 @@ impl KeyCursor {
     /// silent cross-read.
     pub fn decode(
         s: &str,
+        project: &crate::tenant::ProjectId,
         key: &StreamKey,
         expect_epoch: &[u8; 16],
         expect_key_hash: &[u8; 16],
     ) -> Result<KeyCursor, &'static str> {
         let raw = unb64(s).ok_or("invalid_cursor")?;
-        if raw.first() != Some(&KIND_KEY_V1) {
+        if raw.first() != Some(&KIND_KEY_V2) {
             // A scan cursor (or protocol offset) on a key endpoint is a
             // DIFFERENT token class, rejected explicitly — checked
             // before the length so the class error is stable.
@@ -100,7 +113,7 @@ impl KeyCursor {
         let (payload, mac) = raw.split_at(raw.len() - MAC_LEN);
         let mut epoch = [0u8; 16];
         epoch.copy_from_slice(&payload[1..17]);
-        let want = mac16(&mac_key(key, &epoch), payload);
+        let want = mac16(&mac_key(project, key, &epoch), payload);
         // Constant-time-ish compare (16 bytes; not secret-dependent
         // branching on contents).
         if mac
@@ -144,10 +157,86 @@ pub struct ScanCursor {
 
 pub const SCAN_CURSOR_MAX: usize = 16 * 1024;
 
+/// Catalog cursor (review item 3): versioned and PROJECT-BOUND — a
+/// listing cursor from one project replayed under another is
+/// invalid_cursor, never a silent reposition. Signed with the
+/// deployment cursor key when one is configured (fleets set
+/// STREAMS_CURSOR_KEY so page walks verify across instances; a
+/// keyless single instance still gets the binding, and cursors from a
+/// differently-configured process fail closed on shape).
+pub const KIND_CATALOG_V1: u8 = 0x51;
+
+pub struct CatalogCursor {
+    pub project: crate::tenant::ProjectId,
+    pub last_name: String,
+}
+
+impl CatalogCursor {
+    pub fn encode(&self, key: Option<&[u8; 32]>) -> String {
+        let pb = self.project.as_str().as_bytes();
+        let mut p = Vec::with_capacity(1 + 2 + pb.len() + self.last_name.len() + MAC_LEN);
+        p.push(KIND_CATALOG_V1);
+        p.extend_from_slice(&(pb.len() as u16).to_le_bytes());
+        p.extend_from_slice(pb);
+        p.extend_from_slice(self.last_name.as_bytes());
+        if let Some(k) = key {
+            let mac = mac16(k, &p);
+            p.extend_from_slice(&mac);
+        }
+        b64(&p)
+    }
+
+    /// Decode, verify (when keyed), and REQUIRE the bound project to
+    /// be the request's listing authority.
+    pub fn decode(
+        s: &str,
+        expect_project: &crate::tenant::ProjectId,
+        key: Option<&[u8; 32]>,
+    ) -> Option<String> {
+        let raw = unb64(s)?;
+        let body = match key {
+            Some(k) => {
+                if raw.len() < 1 + 2 + MAC_LEN {
+                    return None;
+                }
+                let (payload, mac) = raw.split_at(raw.len() - MAC_LEN);
+                let want = mac16(k, payload);
+                if mac
+                    .iter()
+                    .zip(want.iter())
+                    .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+                    != 0
+                {
+                    return None;
+                }
+                payload
+            }
+            None => {
+                if raw.len() < 1 + 2 {
+                    return None;
+                }
+                &raw[..]
+            }
+        };
+        if body.first() != Some(&KIND_CATALOG_V1) {
+            return None;
+        }
+        let plen = u16::from_le_bytes([body[1], body[2]]) as usize;
+        if body.len() < 3 + plen {
+            return None;
+        }
+        let project = std::str::from_utf8(&body[3..3 + plen]).ok()?;
+        if project != expect_project.as_str() {
+            return None;
+        }
+        String::from_utf8(body[3 + plen..].to_vec()).ok()
+    }
+}
+
 impl ScanCursor {
-    pub fn encode(&self, key: &StreamKey) -> String {
+    pub fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
         let mut p = Vec::with_capacity(64 + self.segments.len() * 12);
-        p.push(KIND_SCAN_V1);
+        p.push(KIND_SCAN_V2);
         p.extend_from_slice(&self.epoch);
         p.extend_from_slice(&self.map_version.to_le_bytes());
         p.extend_from_slice(&(self.segments.len() as u32).to_le_bytes());
@@ -158,13 +247,14 @@ impl ScanCursor {
         p.extend_from_slice(&self.current_index.to_le_bytes());
         p.extend_from_slice(&self.current_offset.to_le_bytes());
         p.extend_from_slice(&self.expires_at_ms.to_le_bytes());
-        let mac = mac16(&mac_key(key, &self.epoch), &p);
+        let mac = mac16(&mac_key(project, key, &self.epoch), &p);
         p.extend_from_slice(&mac);
         b64(&p)
     }
 
     pub fn decode(
         s: &str,
+        project: &crate::tenant::ProjectId,
         key: &StreamKey,
         expect_epoch: &[u8; 16],
         now_ms: i64,
@@ -176,7 +266,7 @@ impl ScanCursor {
         // Class before length: a KEY cursor is shorter than the scan
         // minimum, so a length-first check would report the wrong error
         // for the wrong-endpoint case.
-        if raw.first() != Some(&KIND_SCAN_V1) {
+        if raw.first() != Some(&KIND_SCAN_V2) {
             return Err("wrong_cursor_kind");
         }
         if raw.len() < 1 + 16 + 8 + 4 + 4 + 8 + 8 + MAC_LEN {
@@ -185,7 +275,7 @@ impl ScanCursor {
         let (payload, mac) = raw.split_at(raw.len() - MAC_LEN);
         let mut epoch = [0u8; 16];
         epoch.copy_from_slice(&payload[1..17]);
-        let want = mac16(&mac_key(key, &epoch), payload);
+        let want = mac16(&mac_key(project, key, &epoch), payload);
         if mac
             .iter()
             .zip(want.iter())
@@ -240,25 +330,26 @@ pub struct MessageId {
 }
 
 impl MessageId {
-    pub fn encode(&self, key: &StreamKey) -> String {
+    pub fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
         let mut p = Vec::with_capacity(1 + 16 + 16 + 4 + 8 + MAC_LEN);
-        p.push(KIND_MSG_V1);
+        p.push(KIND_MSG_V2);
         p.extend_from_slice(&self.epoch);
         p.extend_from_slice(&self.key_hash);
         p.extend_from_slice(&self.seg_id.to_le_bytes());
         p.extend_from_slice(&self.offset.to_le_bytes());
-        let mac = mac16(&mac_key(key, &self.epoch), &p);
+        let mac = mac16(&mac_key(project, key, &self.epoch), &p);
         p.extend_from_slice(&mac);
         b64(&p)
     }
 
     pub fn decode(
         s: &str,
+        project: &crate::tenant::ProjectId,
         key: &StreamKey,
         expect_epoch: &[u8; 16],
     ) -> Result<MessageId, &'static str> {
         let raw = unb64(s).ok_or("invalid_message_id")?;
-        if raw.first() != Some(&KIND_MSG_V1) {
+        if raw.first() != Some(&KIND_MSG_V2) {
             return Err("wrong_token_kind");
         }
         if raw.len() != 1 + 16 + 16 + 4 + 8 + MAC_LEN {
@@ -267,7 +358,7 @@ impl MessageId {
         let (payload, mac) = raw.split_at(raw.len() - MAC_LEN);
         let mut epoch = [0u8; 16];
         epoch.copy_from_slice(&payload[1..17]);
-        let want = mac16(&mac_key(key, &epoch), payload);
+        let want = mac16(&mac_key(project, key, &epoch), payload);
         if mac
             .iter()
             .zip(want.iter())
@@ -308,9 +399,9 @@ pub struct LeaseToken {
 }
 
 impl LeaseToken {
-    pub fn encode(&self, key: &StreamKey) -> String {
+    pub fn encode(&self, project: &crate::tenant::ProjectId, key: &StreamKey) -> String {
         let mut p = Vec::with_capacity(1 + 16 + 16 + 4 + 8 + 4 + 8 + 8 + MAC_LEN);
-        p.push(KIND_LEASE_V1);
+        p.push(KIND_LEASE_V2);
         p.extend_from_slice(&self.msg.epoch);
         p.extend_from_slice(&self.msg.key_hash);
         p.extend_from_slice(&self.msg.seg_id.to_le_bytes());
@@ -318,18 +409,19 @@ impl LeaseToken {
         p.extend_from_slice(&self.lease_gen.to_le_bytes());
         p.extend_from_slice(&self.consumer_gen.to_le_bytes());
         p.extend_from_slice(&self.deadline_ms.to_le_bytes());
-        let mac = mac16(&mac_key(key, &self.msg.epoch), &p);
+        let mac = mac16(&mac_key(project, key, &self.msg.epoch), &p);
         p.extend_from_slice(&mac);
         b64(&p)
     }
 
     pub fn decode(
         s: &str,
+        project: &crate::tenant::ProjectId,
         key: &StreamKey,
         expect_epoch: &[u8; 16],
     ) -> Result<LeaseToken, &'static str> {
         let raw = unb64(s).ok_or("invalid_lease_token")?;
-        if raw.first() != Some(&KIND_LEASE_V1) {
+        if raw.first() != Some(&KIND_LEASE_V2) {
             return Err("wrong_token_kind");
         }
         if raw.len() != 1 + 16 + 16 + 4 + 8 + 4 + 8 + 8 + MAC_LEN {
@@ -338,7 +430,7 @@ impl LeaseToken {
         let (payload, mac) = raw.split_at(raw.len() - MAC_LEN);
         let mut epoch = [0u8; 16];
         epoch.copy_from_slice(&payload[1..17]);
-        let want = mac16(&mac_key(key, &epoch), payload);
+        let want = mac16(&mac_key(project, key, &epoch), payload);
         if mac
             .iter()
             .zip(want.iter())
@@ -373,6 +465,73 @@ impl LeaseToken {
 
 #[cfg(test)]
 mod tests {
+    fn tp() -> crate::tenant::ProjectId {
+        crate::tenant::ProjectId::new("proj-test").unwrap()
+    }
+
+    fn other() -> crate::tenant::ProjectId {
+        crate::tenant::ProjectId::new("proj-other").unwrap()
+    }
+
+    /// Review item 3 red tests: cursors are PROJECT-BOUND.
+    #[test]
+    fn cursors_never_cross_projects() {
+        // Same stream key, same epoch, same routing key — only the
+        // project differs. The v2 subkey makes the MAC fail.
+        let c = KeyCursor {
+            epoch: [1; 16],
+            key_hash: [2; 16],
+            seg_id: 0,
+            offset: 7,
+        };
+        let s = c.encode(&tp(), &key());
+        assert!(KeyCursor::decode(&s, &tp(), &key(), &[1; 16], &[2; 16]).is_ok());
+        assert!(
+            KeyCursor::decode(&s, &other(), &key(), &[1; 16], &[2; 16]).is_err(),
+            "a cursor minted under one project must not verify under another"
+        );
+
+        // Catalog cursor: bound without a key, signed with one.
+        let cc = CatalogCursor {
+            project: tp(),
+            last_name: "orders".into(),
+        };
+        let unsigned = cc.encode(None);
+        assert_eq!(
+            CatalogCursor::decode(&unsigned, &tp(), None).as_deref(),
+            Some("orders")
+        );
+        assert!(
+            CatalogCursor::decode(&unsigned, &other(), None).is_none(),
+            "project binding holds even unsigned"
+        );
+        let k = [7u8; 32];
+        let signed = cc.encode(Some(&k));
+        assert_eq!(
+            CatalogCursor::decode(&signed, &tp(), Some(&k)).as_deref(),
+            Some("orders")
+        );
+        // Tampered project inside a signed cursor: MAC fails.
+        let mut raw = {
+            use base64::Engine;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode(signed.as_bytes())
+                .unwrap()
+        };
+        raw[4] ^= 1;
+        let tampered = {
+            use base64::Engine;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(&raw)
+        };
+        assert!(CatalogCursor::decode(&tampered, &tp(), Some(&k)).is_none());
+        // The retired bare-base64 cursor form is invalid.
+        let legacy = {
+            use base64::Engine;
+            base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(b"orders")
+        };
+        assert!(CatalogCursor::decode(&legacy, &tp(), None).is_none());
+    }
+
     use super::*;
 
     fn key() -> StreamKey {
@@ -387,21 +546,21 @@ mod tests {
             seg_id: 7,
             offset: 4242,
         };
-        let s = c.encode(&key());
+        let s = c.encode(&tp(), &key());
         assert_eq!(
-            KeyCursor::decode(&s, &key(), &[1; 16], &[2; 16]).unwrap(),
+            KeyCursor::decode(&s, &tp(), &key(), &[1; 16], &[2; 16]).unwrap(),
             c
         );
         // Wrong stream incarnation / wrong routing key / wrong stream key.
-        assert!(KeyCursor::decode(&s, &key(), &[9; 16], &[2; 16]).is_err());
-        assert!(KeyCursor::decode(&s, &key(), &[1; 16], &[3; 16]).is_err());
-        assert!(KeyCursor::decode(&s, &StreamKey([8u8; 32]), &[1; 16], &[2; 16]).is_err());
+        assert!(KeyCursor::decode(&s, &tp(), &key(), &[9; 16], &[2; 16]).is_err());
+        assert!(KeyCursor::decode(&s, &tp(), &key(), &[1; 16], &[3; 16]).is_err());
+        assert!(KeyCursor::decode(&s, &tp(), &StreamKey([8u8; 32]), &[1; 16], &[2; 16]).is_err());
         // Tampered byte.
         let mut raw = s.into_bytes();
         let mid = raw.len() / 2;
         raw[mid] = if raw[mid] == b'A' { b'B' } else { b'A' };
         let t = String::from_utf8(raw).unwrap();
-        assert!(KeyCursor::decode(&t, &key(), &[1; 16], &[2; 16]).is_err());
+        assert!(KeyCursor::decode(&t, &tp(), &key(), &[1; 16], &[2; 16]).is_err());
     }
 
     #[test]
@@ -414,13 +573,13 @@ mod tests {
             current_offset: 10,
             expires_at_ms: 1_000_000,
         };
-        let s = c.encode(&key());
+        let s = c.encode(&tp(), &key());
         assert_eq!(
-            ScanCursor::decode(&s, &key(), &[1; 16], 999_999).unwrap(),
+            ScanCursor::decode(&s, &tp(), &key(), &[1; 16], 999_999).unwrap(),
             c
         );
         assert_eq!(
-            ScanCursor::decode(&s, &key(), &[1; 16], 1_000_001).unwrap_err(),
+            ScanCursor::decode(&s, &tp(), &key(), &[1; 16], 1_000_001).unwrap_err(),
             "scan_expired"
         );
         // A key cursor on the scan decoder (and vice versa) is a
@@ -431,13 +590,13 @@ mod tests {
             seg_id: 0,
             offset: 0,
         }
-        .encode(&key());
+        .encode(&tp(), &key());
         assert_eq!(
-            ScanCursor::decode(&kc, &key(), &[1; 16], 0).unwrap_err(),
+            ScanCursor::decode(&kc, &tp(), &key(), &[1; 16], 0).unwrap_err(),
             "wrong_cursor_kind"
         );
         assert_eq!(
-            KeyCursor::decode(&s, &key(), &[1; 16], &[2; 16]).unwrap_err(),
+            KeyCursor::decode(&s, &tp(), &key(), &[1; 16], &[2; 16]).unwrap_err(),
             "wrong_cursor_kind"
         );
     }
@@ -450,30 +609,33 @@ mod tests {
             seg_id: 3,
             offset: 44,
         };
-        let ms = m.encode(&key());
-        assert_eq!(MessageId::decode(&ms, &key(), &[1; 16]).unwrap(), m);
-        assert!(MessageId::decode(&ms, &key(), &[9; 16]).is_err());
-        assert!(MessageId::decode(&ms, &StreamKey([8u8; 32]), &[1; 16]).is_err());
+        let ms = m.encode(&tp(), &key());
+        assert_eq!(MessageId::decode(&ms, &tp(), &key(), &[1; 16]).unwrap(), m);
+        assert!(MessageId::decode(&ms, &tp(), &key(), &[9; 16]).is_err());
+        assert!(MessageId::decode(&ms, &tp(), &StreamKey([8u8; 32]), &[1; 16]).is_err());
         let lt = LeaseToken {
             msg: m.clone(),
             lease_gen: 7,
             consumer_gen: 3,
             deadline_ms: 123_456,
         };
-        let ls = lt.encode(&key());
-        assert_eq!(LeaseToken::decode(&ls, &key(), &[1; 16]).unwrap(), lt);
+        let ls = lt.encode(&tp(), &key());
+        assert_eq!(
+            LeaseToken::decode(&ls, &tp(), &key(), &[1; 16]).unwrap(),
+            lt
+        );
         // Cross-kind: a lease token is not a message id, a message id
         // is not a cursor, and vice versa.
         assert_eq!(
-            MessageId::decode(&ls, &key(), &[1; 16]).unwrap_err(),
+            MessageId::decode(&ls, &tp(), &key(), &[1; 16]).unwrap_err(),
             "wrong_token_kind"
         );
         assert_eq!(
-            LeaseToken::decode(&ms, &key(), &[1; 16]).unwrap_err(),
+            LeaseToken::decode(&ms, &tp(), &key(), &[1; 16]).unwrap_err(),
             "wrong_token_kind"
         );
         assert_eq!(
-            KeyCursor::decode(&ms, &key(), &[1; 16], &[2; 16]).unwrap_err(),
+            KeyCursor::decode(&ms, &tp(), &key(), &[1; 16], &[2; 16]).unwrap_err(),
             "wrong_cursor_kind"
         );
     }

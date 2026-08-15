@@ -158,6 +158,18 @@ pub fn watch_capability_sig(
 /// Capability wire form: `<exp_unix>.<sig_hex32>`. Verification is
 /// constant-time over the signature and enforces the §15 lifetime
 /// window against the caller-supplied clock.
+/// Wire v2 (review item 3): `<project_id>.<exp_unix>.<sig_hex32>`.
+/// The capability CARRIES the project, so a bearer-free observation
+/// request can resolve which project's same-named stream it targets
+/// BEFORE any registry lookup — the wire's project must match the
+/// sref the caller resolved (and the signature input has always bound
+/// the project, so a swapped prefix cannot verify).
+#[allow(dead_code)] // unused only in the crypto-sharing side bins
+pub fn watch_capability_project(cap: &str) -> Option<crate::tenant::ProjectId> {
+    let (project_s, _) = cap.trim().split_once('.')?;
+    crate::tenant::ProjectId::new(project_s).ok()
+}
+
 #[allow(clippy::too_many_arguments)]
 #[allow(dead_code)] // unused only in the crypto-sharing side bins
 pub fn verify_watch_capability(
@@ -170,7 +182,13 @@ pub fn verify_watch_capability(
     method: &str,
     now_unix: i64,
 ) -> bool {
-    let Some((exp_s, got)) = cap.trim().split_once('.') else {
+    let Some((project_s, rest)) = cap.trim().split_once('.') else {
+        return false;
+    };
+    if project_s != sref.project_id().as_str() {
+        return false;
+    }
+    let Some((exp_s, got)) = rest.split_once('.') else {
         return false;
     };
     let Ok(exp) = exp_s.parse::<i64>() else {

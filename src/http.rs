@@ -215,6 +215,10 @@ pub struct AppState {
     pub auth: std::sync::Arc<crate::auth::AuthService>,
     /// §17.3 server backstops: bounded per-project admission.
     pub quotas: crate::quota::QuotaRegistry,
+    /// Review item 3: deployment key signing catalog cursors (fleets
+    /// set it so page walks verify across instances; None = bound but
+    /// unsigned on a single instance).
+    pub catalog_cursor_key: Option<[u8; 32]>,
     /// The deployment's tenant (MULTITENANCY transition posture):
     /// until enforce-mode principals carry per-request projects, a
     /// dedicated cell serves exactly ONE project, configured
@@ -6889,7 +6893,7 @@ pub(crate) fn sse_lineage_response(
                                             seg_id: sg.seg_id,
                                             offset: r.off + 1,
                                         }
-                                        .encode(&key),
+                                        .encode(&desc.project_id, &key),
                                         utd,
                                         cls,
                                     ),
@@ -6941,7 +6945,7 @@ pub(crate) fn sse_lineage_response(
                                 seg_id: sg.seg_id,
                                 offset: scan_from,
                             }
-                            .encode(&key),
+                            .encode(&desc.project_id, &key),
                             at_end,
                             report_closed,
                         ),
@@ -7114,7 +7118,7 @@ async fn sse_response(
                                         seg_id: ctl_seg_id,
                                         offset: r.off + 1,
                                     }
-                                    .encode(&key),
+                                    .encode(&desc.project_id, &key),
                                     utd,
                                     cls,
                                 ),
@@ -7156,7 +7160,7 @@ async fn sse_response(
                             seg_id: ctl_seg_id,
                             offset: pos,
                         }
-                        .encode(&key),
+                        .encode(&desc.project_id, &key),
                         at_end,
                         report_closed,
                     ),
