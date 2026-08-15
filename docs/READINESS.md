@@ -29,14 +29,18 @@ wins.
   boot id on /readyz and /v1/debug/load; campaign verifier compares all.
 - Cost of the survival profile: +4.7% cost units (accepted).
 
-## Tenancy — DECIDED, implementation pending
-**Many projects per cell is the chosen architecture** (2026-08-14;
-implementation plan in preparation, owner: Søren). Consequences this
-table tracks as GA blockers for shared cells:
-- per-request trusted principal (account, project, permissions);
-- tenant-scoped quotas (streams, append/read bytes + requests,
-  subscriptions, consumer ops, stored bytes, monthly spend).
-Until that lands, deployments are one-project-per-cell dedicated.
+## Tenancy — PLAN FROZEN, IMPLEMENTATION IN PROGRESS
+**Many projects per cell is the chosen architecture** (decided
+2026-08-14; implementation plan delivered and frozen 2026-08-15 as
+`docs/MULTITENANCY.md` — that document is the contract; the
+stage-by-stage conversion inventory is `docs/MULTITENANCY-MAP.md`).
+Shared-cell GA blockers tracked there (§20): project-qualified
+identity everywhere (layout 4), per-request verified principal with
+exact ownership/grant version checks, project/workspace quotas,
+transfer without data rewrite, separate customer/fleet/operator/watch
+trust boundaries, shared-cell field battery + external security
+review. Until Stage 8 exits, deployments remain
+one-project-per-cell dedicated.
 
 ## Platform (Prisma Compute) — BLOCKING GA
 1. Stale-build serving: deploys must carry an expected digest, VMs must
