@@ -1104,10 +1104,20 @@ Add weighted deficit round-robin inside shard committers only if noisy-neighbor 
 * [x] Replace watch URL secret design. *(Stage 4b: §15 short-lived
   fully-bound capabilities, `Prisma-Watch` / `cap=`; `sig=` retired;
   cross-language vector pinned.)*
-* [ ] Update SDK. *(Watch capability + project option landed with 4b;
-  tokenProvider + 421 wrong-cell handling remain.)*
+* [x] Update SDK. *(Watch capability + project option with 4b;
+  tokenProvider — lazy, single-flight, refresh-once-on-401 — plus
+  typed WrongCellError (421/header fallback, never a refresh) and
+  producer state scoped by project + endpoint; behavior pinned by
+  sdk/scripts/auth-behavior.mjs.)*
 
 **Exit:** the complete cross-project isolation matrix passes.
+*(Covered at the testable-today layers: identity — same name, two
+projects share no path/hash/byte; stored references — fork release +
+DLQ binding against same-named foreign look-alikes; internal RPC —
+foreign-project target refuses; watch capabilities — forged/expired/
+cross-carrier negatives; auth §19 unit matrix. The live end-to-end
+matrix under per-request principals lands with Stage 5 wiring and is
+certified at Stage 8.)*
 
 ### Stage 5 — Policy, transfer, and placement
 

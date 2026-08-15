@@ -6841,6 +6841,19 @@ mod tests {
     }
 
     #[test]
+    fn internal_target_refuses_a_foreign_project() {
+        // Same name, same epoch, DIFFERENT project: the §16 corruption
+        // check must refuse the bind even when every other coordinate
+        // matches — a silent project swap here is a cross-tenant bind.
+        let d = desc_with("orders", &"55".repeat(16));
+        let h = target_headers(&d, 0);
+        let mut foreign = d.clone();
+        foreign.project_id = crate::tenant::ProjectId::new("proj-other").unwrap();
+        let err = verify_internal_target(&foreign, &h).expect_err("foreign project must refuse");
+        assert_eq!(err.status(), StatusCode::CONFLICT);
+    }
+
+    #[test]
     fn internal_target_refuses_an_unknown_segment() {
         let d = desc_with("orders", &"33".repeat(16));
         let mut h = target_headers(&d, 0);

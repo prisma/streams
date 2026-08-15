@@ -28,6 +28,16 @@ export interface StreamsClientOptions {
   url: string;
   token?: string;
   /**
+   * Source of short-lived bearer tokens (MULTITENANCY §5: one
+   * credential per project, tokens expire). Called lazily on the
+   * first authenticated request and again after a `401` — never on
+   * `wrong_cell`, which by contract is `421`/`503` precisely so a
+   * valid credential is not refreshed at the wrong cell. Takes
+   * precedence over the static `token` when both are set... don't set
+   * both.
+   */
+  tokenProvider?: () => string | Promise<string>;
+  /**
    * The stream's project id. Required for minting watch-observation
    * capabilities (the capability is bound to
    * project + stream + epoch + watch + key + method + expiry).
@@ -187,6 +197,12 @@ export interface ProducerScope {
   stream: string;
   producerId: string;
   routingKey: string;
+  /** The stream's project ("" when the client sets none). One durable
+   * state store shared across projects must not mix their epochs. */
+  project: string;
+  /** The service base URL — two deployments with the same stream name
+   * are different producers. */
+  endpoint: string;
 }
 
 export interface ProducerState {
@@ -206,7 +222,10 @@ export class MemoryProducerStateStore implements ProducerStateStore {
     // Length-prefixed rather than delimiter-joined: a routing key
     // may contain any byte, so a separator can be ambiguous, and
     // literal control bytes do not belong in source.
-    return `${s.stream.length}:${s.stream}|${s.producerId.length}:${s.producerId}|${s.routingKey}`;
+    return (
+      `${s.endpoint.length}:${s.endpoint}|${s.project.length}:${s.project}|` +
+      `${s.stream.length}:${s.stream}|${s.producerId.length}:${s.producerId}|${s.routingKey}`
+    );
   }
   async load(scope: ProducerScope): Promise<ProducerState | undefined> {
     return this.m.get(this.key(scope));
@@ -267,6 +286,19 @@ export class StreamsError extends Error {
   }
 }
 
+/**
+ * MULTITENANCY §8.1: a valid token presented to a cell that does not
+ * serve its project. Not an authentication failure — refreshing the
+ * credential cannot help. Re-resolve the project's endpoint (token
+ * exchange / gateway) and retry there.
+ */
+export class WrongCellError extends StreamsError {
+  constructor(status: number, message: string) {
+    super(status, "wrong_cell", message, status === 503);
+    this.name = "WrongCellError";
+  }
+}
+
 export class ProducerFencedError extends StreamsError {
   currentEpoch: number;
   constructor(currentEpoch: number, status: number, message: string) {
@@ -305,8 +337,40 @@ export class ProducerSequenceReusedError extends StreamsError {
 interface Ctx {
   base: string;
   token?: string;
+  tokenProvider?: () => string | Promise<string>;
+  /** tokenProvider cache; single-flight so a burst of requests after
+   * expiry fetches ONE token, not one per request. */
+  tokens?: { value?: string; inflight?: Promise<string> };
   project?: string;
   fetch: typeof fetch;
+}
+
+async function authHeader(
+  ctx: Ctx,
+  fresh: boolean,
+): Promise<string | undefined> {
+  if (ctx.tokenProvider) {
+    const cache = (ctx.tokens ??= {});
+    if (fresh) {
+      cache.value = undefined;
+      cache.inflight = undefined;
+    }
+    if (cache.value !== undefined) return `Bearer ${cache.value}`;
+    cache.inflight ??= Promise.resolve(ctx.tokenProvider()).then(
+      (t) => {
+        cache.value = t;
+        cache.inflight = undefined;
+        return t;
+      },
+      (e) => {
+        cache.inflight = undefined;
+        throw e;
+      },
+    );
+    return `Bearer ${await cache.inflight}`;
+  }
+  if (ctx.token) return `Bearer ${ctx.token}`;
+  return undefined;
 }
 
 /** Bytes as a fetch body across the runtimes this SDK supports. */
@@ -345,6 +409,21 @@ async function errorFrom(res: Response): Promise<StreamsError> {
     }
   } catch {
     // non-JSON error body: keep defaults
+  }
+  // The fallback wrong-cell response may carry only the header, no
+  // JSON body (contract §8.1).
+  if (
+    code === "wrong_cell" ||
+    res.status === 421 ||
+    res.headers.get("prisma-error-code") === "wrong_cell"
+  ) {
+    return new WrongCellError(
+      res.status,
+      message === `HTTP ${res.status}`
+        ? "this cell does not serve the project; re-resolve the " +
+          "project's endpoint (the credential itself is fine)"
+        : message,
+    );
   }
   if (code === "stale_producer_epoch") {
     const d = details as { currentEpoch?: number } | undefined;
@@ -390,8 +469,12 @@ async function req(
   signal?: AbortSignal,
 ): Promise<Response> {
   const h: Record<string, string> = { ...headers };
-  if (ctx.token) h["authorization"] = `Bearer ${ctx.token}`;
+  let refresh = false;
+  let refreshed = false;
   for (let attempt = 0; ; attempt++) {
+    const auth = await authHeader(ctx, refresh);
+    refresh = false;
+    if (auth) h["authorization"] = auth;
     // The signal reaches fetch itself, so an abort ends the in-flight
     // long poll instead of leaving it running until its timeout.
     const res = await ctx.fetch(`${ctx.base}${path}`, {
@@ -400,6 +483,14 @@ async function req(
       body,
       signal,
     });
+    // 401 = the token itself is bad or expired: refresh ONCE through
+    // the provider and replay. `wrong_cell` is 421/503 by contract
+    // (never 401), so a misdirected request never burns a refresh.
+    if (res.status === 401 && ctx.tokenProvider && !refreshed) {
+      refreshed = true;
+      refresh = true;
+      continue;
+    }
     if ((res.status === 429 || res.status === 503) && attempt < 3) {
       if (signal?.aborted) return res;
       const ra = Number(res.headers.get("retry-after") ?? "1");
@@ -424,6 +515,7 @@ export class StreamsClient {
       base: options.url.replace(/\/$/, ""),
       project: options.project,
       token: options.token,
+      tokenProvider: options.tokenProvider,
       fetch: options.fetch ?? fetch.bind(globalThis),
     };
   }
@@ -893,19 +985,21 @@ export class Stream<T = unknown> {
 export class Producer<T> {
   private chains = new Map<string, Promise<void>>();
   private stream: Stream<T>;
+  private ctx: Ctx;
   private streamName: string;
   private id: string;
   private options: ProducerOptions & { state: ProducerStateStore };
 
   constructor(
     stream: Stream<T>,
-    _ctx: Ctx,
+    ctx: Ctx,
     streamName: string,
     _key: string,
     id: string,
     options: ProducerOptions & { state: ProducerStateStore },
   ) {
     this.stream = stream;
+    this.ctx = ctx;
     this.streamName = streamName;
     this.id = id;
     this.options = options;
@@ -962,7 +1056,13 @@ export class Producer<T> {
   }
 
   private scope(routingKey: string): ProducerScope {
-    return { stream: this.streamName, producerId: this.id, routingKey };
+    return {
+      stream: this.streamName,
+      producerId: this.id,
+      routingKey,
+      project: this.ctx.project ?? "",
+      endpoint: this.ctx.base,
+    };
   }
 
   /**
