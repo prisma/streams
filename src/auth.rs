@@ -379,6 +379,11 @@ impl AuthService {
 
         let project_id =
             ProjectId::new(&c.project_id).map_err(|_| AuthError::ClaimInvalid("project_id"))?;
+        // §10.4: the reserved system project is internal-only; a
+        // customer token claiming it is hostile or a grave issuer bug.
+        if project_id.is_system() {
+            return Err(AuthError::ClaimInvalid("project_id is reserved"));
+        }
         let workspace_id = WorkspaceId::new(&c.workspace_id)
             .map_err(|_| AuthError::ClaimInvalid("workspace_id"))?;
         validate_cell_id(&c.cell_id).map_err(|_| AuthError::ClaimInvalid("cell_id"))?;

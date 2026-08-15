@@ -753,13 +753,13 @@ impl OpLog {
         // I7: every observed record belongs to an issued attempt. Only
         // enforced when the workload actually tracked issuance, so hand-
         // built oracle unit tests stay valid.
-        if !self.issued.is_empty() {
-            if let Some(a) = seen_count.keys().find(|a| !self.issued.contains(a)) {
-                return Err(format!(
-                    "I7 violated: op{}#{} is readable but was never issued",
-                    a.0, a.1
-                ));
-            }
+        if !self.issued.is_empty()
+            && let Some(a) = seen_count.keys().find(|a| !self.issued.contains(a))
+        {
+            return Err(format!(
+                "I7 violated: op{}#{} is readable but was never issued",
+                a.0, a.1
+            ));
         }
 
         // I3: nothing is stored twice.

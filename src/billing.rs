@@ -875,10 +875,9 @@ pub fn identity_of(
             .account_id
             .clone()
             .unwrap_or_else(|| state.account_id.clone()),
-        project_id: desc
-            .project_id
-            .clone()
-            .unwrap_or_else(|| state.project_id.clone()),
+        // Layout 4: the descriptor's project is MANDATORY — the
+        // deployment-global fallback is gone (MULTITENANCY §20).
+        project_id: desc.project_id.as_str().to_string(),
         stream_id: desc.stream_epoch.clone(),
         stream_name: desc.name.clone(),
     }
@@ -1187,7 +1186,7 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
             // retained source (soft delete with live children) is NOT
             // closure: it flags retained_by_forks and keeps accruing —
             // the fork billing contract.
-            match state.registry.get(&meta.stream_name).await {
+            match state.registry.get(&state.sref(&meta.stream_name)).await {
                 Ok(Some(d)) if d.stream_epoch == meta.stream_id => {
                     if d.soft_deleted && !d.deleted {
                         let was_retained = meta.retained_by_forks;
@@ -2587,7 +2586,11 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
     }
     let mut after: Option<String> = state.sweep_sched.walk_cursor.lock().unwrap().clone();
     loop {
-        let page = match state.registry.list_page_raw(after.as_deref(), 256).await {
+        let page = match state
+            .registry
+            .list_page_raw(&state.tenant, after.as_deref(), 256)
+            .await
+        {
             Ok(p) => p,
             Err(e) => {
                 tracing::warn!("tombstone walk paused (registry list): {e}");
@@ -2807,7 +2810,7 @@ pub async fn system_read(
     // Relay through the incarnation-bound internal read.
     let desc = state
         .registry
-        .get(stream)
+        .get(&state.sref(stream))
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "system stream descriptor missing".to_string())?;

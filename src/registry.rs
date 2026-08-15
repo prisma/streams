@@ -21,8 +21,11 @@ pub struct StreamDesc {
     /// under the deployment default at meter time).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub account_id: Option<String>,
-    #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub project_id: Option<String>,
+    /// MANDATORY stable tenant identity (MULTITENANCY §10.2): an input
+    /// to the registry path and every layout-4 identity hash, verified
+    /// against the path at decode. The mutable workspace_id is
+    /// deliberately NOT persisted in the immutable descriptor.
+    pub project_id: crate::tenant::ProjectId,
     /// 16-byte hex; minted per creation, bound into HKDF (V9 mandate).
     pub stream_epoch: String,
     /// One-way key fingerprint; wrong-key requests are rejected with 403.
@@ -139,7 +142,7 @@ pub struct StreamDesc {
 /// The storage-layout generation this binary writes and the ONLY one it
 /// reads. There are no layout bridges: opening a namespace written by a
 /// different layout is refused (pre-launch hard cutover).
-pub const LAYOUT_VERSION: u32 = 3;
+pub const LAYOUT_VERSION: u32 = 4;
 
 /// Seal-in-progress marker (audit P0). Present = Sealing: normal
 /// appends are refused, only the matching seal operation may write its
@@ -342,11 +345,64 @@ pub struct SegRoute {
 /// layout gate: any layout_version other than LAYOUT_VERSION — including
 /// 0, which every pre-cutover descriptor deserializes to — refuses the
 /// namespace rather than decoding it (spec §0: no legacy decoders).
-pub(crate) fn decode_desc(raw: &[u8]) -> Result<StreamDesc, object_store::Error> {
+pub(crate) fn decode_desc(
+    raw: &[u8],
+    expect: Option<&crate::tenant::TenantStreamRef>,
+) -> Result<StreamDesc, object_store::Error> {
+    // Layout gate FIRST, on a minimal probe: a legacy descriptor must
+    // be refused as unsupported_storage_layout — the precise
+    // operator-facing diagnostic — not as a parse error on the fields
+    // layout 4 made mandatory.
+    #[derive(serde::Deserialize)]
+    struct LayoutProbe {
+        #[serde(default)]
+        layout_version: u32,
+        #[serde(default)]
+        name: String,
+    }
+    let probe: LayoutProbe =
+        serde_json::from_slice(raw).map_err(|e| object_store::Error::Generic {
+            store: "registry",
+            source: format!("descriptor parse: {e}").into(),
+        })?;
+    if probe.layout_version != LAYOUT_VERSION {
+        return Err(object_store::Error::Generic {
+            store: "registry",
+            source: format!(
+                "unsupported_storage_layout: descriptor '{}' has layout {} (this binary \
+                 reads only {}); this namespace was written by a different implementation \
+                 — deploy against a fresh bucket/PATH_PREFIX",
+                probe.name, probe.layout_version, LAYOUT_VERSION
+            )
+            .into(),
+        });
+    }
     let d: StreamDesc = serde_json::from_slice(raw).map_err(|e| object_store::Error::Generic {
         store: "registry",
         source: format!("descriptor parse: {e}").into(),
     })?;
+    // The sref() invariant: a decoded name must be structurally
+    // canonical, or every downstream identity derivation is unsound.
+    if crate::tenant::CanonicalStreamName::new(&d.name).is_err() {
+        return Err(object_store::Error::Generic {
+            store: "registry",
+            source: format!("descriptor name {:?} is not canonical — corruption", d.name).into(),
+        });
+    }
+    // §10.1: content must match the path it was read from; a mismatch
+    // is corruption (or a cross-project copy) and NEVER decodes.
+    if let Some(exp) = expect
+        && (d.project_id != *exp.project_id() || d.name != exp.name().as_str())
+    {
+        return Err(object_store::Error::Generic {
+            store: "registry",
+            source: format!(
+                "descriptor identity mismatch: path says {}, content says {}\u{00a7}{} — corruption",
+                exp, d.project_id, d.name
+            )
+            .into(),
+        });
+    }
     if d.layout_version != LAYOUT_VERSION {
         return Err(object_store::Error::Generic {
             store: "registry",
@@ -371,10 +427,23 @@ impl StreamDesc {
         crate::crypto::unhex(&self.stream_epoch)?.try_into().ok()
     }
 
-    /// Storage identity: derived from (name, stream_epoch) so a recreated
-    /// stream gets a fresh keyspace — full delete/recreate isolation.
+    /// The project-qualified identity of this stream. Names are
+    /// validated at decode/create, so reconstructing the checked type
+    /// is an invariant, not a convenience.
+    pub fn sref(&self) -> crate::tenant::TenantStreamRef {
+        crate::tenant::TenantStreamRef::new(
+            self.project_id.clone(),
+            crate::tenant::CanonicalStreamName::new(&self.name)
+                .expect("descriptor name is canonical (verified at decode/create)"),
+        )
+    }
+
+    /// Storage identity (layout 4, MULTITENANCY §2.1):
+    /// storage-v1 + project_id + name + stream_epoch — so a recreated
+    /// stream gets a fresh keyspace (delete/recreate isolation) and two
+    /// projects sharing a name never share a byte.
     pub fn storage_hash(&self) -> [u8; 16] {
-        crate::crypto::stream_hash(&format!("{}\u{0}inc\u{0}{}", self.name, self.stream_epoch))
+        crate::crypto::SegmentHash::for_stream(&self.sref(), &self.stream_epoch).0
     }
 
     pub fn is_json(&self) -> bool {
@@ -397,10 +466,7 @@ impl StreamDesc {
         if seg_id == 0 {
             return self.storage_hash();
         }
-        crate::crypto::stream_hash(&format!(
-            "{}\u{0}segid\u{0}{}\u{0}{}",
-            self.name, seg_id, self.stream_epoch
-        ))
+        crate::crypto::SegmentHash::for_segment(&self.sref(), &self.stream_epoch, seg_id).0
     }
 
     /// THE unified routing resolution (ROUTING-V3 §1-2): routing key →
@@ -424,7 +490,7 @@ impl StreamDesc {
         if seg.route_hash != [0u8; 16] {
             seg.route_hash
         } else if seg.shard_prefix.is_empty() {
-            crate::crypto::stream_hash(&self.name)
+            crate::crypto::RouteHash::for_stream(&self.sref()).0
         } else {
             crate::crypto::stream_hash(&seg.shard_prefix)
         }
@@ -437,11 +503,11 @@ impl StreamDesc {
             .as_ref()
             .and_then(|m| m.get(seg_id))
             .map(|sg| self.segment_route(sg))
-            .unwrap_or_else(|| crate::crypto::stream_hash(&self.name))
+            .unwrap_or_else(|| crate::crypto::RouteHash::for_stream(&self.sref()).0)
     }
 
     pub fn resolve_segment(&self, routing_key: &str) -> SegRoute {
-        let parent_route = crate::crypto::stream_hash(&self.name);
+        let parent_route = crate::crypto::RouteHash::for_stream(&self.sref()).0;
         let key_hash = crate::crypto::RoutingKeyHash::of(routing_key);
         let point = u64::from_be_bytes(key_hash.0[..8].try_into().expect("hash prefix"));
         if let Some(map) = &self.segments {
@@ -503,7 +569,9 @@ pub fn media_type(ct: &str) -> String {
 
 pub struct Registry {
     store: Arc<dyn ObjectStore>,
-    cache: Mutex<HashMap<String, CachedDesc>>,
+    /// §10.4 system-root scoping; validated cell id from config.
+    cell: Arc<str>,
+    cache: Mutex<HashMap<crate::tenant::TenantStreamRef, CachedDesc>>,
     cache_ttl: Duration,
     /// Test-only one-shot: the NEXT `get` for a listed name returns a
     /// store error (round-18 fail-closed refresh probe).
@@ -531,8 +599,28 @@ struct CachedDesc {
 /// bucket, which the descriptor's own `name` field restores. A
 /// hash-keyed path (the pre-audit scheme) sorts randomly, which is why
 /// listing had to scan and sort everything.
-fn desc_path(name: &str) -> ObjPath {
-    ObjPath::from(format!("registry/by-name/{}.json", hex(name.as_bytes())))
+fn desc_path(cell: &str, sref: &crate::tenant::TenantStreamRef) -> ObjPath {
+    if sref.project_id().is_system() {
+        // MULTITENANCY §10.4: system streams (_usage, _ops_*) live
+        // OUTSIDE every customer project root, under the cell.
+        ObjPath::from(format!(
+            "system/v1/cells/{}/{}.json",
+            cell,
+            hex(sref.name().as_str().as_bytes())
+        ))
+    } else {
+        ObjPath::from(format!(
+            "registry/v4/projects/{}/streams/{}.json",
+            hex(sref.project_id().as_bytes()),
+            hex(sref.name().as_str().as_bytes())
+        ))
+    }
+}
+
+/// The catalog scan root for one project (§10.3): a project catalog
+/// never sees another project's keys, by prefix construction.
+fn project_streams_prefix(project: &crate::tenant::ProjectId) -> String {
+    format!("registry/v4/projects/{}/streams/", hex(project.as_bytes()))
 }
 
 /// One page of the stream catalog.
@@ -569,14 +657,11 @@ fn name_from_desc_path(p: &ObjPath) -> Option<String> {
 }
 
 impl Registry {
-    /// Ops-bucket handle (segment maps live beside stream descriptors).
-    pub fn store(&self) -> Arc<dyn ObjectStore> {
-        self.store.clone()
-    }
-
-    pub fn new(store: Arc<dyn ObjectStore>) -> Registry {
+    pub fn new(store: Arc<dyn ObjectStore>, cell: &str) -> Registry {
+        crate::tenant::validate_cell_id(cell).expect("valid cell id (checked at startup)");
         Registry {
             store,
+            cell: Arc::from(cell),
             cache: Mutex::new(HashMap::new()),
             cache_ttl: Duration::from_secs(5),
             #[cfg(test)]
@@ -589,10 +674,10 @@ impl Registry {
     /// creates alone put 100k entries in it). At the cap, expired
     /// entries purge first (TTL is seconds, so this is almost always
     /// enough), then the oldest entry falls out.
-    fn cache_insert(&self, name: String, entry: CachedDesc) {
+    fn cache_insert(&self, sref: crate::tenant::TenantStreamRef, entry: CachedDesc) {
         const REGISTRY_CACHE_MAX: usize = 65_536;
         let mut cache = self.cache.lock().unwrap();
-        if cache.len() >= REGISTRY_CACHE_MAX && !cache.contains_key(&name) {
+        if cache.len() >= REGISTRY_CACHE_MAX && !cache.contains_key(&sref) {
             let ttl = self.cache_ttl;
             cache.retain(|_, e| e.at.elapsed() < ttl);
             if cache.len() >= REGISTRY_CACHE_MAX
@@ -604,7 +689,7 @@ impl Registry {
                 cache.remove(&oldest);
             }
         }
-        cache.insert(name, entry);
+        cache.insert(sref, entry);
     }
 
     pub fn cache_len(&self) -> usize {
@@ -615,9 +700,9 @@ impl Registry {
     /// had read it moments ago — the cross-instance stale-descriptor
     /// shape (another instance CAS'd a transition we have not seen).
     #[cfg(test)]
-    pub fn test_poison_cache(&self, name: &str, desc: StreamDesc) {
+    pub fn test_poison_cache(&self, sref: &crate::tenant::TenantStreamRef, desc: StreamDesc) {
         self.cache_insert(
-            name.to_string(),
+            sref.clone(),
             CachedDesc {
                 desc: Some(desc),
                 at: Instant::now(),
@@ -626,9 +711,17 @@ impl Registry {
         );
     }
 
-    pub async fn get(&self, name: &str) -> Result<Option<StreamDesc>, object_store::Error> {
+    pub async fn get(
+        &self,
+        sref: &crate::tenant::TenantStreamRef,
+    ) -> Result<Option<StreamDesc>, object_store::Error> {
         #[cfg(test)]
-        if self.fail_next_get.lock().unwrap().remove(name) {
+        if self
+            .fail_next_get
+            .lock()
+            .unwrap()
+            .remove(sref.name().as_str())
+        {
             return Err(object_store::Error::Generic {
                 store: "registry",
                 source: "injected registry get failure".into(),
@@ -636,7 +729,7 @@ impl Registry {
         }
         let revalidate = {
             let cache = self.cache.lock().unwrap();
-            match cache.get(name) {
+            match cache.get(sref) {
                 Some(e) if e.at.elapsed() < self.cache_ttl => return Ok(e.desc.clone()),
                 Some(e) => e.etag.clone().map(|t| (t, e.desc.clone())),
                 None => None,
@@ -656,7 +749,7 @@ impl Registry {
         };
         let fetched = match self
             .store
-            .get_opts(&desc_path(name), opts(etag_sent.clone()))
+            .get_opts(&desc_path(&self.cell, sref), opts(etag_sent.clone()))
             .await
         {
             Ok(r) => {
@@ -665,12 +758,12 @@ impl Registry {
                 // Fail CLOSED on a corrupt descriptor: treating it as absent
                 // would let a create/recreate path overwrite a live stream's
                 // identity (key epoch, incarnation) — worse than an error.
-                match decode_desc(&raw) {
+                match decode_desc(&raw, Some(sref)) {
                     Ok(d) => (Some(d), etag),
                     Err(e) => {
                         return Err(object_store::Error::Generic {
                             store: "registry",
-                            source: format!("descriptor for {name:?}: {e}").into(),
+                            source: format!("descriptor for {sref}: {e}").into(),
                         });
                     }
                 }
@@ -680,7 +773,7 @@ impl Registry {
             Err(e) => return Err(e),
         };
         self.cache_insert(
-            name.to_string(),
+            sref.clone(),
             CachedDesc {
                 desc: fetched.0.clone(),
                 at: Instant::now(),
@@ -695,11 +788,12 @@ impl Registry {
         &self,
         desc: StreamDesc,
     ) -> Result<(bool, StreamDesc), object_store::Error> {
+        let sref = desc.sref();
         let raw = serde_json::to_vec(&desc).expect("desc json");
         match self
             .store
             .put_opts(
-                &desc_path(&desc.name),
+                &desc_path(&self.cell, &sref),
                 PutPayload::from(raw),
                 PutOptions::from(PutMode::Create),
             )
@@ -707,7 +801,7 @@ impl Registry {
         {
             Ok(put) => {
                 self.cache_insert(
-                    desc.name.clone(),
+                    sref.clone(),
                     CachedDesc {
                         desc: Some(desc.clone()),
                         at: Instant::now(),
@@ -717,12 +811,12 @@ impl Registry {
                 Ok((true, desc))
             }
             Err(object_store::Error::AlreadyExists { .. }) => {
-                self.invalidate(&desc.name);
+                self.invalidate(&sref);
                 let existing =
-                    self.get(&desc.name)
+                    self.get(&sref)
                         .await?
                         .ok_or_else(|| object_store::Error::NotFound {
-                            path: desc.name.clone(),
+                            path: sref.to_string(),
                             source: "raced create then missing".into(),
                         })?;
                 Ok((false, existing))
@@ -738,16 +832,16 @@ impl Registry {
     /// (`(false, winner)`) instead of overwriting its incarnation.
     pub async fn recreate(
         &self,
-        name: &str,
+        sref: &crate::tenant::TenantStreamRef,
         fresh: StreamDesc,
         still_dead: impl Fn(&StreamDesc) -> bool,
     ) -> Result<(bool, StreamDesc), object_store::Error> {
         for _ in 0..5 {
-            let got = match self.store.get(&desc_path(name)).await {
+            let got = match self.store.get(&desc_path(&self.cell, sref)).await {
                 Ok(r) => r,
                 Err(object_store::Error::NotFound { .. }) => {
                     return Err(object_store::Error::NotFound {
-                        path: name.to_string(),
+                        path: sref.to_string(),
                         source: "recreate on missing descriptor".into(),
                     });
                 }
@@ -755,10 +849,10 @@ impl Registry {
             };
             let etag = got.meta.e_tag.clone();
             let raw = got.bytes().await?;
-            let current: StreamDesc = decode_desc(&raw)?;
+            let current: StreamDesc = decode_desc(&raw, Some(sref))?;
             if !still_dead(&current) {
                 self.cache_insert(
-                    name.to_string(),
+                    sref.clone(),
                     CachedDesc {
                         desc: Some(current.clone()),
                         at: Instant::now(),
@@ -771,7 +865,7 @@ impl Registry {
             match self
                 .store
                 .put_opts(
-                    &desc_path(name),
+                    &desc_path(&self.cell, sref),
                     PutPayload::from(body),
                     PutOptions::from(PutMode::Update(UpdateVersion {
                         e_tag: etag,
@@ -781,7 +875,7 @@ impl Registry {
                 .await
             {
                 Ok(_) => {
-                    self.invalidate(name);
+                    self.invalidate(sref);
                     return Ok((true, fresh));
                 }
                 Err(object_store::Error::Precondition { .. }) => continue,
@@ -795,13 +889,14 @@ impl Registry {
     }
 
     /// CAS-update the descriptor (delete = tombstone).
+    #[allow(dead_code)] // production callers converted to fenced APIs; kept as the corruption fail-closed probe (tests) pending a Stage-4 cleanup decision
     pub async fn update<F: Fn(&mut StreamDesc)>(
         &self,
-        name: &str,
+        sref: &crate::tenant::TenantStreamRef,
         apply: F,
     ) -> Result<Option<StreamDesc>, object_store::Error> {
         for _ in 0..5 {
-            let got = match self.store.get(&desc_path(name)).await {
+            let got = match self.store.get(&desc_path(&self.cell, sref)).await {
                 Ok(r) => r,
                 Err(object_store::Error::NotFound { .. }) => return Ok(None),
                 Err(e) => return Err(e),
@@ -809,13 +904,13 @@ impl Registry {
             let etag = got.meta.e_tag.clone();
             let raw = got.bytes().await?;
             // Fail CLOSED on corruption (was: treated as missing).
-            let mut desc: StreamDesc = decode_desc(&raw)?;
+            let mut desc: StreamDesc = decode_desc(&raw, Some(sref))?;
             apply(&mut desc);
             let body = serde_json::to_vec(&desc).expect("desc json");
             match self
                 .store
                 .put_opts(
-                    &desc_path(name),
+                    &desc_path(&self.cell, sref),
                     PutPayload::from(body),
                     PutOptions::from(PutMode::Update(UpdateVersion {
                         e_tag: etag,
@@ -825,7 +920,7 @@ impl Registry {
                 .await
             {
                 Ok(_) => {
-                    self.invalidate(name);
+                    self.invalidate(sref);
                     return Ok(Some(desc));
                 }
                 Err(object_store::Error::Precondition { .. }) => continue,
@@ -866,12 +961,12 @@ impl Registry {
     /// [`Self::cas_update_incarnation_outcome`].
     pub async fn cas_update_incarnation(
         &self,
-        name: &str,
+        sref: &crate::tenant::TenantStreamRef,
         expected_epoch: &str,
         mutate: impl FnMut(&mut StreamDesc) -> bool,
     ) -> anyhow::Result<bool> {
         Ok(matches!(
-            self.cas_update_incarnation_outcome(name, expected_epoch, mutate)
+            self.cas_update_incarnation_outcome(sref, expected_epoch, mutate)
                 .await?,
             IncarnationCas::Applied
         ))
@@ -879,13 +974,13 @@ impl Registry {
 
     pub async fn cas_update_incarnation_outcome(
         &self,
-        name: &str,
+        sref: &crate::tenant::TenantStreamRef,
         expected_epoch: &str,
         mut mutate: impl FnMut(&mut StreamDesc) -> bool,
     ) -> anyhow::Result<IncarnationCas> {
         let mut moved = false;
         let applied = self
-            .cas_update_retry(name, |d| {
+            .cas_update_retry(sref, |d| {
                 if d.stream_epoch != expected_epoch {
                     moved = true;
                     return false;
@@ -917,14 +1012,14 @@ impl Registry {
     /// them) under the same identity discipline.
     pub async fn mutate_incarnation<T>(
         &self,
-        name: &str,
+        sref: &crate::tenant::TenantStreamRef,
         expected_epoch: &str,
         decide: impl Fn(&StreamDesc) -> Mutation<T>,
     ) -> anyhow::Result<MutationResult<T>> {
-        let path = desc_path(name);
+        let path = desc_path(&self.cell, sref);
         let mut last: Option<anyhow::Error> = None;
         for attempt in 0..5u32 {
-            self.invalidate(name);
+            self.invalidate(sref);
             let got = match self.store.get(&path).await {
                 Ok(g) => g,
                 Err(object_store::Error::NotFound { .. }) => {
@@ -934,7 +1029,8 @@ impl Registry {
             };
             let etag = got.meta.e_tag.clone();
             let bytes = got.bytes().await?;
-            let desc: StreamDesc = decode_desc(&bytes).map_err(|e| anyhow::anyhow!("{e}"))?;
+            let desc: StreamDesc =
+                decode_desc(&bytes, Some(sref)).map_err(|e| anyhow::anyhow!("{e}"))?;
             if desc.stream_epoch != expected_epoch {
                 return Ok(MutationResult::IncarnationChanged);
             }
@@ -963,7 +1059,7 @@ impl Registry {
                 .await
             {
                 Ok(_) => {
-                    self.invalidate(name);
+                    self.invalidate(sref);
                     return Ok(MutationResult::Applied(result));
                 }
                 // Precondition conflict: another writer moved the
@@ -980,13 +1076,13 @@ impl Registry {
 
     pub async fn cas_update_retry(
         &self,
-        name: &str,
+        sref: &crate::tenant::TenantStreamRef,
         mut mutate: impl FnMut(&mut StreamDesc) -> bool,
     ) -> anyhow::Result<bool> {
         let mut last = None;
         for attempt in 0..5u32 {
-            self.invalidate(name);
-            match self.cas_update(name, &mut mutate).await {
+            self.invalidate(sref);
+            match self.cas_update(sref, &mut mutate).await {
                 Ok(v) => return Ok(v),
                 Err(e) => {
                     last = Some(e);
@@ -999,10 +1095,10 @@ impl Registry {
 
     pub async fn cas_update(
         &self,
-        name: &str,
+        sref: &crate::tenant::TenantStreamRef,
         mut mutate: impl FnMut(&mut StreamDesc) -> bool,
     ) -> anyhow::Result<bool> {
-        let path = desc_path(name);
+        let path = desc_path(&self.cell, sref);
         let got = match self.store.get(&path).await {
             Ok(g) => g,
             Err(object_store::Error::NotFound { .. }) => return Ok(false),
@@ -1010,7 +1106,8 @@ impl Registry {
         };
         let etag = got.meta.e_tag.clone();
         let bytes = got.bytes().await?;
-        let mut desc: StreamDesc = decode_desc(&bytes).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut desc: StreamDesc =
+            decode_desc(&bytes, Some(sref)).map_err(|e| anyhow::anyhow!("{e}"))?;
         if desc.deleted {
             return Ok(false);
         }
@@ -1035,12 +1132,12 @@ impl Registry {
                 },
             )
             .await?;
-        self.invalidate(name);
+        self.invalidate(sref);
         Ok(true)
     }
 
-    pub fn invalidate(&self, name: &str) {
-        self.cache.lock().unwrap().remove(name);
+    pub fn invalidate(&self, sref: &crate::tenant::TenantStreamRef) {
+        self.cache.lock().unwrap().remove(sref);
     }
 
     /// Arm a ONE-SHOT store error for the next `get(name)` (round 18:
@@ -1054,8 +1151,8 @@ impl Registry {
     /// Force a cached entry past its TTL so tests can exercise the
     /// refresh path without sleeping through the real TTL.
     #[cfg(test)]
-    fn expire_for_tests(&self, name: &str) {
-        if let Some(e) = self.cache.lock().unwrap().get_mut(name) {
+    fn expire_for_tests(&self, sref: &crate::tenant::TenantStreamRef) {
+        if let Some(e) = self.cache.lock().unwrap().get_mut(sref) {
             e.at -= self.cache_ttl + Duration::from_secs(1);
         }
     }
@@ -1066,15 +1163,18 @@ impl Registry {
     /// page costs O(limit) Class B requests instead of O(all streams).
     pub async fn list_page(
         &self,
+        project: &crate::tenant::ProjectId,
         after: Option<&str>,
         limit: usize,
     ) -> Result<CatalogPage, object_store::Error> {
         use futures_util::TryStreamExt;
-        let prefix = ObjPath::from("registry/by-name");
+        // §10.3: a project catalog scans ONLY its own prefix — other
+        // projects' keys are unreachable by construction.
+        let root = project_streams_prefix(project);
+        let prefix = ObjPath::from(root.trim_end_matches('/'));
         // The offset is exclusive and compares by key, which sorts
         // exactly as the name does under the hex encoding.
-        let offset =
-            after.map(|n| ObjPath::from(format!("registry/by-name/{}.json", hex(n.as_bytes()))));
+        let offset = after.map(|n| ObjPath::from(format!("{root}{}.json", hex(n.as_bytes()))));
         let mut stream = match &offset {
             Some(o) => self.store.list_with_offset(Some(&prefix), o),
             None => self.store.list(Some(&prefix)),
@@ -1109,7 +1209,14 @@ impl Registry {
                 Err(object_store::Error::NotFound { .. }) => continue,
                 Err(e) => return Err(e),
             };
-            let d = decode_desc(&raw).map_err(|e| object_store::Error::Generic {
+            let expect = name_from_desc_path(&meta.location)
+                .and_then(|n| crate::tenant::CanonicalStreamName::new(&n).ok())
+                .map(|n| crate::tenant::TenantStreamRef::new(project.clone(), n))
+                .ok_or_else(|| object_store::Error::Generic {
+                    store: "registry",
+                    source: format!("catalog: non-canonical key at {}", meta.location).into(),
+                })?;
+            let d = decode_desc(&raw, Some(&expect)).map_err(|e| object_store::Error::Generic {
                 store: "registry",
                 source: format!("catalog: undecodable descriptor at {}: {e}", meta.location).into(),
             })?;
@@ -1131,13 +1238,14 @@ impl Registry {
     /// `list_page` hides. Same pagination contract.
     pub async fn list_page_raw(
         &self,
+        project: &crate::tenant::ProjectId,
         after: Option<&str>,
         limit: usize,
     ) -> Result<CatalogPage, object_store::Error> {
         use futures_util::TryStreamExt;
-        let prefix = ObjPath::from("registry/by-name");
-        let offset =
-            after.map(|n| ObjPath::from(format!("registry/by-name/{}.json", hex(n.as_bytes()))));
+        let root = project_streams_prefix(project);
+        let prefix = ObjPath::from(root.trim_end_matches('/'));
+        let offset = after.map(|n| ObjPath::from(format!("{root}{}.json", hex(n.as_bytes()))));
         let mut stream = match &offset {
             Some(o) => self.store.list_with_offset(Some(&prefix), o),
             None => self.store.list(Some(&prefix)),
@@ -1156,7 +1264,14 @@ impl Registry {
                 Err(object_store::Error::NotFound { .. }) => continue,
                 Err(e) => return Err(e),
             };
-            let d = decode_desc(&raw).map_err(|e| object_store::Error::Generic {
+            let expect = name_from_desc_path(&meta.location)
+                .and_then(|n| crate::tenant::CanonicalStreamName::new(&n).ok())
+                .map(|n| crate::tenant::TenantStreamRef::new(project.clone(), n))
+                .ok_or_else(|| object_store::Error::Generic {
+                    store: "registry",
+                    source: format!("catalog: non-canonical key at {}", meta.location).into(),
+                })?;
+            let d = decode_desc(&raw, Some(&expect)).map_err(|e| object_store::Error::Generic {
                 store: "registry",
                 source: format!("catalog: undecodable descriptor at {}: {e}", meta.location).into(),
             })?;
@@ -1167,26 +1282,6 @@ impl Registry {
             next_after: last_name,
             exhausted,
         })
-    }
-
-    pub async fn list(&self, limit: usize) -> Result<Vec<StreamDesc>, object_store::Error> {
-        use futures_util::TryStreamExt;
-        let prefix = ObjPath::from("registry/by-name");
-        let mut out = Vec::new();
-        let mut stream = self.store.list(Some(&prefix));
-        while let Some(meta) = stream.try_next().await? {
-            if out.len() >= limit {
-                break;
-            }
-            if let Ok(r) = self.store.get(&meta.location).await
-                && let Ok(raw) = r.bytes().await
-                && let Ok(d) = decode_desc(&raw)
-                && !d.deleted
-            {
-                out.push(d);
-            }
-        }
-        Ok(out)
     }
 }
 
@@ -1275,7 +1370,7 @@ pub async fn load_or_init_topology(
     }
 }
 
-fn hash_bits(hash: &[u8; 16]) -> String {
+pub(crate) fn hash_bits(hash: &[u8; 16]) -> String {
     let mut bits = String::with_capacity(24);
     for byte in hash.iter().take(3) {
         bits.push_str(&format!("{byte:08b}"));
@@ -1306,11 +1401,62 @@ mod tests {
     use crate::crypto::stream_hash;
     use object_store::ObjectStoreExt;
 
+    fn tp() -> crate::tenant::ProjectId {
+        crate::tenant::ProjectId::new("proj-test").unwrap()
+    }
+    /// MULTITENANCY §19 "Identity": two projects owning the same name
+    /// share NOTHING — paths, route hashes, storage hashes, segment
+    /// identities all differ — and the workspace is not an input to
+    /// any of them (transfer changes none of these values).
+    #[test]
+    fn same_name_two_projects_share_no_identity() {
+        let pa = crate::tenant::ProjectId::new("proj-a").unwrap();
+        let pb = crate::tenant::ProjectId::new("proj-b").unwrap();
+        let mk = |p: &crate::tenant::ProjectId| {
+            let mut d = desc("orders", "e1", false);
+            d.project_id = p.clone();
+            d
+        };
+        let (da, db) = (mk(&pa), mk(&pb));
+        // Registry paths.
+        assert_ne!(
+            desc_path("cell", &da.sref()).to_string(),
+            desc_path("cell", &db.sref()).to_string()
+        );
+        // Route, storage, and dynamic-segment identities.
+        assert_ne!(
+            crate::crypto::RouteHash::for_stream(&da.sref()),
+            crate::crypto::RouteHash::for_stream(&db.sref())
+        );
+        assert_ne!(da.storage_hash(), db.storage_hash());
+        assert_ne!(
+            da.dynamic_segment_identity(3),
+            db.dynamic_segment_identity(3)
+        );
+        // resolve_segment end to end: same key, disjoint physical
+        // coordinates.
+        let (ra, rb) = (da.resolve_segment("user-1"), db.resolve_segment("user-1"));
+        assert_ne!(ra.identity, rb.identity);
+        assert_ne!(ra.shard_route, rb.shard_route);
+        // Same project + name + epoch = identical (the stable identity).
+        assert_eq!(mk(&pa).storage_hash(), da.storage_hash());
+        // And the catalog scan prefixes are disjoint by construction.
+        assert_ne!(project_streams_prefix(&pa), project_streams_prefix(&pb));
+        assert!(!project_streams_prefix(&pa).starts_with(&project_streams_prefix(&pb)));
+    }
+
+    fn ts(name: &str) -> crate::tenant::TenantStreamRef {
+        crate::tenant::TenantStreamRef::new(
+            tp(),
+            crate::tenant::CanonicalStreamName::new(name).unwrap(),
+        )
+    }
+
     fn desc(name: &str, epoch: &str, deleted: bool) -> StreamDesc {
         StreamDesc {
             seal_gen_counter: 0,
             account_id: None,
-            project_id: None,
+            project_id: tp(),
             name: name.into(),
             stream_epoch: epoch.into(),
             key_fingerprint: "fp".into(),
@@ -1341,7 +1487,7 @@ mod tests {
     #[tokio::test]
     async fn layout_gate_refuses_foreign_namespaces() {
         let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-        let reg = Registry::new(store.clone());
+        let reg = Registry::new(store.clone(), "test-cell");
         // Old-shape descriptor: valid JSON, no layout_version field.
         let old = serde_json::json!({
             "name": "legacy",
@@ -1352,7 +1498,7 @@ mod tests {
             "content_type": "application/json",
         });
         put_raw(&store, "legacy", old.to_string().as_bytes()).await;
-        let err = reg.get("legacy").await.expect_err("gate must refuse");
+        let err = reg.get(&ts("legacy")).await.expect_err("gate must refuse");
         assert!(
             err.to_string().contains("unsupported_storage_layout"),
             "wrong refusal: {err}"
@@ -1360,13 +1506,13 @@ mod tests {
         // A current-layout descriptor round-trips.
         let d = desc("fresh", "00000000000000000000000000000001", false);
         put_raw(&store, "fresh", &serde_json::to_vec(&d).unwrap()).await;
-        assert!(reg.get("fresh").await.unwrap().is_some());
+        assert!(reg.get(&ts("fresh")).await.unwrap().is_some());
     }
 
     async fn put_raw(store: &Arc<dyn ObjectStore>, name: &str, body: &[u8]) {
         store
             .put(
-                &desc_path(name),
+                &desc_path("test-cell", &ts(name)),
                 object_store::PutPayload::from(body.to_vec()),
             )
             .await
@@ -1470,7 +1616,7 @@ mod tests {
             armed: std::sync::atomic::AtomicBool::new(false),
             inject: std::sync::Mutex::new(None),
         });
-        let reg = Registry::new(conflict.clone());
+        let reg = Registry::new(conflict.clone(), "test-cell");
         let mut src = desc("src", "e1", false);
         src.soft_deleted = true;
         src.fork_children = vec!["C".into()];
@@ -1488,7 +1634,7 @@ mod tests {
             .store(true, std::sync::atomic::Ordering::SeqCst);
 
         let outcome = reg
-            .mutate_incarnation("src", "e1", |x| {
+            .mutate_incarnation(&ts("src"), "e1", |x| {
                 let mut next = x.clone();
                 let before = next.fork_children.len();
                 next.fork_children.retain(|c| c != "C");
@@ -1514,7 +1660,7 @@ mod tests {
             }
             other => panic!("expected Applied, got {other:?}"),
         }
-        let after = reg.get("src").await.unwrap().unwrap();
+        let after = reg.get(&ts("src")).await.unwrap().unwrap();
         assert!(
             !after.deleted,
             "the source was tombstoned while D still forks it"
@@ -1618,12 +1764,12 @@ mod tests {
             conditional: Default::default(),
             not_modified: Default::default(),
         });
-        let reg = Registry::new(counting.clone());
+        let reg = Registry::new(counting.clone(), "test-cell");
         let (created, _) = reg.create(desc("s", "e1", false)).await.unwrap();
         assert!(created);
 
         // Warm read: cache hit, no store traffic at all.
-        assert_eq!(reg.get("s").await.unwrap().unwrap().stream_epoch, "e1");
+        assert_eq!(reg.get(&ts("s")).await.unwrap().unwrap().stream_epoch, "e1");
         assert_eq!(
             counting.gets.load(Relaxed),
             0,
@@ -1632,8 +1778,8 @@ mod tests {
 
         // TTL expiry on an unchanged descriptor: exactly one conditional
         // GET, answered 304, still serving the cached descriptor.
-        reg.expire_for_tests("s");
-        assert_eq!(reg.get("s").await.unwrap().unwrap().stream_epoch, "e1");
+        reg.expire_for_tests(&ts("s"));
+        assert_eq!(reg.get(&ts("s")).await.unwrap().unwrap().stream_epoch, "e1");
         assert_eq!(
             counting.conditional.load(Relaxed),
             1,
@@ -1647,7 +1793,7 @@ mod tests {
 
         // The 304 renews the TTL: the next read is a cache hit again.
         let gets_now = counting.gets.load(Relaxed);
-        assert_eq!(reg.get("s").await.unwrap().unwrap().stream_epoch, "e1");
+        assert_eq!(reg.get(&ts("s")).await.unwrap().unwrap().stream_epoch, "e1");
         assert_eq!(
             counting.gets.load(Relaxed),
             gets_now,
@@ -1656,12 +1802,12 @@ mod tests {
 
         // A real change (delete tombstone) must come through on the next
         // refresh — the conditional path must never pin a stale view.
-        reg.update("s", |d| d.deleted = true).await.unwrap();
-        reg.expire_for_tests("s");
+        reg.update(&ts("s"), |d| d.deleted = true).await.unwrap();
+        reg.expire_for_tests(&ts("s"));
         // update() invalidates, so re-prime the cache then expire it.
-        assert!(reg.get("s").await.unwrap().unwrap().deleted);
-        reg.expire_for_tests("s");
-        assert!(reg.get("s").await.unwrap().unwrap().deleted);
+        assert!(reg.get(&ts("s")).await.unwrap().unwrap().deleted);
+        reg.expire_for_tests(&ts("s"));
+        assert!(reg.get(&ts("s")).await.unwrap().unwrap().deleted);
     }
 
     /// Round-22 item 7: the tombstone write carries the logical close
@@ -1671,21 +1817,21 @@ mod tests {
     #[tokio::test]
     async fn tombstone_stamp_persists_and_raw_page_sees_terminals() {
         let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-        let reg = Registry::new(store.clone());
+        let reg = Registry::new(store.clone(), "test-cell");
         reg.create(desc("alive", "e1", false)).await.unwrap();
         reg.create(desc("gone", "e2", false)).await.unwrap();
         let mut ex = desc("expired", "e3", false);
         ex.expires_at_ms = Some(1); // long past
         reg.create(ex).await.unwrap();
         // Tombstone with the stamp in the SAME write.
-        reg.update("gone", |d| {
+        reg.update(&ts("gone"), |d| {
             d.deleted = true;
             d.logical_close_ms = Some(1_786_000_000_000);
         })
         .await
         .unwrap();
-        reg.invalidate("gone");
-        let got = reg.get("gone").await.unwrap().unwrap();
+        reg.invalidate(&ts("gone"));
+        let got = reg.get(&ts("gone")).await.unwrap().unwrap();
         assert!(got.deleted);
         assert_eq!(
             got.logical_close_ms,
@@ -1693,11 +1839,11 @@ mod tests {
             "the debt survives on the tombstone"
         );
         // Customer catalog: only the live stream.
-        let visible = reg.list_page(None, 10).await.unwrap();
+        let visible = reg.list_page(&tp(), None, 10).await.unwrap();
         assert_eq!(visible.streams.len(), 1);
         assert_eq!(visible.streams[0].name, "alive");
         // Reconciler view: everything, terminals included.
-        let raw = reg.list_page_raw(None, 10).await.unwrap();
+        let raw = reg.list_page_raw(&tp(), None, 10).await.unwrap();
         assert_eq!(raw.streams.len(), 3, "raw page hides nothing");
         assert!(raw.streams.iter().any(|d| d.deleted));
         assert!(
@@ -1713,14 +1859,14 @@ mod tests {
     #[tokio::test]
     async fn corrupt_descriptor_fails_closed() {
         let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-        let reg = Registry::new(store.clone());
+        let reg = Registry::new(store.clone(), "test-cell");
         put_raw(&store, "s1", b"{ not json").await;
         assert!(
-            reg.get("s1").await.is_err(),
+            reg.get(&ts("s1")).await.is_err(),
             "corrupt descriptor returned as absent/ok"
         );
         // update() must also refuse (was: Ok(None), i.e. missing).
-        assert!(reg.update("s1", |_| {}).await.is_err());
+        assert!(reg.update(&ts("s1"), |_| {}).await.is_err());
     }
 
     /// A corrupt topology must abort boot, never panic and NEVER be treated
@@ -1757,13 +1903,13 @@ mod tests {
     #[tokio::test]
     async fn recreate_race_has_one_winner() {
         let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-        let reg = Registry::new(store.clone());
+        let reg = Registry::new(store.clone(), "test-cell");
         let (created, _) = reg.create(desc("s", "dead", true)).await.unwrap();
         assert!(created);
 
         let alive = |d: &StreamDesc| !d.deleted;
         let (won_a, got_a) = reg
-            .recreate("s", desc("s", "epoch-a", false), |d| !alive(d))
+            .recreate(&ts("s"), desc("s", "epoch-a", false), |d| !alive(d))
             .await
             .unwrap();
         assert!(won_a, "first recreate must win");
@@ -1772,14 +1918,14 @@ mod tests {
         // Second recreator raced and lost: descriptor is now alive, so the
         // predicate fails and it must observe epoch-a, not install epoch-b.
         let (won_b, got_b) = reg
-            .recreate("s", desc("s", "epoch-b", false), |d| !alive(d))
+            .recreate(&ts("s"), desc("s", "epoch-b", false), |d| !alive(d))
             .await
             .unwrap();
         assert!(!won_b, "second recreate must lose");
         assert_eq!(got_b.stream_epoch, "epoch-a");
 
-        reg.invalidate("s");
-        let stored = reg.get("s").await.unwrap().unwrap();
+        reg.invalidate(&ts("s"));
+        let stored = reg.get(&ts("s")).await.unwrap().unwrap();
         assert_eq!(stored.stream_epoch, "epoch-a", "loser overwrote the winner");
     }
 
@@ -1795,7 +1941,13 @@ mod tests {
             let r = d.resolve_segment(rk);
             assert_eq!(r.seg_id, 0);
             assert_eq!(r.identity, d.storage_hash());
-            assert_eq!(r.shard_route, stream_hash("t"));
+            // Layout 4: the parent route is project-qualified and
+            // domain-separated — NOT the bare name hash.
+            assert_eq!(
+                r.shard_route,
+                crate::crypto::RouteHash::for_stream(&d.sref()).0
+            );
+            assert_ne!(r.shard_route, stream_hash("t"));
             assert!(!r.sealed);
         }
     }
@@ -1865,7 +2017,7 @@ mod tests {
         assert_ne!(r.identity, d.storage_hash());
         assert_eq!(
             r.shard_route,
-            stream_hash("dyn"),
+            crate::crypto::RouteHash::for_stream(&d.sref()).0,
             "empty prefix = parent route"
         );
 

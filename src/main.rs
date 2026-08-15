@@ -1096,7 +1096,16 @@ async fn async_main() -> anyhow::Result<()> {
     // exit rather than sit in rotation-limbo (see spawn_unready_watchdog).
     crate::sharddir::spawn_unready_watchdog();
 
-    let registry = Registry::new(ops_store.clone());
+    let registry = Registry::new(ops_store.clone(), &args.cell_id);
+    // MULTITENANCY transition posture: the deployment tenant is
+    // EXPLICIT, validated config — layout-4 paths and hashes derive
+    // from it, so an invalid or reserved value refuses boot loudly
+    // instead of writing a mis-keyed namespace.
+    let tenant = crate::tenant::ProjectId::new(&args.project_id)
+        .unwrap_or_else(|e| panic!("PROJECT_ID {:?} is invalid: {e}", args.project_id));
+    if tenant.is_system() {
+        panic!("PROJECT_ID may not be the reserved system project");
+    }
     // Only relevant when no topology exists yet; an existing topology wins.
     let fleet_mode = args.fleet_prefix.is_some() && args.fleet_max > 1;
     // FAIL CLOSED (round-19 security): the /v1/internal/* peer surface
@@ -1360,6 +1369,7 @@ async fn async_main() -> anyhow::Result<()> {
     let gate = crate::sharddir::OpenGate::new(shards_map.clone(), opener.open);
     let state = Arc::new(AppState {
         registry,
+        tenant,
         shard_prefixes: topology.shards.clone(),
         shards: shards_map,
         fleet_store: fleet_store_opt.clone(),
@@ -1465,7 +1475,7 @@ async fn async_main() -> anyhow::Result<()> {
                 // (R23-1). Doing it here keeps the request path to a
                 // single atomic read — walking the lag map per append
                 // would put the overload on the hot path.
-                if ticks % 8 == 0 {
+                if ticks.is_multiple_of(8) {
                     let snap = crate::backpressure::snapshot(&st);
                     st.maint_latch.apply(&snap, &bp_limits);
                 }

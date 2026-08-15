@@ -211,6 +211,14 @@ pub struct AppState {
     /// into every descriptor at creation.
     pub account_id: String,
     pub project_id: String,
+    /// The deployment's tenant (MULTITENANCY transition posture):
+    /// until enforce-mode principals carry per-request projects, a
+    /// dedicated cell serves exactly ONE project, configured
+    /// explicitly at startup (PROJECT_ID env, validated — a missing or
+    /// invalid value refuses boot; there is no silent default at the
+    /// storage layer). Every layout-4 registry path and identity hash
+    /// derives from this value via `sref()`.
+    pub tenant: crate::tenant::ProjectId,
     /// Telemetry source coordinates.
     pub cell_id: String,
     pub region: String,
@@ -278,6 +286,19 @@ pub(crate) fn internal_unauthorized() -> Response {
 }
 
 impl AppState {
+    /// Project-qualify a canonical stream name under the deployment
+    /// tenant. `name` MUST already be canonical (`canonical_name` ran
+    /// at the route boundary); the checked construction here is the
+    /// invariant that keeps unvalidated bytes out of registry paths
+    /// and identity hashes.
+    pub fn sref(&self, canonical_name: &str) -> crate::tenant::TenantStreamRef {
+        crate::tenant::TenantStreamRef::new(
+            self.tenant.clone(),
+            crate::tenant::CanonicalStreamName::new(canonical_name)
+                .expect("caller passed a canonical stream name"),
+        )
+    }
+
     /// Shard engine for `hash`, opening the shard log on first use (which
     /// fences any previous owner). A shard that was just fenced away is
     /// held off for 3 s (anti-flap while the router converges) → 503.
@@ -662,7 +683,7 @@ async fn get_segments(
             "bearer token required",
         );
     }
-    let desc = match state.registry.get(&name).await {
+    let desc = match state.registry.get(&state.sref(&name)).await {
         Ok(Some(d)) if desc_alive(&d) => d,
         Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
         Err(e) => {
@@ -1730,7 +1751,7 @@ async fn stream_entry_inner(
             };
             let r = create_stream(state.clone(), name.clone(), headers, body).await;
             if r.status() == StatusCode::CREATED
-                && let Ok(Some(d)) = state.registry.get(&name).await
+                && let Ok(Some(d)) = state.registry.get(&state.sref(&name)).await
             {
                 crate::ops::emit(
                     crate::ops::OpsEvent::new(
@@ -1747,7 +1768,7 @@ async fn stream_entry_inner(
             // Operation count only (§4.5) — the BILLED ingest bytes are
             // the committer's, atomic with the records themselves.
             if r.status().is_success()
-                && let Ok(Some(desc)) = state.registry.get(&name).await
+                && let Ok(Some(desc)) = state.registry.get(&state.sref(&name)).await
             {
                 crate::billing::meter_append_request(&state, &desc);
             }
@@ -1994,7 +2015,7 @@ fn fork_chain_of(
             match parent {
                 None => break,
                 Some((src, want_epoch)) => {
-                    let d = match state_reg.registry.get(&src).await {
+                    let d = match state_reg.registry.get(&state_reg.sref(&src)).await {
                         Ok(Some(d)) if !d.deleted => d,
                         _ => return Err(format!("fork source '{src}' is gone")),
                     };
@@ -2130,7 +2151,7 @@ async fn clear_parent_debt(
 ) -> Result<(), String> {
     let _ = state
         .registry
-        .mutate_incarnation(name, expect_epoch, |x| {
+        .mutate_incarnation(&state.sref(name), expect_epoch, |x| {
             let debt_matches = match expect_ref {
                 Some((src, fid)) => x
                     .forked_from
@@ -2150,7 +2171,7 @@ async fn clear_parent_debt(
         })
         .await
         .map_err(|e| e.to_string())?;
-    state.registry.invalidate(name);
+    state.registry.invalidate(&state.sref(name));
     Ok(())
 }
 
@@ -2220,7 +2241,7 @@ pub(crate) fn touch_ttl(state: &Arc<AppState>, desc: &StreamDesc) {
         // name while the task sat on the runtime.
         if let Err(e) = state
             .registry
-            .cas_update_incarnation(&name, &expect_epoch, |d| {
+            .cas_update_incarnation(&state.sref(&name), &expect_epoch, |d| {
                 if d.ttl_secs.is_none() {
                     return false;
                 }
@@ -2236,7 +2257,7 @@ pub(crate) fn touch_ttl(state: &Arc<AppState>, desc: &StreamDesc) {
         {
             tracing::warn!(stream = %name, "ttl slide lost: {e}");
         }
-        state.registry.invalidate(&name);
+        state.registry.invalidate(&state.sref(&name));
         sliding().lock().unwrap().remove(&name);
     });
 }
@@ -2349,7 +2370,7 @@ fn fresh_desc(
     StreamDesc {
         name: name.to_string(),
         account_id: Some(state.account_id.clone()),
-        project_id: Some(state.project_id.clone()),
+        project_id: state.tenant.clone(),
         stream_epoch: hex(&epoch),
         seal_gen_counter: 0,
         key_fingerprint: key.fingerprint(&epoch),
@@ -2392,7 +2413,10 @@ pub(crate) fn fresh_desc_product(
 
 /// R2 ring-ownership check shared by both creation surfaces.
 pub(crate) fn ring_owner_check(state: &Arc<AppState>, name: &str) -> Option<Response> {
-    let prefix = shard_for_hash(&state.shard_prefixes, &crate::crypto::stream_hash(name));
+    let prefix = shard_for_hash(
+        &state.shard_prefixes,
+        &crate::crypto::RouteHash::for_stream(&state.sref(name)).0,
+    );
     if let Some(owner) = state.effective_owner(&prefix)
         && owner != state.instance_name
     {
@@ -2450,7 +2474,10 @@ pub(crate) async fn create_stream(
     // new user hits. Answer the same 409 + Streams-Replay-To contract the
     // append and read paths use, and let the client re-issue at the owner.
     {
-        let prefix = shard_for_hash(&state.shard_prefixes, &crate::crypto::stream_hash(&name));
+        let prefix = shard_for_hash(
+            &state.shard_prefixes,
+            &crate::crypto::RouteHash::for_stream(&state.sref(&name)).0,
+        );
         if let Some(owner) = state.effective_owner(&prefix)
             && owner != state.instance_name
         {
@@ -2554,14 +2581,14 @@ pub(crate) async fn create_stream(
         // broke idempotence — a completed fork whose response was lost
         // could not be re-PUT once its source was retained, because the
         // soft-delete check fired first.
-        let resuming_child = match state.registry.get(&name).await {
+        let resuming_child = match state.registry.get(&state.sref(&name)).await {
             Ok(Some(c)) if !c.deleted => c
                 .forked_from
                 .clone()
                 .filter(|f| f.source == src_name && !f.fork_id.is_empty()),
             _ => None,
         };
-        let src = match state.registry.get(&src_name).await {
+        let src = match state.registry.get(&state.sref(&src_name)).await {
             Ok(Some(d)) if desc_alive(&d) => d,
             // Retained for this very child: same incarnation, and the
             // reference this child installed is still on it.
@@ -2772,7 +2799,7 @@ pub(crate) async fn create_stream(
     );
 
     // Resolve existing.
-    let existing = match state.registry.get(&name).await {
+    let existing = match state.registry.get(&state.sref(&name)).await {
         Ok(v) => v,
         Err(e) => {
             return err_resp(
@@ -2922,7 +2949,9 @@ pub(crate) async fn create_stream(
             });
             match state
                 .registry
-                .recreate(&name, fresh, |d| !desc_alive(d) && !d.soft_deleted)
+                .recreate(&state.sref(&name), fresh, |d| {
+                    !desc_alive(d) && !d.soft_deleted
+                })
                 .await
             {
                 Ok((true, d)) => (true, d),
@@ -3009,7 +3038,7 @@ pub(crate) async fn create_stream(
     // router can compute placement without knowing the stream epoch; the
     // record keyspace keeps using storage/segment hashes.
     let engine = match state
-        .engine_for(&crate::crypto::stream_hash(&desc.name))
+        .engine_for(&crate::crypto::RouteHash::for_stream(&desc.sref()).0)
         .await
     {
         Ok(e) => e,
@@ -3024,7 +3053,11 @@ pub(crate) async fn create_stream(
         && created
     {
         if let Err(e) = engine
-            .seed_fork_tail(hash, crate::crypto::stream_hash(&desc.name), fc.boundary)
+            .seed_fork_tail(
+                hash,
+                crate::crypto::RouteHash::for_stream(&desc.sref()).0,
+                fc.boundary,
+            )
             .await
         {
             return err_resp(
@@ -3049,7 +3082,7 @@ pub(crate) async fn create_stream(
             let mut already = false;
             let stamped = match state
                 .registry
-                .cas_update_incarnation(&name, &desc.stream_epoch, |d| {
+                .cas_update_incarnation(&state.sref(&name), &desc.stream_epoch, |d| {
                     match d.forked_from.as_mut() {
                         Some(f) if f.fork_id.is_empty() => {
                             f.fork_id = fid.clone();
@@ -3073,7 +3106,7 @@ pub(crate) async fn create_stream(
                     );
                 }
             };
-            state.registry.invalidate(&name);
+            state.registry.invalidate(&state.sref(&name));
             // A declined CAS here means the child was deleted (or
             // re-forked) underneath us. Installing a source
             // reference for it anyway would pin the source's data
@@ -3102,7 +3135,7 @@ pub(crate) async fn create_stream(
         // repaired by the tombstone's RETAINED debt. The park sits
         // BETWEEN the check and the install so tests can drive
         // exactly that window.
-        match state.registry.get(&name).await {
+        match state.registry.get(&state.sref(&name)).await {
             Ok(Some(c)) if desc_alive(&c) && c.stream_epoch == desc.stream_epoch => {}
             _ => {
                 return err_resp(
@@ -3116,7 +3149,7 @@ pub(crate) async fn create_stream(
         fork_failpoints::pause_fork_before_source_ref(&name).await;
         match state
             .registry
-            .cas_update_retry(&fc.source, |d| {
+            .cas_update_retry(&state.sref(&fc.source), |d| {
                 // The reference is installed on the incarnation the
                 // child actually forked. Between validating the
                 // source and getting here it can be recreated,
@@ -3169,14 +3202,14 @@ pub(crate) async fn create_stream(
                 );
             }
         }
-        state.registry.invalidate(&fc.source);
+        state.registry.invalidate(&state.sref(&fc.source));
         #[cfg(test)]
         fork_failpoints::pause_fork_after_source_ref(&name).await;
         // Post-install: the child can have been deleted between the
         // pre-check and the install CAS. Release the reference this
         // request just installed — its tombstone's retained debt
         // covers the crash variant of the same window.
-        match state.registry.get(&name).await {
+        match state.registry.get(&state.sref(&name)).await {
             Ok(Some(c)) if desc_alive(&c) && c.stream_epoch == desc.stream_epoch => {}
             _ => {
                 if let Err(m) =
@@ -3192,7 +3225,7 @@ pub(crate) async fn create_stream(
                 );
             }
         }
-        match state.registry.get(&fc.source).await {
+        match state.registry.get(&state.sref(&fc.source)).await {
             Ok(Some(sd)) if sd.fork_children.iter().any(|c| c == &fork_id) => {}
             Ok(_) => {
                 return err_resp(
@@ -3260,7 +3293,7 @@ pub(crate) async fn create_stream(
         let req = AppendReq {
             enqueued_at: std::time::Instant::now(),
             hash,
-            route: crate::crypto::stream_hash(&desc.name),
+            route: crate::crypto::RouteHash::for_stream(&desc.sref()).0,
             entries,
             routing_key: String::new(),
             key_hash: crate::crypto::stream_hash(""),
@@ -3286,7 +3319,7 @@ pub(crate) async fn create_stream(
             deferred_error: None,
             sealed_reject_new: None,
             touch: None,
-            usage: crate::usage::counters(&crate::crypto::stream_hash(&desc.name)),
+            usage: crate::usage::counters(&crate::crypto::RouteHash::for_stream(&desc.sref()).0),
             seal_gen: None,
             seal_fence_to: None,
             billing: (!crate::billing::is_reserved_stream(&desc.name)).then(|| {
@@ -3329,7 +3362,7 @@ pub(crate) async fn create_stream(
         fork_failpoints::pause_create_before_ready(&name).await;
         let published = match state
             .registry
-            .cas_update_incarnation(&name, &desc.stream_epoch, |d| {
+            .cas_update_incarnation(&state.sref(&name), &desc.stream_epoch, |d| {
                 // Our OWN claim, on OUR incarnation. Clearing `init`
                 // because "something is initializing" let a paused
                 // creator publish readiness for a stream that had since
@@ -3354,14 +3387,14 @@ pub(crate) async fn create_stream(
                 );
             }
         };
-        state.registry.invalidate(&name);
+        state.registry.invalidate(&state.sref(&name));
         // A declined CAS is NOT readiness. `cas_update` refuses a
         // deleted descriptor, so a delete that won mid-initialization
         // made this return 201 for a stream that no longer exists — and
         // if the work had already installed a fork reference, the source
         // stayed pinned by a child that was never published.
         if !published {
-            let now = state.registry.get(&name).await.ok().flatten();
+            let now = state.registry.get(&state.sref(&name)).await.ok().flatten();
             let live_and_ready = now.as_ref().is_some_and(|d| {
                 desc_alive(d) && d.init.is_none() && d.stream_epoch == desc.stream_epoch
             });
@@ -3400,7 +3433,7 @@ pub(crate) async fn create_stream(
 }
 
 async fn delete_stream(state: Arc<AppState>, name: String) -> Response {
-    let existing = match state.registry.get(&name).await {
+    let existing = match state.registry.get(&state.sref(&name)).await {
         Ok(v) => v,
         Err(e) => {
             return err_resp(
@@ -3938,7 +3971,11 @@ fn release_fork_ref(
         // whatever incarnation holds the name at that instant (round
         // 15: check A, name recreated as B, mutation fenced to B —
         // legitimately fenced, wrong identity).
-        let cur = state.registry.get(&src).await.map_err(|e| e.to_string())?;
+        let cur = state
+            .registry
+            .get(&state.sref(&src))
+            .await
+            .map_err(|e| e.to_string())?;
         let Some(cur) = cur else {
             // Source gone entirely: nothing to release, ever.
             return Ok(true);
@@ -3983,7 +4020,7 @@ fn release_fork_ref(
         // attempt. The verdict is `(removed_ref, tombstoned)`.
         let outcome = state
             .registry
-            .mutate_incarnation(&src, &source_epoch, |x| {
+            .mutate_incarnation(&state.sref(&src), &source_epoch, |x| {
                 let before = x.fork_children.len();
                 let mut next = x.clone();
                 next.fork_children.retain(|c| c != &fork_id);
@@ -4017,11 +4054,11 @@ fn release_fork_ref(
             // check at the top, so recreated-source debt converges.
             crate::registry::MutationResult::Missing
             | crate::registry::MutationResult::IncarnationChanged => {
-                state.registry.invalidate(&src);
+                state.registry.invalidate(&state.sref(&src));
                 return Ok(true);
             }
         };
-        state.registry.invalidate(&src);
+        state.registry.invalidate(&state.sref(&src));
         #[cfg(test)]
         if tombstoned && fork_failpoints::should_stop_after_tombstone(&src) {
             // "Crash" here: the tombstone and its debt are durable, the
@@ -4033,7 +4070,11 @@ fn release_fork_ref(
             // tombstone keeps its epoch), so the debt clear stays
             // fenced to it. The grandparent release carries the
             // ForkRef's own recorded source epoch.
-            if let Some(after) = state.registry.get(&src).await.map_err(|e| e.to_string())?
+            if let Some(after) = state
+                .registry
+                .get(&state.sref(&src))
+                .await
+                .map_err(|e| e.to_string())?
                 && after.stream_epoch == source_epoch
                 && let Some(gf) = after.forked_from.as_ref()
                 && release_fork_ref(&state, &gf.source, &gf.fork_id, &gf.source_epoch).await?
@@ -4058,7 +4099,12 @@ fn delete_lifecycle(
     let state = state.clone();
     let name = name.to_string();
     Box::pin(async move {
-        let d = match state.registry.get(&name).await.map_err(|e| e.to_string())? {
+        let d = match state
+            .registry
+            .get(&state.sref(&name))
+            .await
+            .map_err(|e| e.to_string())?
+        {
             Some(d) => d,
             None => return Ok(()),
         };
@@ -4094,7 +4140,7 @@ fn delete_lifecycle(
                 let Some(f) = next else { break };
                 let Some(anc) = state
                     .registry
-                    .get(&f.source)
+                    .get(&state.sref(&f.source))
                     .await
                     .map_err(|e| e.to_string())?
                 else {
@@ -4146,7 +4192,7 @@ fn delete_lifecycle(
         let close_stamp = crate::billing::billing_now_ms();
         state
             .registry
-            .cas_update_incarnation(&name, &epoch, |x| {
+            .cas_update_incarnation(&state.sref(&name), &epoch, |x| {
                 if x.deleted {
                     return false;
                 }
@@ -4163,7 +4209,7 @@ fn delete_lifecycle(
             })
             .await
             .map_err(|e| e.to_string())?;
-        state.registry.invalidate(&name);
+        state.registry.invalidate(&state.sref(&name));
         if !hard_deleted {
             return Ok(());
         }
@@ -4254,7 +4300,7 @@ pub(crate) async fn append(
     seal_auth: Option<SealAuthz>,
 ) -> Response {
     let wrapped = matches!(
-        state.registry.get(&name).await,
+        state.registry.get(&state.sref(&name)).await,
         Ok(Some(d)) if d
             .segments
             .as_ref()
@@ -4290,8 +4336,8 @@ pub(crate) async fn append(
         if !(r.status() == StatusCode::CONFLICT && r.headers().contains_key("stream-closed")) {
             return r;
         }
-        state.registry.invalidate(&name);
-        let Ok(Some(d)) = state.registry.get(&name).await else {
+        state.registry.invalidate(&state.sref(&name));
+        let Ok(Some(d)) = state.registry.get(&state.sref(&name)).await else {
             return r;
         };
         let rk = product_key.clone().unwrap_or_default();
@@ -4408,8 +4454,8 @@ pub(crate) async fn fence_segment_for_key(
     routing_key: &str,
     fence_to: u64,
 ) -> Result<bool, String> {
-    state.registry.invalidate(name);
-    let desc = match state.registry.get(name).await {
+    state.registry.invalidate(&state.sref(name));
+    let desc = match state.registry.get(&state.sref(name)).await {
         Ok(Some(d)) if d.stream_epoch == expect_epoch => d,
         Ok(_) => return Err("the collection this seal was issued against no longer exists".into()),
         Err(e) => return Err(e.to_string()),
@@ -4473,7 +4519,7 @@ async fn append_core(
     // observe the transition beyond a few ms of latency.
     // (LEGACY path, pre-v3 descriptors only; unified-model streams
     // resolve segments in-process below — docs/ROUTING-V3.md §2.)
-    let mut desc = match state.registry.get(&name).await {
+    let mut desc = match state.registry.get(&state.sref(&name)).await {
         Ok(Some(d)) if desc_alive(&d) && initializing(&d) => {
             return creating_resp();
         }
@@ -4907,7 +4953,7 @@ async fn append_core(
     // carried through both count sites (here and the committer), so a
     // concurrent eviction/promotion can never split one request's
     // accounting across two objects (review round 4).
-    let name_hash = crate::crypto::stream_hash(&desc.name);
+    let name_hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
     let usage_c = if !close_only && deferred.is_none() {
         match crate::usage::admit_append(&name_hash, body.len() as u64, entries.len() as u64) {
             Err(hit) => {
@@ -4976,8 +5022,8 @@ async fn append_core(
         // the descriptor once and re-resolve; the successor is in the
         // CAS'd map. Still sealed after a fresh read = the transition
         // is mid-publish — tell the client to retry rather than hang.
-        state.registry.invalidate(&name);
-        match state.registry.get(&name).await {
+        state.registry.invalidate(&state.sref(&name));
+        match state.registry.get(&state.sref(&name)).await {
             Ok(Some(d2)) if desc_alive(&d2) => {
                 desc = d2;
                 seg = desc.resolve_segment(&routing_key);
@@ -5029,7 +5075,7 @@ async fn append_core(
     // Usage counters key by the name hash; the absorber keys lag by this
     // engine hash. Record the alias so /v1/debug/usage can join them.
     crate::usage::link_storage(
-        crate::crypto::RouteHash::of(&desc.name),
+        crate::crypto::RouteHash::for_stream(&desc.sref()),
         crate::crypto::SegmentHash(hash),
     );
     let kv = key_version(&headers);
@@ -5047,7 +5093,7 @@ async fn append_core(
         // segments (§3.7).
         let journal = state.touch.journal(
             desc.storage_hash(),
-            crate::crypto::RouteHash::of(&desc.name),
+            crate::crypto::RouteHash::for_stream(&desc.sref()),
             &crate::product::watch_pinned(&desc),
         );
         let mut key_ids: Vec<u32> = Vec::new();
@@ -6026,8 +6072,8 @@ async fn genuine_closure(state: &Arc<AppState>, name: &str, may_refresh: bool) -
     if !may_refresh {
         return true;
     }
-    state.registry.invalidate(name);
-    match state.registry.get(name).await {
+    state.registry.invalidate(&state.sref(name));
+    match state.registry.get(&state.sref(name)).await {
         Ok(Some(d)) => !d
             .segments
             .as_ref()
@@ -6051,7 +6097,7 @@ pub(crate) async fn read_inner(
     may_refresh: bool,
     surface: SseSurface,
 ) -> Response {
-    let desc = match state.registry.get(&name).await {
+    let desc = match state.registry.get(&state.sref(&name)).await {
         Ok(Some(d)) if desc_alive(&d) => d,
         Ok(d) => return gone_or_missing(d.as_ref()),
         Err(e) => {
@@ -6099,7 +6145,7 @@ pub(crate) async fn read_inner(
     // pre-v3 contract because one segment means one routing key space.
     let hash = desc.resolve_segment("").identity;
     let engine = match state
-        .engine_for(&crate::crypto::stream_hash(&desc.name))
+        .engine_for(&crate::crypto::RouteHash::for_stream(&desc.sref()).0)
         .await
     {
         Ok(e) => e,
@@ -6478,7 +6524,7 @@ pub(crate) async fn read_inner(
             ),
         );
     }
-    crate::usage::counters(&crate::crypto::stream_hash(&desc.name))
+    crate::usage::counters(&crate::crypto::RouteHash::for_stream(&desc.sref()).0)
         .bytes_out
         .fetch_add(body.len() as u64, std::sync::atomic::Ordering::Relaxed);
     // THE read meter (§5/§7): payload bytes only — array brackets,
@@ -6572,7 +6618,7 @@ pub(crate) fn sse_lineage_response(
     surface: SseSurface,
 ) -> Response {
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(64);
-    let sse_hash = crate::crypto::stream_hash(&desc.name);
+    let sse_hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
     // One subscribe operation; delivered bytes meter per chunk (§5).
     crate::billing::meter_read(&state, &desc, 0, 0);
     let cursor = params.cursor.clone();
@@ -6811,7 +6857,7 @@ async fn sse_response(
     params: ReadParams,
     surface: SseSurface,
 ) -> Response {
-    let sse_hash = crate::crypto::stream_hash(&desc.name);
+    let sse_hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(64);
     // One subscribe operation; delivered bytes meter per chunk (§5).
     crate::billing::meter_read(&state, &desc, 0, 0);
@@ -7193,7 +7239,7 @@ async fn internal_segment_read(
     // incarnation. Without this, a delete/recreate between dispatch and
     // arrival serves the REPLACEMENT stream's records against the
     // original request's cursor.
-    match state.registry.get(&name).await {
+    match state.registry.get(&state.sref(&name)).await {
         Ok(Some(desc)) => {
             if let Err(r) = crate::product::verify_internal_target(&desc, &headers) {
                 return r;
@@ -7341,8 +7387,8 @@ async fn read_v3_lineage_inner(
                 Some(p) => (p, o.scan_from()),
                 None if may_refresh => {
                     // A successor our cached map has not seen yet.
-                    state.registry.invalidate(&desc.name);
-                    let fresh = match state.registry.get(&desc.name).await {
+                    state.registry.invalidate(&state.sref(&desc.name));
+                    let fresh = match state.registry.get(&state.sref(&desc.name)).await {
                         Ok(Some(d)) if desc_alive(&d) => d,
                         _ => {
                             return err_resp(
@@ -7478,8 +7524,8 @@ async fn read_v3_lineage_inner(
                     crate::scaler3::resume(&st, &nm).await;
                 });
             }
-            state.registry.invalidate(&desc.name);
-            if let Ok(Some(fresh)) = state.registry.get(&desc.name).await
+            state.registry.invalidate(&state.sref(&desc.name));
+            if let Ok(Some(fresh)) = state.registry.get(&state.sref(&desc.name)).await
                 && desc_alive(&fresh)
             {
                 return Box::pin(read_v3_lineage_inner(

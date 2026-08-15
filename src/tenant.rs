@@ -136,6 +136,36 @@ impl fmt::Display for ProjectId {
     }
 }
 
+impl serde::Serialize for ProjectId {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        s.serialize_str(&self.0)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for ProjectId {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        ProjectId::new(&raw).map_err(serde::de::Error::custom)
+    }
+}
+
+/// The reserved project id that owns system streams (_usage,
+/// _ops_events, _ops_metrics, _audit_events — MULTITENANCY §10.4).
+/// Registry paths for it live under `system/v1/cells/<cell-id>/`,
+/// OUTSIDE every customer project root; auth refuses it in customer
+/// token claims, and startup refuses it as the deployment project.
+pub const SYSTEM_PROJECT: &str = "system";
+
+#[allow(dead_code)] // consumed at MT Stage 4/7 (system-stream relocation)
+impl ProjectId {
+    pub fn system() -> Self {
+        ProjectId(Arc::from(SYSTEM_PROJECT))
+    }
+    pub fn is_system(&self) -> bool {
+        self.as_str() == SYSTEM_PROJECT
+    }
+}
+
 /// Validate a cell id (§2). Cells stay `Arc<str>` in principals; this
 /// is the shared bound check for config and token claims.
 #[allow(dead_code)] // consumed from MT Stage 2b (auth.rs principal)

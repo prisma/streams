@@ -76,7 +76,6 @@ function `watch_key_hex` is never used :: src/product.rs
 item has both inner and outer attributes :: src/http.rs
 large size difference between variants :: src/registry.rs
 large size difference between variants :: src/shard.rs
-manual implementation of `.is_multiple_of()` :: src/main.rs
 method `instance` is never used :: src/ops.rs
 method `ops_m1` is never used :: src/rollup.rs
 method `persist` is never used :: src/billing.rs
@@ -89,8 +88,6 @@ method `to_b64` is never used :: src/crypto.rs
 methods `await_terminated`, `submit_absorbed`, `submit_absorbed_v2`, `pump_trim_tick`, and `count_consumer_state_rows` are never used :: src/shard.rs
 methods `route`, `successors`, and `prune` are never used :: src/segmap.rs
 methods `shards` and `opening` are never used :: src/sharddir.rs
-methods `store` and `list` are never used :: src/registry.rs
-methods `store`, `update`, and `list` are never used :: src/registry.rs
 methods `to_b64` and `fingerprint` are never used :: src/bin/../crypto.rs
 replacing text with itself :: src/registry.rs
 struct `DecodedFrame` is never constructed :: src/bin/../crypto.rs
@@ -101,19 +98,12 @@ struct `QueueReceiveBody` is never constructed :: src/http.rs
 struct `QueueRetryRef` is never constructed :: src/http.rs
 struct `QueueSettleBody` is never constructed :: src/http.rs
 struct `QueueTokenRef` is never constructed :: src/http.rs
-struct `RouteHash` is never constructed :: src/bin/../crypto.rs
 struct `RoutingKeyHash` is never constructed :: src/bin/../crypto.rs
-struct `SegmentHash` is never constructed :: src/bin/../crypto.rs
 struct update has no effect, all the fields in the struct have already been specified :: src/backpressure.rs
 the `Err`-variant returned from this function is very large :: src/product.rs
 the `Err`-variant returned from this function is very large :: src/shard.rs
 this `.filter_map(..)` can be written more simply using `.map(..)` :: src/product.rs
 this `MutexGuard` is held across an await point :: src/dst/dst_tests.rs
-this `if` statement can be collapsed :: src/dst.rs
-this `if` statement can be collapsed :: src/dst/dst_tests.rs
-this `if` statement can be collapsed :: src/shard.rs
-this `repeat().take()` can be written more concisely :: src/store_timing.rs
-this boolean expression can be simplified :: src/dst/dst_tests.rs
 this boolean expression can be simplified :: src/http.rs
 this function has too many arguments (10/7) :: src/http.rs
 this function has too many arguments (8/7) :: src/dst/dst_tests.rs
@@ -131,14 +121,7 @@ unnecessary use of `get("prisma-sealed").is_none()` :: src/dst/dst_tests.rs
 unnecessary use of `get("stream-next-offset").is_none()` :: src/dst/dst_tests.rs
 unnecessary use of `get("stream-up-to-date").is_none()` :: src/dst/dst_tests.rs
 unnecessary use of `to_string` :: src/dst/dst_tests.rs
-unnecessary use of `to_vec` :: src/dst/dst_tests.rs
-unnecessary use of `to_vec` :: src/rollup.rs
-unnecessary use of `to_vec` :: src/shard.rs
 unused import: `object_store::ObjectStoreExt` :: src/billing.rs
-unused variable: `ds` :: src/dst/dst_tests.rs
-unused variable: `pk` :: src/dst/dst_tests.rs
-unused variable: `st2` :: src/dst/dst_tests.rs
-using `clone` on type `[u8; 16]` which implements the `Copy` trait :: src/dst/dst_tests.rs
 value assigned to `dead_bytes` is never read :: src/shard.rs
 value assigned to `point` is never read :: src/bin/pilot.rs
 variants `NotSealed` and `SingleSegmentStream` are never constructed :: src/segmap.rs

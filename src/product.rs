@@ -600,7 +600,7 @@ async fn meter_op_if_ok(state: &Arc<AppState>, name: &str, ok: bool, kind: OpKin
     if !ok {
         return;
     }
-    if let Ok(Some(desc)) = state.registry.get(name).await {
+    if let Ok(Some(desc)) = state.registry.get(&state.sref(name)).await {
         match kind {
             OpKind::Append => crate::billing::meter_append_request(state, &desc),
             OpKind::Queue => crate::billing::meter_queue_op(state, &desc),
@@ -940,7 +940,7 @@ async fn product_create(
         Ok(d)
     };
 
-    let existing = match state.registry.get(&name).await {
+    let existing = match state.registry.get(&state.sref(&name)).await {
         Ok(v) => v,
         Err(e) => {
             return perr(
@@ -959,7 +959,7 @@ async fn product_create(
         },
         Some(_) => match state
             .registry
-            .recreate(&name, build_fresh(), |d| {
+            .recreate(&state.sref(&name), build_fresh(), |d| {
                 // Never replace a descriptor that still backs live
                 // forks (audit P0: the product path replaced the
                 // soft-deleted/expired sources the raw path blocks,
@@ -1062,7 +1062,7 @@ fn metadata_response(desc: &StreamDesc, status: StatusCode) -> Response {
 }
 
 async fn product_metadata(state: Arc<AppState>, name: String) -> Response {
-    match state.registry.get(&name).await {
+    match state.registry.get(&state.sref(&name)).await {
         // A half-built collection is not a collection yet: reporting its
         // metadata would describe content that is not durable.
         Ok(Some(d)) if crate::http::desc_alive(&d) && crate::http::initializing(&d) => perr(
@@ -1109,7 +1109,7 @@ async fn product_seal(
     // the name by then: a delete+recreate under the same key
     // between validation and claim had the request seal a
     // replacement nobody asked it to touch.
-    let validated = match state.registry.get(&name).await {
+    let validated = match state.registry.get(&state.sref(&name)).await {
         Ok(Some(d)) if crate::http::desc_alive(&d) => {
             if crate::http::initializing(&d) {
                 return perr(
@@ -1491,7 +1491,7 @@ pub(crate) async fn enter_sealing_cas(
     let mut outcome = EnterSeal::Missing;
     let installed = state
         .registry
-        .cas_update(name, |d| {
+        .cas_update(&state.sref(name), |d| {
             // A seal belongs to the incarnation it was issued
             // against. The name can be deleted and recreated
             // while this operation is in flight, and sealing the
@@ -1589,7 +1589,7 @@ pub(crate) async fn enter_sealing_cas(
         })
         .await
         .map_err(|e| e.to_string())?;
-    state.registry.invalidate(name);
+    state.registry.invalidate(&state.sref(name));
     let _ = installed;
     Ok(outcome)
 }
@@ -1608,7 +1608,7 @@ pub(crate) async fn claim_seal(
             EnterSeal::PendingTopology => {
                 // Finish the transition, then race for the intent again.
                 crate::scaler3::resume(state, name).await;
-                state.registry.invalidate(name);
+                state.registry.invalidate(&state.sref(name));
             }
             EnterSeal::AbandonedClaim {
                 old_op,
@@ -1630,7 +1630,7 @@ pub(crate) async fn claim_seal(
                     Some(outcome) => return Ok(outcome),
                     // The claim moved while we were fencing (renewed,
                     // completed, replaced): whatever it is now decides.
-                    None => state.registry.invalidate(name),
+                    None => state.registry.invalidate(&state.sref(name)),
                 }
             }
             other => return Ok(other),
@@ -1677,7 +1677,7 @@ async fn take_over_abandoned(
     };
     let ok = state
         .registry
-        .cas_update_incarnation(name, expect_epoch, |d| match &d.sealing {
+        .cas_update_incarnation(&state.sref(name), expect_epoch, |d| match &d.sealing {
             Some(sl) if same_claim(sl) => {
                 d.seal_gen_counter += 1;
                 reserved = d.seal_gen_counter;
@@ -1687,7 +1687,7 @@ async fn take_over_abandoned(
         })
         .await
         .map_err(|e| e.to_string())?;
-    state.registry.invalidate(name);
+    state.registry.invalidate(&state.sref(name));
     if !ok {
         return Ok(None);
     }
@@ -1761,7 +1761,7 @@ pub(crate) async fn install_reserved_claim(
 ) -> Result<bool, String> {
     let installed = state
         .registry
-        .cas_update_incarnation(name, expect_epoch, |d| match &d.sealing {
+        .cas_update_incarnation(&state.sref(name), expect_epoch, |d| match &d.sealing {
             Some(sl)
                 if sl.operation_id == old_op
                     && sl.claim_generation == old_gen
@@ -1779,7 +1779,7 @@ pub(crate) async fn install_reserved_claim(
         })
         .await
         .map_err(|e| e.to_string())?;
-    state.registry.invalidate(name);
+    state.registry.invalidate(&state.sref(name));
     Ok(installed)
 }
 
@@ -1939,7 +1939,7 @@ pub(crate) async fn renew_owed_claim(
     let mut renewed = None;
     state
         .registry
-        .cas_update_incarnation(name, expect_epoch, |d| {
+        .cas_update_incarnation(&state.sref(name), expect_epoch, |d| {
             let counter = &mut d.seal_gen_counter;
             *counter += 1;
             let g = *counter;
@@ -1958,7 +1958,7 @@ pub(crate) async fn renew_owed_claim(
         })
         .await
         .map_err(|e| e.to_string())?;
-    state.registry.invalidate(name);
+    state.registry.invalidate(&state.sref(name));
     Ok(renewed)
 }
 
@@ -1981,7 +1981,7 @@ pub(crate) async fn abandon_seal_intent(
     // already durable is finished by run_seal, never undone here.
     state
         .registry
-        .cas_update_incarnation(name, expect_epoch, |d| match &d.sealing {
+        .cas_update_incarnation(&state.sref(name), expect_epoch, |d| match &d.sealing {
             Some(sl)
                 if sl.operation_id == op_id
                     && sl.claim_generation == expect_gen
@@ -2000,7 +2000,7 @@ pub(crate) async fn abandon_seal_intent(
         })
         .await
         .map_err(|e| e.to_string())?;
-    state.registry.invalidate(name);
+    state.registry.invalidate(&state.sref(name));
     Ok(())
 }
 
@@ -2022,7 +2022,7 @@ pub(crate) async fn mark_final_committed(
     // on to seal) a collection it was never part of.
     let marked = state
         .registry
-        .cas_update_incarnation(name, expect_epoch, |d| match &mut d.sealing {
+        .cas_update_incarnation(&state.sref(name), expect_epoch, |d| match &mut d.sealing {
             Some(sl) if sl.operation_id == op_id && sl.claim_generation == expect_gen => {
                 match &mut sl.intent {
                     crate::registry::SealIntent::Final {
@@ -2041,7 +2041,7 @@ pub(crate) async fn mark_final_committed(
         })
         .await
         .map_err(|e| e.to_string())?;
-    state.registry.invalidate(name);
+    state.registry.invalidate(&state.sref(name));
     if marked || already {
         return Ok(());
     }
@@ -2050,7 +2050,7 @@ pub(crate) async fn mark_final_committed(
     // Saying nothing here let the caller close segments for a record
     // this operation never owned — and the ONLY acceptable silent
     // answer is "OUR seal already completed on OUR incarnation".
-    match state.registry.get(name).await {
+    match state.registry.get(&state.sref(name)).await {
         Ok(Some(d))
             if d.sealed
                 && d.stream_epoch == expect_epoch
@@ -2070,7 +2070,7 @@ pub(crate) async fn mark_final_committed(
 /// monotonic state). Idempotent; errors are logged by callers that
 /// cannot surface them.
 pub(crate) async fn seal_descriptor(state: &Arc<AppState>, name: &str) -> Result<(), String> {
-    let desc = match state.registry.get(name).await {
+    let desc = match state.registry.get(&state.sref(name)).await {
         Ok(Some(d)) if crate::http::desc_alive(&d) => {
             if crate::http::initializing(&d) {
                 return Err("stream is still being created".into());
@@ -2085,7 +2085,7 @@ pub(crate) async fn seal_descriptor(state: &Arc<AppState>, name: &str) -> Result
     }
     state
         .registry
-        .cas_update(name, |d| {
+        .cas_update(&state.sref(name), |d| {
             if d.sealed {
                 return false;
             }
@@ -2153,7 +2153,7 @@ pub(crate) async fn run_seal(
     expect_epoch: &str,
     claim_gen: Option<u64>,
 ) -> Result<(), String> {
-    let desc = match state.registry.get(name).await {
+    let desc = match state.registry.get(&state.sref(name)).await {
         Ok(Some(d)) if crate::http::desc_alive(&d) => d,
         Ok(_) => return Ok(()),
         Err(e) => return Err(e.to_string()),
@@ -2251,8 +2251,8 @@ pub(crate) async fn run_seal(
         }
     }
     // 2. Close every live segment identity. Idempotent per segment.
-    state.registry.invalidate(name);
-    let d = match state.registry.get(name).await {
+    state.registry.invalidate(&state.sref(name));
+    let d = match state.registry.get(&state.sref(name)).await {
         Ok(Some(d)) => d,
         Ok(None) => return Ok(()),
         Err(e) => return Err(e.to_string()),
@@ -2286,7 +2286,7 @@ pub(crate) async fn run_seal(
     //    reappeared while the segments were closing.
     let published = state
         .registry
-        .cas_update_incarnation(name, expect_epoch, |d| {
+        .cas_update_incarnation(&state.sref(name), expect_epoch, |d| {
             if d.sealed {
                 return false;
             }
@@ -2321,12 +2321,12 @@ pub(crate) async fn run_seal(
         })
         .await
         .map_err(|e| e.to_string())?;
-    state.registry.invalidate(name);
+    state.registry.invalidate(&state.sref(name));
     // Success is PROVEN, never assumed. The CAS above declines when a
     // transition reappeared or another writer moved the state, and
     // returning Ok regardless told clients `{"sealed": true}` about a
     // descriptor that was still Sealing with a split pending.
-    let final_state = match state.registry.get(name).await {
+    let final_state = match state.registry.get(&state.sref(name)).await {
         Ok(Some(d)) => d,
         Ok(None) => return Ok(()), // gone: nothing left to seal
         Err(e) => return Err(e.to_string()),
@@ -2469,7 +2469,7 @@ async fn product_append_inner(
             false,
         );
     }
-    let desc = match state.registry.get(&name).await {
+    let desc = match state.registry.get(&state.sref(&name)).await {
         Ok(Some(d)) if crate::http::desc_alive(&d) => {
             if crate::http::initializing(&d) {
                 return perr(
@@ -3132,7 +3132,7 @@ async fn product_read(
             false,
         );
     }
-    let desc = match state.registry.get(&name).await {
+    let desc = match state.registry.get(&state.sref(&name)).await {
         Ok(Some(d)) if crate::http::desc_alive(&d) => {
             if crate::http::initializing(&d) {
                 return perr(
@@ -3422,7 +3422,7 @@ async fn product_scan(
         Ok(q) => q,
         Err(r) => return r,
     };
-    let desc = match state.registry.get(&name).await {
+    let desc = match state.registry.get(&state.sref(&name)).await {
         Ok(Some(d)) if crate::http::desc_alive(&d) => {
             if crate::http::initializing(&d) {
                 return perr(
@@ -3819,7 +3819,7 @@ async fn consumer_ctx(
             false,
         ));
     };
-    let desc = match state.registry.get(name).await {
+    let desc = match state.registry.get(&state.sref(name)).await {
         Ok(Some(d)) if crate::http::desc_alive(&d) => {
             if crate::http::initializing(&d) {
                 return Err(perr(
@@ -3876,7 +3876,7 @@ async fn consumer_config_op(
     desc: &StreamDesc,
     op: crate::queue::QueueOp,
 ) -> Result<crate::queue::QueueOut, Response> {
-    let route = crate::crypto::stream_hash(&desc.name);
+    let route = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
     let engine = state
         .engine_for(&route)
         .await
@@ -4008,7 +4008,7 @@ async fn product_consumer_put(
                 false,
             );
         }
-        let target = match state.registry.get(&d).await {
+        let target = match state.registry.get(&state.sref(&d)).await {
             Ok(Some(t)) if crate::http::desc_alive(&t) && !crate::http::initializing(&t) => t,
             Ok(_) => {
                 return perr(
@@ -4452,7 +4452,7 @@ pub(crate) async fn internal_sweep_segment(
             );
         }
     };
-    let desc = match state.registry.get(&name).await {
+    let desc = match state.registry.get(&state.sref(&name)).await {
         Ok(Some(d)) => d,
         _ => return perr(StatusCode::NOT_FOUND, "not_found", "stream", None, false),
     };
@@ -4545,7 +4545,7 @@ pub(crate) async fn internal_queue_cursor(
             false,
         );
     };
-    let desc = match state.registry.get(&name).await {
+    let desc = match state.registry.get(&state.sref(&name)).await {
         Ok(Some(d)) => d,
         _ => return perr(StatusCode::NOT_FOUND, "not_found", "stream", None, false),
     };
@@ -4645,7 +4645,7 @@ pub(crate) async fn internal_segment_scan(
             false,
         );
     };
-    let desc = match state.registry.get(&name).await {
+    let desc = match state.registry.get(&state.sref(&name)).await {
         Ok(Some(d)) => d,
         _ => return perr(StatusCode::NOT_FOUND, "not_found", "stream", None, false),
     };
@@ -4859,7 +4859,7 @@ async fn product_consumer_delete(
             false,
         );
     };
-    let desc = match state.registry.get(&name).await {
+    let desc = match state.registry.get(&state.sref(&name)).await {
         Ok(Some(d)) if crate::http::desc_alive(&d) => {
             if crate::http::initializing(&d) {
                 return perr(
@@ -5132,8 +5132,8 @@ async fn product_consumer_delete(
         // descriptor — as "keep the cached map", which could let a
         // stale pre-split map look stable for two rounds and publish
         // a false collection-wide 204.
-        state.registry.invalidate(&name);
-        let fresh = match state.registry.get(&name).await {
+        state.registry.invalidate(&state.sref(&name));
+        let fresh = match state.registry.get(&state.sref(&name)).await {
             Ok(Some(d)) if crate::http::desc_alive(&d) => d,
             Ok(_) => {
                 // The collection is gone mid-saga; so is the target.
@@ -5294,7 +5294,7 @@ async fn dlq_and_settle(
     let mut blocked = 0usize;
     // The target must still be the incarnation that was configured.
     let dlq_identity_ok = match (&cfg.dead_letter_stream, &cfg.dead_letter_epoch) {
-        (Some(dlq), Some(want)) => match state.registry.get(dlq).await {
+        (Some(dlq), Some(want)) => match state.registry.get(&state.sref(dlq)).await {
             Ok(Some(t)) => &t.stream_epoch == want,
             _ => false,
         },
@@ -5983,7 +5983,7 @@ fn watch_def_json(w: &crate::registry::WatchDefinition) -> serde_json::Value {
 }
 
 async fn product_watches_list(state: Arc<AppState>, name: String) -> Response {
-    let desc = match state.registry.get(&name).await {
+    let desc = match state.registry.get(&state.sref(&name)).await {
         Ok(Some(d)) if crate::http::desc_alive(&d) => {
             if crate::http::initializing(&d) {
                 return perr(
@@ -6025,7 +6025,7 @@ async fn product_watches_list(state: Arc<AppState>, name: String) -> Response {
 }
 
 async fn product_watch_get(state: Arc<AppState>, name: String, w: String) -> Response {
-    let desc = match state.registry.get(&name).await {
+    let desc = match state.registry.get(&state.sref(&name)).await {
         Ok(Some(d)) if crate::http::desc_alive(&d) => {
             if crate::http::initializing(&d) {
                 return perr(
@@ -6077,7 +6077,7 @@ async fn product_watch_wait(
     headers: HeaderMap,
     query: &str,
 ) -> Response {
-    let desc = match state.registry.get(&name).await {
+    let desc = match state.registry.get(&state.sref(&name)).await {
         Ok(Some(d)) if crate::http::desc_alive(&d) => {
             if crate::http::initializing(&d) {
                 return perr(
@@ -6188,7 +6188,7 @@ async fn product_watch_wait(
     }
     let journal = state.touch.journal(
         desc.storage_hash(),
-        crate::crypto::RouteHash::of(&desc.name),
+        crate::crypto::RouteHash::for_stream(&desc.sref()),
         &watch_pinned(&desc),
     );
     let cursor = q
@@ -6310,7 +6310,11 @@ pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMa
             }
         }
     };
-    let page = match state.registry.list_page(after.as_deref(), limit).await {
+    let page = match state
+        .registry
+        .list_page(&state.tenant, after.as_deref(), limit)
+        .await
+    {
         Ok(p) => p,
         Err(e) => {
             return perr(
@@ -6377,7 +6381,7 @@ async fn product_usage(state: Arc<AppState>, name: String, query: &str) -> Respo
             true,
         );
     };
-    let desc = match state.registry.get(&name).await {
+    let desc = match state.registry.get(&state.sref(&name)).await {
         Ok(Some(d)) => d,
         Ok(None) => {
             return perr(
@@ -6695,7 +6699,7 @@ mod tests {
         StreamDesc {
             name: name.to_string(),
             account_id: None,
-            project_id: None,
+            project_id: crate::tenant::ProjectId::new("proj-test").unwrap(),
             stream_epoch: epoch_hex.to_string(),
             seal_gen_counter: 0,
             key_fingerprint: String::new(),

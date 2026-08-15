@@ -372,7 +372,7 @@ pub async fn execute_split(
     seg_id: u32,
     split_at: u64,
 ) -> bool {
-    let Ok(Some(d)) = st.registry.get(name).await else {
+    let Ok(Some(d)) = st.registry.get(&st.sref(name)).await else {
         return false;
     };
     execute_split_fenced(st, name, &d.stream_epoch, seg_id, split_at).await
@@ -394,7 +394,7 @@ pub async fn execute_split_fenced(
     // Phase A: persist the intent (materializing the implicit map).
     let ok = st
         .registry
-        .cas_update_incarnation(name, expect_epoch, |d| {
+        .cas_update_incarnation(&st.sref(name), expect_epoch, |d| {
             // Fork chains stay single-segment (audit P0): stitched fork
             // reads resolve each ancestor through its ONE empty-key
             // segment, so a post-fork split would make inherited data
@@ -456,7 +456,7 @@ pub async fn execute_merge(
     a_id: u32,
     b_id: u32,
 ) -> bool {
-    let Ok(Some(d)) = st.registry.get(name).await else {
+    let Ok(Some(d)) = st.registry.get(&st.sref(name)).await else {
         return false;
     };
     execute_merge_fenced(st, name, &d.stream_epoch, a_id, b_id).await
@@ -473,7 +473,7 @@ pub async fn execute_merge_fenced(
 ) -> bool {
     let ok = st
         .registry
-        .cas_update_incarnation(name, expect_epoch, |d| {
+        .cas_update_incarnation(&st.sref(name), expect_epoch, |d| {
             // A sealing or sealed collection has a fixed topology. A
             // transition that started just before the seal could
             // otherwise publish a successor AFTER the seal took its
@@ -522,8 +522,8 @@ pub async fn execute_merge_fenced(
 /// seal the parents (idempotent), then CAS the successor publication.
 /// Safe to call from any instance at any time.
 pub async fn resume(st: &std::sync::Arc<crate::http::AppState>, name: &str) -> bool {
-    st.registry.invalidate(name);
-    let Ok(Some(desc)) = st.registry.get(name).await else {
+    st.registry.invalidate(&st.sref(name));
+    let Ok(Some(desc)) = st.registry.get(&st.sref(name)).await else {
         return false;
     };
     let Some(map) = &desc.segments else {
@@ -561,7 +561,7 @@ pub async fn resume(st: &std::sync::Arc<crate::http::AppState>, name: &str) -> b
     // onto the replacement.
     let published = st
         .registry
-        .cas_update_incarnation(name, &desc.stream_epoch, |d| {
+        .cas_update_incarnation(&st.sref(name), &desc.stream_epoch, |d| {
             // Phase B is a SECOND durable step, so it re-checks the
             // lifecycle. Fencing only phase A left this race: publish
             // pending -> seal the parent -> pause -> the collection
@@ -592,10 +592,12 @@ pub async fn resume(st: &std::sync::Arc<crate::http::AppState>, name: &str) -> b
             let parent_prefix = crate::registry::shard_for_hash(&prefixes, &low_route);
             let mut high_route = [0u8; 16];
             for salt in 0u32..16 {
-                high_route = crate::crypto::stream_hash(&format!(
-                    "{}\0segroute\0{}\0{}",
-                    d.name, child_id, salt
-                ));
+                // Contract r1: route-child-v1 + project + name +
+                // child_segment_id + salt — the layout-4 domain-
+                // separated construction (was the "\0segroute\0"
+                // delimiter string).
+                high_route =
+                    crate::crypto::RouteHash::for_child(&d.sref(), child_id, &salt.to_be_bytes()).0;
                 if prefixes.len() < 2
                     || crate::registry::shard_for_hash(&prefixes, &high_route) != parent_prefix
                 {
@@ -634,7 +636,7 @@ pub async fn resume(st: &std::sync::Arc<crate::http::AppState>, name: &str) -> b
             .unwrap()
             .sketches
             .remove(&(name.to_string(), seg_id));
-        st.registry.invalidate(name);
+        st.registry.invalidate(&st.sref(name));
         SEGMENT_MAP_REFRESHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     published
@@ -662,7 +664,7 @@ async fn resume_merge(
     let name = &desc.name;
     let published = st
         .registry
-        .cas_update_incarnation(name, &desc.stream_epoch, |d| {
+        .cas_update_incarnation(&st.sref(name), &desc.stream_epoch, |d| {
             // Phase B is a SECOND durable step, so it re-checks the
             // lifecycle. Fencing only phase A left this race: publish
             // pending -> seal the parent -> pause -> the collection
@@ -704,7 +706,7 @@ async fn resume_merge(
             g.sketches.remove(&(name.to_string(), a_id));
             g.sketches.remove(&(name.to_string(), b_id));
         }
-        st.registry.invalidate(name);
+        st.registry.invalidate(&st.sref(name));
         SEGMENT_MAP_REFRESHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     published
@@ -799,7 +801,7 @@ pub fn start(st: std::sync::Weak<crate::http::AppState>) {
                 // fenced to the incarnation the cold sketches belong
                 // to — a replacement under the same name is not merged
                 // on a dead collection's silence.
-                let Ok(Some(desc)) = st.registry.get(&name).await else {
+                let Ok(Some(desc)) = st.registry.get(&st.sref(&name)).await else {
                     continue;
                 };
                 if desc.stream_epoch != epoch {
@@ -864,7 +866,7 @@ mod tests {
         StreamDesc {
             seal_gen_counter: 0,
             account_id: None,
-            project_id: None,
+            project_id: crate::tenant::ProjectId::new("proj-test").unwrap(),
             name: name.into(),
             stream_epoch: "00000000000000000000000000000000".into(),
             key_fingerprint: "fp".into(),

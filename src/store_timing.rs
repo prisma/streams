@@ -1191,7 +1191,7 @@ mod tests {
     /// Build a window: `n` copies of `(op, class)`.
     fn ops(spec: &[((u8, u8), usize)]) -> Vec<(u8, u8)> {
         spec.iter()
-            .flat_map(|(oc, n)| std::iter::repeat(*oc).take(*n))
+            .flat_map(|(oc, n)| std::iter::repeat_n(*oc, *n))
             .collect()
     }
 

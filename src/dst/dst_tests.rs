@@ -276,7 +276,7 @@ async fn acked_records_survive_store_faults() {
             .await;
         assert!(log.total_acked() > 0, "seed {seed}: nothing acked");
 
-        let ds: Arc<dyn ObjectStore> = store.clone();
+        let _ds: Arc<dyn ObjectStore> = store.clone();
         let observed = drain_observed(&engine, hash, &key, &cov).await;
         if let Err(e) = log.audit(&observed) {
             panic!("seed {seed}: {e}\ncoverage={:?}", cov.snapshot());
@@ -334,7 +334,7 @@ async fn store_errors_surface_as_latency_not_as_failed_appends() {
         log.unknown.len(),
         log.rejected.len()
     );
-    let ds: Arc<dyn ObjectStore> = store.clone();
+    let _ds: Arc<dyn ObjectStore> = store.clone();
     let observed = drain_observed(&engine, hash, &key, &cov).await;
     log.audit(&observed).expect("audit");
 }
@@ -461,7 +461,7 @@ async fn producer_state_survives_a_handoff_and_suppresses_duplicates() {
 
         // Exactly one copy in the stream, and no offset consumed by the
         // duplicate.
-        let ds: Arc<dyn ObjectStore> = store.clone();
+        let _ds: Arc<dyn ObjectStore> = store.clone();
         let handle = b.stream_handle(hash).await.expect("handle");
         let before_next = handle.state.lock().unwrap().durable.next;
         let res = crate::http::read_merged(
@@ -625,7 +625,7 @@ async fn ambiguous_commit_survives_handoff_and_dedupes() {
     // Recover the original offset from the stream (the client never got
     // it) and check the dedupe pointed there — and that exactly one copy
     // exists across both owners' tenures.
-    let ds: Arc<dyn ObjectStore> = store.clone();
+    let _ds: Arc<dyn ObjectStore> = store.clone();
     let handle = b.stream_handle(hash).await.expect("handle");
     let res = crate::http::read_merged(
         &key,
@@ -746,7 +746,7 @@ async fn storage_latency_creates_client_ambiguity_resolved_by_idempotence() {
         other => panic!("retry should ack as a duplicate, got {other:?}"),
     }
 
-    let ds: Arc<dyn ObjectStore> = store.clone();
+    let _ds: Arc<dyn ObjectStore> = store.clone();
     let handle = engine.stream_handle(hash).await.expect("handle");
     let res = crate::http::read_merged(
         &key,
@@ -824,7 +824,7 @@ async fn a_fenced_owner_acknowledges_nothing() {
 
         // I1 across the move: what A acked is still readable through B.
         w.run(&b, hash, &key, &["x", "y"], 8, false, &mut log).await;
-        let ds: Arc<dyn ObjectStore> = store.clone();
+        let _ds: Arc<dyn ObjectStore> = store.clone();
         let observed = drain_observed(&b, hash, &key, &cov).await;
         if let Err(e) = log.audit(&observed) {
             panic!("seed {seed}: after handoff (pre-handoff acks={before}): {e}");
@@ -892,7 +892,7 @@ async fn a_handoff_with_an_append_in_flight_resolves_safely() {
     let (outcome, inflight_log) = inflight.await.expect("in-flight task panicked");
 
     // Whatever happened, it must not be "acknowledged but unreadable".
-    let ds: Arc<dyn ObjectStore> = store.clone();
+    let _ds: Arc<dyn ObjectStore> = store.clone();
     let observed = drain_observed(&b, hash, &key, &cov).await;
     for (rk, attempts) in &inflight_log.acked {
         log.acked.entry(rk.clone()).or_default().extend(attempts);
@@ -1013,7 +1013,7 @@ async fn acked_records_survive_absorption_into_history() {
          have tested the shard log again"
     );
 
-    let ds: Arc<dyn ObjectStore> = store.clone();
+    let _ds: Arc<dyn ObjectStore> = store.clone();
     let observed = drain_observed(&engine, hash, &key, &cov).await;
     if let Err(e) = log.audit(&observed) {
         panic!("absorbed={absorbed}: {e}\ncoverage={:?}", cov.snapshot());
@@ -1157,7 +1157,7 @@ async fn absorber_sweep_recovers_streams_whose_signals_were_lost() {
         "the sweep never absorbed the signal-less stream — lost signals \
          mean lost absorption"
     );
-    let ds: Arc<dyn ObjectStore> = store.clone();
+    let _ds: Arc<dyn ObjectStore> = store.clone();
     let observed = drain_observed(&engine, hash, &key, &cov).await;
     if let Err(e) = log.audit(&observed) {
         panic!("sweep-absorbed stream lost records: {e}");
@@ -1381,7 +1381,7 @@ async fn v2_absorbs_without_customer_keys() {
 
     // Reads (client-supplied key) must see every acked record across the
     // boundary, and filters must work against the shared partition.
-    let ds: Arc<dyn ObjectStore> = store.clone();
+    let _ds: Arc<dyn ObjectStore> = store.clone();
     let observed = drain_observed(&engine, hash, &key, &cov).await;
     if let Err(e) = log.audit(&observed) {
         panic!("v2 keyless absorption lost records (absorbed={absorbed}): {e}");
@@ -1430,7 +1430,7 @@ async fn v2_history_survives_engine_handoff() {
     // collide with the pre-handoff ones in the shared OpLog.
     w.run(&b, hash, &key, &["r"], 5, false, &mut log).await;
 
-    let ds: Arc<dyn ObjectStore> = store.clone();
+    let _ds: Arc<dyn ObjectStore> = store.clone();
     let observed = drain_observed(&b, hash, &key, &cov).await;
     if let Err(e) = log.audit(&observed) {
         panic!("v2 history lost records across the handoff: {e}");
@@ -1571,7 +1571,7 @@ async fn tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch() {
     );
 
     // Both streams stay fully readable through the merged reader.
-    let ds: Arc<dyn ObjectStore> = store.clone();
+    let _ds: Arc<dyn ObjectStore> = store.clone();
     let obs_tiny = drain_observed(&engine, tiny, &key, &cov).await;
     tiny_log
         .audit(&obs_tiny)
@@ -1998,7 +1998,7 @@ async fn gather_pump_preserves_invariants_under_faults() {
         total_gathers += engine.pump_gathers.load(Ordering::Relaxed)
             + engine.pump_barrier_acked.load(Ordering::Relaxed);
 
-        let ds: Arc<dyn ObjectStore> = store.clone();
+        let _ds: Arc<dyn ObjectStore> = store.clone();
         let observed = drain_observed(&engine, hash, &key, &cov).await;
         if let Err(e) = log.audit(&observed) {
             panic!("seed {seed}: {e}");
@@ -2219,7 +2219,7 @@ async fn tail_ring_serves_live_reads_and_survives_eviction() {
         );
         assert!(evicted > 0, "seed {seed}: budget never forced an eviction");
 
-        let ds: Arc<dyn ObjectStore> = store.clone();
+        let _ds: Arc<dyn ObjectStore> = store.clone();
         let observed = drain_observed(&engine, hash, &key, &cov).await;
         if let Err(e) = log.audit(&observed) {
             panic!("seed {seed}: ring-backed reads broke the canon: {e}");
@@ -3117,11 +3117,11 @@ async fn a_hung_open_is_deadlined_and_its_late_engine_reaped() {
     for _ in 0..200 {
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         let engines = opened.lock().unwrap().clone();
-        if let Some(e) = engines.first() {
-            if e.is_closed() {
-                reaped = true;
-                break;
-            }
+        if let Some(e) = engines.first()
+            && e.is_closed()
+        {
+            reaped = true;
+            break;
         }
     }
     assert!(reaped, "the late engine was never closed by the reaper");
@@ -4624,7 +4624,7 @@ async fn sparse_key_reads_page_with_bounded_spans() {
     let _ = off;
     wait_all_absorbed(&engine, &[hash]).await;
 
-    let ds: Arc<dyn ObjectStore> = store.clone();
+    let _ds: Arc<dyn ObjectStore> = store.clone();
     let got = drain_filtered(&engine, hash, &key, "sp").await;
     assert_eq!(
         got, expected,
@@ -4744,7 +4744,7 @@ async fn corrupt_postings_fall_back_to_the_envelope() {
     part.flush().await.expect("flush corruption");
 
     let before = crate::history::POSTINGS_CORRUPT.load(Ordering::Relaxed);
-    let ds: Arc<dyn ObjectStore> = store.clone();
+    let _ds: Arc<dyn ObjectStore> = store.clone();
     // The absorber write-through-warmed the slice cache with the (valid)
     // runs it encoded; served from there, the corruption would never be
     // touched. The envelope contract is about a COLD index read — model
@@ -4846,7 +4846,7 @@ async fn repeated_keyed_reads_hit_the_postings_cache() {
     }
     wait_all_absorbed(&engine, &[hash]).await;
 
-    let ds: Arc<dyn ObjectStore> = store.clone();
+    let _ds: Arc<dyn ObjectStore> = store.clone();
     let cache = &engine.postings_cache;
 
     // Write-through warming (spec §7): the absorber installed the runs
@@ -5238,7 +5238,7 @@ async fn http_rig_inner(
     open_park: Option<Arc<tokio::sync::Mutex<()>>>,
     absorber_cfg: Option<crate::history::AbsorberConfig>,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
-    let registry = crate::registry::Registry::new(store.clone());
+    let registry = crate::registry::Registry::new(store.clone(), "test-cell");
     let keys = Arc::new(crate::history::KeyCache::default());
     let touch = Arc::new(crate::touch::TouchRegistry::default());
     let shards_map: Arc<
@@ -5311,6 +5311,7 @@ async fn http_rig_inner(
     let gate = crate::sharddir::OpenGate::new(shards_map.clone(), opener);
     let state = Arc::new(crate::http::AppState {
         registry,
+        tenant: crate::tenant::ProjectId::new("proj-test").unwrap(),
         shard_prefixes: prefixes,
         shards: shards_map,
         fleet_store: None,
@@ -5399,10 +5400,10 @@ async fn hreq(
     // queued; treat it as end-of-response and let the parse below judge
     // completeness (a truly truncated read fails at the header
     // terminator).
-    if let Err(e) = s.read_to_end(&mut buf).await {
-        if e.kind() != std::io::ErrorKind::ConnectionReset || buf.is_empty() {
-            panic!("response read: {e}");
-        }
+    if let Err(e) = s.read_to_end(&mut buf).await
+        && (e.kind() != std::io::ErrorKind::ConnectionReset || buf.is_empty())
+    {
+        panic!("response read: {e}");
     }
     let split = buf
         .windows(4)
@@ -5605,12 +5606,17 @@ async fn rig_in_seal_gap(
     };
     // The gap is entered once the parent identity's engine handle is
     // CLOSED while the descriptor still shows one segment + pending.
-    let desc = state.registry.get(stream).await.unwrap().unwrap();
+    let desc = state
+        .registry
+        .get(&state.sref(stream))
+        .await
+        .unwrap()
+        .unwrap();
     let identity = desc.resolve_segment("").identity;
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         let closed = match state
-            .engine_for_scaler(&crate::crypto::stream_hash(stream))
+            .engine_for_scaler(&crate::crypto::RouteHash::for_stream(&state.sref(stream)).0)
             .await
         {
             Some(e) => match e.stream_handle(identity).await {
@@ -5619,7 +5625,12 @@ async fn rig_in_seal_gap(
             },
             None => false,
         };
-        let d = state.registry.get(stream).await.unwrap().unwrap();
+        let d = state
+            .registry
+            .get(&state.sref(stream))
+            .await
+            .unwrap()
+            .unwrap();
         let pending = d
             .segments
             .as_ref()
@@ -5641,8 +5652,13 @@ async fn rig_in_seal_gap(
 async fn await_published(state: &Arc<crate::http::AppState>, stream: &str) {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        state.registry.invalidate(stream);
-        let d = state.registry.get(stream).await.unwrap().unwrap();
+        state.registry.invalidate(&state.sref(stream));
+        let d = state
+            .registry
+            .get(&state.sref(stream))
+            .await
+            .unwrap()
+            .unwrap();
         let done = d
             .segments
             .as_ref()
@@ -5882,7 +5898,12 @@ async fn seal_gap_stale_descriptor_redispatches() {
         .await;
     }
     // The pre-transition descriptor this "instance" will keep believing.
-    let stale = state.registry.get("gapstale").await.unwrap().unwrap();
+    let stale = state
+        .registry
+        .get(&state.sref("gapstale"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(stale.segments.as_ref().is_none_or(|m| m.pending.is_none()));
 
     crate::scaler3::failpoints::arm_before_publish();
@@ -5900,7 +5921,7 @@ async fn seal_gap_stale_descriptor_redispatches() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
         let closed = match state
-            .engine_for_scaler(&crate::crypto::stream_hash("gapstale"))
+            .engine_for_scaler(&crate::crypto::RouteHash::for_stream(&state.sref("gapstale")).0)
             .await
         {
             Some(e) => match e.stream_handle(identity).await {
@@ -5915,7 +5936,9 @@ async fn seal_gap_stale_descriptor_redispatches() {
         assert!(std::time::Instant::now() < deadline, "seal never landed");
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
-    state.registry.test_poison_cache("gapstale", stale);
+    state
+        .registry
+        .test_poison_cache(&state.sref("gapstale"), stale);
 
     let (st, h, recs) = read_page(addr, "gapstale", Some("ga"), None).await;
     assert_eq!(st, 200);
@@ -6044,7 +6067,7 @@ async fn oversized_keyed_record_pages_through() {
         ));
     }
     wait_all_absorbed(&engine, &[hash]).await;
-    let ds: Arc<dyn ObjectStore> = store.clone();
+    let _ds: Arc<dyn ObjectStore> = store.clone();
     let (offs, sizes, pages) = drain_keyed_paged(&engine, hash, &key, "big", 1024 * 1024).await;
     assert_eq!(
         offs,
@@ -6112,7 +6135,7 @@ async fn long_keyed_run_pages_with_progress() {
         want.push(append_sized(&engine, hash, &key, "run", 1024 * 1024).await);
     }
     wait_all_absorbed(&engine, &[hash]).await;
-    let ds: Arc<dyn ObjectStore> = store.clone();
+    let _ds: Arc<dyn ObjectStore> = store.clone();
 
     // Page manually so the cache wipe lands between pages.
     let handle = engine.stream_handle(hash).await.expect("handle");
@@ -6539,8 +6562,13 @@ async fn split_children_land_on_distinct_engines() {
         crate::scaler3::execute_split(&state, "cap-routes", 0, 0x8000_0000_0000_0000).await,
         "split executes"
     );
-    state.registry.invalidate("cap-routes");
-    let desc = state.registry.get("cap-routes").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("cap-routes"));
+    let desc = state
+        .registry
+        .get(&state.sref("cap-routes"))
+        .await
+        .unwrap()
+        .unwrap();
     let map = desc.segments.as_ref().expect("map");
     let live: Vec<_> = map.segments.iter().filter(|s| s.is_live()).collect();
     assert_eq!(live.len(), 2);
@@ -6678,8 +6706,13 @@ async fn post_split_throughput_scales() {
         "split executes"
     );
     // Verify distinct engines before measuring.
-    state.registry.invalidate("cap-scale");
-    let desc = state.registry.get("cap-scale").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("cap-scale"));
+    let desc = state
+        .registry
+        .get(&state.sref("cap-scale"))
+        .await
+        .unwrap()
+        .unwrap();
     let map = desc.segments.as_ref().expect("map");
     let live: Vec<_> = map.segments.iter().filter(|s| s.is_live()).collect();
     let e0 = state
@@ -6790,8 +6823,13 @@ async fn merge_rejoins_cold_children_with_exact_lineage() {
         append_round(addr, &keys, r, &mut per_key).await;
     }
     // Merge the two live children back together.
-    state.registry.invalidate("mergeback");
-    let desc = state.registry.get("mergeback").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("mergeback"));
+    let desc = state
+        .registry
+        .get(&state.sref("mergeback"))
+        .await
+        .unwrap()
+        .unwrap();
     let live: Vec<u32> = {
         let map = desc.segments.as_ref().unwrap();
         let mut v: Vec<_> = map.segments.iter().filter(|s| s.is_live()).collect();
@@ -6803,8 +6841,13 @@ async fn merge_rejoins_cold_children_with_exact_lineage() {
         crate::scaler3::execute_merge(&state, "mergeback", live[0], live[1]).await,
         "merge executes"
     );
-    state.registry.invalidate("mergeback");
-    let desc = state.registry.get("mergeback").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("mergeback"));
+    let desc = state
+        .registry
+        .get(&state.sref("mergeback"))
+        .await
+        .unwrap()
+        .unwrap();
     let map = desc.segments.as_ref().unwrap();
     assert!(map.pending.is_none());
     let now_live: Vec<_> = map.segments.iter().filter(|s| s.is_live()).collect();
@@ -7043,10 +7086,10 @@ async fn preq(
     // queued; treat it as end-of-response and let the parse below judge
     // completeness (a truly truncated read fails at the header
     // terminator).
-    if let Err(e) = s.read_to_end(&mut buf).await {
-        if e.kind() != std::io::ErrorKind::ConnectionReset || buf.is_empty() {
-            panic!("response read: {e}");
-        }
+    if let Err(e) = s.read_to_end(&mut buf).await
+        && (e.kind() != std::io::ErrorKind::ConnectionReset || buf.is_empty())
+    {
+        panic!("response read: {e}");
     }
     let split = buf
         .windows(4)
@@ -7371,7 +7414,12 @@ async fn product_append_and_append_many() {
 
     // The returned cursor decodes and points past the appended records.
     let key = crate::crypto::StreamKey::from_b64(PRISMA_KEY).unwrap();
-    let desc = state.registry.get("orders").await.unwrap().unwrap();
+    let desc = state
+        .registry
+        .get(&state.sref("orders"))
+        .await
+        .unwrap()
+        .unwrap();
     let epoch = desc.epoch_bytes().unwrap();
     let kh = crate::crypto::stream_hash("customer-42");
     let c = crate::product_cursor::KeyCursor::decode(&cursor1, &key, &epoch, &kh)
@@ -7622,7 +7670,12 @@ async fn product_read_pages_and_binds_cursors() {
     assert_eq!(v["error"]["code"], "invalid_cursor");
 
     // A scan cursor on the key endpoint is a different token class.
-    let desc = state.registry.get("reads").await.unwrap().unwrap();
+    let desc = state
+        .registry
+        .get(&state.sref("reads"))
+        .await
+        .unwrap()
+        .unwrap();
     let epoch = desc.epoch_bytes().unwrap();
     let sc = crate::product_cursor::ScanCursor {
         epoch,
@@ -7954,7 +8007,12 @@ async fn product_sse_controls_carry_signed_cursors() {
     }
     assert_eq!(data_n, vec![0, 1], "catch-up records in order");
     let tok = cursor_tok.expect("control frame with nextCursor");
-    let desc = state.registry.get("psse").await.unwrap().unwrap();
+    let desc = state
+        .registry
+        .get(&state.sref("psse"))
+        .await
+        .unwrap()
+        .unwrap();
     let epoch = desc.epoch_bytes().unwrap();
     let kh = crate::crypto::stream_hash("s1");
     let kc = crate::product_cursor::KeyCursor::decode(&tok, &skey(), &epoch, &kh)
@@ -8110,7 +8168,12 @@ async fn product_scan_is_snapshot_exact() {
     );
 
     // Expired cursor: 410 scan_expired.
-    let desc = state.registry.get("scn").await.unwrap().unwrap();
+    let desc = state
+        .registry
+        .get(&state.sref("scn"))
+        .await
+        .unwrap()
+        .unwrap();
     let epoch = desc.epoch_bytes().unwrap();
     let expired = crate::product_cursor::ScanCursor {
         epoch,
@@ -8364,7 +8427,12 @@ async fn product_producer_hash_discipline() {
     assert_eq!(st, 200);
     let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
     assert_eq!(v["duplicate"], true);
-    let desc = state.registry.get("ph").await.unwrap().unwrap();
+    let desc = state
+        .registry
+        .get(&state.sref("ph"))
+        .await
+        .unwrap()
+        .unwrap();
     let epoch = desc.epoch_bytes().unwrap();
     let kh = crate::crypto::stream_hash("g");
     let kc = crate::product_cursor::KeyCursor::decode(
@@ -9064,10 +9132,15 @@ async fn touch_close_shard_matches_route_hash_not_storage_hash() {
         )
         .await;
         assert_eq!(st, 201, "{}", String::from_utf8_lossy(&b));
-        let desc = state.registry.get(&name).await.unwrap().unwrap();
+        let desc = state
+            .registry
+            .get(&state.sref(&name))
+            .await
+            .unwrap()
+            .unwrap();
         let rp = crate::registry::shard_for_hash(
             &state.shard_prefixes,
-            &crate::crypto::stream_hash(&name),
+            &crate::crypto::RouteHash::for_stream(&state.sref(&name)).0,
         );
         let sp = crate::registry::shard_for_hash(&state.shard_prefixes, &desc.storage_hash());
         if rp != sp {
@@ -9315,7 +9388,12 @@ async fn product_watch_wakes_on_matching_append() {
 
     // Derived URL sig authorizes WITHOUT the encryption key.
     let skey_local = skey();
-    let desc = state.registry.get("wt").await.unwrap().unwrap();
+    let desc = state
+        .registry
+        .get(&state.sref("wt"))
+        .await
+        .unwrap()
+        .unwrap();
     let epoch = desc.epoch_bytes().unwrap();
     let tok = crate::crypto::touch_token(&skey_local, &epoch);
     let sk = crate::crypto::wait_sig_key(&tok, &epoch);
@@ -10173,7 +10251,7 @@ async fn a_stale_initialization_never_becomes_visible() {
     // A creator that died long ago: claim present, ancient.
     state
         .registry
-        .cas_update("stale1", |d| {
+        .cas_update(&state.sref("stale1"), |d| {
             d.init = Some(crate::registry::InitState {
                 request_hash: "abandoned".into(),
                 key_fingerprint: d.key_fingerprint.clone(),
@@ -10183,7 +10261,7 @@ async fn a_stale_initialization_never_becomes_visible() {
         })
         .await
         .unwrap();
-    state.registry.invalidate("stale1");
+    state.registry.invalidate(&state.sref("stale1"));
 
     let (st, _, _) = hreq(addr, "GET", "/v1/stream/stale1", &[], b"").await;
     assert_eq!(st, 503, "an abandoned create must not read as complete");
@@ -10243,7 +10321,7 @@ async fn an_initialization_cannot_be_resumed_with_another_key() {
         async move {
             state
                 .registry
-                .cas_update("keyinit", |d| {
+                .cas_update(&state.sref("keyinit"), |d| {
                     d.init = Some(crate::registry::InitState {
                         request_hash: crate::http::create_request_hash(
                             "application/json",
@@ -10264,7 +10342,7 @@ async fn an_initialization_cannot_be_resumed_with_another_key() {
                 })
                 .await
                 .unwrap();
-            state.registry.invalidate("keyinit");
+            state.registry.invalidate(&state.sref("keyinit"));
         }
     };
     for stale in [false, true] {
@@ -10277,14 +10355,24 @@ async fn an_initialization_cannot_be_resumed_with_another_key() {
             String::from_utf8_lossy(&b)
         );
         // The descriptor is untouched: still initializing, still ours.
-        let d = state.registry.get("keyinit").await.unwrap().unwrap();
+        let d = state
+            .registry
+            .get(&state.sref("keyinit"))
+            .await
+            .unwrap()
+            .unwrap();
         assert!(d.init.is_some(), "a refused resume must not complete it");
     }
     // The RIGHT key resumes and completes it.
     plant(false).await;
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/keyinit", &mine, body).await;
     assert!(st == 200 || st == 201);
-    let d = state.registry.get("keyinit").await.unwrap().unwrap();
+    let d = state
+        .registry
+        .get(&state.sref("keyinit"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(d.init.is_none(), "the right key completes initialization");
     engine_shutdown(&state).await;
 }
@@ -10363,7 +10451,7 @@ async fn a_plain_seal_cannot_finish_someone_elses_final() {
     // A seal-with-final that published its intent and then died.
     state
         .registry
-        .cas_update("sealint", |d| {
+        .cas_update(&state.sref("sealint"), |d| {
             d.sealing = Some(crate::registry::SealState {
                 operation_id: crate::product::seal_op_id_full(
                     &serde_json::json!({"done": true}),
@@ -10386,12 +10474,17 @@ async fn a_plain_seal_cannot_finish_someone_elses_final() {
         })
         .await
         .unwrap();
-    state.registry.invalidate("sealint");
+    state.registry.invalidate(&state.sref("sealint"));
 
     // A plain seal must NOT complete it.
     let (st, _, b) = preq(addr, "POST", "/v1/streams/sealint:seal", &key, b"").await;
     assert_eq!(st, 409, "{}", String::from_utf8_lossy(&b));
-    let d = state.registry.get("sealint").await.unwrap().unwrap();
+    let d = state
+        .registry
+        .get(&state.sref("sealint"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!d.sealed, "the collection must not be sealed yet");
     assert!(d.sealing.is_some(), "the intent survives the refusal");
 
@@ -10411,7 +10504,12 @@ async fn a_plain_seal_cannot_finish_someone_elses_final() {
         st == 409 || st == 503,
         "raw close during a final seal: {st}"
     );
-    let d = state.registry.get("sealint").await.unwrap().unwrap();
+    let d = state
+        .registry
+        .get(&state.sref("sealint"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!d.sealed);
 
     // The owning operation finishes it: same final, same routing key.
@@ -10424,7 +10522,12 @@ async fn a_plain_seal_cannot_finish_someone_elses_final() {
     )
     .await;
     assert!(st == 200 || st == 204, "{}", String::from_utf8_lossy(&b));
-    let d = state.registry.get("sealint").await.unwrap().unwrap();
+    let d = state
+        .registry
+        .get(&state.sref("sealint"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(d.sealed && d.sealing.is_none(), "seal completes: {d:?}");
     engine_shutdown(&state).await;
 }
@@ -10458,7 +10561,7 @@ async fn producers_cannot_write_new_records_while_sealing() {
     // Enter Sealing without finishing (as a crashed seal would leave it).
     state
         .registry
-        .cas_update("prodseal", |d| {
+        .cas_update(&state.sref("prodseal"), |d| {
             d.sealing = Some(crate::registry::SealState {
                 operation_id: String::new(),
                 intent: crate::registry::SealIntent::Empty,
@@ -10469,7 +10572,7 @@ async fn producers_cannot_write_new_records_while_sealing() {
         })
         .await
         .unwrap();
-    state.registry.invalidate("prodseal");
+    state.registry.invalidate(&state.sref("prodseal"));
 
     // The RETRY of seq 0 still dedups to success…
     let (st, _, _) = hreq(addr, "POST", "/v1/stream/prodseal", &ph(0), br#"[{"n":0}]"#).await;
@@ -10512,7 +10615,7 @@ async fn topology_transitions_are_fenced_by_sealing() {
     assert_eq!(st, 201);
     state
         .registry
-        .cas_update("fenced", |d| {
+        .cas_update(&state.sref("fenced"), |d| {
             d.sealing = Some(crate::registry::SealState {
                 operation_id: String::new(),
                 intent: crate::registry::SealIntent::Empty,
@@ -10523,7 +10626,7 @@ async fn topology_transitions_are_fenced_by_sealing() {
         })
         .await
         .unwrap();
-    state.registry.invalidate("fenced");
+    state.registry.invalidate(&state.sref("fenced"));
     assert!(
         !crate::scaler3::execute_split(&state, "fenced", 0, 0x8000_0000_0000_0000).await,
         "a split started under Sealing"
@@ -10532,7 +10635,7 @@ async fn topology_transitions_are_fenced_by_sealing() {
     {
         let ep = state
             .registry
-            .get("fenced")
+            .get(&state.sref("fenced"))
             .await
             .unwrap()
             .unwrap()
@@ -10541,7 +10644,7 @@ async fn topology_transitions_are_fenced_by_sealing() {
             .await
             .unwrap();
     }
-    state.registry.invalidate("fenced");
+    state.registry.invalidate(&state.sref("fenced"));
     assert!(
         !crate::scaler3::execute_split(&state, "fenced", 0, 0x8000_0000_0000_0000).await,
         "a split started under Sealed"
@@ -10636,36 +10739,56 @@ async fn a_half_deleted_fork_finishes_its_cleanup() {
     )
     .await;
     assert_eq!(st, 201);
-    let src = state.registry.get("dsrc").await.unwrap().unwrap();
+    let src = state
+        .registry
+        .get(&state.sref("dsrc"))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(src.fork_children.len(), 1, "the source holds the reference");
 
     // Simulate the crash: tombstone the child with the debt recorded,
     // exactly as delete_lifecycle writes it before releasing.
     state
         .registry
-        .cas_update("dchild", |d| {
+        .cas_update(&state.sref("dchild"), |d| {
             d.deleted = true;
             d.parent_ref_pending = true;
             true
         })
         .await
         .unwrap();
-    state.registry.invalidate("dchild");
-    let src = state.registry.get("dsrc").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("dchild"));
+    let src = state
+        .registry
+        .get(&state.sref("dsrc"))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(src.fork_children.len(), 1, "the reference is still leaked");
 
     // A retried DELETE finishes the cleanup rather than bouncing.
     let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/dchild", &[], b"").await;
     assert!(st == 404 || st == 410 || st == 204, "retry delete: {st}");
-    state.registry.invalidate("dsrc");
-    let src = state.registry.get("dsrc").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("dsrc"));
+    let src = state
+        .registry
+        .get(&state.sref("dsrc"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         src.fork_children.is_empty(),
         "the parent still pins a dead fork: {:?}",
         src.fork_children
     );
-    state.registry.invalidate("dchild");
-    let child = state.registry.get("dchild").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("dchild"));
+    let child = state
+        .registry
+        .get(&state.sref("dchild"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!child.parent_ref_pending, "the debt is settled");
     engine_shutdown(&state).await;
 }
@@ -10717,12 +10840,12 @@ async fn a_parked_split_cannot_publish_under_a_sealed_collection() {
     // Wait for the intent to become durable.
     let mut pending = false;
     for _ in 0..100 {
-        state.registry.invalidate("parked");
-        if let Ok(Some(d)) = state.registry.get("parked").await {
-            if d.segments.as_ref().is_some_and(|m| m.pending.is_some()) {
-                pending = true;
-                break;
-            }
+        state.registry.invalidate(&state.sref("parked"));
+        if let Ok(Some(d)) = state.registry.get(&state.sref("parked")).await
+            && d.segments.as_ref().is_some_and(|m| m.pending.is_some())
+        {
+            pending = true;
+            break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
@@ -10735,7 +10858,7 @@ async fn a_parked_split_cannot_publish_under_a_sealed_collection() {
         tokio::spawn(async move {
             let ep = st2
                 .registry
-                .get("parked")
+                .get(&st2.sref("parked"))
                 .await
                 .unwrap()
                 .unwrap()
@@ -10751,11 +10874,16 @@ async fn a_parked_split_cannot_publish_under_a_sealed_collection() {
     // Whatever order they settled in, the end state must be coherent:
     // if the collection is sealed, nothing may be live and unclosed, and
     // no transition may be left dangling.
-    state.registry.invalidate("parked");
-    let d = state.registry.get("parked").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("parked"));
+    let d = state
+        .registry
+        .get(&state.sref("parked"))
+        .await
+        .unwrap()
+        .unwrap();
     if d.sealed {
         assert!(
-            !d.segments.as_ref().is_some_and(|m| m.pending.is_some()),
+            d.segments.as_ref().is_none_or(|m| m.pending.is_none()),
             "sealed with a transition still pending: {:?}",
             d.segments
         );
@@ -10820,7 +10948,7 @@ async fn a_fork_initialization_is_bound_to_its_source_incarnation() {
     let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
     let epoch_a = state
         .registry
-        .get("fsrc")
+        .get(&state.sref("fsrc"))
         .await
         .unwrap()
         .unwrap()
@@ -10854,7 +10982,7 @@ async fn a_fork_initialization_is_bound_to_its_source_incarnation() {
     );
     state
         .registry
-        .cas_update("fchild", |d| {
+        .cas_update(&state.sref("fchild"), |d| {
             d.init = Some(crate::registry::InitState {
                 request_hash: hash_against_a.clone(),
                 key_fingerprint: d.key_fingerprint.clone(),
@@ -10864,7 +10992,7 @@ async fn a_fork_initialization_is_bound_to_its_source_incarnation() {
         })
         .await
         .unwrap();
-    state.registry.invalidate("fchild");
+    state.registry.invalidate(&state.sref("fchild"));
 
     // The source becomes a DIFFERENT incarnation. A delete+recreate is
     // the way that happens in the field, but a source pinned by a fork
@@ -10874,13 +11002,13 @@ async fn a_fork_initialization_is_bound_to_its_source_incarnation() {
     let epoch_b = format!("{:032x}", 0xfeed_beefu64);
     state
         .registry
-        .cas_update("fsrc", |d| {
+        .cas_update(&state.sref("fsrc"), |d| {
             d.stream_epoch = epoch_b.clone();
             true
         })
         .await
         .unwrap();
-    state.registry.invalidate("fsrc");
+    state.registry.invalidate(&state.sref("fsrc"));
     assert_ne!(epoch_a, epoch_b, "the source must be a new incarnation");
 
     // Retrying the same fork request must NOT quietly resume the
@@ -10912,7 +11040,12 @@ async fn a_fork_initialization_is_bound_to_its_source_incarnation() {
         hash_against_a, hash_against_b,
         "the creation hash ignores the source incarnation"
     );
-    let child = state.registry.get("fchild").await.unwrap().unwrap();
+    let child = state
+        .registry
+        .get(&state.sref("fchild"))
+        .await
+        .unwrap()
+        .unwrap();
     if let Some(f) = &child.forked_from {
         assert_eq!(
             f.source_epoch, epoch_a,
@@ -10960,7 +11093,12 @@ async fn a_crashed_fork_cascade_can_be_resumed() {
     // B is soft-deleted: alive only because C exists.
     let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/genB", &[], b"").await;
     assert!(st == 204 || st == 200);
-    let b = state.registry.get("genB").await.unwrap().unwrap();
+    let b = state
+        .registry
+        .get(&state.sref("genB"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(b.soft_deleted && !b.deleted, "B soft-deleted: {b:?}");
 
     // The crash, through the REAL cascade: deleting C makes B lose its
@@ -10971,13 +11109,23 @@ async fn a_crashed_fork_cascade_can_be_resumed() {
     let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/genC", &[], b"").await;
     assert!(st == 204 || st == 200, "delete C: {st}");
     crate::http::fork_failpoints::stop_after_tombstone_off("genB");
-    state.registry.invalidate("genB");
-    let bdesc = state.registry.get("genB").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("genB"));
+    let bdesc = state
+        .registry
+        .get(&state.sref("genB"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         bdesc.deleted && bdesc.parent_ref_pending,
         "the cascade did not tombstone B with its debt in one write: {bdesc:?}"
     );
-    let a = state.registry.get("genA").await.unwrap().unwrap();
+    let a = state
+        .registry
+        .get(&state.sref("genA"))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(a.fork_children.len(), 1, "A still pins B");
 
     // The ORIGINAL request is what a client retries — DELETE C, not the
@@ -10985,15 +11133,25 @@ async fn a_crashed_fork_cascade_can_be_resumed() {
     // could not finish.
     let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/genC", &[], b"").await;
     assert!(st == 404 || st == 410 || st == 204, "resume delete: {st}");
-    state.registry.invalidate("genA");
-    let a = state.registry.get("genA").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("genA"));
+    let a = state
+        .registry
+        .get(&state.sref("genA"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         a.fork_children.is_empty(),
         "A still pins a dead generation: {:?}",
         a.fork_children
     );
-    state.registry.invalidate("genB");
-    let b = state.registry.get("genB").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("genB"));
+    let b = state
+        .registry
+        .get(&state.sref("genB"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!b.parent_ref_pending, "the debt is settled");
     engine_shutdown(&state).await;
 }
@@ -11071,7 +11229,12 @@ async fn seal_requests_are_identified_and_validated_exactly() {
     )
     .await;
     assert_eq!(st, 403, "wrong key accepted");
-    let d = state.registry.get("sealkey").await.unwrap().unwrap();
+    let d = state
+        .registry
+        .get(&state.sref("sealkey"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         d.sealing.is_none() && !d.sealed,
         "a refused seal published an intent: {:?}",
@@ -11087,8 +11250,13 @@ async fn seal_requests_are_identified_and_validated_exactly() {
     )
     .await;
     assert_eq!(st, 400);
-    state.registry.invalidate("sealkey");
-    let d = state.registry.get("sealkey").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("sealkey"));
+    let d = state
+        .registry
+        .get(&state.sref("sealkey"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(d.sealing.is_none() && !d.sealed);
     // The right key still works afterwards.
     let (st, _, _) = preq(
@@ -11125,8 +11293,13 @@ async fn a_raw_close_with_content_owes_its_records() {
     )
     .await;
     assert!(st >= 400, "malformed close accepted: {st}");
-    state.registry.invalidate("rawfin");
-    let d = state.registry.get("rawfin").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("rawfin"));
+    let d = state
+        .registry
+        .get(&state.sref("rawfin"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         d.sealing.is_none() && !d.sealed,
         "a refused close published an intent: {:?}",
@@ -11151,8 +11324,13 @@ async fn a_raw_close_with_content_owes_its_records() {
         "close with content: {st} {}",
         String::from_utf8_lossy(&b)
     );
-    state.registry.invalidate("rawfin");
-    let d = state.registry.get("rawfin").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("rawfin"));
+    let d = state
+        .registry
+        .get(&state.sref("rawfin"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(d.sealed, "the collection did not seal");
     assert!(d.sealing.is_none(), "sealing state left behind");
     let (_, _, b) = hreq(addr, "GET", "/v1/stream/rawfin", &[], b"").await;
@@ -11200,8 +11378,13 @@ async fn a_crashed_raw_final_close_is_resumed_by_an_ordinary_retry() {
     .await;
     assert_eq!(st, 503, "the failpoint did not stop the close");
     crate::http::fork_failpoints::stop_after_seal_intent_off("rawcrash");
-    state.registry.invalidate("rawcrash");
-    let d = state.registry.get("rawcrash").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("rawcrash"));
+    let d = state
+        .registry
+        .get(&state.sref("rawcrash"))
+        .await
+        .unwrap()
+        .unwrap();
     let sl = d.sealing.clone().expect("no intent survived the crash");
     assert!(
         sl.owes_final(),
@@ -11254,8 +11437,13 @@ async fn a_crashed_raw_final_close_is_resumed_by_an_ordinary_retry() {
         "the exact retry could not resume: {st} {}",
         String::from_utf8_lossy(&b)
     );
-    state.registry.invalidate("rawcrash");
-    let d = state.registry.get("rawcrash").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("rawcrash"));
+    let d = state
+        .registry
+        .get(&state.sref("rawcrash"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(d.sealed, "the collection did not reach Sealed");
     assert!(d.sealing.is_none(), "sealing state left behind");
     let (_, _, b) = hreq(addr, "GET", "/v1/stream/rawcrash", &[], b"").await;
@@ -11311,12 +11499,12 @@ async fn a_seal_never_installs_over_a_pending_transition() {
     };
     let mut pending = false;
     for _ in 0..100 {
-        state.registry.invalidate("deadl");
-        if let Ok(Some(d)) = state.registry.get("deadl").await {
-            if d.segments.as_ref().is_some_and(|m| m.pending.is_some()) {
-                pending = true;
-                break;
-            }
+        state.registry.invalidate(&state.sref("deadl"));
+        if let Ok(Some(d)) = state.registry.get(&state.sref("deadl")).await
+            && d.segments.as_ref().is_some_and(|m| m.pending.is_some())
+        {
+            pending = true;
+            break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
@@ -11326,7 +11514,7 @@ async fn a_seal_never_installs_over_a_pending_transition() {
     // the pending transition. It either resolves it and seals, or it
     // refuses — never "sealing forever with pending work".
     let sealer = {
-        let st2 = state.clone();
+        let _st2 = state.clone();
         tokio::spawn(async move {
             preq(
                 addr,
@@ -11341,8 +11529,8 @@ async fn a_seal_never_installs_over_a_pending_transition() {
     tokio::time::sleep(std::time::Duration::from_millis(150)).await;
     // While the split is still parked, the descriptor must never hold
     // BOTH a sealing intent and pending work.
-    state.registry.invalidate("deadl");
-    if let Ok(Some(d)) = state.registry.get("deadl").await {
+    state.registry.invalidate(&state.sref("deadl"));
+    if let Ok(Some(d)) = state.registry.get(&state.sref("deadl")).await {
         let both = d.sealing.is_some() && d.segments.as_ref().is_some_and(|m| m.pending.is_some());
         assert!(
             !both,
@@ -11354,8 +11542,13 @@ async fn a_seal_never_installs_over_a_pending_transition() {
     let _ = split.await;
     let (st, _, b) = sealer.await.unwrap();
 
-    state.registry.invalidate("deadl");
-    let d = state.registry.get("deadl").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("deadl"));
+    let d = state
+        .registry
+        .get(&state.sref("deadl"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         !(d.sealing.is_some() && d.segments.as_ref().is_some_and(|m| m.pending.is_some())),
         "ended deadlocked: sealing={:?} segments={:?}",
@@ -11445,8 +11638,13 @@ async fn fork_creation_and_source_deletion_serialize() {
     let (dst, _, _) = del.await.unwrap();
     assert!(dst == 204 || dst == 200, "delete: {dst}");
 
-    state.registry.invalidate("rsrc");
-    let src = state.registry.get("rsrc").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("rsrc"));
+    let src = state
+        .registry
+        .get(&state.sref("rsrc"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         !src.deleted,
         "a live fork is anchored to a HARD-deleted source: {src:?}"
@@ -11482,8 +11680,13 @@ async fn an_impossible_final_never_publishes_an_intent() {
     let untouched = |label: &'static str| {
         let state = state.clone();
         async move {
-            state.registry.invalidate("impossible");
-            let d = state.registry.get("impossible").await.unwrap().unwrap();
+            state.registry.invalidate(&state.sref("impossible"));
+            let d = state
+                .registry
+                .get(&state.sref("impossible"))
+                .await
+                .unwrap()
+                .unwrap();
             assert!(
                 d.sealing.is_none() && !d.sealed,
                 "{label} published a lifecycle intent: {:?}",
@@ -11572,8 +11775,13 @@ async fn a_raw_final_close_resumes_after_its_records_are_durable() {
     crate::http::fork_failpoints::stop_before_mark_committed_off("rawmark");
     assert_eq!(st, 503, "the failpoint should have interrupted the close");
 
-    state.registry.invalidate("rawmark");
-    let d = state.registry.get("rawmark").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("rawmark"));
+    let d = state
+        .registry
+        .get(&state.sref("rawmark"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!d.sealed, "sealed despite the interruption");
     assert!(
         d.sealing.as_ref().is_some_and(|sl| sl.owes_final()),
@@ -11589,8 +11797,13 @@ async fn a_raw_final_close_resumes_after_its_records_are_durable() {
         "the retry could not resume after the records were durable: {st} {}",
         String::from_utf8_lossy(&b)
     );
-    state.registry.invalidate("rawmark");
-    let d = state.registry.get("rawmark").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("rawmark"));
+    let d = state
+        .registry
+        .get(&state.sref("rawmark"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         d.sealed && d.sealing.is_none(),
         "not terminal: {:?}",
@@ -11629,7 +11842,7 @@ async fn a_fork_initialization_resumes_against_a_retained_source() {
     assert_eq!(st, 201);
     let real_hash = state
         .registry
-        .get("retchild")
+        .get(&state.sref("retchild"))
         .await
         .unwrap()
         .unwrap()
@@ -11649,7 +11862,7 @@ async fn a_fork_initialization_resumes_against_a_retained_source() {
     );
     state
         .registry
-        .cas_update("retchild", |d| {
+        .cas_update(&state.sref("retchild"), |d| {
             d.init = Some(crate::registry::InitState {
                 request_hash: hash.clone(),
                 key_fingerprint: d.key_fingerprint.clone(),
@@ -11659,13 +11872,18 @@ async fn a_fork_initialization_resumes_against_a_retained_source() {
         })
         .await
         .unwrap();
-    state.registry.invalidate("retchild");
+    state.registry.invalidate(&state.sref("retchild"));
 
     // Now the source is deleted. It has a child reference, so it is
     // RETAINED — soft-deleted, data intact, for this child.
     let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/retsrc", &[], b"").await;
     assert!(st == 204 || st == 200);
-    let src = state.registry.get("retsrc").await.unwrap().unwrap();
+    let src = state
+        .registry
+        .get(&state.sref("retsrc"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(src.soft_deleted && !src.deleted, "source retained: {src:?}");
 
     // The exact retry must complete the child, not refuse it.
@@ -11675,8 +11893,13 @@ async fn a_fork_initialization_resumes_against_a_retained_source() {
         "the child could not resume against its retained source: {st} {}",
         String::from_utf8_lossy(&b)
     );
-    state.registry.invalidate("retchild");
-    let child = state.registry.get("retchild").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("retchild"));
+    let child = state
+        .registry
+        .get(&state.sref("retchild"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(child.init.is_none(), "the child is still Initializing");
     // …and it reads its inherited records.
     let (st, _, b) = hreq(addr, "GET", "/v1/stream/retchild", &[], b"").await;
@@ -11731,8 +11954,13 @@ async fn an_ordering_verdict_keeps_its_intent_until_the_claim_is_abandoned() {
         "a producer gap should have been refused: {st} {}",
         String::from_utf8_lossy(&b)
     );
-    state.registry.invalidate("refused");
-    let d = state.registry.get("refused").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("refused"));
+    let d = state
+        .registry
+        .get(&state.sref("refused"))
+        .await
+        .unwrap()
+        .unwrap();
     let sl = d
         .sealing
         .clone()
@@ -11768,7 +11996,7 @@ async fn an_ordering_verdict_keeps_its_intent_until_the_claim_is_abandoned() {
     // hold a collection Sealing forever.
     state
         .registry
-        .cas_update("refused", |d| {
+        .cas_update(&state.sref("refused"), |d| {
             if let Some(sl) = d.sealing.as_mut() {
                 sl.claimed_ms -= crate::registry::SEAL_CLAIM_MS + 1_000;
                 return true;
@@ -11777,7 +12005,7 @@ async fn an_ordering_verdict_keeps_its_intent_until_the_claim_is_abandoned() {
         })
         .await
         .unwrap();
-    state.registry.invalidate("refused");
+    state.registry.invalidate(&state.sref("refused"));
     let (st, _, b) = preq(
         addr,
         "POST",
@@ -11791,8 +12019,13 @@ async fn an_ordering_verdict_keeps_its_intent_until_the_claim_is_abandoned() {
         "an abandoned claim was never released: {st} {}",
         String::from_utf8_lossy(&b)
     );
-    state.registry.invalidate("refused");
-    let d = state.registry.get("refused").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("refused"));
+    let d = state
+        .registry
+        .get(&state.sref("refused"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(d.sealed, "the takeover did not reach Sealed");
     assert!(d.sealing.is_none(), "sealing state left behind");
     engine_shutdown(&state).await;
@@ -11888,8 +12121,13 @@ async fn internal_producer_identities_are_unreachable_from_the_wire() {
         "a non-closing duplicate was accepted as the final: {}",
         String::from_utf8_lossy(&b)
     );
-    state.registry.invalidate("nsguard");
-    let d = state.registry.get("nsguard").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("nsguard"));
+    let d = state
+        .registry
+        .get(&state.sref("nsguard"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!d.sealed, "the collection sealed without its final record");
     assert!(
         d.sealing.is_none(),
@@ -11931,8 +12169,13 @@ async fn a_refused_raw_close_does_not_strand_the_collection() {
     .await;
     assert!(st >= 400, "a content-type mismatch was accepted: {st}");
     let _ = b;
-    state.registry.invalidate("rawrefuse");
-    let d = state.registry.get("rawrefuse").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("rawrefuse"));
+    let d = state
+        .registry
+        .get(&state.sref("rawrefuse"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         d.sealing.is_none() && !d.sealed,
         "a definitively refused raw close stranded the collection: {:?}",
@@ -11962,8 +12205,13 @@ async fn a_refused_raw_close_does_not_strand_the_collection() {
     )
     .await;
     assert!(st >= 400, "a producer gap should be refused: {st}");
-    state.registry.invalidate("rawrefuse");
-    let d = state.registry.get("rawrefuse").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("rawrefuse"));
+    let d = state
+        .registry
+        .get(&state.sref("rawrefuse"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         d.sealing.as_ref().is_some_and(|sl| sl.owes_final()),
         "an ordering verdict discarded the intent its retry needs: {:?}",
@@ -12046,8 +12294,13 @@ async fn a_transient_producer_gap_does_not_lose_the_promised_record() {
     )
     .await;
     assert_eq!(st, 409, "the close should have seen the gap: {st}");
-    state.registry.invalidate("gapwin");
-    let d = state.registry.get("gapwin").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("gapwin"));
+    let d = state
+        .registry
+        .get(&state.sref("gapwin"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         d.sealing.as_ref().is_some_and(|sl| sl.owes_final()),
         "the gap response cleared the final intent: {:?}",
@@ -12079,8 +12332,13 @@ async fn a_transient_producer_gap_does_not_lose_the_promised_record() {
         "the exact retry could not resume: {st} {}",
         String::from_utf8_lossy(&b)
     );
-    state.registry.invalidate("gapwin");
-    let d = state.registry.get("gapwin").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("gapwin"));
+    let d = state
+        .registry
+        .get(&state.sref("gapwin"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(d.sealed, "the collection did not reach Sealed");
     assert!(d.sealing.is_none(), "sealing state left behind");
 
@@ -12151,15 +12409,20 @@ async fn a_superseded_close_cannot_write_or_close() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(parked, "A never reached the window");
-    state.registry.invalidate("lease1");
-    let d = state.registry.get("lease1").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("lease1"));
+    let d = state
+        .registry
+        .get(&state.sref("lease1"))
+        .await
+        .unwrap()
+        .unwrap();
     let a_claim = d.sealing.clone().expect("A published no intent");
     assert!(a_claim.owes_final());
 
     // A's lease lapses.
     state
         .registry
-        .cas_update("lease1", |d| {
+        .cas_update(&state.sref("lease1"), |d| {
             if let Some(sl) = d.sealing.as_mut() {
                 sl.claimed_ms -= crate::registry::SEAL_CLAIM_MS + 1_000;
                 return true;
@@ -12168,7 +12431,7 @@ async fn a_superseded_close_cannot_write_or_close() {
         })
         .await
         .unwrap();
-    state.registry.invalidate("lease1");
+    state.registry.invalidate(&state.sref("lease1"));
 
     // B claims it through the real takeover protocol (reserve, fence,
     // closed-report, install) — but appends nothing yet: the point is
@@ -12196,8 +12459,13 @@ async fn a_superseded_close_cannot_write_or_close() {
         "a superseded close was accepted: {st} {}",
         String::from_utf8_lossy(&b)
     );
-    state.registry.invalidate("lease1");
-    let d = state.registry.get("lease1").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("lease1"));
+    let d = state
+        .registry
+        .get(&state.sref("lease1"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!d.sealed, "the superseded close sealed the collection");
     assert_eq!(
         d.sealing.as_ref().map(|s| s.operation_id.as_str()),
@@ -12248,14 +12516,19 @@ async fn a_takeover_completes_an_old_close_that_won() {
     .await;
     assert_eq!(st, 503, "the failpoint did not stop A");
     crate::http::fork_failpoints::stop_before_mark_committed_off("lease2");
-    state.registry.invalidate("lease2");
-    let d = state.registry.get("lease2").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("lease2"));
+    let d = state
+        .registry
+        .get(&state.sref("lease2"))
+        .await
+        .unwrap()
+        .unwrap();
     let a_op = d.sealing.clone().expect("A's claim is gone").operation_id;
 
     // A's lease lapses; B arrives with a DIFFERENT final.
     state
         .registry
-        .cas_update("lease2", |d| {
+        .cas_update(&state.sref("lease2"), |d| {
             if let Some(sl) = d.sealing.as_mut() {
                 sl.claimed_ms -= crate::registry::SEAL_CLAIM_MS + 1_000;
                 return true;
@@ -12264,7 +12537,7 @@ async fn a_takeover_completes_an_old_close_that_won() {
         })
         .await
         .unwrap();
-    state.registry.invalidate("lease2");
+    state.registry.invalidate(&state.sref("lease2"));
     let (st, _, _) = hreq(
         addr,
         "POST",
@@ -12278,8 +12551,13 @@ async fn a_takeover_completes_an_old_close_that_won() {
     .await;
     // B cannot succeed as itself — the collection sealed under A.
     assert!(st >= 400, "B's different final reported success: {st}");
-    state.registry.invalidate("lease2");
-    let d = state.registry.get("lease2").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("lease2"));
+    let d = state
+        .registry
+        .get(&state.sref("lease2"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(d.sealed, "the takeover did not complete A's transition");
     assert_eq!(
         d.seal_op.as_deref(),
@@ -12315,10 +12593,10 @@ async fn an_exact_retry_renews_its_lease() {
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/renew", &ct, br#"[{"n":0}]"#).await;
     assert!(st == 200 || st == 201);
-    state.registry.invalidate("renew");
+    state.registry.invalidate(&state.sref("renew"));
     let epoch = state
         .registry
-        .get("renew")
+        .get(&state.sref("renew"))
         .await
         .unwrap()
         .unwrap()
@@ -12339,7 +12617,7 @@ async fn an_exact_retry_renews_its_lease() {
     // Lease ages…
     state
         .registry
-        .cas_update("renew", |d| {
+        .cas_update(&state.sref("renew"), |d| {
             if let Some(sl) = d.sealing.as_mut() {
                 sl.claimed_ms -= crate::registry::SEAL_CLAIM_MS + 1_000;
                 return true;
@@ -12348,7 +12626,7 @@ async fn an_exact_retry_renews_its_lease() {
         })
         .await
         .unwrap();
-    state.registry.invalidate("renew");
+    state.registry.invalidate(&state.sref("renew"));
     // …but the owner retries: renewed, and with a HIGHER generation.
     let g2 = match crate::product::claim_seal(&state, "renew", "op-r", &intent, &epoch)
         .await
@@ -12438,8 +12716,13 @@ async fn a_resumed_mark_never_seals_a_later_incarnation() {
         "a close from a dead incarnation reported success: {st} {}",
         String::from_utf8_lossy(&b)
     );
-    state.registry.invalidate("markaba");
-    let d = state.registry.get("markaba").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("markaba"));
+    let d = state
+        .registry
+        .get(&state.sref("markaba"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!d.sealed, "the resumed close sealed the replacement");
     assert!(
         d.sealing.is_none(),
@@ -12506,10 +12789,10 @@ async fn a_wrong_content_type_close_cannot_join_the_valid_intent() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(parked, "A never parked");
-    state.registry.invalidate("ctid");
+    state.registry.invalidate(&state.sref("ctid"));
     let a_claim = state
         .registry
-        .get("ctid")
+        .get(&state.sref("ctid"))
         .await
         .unwrap()
         .unwrap()
@@ -12535,8 +12818,13 @@ async fn a_wrong_content_type_close_cannot_join_the_valid_intent() {
     )
     .await;
     assert!(st >= 400, "the wrong-type close was accepted: {st}");
-    state.registry.invalidate("ctid");
-    let d = state.registry.get("ctid").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("ctid"));
+    let d = state
+        .registry
+        .get(&state.sref("ctid"))
+        .await
+        .unwrap()
+        .unwrap();
     let now_claim = d.sealing.as_ref().expect("B tore down A's intent");
     assert_eq!(
         now_claim.operation_id, a_claim.operation_id,
@@ -12552,8 +12840,13 @@ async fn a_wrong_content_type_close_cannot_join_the_valid_intent() {
         "the valid close could not finish: {st} {}",
         String::from_utf8_lossy(&b)
     );
-    state.registry.invalidate("ctid");
-    let d = state.registry.get("ctid").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("ctid"));
+    let d = state
+        .registry
+        .get(&state.sref("ctid"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(d.sealed, "A did not seal");
     let (_, _, bd) = hreq(addr, "GET", "/v1/stream/ctid", &[], b"").await;
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&bd).unwrap();
@@ -12598,7 +12891,7 @@ async fn seal_only_takes_over_an_abandoned_final_claim() {
     // …and once it lapses, the SAME plain :seal recovers the stream.
     state
         .registry
-        .cas_update("rescue", |d| {
+        .cas_update(&state.sref("rescue"), |d| {
             if let Some(sl) = d.sealing.as_mut() {
                 sl.claimed_ms -= crate::registry::SEAL_CLAIM_MS + 1_000;
                 return true;
@@ -12607,15 +12900,20 @@ async fn seal_only_takes_over_an_abandoned_final_claim() {
         })
         .await
         .unwrap();
-    state.registry.invalidate("rescue");
+    state.registry.invalidate(&state.sref("rescue"));
     let (st, _, b) = preq(addr, "POST", "/v1/streams/rescue:seal", &key, b"{}").await;
     assert!(
         st == 200 || st == 204,
         "seal-only could not recover an abandoned claim: {st} {}",
         String::from_utf8_lossy(&b)
     );
-    state.registry.invalidate("rescue");
-    let d = state.registry.get("rescue").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("rescue"));
+    let d = state
+        .registry
+        .get(&state.sref("rescue"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(d.sealed && d.sealing.is_none());
 
     // The dead operation's exact retry is told the truth: sealed by
@@ -12647,8 +12945,13 @@ async fn stale_scaler_and_ttl_decisions_decline_after_recreate() {
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/stale1", &ct, br#"[{"n":0}]"#).await;
     assert!(st == 200 || st == 201);
-    state.registry.invalidate("stale1");
-    let old = state.registry.get("stale1").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("stale1"));
+    let old = state
+        .registry
+        .get(&state.sref("stale1"))
+        .await
+        .unwrap()
+        .unwrap();
 
     let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/stale1", &[], b"").await;
     assert!(st == 204 || st == 200);
@@ -12661,8 +12964,13 @@ async fn stale_scaler_and_ttl_decisions_decline_after_recreate() {
     )
     .await;
     assert!(st == 200 || st == 201, "recreate: {st}");
-    state.registry.invalidate("stale1");
-    let fresh = state.registry.get("stale1").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("stale1"));
+    let fresh = state
+        .registry
+        .get(&state.sref("stale1"))
+        .await
+        .unwrap()
+        .unwrap();
     assert_ne!(fresh.stream_epoch, old.stream_epoch);
     let fresh_exp = fresh.expires_at_ms;
 
@@ -12678,8 +12986,13 @@ async fn stale_scaler_and_ttl_decisions_decline_after_recreate() {
     )
     .await;
     assert!(!did, "a stale split decision was applied");
-    state.registry.invalidate("stale1");
-    let d = state.registry.get("stale1").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("stale1"));
+    let d = state
+        .registry
+        .get(&state.sref("stale1"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         d.segments.as_ref().is_none_or(|m| m.pending.is_none()),
         "a stale decision installed pending topology: {:?}",
@@ -12695,8 +13008,13 @@ async fn stale_scaler_and_ttl_decisions_decline_after_recreate() {
     fake_old.expires_at_ms = Some(crate::shard::now_ms() + 1_000);
     crate::http::touch_ttl(&state, &fake_old);
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    state.registry.invalidate("stale1");
-    let d = state.registry.get("stale1").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("stale1"));
+    let d = state
+        .registry
+        .get(&state.sref("stale1"))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         d.expires_at_ms, fresh_exp,
         "a stale TTL slide extended the replacement"
@@ -12722,8 +13040,13 @@ async fn a_fence_waits_for_durability_before_reporting_closed() {
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/dur9", &ct, br#"[{"n":0}]"#).await;
     assert!(st == 200 || st == 201);
-    state.registry.invalidate("dur9");
-    let desc = state.registry.get("dur9").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("dur9"));
+    let desc = state
+        .registry
+        .get(&state.sref("dur9"))
+        .await
+        .unwrap()
+        .unwrap();
     let epoch = desc.stream_epoch.clone();
     let seg = desc.resolve_segment("");
     let route = desc.segment_route_by_id(seg.seg_id);
@@ -12748,12 +13071,12 @@ async fn a_fence_waits_for_durability_before_reporting_closed() {
     });
     let mut a_claim = None;
     for _ in 0..300 {
-        state.registry.invalidate("dur9");
-        if let Ok(Some(d)) = state.registry.get("dur9").await {
-            if let Some(sl) = d.sealing.clone() {
-                a_claim = Some(sl);
-                break;
-            }
+        state.registry.invalidate(&state.sref("dur9"));
+        if let Ok(Some(d)) = state.registry.get(&state.sref("dur9")).await
+            && let Some(sl) = d.sealing.clone()
+        {
+            a_claim = Some(sl);
+            break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
@@ -12764,7 +13087,7 @@ async fn a_fence_waits_for_durability_before_reporting_closed() {
     // A's lease lapses; B begins a takeover with its own final.
     state
         .registry
-        .cas_update("dur9", |d| {
+        .cas_update(&state.sref("dur9"), |d| {
             if let Some(sl) = d.sealing.as_mut() {
                 sl.claimed_ms -= crate::registry::SEAL_CLAIM_MS + 1_000;
                 return true;
@@ -12773,7 +13096,7 @@ async fn a_fence_waits_for_durability_before_reporting_closed() {
         })
         .await
         .unwrap();
-    state.registry.invalidate("dur9");
+    state.registry.invalidate(&state.sref("dur9"));
     let b_intent = crate::registry::SealIntent::Final {
         routing_key: String::new(),
         request_hash: "b-op-9".into(),
@@ -12789,8 +13112,13 @@ async fn a_fence_waits_for_durability_before_reporting_closed() {
     // the old claim stays exactly as it was — same op, still unmarked.
     tokio::time::sleep(std::time::Duration::from_millis(400)).await;
     assert!(!b.is_finished(), "the takeover concluded before durability");
-    state.registry.invalidate("dur9");
-    let d = state.registry.get("dur9").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("dur9"));
+    let d = state
+        .registry
+        .get(&state.sref("dur9"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!d.sealed, "sealed before the record was durable");
     let sl = d.sealing.clone().expect("the claim vanished mid-takeover");
     assert_eq!(
@@ -12820,8 +13148,13 @@ async fn a_fence_waits_for_durability_before_reporting_closed() {
         ),
         "B did not defer to the close that won: {b_out:?}"
     );
-    state.registry.invalidate("dur9");
-    let d = state.registry.get("dur9").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("dur9"));
+    let d = state
+        .registry
+        .get(&state.sref("dur9"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(d.sealed && d.sealing.is_none());
     let (_, _, bd) = hreq(addr, "GET", "/v1/stream/dur9", &[], b"").await;
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&bd).unwrap();
@@ -12858,7 +13191,7 @@ async fn a_lower_takeover_reservation_cannot_install() {
     crate::http::fork_failpoints::stop_after_seal_intent_off("race9");
     state
         .registry
-        .cas_update("race9", |d| {
+        .cas_update(&state.sref("race9"), |d| {
             if let Some(sl) = d.sealing.as_mut() {
                 sl.claimed_ms -= crate::registry::SEAL_CLAIM_MS + 1_000;
                 return true;
@@ -12867,8 +13200,13 @@ async fn a_lower_takeover_reservation_cannot_install() {
         })
         .await
         .unwrap();
-    state.registry.invalidate("race9");
-    let d = state.registry.get("race9").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("race9"));
+    let d = state
+        .registry
+        .get(&state.sref("race9"))
+        .await
+        .unwrap()
+        .unwrap();
     let epoch = d.stream_epoch.clone();
     let old = d.sealing.clone().unwrap();
 
@@ -12876,14 +13214,14 @@ async fn a_lower_takeover_reservation_cannot_install() {
     let mut g_a = 0;
     state
         .registry
-        .cas_update("race9", |d| {
+        .cas_update(&state.sref("race9"), |d| {
             d.seal_gen_counter += 1;
             g_a = d.seal_gen_counter;
             true
         })
         .await
         .unwrap();
-    state.registry.invalidate("race9");
+    state.registry.invalidate(&state.sref("race9"));
     let closed = crate::http::fence_segment_for_key(&state, "race9", &epoch, "", g_a)
         .await
         .unwrap();
@@ -12893,14 +13231,14 @@ async fn a_lower_takeover_reservation_cannot_install() {
     let mut g_b = 0;
     state
         .registry
-        .cas_update("race9", |d| {
+        .cas_update(&state.sref("race9"), |d| {
             d.seal_gen_counter += 1;
             g_b = d.seal_gen_counter;
             true
         })
         .await
         .unwrap();
-    state.registry.invalidate("race9");
+    state.registry.invalidate(&state.sref("race9"));
     assert!(g_b > g_a);
     let closed = crate::http::fence_segment_for_key(&state, "race9", &epoch, "", g_b)
         .await
@@ -12926,8 +13264,13 @@ async fn a_lower_takeover_reservation_cannot_install() {
         !installed_a,
         "a lower reservation installed below a higher fence"
     );
-    state.registry.invalidate("race9");
-    let d = state.registry.get("race9").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("race9"));
+    let d = state
+        .registry
+        .get(&state.sref("race9"))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         d.sealing.as_ref().map(|s| s.claim_generation),
         Some(old.claim_generation),
@@ -12944,8 +13287,13 @@ async fn a_lower_takeover_reservation_cannot_install() {
         "recovery seal failed: {st} {}",
         String::from_utf8_lossy(&b)
     );
-    state.registry.invalidate("race9");
-    let d = state.registry.get("race9").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("race9"));
+    let d = state
+        .registry
+        .get(&state.sref("race9"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(d.sealed && d.sealing.is_none(), "not sealed after recovery");
     engine_shutdown(&state).await;
 }
@@ -12960,8 +13308,13 @@ async fn a_fence_survives_handle_eviction() {
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/evict9", &ct, br#"[{"n":0}]"#).await;
     assert!(st == 200 || st == 201);
-    state.registry.invalidate("evict9");
-    let desc = state.registry.get("evict9").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("evict9"));
+    let desc = state
+        .registry
+        .get(&state.sref("evict9"))
+        .await
+        .unwrap()
+        .unwrap();
     let epoch = desc.stream_epoch.clone();
     let seg = desc.resolve_segment("");
     let route = desc.segment_route_by_id(seg.seg_id);
@@ -13094,8 +13447,13 @@ async fn a_product_seal_never_binds_to_a_recreated_incarnation() {
         "a seal validated against a dead incarnation succeeded: {st} {}",
         String::from_utf8_lossy(&b)
     );
-    state.registry.invalidate("sealaba");
-    let d = state.registry.get("sealaba").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("sealaba"));
+    let d = state
+        .registry
+        .get(&state.sref("sealaba"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!d.sealed, "the replacement was sealed");
     assert!(
         d.sealing.is_none(),
@@ -13149,8 +13507,13 @@ async fn a_non_closing_duplicate_releases_its_own_intent() {
     )
     .await;
     assert_eq!(st, 204, "the duplicate answer is the protocol's contract");
-    state.registry.invalidate("dup9");
-    let d = state.registry.get("dup9").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("dup9"));
+    let d = state
+        .registry
+        .get(&state.sref("dup9"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         d.sealing.is_none(),
         "a non-closing duplicate left its intent behind: {:?}",
@@ -13177,8 +13540,13 @@ async fn scaler_heat_and_terminal_proof_are_incarnation_scoped() {
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/heat9", &ct, br#"[{"n":0}]"#).await;
     assert!(st == 200 || st == 201);
-    state.registry.invalidate("heat9");
-    let old = state.registry.get("heat9").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("heat9"));
+    let old = state
+        .registry
+        .get(&state.sref("heat9"))
+        .await
+        .unwrap()
+        .unwrap();
     // Feed heavy, PLURAL heat under incarnation A: many distinct keys
     // (a single dominant key trips hot-key suppression, not a split)
     // at rates far above the default hot thresholds.
@@ -13193,8 +13561,13 @@ async fn scaler_heat_and_terminal_proof_are_incarnation_scoped() {
     assert!(st == 204 || st == 200);
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/heat9", &ct, br#"[{"n":1}]"#).await;
     assert!(st == 200 || st == 201);
-    state.registry.invalidate("heat9");
-    let fresh = state.registry.get("heat9").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("heat9"));
+    let fresh = state
+        .registry
+        .get(&state.sref("heat9"))
+        .await
+        .unwrap()
+        .unwrap();
     let fseg = fresh.resolve_segment("");
     // One COLD feed under the replacement resets the sketch. Then
     // hammer the evaluator long enough for any surviving heat to build
@@ -13224,8 +13597,13 @@ async fn scaler_heat_and_terminal_proof_are_incarnation_scoped() {
     )
     .await;
     assert!(st == 200 || st == 204);
-    state.registry.invalidate("heat9");
-    let d = state.registry.get("heat9").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("heat9"));
+    let d = state
+        .registry
+        .get(&state.sref("heat9"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(d.sealed);
     let err = crate::product::run_seal(
         &state,
@@ -13261,8 +13639,13 @@ async fn idempotent_successes_wait_for_durability() {
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/dur10", &ct, br#"[{"n":0}]"#).await;
     assert!(st == 200 || st == 201);
-    state.registry.invalidate("dur10");
-    let desc = state.registry.get("dur10").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("dur10"));
+    let desc = state
+        .registry
+        .get(&state.sref("dur10"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let route = desc.segment_route_by_id(seg.seg_id);
     let engine = state.engine_for(&route).await.unwrap();
@@ -13388,8 +13771,13 @@ async fn state_dependent_conflicts_wait_for_durability() {
     )
     .await;
     assert_eq!(st, 201);
-    state.registry.invalidate("conf11");
-    let desc = state.registry.get("conf11").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("conf11"));
+    let desc = state
+        .registry
+        .get(&state.sref("conf11"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let route = desc.segment_route_by_id(seg.seg_id);
     let engine = state.engine_for(&route).await.unwrap();
@@ -13461,8 +13849,13 @@ async fn a_fence_outlives_the_maintenance_sweep() {
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/sweep11", &ct, br#"[{"n":0}]"#).await;
     assert!(st == 200 || st == 201);
-    state.registry.invalidate("sweep11");
-    let desc = state.registry.get("sweep11").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("sweep11"));
+    let desc = state
+        .registry
+        .get(&state.sref("sweep11"))
+        .await
+        .unwrap()
+        .unwrap();
     let epoch = desc.stream_epoch.clone();
     let seg = desc.resolve_segment("");
     let route = desc.segment_route_by_id(seg.seg_id);
@@ -13562,8 +13955,13 @@ async fn a_product_final_never_writes_into_a_recreated_incarnation() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(parked, "the sealer never reached the claim-to-append gap");
-    state.registry.invalidate("finaba");
-    let a = state.registry.get("finaba").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("finaba"));
+    let a = state
+        .registry
+        .get(&state.sref("finaba"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(a.sealing.is_some(), "no claim installed before the park");
 
     // Replace the collection under the SAME key while the final is
@@ -13587,8 +13985,13 @@ async fn a_product_final_never_writes_into_a_recreated_incarnation() {
         "a final from a dead incarnation reported success: {st} {}",
         String::from_utf8_lossy(&b)
     );
-    state.registry.invalidate("finaba");
-    let d = state.registry.get("finaba").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("finaba"));
+    let d = state
+        .registry
+        .get(&state.sref("finaba"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!d.sealed, "the replacement was sealed");
     assert!(
         d.sealing.is_none(),
@@ -13642,8 +14045,13 @@ async fn a_failed_group_write_fails_its_duplicate_too() {
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/dur002", &ct, br#"[{"n":0}]"#).await;
     assert!(st == 200 || st == 201);
-    state.registry.invalidate("dur002");
-    let desc = state.registry.get("dur002").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("dur002"));
+    let desc = state
+        .registry
+        .get(&state.sref("dur002"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let route = desc.segment_route_by_id(seg.seg_id);
     let identity = desc.dynamic_segment_identity(seg.seg_id);
@@ -13738,8 +14146,13 @@ async fn a_reuse_verdict_dies_with_its_failed_group() {
     )
     .await;
     assert_eq!(st, 201);
-    state.registry.invalidate("dur006");
-    let desc = state.registry.get("dur006").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("dur006"));
+    let desc = state
+        .registry
+        .get(&state.sref("dur006"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let route = desc.segment_route_by_id(seg.seg_id);
     let identity = desc.dynamic_segment_identity(seg.seg_id);
@@ -13839,8 +14252,13 @@ async fn a_failed_group_fails_the_close_and_its_retry_together() {
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/dur004", &ct, br#"[{"n":0}]"#).await;
     assert!(st == 200 || st == 201);
-    state.registry.invalidate("dur004");
-    let desc = state.registry.get("dur004").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("dur004"));
+    let desc = state
+        .registry
+        .get(&state.sref("dur004"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let route = desc.segment_route_by_id(seg.seg_id);
     let identity = desc.dynamic_segment_identity(seg.seg_id);
@@ -13909,8 +14327,13 @@ async fn a_failed_group_fails_the_close_and_its_retry_together() {
         s1 >= 400 && s2 >= 400,
         "a close (or its idempotent echo) outlived the failed group: {s1} {s2}"
     );
-    state.registry.invalidate("dur004");
-    let d = state.registry.get("dur004").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("dur004"));
+    let d = state
+        .registry
+        .get(&state.sref("dur004"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!d.sealed, "sealing published off a failed close");
     // Recovery.
     let (s3, _, _) = tokio::time::timeout(
@@ -13929,8 +14352,13 @@ async fn a_failed_group_fails_the_close_and_its_retry_together() {
     .await
     .expect("LIVENESS WEDGE: the recovery close never returned");
     assert!(s3 == 200 || s3 == 204, "recovery close: {s3}");
-    state.registry.invalidate("dur004");
-    let d = state.registry.get("dur004").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("dur004"));
+    let d = state
+        .registry
+        .get(&state.sref("dur004"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(d.sealed && d.sealing.is_none());
     engine_shutdown(&state).await;
 }
@@ -13948,8 +14376,13 @@ async fn a_fence_in_a_failed_group_reports_failure_not_closed() {
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/sel021", &ct, br#"[{"n":0}]"#).await;
     assert!(st == 200 || st == 201);
-    state.registry.invalidate("sel021");
-    let desc = state.registry.get("sel021").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("sel021"));
+    let desc = state
+        .registry
+        .get(&state.sref("sel021"))
+        .await
+        .unwrap()
+        .unwrap();
     let epoch = desc.stream_epoch.clone();
     let seg = desc.resolve_segment("");
     let route = desc.segment_route_by_id(seg.seg_id);
@@ -13991,10 +14424,10 @@ async fn a_fence_in_a_failed_group_reports_failure_not_closed() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(parked, "the close never parked");
-    state.registry.invalidate("sel021");
+    state.registry.invalidate(&state.sref("sel021"));
     let claim = state
         .registry
-        .get("sel021")
+        .get(&state.sref("sel021"))
         .await
         .unwrap()
         .unwrap()
@@ -14040,8 +14473,13 @@ async fn a_fence_in_a_failed_group_reports_failure_not_closed() {
         "the close reported success for a failed write: {cs}"
     );
     // A write failure is AMBIGUOUS: the intent stays for the retry.
-    state.registry.invalidate("sel021");
-    let d = state.registry.get("sel021").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("sel021"));
+    let d = state
+        .registry
+        .get(&state.sref("sel021"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         d.sealing.as_ref().is_some_and(|sl| sl.owes_final()),
         "the ambiguous failure tore down the intent: {:?}",
@@ -14066,8 +14504,13 @@ async fn a_fence_in_a_failed_group_reports_failure_not_closed() {
         "the exact retry could not recover: {st} {}",
         String::from_utf8_lossy(&b)
     );
-    state.registry.invalidate("sel021");
-    let d = state.registry.get("sel021").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("sel021"));
+    let d = state
+        .registry
+        .get(&state.sref("sel021"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(d.sealed && d.sealing.is_none());
     let (_, _, bd) = hreq(addr, "GET", "/v1/stream/sel021", &[], b"").await;
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&bd).unwrap();
@@ -14097,8 +14540,13 @@ async fn a_stream_seq_verdict_is_grounded_in_durable_state() {
     )
     .await;
     assert!(st == 200 || st == 201);
-    state.registry.invalidate("dur008");
-    let desc = state.registry.get("dur008").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("dur008"));
+    let desc = state
+        .registry
+        .get(&state.sref("dur008"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let route = desc.segment_route_by_id(seg.seg_id);
     let identity = desc.dynamic_segment_identity(seg.seg_id);
@@ -14176,8 +14624,13 @@ async fn create_replay_recovers_from_a_failed_initial_write() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(parked, "the initial append never reached the park");
-    state.registry.invalidate("crt007");
-    let desc = state.registry.get("crt007").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("crt007"));
+    let desc = state
+        .registry
+        .get(&state.sref("crt007"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(desc.init.is_some(), "no initialization claim");
     let seg = desc.resolve_segment("");
     let route = desc.segment_route_by_id(seg.seg_id);
@@ -14198,8 +14651,13 @@ async fn create_replay_recovers_from_a_failed_initial_write() {
         cs >= 400,
         "create reported success over a failed seed write: {cs}"
     );
-    state.registry.invalidate("crt007");
-    let d = state.registry.get("crt007").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("crt007"));
+    let d = state
+        .registry
+        .get(&state.sref("crt007"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         d.init.is_some(),
         "a failed initialization published readiness"
@@ -14208,8 +14666,13 @@ async fn create_replay_recovers_from_a_failed_initial_write() {
     // The exact replay resumes and completes.
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/crt007", &ct, body).await;
     assert!(st == 200 || st == 201, "replay: {st}");
-    state.registry.invalidate("crt007");
-    let d = state.registry.get("crt007").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("crt007"));
+    let d = state
+        .registry
+        .get(&state.sref("crt007"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(d.init.is_none(), "replay did not publish readiness");
     let (_, _, bd) = hreq(addr, "GET", "/v1/stream/crt007", &[], b"").await;
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&bd).unwrap();
@@ -14254,8 +14717,13 @@ async fn merge_phase_b_declines_under_sealing() {
         crate::scaler3::execute_split(&state, "sel019", 0, 0x8000_0000_0000_0000).await,
         "split failed"
     );
-    state.registry.invalidate("sel019");
-    let d = state.registry.get("sel019").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("sel019"));
+    let d = state
+        .registry
+        .get(&state.sref("sel019"))
+        .await
+        .unwrap()
+        .unwrap();
     let live: Vec<u32> = d
         .segments
         .as_ref()
@@ -14282,7 +14750,7 @@ async fn merge_phase_b_declines_under_sealing() {
     }
     state
         .registry
-        .cas_update("sel019", |d| {
+        .cas_update(&state.sref("sel019"), |d| {
             d.seal_gen_counter += 1;
             d.sealing = Some(crate::registry::SealState {
                 operation_id: "seal-x".into(),
@@ -14294,12 +14762,17 @@ async fn merge_phase_b_declines_under_sealing() {
         })
         .await
         .unwrap();
-    state.registry.invalidate("sel019");
+    state.registry.invalidate(&state.sref("sel019"));
     crate::scaler3::failpoints::release_before_publish();
     let done = merge.await.unwrap();
     assert!(!done, "merge published under a sealing collection");
-    state.registry.invalidate("sel019");
-    let d = state.registry.get("sel019").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("sel019"));
+    let d = state
+        .registry
+        .get(&state.sref("sel019"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         d.segments.as_ref().is_some_and(|m| m.pending.is_some()),
         "the pending merge was lost instead of retained"
@@ -14308,19 +14781,24 @@ async fn merge_phase_b_declines_under_sealing() {
     // Clear the claim; the merge resumes to completion.
     state
         .registry
-        .cas_update("sel019", |d| {
+        .cas_update(&state.sref("sel019"), |d| {
             d.sealing = None;
             true
         })
         .await
         .unwrap();
-    state.registry.invalidate("sel019");
+    state.registry.invalidate(&state.sref("sel019"));
     assert!(
         crate::scaler3::resume(&state, "sel019").await,
         "resume failed"
     );
-    state.registry.invalidate("sel019");
-    let d = state.registry.get("sel019").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("sel019"));
+    let d = state
+        .registry
+        .get(&state.sref("sel019"))
+        .await
+        .unwrap()
+        .unwrap();
     let live_after = d
         .segments
         .as_ref()
@@ -14383,10 +14861,10 @@ async fn concurrent_finals_with_different_coordination_do_not_share_a_claim() {
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
     assert!(parked, "A never parked");
-    state.registry.invalidate("sel027");
+    state.registry.invalidate(&state.sref("sel027"));
     let a_claim = state
         .registry
-        .get("sel027")
+        .get(&state.sref("sel027"))
         .await
         .unwrap()
         .unwrap()
@@ -14409,10 +14887,10 @@ async fn concurrent_finals_with_different_coordination_do_not_share_a_claim() {
     )
     .await;
     assert_eq!(st, 409, "B should conflict with A's live claim: {st}");
-    state.registry.invalidate("sel027");
+    state.registry.invalidate(&state.sref("sel027"));
     let now_claim = state
         .registry
-        .get("sel027")
+        .get(&state.sref("sel027"))
         .await
         .unwrap()
         .unwrap()
@@ -14428,8 +14906,13 @@ async fn concurrent_finals_with_different_coordination_do_not_share_a_claim() {
         "A: {st} {}",
         String::from_utf8_lossy(&b)
     );
-    state.registry.invalidate("sel027");
-    let d = state.registry.get("sel027").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("sel027"));
+    let d = state
+        .registry
+        .get(&state.sref("sel027"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(d.sealed);
     let (_, _, bd) = hreq(addr, "GET", "/v1/stream/sel027", &[], b"").await;
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&bd).unwrap();
@@ -14502,8 +14985,13 @@ async fn a_child_deleted_before_the_source_ref_cannot_pin_the_source() {
         String::from_utf8_lossy(&cb)
     );
     // The source holds no reference to the dead child…
-    state.registry.invalidate("frk13src");
-    let src = state.registry.get("frk13src").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("frk13src"));
+    let src = state
+        .registry
+        .get(&state.sref("frk13src"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         src.fork_children.is_empty(),
         "a dead child pinned the source: {:?}",
@@ -14512,8 +15000,8 @@ async fn a_child_deleted_before_the_source_ref_cannot_pin_the_source() {
     // …and hard-deletes cleanly (a leaked ref would soft-delete it).
     let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/frk13src", &[], b"").await;
     assert!(st == 204 || st == 200, "source delete: {st}");
-    state.registry.invalidate("frk13src");
-    let gone = state.registry.get("frk13src").await.unwrap();
+    state.registry.invalidate(&state.sref("frk13src"));
+    let gone = state.registry.get(&state.sref("frk13src")).await.unwrap();
     assert!(
         gone.is_none() || gone.as_ref().is_some_and(|d| d.deleted && !d.soft_deleted),
         "the source was retained by a leaked reference: {gone:?}"
@@ -14581,8 +15069,13 @@ async fn a_stale_epoch_final_releases_its_intent_on_both_surfaces() {
         st == 403 || st == 409,
         "stale epoch should be refused: {st}"
     );
-    state.registry.invalidate("stale12p");
-    let d = state.registry.get("stale12p").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("stale12p"));
+    let d = state
+        .registry
+        .get(&state.sref("stale12p"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         d.sealing.is_none(),
         "a permanently-stale final retained its intent: {:?}",
@@ -14633,8 +15126,13 @@ async fn a_stale_epoch_final_releases_its_intent_on_both_surfaces() {
     )
     .await;
     assert!(st >= 400, "stale epoch should be refused: {st}");
-    state.registry.invalidate("stale12r");
-    let d = state.registry.get("stale12r").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("stale12r"));
+    let d = state
+        .registry
+        .get(&state.sref("stale12r"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         d.sealing.is_none(),
         "raw: a permanently-stale final retained its intent: {:?}",
@@ -14687,8 +15185,13 @@ async fn a_failed_queue_write_leaves_no_phantom_leases() {
     )
     .await;
     assert_eq!(st, 201, "consumer create: {}", String::from_utf8_lossy(&b));
-    state.registry.invalidate("q12");
-    let desc = state.registry.get("q12").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("q12"));
+    let desc = state
+        .registry
+        .get(&state.sref("q12"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let route = desc.segment_route_by_id(seg.seg_id);
     let identity = desc.dynamic_segment_identity(seg.seg_id);
@@ -14803,8 +15306,13 @@ async fn a_crashed_creators_late_reference_is_repaired_by_delete_retry() {
     // conclusive).
     let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/frk13kid", &[], b"").await;
     assert!(st == 204 || st == 200, "delete: {st}");
-    state.registry.invalidate("frk13kid");
-    let tomb = state.registry.get("frk13kid").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("frk13kid"));
+    let tomb = state
+        .registry
+        .get(&state.sref("frk13kid"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(tomb.deleted, "no tombstone");
     assert!(
         tomb.parent_ref_pending,
@@ -14820,8 +15328,13 @@ async fn a_crashed_creators_late_reference_is_repaired_by_delete_retry() {
     {
         tokio::time::sleep(std::time::Duration::from_millis(5)).await;
     }
-    state.registry.invalidate("frk13c");
-    let src = state.registry.get("frk13c").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("frk13c"));
+    let src = state
+        .registry
+        .get(&state.sref("frk13c"))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         src.fork_children.len(),
         1,
@@ -14835,8 +15348,13 @@ async fn a_crashed_creators_late_reference_is_repaired_by_delete_retry() {
         st == 204 || st == 200 || st == 404 || st == 410,
         "retry delete: {st}"
     );
-    state.registry.invalidate("frk13c");
-    let src = state.registry.get("frk13c").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("frk13c"));
+    let src = state
+        .registry
+        .get(&state.sref("frk13c"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         src.fork_children.is_empty(),
         "the crashed creator's reference survived the delete retry: {:?}",
@@ -14845,8 +15363,8 @@ async fn a_crashed_creators_late_reference_is_repaired_by_delete_retry() {
     // And the source hard-deletes cleanly.
     let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/frk13c", &[], b"").await;
     assert!(st == 204 || st == 200, "source delete: {st}");
-    state.registry.invalidate("frk13c");
-    let gone = state.registry.get("frk13c").await.unwrap();
+    state.registry.invalidate(&state.sref("frk13c"));
+    let gone = state.registry.get(&state.sref("frk13c")).await.unwrap();
     assert!(
         gone.is_none() || gone.as_ref().is_some_and(|d| d.deleted && !d.soft_deleted),
         "the source was retained by the crashed creator's reference: {gone:?}"
@@ -14915,8 +15433,13 @@ async fn a_failed_settle_leaves_no_phantom_acks() {
         .collect();
     let settle_body = serde_json::json!({ "acks": acks }).to_string();
 
-    state.registry.invalidate("que004");
-    let desc = state.registry.get("que004").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("que004"));
+    let desc = state
+        .registry
+        .get(&state.sref("que004"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let route = desc.segment_route_by_id(seg.seg_id);
     let identity = desc.dynamic_segment_identity(seg.seg_id);
@@ -15020,8 +15543,13 @@ async fn queue_config_delete_is_group_local() {
     assert_eq!(held, 2);
 
     // Fail the group carrying the ConfigDelete.
-    state.registry.invalidate("qc14");
-    let desc = state.registry.get("qc14").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("qc14"));
+    let desc = state
+        .registry
+        .get(&state.sref("qc14"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let route = desc.segment_route_by_id(seg.seg_id);
     let identity = desc.dynamic_segment_identity(seg.seg_id);
@@ -15152,8 +15680,13 @@ async fn receive_then_delete_in_one_group_leaves_no_stale_lease() {
     .await;
     assert_eq!(st, 201);
 
-    state.registry.invalidate("qc15a");
-    let desc = state.registry.get("qc15a").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("qc15a"));
+    let desc = state
+        .registry
+        .get(&state.sref("qc15a"))
+        .await
+        .unwrap()
+        .unwrap();
     let ro = desc.resolve_segment("");
     let engine = state.engine_for(&ro.shard_route).await.unwrap();
     let identity = ro.identity;
@@ -15266,8 +15799,13 @@ async fn settle_then_delete_in_one_group_leaves_no_stale_rows() {
     .await;
     assert_eq!(st, 201);
 
-    state.registry.invalidate("qc15b");
-    let desc = state.registry.get("qc15b").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("qc15b"));
+    let desc = state
+        .registry
+        .get(&state.sref("qc15b"))
+        .await
+        .unwrap()
+        .unwrap();
     let ro = desc.resolve_segment("");
     let engine = state.engine_for(&ro.shard_route).await.unwrap();
     let identity = ro.identity;
@@ -15399,8 +15937,13 @@ async fn a_receive_after_delete_in_the_same_group_is_refused() {
     .await;
     assert_eq!(st, 201);
 
-    state.registry.invalidate("qc15d");
-    let desc = state.registry.get("qc15d").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("qc15d"));
+    let desc = state
+        .registry
+        .get(&state.sref("qc15d"))
+        .await
+        .unwrap()
+        .unwrap();
     let ro = desc.resolve_segment("");
     let engine = state.engine_for(&ro.shard_route).await.unwrap();
     let identity = ro.identity;
@@ -15598,8 +16141,13 @@ async fn a_split_consumers_deletion_fails_one_segment_then_retries_clean() {
     assert_eq!(total, 2, "one lease per segment across two pulls");
 
     // The two CHILD segments' engines + identities.
-    state.registry.invalidate("qc16s");
-    let desc = state.registry.get("qc16s").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("qc16s"));
+    let desc = state
+        .registry
+        .get(&state.sref("qc16s"))
+        .await
+        .unwrap()
+        .unwrap();
     let children: Vec<_> = desc
         .segments
         .as_ref()
@@ -15807,8 +16355,13 @@ async fn a_parked_pull_cannot_lease_after_its_generation_was_deleted() {
         String::from_utf8_lossy(&b)
     );
     // No row of the dead generation landed.
-    state.registry.invalidate("qc16p");
-    let desc = state.registry.get("qc16p").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("qc16p"));
+    let desc = state
+        .registry
+        .get(&state.sref("qc16p"))
+        .await
+        .unwrap()
+        .unwrap();
     let ro = desc.resolve_segment("");
     let engine = state.engine_for(&ro.shard_route).await.unwrap();
     let rows = engine
@@ -15895,8 +16448,13 @@ async fn a_failed_config_scan_aborts_the_delete_untouched() {
     .await;
     assert_eq!(st, 200);
 
-    state.registry.invalidate("qc15c");
-    let desc = state.registry.get("qc15c").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("qc15c"));
+    let desc = state
+        .registry
+        .get(&state.sref("qc15c"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let route = desc.segment_route_by_id(seg.seg_id);
     let engine = state.engine_for(&route).await.unwrap();
@@ -15969,8 +16527,13 @@ async fn same_group_config_puts_see_each_other() {
     )
     .await;
     assert_eq!(st, 201);
-    state.registry.invalidate("qc14b");
-    let desc = state.registry.get("qc14b").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("qc14b"));
+    let desc = state
+        .registry
+        .get(&state.sref("qc14b"))
+        .await
+        .unwrap()
+        .unwrap();
     let route = desc.segment_route_by_id(desc.resolve_segment("").seg_id);
     let engine = state.engine_for(&route).await.unwrap();
 
@@ -16029,10 +16592,10 @@ async fn a_stale_fork_release_does_not_touch_a_recreated_source() {
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/frk14src", &ct, br#"[{"n":0}]"#).await;
     assert!(st == 200 || st == 201);
-    state.registry.invalidate("frk14src");
+    state.registry.invalidate(&state.sref("frk14src"));
     let old_epoch = state
         .registry
-        .get("frk14src")
+        .get(&state.sref("frk14src"))
         .await
         .unwrap()
         .unwrap()
@@ -16044,22 +16607,27 @@ async fn a_stale_fork_release_does_not_touch_a_recreated_source() {
     assert!(st == 204 || st == 200, "delete: {st}");
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/frk14src", &ct, br#"[{"n":9}]"#).await;
     assert!(st == 200 || st == 201, "recreate: {st}");
-    state.registry.invalidate("frk14src");
-    let fresh = state.registry.get("frk14src").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("frk14src"));
+    let fresh = state
+        .registry
+        .get(&state.sref("frk14src"))
+        .await
+        .unwrap()
+        .unwrap();
     assert_ne!(fresh.stream_epoch, old_epoch);
 
     // Put the REPLACEMENT into a soft-deleted-with-one-child state, so
     // a release that ignored the epoch fence WOULD tombstone it.
     state
         .registry
-        .cas_update("frk14src", |d| {
+        .cas_update(&state.sref("frk14src"), |d| {
             d.soft_deleted = true;
             d.fork_children = vec!["ghost".into()];
             true
         })
         .await
         .unwrap();
-    state.registry.invalidate("frk14src");
+    state.registry.invalidate(&state.sref("frk14src"));
 
     // A release carrying the OLD source epoch is conclusive and leaves
     // the replacement untouched — not soft-deleted, not tombstoned.
@@ -16068,8 +16636,13 @@ async fn a_stale_fork_release_does_not_touch_a_recreated_source() {
             .await
             .unwrap();
     assert!(conclusive, "a stale release should be conclusive");
-    state.registry.invalidate("frk14src");
-    let d = state.registry.get("frk14src").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("frk14src"));
+    let d = state
+        .registry
+        .get(&state.sref("frk14src"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(!d.deleted, "a stale release tombstoned the replacement");
     assert_eq!(
         d.fork_children,
@@ -16106,10 +16679,10 @@ async fn a_release_parked_across_recreation_cannot_touch_the_replacement() {
     )
     .await;
     assert_eq!(st, 201);
-    state.registry.invalidate("frk15src");
+    state.registry.invalidate(&state.sref("frk15src"));
     let epoch_a = state
         .registry
-        .get("frk15src")
+        .get(&state.sref("frk15src"))
         .await
         .unwrap()
         .unwrap()
@@ -16147,8 +16720,13 @@ async fn a_release_parked_across_recreation_cannot_touch_the_replacement() {
     )
     .await;
     assert_eq!(st, 201, "recreate as B");
-    state.registry.invalidate("frk15src");
-    let fresh = state.registry.get("frk15src").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("frk15src"));
+    let fresh = state
+        .registry
+        .get(&state.sref("frk15src"))
+        .await
+        .unwrap()
+        .unwrap();
     assert_ne!(fresh.stream_epoch, epoch_a);
 
     // ...conditioned so an UNFENCED release would visibly mutate it:
@@ -16156,15 +16734,20 @@ async fn a_release_parked_across_recreation_cannot_touch_the_replacement() {
     // soft-deleted, so removing that child would tombstone it.
     state
         .registry
-        .cas_update("frk15src", |d| {
+        .cas_update(&state.sref("frk15src"), |d| {
             d.soft_deleted = true;
             d.fork_children = vec!["frk15-ghost-fork".into()];
             true
         })
         .await
         .unwrap();
-    state.registry.invalidate("frk15src");
-    let b_before = state.registry.get("frk15src").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("frk15src"));
+    let b_before = state
+        .registry
+        .get(&state.sref("frk15src"))
+        .await
+        .unwrap()
+        .unwrap();
     let b_bytes_before = serde_json::to_vec(&b_before).unwrap();
 
     // Resume the stale release.
@@ -16175,8 +16758,13 @@ async fn a_release_parked_across_recreation_cannot_touch_the_replacement() {
         "a release for a dead incarnation must be conclusive so its debt converges"
     );
 
-    state.registry.invalidate("frk15src");
-    let b_after = state.registry.get("frk15src").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("frk15src"));
+    let b_after = state
+        .registry
+        .get(&state.sref("frk15src"))
+        .await
+        .unwrap()
+        .unwrap();
     let b_bytes_after = serde_json::to_vec(&b_after).unwrap();
     assert_eq!(
         b_bytes_before, b_bytes_after,
@@ -16221,13 +16809,13 @@ async fn a_parked_create_never_publishes_readiness_for_a_later_incarnation() {
         tokio::spawn(async move { hreq(addr, "PUT", "/v1/stream/abacreate", &ct, body).await });
     let mut first_epoch = String::new();
     for _ in 0..300 {
-        state.registry.invalidate("abacreate");
+        state.registry.invalidate(&state.sref("abacreate"));
         if crate::http::fork_failpoints::parked(
             crate::http::fork_failpoints::Fp::CreateBeforeReady,
             "abacreate",
         ) > before
         {
-            if let Ok(Some(d)) = state.registry.get("abacreate").await {
+            if let Ok(Some(d)) = state.registry.get(&state.sref("abacreate")).await {
                 first_epoch = d.stream_epoch.clone();
             }
             break;
@@ -16256,8 +16844,8 @@ async fn a_parked_create_never_publishes_readiness_for_a_later_incarnation() {
             "abacreate",
         ) > before + 1
         {
-            state.registry.invalidate("abacreate");
-            if let Ok(Some(d)) = state.registry.get("abacreate").await {
+            state.registry.invalidate(&state.sref("abacreate"));
+            if let Ok(Some(d)) = state.registry.get(&state.sref("abacreate")).await {
                 second_epoch = d.stream_epoch.clone();
             }
             break;
@@ -16285,8 +16873,13 @@ async fn a_parked_create_never_publishes_readiness_for_a_later_incarnation() {
         String::from_utf8_lossy(&lb)
     );
 
-    state.registry.invalidate("abacreate");
-    let d = state.registry.get("abacreate").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("abacreate"));
+    let d = state
+        .registry
+        .get(&state.sref("abacreate"))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         d.stream_epoch, second_epoch,
         "the surviving incarnation is not the live one"
@@ -16331,8 +16924,13 @@ async fn a_seal_in_flight_never_closes_a_later_incarnation() {
     .await;
     assert_eq!(st, 503, "the failpoint did not stop the close");
     crate::http::fork_failpoints::stop_after_seal_intent_off("abaseal");
-    state.registry.invalidate("abaseal");
-    let old = state.registry.get("abaseal").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("abaseal"));
+    let old = state
+        .registry
+        .get(&state.sref("abaseal"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(old.sealing.as_ref().is_some_and(|sl| sl.owes_final()));
 
     // Delete and recreate: the intent belongs to an incarnation that no
@@ -16341,8 +16939,13 @@ async fn a_seal_in_flight_never_closes_a_later_incarnation() {
     assert!(st == 204 || st == 200, "delete: {st}");
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/abaseal", &ct, br#"[{"n":9}]"#).await;
     assert!(st == 200 || st == 201, "recreate: {st}");
-    state.registry.invalidate("abaseal");
-    let fresh = state.registry.get("abaseal").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("abaseal"));
+    let fresh = state
+        .registry
+        .get(&state.sref("abaseal"))
+        .await
+        .unwrap()
+        .unwrap();
     assert_ne!(
         fresh.stream_epoch, old.stream_epoch,
         "the incarnation never changed"
@@ -16371,8 +16974,13 @@ async fn a_seal_in_flight_never_closes_a_later_incarnation() {
         matches!(claim, crate::product::EnterSeal::Missing),
         "a seal issued against a dead incarnation claimed its replacement: {claim:?}"
     );
-    state.registry.invalidate("abaseal");
-    let d = state.registry.get("abaseal").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("abaseal"));
+    let d = state
+        .registry
+        .get(&state.sref("abaseal"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         d.sealing.is_none(),
         "a stale seal installed its intent: {:?}",
@@ -16421,10 +17029,10 @@ async fn a_parked_delete_never_removes_a_later_incarnation() {
     let ct = [("content-type", "application/json")];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/abadel", &ct, br#"[{"n":0}]"#).await;
     assert!(st == 200 || st == 201);
-    state.registry.invalidate("abadel");
+    state.registry.invalidate(&state.sref("abadel"));
     let first = state
         .registry
-        .get("abadel")
+        .get(&state.sref("abadel"))
         .await
         .unwrap()
         .unwrap()
@@ -16454,8 +17062,13 @@ async fn a_parked_delete_never_removes_a_later_incarnation() {
     assert!(st == 204 || st == 200, "delete: {st}");
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/abadel", &ct, br#"[{"n":1}]"#).await;
     assert!(st == 200 || st == 201, "recreate: {st}");
-    state.registry.invalidate("abadel");
-    let second = state.registry.get("abadel").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("abadel"));
+    let second = state
+        .registry
+        .get(&state.sref("abadel"))
+        .await
+        .unwrap()
+        .unwrap();
     assert_ne!(second.stream_epoch, first, "the incarnation never changed");
     assert!(
         !second.deleted && !second.soft_deleted,
@@ -16468,7 +17081,7 @@ async fn a_parked_delete_never_removes_a_later_incarnation() {
     // is the same CAS the parked deleter would have run.
     let outcome = state
         .registry
-        .cas_update_incarnation_outcome("abadel", &first, |x| {
+        .cas_update_incarnation_outcome(&state.sref("abadel"), &first, |x| {
             x.deleted = true;
             true
         })
@@ -16478,8 +17091,13 @@ async fn a_parked_delete_never_removes_a_later_incarnation() {
         matches!(outcome, crate::registry::IncarnationCas::IncarnationChanged),
         "a stale delete decision was applied: {outcome:?}"
     );
-    state.registry.invalidate("abadel");
-    let d = state.registry.get("abadel").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("abadel"));
+    let d = state
+        .registry
+        .get(&state.sref("abadel"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         !d.deleted,
         "the replacement was deleted by a stale decision"
@@ -16521,8 +17139,13 @@ async fn a_fork_stamp_never_lands_on_a_later_incarnation() {
     )
     .await;
     assert!(st == 200 || st == 201, "fork: {st}");
-    state.registry.invalidate("abachild");
-    let forked = state.registry.get("abachild").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("abachild"));
+    let forked = state
+        .registry
+        .get(&state.sref("abachild"))
+        .await
+        .unwrap()
+        .unwrap();
     let stale_epoch = forked.stream_epoch.clone();
     assert!(forked.forked_from.is_some(), "the child has no parentage");
 
@@ -16532,8 +17155,13 @@ async fn a_fork_stamp_never_lands_on_a_later_incarnation() {
     assert!(st == 204 || st == 200, "delete: {st}");
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/abachild", &ct, br#"[{"n":7}]"#).await;
     assert!(st == 200 || st == 201, "recreate: {st}");
-    state.registry.invalidate("abachild");
-    let fresh = state.registry.get("abachild").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("abachild"));
+    let fresh = state
+        .registry
+        .get(&state.sref("abachild"))
+        .await
+        .unwrap()
+        .unwrap();
     assert_ne!(
         fresh.stream_epoch, stale_epoch,
         "the incarnation never changed"
@@ -16547,7 +17175,7 @@ async fn a_fork_stamp_never_lands_on_a_later_incarnation() {
     // the epoch it was issued against, so the fence declines it.
     let outcome = state
         .registry
-        .cas_update_incarnation_outcome("abachild", &stale_epoch, |d| {
+        .cas_update_incarnation_outcome(&state.sref("abachild"), &stale_epoch, |d| {
             d.forked_from = Some(crate::registry::ForkRef {
                 source: "abasrc".into(),
                 source_epoch: String::new(),
@@ -16563,8 +17191,13 @@ async fn a_fork_stamp_never_lands_on_a_later_incarnation() {
         matches!(outcome, crate::registry::IncarnationCas::IncarnationChanged),
         "a stale fork stamp was applied: {outcome:?}"
     );
-    state.registry.invalidate("abachild");
-    let d = state.registry.get("abachild").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("abachild"));
+    let d = state
+        .registry
+        .get(&state.sref("abachild"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         d.forked_from.is_none(),
         "the replacement was pinned to a stranger"
@@ -16613,12 +17246,12 @@ async fn creation_does_not_report_success_after_a_concurrent_delete() {
     // pinned — i.e. the creator really is in the window.
     let mut pinned = false;
     for _ in 0..200 {
-        state.registry.invalidate("racesrc");
-        if let Ok(Some(d)) = state.registry.get("racesrc").await {
-            if !d.fork_children.is_empty() {
-                pinned = true;
-                break;
-            }
+        state.registry.invalidate(&state.sref("racesrc"));
+        if let Ok(Some(d)) = state.registry.get(&state.sref("racesrc")).await
+            && !d.fork_children.is_empty()
+        {
+            pinned = true;
+            break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
@@ -16639,8 +17272,13 @@ async fn creation_does_not_report_success_after_a_concurrent_delete() {
         String::from_utf8_lossy(&b)
     );
     // …and the source is not left pinned by a child that never existed.
-    state.registry.invalidate("racesrc");
-    let src = state.registry.get("racesrc").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("racesrc"));
+    let src = state
+        .registry
+        .get(&state.sref("racesrc"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(
         src.fork_children.is_empty(),
         "source pinned by an unpublished child: {:?}",
@@ -17093,14 +17731,19 @@ async fn create_replay_never_loses_the_initial_body() {
     // A descriptor stuck in Initializing (the creator died): reads and
     // appends are retryable, NOT an empty stream, and the SAME request
     // resumes it while a different one conflicts.
-    let desc = state.registry.get("replay1").await.unwrap().unwrap();
+    let desc = state
+        .registry
+        .get(&state.sref("replay1"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(desc.init.is_none(), "a completed create publishes Ready");
     // Plant an initializing incarnation by hand (a crashed creator).
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/replay2", &ct, br#"[{"n":7}]"#).await;
     assert_eq!(st, 201);
     state
         .registry
-        .cas_update("replay2", |d| {
+        .cas_update(&state.sref("replay2"), |d| {
             d.init = Some(crate::registry::InitState {
                 request_hash: "deadbeef".into(),
                 key_fingerprint: d.key_fingerprint.clone(),
@@ -17110,7 +17753,7 @@ async fn create_replay_never_loses_the_initial_body() {
         })
         .await
         .unwrap();
-    state.registry.invalidate("replay2");
+    state.registry.invalidate(&state.sref("replay2"));
     let (st, _, _) = hreq(addr, "GET", "/v1/stream/replay2", &[], b"").await;
     assert_eq!(st, 503, "reads of an initializing stream are retryable");
     let (st, _, _) = hreq(addr, "POST", "/v1/stream/replay2", &ct, br#"[{"n":8}]"#).await;
@@ -17126,7 +17769,7 @@ async fn create_replay_never_loses_the_initial_body() {
     // wedged: the same request takes over and completes it.
     state
         .registry
-        .cas_update("replay2", |d| {
+        .cas_update(&state.sref("replay2"), |d| {
             d.init = Some(crate::registry::InitState {
                 request_hash: "deadbeef".into(),
                 key_fingerprint: d.key_fingerprint.clone(),
@@ -17136,7 +17779,7 @@ async fn create_replay_never_loses_the_initial_body() {
         })
         .await
         .unwrap();
-    state.registry.invalidate("replay2");
+    state.registry.invalidate(&state.sref("replay2"));
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/replay2", &ct, br#"[{"other":1}]"#).await;
     assert_eq!(
         st, 409,
@@ -17178,7 +17821,7 @@ async fn seal_is_a_resumable_transition() {
     // segments and publishing Sealed).
     state
         .registry
-        .cas_update_retry("sealtx", |d| {
+        .cas_update_retry(&state.sref("sealtx"), |d| {
             d.sealing = Some(crate::registry::SealState {
                 intent: crate::registry::SealIntent::Empty,
                 operation_id: "op-1".into(),
@@ -17189,7 +17832,7 @@ async fn seal_is_a_resumable_transition() {
         })
         .await
         .unwrap();
-    state.registry.invalidate("sealtx");
+    state.registry.invalidate(&state.sref("sealtx"));
 
     // Ordinary appends are refused on both surfaces WHILE sealing.
     let (st, _, _) = preq(
@@ -17220,7 +17863,12 @@ async fn seal_is_a_resumable_transition() {
     // Any seal request resumes and completes the transition.
     let (st, _, _) = preq(addr, "POST", "/v1/streams/sealtx:seal", &pk, b"{}").await;
     assert!(st == 200 || st == 204);
-    let d = state.registry.get("sealtx").await.unwrap().unwrap();
+    let d = state
+        .registry
+        .get(&state.sref("sealtx"))
+        .await
+        .unwrap()
+        .unwrap();
     assert!(d.sealed, "resumed seal publishes Sealed");
     assert!(d.sealing.is_none(), "the intent is cleared");
     let (st, _, _) = preq(
@@ -17248,13 +17896,13 @@ async fn seal_is_a_resumable_transition() {
     assert_eq!(st, 201);
     state
         .registry
-        .cas_update_retry("sealauth", |d| {
+        .cas_update_retry(&state.sref("sealauth"), |d| {
             d.sealed = true; // descriptor only; engines untouched
             true
         })
         .await
         .unwrap();
-    state.registry.invalidate("sealauth");
+    state.registry.invalidate(&state.sref("sealauth"));
     let (st, _, _) = preq(
         addr,
         "POST",
@@ -17310,14 +17958,24 @@ async fn fork_lifecycle_is_idempotent_and_epoch_checked() {
     assert_eq!(st, 201);
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/fk-a", &fh, b"").await;
     assert!(st == 200 || st == 201, "idempotent fork PUT: {st}");
-    let src = state.registry.get("fk-src").await.unwrap().unwrap();
+    let src = state
+        .registry
+        .get(&state.sref("fk-src"))
+        .await
+        .unwrap()
+        .unwrap();
     assert_eq!(
         src.fork_children.len(),
         1,
         "one reference per fork: {:?}",
         src.fork_children
     );
-    let child = state.registry.get("fk-a").await.unwrap().unwrap();
+    let child = state
+        .registry
+        .get(&state.sref("fk-a"))
+        .await
+        .unwrap()
+        .unwrap();
     let fref = child.forked_from.as_ref().unwrap();
     assert!(!fref.fork_id.is_empty(), "the fork stamps its own id");
     assert_eq!(
@@ -17340,14 +17998,14 @@ async fn fork_lifecycle_is_idempotent_and_epoch_checked() {
     // read of a recreated source.
     state
         .registry
-        .cas_update_retry("fk-a", |d| {
+        .cas_update_retry(&state.sref("fk-a"), |d| {
             d.forked_from.as_mut().unwrap().source_epoch =
                 "ffffffffffffffffffffffffffffffff".into();
             true
         })
         .await
         .unwrap();
-    state.registry.invalidate("fk-a");
+    state.registry.invalidate(&state.sref("fk-a"));
     let (st, _, b) = hreq(addr, "GET", "/v1/stream/fk-a", &[], b"").await;
     assert_eq!(
         st,
@@ -17359,13 +18017,13 @@ async fn fork_lifecycle_is_idempotent_and_epoch_checked() {
     let true_epoch = src.stream_epoch.clone();
     state
         .registry
-        .cas_update_retry("fk-a", |d| {
+        .cas_update_retry(&state.sref("fk-a"), |d| {
             d.forked_from.as_mut().unwrap().source_epoch = true_epoch.clone();
             true
         })
         .await
         .unwrap();
-    state.registry.invalidate("fk-a");
+    state.registry.invalidate(&state.sref("fk-a"));
     let (st, _, b) = hreq(addr, "GET", "/v1/stream/fk-a", &[], b"").await;
     assert_eq!(st, 200);
     let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
@@ -17413,7 +18071,7 @@ async fn raw_route_is_the_default_key_view_across_splits() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
     let ct = [("content-type", "application/json")];
-    let pk = [("prisma-encryption-key", PRISMA_KEY)];
+    let _pk = [("prisma-encryption-key", PRISMA_KEY)];
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/dualkey", &ct, b"").await;
     assert!(st == 200 || st == 201);
 
@@ -17553,7 +18211,7 @@ async fn catalog_pages_without_scanning_the_world() {
         let d = crate::registry::StreamDesc {
             seal_gen_counter: 0,
             account_id: None,
-            project_id: None,
+            project_id: crate::tenant::ProjectId::new("proj-test").unwrap(),
             name: name.clone(),
             stream_epoch: format!("{:032x}", i),
             key_fingerprint: "fp".into(),
@@ -17693,8 +18351,13 @@ async fn a_applied_read_and_long_poll_serve_the_tail_before_durability() {
     .await;
     assert!(st == 200 || st == 202, "append r1: {st}");
 
-    state.registry.invalidate("lat");
-    let desc = state.registry.get("lat").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("lat"));
+    let desc = state
+        .registry
+        .get(&state.sref("lat"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let route = desc.segment_route_by_id(seg.seg_id);
     let engine = state.engine_for(&route).await.unwrap();
@@ -18047,8 +18710,13 @@ async fn a_stale_applied_cursor_is_refused_after_crash_restart() {
     // Phase 2: reopen the live store, hold dispatch, apply r2, mint the
     // applied-session cursor (position 2 — past the snapshot's tail).
     let (state2, addr2) = http_rig(store.clone()).await;
-    state2.registry.invalidate("sc");
-    let desc = state2.registry.get("sc").await.unwrap().unwrap();
+    state2.registry.invalidate(&state2.sref("sc"));
+    let desc = state2
+        .registry
+        .get(&state2.sref("sc"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let route = desc.segment_route_by_id(seg.seg_id);
     let engine = state2.engine_for(&route).await.unwrap();
@@ -18221,8 +18889,13 @@ async fn a_stale_cleanup_replay_never_touches_a_recreated_generation() {
     );
     let ver2 = consumer_version(addr, "qc17a", "c1").await;
 
-    state.registry.invalidate("qc17a");
-    let desc = state.registry.get("qc17a").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("qc17a"));
+    let desc = state
+        .registry
+        .get(&state.sref("qc17a"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let engine = state.engine_for(&seg.shard_route).await.unwrap();
     let rows_before = engine
@@ -18380,8 +19053,13 @@ async fn a_stale_delete_retry_cannot_delete_the_replacement_consumer() {
     )
     .await;
     assert_eq!(st, 200, "replacement leases records");
-    state.registry.invalidate("qc17b");
-    let desc = state.registry.get("qc17b").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("qc17b"));
+    let desc = state
+        .registry
+        .get(&state.sref("qc17b"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let engine = state.engine_for(&seg.shard_route).await.unwrap();
     let rows_before = engine
@@ -18554,8 +19232,13 @@ async fn a_parked_saga_never_touches_a_recreated_stream() {
     assert_eq!(st, 200, "replacement consumer leases");
     let ver_b = consumer_version(addr, "qc17c", "c1").await;
     assert_ne!(ver1, ver_b, "the replacement is a different incarnation");
-    state.registry.invalidate("qc17c");
-    let desc_b = state.registry.get("qc17c").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("qc17c"));
+    let desc_b = state
+        .registry
+        .get(&state.sref("qc17c"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg_b = desc_b.resolve_segment("");
     let engine_b = state.engine_for(&seg_b.shard_route).await.unwrap();
     let rows_before = engine_b
@@ -18666,8 +19349,13 @@ async fn a_bounded_cleanup_drains_residue_without_touching_the_live_generation()
     .await;
     assert_eq!(st, 200);
 
-    state.registry.invalidate("qc17d");
-    let desc = state.registry.get("qc17d").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("qc17d"));
+    let desc = state
+        .registry
+        .get(&state.sref("qc17d"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let engine = state.engine_for(&seg.shard_route).await.unwrap();
     let live_rows = engine
@@ -19213,8 +19901,13 @@ async fn consumer_fence_survives_ownership_move() {
     .await;
     assert_eq!(st, 200);
 
-    state.registry.invalidate("qc19");
-    let desc = state.registry.get("qc19").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("qc19"));
+    let desc = state
+        .registry
+        .get(&state.sref("qc19"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let route = desc.segment_route_by_id(seg.seg_id);
     let identity = desc.dynamic_segment_identity(seg.seg_id);
@@ -19335,12 +20028,12 @@ async fn reserved_namespace_refuses_customer_credentials() {
     // Billing identity is persisted at creation.
     let desc = state
         .registry
-        .get("customers/_acme/orders")
+        .get(&state.sref("customers/_acme/orders"))
         .await
         .unwrap()
         .unwrap();
     assert_eq!(desc.account_id.as_deref(), Some("acct_test"));
-    assert_eq!(desc.project_id.as_deref(), Some("proj_test"));
+    assert_eq!(desc.project_id.as_str(), "proj-test");
     engine_shutdown(&state).await;
 }
 
@@ -19471,7 +20164,12 @@ async fn read_meter_covers_the_matrix_exactly() {
 
     // Internal segment-read (the fleet relay path) must add NOTHING:
     // the public coordinator that requested it meters, not the server.
-    let desc = state.registry.get("meter1").await.unwrap().unwrap();
+    let desc = state
+        .registry
+        .get(&state.sref("meter1"))
+        .await
+        .unwrap()
+        .unwrap();
     let target = crate::product::InternalTarget::of(&desc, 0).unwrap();
     let mut hdrs: Vec<(String, String)> = vec![
         (
@@ -19572,10 +20270,15 @@ async fn billing_meta_is_exact_durable_and_ackable() {
     .await;
     assert_eq!(st, 204);
 
-    let desc = state.registry.get("bill1").await.unwrap().unwrap();
+    let desc = state
+        .registry
+        .get(&state.sref("bill1"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let identity = seg.identity;
-    let route = seg.shard_route.clone();
+    let route = seg.shard_route;
     let engine = state.engine_for(&route).await.unwrap();
 
     let bm = engine.billing_meta(identity).await.expect("meta row");
@@ -19671,11 +20374,11 @@ async fn billing_meta_is_exact_durable_and_ackable() {
     assert!(st == 204 || st == 200);
     let mut closed = None;
     for _ in 0..150 {
-        if let Some(m) = engine.billing_meta(identity).await {
-            if m.owned_frame_bytes_current == 0 {
-                closed = Some(m);
-                break;
-            }
+        if let Some(m) = engine.billing_meta(identity).await
+            && m.owned_frame_bytes_current == 0
+        {
+            closed = Some(m);
+            break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(20)).await;
     }
@@ -19850,7 +20553,12 @@ async fn ops_events_journal_end_to_end() {
     assert!(st == 204 || st == 200);
     let epoch = {
         // The tombstone still names the incarnation.
-        let d = state.registry.get("opsev1").await.unwrap().unwrap();
+        let d = state
+            .registry
+            .get(&state.sref("opsev1"))
+            .await
+            .unwrap()
+            .unwrap();
         d.stream_epoch.clone()
     };
 
@@ -20068,7 +20776,12 @@ async fn telemetry_crash_points_and_cost_gates() {
     // CRASH POINT "emit ok, ack lost": re-emit the CURRENT snapshot
     // with its deterministic id (exactly what a re-drain does when the
     // ack never landed), then re-consume. Numbers must not move.
-    let desc = state.registry.get("cg0").await.unwrap().unwrap();
+    let desc = state
+        .registry
+        .get(&state.sref("cg0"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("k");
     let engine = state.engine_for(&seg.shard_route).await.unwrap();
     let meta = engine.billing_meta(seg.identity).await.unwrap();
@@ -20221,7 +20934,12 @@ async fn expiry_closes_the_storage_gauge() {
     )
     .await;
     assert_eq!(st, 200);
-    let desc = state.registry.get("exp1").await.unwrap().unwrap();
+    let desc = state
+        .registry
+        .get(&state.sref("exp1"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("k");
     let engine = state.engine_for(&seg.shard_route).await.unwrap();
     let gauge_before = engine
@@ -20233,15 +20951,15 @@ async fn expiry_closes_the_storage_gauge() {
 
     // Let the TTL lapse, then run drains: the reconciler must close.
     tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
-    state.registry.invalidate("exp1");
+    state.registry.invalidate(&state.sref("exp1"));
     let mut closed = false;
     for _ in 0..100 {
         let _ = crate::billing::drain_once(&state).await;
-        if let Some(m) = engine.billing_meta(seg.identity).await {
-            if m.owned_frame_bytes_current == 0 {
-                closed = true;
-                break;
-            }
+        if let Some(m) = engine.billing_meta(seg.identity).await
+            && m.owned_frame_bytes_current == 0
+        {
+            closed = true;
+            break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(30)).await;
     }
@@ -20824,7 +21542,7 @@ async fn legacy_rows_are_rebuilt_and_legacy_tails_repaired_on_open() {
     );
     let mut v1 = [0u8; 16];
     v1[..8].copy_from_slice(&999_999_999u64.to_le_bytes());
-    wb.put(crate::shard::shard_maint_key(), v1.to_vec());
+    wb.put(crate::shard::shard_maint_key(), v1);
     engine
         .db
         .write_with_options(wb, &slatedb::config::WriteOptions::default())
@@ -21126,7 +21844,12 @@ async fn raw_hierarchical_append_sheds_typed_503_under_backlog() {
         "baseline append through the wildcard route, got {st}"
     );
 
-    let desc = state.registry.get(name).await.unwrap().unwrap();
+    let desc = state
+        .registry
+        .get(&state.sref(name))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let engine = state
         .engine_for_scaler(&seg.shard_route)
@@ -21214,8 +21937,13 @@ async fn split_child_sheds_while_sibling_child_admits() {
         crate::scaler3::execute_split(&state, "shed-split", 0, 0x8000_0000_0000_0000).await,
         "split executes"
     );
-    state.registry.invalidate("shed-split");
-    let desc = state.registry.get("shed-split").await.unwrap().unwrap();
+    state.registry.invalidate(&state.sref("shed-split"));
+    let desc = state
+        .registry
+        .get(&state.sref("shed-split"))
+        .await
+        .unwrap()
+        .unwrap();
     let map = desc.segments.as_ref().expect("map");
     let live: Vec<_> = map.segments.iter().filter(|s| s.is_live()).collect();
     assert_eq!(live.len(), 2);
@@ -21304,7 +22032,12 @@ async fn ownership_replay_wins_over_a_latched_local_engine() {
 
     // Latch the local engine.
     let name = "replay-x";
-    let desc = state.registry.get(name).await.unwrap().unwrap();
+    let desc = state
+        .registry
+        .get(&state.sref(name))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let engine = state
         .engine_for_scaler(&seg.shard_route)
@@ -21353,7 +22086,12 @@ async fn first_request_waits_for_restoration_then_sees_the_restored_ledger() {
     assert!(st == 200 || st == 201);
     let (st, _, _) = hreq(addr1, "POST", "/v1/stream/restore-x", &ct, br#"[{"n":1}]"#).await;
     assert!(st == 200 || st == 204);
-    let desc = state1.registry.get("restore-x").await.unwrap().unwrap();
+    let desc = state1
+        .registry
+        .get(&state1.sref("restore-x"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let prefix = crate::registry::shard_for_hash(&state1.shard_prefixes, &seg.shard_route);
     let engine1 = state1
@@ -21420,7 +22158,12 @@ async fn reserved_streams_append_through_a_latched_engine() {
     assert!(st == 200 || st == 204);
 
     let name = "cust-r";
-    let desc = state.registry.get(name).await.unwrap().unwrap();
+    let desc = state
+        .registry
+        .get(&state.sref(name))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let engine = state
         .engine_for_scaler(&seg.shard_route)
@@ -21572,9 +22315,25 @@ async fn cold_shard_maintenance_debt_survives_the_sweep_and_drains() {
     let store = mem();
     let (state, addr) = http_rig_cold_absorb(store, vec!["00".into()]).await;
     let ct = [("content-type", "application/json")];
-    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/cold-x", &ct, b"").await;
+    // Layout 4: routes are project-qualified, so the name that lands
+    // in the pinned "00" shard is found by probing, not hardcoded.
+    let name = (0..256)
+        .map(|i| format!("cold-{i}"))
+        .find(|n| {
+            crate::registry::hash_bits(&crate::crypto::RouteHash::for_stream(&state.sref(n)).0)
+                .starts_with("00")
+        })
+        .expect("a cold name landing in shard 00");
+    let (st, _, _) = hreq(addr, "PUT", &format!("/v1/stream/{name}"), &ct, b"").await;
     assert!(st == 200 || st == 201);
-    let (st, _, _) = hreq(addr, "POST", "/v1/stream/cold-x", &ct, br#"[{"n":1}]"#).await;
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        &format!("/v1/stream/{name}"),
+        &ct,
+        br#"[{"n":1}]"#,
+    )
+    .await;
     assert!(st == 200 || st == 204);
     drain_billing_clean(&state, &["00"]).await;
     let engine = state.shards.read().unwrap().get("00").cloned().unwrap();
@@ -21652,7 +22411,12 @@ async fn sweep_residency_bound_rotates_over_many_indebted_shards() {
         let name = format!("cold-m{i}");
         let (st, _, _) = hreq(addr, "PUT", &format!("/v1/stream/{name}"), &ct, b"").await;
         assert!(st == 200 || st == 201);
-        let desc = state.registry.get(&name).await.unwrap().unwrap();
+        let desc = state
+            .registry
+            .get(&state.sref(&name))
+            .await
+            .unwrap()
+            .unwrap();
         let seg = desc.resolve_segment("");
         let p = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
         if covered.insert(p) {
@@ -21743,7 +22507,12 @@ async fn sweep_peak_open_never_exceeds_the_budget() {
         let name = format!("peak-m{i}");
         let (st, _, _) = hreq(addr, "PUT", &format!("/v1/stream/{name}"), &ct, b"").await;
         assert!(st == 200 || st == 201);
-        let desc = state.registry.get(&name).await.unwrap().unwrap();
+        let desc = state
+            .registry
+            .get(&state.sref(&name))
+            .await
+            .unwrap()
+            .unwrap();
         let seg = desc.resolve_segment("");
         let p = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
         if covered.insert(p) {
@@ -21802,7 +22571,12 @@ async fn customer_race_into_a_sweep_opened_engine_prevents_its_close() {
     let name = "race-m0".to_string();
     let (st, _, _) = hreq(addr, "PUT", &format!("/v1/stream/{name}"), &ct, b"").await;
     assert!(st == 200 || st == 201);
-    let desc = state.registry.get(&name).await.unwrap().unwrap();
+    let desc = state
+        .registry
+        .get(&state.sref(&name))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let prefix = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
     let (st, _, _) = hreq(
@@ -21878,7 +22652,12 @@ async fn custody_declines_on_prior_external_use() {
     assert!(st == 200 || st == 201);
     let (st, _, _) = hreq(addr, "POST", "/v1/stream/pre-mark-1", &ct, br#"[{"n":1}]"#).await;
     assert!(st == 200 || st == 204);
-    let desc = state.registry.get("pre-mark-1").await.unwrap().unwrap();
+    let desc = state
+        .registry
+        .get(&state.sref("pre-mark-1"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let prefix = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
     let pref_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
@@ -21942,7 +22721,12 @@ async fn internal_touch_does_not_leak_an_engine_from_the_rotation() {
     assert!(st == 200 || st == 201);
     let (st, _, _) = hreq(addr, "POST", "/v1/stream/itouch-1", &ct, br#"[{"n":1}]"#).await;
     assert!(st == 200 || st == 204);
-    let desc = state.registry.get("itouch-1").await.unwrap().unwrap();
+    let desc = state
+        .registry
+        .get(&state.sref("itouch-1"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let prefix = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
     let pref_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
@@ -22022,7 +22806,12 @@ async fn tombstone_walk_peak_residency_stays_under_the_budget() {
         let name = format!("tomb-m{i}");
         let (st, _, _) = hreq(addr, "PUT", &format!("/v1/stream/{name}"), &ct, b"").await;
         assert!(st == 200 || st == 201);
-        let desc = state.registry.get(&name).await.unwrap().unwrap();
+        let desc = state
+            .registry
+            .get(&state.sref(&name))
+            .await
+            .unwrap()
+            .unwrap();
         let seg = desc.resolve_segment("");
         let p = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
         if covered.insert(p) {
@@ -22052,7 +22841,7 @@ async fn tombstone_walk_peak_residency_stays_under_the_budget() {
     }
     tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
     for n in &names {
-        state.registry.invalidate(n);
+        state.registry.invalidate(&state.sref(n));
     }
     crate::billing::sweep_open_peak_reset(&state);
     // Several sweeps: the walk pages terminal descriptors on all four
@@ -22097,7 +22886,12 @@ async fn tombstone_walk_fairness_under_occupied_budget() {
         let name = format!("fair-m{i}");
         let (st, _, _) = hreq(addr, "PUT", &format!("/v1/stream/{name}"), &ct, b"").await;
         assert!(st == 200 || st == 201);
-        let desc = state.registry.get(&name).await.unwrap().unwrap();
+        let desc = state
+            .registry
+            .get(&state.sref(&name))
+            .await
+            .unwrap()
+            .unwrap();
         let seg = desc.resolve_segment("");
         let p = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
         if pinned.len() < 2 && !expired_shards.contains(&p) {
@@ -22146,7 +22940,7 @@ async fn tombstone_walk_fairness_under_occupied_budget() {
     }
     tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
     for n in &expired_names {
-        state.registry.invalidate(n);
+        state.registry.invalidate(&state.sref(n));
     }
     let submits0 = WALK_CLOSE_SUBMITS_SNAPSHOT();
     // Bounded sweeps: quantum rotation + walk cursor must reach BOTH
@@ -22194,7 +22988,12 @@ async fn revoked_close_keeps_the_identical_engine_with_no_new_open() {
     assert!(st == 200 || st == 201);
     let (st, _, _) = hreq(addr, "POST", "/v1/stream/noslot-1", &ct, br#"[{"n":1}]"#).await;
     assert!(st == 200 || st == 204);
-    let desc = state.registry.get("noslot-1").await.unwrap().unwrap();
+    let desc = state
+        .registry
+        .get(&state.sref("noslot-1"))
+        .await
+        .unwrap()
+        .unwrap();
     let seg = desc.resolve_segment("");
     let prefix = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
     let pref_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();

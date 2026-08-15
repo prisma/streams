@@ -156,13 +156,6 @@ pub fn hash16(bytes: &[u8]) -> [u8; 16] {
 pub struct RouteHash(pub [u8; 16]);
 
 impl RouteHash {
-    /// v3 (layout ≤3) route hash over the bare name. DELETED at MT
-    /// Stage 3 — the layout-4 switch replaces every caller with
-    /// [`RouteHash::for_stream`]; no dual-identity API survives it.
-    pub fn of(name: &str) -> Self {
-        RouteHash(stream_hash(name))
-    }
-
     /// Layout-4 route hash (MULTITENANCY §2.1):
     /// route-v1 + project_id + stream_name.
     #[allow(dead_code)] // consumed at MT Stage 3 (layout-4 switch)

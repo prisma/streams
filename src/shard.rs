@@ -1972,11 +1972,11 @@ impl ShardEngine {
         #[cfg(test)]
         {
             let mut faults = dirty_scan_faults().lock().unwrap();
-            if let Some(n) = faults.get_mut(&self.prefix) {
-                if *n > 0 {
-                    *n -= 1;
-                    anyhow::bail!("injected dirty-scan fault (test hook)");
-                }
+            if let Some(n) = faults.get_mut(&self.prefix)
+                && *n > 0
+            {
+                *n -= 1;
+                anyhow::bail!("injected dirty-scan fault (test hook)");
             }
         }
         let mut pfx = Vec::with_capacity(17);
@@ -5205,7 +5205,7 @@ mod maintenance_tests {
         v1[..8].copy_from_slice(&777u64.to_le_bytes());
         let h0 = [9u8; 16];
         let mut wb = WriteBatch::new();
-        wb.put(shard_maint_key(), v1.to_vec());
+        wb.put(shard_maint_key(), v1);
         wb.put(
             tail_key(&h0),
             encode_tail(&TailFields {

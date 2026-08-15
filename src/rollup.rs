@@ -2113,7 +2113,7 @@ mod tests {
         {
             let mut wb = WriteBatch::new();
             wb.put(
-                b"artifact-pending/2026-01/acct/proj/x".to_vec(),
+                b"artifact-pending/2026-01/acct/proj/x",
                 serde_json::to_vec(&MonthRow::default()).unwrap(),
             );
             r.db.write(wb).await.unwrap();

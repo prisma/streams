@@ -1067,13 +1067,20 @@ Add weighted deficit round-robin inside shard committers only if noisy-neighbor 
 
 ### Stage 3 — Layout 4 identity switch
 
-* [ ] Make descriptor `project_id` mandatory.
-* [ ] Change registry paths and caches.
-* [ ] Tenant-qualify route/storage/segment hashes.
-* [ ] Change catalog prefix and cursors.
-* [ ] Change consumer, producer, watch, and fork identities.
-* [ ] Create fresh system namespaces.
-* [ ] Add CI grep checks for name-only identity derivation.
+* [x] Make descriptor `project_id` mandatory.
+* [x] Change registry paths and caches.
+* [x] Tenant-qualify route/storage/segment hashes.
+* [x] Change catalog prefix and cursors. *(prefix + list APIs done; the
+      opaque product-cursor project binding lands with Stage 4's
+      handler conversion)*
+* [x] Change consumer, producer, watch, and fork identities. *(all key
+      through storage/segment hashes — converted transitively; fork
+      refs stay project-local names under the same-project rule)*
+* [x] Create fresh system namespaces. *(desc_path system/v1/cells root
+      + reserved system project; billing's system streams move onto it
+      in Stage 7)*
+* [x] Add CI grep checks for name-only identity derivation.
+      *(scripts/multitenancy-audit.sh, in the release gate)*
 
 **Exit:** two projects can independently own an identically named stream.
 
