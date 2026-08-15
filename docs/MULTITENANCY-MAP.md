@@ -36,7 +36,10 @@ Reading notes from the critic pass:
    derivation. Proposed: a sixth tag `route-child-v1` over
    `project_id + name + child_seg + salt` — needs a contract-revision
    commit before Stage 3 touches scaler3.
-2. **FIX IN FLIGHT (isolated pre-MT commit):** **`touch.rs` close_shard hash-domain mismatch (pre-existing bug,
+2. **FIXED (27adb40d, isolated pre-MT commit):** TouchRegistry now
+   carries the stream's typed RouteHash; close_shard matches route
+   space; discriminating regression test verified to fail pre-fix.
+   Original finding: **`touch.rs` close_shard hash-domain mismatch (pre-existing bug,
    independent of tenancy).** `close_shard` matches ROUTE-hash-space
    shard prefixes against journals keyed by STORAGE hash
    (`desc.storage_hash()` at http.rs:5050 / product.rs:6172).
