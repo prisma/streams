@@ -867,24 +867,47 @@ impl ReadUsageAccumulator {
 }
 
 /// The BillingIdentity for a descriptor, with deployment defaults for
-/// descriptors created before the cutover.
+/// descriptors created before the cutover. Counts feed misses — use
+/// on METERING paths only.
 pub fn identity_of(
     state: &crate::http::AppState,
     desc: &crate::registry::StreamDesc,
+) -> BillingIdentity {
+    identity_inner(state, desc, true)
+}
+
+/// Same resolution WITHOUT the miss counter — for read-only query
+/// paths (usage GETs), so dashboard polling of a feed-lagged project
+/// cannot inflate a counter named "meter events".
+pub fn identity_of_query(
+    state: &crate::http::AppState,
+    desc: &crate::registry::StreamDesc,
+) -> BillingIdentity {
+    identity_inner(state, desc, false)
+}
+
+fn identity_inner(
+    state: &crate::http::AppState,
+    desc: &crate::registry::StreamDesc,
+    count_miss: bool,
 ) -> BillingIdentity {
     // Stage 7 (workspace-at-event): under shadow/enforce the billable
     // owner is the WORKSPACE the policy snapshot names for the
     // descriptor's project AT METERING TIME — invoices attach to the
     // owner-at-event, which is what makes transfer splits possible.
     // A project absent from the snapshot (feed lag, removal mid-sweep)
-    // falls to the deployment account and is COUNTED so reconciliation
-    // sees it; in Off mode the deployment account is the single-tenant
-    // truth.
+    // falls to the deployment account and is COUNTED under enforce so
+    // reconciliation sees it (shadow's deployment project is absent
+    // from the platform feed by construction — counting there would
+    // drown the signal in noise); in Off mode the deployment account
+    // is the single-tenant truth.
     let account_id = if state.auth.mode != crate::auth::AuthMode::Off {
         match state.auth.workspace_for(&desc.project_id) {
             Some(ws) => ws.as_str().to_string(),
             None => {
-                UNOWNED_METER_EVENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                if count_miss && state.auth.mode == crate::auth::AuthMode::Enforce {
+                    UNOWNED_METER_EVENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
                 state.account_id.clone()
             }
         }
@@ -904,9 +927,19 @@ pub fn identity_of(
 }
 
 /// Metering events whose project had NO owner in the policy snapshot
-/// (attributed to the deployment account) — reconciliation reads this;
-/// a nonzero steady rate means the feed is lying or lagging.
+/// (attributed to the deployment account) — exported in the ops
+/// snapshot as unowned_meter_events_total; a nonzero steady rate means
+/// the feed is lying or lagging.
 pub static UNOWNED_METER_EVENTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Segment rows whose STORED workspace disagrees with the current
+/// policy resolution at emission time (feed-lag first-append capture,
+/// or a transfer awaiting the §12.1 split). Detection only — mutating
+/// the stored identity mid-month would double-count (rollup deltas are
+/// absolute per account row); the committer heals at the next month
+/// boundary. Exported as segment_identity_drift_total.
+pub static SEGMENT_IDENTITY_DRIFT: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
 /// Meter one externally delivered read page (op + payload bytes).
@@ -1212,7 +1245,31 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
             // retained source (soft delete with live children) is NOT
             // closure: it flags retained_by_forks and keeps accruing —
             // the fork billing contract.
-            match state.registry.get(&state.sref(&meta.stream_name)).await {
+            // Stage 7 review fix (P0): resolve under the row's OWN
+            // project — the row carries it. Resolving under the
+            // deployment sref made every live enforce-mode project
+            // stream look "gone" and spuriously billing-closed it,
+            // zeroing its storage gauge each drain. Rows without a
+            // project predate layout 4 and were deployment-owned by
+            // definition.
+            let row_ref = if meta.project_id.is_empty() {
+                state.sref(&meta.stream_name)
+            } else {
+                match crate::tenant::ProjectId::new(&meta.project_id) {
+                    Ok(p) => p.stream_ref(&meta.stream_name),
+                    Err(_) => {
+                        // Fail closed: defer, never close on a row we
+                        // cannot even attribute.
+                        tracing::warn!(
+                            "unparseable project {:?} on usage row for {} (deferred)",
+                            meta.project_id,
+                            meta.stream_name
+                        );
+                        continue;
+                    }
+                }
+            };
+            match state.registry.get(&row_ref).await {
                 Ok(Some(d)) if d.stream_epoch == meta.stream_id => {
                     if d.soft_deleted && !d.deleted {
                         let was_retained = meta.retained_by_forks;
@@ -1298,6 +1355,20 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
             // Emit the CURRENT row at ITS version (>= the marker's) —
             // acking the emitted version keeps anything newer dirty.
             let ver = meta.usage_version;
+            // Stage 7 review: DETECT drift between the row's stored
+            // workspace and the current policy resolution. No mutation
+            // here — that would double-count the month; the committer
+            // re-stamps at the next month boundary, and this counter
+            // makes the interim visible to reconciliation.
+            if state.auth.mode == crate::auth::AuthMode::Enforce
+                && !meta.project_id.is_empty()
+                && !is_reserved_stream(&meta.stream_name)
+                && let Ok(p) = crate::tenant::ProjectId::new(&meta.project_id)
+                && let Some(ws) = state.auth.workspace_for(&p)
+                && ws.as_str() != meta.account_id
+            {
+                SEGMENT_IDENTITY_DRIFT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            }
             let snap = meta.to_snapshot(false);
             let mut final_keys = Vec::new();
             for (k, fs) in row_finals {

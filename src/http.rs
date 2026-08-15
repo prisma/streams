@@ -1017,6 +1017,61 @@ async fn debug_ops_events(State(state): State<Arc<AppState>>, headers: HeaderMap
     .into_response()
 }
 
+/// Invoice reconciliation (MULTITENANCY Stage 7): recompute one
+/// month's per-(account, project) totals from the stream month rows
+/// and compare against the served project aggregates. Operator
+/// bearer; customer tokens never reach /v1/debug/*.
+async fn debug_usage_reconcile(
+    State(state): State<Arc<AppState>>,
+    axum::extract::RawQuery(query): axum::extract::RawQuery,
+    headers: HeaderMap,
+) -> Response {
+    if !authorized(&state, &headers) {
+        return err_resp(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bearer token required",
+        );
+    }
+    let mut month: Option<String> = None;
+    for pair in query
+        .as_deref()
+        .unwrap_or("")
+        .split('&')
+        .filter(|s| !s.is_empty())
+    {
+        match pair.split_once('=') {
+            Some(("month", v)) if !v.is_empty() => month = Some(v.to_string()),
+            _ => {
+                return err_resp(
+                    StatusCode::BAD_REQUEST,
+                    "bad_query",
+                    "only month=YYYY-MM is accepted",
+                );
+            }
+        }
+    }
+    let month = month.unwrap_or_else(|| {
+        let (y, m) = crate::billing::utc_year_month(crate::billing::billing_now_ms());
+        crate::billing::month_str(y, m)
+    });
+    let Some(rollup) = state.rollup.get() else {
+        return err_resp(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "rollup_unavailable",
+            "this instance does not host the usage rollup",
+        );
+    };
+    match rollup.reconcile_month(&month).await {
+        Ok(report) => axum::Json(serde_json::json!(report)).into_response(),
+        Err(e) => err_resp(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "reconcile_failed",
+            &e.to_string(),
+        ),
+    }
+}
+
 /// Fleet-internal telemetry append (round-21 blocker 5): the OWNER-side
 /// target for system-stream relays. Fleet credential only; reserved
 /// names only; creates the stream lazily with the carried system key.
@@ -1036,9 +1091,13 @@ async fn internal_telemetry_append(
             "telemetry-append accepts only reserved system streams",
         );
     }
-    // Stage 7: this endpoint is gated to reserved SYSTEM streams; the
-    // delegate (billing::system_append) addresses them under the
-    // reserved SYSTEM project, never a per-request header.
+    // Stage 7 review fix: the relay RECEIVER must address the reserved
+    // stream under the SYSTEM project — the same identity the sender
+    // (billing::system_append) appended toward and every reader
+    // (system_read, rollup_step) reads. Writing under the deployment
+    // tenant here put relayed usage/ops/audit batches in a stream
+    // nobody reads (route hashes include the project), silently losing
+    // every batch relayed across instances.
     let mut hdrs = HeaderMap::new();
     if let Some(k) = headers.get("stream-encryption-key") {
         hdrs.insert("stream-encryption-key", k.clone());
@@ -1047,9 +1106,10 @@ async fn internal_telemetry_append(
         "content-type",
         axum::http::HeaderValue::from_static("application/json"),
     );
+    let system = crate::tenant::system_project();
     let c = create_stream(
         state.clone(),
-        state.tenant.clone(),
+        system.clone(),
         name.clone(),
         hdrs.clone(),
         Bytes::new(),
@@ -1059,7 +1119,7 @@ async fn internal_telemetry_append(
     if !(cst == 200 || cst == 201 || cst == 409) {
         return c;
     }
-    let sref = state.sref(&name);
+    let sref = system.stream_ref(&name);
     append(state, sref, name, hdrs, Body::from(body), None, None, None).await
 }
 
@@ -1117,6 +1177,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/debug/usage", get(debug_usage))
         .route("/v1/debug/auth", get(debug_auth))
         .route("/v1/debug/ops-events", get(debug_ops_events))
+        .route("/v1/debug/usage-reconcile", get(debug_usage_reconcile))
         // Every /v1/debug/* route is account-gated (round-19: the
         // security model claims bearer auth on all of /v1/*, and these
         // MUTATE production state — pausing absorption, occupying
@@ -2649,10 +2710,15 @@ pub(crate) async fn create_stream(
     // already created, which is both inconsistent and the first thing a
     // new user hits. Answer the same 409 + Streams-Replay-To contract the
     // append and read paths use, and let the client re-issue at the owner.
+    // Stage 7 review fix: the guard hashes the ref the descriptor will
+    // actually live under — the caller's PROJECT — not the deployment
+    // sref. Hashing the wrong project authorized creation against the
+    // wrong shard (and bounced the rightful owner) for every system
+    // stream and every enforce-mode product create.
     {
         let prefix = shard_for_hash(
             &state.shard_prefixes,
-            &crate::crypto::RouteHash::for_stream(&state.sref(&name)).0,
+            &crate::crypto::RouteHash::for_stream(&project.stream_ref(&name)).0,
         );
         if let Some(owner) = state.effective_owner(&prefix)
             && owner != state.instance_name

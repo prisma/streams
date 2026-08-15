@@ -7124,7 +7124,7 @@ async fn product_usage(
             false,
         );
     }
-    let mut id = crate::billing::identity_of(&state, &desc);
+    let mut id = crate::billing::identity_of_query(&state, &desc);
     // Historical incarnation lookup (round-21 dashboard gap): after a
     // delete/recreate, ?streamId= addresses a PRIOR incarnation's rows
     // directly — invoice history survives the live resource.

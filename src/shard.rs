@@ -3085,9 +3085,25 @@ impl ShardEngine {
                         // customer record metadata; billing integrates
                         // on the server's clock.
                         let bts = crate::billing::billing_now_ms();
+                        let finals_before = finals.len();
                         bm.advance_storage_clock(bts, |closed| {
                             finals.push(closed.to_snapshot(true));
                         });
+                        // Stage 7 review: adopt the CURRENT workspace-
+                        // at-event identity at each MONTH boundary. The
+                        // closed month's finals above were materialized
+                        // with the old identity, and the fresh month
+                        // has emitted nothing yet, so the re-stamp is
+                        // split-safe: each month bills the workspace
+                        // that owned it. Mid-month switches wait on the
+                        // §12.1 transfer-split protocol; a feed-lag
+                        // first-append capture heals here at the next
+                        // boundary and is counted by the drift counter
+                        // meanwhile.
+                        if finals.len() > finals_before && bm.account_id != bref.identity.account_id
+                        {
+                            bm.account_id = bref.identity.account_id.clone();
+                        }
                         bm.ingest_payload_bytes_total += pt_sum;
                         bm.ingest_records_total += req.entries.len() as u64;
                         bm.month_ingest_payload_bytes += pt_sum;
