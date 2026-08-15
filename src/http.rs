@@ -1036,10 +1036,9 @@ async fn internal_telemetry_append(
             "telemetry-append accepts only reserved system streams",
         );
     }
-    // §16 note: this endpoint is gated to reserved SYSTEM streams and
-    // delegates to the deployment-tenant creation path; it moves onto
-    // the reserved system project with the Stage-7 system-stream
-    // relocation rather than taking the per-request project header.
+    // Stage 7: this endpoint is gated to reserved SYSTEM streams; the
+    // delegate (billing::system_append) addresses them under the
+    // reserved SYSTEM project, never a per-request header.
     let mut hdrs = HeaderMap::new();
     if let Some(k) = headers.get("stream-encryption-key") {
         hdrs.insert("stream-encryption-key", k.clone());
@@ -1048,7 +1047,14 @@ async fn internal_telemetry_append(
         "content-type",
         axum::http::HeaderValue::from_static("application/json"),
     );
-    let c = create_stream(state.clone(), name.clone(), hdrs.clone(), Bytes::new()).await;
+    let c = create_stream(
+        state.clone(),
+        state.tenant.clone(),
+        name.clone(),
+        hdrs.clone(),
+        Bytes::new(),
+    )
+    .await;
     let cst = c.status().as_u16();
     if !(cst == 200 || cst == 201 || cst == 409) {
         return c;
@@ -1845,7 +1851,14 @@ async fn stream_entry_inner(
                     return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large");
                 }
             };
-            let r = create_stream(state.clone(), name.clone(), headers, body).await;
+            let r = create_stream(
+                state.clone(),
+                state.tenant.clone(),
+                name.clone(),
+                headers,
+                body,
+            )
+            .await;
             if r.status() == StatusCode::CREATED
                 && let Ok(Some(d)) = state.registry.get(&state.sref(&name)).await
             {
@@ -2565,6 +2578,7 @@ pub(crate) async fn product_delete(
 
 pub(crate) async fn create_stream(
     state: Arc<AppState>,
+    project: crate::tenant::ProjectId,
     name: String,
     headers: HeaderMap,
     body: Bytes,
@@ -2924,7 +2938,7 @@ pub(crate) async fn create_stream(
     );
 
     // Resolve existing.
-    let existing = match state.registry.get(&state.sref(&name)).await {
+    let existing = match state.registry.get(&project.stream_ref(&name)).await {
         Ok(v) => v,
         Err(e) => {
             return err_resp(
@@ -3065,6 +3079,7 @@ pub(crate) async fn create_stream(
                 ttl_secs,
                 expires_at_ms,
             );
+            fresh.project_id = project.clone();
             fresh.forked_from = expected_fork_ref.clone();
             let fp = fresh.key_fingerprint.clone();
             fresh.init = needs_init.then(|| crate::registry::InitState {
@@ -3074,7 +3089,7 @@ pub(crate) async fn create_stream(
             });
             match state
                 .registry
-                .recreate(&state.sref(&name), fresh, |d| {
+                .recreate(&project.stream_ref(&name), fresh, |d| {
                     !desc_alive(d) && !d.soft_deleted
                 })
                 .await
@@ -3102,6 +3117,7 @@ pub(crate) async fn create_stream(
                 ttl_secs,
                 expires_at_ms,
             );
+            fresh.project_id = project.clone();
             fresh.forked_from = expected_fork_ref.clone();
             let fp = fresh.key_fingerprint.clone();
             fresh.init = needs_init.then(|| crate::registry::InitState {

@@ -180,6 +180,14 @@ impl ProjectId {
 /// token claims, and startup refuses it as the deployment project.
 pub const SYSTEM_PROJECT: &str = "system";
 
+/// The typed identity of the reserved system project (Stage 7): the
+/// ONLY way internal code should address system streams — customer
+/// paths can never construct it through a verified principal (auth
+/// refuses the claim) or the deployment tenant (startup refuses it).
+pub fn system_project() -> ProjectId {
+    ProjectId::new(SYSTEM_PROJECT).expect("the reserved id satisfies the grammar")
+}
+
 #[allow(dead_code)] // consumed at MT Stage 4/7 (system-stream relocation)
 impl ProjectId {
     pub fn system() -> Self {

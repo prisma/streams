@@ -2697,7 +2697,7 @@ pub async fn system_append(
     // Local attempt (create lazily on 404).
     let mut r = crate::http::append(
         state.clone(),
-        state.sref(stream),
+        crate::tenant::system_project().stream_ref(stream),
         stream.to_string(),
         hdrs.clone(),
         axum::body::Body::from(body.clone()),
@@ -2709,6 +2709,7 @@ pub async fn system_append(
     if r.status() == axum::http::StatusCode::NOT_FOUND {
         let c = crate::http::create_stream(
             state.clone(),
+            crate::tenant::system_project(),
             stream.to_string(),
             hdrs.clone(),
             bytes::Bytes::new(),
@@ -2724,7 +2725,7 @@ pub async fn system_append(
         } else {
             r = crate::http::append(
                 state.clone(),
-                state.sref(stream),
+                crate::tenant::system_project().stream_ref(stream),
                 stream.to_string(),
                 hdrs.clone(),
                 axum::body::Body::from(body.clone()),
@@ -2783,7 +2784,7 @@ pub async fn system_read(
     };
     let resp = crate::http::read_inner(
         state.clone(),
-        state.sref(stream),
+        crate::tenant::system_project().stream_ref(stream),
         stream.to_string(),
         params,
         hdrs,
@@ -2813,7 +2814,7 @@ pub async fn system_read(
     // Relay through the incarnation-bound internal read.
     let desc = state
         .registry
-        .get(&state.sref(stream))
+        .get(&crate::tenant::system_project().stream_ref(stream))
         .await
         .map_err(|e| e.to_string())?
         .ok_or_else(|| "system stream descriptor missing".to_string())?;

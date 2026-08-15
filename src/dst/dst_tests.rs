@@ -22498,7 +22498,7 @@ async fn ops_events_journal_end_to_end() {
     );
     let resp = crate::http::read_inner(
         state.clone(),
-        state.sref("_ops_events"),
+        crate::tenant::system_project().stream_ref("_ops_events"),
         "_ops_events".to_string(),
         crate::http::ReadParams::default(),
         hdrs,
@@ -22723,7 +22723,7 @@ async fn telemetry_crash_points_and_cost_gates() {
     );
     let r = crate::http::append(
         state.clone(),
-        state.sref("_usage"),
+        crate::tenant::system_project().stream_ref("_usage"),
         "_usage".to_string(),
         hdrs,
         axum::body::Body::from(serde_json::to_vec(&[env]).unwrap()),
