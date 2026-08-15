@@ -132,37 +132,142 @@ pub fn validate_cell_id(raw: &str) -> Result<(), IdentityError> {
     validate_id(raw, ID_MAX_BYTES)
 }
 
+/// Stream-name length bound (matches `product::canonical_name`).
+pub const NAME_MAX_BYTES: usize = 512;
+/// The reserved system namespace root. Owned here (identity layer);
+/// `product.rs` re-exports it for the HTTP surface.
+pub const RESERVED_ROOT: &str = "__ds";
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum NameError {
+    Empty,
+    TooLong { max: usize, got: usize },
+    ControlChar { at: usize },
+    EmptyComponent,
+    DotComponent,
+    ReservedRoot,
+}
+
+impl fmt::Display for NameError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            NameError::Empty => write!(f, "stream name must be 1-{NAME_MAX_BYTES} UTF-8 bytes"),
+            NameError::TooLong { max, got } => {
+                write!(f, "stream name is {got} bytes; maximum is {max}")
+            }
+            NameError::ControlChar { at } => {
+                write!(f, "control characters are not allowed (offset {at})")
+            }
+            NameError::EmptyComponent => write!(f, "empty path segments are not allowed"),
+            NameError::DotComponent => write!(f, "'.' and '..' segments are not allowed"),
+            NameError::ReservedRoot => write!(f, "the {RESERVED_ROOT} namespace is reserved"),
+        }
+    }
+}
+
+/// The shared per-component rule for stream names AND prefix grants:
+/// non-empty, not `.` or `..`. Character-level rules (control chars)
+/// are enforced on the whole string by the callers because their
+/// offsets differ.
+fn valid_component(c: &str) -> Result<(), NameError> {
+    if c.is_empty() {
+        return Err(NameError::EmptyComponent);
+    }
+    if c == "." || c == ".." {
+        return Err(NameError::DotComponent);
+    }
+    Ok(())
+}
+
+/// A structurally canonical stream name — the only name type identity
+/// derivation accepts. Construction is checked (no unchecked public
+/// path): 1–512 bytes, no control characters, slash-separated
+/// components that are non-empty and not `.`/`..`, and not rooted in
+/// the reserved `__ds` namespace.
+///
+/// `product::canonical_name` layers the product-surface
+/// ADDRESSABILITY rules on top (reserved final segments, no
+/// subresource-shaped names); those are HTTP-creation concerns, not
+/// identity-safety concerns, which is why they live there. A unit test
+/// pins the two validators together: everything `canonical_name`
+/// accepts, this constructor accepts.
+#[derive(Clone, Debug, Eq, PartialEq, Hash)]
+pub struct CanonicalStreamName(Arc<str>);
+
+impl CanonicalStreamName {
+    pub fn new(raw: &str) -> Result<Self, NameError> {
+        if raw.is_empty() {
+            return Err(NameError::Empty);
+        }
+        if raw.len() > NAME_MAX_BYTES {
+            return Err(NameError::TooLong {
+                max: NAME_MAX_BYTES,
+                got: raw.len(),
+            });
+        }
+        if let Some(at) = raw
+            .char_indices()
+            .find(|(_, c)| c.is_control())
+            .map(|(i, _)| i)
+        {
+            return Err(NameError::ControlChar { at });
+        }
+        let mut first = true;
+        for comp in raw.split('/') {
+            valid_component(comp)?;
+            if first && comp == RESERVED_ROOT {
+                return Err(NameError::ReservedRoot);
+            }
+            first = false;
+        }
+        Ok(Self(Arc::from(raw)))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+    pub fn as_bytes(&self) -> &[u8] {
+        self.0.as_bytes()
+    }
+}
+
+impl fmt::Display for CanonicalStreamName {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// The project-qualified stream reference every handler and registry
-/// call operates on after Stage 4. `name` is ALREADY canonical
-/// (`product::canonical_name`); this type does not re-derive it.
+/// call operates on after Stage 4. Fields are PRIVATE and construction
+/// is checked end to end: this type is a security boundary — an
+/// unvalidated name here would flow into registry paths and every
+/// layout-4 hash.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct TenantStreamRef {
-    pub project_id: ProjectId,
-    pub name: Arc<str>,
+    project_id: ProjectId,
+    name: CanonicalStreamName,
 }
 
 impl TenantStreamRef {
-    /// `name` must be the output of `product::canonical_name`. The
-    /// debug assertion catches call sites that skip canonicalization;
-    /// the contract's validation lives there, not here.
-    pub fn from_canonical(project_id: ProjectId, name: &str) -> Self {
-        debug_assert!(
-            !name.is_empty(),
-            "TenantStreamRef requires a canonical name"
-        );
-        Self {
-            project_id,
-            name: Arc::from(name),
-        }
+    pub fn new(project_id: ProjectId, name: CanonicalStreamName) -> Self {
+        Self { project_id, name }
+    }
+
+    pub fn project_id(&self) -> &ProjectId {
+        &self.project_id
+    }
+
+    pub fn name(&self) -> &CanonicalStreamName {
+        &self.name
     }
 }
 
 impl fmt::Display for TenantStreamRef {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         // Display is for logs/errors only; '§' cannot appear in either
-        // component (ids reject non-graphic-ASCII bytes ≤0x20/0x7f and
-        // canonical names have no control chars, but '/' appears in
-        // names, so the separator must not be '/').
+        // component (ids are an ASCII allowlist and canonical names
+        // have no control chars, but '/' appears in names, so the
+        // separator must not be '/').
         write!(f, "{}\u{00a7}{}", self.project_id, self.name)
     }
 }
@@ -220,7 +325,7 @@ pub fn encode_hash_input(domain: HashDomain, components: &[&[u8]]) -> Vec<u8> {
 pub fn route_hash_input(sref: &TenantStreamRef) -> Vec<u8> {
     encode_hash_input(
         HashDomain::RouteV1,
-        &[sref.project_id.as_bytes(), sref.name.as_bytes()],
+        &[sref.project_id().as_bytes(), sref.name().as_bytes()],
     )
 }
 
@@ -229,8 +334,8 @@ pub fn storage_hash_input(sref: &TenantStreamRef, stream_epoch: &str) -> Vec<u8>
     encode_hash_input(
         HashDomain::StorageV1,
         &[
-            sref.project_id.as_bytes(),
-            sref.name.as_bytes(),
+            sref.project_id().as_bytes(),
+            sref.name().as_bytes(),
             stream_epoch.as_bytes(),
         ],
     )
@@ -246,8 +351,8 @@ pub fn segment_identity_input(
     encode_hash_input(
         HashDomain::SegmentV1,
         &[
-            sref.project_id.as_bytes(),
-            sref.name.as_bytes(),
+            sref.project_id().as_bytes(),
+            sref.name().as_bytes(),
             stream_epoch.as_bytes(),
             &segment_id.to_be_bytes(),
         ],
@@ -520,6 +625,10 @@ mod tests {
         ProjectId::new(s).unwrap()
     }
 
+    fn sref(p: &str, n: &str) -> TenantStreamRef {
+        TenantStreamRef::new(pid(p), CanonicalStreamName::new(n).unwrap())
+    }
+
     #[test]
     fn id_bounds_are_enforced() {
         assert_eq!(ProjectId::new(""), Err(IdentityError::Empty));
@@ -571,8 +680,8 @@ mod tests {
 
     #[test]
     fn same_name_in_two_projects_yields_different_identity_inputs() {
-        let a = TenantStreamRef::from_canonical(pid("proj_a"), "orders");
-        let b = TenantStreamRef::from_canonical(pid("proj_b"), "orders");
+        let a = sref("proj_a", "orders");
+        let b = sref("proj_b", "orders");
         assert_ne!(route_hash_input(&a), route_hash_input(&b));
         assert_ne!(storage_hash_input(&a, "e1"), storage_hash_input(&b, "e1"));
         assert_ne!(
@@ -580,14 +689,14 @@ mod tests {
             segment_identity_input(&b, "e1", 0)
         );
         // Same project, same name: identical (the reference identity).
-        let a2 = TenantStreamRef::from_canonical(pid("proj_a"), "orders");
+        let a2 = sref("proj_a", "orders");
         assert_eq!(route_hash_input(&a), route_hash_input(&a2));
     }
 
     #[test]
     fn segment_id_is_a_fixed_width_component() {
         // Adjacent segment ids must not alias epoch bytes.
-        let r = TenantStreamRef::from_canonical(pid("p"), "n");
+        let r = sref("p", "n");
         assert_ne!(
             segment_identity_input(&r, "e", 1),
             segment_identity_input(&r, "e", 256)
@@ -665,6 +774,49 @@ mod tests {
         assert_eq!(set3.len(), 2);
         assert!(prefix_set_matches(&set3, "a-b/x"));
         assert!(!prefix_set_matches(&set3, "a-c"));
+    }
+
+    #[test]
+    fn canonical_stream_name_is_checked_construction() {
+        assert!(CanonicalStreamName::new("orders").is_ok());
+        assert!(CanonicalStreamName::new("customers/acme/orders").is_ok());
+        assert_eq!(CanonicalStreamName::new(""), Err(NameError::Empty));
+        assert_eq!(
+            CanonicalStreamName::new("a//b"),
+            Err(NameError::EmptyComponent)
+        );
+        assert_eq!(
+            CanonicalStreamName::new("/a"),
+            Err(NameError::EmptyComponent)
+        );
+        assert_eq!(
+            CanonicalStreamName::new("a/"),
+            Err(NameError::EmptyComponent)
+        );
+        assert_eq!(
+            CanonicalStreamName::new("a/./b"),
+            Err(NameError::DotComponent)
+        );
+        assert_eq!(
+            CanonicalStreamName::new("a/../b"),
+            Err(NameError::DotComponent)
+        );
+        assert_eq!(
+            CanonicalStreamName::new("__ds/x"),
+            Err(NameError::ReservedRoot)
+        );
+        assert_eq!(
+            CanonicalStreamName::new("__ds"),
+            Err(NameError::ReservedRoot)
+        );
+        // __ds below the root is a legal component (only the ROOT is reserved).
+        assert!(CanonicalStreamName::new("a/__ds").is_ok());
+        assert_eq!(
+            CanonicalStreamName::new("a\u{7}b"),
+            Err(NameError::ControlChar { at: 1 })
+        );
+        assert!(CanonicalStreamName::new(&"x".repeat(513)).is_err());
+        assert!(CanonicalStreamName::new(&"x".repeat(512)).is_ok());
     }
 
     #[test]

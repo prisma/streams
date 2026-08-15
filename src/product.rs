@@ -24,7 +24,7 @@ use crate::registry::{LAYOUT_VERSION, StreamDesc, WatchDefinition};
 
 /// Reserved protocol control namespace (appendix §2.6): never a
 /// customer stream name, on either surface.
-pub const RESERVED_ROOT: &str = "__ds";
+pub use crate::tenant::RESERVED_ROOT;
 
 /// Final path segments reserved for product subresources. Explicit
 /// route matching happens before wildcard names (spec Stage 8 §4.1);
@@ -98,7 +98,26 @@ pub fn canonical_name(raw: &str) -> Result<String, Response> {
             "this name is already a subresource path (…/records, …/consumers/{name}, …/watches/…)",
         );
     }
+    // The structural half of these rules also lives in
+    // tenant::CanonicalStreamName (the identity-layer type). This
+    // assertion pins the two validators together at every call in
+    // debug/test builds; `validators_agree` in tenant_name_tests pins
+    // them in CI.
+    debug_assert!(
+        crate::tenant::CanonicalStreamName::new(raw).is_ok(),
+        "canonical_name accepted a name CanonicalStreamName rejects: {raw:?}"
+    );
     Ok(raw.to_string())
+}
+
+/// Typed variant of [`canonical_name`] for tenant-qualified call sites
+/// (Stage 4): same rules, same error responses, returns the checked
+/// identity type instead of a bare String.
+#[allow(dead_code)] // consumed from MT Stage 4 surface conversion on
+pub fn canonical_stream_name(raw: &str) -> Result<crate::tenant::CanonicalStreamName, Response> {
+    canonical_name(raw)?;
+    Ok(crate::tenant::CanonicalStreamName::new(raw)
+        .expect("canonical_name and CanonicalStreamName agree"))
 }
 
 /// The experimental product names this route REJECTS instead of
@@ -6595,6 +6614,54 @@ mod tests {
         assert!(canonical_name("a/consumers").is_err());
         assert!(canonical_name("a/watches").is_err());
         assert!(canonical_name("has\u{7}bell").is_err());
+    }
+
+    #[test]
+    fn validators_agree() {
+        // Pins product::canonical_name to tenant::CanonicalStreamName:
+        // every ACCEPT of canonical_name must be an ACCEPT of the
+        // identity type (canonical_name may be STRICTER — it adds the
+        // addressability rules — never looser). Divergence here means
+        // an identity-layer bypass.
+        let corpus = [
+            "orders",
+            "customers/acme/orders",
+            "a",
+            "a/b/c",
+            "a/__ds",
+            "records-ish",
+            "a/recordsx",
+            "deep/a/b/c/d/e",
+            "",
+            "a//b",
+            "/a",
+            "a/",
+            "a/./b",
+            "a/../b",
+            ".",
+            "..",
+            "__ds",
+            "__ds/x",
+            "has\u{7}bell",
+            "a/records",
+            "a/consumers",
+            "a/watches",
+        ];
+        for raw in corpus {
+            let product_ok = canonical_name(raw).is_ok();
+            let tenant_ok = crate::tenant::CanonicalStreamName::new(raw).is_ok();
+            assert!(
+                !product_ok || tenant_ok,
+                "canonical_name accepted {raw:?} but CanonicalStreamName rejected it"
+            );
+        }
+        let long = "x".repeat(513);
+        assert!(canonical_name(&long).is_err());
+        assert!(crate::tenant::CanonicalStreamName::new(&long).is_err());
+        // The typed entry point returns the same acceptance set as
+        // canonical_name itself.
+        assert!(canonical_stream_name("customers/acme").is_ok());
+        assert!(canonical_stream_name("a/records").is_err());
     }
 
     #[test]
