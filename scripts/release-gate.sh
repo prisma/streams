@@ -43,6 +43,9 @@ if [ -n "$GONE" ]; then
 fi
 echo "clippy: no new warning fingerprints"
 
+echo "== multitenancy conversion audit =="
+scripts/multitenancy-audit.sh
+
 echo "== tests =="
 cargo test --bin streams-slate
 

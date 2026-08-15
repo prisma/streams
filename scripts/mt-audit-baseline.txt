@@ -1,0 +1,354 @@
+global-name-maps	src/registry.rs cache: Mutex<HashMap<String, CachedDesc>>,	
+global-name-maps	src/scaler3.rs hot_keys: HashMap<String, RoutingKeyHash>,	
+global-name-maps	src/scaler3.rs last_transition_ms: HashMap<String, i64>,	
+internal-target	src/product.rs "streams-internal-epoch",	
+internal-target	src/product.rs "streams-internal-identity",	
+internal-target	src/product.rs "streams-internal-seg",	
+internal-target	src/product.rs ("streams-internal-seg", self.seg_id.to_string()),	
+internal-target	src/product.rs h("streams-internal-epoch"),	
+internal-target	src/product.rs h("streams-internal-seg").and_then(|v| v.parse::<u32>().ok()),	
+internal-target	src/product.rs if let Some(want_id) = h("streams-internal-identity") {	
+registry-bare-name	src/billing.rs match state.registry.get(&meta.stream_name).await {	
+registry-bare-name	src/dst/dst_tests.rs if let Ok(Some(d)) = state.registry.get("abacreate").await {	
+registry-bare-name	src/dst/dst_tests.rs if let Ok(Some(d)) = state.registry.get("deadl").await {	
+registry-bare-name	src/dst/dst_tests.rs if let Ok(Some(d)) = state.registry.get("dur9").await {	
+registry-bare-name	src/dst/dst_tests.rs if let Ok(Some(d)) = state.registry.get("parked").await {	
+registry-bare-name	src/dst/dst_tests.rs if let Ok(Some(d)) = state.registry.get("racesrc").await {	
+registry-bare-name	src/dst/dst_tests.rs let a = state.registry.get("finaba").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let a = state.registry.get("genA").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let b = state.registry.get("genB").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let b_after = state.registry.get("frk15src").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let b_before = state.registry.get("frk15src").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let bdesc = state.registry.get("genB").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let child = state.registry.get("dchild").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let child = state.registry.get("fchild").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let child = state.registry.get("fk-a").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let child = state.registry.get("retchild").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("abachild").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("abacreate").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("abadel").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("abaseal").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("crt007").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("ctid").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("deadl").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("dup9").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("dur004").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("dur9").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("finaba").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("frk14src").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("gapwin").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("heat9").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("impossible").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("keyinit").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("lease1").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("lease2").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("markaba").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("nsguard").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("opsev1").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("parked").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("race9").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("rawcrash").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("rawfin").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("rawmark").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("rawrefuse").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("refused").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("rescue").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("sealaba").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("sealint").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("sealkey").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("sealtx").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("sel019").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("sel021").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("sel027").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("stale1").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("stale12p").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get("stale12r").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let d = state.registry.get(stream).await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("bill1").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("cap-routes").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("cap-scale").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("cg0").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("conf11").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("crt007").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("dur002").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("dur004").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("dur006").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("dur008").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("dur10").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("dur9").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("evict9").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("exp1").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("itouch-1").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("lat").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("mergeback").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("meter1").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("noslot-1").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("orders").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("ph").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("pre-mark-1").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("psse").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("q12").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("qc14").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("qc14b").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("qc15a").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("qc15b").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("qc15c").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("qc15d").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("qc16p").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("qc16s").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("qc17a").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("qc17b").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("qc17d").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("qc19").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("que004").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("reads").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("replay1").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("scn").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("sel021").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("shed-split").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("sweep11").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get("wt").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get(&name).await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get(name).await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state.registry.get(stream).await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state1.registry.get("restore-x").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc = state2.registry.get("sc").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let desc_b = state.registry.get("qc17c").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let forked = state.registry.get("abachild").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let fresh = state.registry.get("abachild").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let fresh = state.registry.get("abaseal").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let fresh = state.registry.get("frk14src").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let fresh = state.registry.get("frk15src").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let fresh = state.registry.get("heat9").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let fresh = state.registry.get("stale1").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let gone = state.registry.get("frk13c").await.unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let gone = state.registry.get("frk13src").await.unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let old = state.registry.get("abaseal").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let old = state.registry.get("heat9").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let old = state.registry.get("stale1").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let second = state.registry.get("abadel").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let src = state.registry.get("dsrc").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let src = state.registry.get("fk-src").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let src = state.registry.get("frk13c").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let src = state.registry.get("frk13src").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let src = state.registry.get("racesrc").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let src = state.registry.get("retsrc").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let src = state.registry.get("rsrc").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let stale = state.registry.get("gapstale").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs let tomb = state.registry.get("frk13kid").await.unwrap().unwrap();	
+registry-bare-name	src/dst/dst_tests.rs state.registry.create(d).await.unwrap();	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("abachild");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("abacreate");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("abadel");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("abaseal");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("cap-routes");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("cap-scale");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("conf11");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("crt007");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("ctid");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("dchild");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("deadl");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("dsrc");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("dup9");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("dur002");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("dur004");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("dur006");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("dur008");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("dur10");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("dur9");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("evict9");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("exp1");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("fchild");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("fenced");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("finaba");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("fk-a");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("frk13c");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("frk13kid");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("frk13src");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("frk14src");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("frk15src");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("fsrc");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("gapwin");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("genA");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("genB");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("heat9");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("impossible");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("keyinit");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("lat");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("lease1");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("lease2");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("markaba");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("mergeback");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("nsguard");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("parked");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("prodseal");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("q12");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("qc14");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("qc14b");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("qc15a");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("qc15b");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("qc15c");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("qc15d");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("qc16p");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("qc16s");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("qc17a");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("qc17b");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("qc17c");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("qc17d");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("qc19");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("que004");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("race9");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("racesrc");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("rawcrash");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("rawfin");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("rawmark");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("rawrefuse");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("refused");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("renew");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("replay2");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("rescue");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("retchild");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("rsrc");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("sealaba");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("sealauth");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("sealint");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("sealkey");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("sealtx");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("sel019");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("sel021");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("sel027");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("shed-split");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("stale1");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("stale12p");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("stale12r");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate("sweep11");	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate(n);	
+registry-bare-name	src/dst/dst_tests.rs state.registry.invalidate(stream);	
+registry-bare-name	src/dst/dst_tests.rs state2.registry.invalidate("sc");	
+registry-bare-name	src/http.rs && let Ok(Some(d)) = state.registry.get(&name).await	
+registry-bare-name	src/http.rs && let Ok(Some(desc)) = state.registry.get(&name).await	
+registry-bare-name	src/http.rs if let Ok(Some(fresh)) = state.registry.get(&desc.name).await	
+registry-bare-name	src/http.rs if let Some(after) = state.registry.get(&src).await.map_err(|e| e.to_string())?	
+registry-bare-name	src/http.rs let Ok(Some(d)) = state.registry.get(&name).await else {	
+registry-bare-name	src/http.rs let cur = state.registry.get(&src).await.map_err(|e| e.to_string())?;	
+registry-bare-name	src/http.rs let d = match state.registry.get(&name).await.map_err(|e| e.to_string())? {	
+registry-bare-name	src/http.rs let d = match state_reg.registry.get(&src).await {	
+registry-bare-name	src/http.rs let desc = match state.registry.get(&name).await {	
+registry-bare-name	src/http.rs let desc = match state.registry.get(name).await {	
+registry-bare-name	src/http.rs let existing = match state.registry.get(&name).await {	
+registry-bare-name	src/http.rs let fresh = match state.registry.get(&desc.name).await {	
+registry-bare-name	src/http.rs let mut desc = match state.registry.get(&name).await {	
+registry-bare-name	src/http.rs let now = state.registry.get(&name).await.ok().flatten();	
+registry-bare-name	src/http.rs let resuming_child = match state.registry.get(&name).await {	
+registry-bare-name	src/http.rs let src = match state.registry.get(&src_name).await {	
+registry-bare-name	src/http.rs match state.registry.create(fresh).await {	
+registry-bare-name	src/http.rs match state.registry.get(&fc.source).await {	
+registry-bare-name	src/http.rs match state.registry.get(&name).await {	
+registry-bare-name	src/http.rs match state.registry.get(name).await {	
+registry-bare-name	src/http.rs state.registry.get(&name).await,	
+registry-bare-name	src/http.rs state.registry.invalidate(&desc.name);	
+registry-bare-name	src/http.rs state.registry.invalidate(&fc.source);	
+registry-bare-name	src/http.rs state.registry.invalidate(&name);	
+registry-bare-name	src/http.rs state.registry.invalidate(&src);	
+registry-bare-name	src/http.rs state.registry.invalidate(name);	
+registry-bare-name	src/product.rs (Some(dlq), Some(want)) => match state.registry.get(dlq).await {	
+registry-bare-name	src/product.rs None => match state.registry.create(build_fresh()).await {	
+registry-bare-name	src/product.rs None => state.registry.invalidate(name),	
+registry-bare-name	src/product.rs if let Ok(Some(desc)) = state.registry.get(name).await {	
+registry-bare-name	src/product.rs let d = match state.registry.get(name).await {	
+registry-bare-name	src/product.rs let desc = match state.registry.get(&name).await {	
+registry-bare-name	src/product.rs let desc = match state.registry.get(name).await {	
+registry-bare-name	src/product.rs let existing = match state.registry.get(&name).await {	
+registry-bare-name	src/product.rs let final_state = match state.registry.get(name).await {	
+registry-bare-name	src/product.rs let fresh = match state.registry.get(&name).await {	
+registry-bare-name	src/product.rs let page = match state.registry.list_page(after.as_deref(), limit).await {	
+registry-bare-name	src/product.rs let target = match state.registry.get(&d).await {	
+registry-bare-name	src/product.rs let validated = match state.registry.get(&name).await {	
+registry-bare-name	src/product.rs match state.registry.get(&name).await {	
+registry-bare-name	src/product.rs match state.registry.get(name).await {	
+registry-bare-name	src/product.rs state.registry.invalidate(&name);	
+registry-bare-name	src/product.rs state.registry.invalidate(name);	
+registry-bare-name	src/scaler3.rs let Ok(Some(d)) = st.registry.get(name).await else {	
+registry-bare-name	src/scaler3.rs let Ok(Some(desc)) = st.registry.get(&name).await else {	
+registry-bare-name	src/scaler3.rs let Ok(Some(desc)) = st.registry.get(name).await else {	
+registry-bare-name	src/scaler3.rs st.registry.invalidate(name);	
+stream-hash	src/bin/keys.rs let hash = crypto::stream_hash(&stream);	
+stream-hash	src/crypto.rs /// Shard-routing identity: `stream_hash(name)`. Keys the usage counters	
+stream-hash	src/crypto.rs RouteHash(stream_hash(name))	
+stream-hash	src/crypto.rs RoutingKeyHash(stream_hash(rk))	
+stream-hash	src/crypto.rs let hash = stream_hash("s");	
+stream-hash	src/crypto.rs let hash = stream_hash("s1");	
+stream-hash	src/crypto.rs pub fn stream_hash(name: &str) -> [u8; 16] {	
+stream-hash	src/dst.rs key_hash: crate::crypto::stream_hash(rk),	
+stream-hash	src/dst/dst_tests.rs &crate::crypto::stream_hash(&name),	
+stream-hash	src/dst/dst_tests.rs .engine_for_scaler(&crate::crypto::stream_hash("gapstale"))	
+stream-hash	src/dst/dst_tests.rs .engine_for_scaler(&crate::crypto::stream_hash(stream))	
+stream-hash	src/dst/dst_tests.rs key_hash: crate::crypto::stream_hash(""),	
+stream-hash	src/dst/dst_tests.rs key_hash: crate::crypto::stream_hash("a"),	
+stream-hash	src/dst/dst_tests.rs key_hash: crate::crypto::stream_hash("ck"),	
+stream-hash	src/dst/dst_tests.rs key_hash: crate::crypto::stream_hash("hot"),	
+stream-hash	src/dst/dst_tests.rs key_hash: crate::crypto::stream_hash("k"),	
+stream-hash	src/dst/dst_tests.rs key_hash: crate::crypto::stream_hash("pk"),	
+stream-hash	src/dst/dst_tests.rs key_hash: crate::crypto::stream_hash("sk"),	
+stream-hash	src/dst/dst_tests.rs key_hash: crate::crypto::stream_hash("sp"),	
+stream-hash	src/dst/dst_tests.rs key_hash: crate::crypto::stream_hash(&rk),	
+stream-hash	src/dst/dst_tests.rs key_hash: crate::crypto::stream_hash(rk),	
+stream-hash	src/dst/dst_tests.rs keys_map.insert(0, crate::crypto::stream_hash("k0"));	
+stream-hash	src/dst/dst_tests.rs keys_map.insert(1, crate::crypto::stream_hash("k1"));	
+stream-hash	src/dst/dst_tests.rs let kh = crate::crypto::stream_hash("customer-42");	
+stream-hash	src/dst/dst_tests.rs let kh = crate::crypto::stream_hash("g");	
+stream-hash	src/dst/dst_tests.rs let kh = crate::crypto::stream_hash("s1");	
+stream-hash	src/fleet.rs // stream_hash(name) - so it almost never matched and D3 never moved.	
+stream-hash	src/fleet.rs /// stream_hash(name); the two are unrelated, so the derived prefix	
+stream-hash	src/history.rs key_hash: crate::crypto::stream_hash(""),	
+stream-hash	src/history.rs let h = crate::crypto::stream_hash(&absorber.shard.prefix);	
+stream-hash	src/history.rs let h = crate::crypto::stream_hash(prefix);	
+stream-hash	src/http.rs .engine_for(&crate::crypto::stream_hash(&desc.name))	
+stream-hash	src/http.rs .seed_fork_tail(hash, crate::crypto::stream_hash(&desc.name), fc.boundary)	
+stream-hash	src/http.rs crate::usage::counters(&crate::crypto::stream_hash(&desc.name))	
+stream-hash	src/http.rs key_hash: crate::crypto::stream_hash(""),	
+stream-hash	src/http.rs let name_hash = crate::crypto::stream_hash(&desc.name);	
+stream-hash	src/http.rs let prefix = shard_for_hash(&state.shard_prefixes, &crate::crypto::stream_hash(&name));	
+stream-hash	src/http.rs let prefix = shard_for_hash(&state.shard_prefixes, &crate::crypto::stream_hash(name));	
+stream-hash	src/http.rs let rk_hash = crate::crypto::stream_hash(&rk);	
+stream-hash	src/http.rs let rk_hash = crate::crypto::stream_hash(key_filter.as_deref().unwrap_or(""));	
+stream-hash	src/http.rs let sse_hash = crate::crypto::stream_hash(&desc.name);	
+stream-hash	src/http.rs route: crate::crypto::stream_hash(&desc.name),	
+stream-hash	src/http.rs usage: crate::usage::counters(&crate::crypto::stream_hash(&desc.name)),	
+stream-hash	src/product.rs key_hash: crate::crypto::stream_hash(""),	
+stream-hash	src/product.rs key_hash: crate::crypto::stream_hash(routing_key),	
+stream-hash	src/product.rs keys_map.insert(r.off, crate::crypto::stream_hash(&r.rkey));	
+stream-hash	src/product.rs let kh = crate::crypto::stream_hash(&rk);	
+stream-hash	src/product.rs let route = crate::crypto::stream_hash(&desc.name);	
+stream-hash	src/registry.rs .unwrap_or_else(|| crate::crypto::stream_hash(&self.name))	
+stream-hash	src/registry.rs /// is an ordinary key at stream_hash("")'s position.	
+stream-hash	src/registry.rs assert_eq!(r.shard_route, stream_hash("shard-07"));	
+stream-hash	src/registry.rs assert_eq!(r.shard_route, stream_hash("t"));	
+stream-hash	src/registry.rs crate::crypto::stream_hash(&format!(	
+stream-hash	src/registry.rs crate::crypto::stream_hash(&format!("{}\u{0}inc\u{0}{}", self.name, self.stream_epoch))	
+stream-hash	src/registry.rs crate::crypto::stream_hash(&seg.shard_prefix)	
+stream-hash	src/registry.rs crate::crypto::stream_hash(&self.name)	
+stream-hash	src/registry.rs let h = crate::crypto::stream_hash(routing_key);	
+stream-hash	src/registry.rs let parent_route = crate::crypto::stream_hash(&self.name);	
+stream-hash	src/registry.rs stream_hash("dyn"),	
+stream-hash	src/rollup.rs crate::crypto::hex(&crate::crypto::stream_hash(name))	
+stream-hash	src/scaler3.rs high_route = crate::crypto::stream_hash(&format!(	
+stream-hash	src/scaler3.rs key_hash: crate::crypto::stream_hash(""),	
+stream-hash	src/segmap.rs let h = crate::crypto::stream_hash(routing_key);	
+stream-hash	src/shard.rs /// Shard-routing hash (stream_hash(name)); zeros for streams last	
+stream-hash	src/shard.rs /// Shard-routing identity (`stream_hash(name)`), persisted into the	
+stream-hash	src/shard.rs /// stream_hash(routing_key), computed once at admission: the	
+stream-hash	src/sketch.rs crate::crypto::stream_hash(&format!("k{i}")),	
+stream-hash	src/sketch.rs d.note(1000, p, crate::crypto::stream_hash(&p.to_string()), 1000, 1);	
+stream-hash	src/sketch.rs d2.note(t, 5, crate::crypto::stream_hash("solo"), 10, 1);	
+stream-hash	src/sketch.rs k[8..16].copy_from_slice(&crate::crypto::stream_hash(&format!("k{i}"))[..8]);	
+stream-hash	src/sketch.rs let a = crate::crypto::stream_hash("old-dominant");	
+stream-hash	src/sketch.rs let b = crate::crypto::stream_hash("new-traffic");	
+stream-hash	src/sketch.rs let k = crate::crypto::stream_hash("only");	
+stream-hash	src/sketch.rs one.note(1000, 6399, crate::crypto::stream_hash("z"), 100, 1);	
+stream-hash	src/usage.rs /// Usage counters are keyed by the NAME hash (`stream_hash(&desc.name)`,	
+stream-hash	src/usage.rs /// chosen by stream_hash(name), so that mapping is simply wrong (ladder	
+tenant-fallback	src/main.rs #[arg(long, env = "ACCOUNT_ID", default_value = "acct_local")]	
+tenant-fallback	src/main.rs #[arg(long, env = "PROJECT_ID", default_value = "proj_local")]	
+tenant-fallback	src/main.rs if args.account_id == "acct_local"	
+tenant-fallback	src/main.rs || args.project_id == "proj_local"	
