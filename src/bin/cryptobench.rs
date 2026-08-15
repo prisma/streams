@@ -3,6 +3,9 @@ use std::time::Instant;
 
 #[path = "../crypto.rs"]
 mod crypto;
+#[path = "../tenant.rs"]
+#[allow(dead_code)] // shared identity module; side bins use only crypto
+mod tenant;
 
 use crypto::{FrameHeader, StreamKey, decode_frame, decrypt_frame, derive_subkey, encrypt_frame};
 

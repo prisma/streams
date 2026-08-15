@@ -14,11 +14,9 @@
 //! separated) so no call site can concatenate identities with
 //! delimiters and accidentally alias `("ab","c")` with `("a","bc")`.
 
-// Consumed incrementally from Stage 2 (auth.rs principal middleware)
-// through Stage 4 (surface conversion); until those land, items here
-// are exercised only by their unit tests.
-#![allow(dead_code)]
-
+// Narrow dead-code allowances only (review round): each unconsumed
+// item carries its own `#[allow(dead_code)]` with the stage that
+// consumes it, and the allowance is REMOVED in that stage's commits.
 use std::fmt;
 use std::sync::Arc;
 
@@ -95,6 +93,7 @@ fn validate_id(raw: &str, max: usize) -> Result<(), IdentityError> {
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct WorkspaceId(Arc<str>);
 
+#[allow(dead_code)] // consumed from MT Stage 2b (auth.rs principal)
 impl WorkspaceId {
     pub fn new(raw: &str) -> Result<Self, IdentityError> {
         validate_id(raw, ID_MAX_BYTES)?;
@@ -117,6 +116,7 @@ impl fmt::Display for WorkspaceId {
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct ProjectId(Arc<str>);
 
+#[allow(dead_code)] // fully consumed at MT Stage 2b/3 (principal + registry)
 impl ProjectId {
     pub fn new(raw: &str) -> Result<Self, IdentityError> {
         validate_id(raw, ID_MAX_BYTES)?;
@@ -138,6 +138,7 @@ impl fmt::Display for ProjectId {
 
 /// Validate a cell id (§2). Cells stay `Arc<str>` in principals; this
 /// is the shared bound check for config and token claims.
+#[allow(dead_code)] // consumed from MT Stage 2b (auth.rs principal)
 pub fn validate_cell_id(raw: &str) -> Result<(), IdentityError> {
     validate_id(raw, ID_MAX_BYTES)
 }
@@ -204,6 +205,7 @@ fn valid_component(c: &str) -> Result<(), NameError> {
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct CanonicalStreamName(Arc<str>);
 
+#[allow(dead_code)] // fully consumed at MT Stage 3/4 (registry + handlers)
 impl CanonicalStreamName {
     pub fn new(raw: &str) -> Result<Self, NameError> {
         if raw.is_empty() {
@@ -258,6 +260,7 @@ pub struct TenantStreamRef {
     name: CanonicalStreamName,
 }
 
+#[allow(dead_code)] // fully consumed at MT Stage 3/4 (registry + handlers)
 impl TenantStreamRef {
     pub fn new(project_id: ProjectId, name: CanonicalStreamName) -> Self {
         Self { project_id, name }
@@ -290,8 +293,11 @@ impl fmt::Display for TenantStreamRef {
 /// a contract change; renaming one is forbidden (it would silently
 /// re-key existing data).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[allow(dead_code)] // CatalogCursorV1/WatchCapabilityV1 consumed at MT Stage 3/4
 pub enum HashDomain {
     RouteV1,
+    /// Contract r1: scaler-minted placement of a split-child segment.
+    RouteChildV1,
     StorageV1,
     SegmentV1,
     CatalogCursorV1,
@@ -302,6 +308,7 @@ impl HashDomain {
     pub const fn tag(self) -> &'static [u8] {
         match self {
             HashDomain::RouteV1 => b"route-v1",
+            HashDomain::RouteChildV1 => b"route-child-v1",
             HashDomain::StorageV1 => b"storage-v1",
             HashDomain::SegmentV1 => b"segment-v1",
             HashDomain::CatalogCursorV1 => b"catalog-cursor-v1",
@@ -369,6 +376,24 @@ pub fn segment_identity_input(
     )
 }
 
+/// split-child route hash input (contract r1):
+/// route-child-v1 + project_id + stream_name + child_segment_id + salt
+pub fn route_child_hash_input(
+    sref: &TenantStreamRef,
+    child_segment_id: u32,
+    salt: &[u8],
+) -> Vec<u8> {
+    encode_hash_input(
+        HashDomain::RouteChildV1,
+        &[
+            sref.project_id().as_bytes(),
+            sref.name().as_bytes(),
+            &child_segment_id.to_be_bytes(),
+            salt,
+        ],
+    )
+}
+
 // ---------------------------------------------------------------------------
 // Scopes (§6)
 // ---------------------------------------------------------------------------
@@ -376,7 +401,7 @@ pub fn segment_identity_input(
 /// The thirteen explicit data-plane scopes (§6). Broad scopes like
 /// STREAM_MANAGE are deliberately absent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[repr(u16)]
+#[repr(u64)]
 pub enum Scope {
     MetadataRead = 1 << 0,
     RecordsRead = 1 << 1,
@@ -393,6 +418,7 @@ pub enum Scope {
     UsageRead = 1 << 12,
 }
 
+#[allow(dead_code)] // consumed from MT Stage 2b (auth.rs authorization)
 impl Scope {
     pub const ALL: [Scope; 13] = [
         Scope::MetadataRead,
@@ -435,8 +461,9 @@ impl Scope {
 
 /// Compact scope set parsed from the OAuth `scope` claim.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ScopeSet(u16);
+pub struct ScopeSet(u64);
 
+#[allow(dead_code)] // consumed from MT Stage 2b (auth.rs authorization)
 impl ScopeSet {
     pub const EMPTY: ScopeSet = ScopeSet(0);
 
@@ -451,7 +478,7 @@ impl ScopeSet {
         let mut unknown = 0usize;
         for word in scope_claim.split_ascii_whitespace() {
             match Scope::parse(word) {
-                Some(s) => set.0 |= s as u16,
+                Some(s) => set.0 |= s as u64,
                 None => unknown += 1,
             }
         }
@@ -459,11 +486,11 @@ impl ScopeSet {
     }
 
     pub fn has(self, scope: Scope) -> bool {
-        self.0 & scope as u16 != 0
+        self.0 & scope as u64 != 0
     }
 
     pub fn with(mut self, scope: Scope) -> Self {
-        self.0 |= scope as u16;
+        self.0 |= scope as u64;
         self
     }
 
@@ -559,6 +586,7 @@ impl fmt::Display for PrefixError {
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub struct CanonicalPrefix(Arc<str>);
 
+#[allow(dead_code)] // consumed from MT Stage 2b (auth.rs prefix checks)
 impl CanonicalPrefix {
     pub fn normalize(raw: &str) -> Result<Self, PrefixError> {
         if raw.is_empty() {
@@ -628,6 +656,7 @@ impl CanonicalPrefix {
 /// is only produced by an empty input; callers must define empty-set
 /// semantics at the policy layer (the contract's token carries the
 /// set verbatim — this module does not invent "match everything").
+#[allow(dead_code)] // consumed from MT Stage 2b (credential-grant cache)
 pub fn normalize_prefix_set(raw: &[&str]) -> Result<Vec<CanonicalPrefix>, PrefixError> {
     if raw.len() > PREFIX_MAX_COUNT {
         return Err(PrefixError::TooMany {
@@ -657,6 +686,7 @@ pub fn normalize_prefix_set(raw: &[&str]) -> Result<Vec<CanonicalPrefix>, Prefix
 }
 
 /// True when any grant in the (normalized, non-empty) set matches.
+#[allow(dead_code)] // consumed from MT Stage 2b (auth.rs prefix checks)
 pub fn prefix_set_matches(grants: &[CanonicalPrefix], stream_name: &str) -> bool {
     grants.iter().any(|g| g.matches(stream_name))
 }
@@ -757,6 +787,17 @@ mod tests {
             segment_identity_input(&r, "e", 1),
             segment_identity_input(&r, "e", 256)
         );
+    }
+
+    #[test]
+    fn child_route_is_its_own_domain() {
+        let r = sref("proj_a", "orders");
+        let child = route_child_hash_input(&r, 3, b"salt1");
+        assert_ne!(child, route_hash_input(&r));
+        assert_ne!(child, route_child_hash_input(&r, 4, b"salt1"));
+        assert_ne!(child, route_child_hash_input(&r, 3, b"salt2"));
+        let other = sref("proj_b", "orders");
+        assert_ne!(child, route_child_hash_input(&other, 3, b"salt1"));
     }
 
     #[test]

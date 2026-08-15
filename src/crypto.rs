@@ -129,7 +129,15 @@ pub fn unhex(s: &str) -> Option<Vec<u8>> {
 }
 
 pub fn stream_hash(name: &str) -> [u8; 16] {
-    let digest = Sha256::digest(name.as_bytes());
+    hash16(name.as_bytes())
+}
+
+/// 128-bit SHA-256 prefix over raw bytes — the shared primitive under
+/// `stream_hash` (v3, bare strings) and the layout-4 constructors
+/// below (length-prefixed, domain-separated inputs from
+/// `tenant::encode_hash_input`).
+pub fn hash16(bytes: &[u8]) -> [u8; 16] {
+    let digest = Sha256::digest(bytes);
     let mut out = [0u8; 16];
     out.copy_from_slice(&digest[..16]);
     out
@@ -148,8 +156,33 @@ pub fn stream_hash(name: &str) -> [u8; 16] {
 pub struct RouteHash(pub [u8; 16]);
 
 impl RouteHash {
+    /// v3 (layout ≤3) route hash over the bare name. DELETED at MT
+    /// Stage 3 — the layout-4 switch replaces every caller with
+    /// [`RouteHash::for_stream`]; no dual-identity API survives it.
     pub fn of(name: &str) -> Self {
         RouteHash(stream_hash(name))
+    }
+
+    /// Layout-4 route hash (MULTITENANCY §2.1):
+    /// route-v1 + project_id + stream_name.
+    #[allow(dead_code)] // consumed at MT Stage 3 (layout-4 switch)
+    pub fn for_stream(sref: &crate::tenant::TenantStreamRef) -> Self {
+        RouteHash(hash16(&crate::tenant::route_hash_input(sref)))
+    }
+
+    /// Layout-4 split-child route (contract r1):
+    /// route-child-v1 + project_id + stream_name + child_segment_id + salt.
+    #[allow(dead_code)] // consumed at MT Stage 3 (scaler3 conversion)
+    pub fn for_child(
+        sref: &crate::tenant::TenantStreamRef,
+        child_segment_id: u32,
+        salt: &[u8],
+    ) -> Self {
+        RouteHash(hash16(&crate::tenant::route_child_hash_input(
+            sref,
+            child_segment_id,
+            salt,
+        )))
     }
 }
 
@@ -161,6 +194,37 @@ impl RouteHash {
 #[derive(Clone, Copy, PartialEq, Eq, Hash, Debug)]
 #[repr(transparent)]
 pub struct SegmentHash(pub [u8; 16]);
+
+impl SegmentHash {
+    /// Layout-4 storage hash (MULTITENANCY §2.1) — the engine identity
+    /// of segment 0 / implicit-map streams:
+    /// storage-v1 + project_id + stream_name + stream_epoch.
+    /// Replaces `StreamDesc::storage_hash`'s bare-name derivation at
+    /// MT Stage 3.
+    #[allow(dead_code)] // consumed at MT Stage 3 (layout-4 switch)
+    pub fn for_stream(sref: &crate::tenant::TenantStreamRef, stream_epoch: &str) -> Self {
+        SegmentHash(hash16(&crate::tenant::storage_hash_input(
+            sref,
+            stream_epoch,
+        )))
+    }
+
+    /// Layout-4 dynamic segment identity (MULTITENANCY §2.1):
+    /// segment-v1 + project_id + stream_name + stream_epoch + segment_id.
+    /// Replaces `StreamDesc::dynamic_segment_identity` at MT Stage 3.
+    #[allow(dead_code)] // consumed at MT Stage 3 (layout-4 switch)
+    pub fn for_segment(
+        sref: &crate::tenant::TenantStreamRef,
+        stream_epoch: &str,
+        segment_id: u32,
+    ) -> Self {
+        SegmentHash(hash16(&crate::tenant::segment_identity_input(
+            sref,
+            stream_epoch,
+            segment_id,
+        )))
+    }
+}
 
 /// 128-bit SHA-256 prefix of a ROUTING KEY's bytes (ROUTING-V3 §3.1) —
 /// the postings-index discriminator. Distinct from RouteHash (shard

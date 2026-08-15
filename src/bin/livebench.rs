@@ -33,6 +33,9 @@ use tokio::sync::Mutex;
 
 #[path = "../crypto.rs"]
 mod crypto;
+#[path = "../tenant.rs"]
+#[allow(dead_code)] // shared identity module; side bins use only crypto
+mod tenant;
 #[path = "../touch_keys.rs"]
 mod touch_keys;
 

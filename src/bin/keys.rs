@@ -7,6 +7,9 @@ use clap::{Parser, Subcommand};
 
 #[path = "../crypto.rs"]
 mod crypto;
+#[path = "../tenant.rs"]
+#[allow(dead_code)] // shared identity module; side bins use only crypto
+mod tenant;
 
 #[derive(Parser)]
 #[command(name = "streams-keys", about = "Stream key lifecycle + envelope tool")]
