@@ -1,4 +1,5 @@
 mod auth;
+mod auth_feed;
 mod backpressure;
 mod billing;
 mod crypto;
@@ -349,6 +350,28 @@ struct Args {
     /// generations and read segment state without a stream key).
     #[arg(long, env = "AUTH_TOKEN")]
     auth_token: Option<String>,
+    /// MULTITENANCY §7.2: off | shadow | enforce. Shadow verifies every
+    /// product bearer through the customer pipeline and counts the
+    /// outcome without touching responses. Enforce is refused at boot
+    /// until the route-scope matrix lands (Stage 5b).
+    #[arg(long, env = "STREAMS_AUTH_MODE", default_value = "off")]
+    streams_auth_mode: String,
+    #[arg(
+        long,
+        env = "STREAMS_AUTH_ISSUER",
+        default_value = "https://auth.prisma.io"
+    )]
+    streams_auth_issuer: String,
+    /// Operator-authored snapshot files (src/auth_feed.rs wire formats).
+    /// All three are required when STREAMS_AUTH_MODE != off.
+    #[arg(long, env = "STREAMS_AUTH_KEYS_FILE")]
+    streams_auth_keys_file: Option<std::path::PathBuf>,
+    #[arg(long, env = "STREAMS_AUTH_POLICY_FILE")]
+    streams_auth_policy_file: Option<std::path::PathBuf>,
+    #[arg(long, env = "STREAMS_AUTH_GRANTS_FILE")]
+    streams_auth_grants_file: Option<std::path::PathBuf>,
+    #[arg(long, env = "STREAMS_AUTH_REFRESH_SECS", default_value_t = 30)]
+    streams_auth_refresh_secs: u64,
 
     /// Fleet-internal credential for /v1/internal/* peer RPCs. REQUIRED
     /// when fleet mode is on (startup refuses otherwise), MUST differ
@@ -1106,6 +1129,37 @@ async fn async_main() -> anyhow::Result<()> {
     if tenant.is_system() {
         panic!("PROJECT_ID may not be the reserved system project");
     }
+    // MULTITENANCY Stage 5: the auth service exists in every mode (Off
+    // is inert); feeds are wired below once the runtime is up.
+    let auth_mode = crate::auth::AuthMode::from_env(Some(args.streams_auth_mode.as_str()))?;
+    anyhow::ensure!(
+        auth_mode != crate::auth::AuthMode::Enforce,
+        "STREAMS_AUTH_MODE=enforce is not wired to the request path yet          (Stage 5b route-scope matrix); run shadow"
+    );
+    if auth_mode != crate::auth::AuthMode::Off {
+        anyhow::ensure!(
+            args.streams_auth_keys_file.is_some()
+                && args.streams_auth_policy_file.is_some()
+                && args.streams_auth_grants_file.is_some(),
+            "STREAMS_AUTH_MODE={} requires STREAMS_AUTH_KEYS_FILE,              STREAMS_AUTH_POLICY_FILE and STREAMS_AUTH_GRANTS_FILE",
+            args.streams_auth_mode
+        );
+        // The refresher cadence must clear the staleness window with
+        // room for a failed fetch or two, or the cell oscillates into
+        // fail-closed refusals on schedule.
+        anyhow::ensure!(
+            (args.streams_auth_refresh_secs as i64) <= crate::auth::POLICY_STALENESS_MAX_SECS / 3,
+            "STREAMS_AUTH_REFRESH_SECS={} must be <= {} (a third of the              {}s staleness window)",
+            args.streams_auth_refresh_secs,
+            crate::auth::POLICY_STALENESS_MAX_SECS / 3,
+            crate::auth::POLICY_STALENESS_MAX_SECS
+        );
+    }
+    let auth_service = std::sync::Arc::new(crate::auth::AuthService::new(
+        auth_mode,
+        args.streams_auth_issuer.clone(),
+        &args.cell_id,
+    )?);
     // Only relevant when no topology exists yet; an existing topology wins.
     let fleet_mode = args.fleet_prefix.is_some() && args.fleet_max > 1;
     // FAIL CLOSED (round-19 security): the /v1/internal/* peer surface
@@ -1415,10 +1469,28 @@ async fn async_main() -> anyhow::Result<()> {
             },
         )),
         account_id: args.account_id.clone(),
+        auth: auth_service.clone(),
         cell_id: args.cell_id.clone(),
         region: args.telemetry_region.clone(),
     });
     let _ = state_slot.set(Arc::downgrade(&state));
+    // MULTITENANCY Stage 5: feed refresher — an immediate first fetch,
+    // then a cadence well inside the staleness window (checked above).
+    if auth_mode != crate::auth::AuthMode::Off {
+        crate::auth_feed::spawn_refresher(
+            auth_service.clone(),
+            Box::new(crate::auth_feed::FileKeySource(
+                args.streams_auth_keys_file.clone().unwrap(),
+            )),
+            Box::new(crate::auth_feed::FilePolicySource(
+                args.streams_auth_policy_file.clone().unwrap(),
+            )),
+            Box::new(crate::auth_feed::FileGrantSource(
+                args.streams_auth_grants_file.clone().unwrap(),
+            )),
+            std::time::Duration::from_secs(args.streams_auth_refresh_secs.max(1)),
+        );
+    }
     // Unified scaler (ROUTING-V3 §5): sketch-driven splits/merges.
     crate::scaler3::start(Arc::downgrade(&state));
     {

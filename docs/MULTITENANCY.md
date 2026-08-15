@@ -1121,8 +1121,15 @@ certified at Stage 8.)*
 
 ### Stage 5 — Policy, transfer, and placement
 
-* [ ] Publish project-policy snapshots/deltas.
-* [ ] Publish credential-grant snapshots/deltas.
+* [~] Publish project-policy snapshots/deltas. *(Data-plane side done:
+  strict file-backed sources + independent-failure refresher publish
+  into the arc-swap slots; the Control Plane feed implements the same
+  `KeySource`/`PolicySource`/`GrantSource` traits when Stage 1 lands.
+  Shadow mode observes every product bearer through the full customer
+  pipeline — `/v1/debug/auth` reports counters + feed freshness.
+  Enforce refuses boot until the Stage-5b route-scope matrix.)*
+* [~] Publish credential-grant snapshots/deltas. *(Same: data-plane
+  done via `STREAMS_AUTH_GRANTS_FILE`; platform feed pending.)*
 * [ ] Implement suspension.
 * [ ] Implement transfer protocol.
 * [ ] Implement project deletion saga.

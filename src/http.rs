@@ -210,6 +210,9 @@ pub struct AppState {
     /// deployment config — never inferred from stream names. Persisted
     /// into every descriptor at creation.
     pub account_id: String,
+    /// MULTITENANCY Stage 5: the auth service — inert in Off mode,
+    /// observing in Shadow, gating (Stage 5b) in Enforce.
+    pub auth: std::sync::Arc<crate::auth::AuthService>,
     /// The deployment's tenant (MULTITENANCY transition posture):
     /// until enforce-mode principals carry per-request projects, a
     /// dedicated cell serves exactly ONE project, configured
@@ -902,6 +905,25 @@ async fn debug_store(
     axum::Json(snap).into_response()
 }
 
+/// Shadow-mode observability (MULTITENANCY §7.2): mode, counter
+/// deltas, and the age/size of every published snapshot — the numbers
+/// the field trial reads to decide the enforce flip.
+async fn debug_auth(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+    if !authorized(&state, &headers) {
+        return err_resp(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "bearer token required",
+        );
+    }
+    let now = crate::shard::now_ms() / 1000;
+    axum::Json(serde_json::json!({
+        "shadow": state.auth.shadow_json(),
+        "feeds": state.auth.feed_json(now),
+    }))
+    .into_response()
+}
+
 /// Per-stream usage counters + the active limits. Auth: same bearer as
 /// the other debug endpoints (enforced by the middleware layer).
 async fn debug_usage(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
@@ -1078,6 +1100,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route("/v1/debug/load", get(debug_load))
         .route("/v1/debug/store", get(debug_store))
         .route("/v1/debug/usage", get(debug_usage))
+        .route("/v1/debug/auth", get(debug_auth))
         .route("/v1/debug/ops-events", get(debug_ops_events))
         // Every /v1/debug/* route is account-gated (round-19: the
         // security model claims bearer auth on all of /v1/*, and these
@@ -1629,6 +1652,13 @@ async fn project_usage_axum(
     req: axum::extract::Request,
 ) -> Response {
     let query = req.uri().query().unwrap_or("").to_string();
+    crate::product::shadow_observe_request(
+        &state,
+        req.uri().path(),
+        req.method(),
+        &query,
+        req.headers(),
+    );
     if !authorized(&state, req.headers()) {
         return crate::product::with_product_cors(crate::product::perr(
             StatusCode::UNAUTHORIZED,
@@ -1653,6 +1683,7 @@ async fn product_entry_axum(
     // Authorize BEFORE buffering. Reading up to MAX_BODY_BYTES first
     // let an unauthenticated caller make the server allocate 32 MiB per
     // request; the gate needs only the path, method, query and headers.
+    crate::product::shadow_observe_request(&state, &name, &method, &query, &headers);
     if let Some(r) = crate::product::product_auth_gate(&state, &name, &method, &query, &headers) {
         return crate::product::with_product_cors(r);
     }

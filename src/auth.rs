@@ -531,6 +531,38 @@ impl AuthService {
         }
     }
 
+    /// Snapshot freshness for the operator surface: whether each feed
+    /// has EVER been published, how old it is against the fail-closed
+    /// window, and what it contains.
+    pub fn feed_json(&self, now: i64) -> serde_json::Value {
+        let jwks = self.jwks.load();
+        let policies = self.projects.load();
+        let grants = self.credentials.load();
+        let age = |fetched: i64| {
+            if fetched == 0 {
+                None
+            } else {
+                Some(now - fetched)
+            }
+        };
+        serde_json::json!({
+            "stalenessMaxSecs": POLICY_STALENESS_MAX_SECS,
+            "jwks": { "keys": jwks.keys.len(), "ageSecs": age(jwks.fetched_at_unix) },
+            "policies": {
+                "projects": policies.projects.len(),
+                "feedVersion": policies.feed_version,
+                "ageSecs": age(policies.fetched_at_unix),
+                "stale": now - policies.fetched_at_unix > POLICY_STALENESS_MAX_SECS,
+            },
+            "grants": {
+                "credentials": grants.credentials.len(),
+                "feedVersion": grants.feed_version,
+                "ageSecs": age(grants.fetched_at_unix),
+                "stale": now - grants.fetched_at_unix > POLICY_STALENESS_MAX_SECS,
+            },
+        })
+    }
+
     pub fn shadow_json(&self) -> serde_json::Value {
         serde_json::json!({
             "mode": match self.mode {

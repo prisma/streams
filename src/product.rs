@@ -535,6 +535,46 @@ pub(crate) fn classify_route(path: &str) -> Result<ProductRoute, Response> {
 /// against the descriptor's persisted verifier inside the handler.
 ///
 /// Returns the 401 to send, or None when the request may proceed.
+/// §15: the observation capability arrives as `Authorization:
+/// Prisma-Watch <cap>` (preferred) or, for EventSource clients, a
+/// SHORT-LIVED `cap=` query parameter. The retired unexpiring `sig=`
+/// design is gone — clean switch.
+fn watch_capability_carrier(path: &str, method: &Method, query: &str, headers: &HeaderMap) -> bool {
+    matches!(classify_route(path), Ok(ProductRoute::WatchWait { .. }))
+        && method == Method::GET
+        && (query.split('&').any(|kv| kv.starts_with("cap="))
+            || headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.starts_with("Prisma-Watch ")))
+}
+
+/// MULTITENANCY Stage 5 shadow trial: run a NON-capability product
+/// bearer through the full customer pipeline and count the outcome.
+/// Observation only, and called from the REQUEST WRAPPERS exactly once
+/// per request — the auth gate itself runs twice by design
+/// (wrapper + entry defense-in-depth) and must stay side-effect free.
+pub(crate) fn shadow_observe_request(
+    state: &AppState,
+    path: &str,
+    method: &Method,
+    query: &str,
+    headers: &HeaderMap,
+) {
+    if state.auth.mode != crate::auth::AuthMode::Shadow
+        || watch_capability_carrier(path, method, query, headers)
+    {
+        return;
+    }
+    let bearer = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "));
+    state
+        .auth
+        .shadow_observe(bearer, crate::shard::now_ms() / 1000);
+}
+
 pub(crate) fn product_auth_gate(
     state: &AppState,
     path: &str,
@@ -545,18 +585,9 @@ pub(crate) fn product_auth_gate(
     if method == Method::OPTIONS {
         return None; // preflights carry no credentials, by definition
     }
-    // §15: the observation capability arrives as `Authorization:
-    // Prisma-Watch <cap>` (preferred) or, for EventSource clients, a
-    // SHORT-LIVED `cap=` query parameter. The retired unexpiring
-    // `sig=` design is gone — clean switch.
-    let capability = matches!(classify_route(path), Ok(ProductRoute::WatchWait { .. }))
-        && method == Method::GET
-        && (query.split('&').any(|kv| kv.starts_with("cap="))
-            || headers
-                .get(axum::http::header::AUTHORIZATION)
-                .and_then(|v| v.to_str().ok())
-                .is_some_and(|v| v.starts_with("Prisma-Watch ")));
-    if capability || crate::http::authorized(state, headers) {
+    if watch_capability_carrier(path, method, query, headers)
+        || crate::http::authorized(state, headers)
+    {
         return None;
     }
     Some(perr(

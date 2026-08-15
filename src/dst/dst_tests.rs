@@ -5151,6 +5151,7 @@ async fn http_rig_auth(
         None,
         None,
         None,
+        None,
     )
     .await
 }
@@ -5166,6 +5167,7 @@ async fn http_rig_full(
         prefixes,
         shard_cfg,
         per_segment_slots,
+        None,
         None,
         None,
         None,
@@ -5190,6 +5192,7 @@ async fn http_rig_named(
         Some(instance.to_string()),
         None,
         None,
+        None,
     )
     .await
 }
@@ -5211,6 +5214,7 @@ async fn http_rig_park(
         None,
         None,
         Some(park),
+        None,
         None,
     )
     .await
@@ -5239,10 +5243,31 @@ async fn http_rig_cold_absorb(
             sweep_every: u32::MAX,
             ..Default::default()
         }),
+        None,
     )
     .await
 }
 
+/// A rig with an explicit auth service (MT Stage 5 shadow tests).
+async fn http_rig_with_auth_service(
+    store: Arc<dyn ObjectStore>,
+    svc: Arc<crate::auth::AuthService>,
+) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+    http_rig_inner(
+        store,
+        vec!["00".to_string()],
+        crate::shard::ShardConfig::default(),
+        0,
+        None,
+        None,
+        None,
+        None,
+        Some(svc),
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)] // test-rig option plumbing
 async fn http_rig_inner(
     store: Arc<dyn ObjectStore>,
     prefixes: Vec<String>,
@@ -5252,6 +5277,7 @@ async fn http_rig_inner(
     instance_name: Option<String>,
     open_park: Option<Arc<tokio::sync::Mutex<()>>>,
     absorber_cfg: Option<crate::history::AbsorberConfig>,
+    auth_service: Option<Arc<crate::auth::AuthService>>,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
     let registry = crate::registry::Registry::new(store.clone(), "test-cell");
     let keys = Arc::new(crate::history::KeyCache::default());
@@ -5366,6 +5392,16 @@ async fn http_rig_inner(
             },
         )),
         account_id: "acct_test".to_string(),
+        auth: auth_service.unwrap_or_else(|| {
+            std::sync::Arc::new(
+                crate::auth::AuthService::new(
+                    crate::auth::AuthMode::Off,
+                    "https://auth.prisma.io".into(),
+                    "test-cell",
+                )
+                .unwrap(),
+            )
+        }),
         cell_id: "cell_test".to_string(),
         region: "test".to_string(),
     });
@@ -16749,6 +16785,170 @@ async fn a_stale_fork_release_does_not_touch_a_recreated_source() {
         "a stale release mutated the replacement's children"
     );
     assert_eq!(d.stream_epoch, fresh.stream_epoch);
+    engine_shutdown(&state).await;
+}
+
+/// MT Stage 5 shadow trial: with STREAMS_AUTH_MODE=shadow, every
+/// non-capability product bearer runs through the FULL customer
+/// pipeline (signature, versions, placement, status) and lands in a
+/// counter — while the response stays exactly what the legacy
+/// deployment bearer decides. A valid credential counts `ok`, garbage
+/// counts `failed`, a bare request counts `missing`, and all three
+/// requests SUCCEED because the rig has no legacy token configured.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn shadow_mode_observes_without_enforcing() {
+    const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
+    const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
+    let now = crate::shard::now_ms() / 1000;
+
+    let svc = std::sync::Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Shadow,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        "shadow-1".to_string(),
+        jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+    );
+    svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys,
+        fetched_at_unix: now,
+    });
+    let pid = crate::tenant::ProjectId::new("proj_456").unwrap();
+    let mut projects = std::collections::HashMap::new();
+    projects.insert(
+        pid.clone(),
+        crate::project_policy::ProjectPolicy {
+            project_id: pid.clone(),
+            workspace_id: crate::tenant::WorkspaceId::new("ws_789").unwrap(),
+            cell_id: std::sync::Arc::from("test-cell"),
+            project_policy_version: 40,
+            ownership_version: 12,
+            status: crate::project_policy::ProjectStatus::Active,
+            quotas: crate::project_policy::ProjectQuotas::default(),
+        },
+    );
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects,
+        fetched_at_unix: now,
+        feed_version: 40,
+    });
+    let mut credentials = std::collections::HashMap::new();
+    credentials.insert(
+        std::sync::Arc::from("strcred_123"),
+        crate::project_policy::CredentialGrant {
+            credential_id: std::sync::Arc::from("strcred_123"),
+            project_id: pid,
+            grant_version: 7,
+            status: crate::project_policy::CredentialStatus::Active,
+            scopes: crate::tenant::ScopeSet::parse("streams.records.read streams.create").0,
+            grant: crate::tenant::StreamGrant::All,
+            expires_at: None,
+        },
+    );
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials,
+        fetched_at_unix: now,
+        feed_version: 7,
+    });
+
+    let (state, addr) = http_rig_with_auth_service(mem(), svc.clone()).await;
+
+    #[derive(serde::Serialize)]
+    struct Claims<'a> {
+        iss: &'a str,
+        aud: &'a str,
+        sub: &'a str,
+        credential_id: &'a str,
+        project_id: &'a str,
+        workspace_id: &'a str,
+        cell_id: &'a str,
+        ownership_version: u64,
+        grant_version: u64,
+        scope: &'a str,
+        jti: &'a str,
+        iat: i64,
+        exp: i64,
+    }
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some("shadow-1".into());
+    let jwt = jsonwebtoken::encode(
+        &header,
+        &Claims {
+            iss: "https://auth.prisma.io",
+            aud: "prisma-streams-data",
+            sub: "user_1",
+            credential_id: "strcred_123",
+            project_id: "proj_456",
+            workspace_id: "ws_789",
+            cell_id: "test-cell",
+            ownership_version: 12,
+            grant_version: 7,
+            scope: "streams.records.read streams.create",
+            jti: "tok_shadow_1",
+            iat: now - 60,
+            exp: now + 600,
+        },
+        &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
+    )
+    .unwrap();
+
+    // Valid customer token: observed ok, request succeeds (no legacy
+    // token configured on the rig — shadow must not change that).
+    let bearer = format!("Bearer {jwt}");
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/shadow1",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("authorization", &bearer),
+        ],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    // Garbage bearer: observed failed, request still succeeds.
+    let (st, _, _) = preq(
+        addr,
+        "GET",
+        "/v1/streams/shadow1",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("authorization", "Bearer garbage"),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    // No bearer at all: observed missing.
+    let (st, _, _) = preq(
+        addr,
+        "GET",
+        "/v1/streams/shadow1",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+
+    use std::sync::atomic::Ordering;
+    assert_eq!(state.auth.shadow.ok.load(Ordering::Relaxed), 1);
+    assert_eq!(state.auth.shadow.failed.load(Ordering::Relaxed), 1);
+    assert_eq!(state.auth.shadow.missing.load(Ordering::Relaxed), 1);
+
+    // Operator surface: mode, counters, feed freshness.
+    let (st, _, body) = preq(addr, "GET", "/v1/debug/auth", &[], b"").await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(v["shadow"]["mode"], "shadow");
+    assert_eq!(v["shadow"]["ok"], 1);
+    assert_eq!(v["feeds"]["policies"]["stale"], false);
+    assert_eq!(v["feeds"]["jwks"]["keys"], 1);
     engine_shutdown(&state).await;
 }
 

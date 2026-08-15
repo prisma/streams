@@ -149,6 +149,15 @@ impl<'de> serde::Deserialize<'de> for ProjectId {
     }
 }
 
+/// Same validated-construction rule as `ProjectId`: no unchecked bytes
+/// enter through a deserializer side door (Stage 5 feed files).
+impl<'de> serde::Deserialize<'de> for WorkspaceId {
+    fn deserialize<D: serde::Deserializer<'de>>(d: D) -> Result<Self, D::Error> {
+        let raw = String::deserialize(d)?;
+        WorkspaceId::new(&raw).map_err(serde::de::Error::custom)
+    }
+}
+
 /// The reserved project id that owns system streams (_usage,
 /// _ops_events, _ops_metrics, _audit_events — MULTITENANCY §10.4).
 /// Registry paths for it live under `system/v1/cells/<cell-id>/`,
