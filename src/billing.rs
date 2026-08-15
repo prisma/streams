@@ -870,11 +870,29 @@ pub fn identity_of(
     state: &crate::http::AppState,
     desc: &crate::registry::StreamDesc,
 ) -> BillingIdentity {
-    BillingIdentity {
-        account_id: desc
-            .account_id
+    // Stage 7 (workspace-at-event): under shadow/enforce the billable
+    // owner is the WORKSPACE the policy snapshot names for the
+    // descriptor's project AT METERING TIME — invoices attach to the
+    // owner-at-event, which is what makes transfer splits possible.
+    // A project absent from the snapshot (feed lag, removal mid-sweep)
+    // falls to the deployment account and is COUNTED so reconciliation
+    // sees it; in Off mode the deployment account is the single-tenant
+    // truth.
+    let account_id = if state.auth.mode != crate::auth::AuthMode::Off {
+        match state.auth.workspace_for(&desc.project_id) {
+            Some(ws) => ws.as_str().to_string(),
+            None => {
+                UNOWNED_METER_EVENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                state.account_id.clone()
+            }
+        }
+    } else {
+        desc.account_id
             .clone()
-            .unwrap_or_else(|| state.account_id.clone()),
+            .unwrap_or_else(|| state.account_id.clone())
+    };
+    BillingIdentity {
+        account_id,
         // Layout 4: the descriptor's project is MANDATORY — the
         // deployment-global fallback is gone (MULTITENANCY §20).
         project_id: desc.project_id.as_str().to_string(),
@@ -882,6 +900,12 @@ pub fn identity_of(
         stream_name: desc.name.clone(),
     }
 }
+
+/// Metering events whose project had NO owner in the policy snapshot
+/// (attributed to the deployment account) — reconciliation reads this;
+/// a nonzero steady rate means the feed is lying or lagging.
+pub static UNOWNED_METER_EVENTS: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 /// Meter one externally delivered read page (op + payload bytes).
 pub fn meter_read(

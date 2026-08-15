@@ -654,6 +654,16 @@ impl AuthService {
             .map(|p| p.quotas.clone())
     }
 
+    /// Stage 7: the workspace that owns `project` in the CURRENT
+    /// policy snapshot — billing's workspace-at-event resolution.
+    pub fn workspace_for(&self, project: &crate::tenant::ProjectId) -> Option<WorkspaceId> {
+        self.projects
+            .load()
+            .projects
+            .get(project)
+            .map(|p| p.workspace_id.clone())
+    }
+
     /// Snapshot freshness for the operator surface: whether each feed
     /// has EVER been published, how old it is against the fail-closed
     /// window, and what it contains.

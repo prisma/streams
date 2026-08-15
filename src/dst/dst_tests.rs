@@ -18370,6 +18370,222 @@ async fn noisy_neighbor_cannot_degrade_a_compliant_project() {
     engine_shutdown(&state).await;
 }
 
+/// Stage 7 exit ("every billable unit belongs to exactly one project
+/// and one workspace-at-event"): the same-name cross-project INVOICE
+/// test. Two projects on one enforce cell create the SAME stream
+/// name, append different volumes, and the whole pipeline — metering,
+/// _usage ledger, rollup, usage APIs — attributes each byte to
+/// exactly one project under its OWN workspace: A's invoice shows
+/// only A's volume under ws_a, B's only B's under ws_b, and the
+/// project-level rollups agree.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn same_name_cross_project_usage_attributes_exactly() {
+    let _xr = crate::billing::billing_clock_lock().read().await;
+    const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
+    const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
+    let now = crate::shard::now_ms() / 1000;
+    let svc = std::sync::Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        "inv-1".to_string(),
+        crate::auth::JwksKey {
+            alg: jsonwebtoken::Algorithm::RS256,
+            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+        },
+    );
+    svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let scopes = "streams.create streams.records.append streams.records.read \
+                  streams.metadata.read streams.usage.read";
+    let mut projects = std::collections::HashMap::new();
+    let mut credentials = std::collections::HashMap::new();
+    for (proj, ws, cred) in [("proj-test", "ws_a", "c_a"), ("proj-b", "ws_b", "c_b")] {
+        let pid = crate::tenant::ProjectId::new(proj).unwrap();
+        projects.insert(
+            pid.clone(),
+            crate::project_policy::ProjectPolicy {
+                project_id: pid.clone(),
+                workspace_id: crate::tenant::WorkspaceId::new(ws).unwrap(),
+                cell_id: std::sync::Arc::from("test-cell"),
+                project_policy_version: 1,
+                ownership_version: 1,
+                status: crate::project_policy::ProjectStatus::Active,
+                quotas: crate::project_policy::ProjectQuotas::default(),
+            },
+        );
+        credentials.insert(
+            std::sync::Arc::from(cred),
+            crate::project_policy::CredentialGrant {
+                credential_id: std::sync::Arc::from(cred),
+                project_id: pid,
+                grant_version: 1,
+                status: crate::project_policy::CredentialStatus::Active,
+                scopes: crate::tenant::ScopeSet::parse(scopes).0,
+                grant: crate::tenant::StreamGrant::All,
+                expires_at: None,
+            },
+        );
+    }
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let (state, addr) = http_rig_with_auth_service(mem(), svc).await;
+    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "")
+        .await
+        .unwrap();
+    let _ = state.rollup.set(std::sync::Arc::new(rollup));
+
+    #[derive(serde::Serialize)]
+    struct C<'a> {
+        iss: &'a str,
+        aud: &'a str,
+        sub: &'a str,
+        credential_id: &'a str,
+        project_id: &'a str,
+        workspace_id: &'a str,
+        cell_id: &'a str,
+        ownership_version: u64,
+        grant_version: u64,
+        scope: &'a str,
+        jti: &'a str,
+        iat: i64,
+        exp: i64,
+    }
+    let mint = |cred: &str, proj: &str, ws: &str| {
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        header.kid = Some("inv-1".into());
+        jsonwebtoken::encode(
+            &header,
+            &C {
+                iss: "https://auth.prisma.io",
+                aud: "prisma-streams-data",
+                sub: "u",
+                credential_id: cred,
+                project_id: proj,
+                workspace_id: ws,
+                cell_id: "test-cell",
+                ownership_version: 1,
+                grant_version: 1,
+                scope: scopes,
+                jti: "t",
+                iat: now - 60,
+                exp: now + 600,
+            },
+            &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
+        )
+        .unwrap()
+    };
+    let ta = format!("Bearer {}", mint("c_a", "proj-test", "ws_a"));
+    let tb = format!("Bearer {}", mint("c_b", "proj-b", "ws_b"));
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let auth_a = ("authorization", ta.as_str());
+    let auth_b = ("authorization", tb.as_str());
+    let create = br#"{"format":{"kind":"json"}}"#;
+
+    // Same name, two projects; DIFFERENT volumes.
+    for auth in [auth_a, auth_b] {
+        let (st, _, _) = preq(addr, "PUT", "/v1/streams/inv", &[ekey, auth], create).await;
+        assert_eq!(st, 201);
+    }
+    let pa = br#"{"who":"a","pad":"xxxxxxxx"}"#; // 27 B x2
+    for _ in 0..2 {
+        let (st, _, _) = preq(addr, "POST", "/v1/streams/inv/records", &[ekey, auth_a], pa).await;
+        assert_eq!(st, 200);
+    }
+    let pb = br#"{"who":"b","padpad":"yyyyyyyyyyyyyyyyyyyy"}"#; // 43 B x3
+    for _ in 0..3 {
+        let (st, _, _) = preq(addr, "POST", "/v1/streams/inv/records", &[ekey, auth_b], pb).await;
+        assert_eq!(st, 200);
+    }
+
+    // Drain the ledger and consume it into the rollup.
+    state.billing_reads.seal_if_aged(0);
+    let mut drained = 0usize;
+    for _ in 0..100 {
+        let n = crate::billing::drain_once(&state).await.expect("drain");
+        drained += n;
+        if n == 0 {
+            break;
+        }
+    }
+    assert!(drained >= 2, "snapshots drained: {drained}");
+    for _ in 0..50 {
+        if crate::billing::rollup_step(&state).await.expect("rollup") == 0 {
+            break;
+        }
+    }
+
+    // Each project's invoice-grade answer: ITS volume, under ITS
+    // workspace, and nothing of the neighbor's.
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        "/v1/streams/inv/usage/current",
+        &[ekey, auth_a],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let va: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(va["ingestRecords"], 2, "A records: {va}");
+    assert_eq!(
+        va["ingestPayloadBytes"],
+        (2 * pa.len()) as u64,
+        "A bytes: {va}"
+    );
+    assert_eq!(va["projectId"], "proj-test", "{va}");
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        "/v1/streams/inv/usage/current",
+        &[ekey, auth_b],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let vb: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(vb["ingestRecords"], 3, "B records: {vb}");
+    assert_eq!(
+        vb["ingestPayloadBytes"],
+        (3 * pb.len()) as u64,
+        "B bytes: {vb}"
+    );
+    assert_eq!(vb["projectId"], "proj-b", "{vb}");
+
+    // Project-level rollups agree, each under its own path+principal.
+    let (st, _, b) = preq(addr, "GET", "/v1/projects/proj-test/usage", &[auth_a], b"").await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let pva: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(pva["ingestRecords"], 2, "{pva}");
+    assert_eq!(pva["accountId"], "ws_a", "workspace-at-event: {pva}");
+    let (st, _, b) = preq(addr, "GET", "/v1/projects/proj-b/usage", &[auth_b], b"").await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let pvb: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(pvb["ingestRecords"], 3, "{pvb}");
+    assert_eq!(pvb["accountId"], "ws_b", "workspace-at-event: {pvb}");
+    engine_shutdown(&state).await;
+}
+
 /// MT Stage 4 same-project rule: stored references (fork parentage,
 /// dead-letter targets) bind inside the REFERRING stream's project. A
 /// foreign project's stream with the SAME name — even one carrying the

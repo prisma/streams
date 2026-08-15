@@ -7271,13 +7271,24 @@ pub async fn project_usage(
             false,
         );
     }
+    // Stage 7: rows land under the workspace-at-event; query and
+    // report under the SAME resolution the meter used.
+    let account = if state.auth.mode != crate::auth::AuthMode::Off {
+        state
+            .auth
+            .workspace_for(authority)
+            .map(|w| w.as_str().to_string())
+            .unwrap_or_else(|| state.account_id.clone())
+    } else {
+        state.account_id.clone()
+    };
     let agg = rollup
-        .project_row(&month, &state.account_id, &project)
+        .project_row(&month, &account, &project)
         .await
         .unwrap_or_default();
     let byte_ms: u128 = agg.storage_byte_ms.parse().unwrap_or(0);
     json_ok(json!({
-        "accountId": state.account_id,
+        "accountId": account,
         "projectId": project,
         "month": month,
         "ingestPayloadBytes": agg.ingest_bytes,
