@@ -4221,6 +4221,9 @@ fn json_ok(v: serde_json::Value) -> Response {
 /// the sender's incarnation and the identity it derived, and the
 /// receiver re-derives both before touching anything.
 pub(crate) struct InternalTarget {
+    /// §16: the physical target is PROJECT-QUALIFIED on the wire —
+    /// workspace id is deliberately not part of it.
+    pub project_id: crate::tenant::ProjectId,
     pub stream_epoch: [u8; 16],
     pub seg_id: u32,
     pub identity: [u8; 16],
@@ -4229,13 +4232,18 @@ pub(crate) struct InternalTarget {
 impl InternalTarget {
     pub fn of(desc: &StreamDesc, seg_id: u32) -> Option<Self> {
         Some(InternalTarget {
+            project_id: desc.project_id.clone(),
             stream_epoch: desc.epoch_bytes()?,
             seg_id,
             identity: desc.dynamic_segment_identity(seg_id),
         })
     }
-    pub fn headers(&self) -> [(&'static str, String); 3] {
+    pub fn headers(&self) -> [(&'static str, String); 4] {
         [
+            (
+                "streams-internal-project",
+                self.project_id.as_str().to_string(),
+            ),
             (
                 "streams-internal-epoch",
                 crate::crypto::hex(&self.stream_epoch),
@@ -4247,6 +4255,27 @@ impl InternalTarget {
             ),
         ]
     }
+}
+
+/// §16 receiver side, step one: construct the registry identity FROM
+/// THE SENDER'S project header — never from the deployment tenant —
+/// so a multi-project cell can never bind a peer's request to the
+/// wrong project's stream. The reserved system project is legal here
+/// (§10.4: only internal workload identity touches system streams).
+pub(crate) fn internal_sref(
+    headers: &HeaderMap,
+    name: &str,
+) -> Result<crate::tenant::TenantStreamRef, Response> {
+    let invalid = |why: &str| perr(StatusCode::BAD_REQUEST, "invalid_target", why, None, false);
+    let raw = headers
+        .get("streams-internal-project")
+        .and_then(|v| v.to_str().ok())
+        .ok_or_else(|| invalid("internal requests must carry the project header"))?;
+    let project =
+        crate::tenant::ProjectId::new(raw).map_err(|_| invalid("malformed internal project id"))?;
+    let cn = crate::tenant::CanonicalStreamName::new(name)
+        .map_err(|_| invalid("non-canonical internal stream name"))?;
+    Ok(crate::tenant::TenantStreamRef::new(project, cn))
 }
 
 /// Receiver-side verification of an internal RPC target against the
@@ -4300,6 +4329,17 @@ pub(crate) fn verify_internal_target(
     };
     if desc.epoch_bytes() != Some(want_epoch) {
         return Err(stale("epoch"));
+    }
+    // §16: the loaded descriptor must belong to the project the sender
+    // addressed. With the registry lookup itself keyed by the header
+    // project this is a pure corruption check — but it stays, because
+    // a silent project swap here would be a cross-tenant bind.
+    if let Some(p) = headers
+        .get("streams-internal-project")
+        .and_then(|v| v.to_str().ok())
+        && p != desc.project_id.as_str()
+    {
+        return Err(stale("project"));
     }
     // Segment 0 is the implicit single segment and always exists.
     let known = seg_id == 0
@@ -4452,7 +4492,11 @@ pub(crate) async fn internal_sweep_segment(
             );
         }
     };
-    let desc = match state.registry.get(&state.sref(&name)).await {
+    let sref = match internal_sref(&headers, &name) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let desc = match state.registry.get(&sref).await {
         Ok(Some(d)) => d,
         _ => return perr(StatusCode::NOT_FOUND, "not_found", "stream", None, false),
     };
@@ -4545,7 +4589,11 @@ pub(crate) async fn internal_queue_cursor(
             false,
         );
     };
-    let desc = match state.registry.get(&state.sref(&name)).await {
+    let sref = match internal_sref(&headers, &name) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let desc = match state.registry.get(&sref).await {
         Ok(Some(d)) => d,
         _ => return perr(StatusCode::NOT_FOUND, "not_found", "stream", None, false),
     };
@@ -4645,7 +4693,11 @@ pub(crate) async fn internal_segment_scan(
             false,
         );
     };
-    let desc = match state.registry.get(&state.sref(&name)).await {
+    let sref = match internal_sref(&headers, &name) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let desc = match state.registry.get(&sref).await {
         Ok(Some(d)) => d,
         _ => return perr(StatusCode::NOT_FOUND, "not_found", "stream", None, false),
     };
@@ -5016,6 +5068,7 @@ async fn product_consumer_delete(
             let state = state.clone();
             let cname = cname.clone();
             let name = name.clone();
+            let project = cur_desc.project_id.clone();
             let steps_left = steps_left.clone();
             async move {
                 let engine = match state.engine_for(&route).await {
@@ -5036,6 +5089,7 @@ async fn product_consumer_delete(
                                 ));
                             };
                             let t = InternalTarget {
+                                project_id: project.clone(),
                                 stream_epoch,
                                 seg_id,
                                 identity,

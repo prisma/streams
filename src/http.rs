@@ -1007,6 +1007,10 @@ async fn internal_telemetry_append(
             "telemetry-append accepts only reserved system streams",
         );
     }
+    // §16 note: this endpoint is gated to reserved SYSTEM streams and
+    // delegates to the deployment-tenant creation path; it moves onto
+    // the reserved system project with the Stage-7 system-stream
+    // relocation rather than taking the per-request project header.
     let mut hdrs = HeaderMap::new();
     if let Some(k) = headers.get("stream-encryption-key") {
         hdrs.insert("stream-encryption-key", k.clone());
@@ -7238,8 +7242,13 @@ async fn internal_segment_read(
     // ABA GUARD (round-19): bind the relayed read to the sender's
     // incarnation. Without this, a delete/recreate between dispatch and
     // arrival serves the REPLACEMENT stream's records against the
-    // original request's cursor.
-    match state.registry.get(&state.sref(&name)).await {
+    // original request's cursor. §16: the registry identity comes from
+    // the sender's PROJECT header, never the deployment tenant.
+    let sref = match crate::product::internal_sref(&headers, &name) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    match state.registry.get(&sref).await {
         Ok(Some(desc)) => {
             if let Err(r) = crate::product::verify_internal_target(&desc, &headers) {
                 return r;
