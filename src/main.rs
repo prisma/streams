@@ -1,3 +1,4 @@
+mod auth;
 mod backpressure;
 mod billing;
 mod crypto;
@@ -13,6 +14,7 @@ mod postings;
 mod postings_cache;
 mod product;
 mod product_cursor;
+mod project_policy;
 mod protocol_pin;
 mod queue;
 mod registry;

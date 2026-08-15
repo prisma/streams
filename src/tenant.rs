@@ -494,6 +494,11 @@ impl ScopeSet {
         self
     }
 
+    /// Effective-authority intersection (auth.rs: token ∩ credential).
+    pub fn intersect(self, other: ScopeSet) -> ScopeSet {
+        ScopeSet(self.0 & other.0)
+    }
+
     pub fn is_empty(self) -> bool {
         self.0 == 0
     }
@@ -689,6 +694,27 @@ pub fn normalize_prefix_set(raw: &[&str]) -> Result<Vec<CanonicalPrefix>, Prefix
 #[allow(dead_code)] // consumed from MT Stage 2b (auth.rs prefix checks)
 pub fn prefix_set_matches(grants: &[CanonicalPrefix], stream_name: &str) -> bool {
     grants.iter().any(|g| g.matches(stream_name))
+}
+
+/// A credential's stream grant (contract r1, §6.2): an explicit type,
+/// never an overloaded empty set. In the access token, an ABSENT
+/// `stream_prefixes` claim means `All`; an EMPTY ARRAY is invalid and
+/// the token is rejected — "no streams" is expressed by not issuing
+/// the credential, and an empty array is far more likely an issuer
+/// bug than an intent.
+#[derive(Clone, Debug)]
+pub enum StreamGrant {
+    All,
+    Prefixes(Arc<[CanonicalPrefix]>),
+}
+
+impl StreamGrant {
+    pub fn permits(&self, stream_name: &str) -> bool {
+        match self {
+            StreamGrant::All => true,
+            StreamGrant::Prefixes(p) => prefix_set_matches(p, stream_name),
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------

@@ -32,6 +32,14 @@ hkdf = "0.12"
 base64 = "0.22.1"
 hmac = "0.12"
 tokio-stream = "0.1.18"
+# MT Stage 2b (docs/MULTITENANCY.md §7): JWT verification for the
+# per-project access-token principal. jsonwebtoken is the audited
+# standard (alg allowlisting, aud/iss/exp validation, JWK decoding) —
+# hand-rolled JWT parsing is the classic alg-confusion trap. arc-swap
+# provides the lock-free policy/JWKS snapshot swap the request path
+# reads (no request performs a synchronous Control Plane lookup).
+jsonwebtoken = "9"
+arc-swap = "1"
 
 [[bin]]
 name = "streams-slate"
