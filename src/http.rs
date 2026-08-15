@@ -1659,7 +1659,34 @@ async fn project_usage_axum(
         &query,
         req.headers(),
     );
-    if !authorized(&state, req.headers()) {
+    if state.auth.mode == crate::auth::AuthMode::Enforce {
+        match crate::product::enforce_customer(&state, req.headers()) {
+            Ok(p) => {
+                if let Err(e) = p.require(crate::tenant::Scope::UsageRead) {
+                    return crate::product::with_product_cors(
+                        crate::product::auth_failure_response(&e),
+                    );
+                }
+                // The path must name the PRINCIPAL's project — usage is
+                // per-project data, and under shared cells the tenant
+                // in the URL is a claim to be checked, not a router
+                // hint. Same not-found shape as a foreign project.
+                if crate::tenant::ProjectId::new(&project)
+                    .map(|pid| pid != p.project_id)
+                    .unwrap_or(true)
+                {
+                    return crate::product::with_product_cors(crate::product::perr(
+                        StatusCode::NOT_FOUND,
+                        "unknown_project",
+                        "the credential does not belong to this project",
+                        None,
+                        false,
+                    ));
+                }
+            }
+            Err(r) => return crate::product::with_product_cors(r),
+        }
+    } else if !authorized(&state, req.headers()) {
         return crate::product::with_product_cors(crate::product::perr(
             StatusCode::UNAUTHORIZED,
             "unauthorized",

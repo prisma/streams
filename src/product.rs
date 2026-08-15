@@ -575,6 +575,168 @@ pub(crate) fn shadow_observe_request(
         .shadow_observe(bearer, crate::shard::now_ms() / 1000);
 }
 
+/// §6.1: the route/method -> required-scope matrix. `None` only for
+/// the watch-wait route, which authorizes itself with a §15
+/// capability. Compound rules (fork creation adds forks.create +
+/// source read; DLQ configuration adds dlq.configure on the target)
+/// are enforced where those requests are RECOGNIZED — the gate cannot
+/// see a request body — and land with Stage 5c.
+pub(crate) fn required_scope(
+    route: &ProductRoute,
+    verb: Option<&str>,
+    method: &Method,
+) -> Option<crate::tenant::Scope> {
+    use crate::tenant::Scope as S;
+    let read = *method == Method::GET || *method == Method::HEAD;
+    Some(match route {
+        ProductRoute::Collection { .. } => {
+            if *method == Method::PUT {
+                S::Create
+            } else if *method == Method::DELETE || verb == Some("seal") {
+                S::LifecycleManage
+            } else if verb == Some("scan") {
+                // :scan pages back DECRYPTED record bodies — a bulk
+                // record read, so it takes records.read, NOT the
+                // metadata scope the other Collection GETs use (§6.1).
+                // Without this, a metadata-only credential (which a
+                // create/monitor service legitimately holds, along with
+                // the stream key) could export every record, and
+                // revoking records.read would not cut off record access.
+                S::RecordsRead
+            } else {
+                S::MetadataRead
+            }
+        }
+        ProductRoute::Records { .. } => {
+            if *method == Method::POST {
+                S::RecordsAppend
+            } else {
+                S::RecordsRead
+            }
+        }
+        ProductRoute::Consumer { .. } => {
+            if verb == Some("pull") {
+                S::ConsumersPull
+            } else if verb == Some("settle") {
+                S::ConsumersSettle
+            } else if read {
+                // Reading a consumer's config/positions is stream
+                // metadata; mutation is configuration.
+                S::MetadataRead
+            } else {
+                S::ConsumersConfigure
+            }
+        }
+        ProductRoute::Watches { .. } | ProductRoute::Watch { .. } => {
+            if read {
+                S::MetadataRead
+            } else {
+                S::WatchesManage
+            }
+        }
+        ProductRoute::Usage { .. } => S::UsageRead,
+        ProductRoute::WatchWait { .. } => return None,
+    })
+}
+
+fn route_stream_name(route: &ProductRoute) -> &str {
+    match route {
+        ProductRoute::Collection { name }
+        | ProductRoute::Records { name }
+        | ProductRoute::Consumer { name, .. }
+        | ProductRoute::Watches { name }
+        | ProductRoute::Watch { name, .. }
+        | ProductRoute::Usage { name }
+        | ProductRoute::WatchWait { name, .. } => name,
+    }
+}
+
+/// One response per fail-closed reason class (§7.1/§8.1):
+/// 421 wrong_cell (placement — the credential is FINE, so never 401,
+/// which would make clients refresh it), 503 for the cell's OWN feed
+/// staleness (retryable, not the client's fault), 403 for verified-
+/// but-denied (suspension, revocation, scope, prefix), 401 for
+/// everything a fresh token could fix.
+pub(crate) fn auth_failure_response(e: &crate::auth::AuthError) -> Response {
+    use crate::auth::AuthError as E;
+    let (status, msg, retryable) = match e {
+        E::WrongCell => (
+            StatusCode::MISDIRECTED_REQUEST,
+            "this cell does not serve the project; re-resolve the              project's endpoint (the credential itself is fine)",
+            false,
+        ),
+        E::PolicyStale | E::GrantsStale => (
+            StatusCode::SERVICE_UNAVAILABLE,
+            "this cell's authorization data is stale; retry",
+            true,
+        ),
+        E::ProjectNotActive(_) => (StatusCode::FORBIDDEN, "the project is not active", false),
+        E::CredentialNotActive(_) => (StatusCode::FORBIDDEN, "the credential is not active", false),
+        E::MissingScope(_) => (
+            StatusCode::FORBIDDEN,
+            "the credential does not grant the scope this operation requires",
+            false,
+        ),
+        E::PrefixDenied => (
+            StatusCode::FORBIDDEN,
+            "the credential's stream grant does not cover this stream",
+            false,
+        ),
+        _ => (
+            StatusCode::UNAUTHORIZED,
+            "the bearer token failed verification",
+            false,
+        ),
+    };
+    let mut r = perr(status, e.kind(), msg, None, retryable);
+    if matches!(e, E::WrongCell) {
+        // §8.1 fallback form: the header survives body-less handling.
+        r.headers_mut().insert(
+            "prisma-error-code",
+            axum::http::HeaderValue::from_static("wrong_cell"),
+        );
+    }
+    r
+}
+
+/// Enforce-mode authentication: the customer token IS the product
+/// credential (the deployment bearer remains only on the raw/debug/
+/// operator surfaces). Pure over the published snapshots.
+pub(crate) fn enforce_customer(
+    state: &AppState,
+    headers: &HeaderMap,
+) -> Result<crate::auth::RequestPrincipal, Response> {
+    let Some(token) = headers
+        .get(axum::http::header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Bearer "))
+    else {
+        return Err(perr(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "a customer bearer token is required",
+            None,
+            false,
+        ));
+    };
+    let principal = state
+        .auth
+        .verify_customer(token, crate::shard::now_ms() / 1000)
+        .map_err(|e| auth_failure_response(&e))?;
+    // Bridge to the data plane. Handlers still address storage under
+    // the cell's DEPLOYMENT tenant (state.tenant) until Stage 7 threads
+    // the principal all the way through. So a token verified for some
+    // OTHER project must never reach this cell's data: require the
+    // principal's project to be the one this cell serves. It is
+    // placement, not an auth failure — §8.1 421, the credential is fine
+    // — and it makes the shared-cell invariant (token.project ==
+    // addressed.project) hold today, before per-request tenanting.
+    if principal.project_id != state.tenant {
+        return Err(auth_failure_response(&crate::auth::AuthError::WrongCell));
+    }
+    Ok(principal)
+}
+
 pub(crate) fn product_auth_gate(
     state: &AppState,
     path: &str,
@@ -585,9 +747,34 @@ pub(crate) fn product_auth_gate(
     if method == Method::OPTIONS {
         return None; // preflights carry no credentials, by definition
     }
-    if watch_capability_carrier(path, method, query, headers)
-        || crate::http::authorized(state, headers)
-    {
+    if watch_capability_carrier(path, method, query, headers) {
+        return None; // §15: the capability is the credential
+    }
+    if state.auth.mode == crate::auth::AuthMode::Enforce {
+        // §9 order: the exact route parses FIRST (grammar errors are
+        // not authentication outcomes), then authenticate, then
+        // authorize scope + prefix. No legacy fallback: in enforce the
+        // customer token is the only product credential.
+        let route = match classify_route(path) {
+            Ok(r) => r,
+            Err(resp) => return Some(resp),
+        };
+        let principal = match enforce_customer(state, headers) {
+            Ok(p) => p,
+            Err(r) => return Some(r),
+        };
+        let (_, verb) = strip_verb(path);
+        if let Some(scope) = required_scope(&route, verb, method)
+            && let Err(e) = principal.require(scope)
+        {
+            return Some(auth_failure_response(&e));
+        }
+        if let Err(e) = principal.require_stream(route_stream_name(&route)) {
+            return Some(auth_failure_response(&e));
+        }
+        return None;
+    }
+    if crate::http::authorized(state, headers) {
         return None;
     }
     Some(perr(
@@ -6377,15 +6564,31 @@ async fn product_watch_wait(
 /// fan-out beyond the descriptors the page returns.
 pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMap) -> Response {
     // Its own route entry (not through product_entry): gate it here.
-    if !crate::http::authorized(&state, &headers) {
-        return perr(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-            None,
-            false,
-        );
-    }
+    // In enforce mode the principal is retained so the listing can be
+    // filtered to the credential's §6.2 prefix grant — catalog.read
+    // authorizes listing, the grant bounds WHICH names are returned.
+    let principal = if state.auth.mode == crate::auth::AuthMode::Enforce {
+        match enforce_customer(&state, &headers) {
+            Ok(p) => {
+                if let Err(e) = p.require(crate::tenant::Scope::CatalogRead) {
+                    return auth_failure_response(&e);
+                }
+                Some(p)
+            }
+            Err(r) => return r,
+        }
+    } else {
+        if !crate::http::authorized(&state, &headers) {
+            return perr(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "bearer token required",
+                None,
+                false,
+            );
+        }
+        None
+    };
     let q = match strict_query(&query, &["limit", "cursor", "prefix"]) {
         Ok(q) => q,
         Err(r) => return r,
@@ -6437,6 +6640,16 @@ pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMa
     let items: Vec<serde_json::Value> = page
         .streams
         .iter()
+        // A prefix-restricted credential must not learn the names of
+        // streams outside its grant. The opaque cursor still walks the
+        // full underlying ordering (it is page.next_after, not derived
+        // from this filtered view), so pagination stays correct.
+        .filter(|d| {
+            principal
+                .as_ref()
+                .map(|p| p.grant.permits(&d.name))
+                .unwrap_or(true)
+        })
         .map(|d| {
             json!({
                 "name": d.name,

@@ -438,6 +438,26 @@ streams.forks.create
 
 DLQ configuration must authorize the source consumer and destination stream independently.
 
+**Stage 5c (body-visible scopes) — follow-ups.** The request gate sees
+only route + method + query, so scopes that depend on the request BODY
+are enforced where the body is parsed, not at the gate:
+
+* fork creation → `streams.forks.create` + read on the source;
+* DLQ configuration → `streams.dlq.configure` on the target;
+* watch creation → `streams.watches.manage`. Watch definitions ride the
+  PUT stream-create body, so today a `streams.create` credential can
+  attach watches without holding `watches.manage`; enforce it in
+  `product_create` where `cfg.watches` is visible (needs the principal
+  threaded to the handler — same plumbing as the others).
+
+Threading the verified `RequestPrincipal` into handlers (rather than
+re-deriving at the gate) is the shared prerequisite; it also lets the
+watch-observation route return a uniform refusal instead of revealing
+stream existence before the capability/key check, and lets the
+data-plane address storage by the principal's project rather than the
+deployment tenant (the Stage-5b gate currently bridges that with a
+`principal.project == cell tenant` check).
+
 ### 6.2 Prefix grants
 
 Prefix grants are normalized when the credential is created.
@@ -1130,12 +1150,17 @@ certified at Stage 8.)*
   Enforce refuses boot until the Stage-5b route-scope matrix.)*
 * [~] Publish credential-grant snapshots/deltas. *(Same: data-plane
   done via `STREAMS_AUTH_GRANTS_FILE`; platform feed pending.)*
-* [ ] Implement suspension.
+* [x] Implement suspension. *(Data-plane: a non-`Active` `ProjectStatus`
+  in the policy feed fails closed at authorization — 403
+  `project_not_active` in enforce, counted in shadow. The transfer/
+  deletion sagas that DRIVE status changes remain platform-side below.)*
 * [ ] Implement transfer protocol.
 * [ ] Implement project deletion saga.
 * [ ] Implement verified gateway placement.
 
-**Exit:** transfer changes workspace billing and authorization without changing stream storage identity.
+**Exit:** transfer changes workspace billing and authorization without changing stream storage identity. *(Enforce-mode gate — §6.1 matrix,
+§6.2 prefix, §7.1/§8.1 response classes — is live and tested; transfer/
+deletion sagas and the Control-Plane feed remain platform-side.)*
 
 ### Stage 6 — Quotas
 

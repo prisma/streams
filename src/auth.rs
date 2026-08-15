@@ -99,6 +99,8 @@ pub enum AuthError {
     WrongIssuer,
     WrongAudience,
     /// §8.1: valid token, wrong cell — NOT an authentication failure.
+    /// Also covers a project absent from this cell's policy snapshot:
+    /// this cell does not serve it (or the feed lags), never a 401.
     WrongCell,
     Expired,
     NotYetValid,
@@ -106,7 +108,6 @@ pub enum AuthError {
     ClaimInvalid(&'static str),
     /// Contract r1: an empty stream_prefixes ARRAY is an issuer bug.
     EmptyPrefixArray,
-    ProjectUnknown,
     ProjectNotActive(ProjectStatus),
     OwnershipVersionMismatch,
     WorkspaceMismatch,
@@ -140,7 +141,6 @@ impl AuthError {
             AuthError::LifetimeTooLong => "lifetime_too_long",
             AuthError::ClaimInvalid(_) => "claim_invalid",
             AuthError::EmptyPrefixArray => "empty_prefix_array",
-            AuthError::ProjectUnknown => "project_unknown",
             AuthError::ProjectNotActive(_) => "project_not_active",
             AuthError::OwnershipVersionMismatch => "ownership_version_mismatch",
             AuthError::WorkspaceMismatch => "workspace_mismatch",
@@ -414,14 +414,17 @@ impl AuthService {
         if now - policies.fetched_at_unix > POLICY_STALENESS_MAX_SECS {
             return Err(AuthError::PolicyStale);
         }
+        // §8.1: placement is not an authorization problem. This cell's
+        // policy snapshot lists EXACTLY the projects placed here, so a
+        // project absent from it is not served by this cell (or the
+        // feed lags a fresh transfer) — either way it is WrongCell, not
+        // a 401 that would make the client refresh a perfectly valid
+        // credential. Then, for a project we DO serve, confirm the
+        // token's own cell claim agrees.
         let policy = policies
             .projects
             .get(&project_id)
-            .ok_or(AuthError::ProjectUnknown)?;
-        // §8.1: placement first — a valid token routed to the wrong
-        // cell must not read as an authorization problem. The check
-        // uses the POLICY's placement (authoritative), then confirms
-        // the token agrees.
+            .ok_or(AuthError::WrongCell)?;
         if policy.cell_id.as_ref() != self.cell_id.as_ref() || c.cell_id != *self.cell_id {
             return Err(AuthError::WrongCell);
         }
@@ -869,12 +872,14 @@ mod tests {
             svc.verify_customer(&sign(&c), NOW).unwrap_err(),
             AuthError::GrantVersionMismatch
         );
-        // Unknown project / credential.
+        // A project absent from this cell's snapshot is WrongCell (§8.1),
+        // never a 401 — the credential is valid, this cell just does not
+        // serve that project.
         let mut c = claims();
         c.project_id = "proj_nope".into();
         assert_eq!(
             svc.verify_customer(&sign(&c), NOW).unwrap_err(),
-            AuthError::ProjectUnknown
+            AuthError::WrongCell
         );
         let mut c = claims();
         c.credential_id = "strcred_nope".into();

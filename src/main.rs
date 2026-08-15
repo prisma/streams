@@ -1132,10 +1132,6 @@ async fn async_main() -> anyhow::Result<()> {
     // MULTITENANCY Stage 5: the auth service exists in every mode (Off
     // is inert); feeds are wired below once the runtime is up.
     let auth_mode = crate::auth::AuthMode::from_env(Some(args.streams_auth_mode.as_str()))?;
-    anyhow::ensure!(
-        auth_mode != crate::auth::AuthMode::Enforce,
-        "STREAMS_AUTH_MODE=enforce is not wired to the request path yet          (Stage 5b route-scope matrix); run shadow"
-    );
     if auth_mode != crate::auth::AuthMode::Off {
         anyhow::ensure!(
             args.streams_auth_keys_file.is_some()
