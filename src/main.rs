@@ -23,6 +23,7 @@ mod shard;
 mod sharddir;
 mod sketch;
 mod store_timing;
+mod tenant;
 mod touch;
 mod touch_keys;
 mod usage;
