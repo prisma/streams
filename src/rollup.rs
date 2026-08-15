@@ -43,6 +43,9 @@ fn k_month_prefix(month: &str) -> Vec<u8> {
     format!("month/{month}/").into_bytes()
 }
 fn k_name(month: &str, account: &str, project: &str, name: &str) -> Vec<u8> {
+    // Bare (non-tenant-qualified) hash is safe here: the key path already
+    // embeds account+project, so equal names in different projects land in
+    // disjoint rows. The hash only canonicalizes the name segment.
     format!(
         "name/{month}/{account}/{project}/{}",
         crate::crypto::hex(&crate::crypto::stream_hash(name))

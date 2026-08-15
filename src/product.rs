@@ -696,7 +696,7 @@ pub(crate) fn auth_failure_response(e: &crate::auth::AuthError) -> Response {
             axum::http::HeaderValue::from_static("wrong_cell"),
         );
     }
-    r
+    crate::audit::tag(r, e.kind())
 }
 
 /// Enforce-mode authentication: the customer token IS the product
@@ -711,12 +711,15 @@ pub(crate) fn enforce_customer(
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.strip_prefix("Bearer "))
     else {
-        return Err(perr(
-            StatusCode::UNAUTHORIZED,
+        return Err(crate::audit::tag(
+            perr(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "a customer bearer token is required",
+                None,
+                false,
+            ),
             "unauthorized",
-            "a customer bearer token is required",
-            None,
-            false,
         ));
     };
     // Stage 5d: no tenant bridge. The verified principal's project
@@ -749,7 +752,7 @@ pub(crate) fn project_admission(
         .quotas
         .admit(&p.project_id, &p.quotas, crate::shard::now_ms())
         .map(Some)
-        .map_err(|r| quota_refusal_response(&r))
+        .map_err(|r| crate::audit::tag_project(quota_refusal_response(&r), &p.project_id))
 }
 
 /// Read admission: refuse while the project's read-byte bucket is in
@@ -763,7 +766,7 @@ fn check_read_quota(
         .quotas
         .check_read(&p.project_id, &p.quotas, crate::shard::now_ms())
         .err()
-        .map(|r| quota_refusal_response(&r))
+        .map(|r| crate::audit::tag_project(quota_refusal_response(&r), &p.project_id))
 }
 
 /// Debit the SERVED read bytes (sized bodies only — streaming bodies
@@ -807,7 +810,7 @@ fn attach_subscription_guard(resp: Response, guard: crate::quota::SubscriptionGu
 
 /// §17.3 refusal classes on the wire.
 fn quota_refusal_response(refusal: &crate::quota::QuotaRefusal) -> Response {
-    match refusal {
+    let resp = match refusal {
         crate::quota::QuotaRefusal::Rate { retry_after_secs } => {
             let mut r = perr(
                 StatusCode::TOO_MANY_REQUESTS,
@@ -835,7 +838,15 @@ fn quota_refusal_response(refusal: &crate::quota::QuotaRefusal) -> Response {
             None,
             true,
         ),
-    }
+    };
+    crate::audit::tag(
+        resp,
+        match refusal {
+            crate::quota::QuotaRefusal::Rate { .. } => "project_rate_limit",
+            crate::quota::QuotaRefusal::Concurrency => "project_concurrency_limit",
+            crate::quota::QuotaRefusal::TrackerCapacity => "project_tracker_capacity",
+        },
+    )
 }
 
 pub(crate) fn product_auth_gate(
@@ -862,10 +873,16 @@ pub(crate) fn product_auth_gate(
         if let Some(scope) = required_scope(&route, verb, method)
             && let Err(e) = principal.require(scope)
         {
-            return Err(auth_failure_response(&e));
+            return Err(crate::audit::tag_project(
+                auth_failure_response(&e),
+                &principal.project_id,
+            ));
         }
         if let Err(e) = principal.require_stream(route_stream_name(&route)) {
-            return Err(auth_failure_response(&e));
+            return Err(crate::audit::tag_project(
+                auth_failure_response(&e),
+                &principal.project_id,
+            ));
         }
         return Ok(Some(principal));
     }
@@ -1059,7 +1076,12 @@ pub async fn product_entry(
                         Some(p) => {
                             match state.quotas.admit_subscription(&p.project_id, &p.quotas) {
                                 Ok(g) => g,
-                                Err(refusal) => return quota_refusal_response(&refusal),
+                                Err(refusal) => {
+                                    return crate::audit::tag_project(
+                                        quota_refusal_response(&refusal),
+                                        &p.project_id,
+                                    );
+                                }
                             }
                         }
                         None => None,
@@ -1299,7 +1321,7 @@ async fn product_create(
         && let Some(p) = principal
         && let Err(e) = p.require(crate::tenant::Scope::WatchesManage)
     {
-        return auth_failure_response(&e);
+        return crate::audit::tag_project(auth_failure_response(&e), &p.project_id);
     }
     if let Some(r) = crate::http::ring_owner_check(&state, &tenant.stream_ref(&name)) {
         return r;
@@ -3074,7 +3096,7 @@ async fn product_append_inner(
             crate::shard::now_ms(),
         )
     {
-        return quota_refusal_response(&refusal);
+        return crate::audit::tag_project(quota_refusal_response(&refusal), &p.project_id);
     }
 
     // Drive the ONE shared append path with internally-constructed
@@ -4508,10 +4530,10 @@ async fn product_consumer_put(
         // same-project lookup alone is not authorization.
         if let Some(p) = principal {
             if let Err(e) = p.require(crate::tenant::Scope::DlqConfigure) {
-                return auth_failure_response(&e);
+                return crate::audit::tag_project(auth_failure_response(&e), &p.project_id);
             }
             if let Err(e) = p.require_stream(&d) {
-                return auth_failure_response(&e);
+                return crate::audit::tag_project(auth_failure_response(&e), &p.project_id);
             }
         }
         if canonical_name(&d).is_err() {
@@ -6925,7 +6947,7 @@ pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMa
         match enforce_customer(&state, &headers) {
             Ok(p) => {
                 if let Err(e) = p.require(crate::tenant::Scope::CatalogRead) {
-                    return auth_failure_response(&e);
+                    return crate::audit::tag_project(auth_failure_response(&e), &p.project_id);
                 }
                 Some(p)
             }

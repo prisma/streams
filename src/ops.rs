@@ -259,6 +259,10 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
         EVENTS_DROPPED.load(Ordering::Relaxed),
     );
     counters.insert(
+        "audit_events_dropped_total".into(),
+        crate::audit::AUDIT_DROPPED.load(Ordering::Relaxed),
+    );
+    counters.insert(
         "read_meter_seal_deferrals_total".into(),
         state.billing_reads.seal_deferrals.load(Ordering::Relaxed),
     );

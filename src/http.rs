@@ -1546,9 +1546,11 @@ async fn product_list_axum(
     axum::extract::RawQuery(query): axum::extract::RawQuery,
     headers: HeaderMap,
 ) -> Response {
-    crate::product::with_product_cors(
-        crate::product::product_list(state, query.unwrap_or_default(), headers).await,
-    )
+    let resp = crate::product::with_product_cors(
+        crate::product::product_list(state.clone(), query.unwrap_or_default(), headers).await,
+    );
+    crate::audit::observe_denial(&state, "/v1/streams", &Method::GET, &resp);
+    resp
 }
 
 /// Health: in BILLING_MODE=required an instance is NOT ready until
@@ -1689,6 +1691,18 @@ async fn project_usage_axum(
     Path(project): Path<String>,
     req: axum::extract::Request,
 ) -> Response {
+    let route = req.uri().path().to_string();
+    let method = req.method().clone();
+    let resp = project_usage_axum_inner(state.clone(), project, req).await;
+    crate::audit::observe_denial(&state, &route, &method, &resp);
+    resp
+}
+
+async fn project_usage_axum_inner(
+    state: Arc<AppState>,
+    project: String,
+    req: axum::extract::Request,
+) -> Response {
     let query = req.uri().query().unwrap_or("").to_string();
     crate::product::shadow_observe_request(
         &state,
@@ -1705,9 +1719,10 @@ async fn project_usage_axum(
         match crate::product::enforce_customer(&state, req.headers()) {
             Ok(p) => {
                 if let Err(e) = p.require(crate::tenant::Scope::UsageRead) {
-                    return crate::product::with_product_cors(
+                    return crate::product::with_product_cors(crate::audit::tag_project(
                         crate::product::auth_failure_response(&e),
-                    );
+                        &p.project_id,
+                    ));
                 }
                 p.project_id
             }
@@ -1731,9 +1746,24 @@ async fn project_usage_axum(
 }
 
 /// Prisma product surface (spec Stage 8): everything under /v1/streams/.
+/// The outer fn exists so EVERY response — early refusals included —
+/// passes the §10.4 denial observer exactly once on its way out.
 async fn product_entry_axum(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
+    method: Method,
+    headers: HeaderMap,
+    req: axum::extract::Request,
+) -> Response {
+    let resp =
+        product_entry_axum_inner(state.clone(), name.clone(), method.clone(), headers, req).await;
+    crate::audit::observe_denial(&state, &name, &method, &resp);
+    resp
+}
+
+async fn product_entry_axum_inner(
+    state: Arc<AppState>,
+    name: String,
     method: Method,
     headers: HeaderMap,
     req: axum::extract::Request,
@@ -1762,13 +1792,20 @@ async fn product_entry_axum(
     // this surface under `{name}/usage`, which is a sub-resource of a
     // CUSTOMER stream — unaffected by this guard.
     if crate::billing::is_reserved_stream(&name) {
-        return crate::product::with_product_cors(crate::product::perr(
-            StatusCode::FORBIDDEN,
+        let mut r = crate::audit::tag(
+            crate::product::perr(
+                StatusCode::FORBIDDEN,
+                "reserved_stream",
+                "names beginning with '_' are reserved for the system",
+                None,
+                false,
+            ),
             "reserved_stream",
-            "names beginning with '_' are reserved for the system",
-            None,
-            false,
-        ));
+        );
+        if let Some(p) = principal.as_ref() {
+            r = crate::audit::tag_project(r, &p.project_id);
+        }
+        return crate::product::with_product_cors(r);
     }
     let body = match axum::body::to_bytes(req.into_body(), max_body_bytes()).await {
         Ok(b) => b,

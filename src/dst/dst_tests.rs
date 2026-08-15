@@ -18586,6 +18586,245 @@ async fn same_name_cross_project_usage_attributes_exactly() {
     engine_shutdown(&state).await;
 }
 
+/// MT Stage 7 / §10.4 `_audit_events`: enforce-mode denials journal to
+/// a durable system stream. A verified-but-underscoped request lands
+/// with its VERIFIED project attached; a garbage token lands with no
+/// project (unverified claims are never identity); the journal lives
+/// under the system project where no customer credential reaches it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn enforce_denials_journal_to_audit_events() {
+    const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
+    const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
+    let now = crate::shard::now_ms() / 1000;
+    let svc = std::sync::Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        "audj-1".to_string(),
+        crate::auth::JwksKey {
+            alg: jsonwebtoken::Algorithm::RS256,
+            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+        },
+    );
+    svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    // Deliberately NO streams.records.read: the read leg must deny.
+    let scopes = "streams.create streams.records.append";
+    let pid = crate::tenant::ProjectId::new("proj-audj").unwrap();
+    let mut projects = std::collections::HashMap::new();
+    projects.insert(
+        pid.clone(),
+        crate::project_policy::ProjectPolicy {
+            project_id: pid.clone(),
+            workspace_id: crate::tenant::WorkspaceId::new("ws_audj").unwrap(),
+            cell_id: std::sync::Arc::from("test-cell"),
+            project_policy_version: 1,
+            ownership_version: 1,
+            status: crate::project_policy::ProjectStatus::Active,
+            quotas: crate::project_policy::ProjectQuotas::default(),
+        },
+    );
+    let mut credentials = std::collections::HashMap::new();
+    credentials.insert(
+        std::sync::Arc::from("c_audj"),
+        crate::project_policy::CredentialGrant {
+            credential_id: std::sync::Arc::from("c_audj"),
+            project_id: pid.clone(),
+            grant_version: 1,
+            status: crate::project_policy::CredentialStatus::Active,
+            scopes: crate::tenant::ScopeSet::parse(scopes).0,
+            grant: crate::tenant::StreamGrant::All,
+            expires_at: None,
+        },
+    );
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let (state, addr) = http_rig_with_auth_service(mem(), svc).await;
+
+    #[derive(serde::Serialize)]
+    struct C<'a> {
+        iss: &'a str,
+        aud: &'a str,
+        sub: &'a str,
+        credential_id: &'a str,
+        project_id: &'a str,
+        workspace_id: &'a str,
+        cell_id: &'a str,
+        ownership_version: u64,
+        grant_version: u64,
+        scope: &'a str,
+        jti: &'a str,
+        iat: i64,
+        exp: i64,
+    }
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some("audj-1".into());
+    let token = jsonwebtoken::encode(
+        &header,
+        &C {
+            iss: "https://auth.prisma.io",
+            aud: "prisma-streams-data",
+            sub: "u",
+            credential_id: "c_audj",
+            project_id: "proj-audj",
+            workspace_id: "ws_audj",
+            cell_id: "test-cell",
+            ownership_version: 1,
+            grant_version: 1,
+            scope: scopes,
+            jti: "t",
+            iat: now - 60,
+            exp: now + 600,
+        },
+        &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
+    )
+    .unwrap();
+    let auth = format!("Bearer {token}");
+    let auth = ("authorization", auth.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+
+    // The queue is process-global and other enforce tests enqueue their
+    // own denials concurrently; empty the backlog first so this test's
+    // probes cannot hit the cap and drop.
+    for _ in 0..40 {
+        if crate::audit::drain_audit_once(&state)
+            .await
+            .expect("pre-drain")
+            == 0
+        {
+            break;
+        }
+    }
+
+    // Compliant create: no denial, no journal entry.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/audj-probe",
+        &[ekey, auth],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    // Verified but underscoped: 403, journals WITH the project.
+    let (st, _, _) = preq(
+        addr,
+        "GET",
+        "/v1/streams/audj-probe/records",
+        &[ekey, auth],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 403);
+    // Garbage token: 401, journals WITHOUT a project.
+    let bad = ("authorization", "Bearer not-a-jwt");
+    let (st, _, _) = preq(
+        addr,
+        "GET",
+        "/v1/streams/audj-probe/records",
+        &[ekey, bad],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 401);
+
+    // Drain the (process-global) queue to this rig's `_audit_events`.
+    let mut appended = 0usize;
+    for _ in 0..40 {
+        let n = crate::audit::drain_audit_once(&state)
+            .await
+            .expect("audit drain");
+        if n == 0 {
+            break;
+        }
+        appended += n;
+    }
+    assert!(appended >= 2, "denials appended: {appended}");
+
+    // Read the journal back through the system read path (each page is
+    // a JSON array of event records) and find both events.
+    let key = state.usage_key.clone().expect("rig usage key");
+    let mut events: Vec<serde_json::Value> = Vec::new();
+    let mut cursor: Option<String> = None;
+    for _ in 0..200 {
+        match crate::billing::system_read(
+            &state,
+            crate::billing::AUDIT_EVENTS_STREAM,
+            &key,
+            cursor.clone(),
+        )
+        .await
+        .expect("system read")
+        {
+            Some((page, next)) => {
+                if page.is_empty() {
+                    break;
+                }
+                if let Ok(serde_json::Value::Array(a)) = serde_json::from_slice(&page) {
+                    if a.is_empty() {
+                        break;
+                    }
+                    events.extend(a);
+                }
+                if cursor.as_deref() == Some(next.as_str()) {
+                    break;
+                }
+                cursor = Some(next);
+            }
+            None => break,
+        }
+    }
+    let probe: Vec<&serde_json::Value> = events
+        .iter()
+        .filter(|e| e["route"] == "audj-probe/records")
+        .collect();
+    assert!(
+        probe.iter().any(|e| e["code"] == "missing_scope"
+            && e["project_id"] == "proj-audj"
+            && e["method"] == "GET"
+            && e["status"] == 403),
+        "verified denial with project missing from journal: {events:?}"
+    );
+    assert!(
+        probe
+            .iter()
+            .any(|e| e["status"] == 401 && e["project_id"].is_null()),
+        "unverified denial (without identity) missing from journal: {events:?}"
+    );
+    assert!(
+        !probe
+            .iter()
+            .any(|e| e["status"] == 401 && !e["project_id"].is_null()),
+        "unverified claims must never journal as identity: {events:?}"
+    );
+    // The compliant create journaled nothing.
+    assert!(
+        !events.iter().any(|e| e["status"] == 201),
+        "success responses must not journal: {events:?}"
+    );
+    engine_shutdown(&state).await;
+}
+
 /// MT Stage 4 same-project rule: stored references (fork parentage,
 /// dead-letter targets) bind inside the REFERRING stream's project. A
 /// foreign project's stream with the SAME name — even one carrying the

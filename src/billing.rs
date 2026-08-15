@@ -30,6 +30,7 @@ use serde::{Deserialize, Serialize};
 pub const USAGE_STREAM: &str = "_usage";
 pub const OPS_METRICS_STREAM: &str = "_ops_metrics";
 pub const OPS_EVENTS_STREAM: &str = "_ops_events";
+pub const AUDIT_EVENTS_STREAM: &str = "_audit_events";
 
 /// The reserved internal namespaces. Reserved streams are invisible to
 /// the customer catalog, refused on every public surface (raw and
@@ -558,6 +559,7 @@ mod tests {
         assert!(is_reserved_stream(USAGE_STREAM));
         assert!(is_reserved_stream(OPS_METRICS_STREAM));
         assert!(is_reserved_stream(OPS_EVENTS_STREAM));
+        assert!(is_reserved_stream(AUDIT_EVENTS_STREAM));
         assert!(is_reserved_stream("_future_system_thing"));
         assert!(!is_reserved_stream("orders"));
         assert!(!is_reserved_stream("customers/_acme")); // only the leading segment
@@ -1418,6 +1420,9 @@ pub fn spawn_telemetry(state: std::sync::Arc<crate::http::AppState>) {
             }
             if let Err(e) = crate::ops::drain_ops_once(&state).await {
                 tracing::warn!("ops drain: {e}");
+            }
+            if let Err(e) = crate::audit::drain_audit_once(&state).await {
+                tracing::warn!("audit drain: {e}");
             }
             if let Err(e) = crate::fleet::drain_fleet_events(&state).await {
                 tracing::warn!("fleet event drain: {e}");
