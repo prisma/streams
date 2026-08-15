@@ -457,9 +457,18 @@ The watch-observation route now returns ONE refusal
 stream, deleted stream, forged/expired capability — so the token-free
 §15 route is not a stream-existence oracle; existence-revealing
 answers (creating, unknown watch) come only after the capability or
-key verifies. Remaining principal work: address storage by the
-principal's project rather than the deployment tenant (the Stage-5b
-`principal.project == cell tenant` bridge stands until Stage 7).
+key verifies. Stage 5d (review item 1) LANDED: the verified
+principal's project selects the tenant-qualified storage identity on
+the whole product surface — handlers, the shared append/read cores,
+seal machinery (TenantStreamRef-keyed), catalog, usage, descriptors
+born into the request's project — and the `principal.project == cell
+tenant` bridge is DELETED. Off/shadow requests and §15 capability
+carriers address the deployment tenant (single-tenant posture; the
+capability wire gains the project in review item 3). Raw Durable
+Streams routes still address the deployment tenant behind the
+deployment bearer — the raw-surface principal decision is the
+recorded follow-up. PROJECT_ID must be explicitly non-default in
+shadow/enforce.
 
 ### 6.2 Prefix grants
 

@@ -1134,6 +1134,15 @@ async fn async_main() -> anyhow::Result<()> {
     // is inert); feeds are wired below once the runtime is up.
     let auth_mode = crate::auth::AuthMode::from_env(Some(args.streams_auth_mode.as_str()))?;
     if auth_mode != crate::auth::AuthMode::Off {
+        // Review item: the local placeholder tenant must never reach a
+        // shadow/enforce deployment — those are the multi-tenant
+        // postures, and proj_local silently naming a real project's
+        // data is exactly the accident this refuses.
+        anyhow::ensure!(
+            args.project_id != "proj_local",
+            "STREAMS_AUTH_MODE={} requires an explicit non-default PROJECT_ID",
+            args.streams_auth_mode
+        );
         anyhow::ensure!(
             args.streams_auth_keys_file.is_some()
                 && args.streams_auth_policy_file.is_some()

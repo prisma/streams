@@ -1049,7 +1049,8 @@ async fn internal_telemetry_append(
     if !(cst == 200 || cst == 201 || cst == 409) {
         return c;
     }
-    append(state, name, hdrs, Body::from(body), None, None, None).await
+    let sref = state.sref(&name);
+    append(state, sref, name, hdrs, Body::from(body), None, None, None).await
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -1663,7 +1664,11 @@ async fn project_usage_axum(
         &query,
         req.headers(),
     );
-    if state.auth.mode == crate::auth::AuthMode::Enforce {
+    // Stage 5d: ONE verification; the principal's project is the
+    // authority the handler compares the path against (the URL tenant
+    // is a claim to check, never a router hint). Off/shadow keep the
+    // deployment tenant + legacy bearer.
+    let authority = if state.auth.mode == crate::auth::AuthMode::Enforce {
         match crate::product::enforce_customer(&state, req.headers()) {
             Ok(p) => {
                 if let Err(e) = p.require(crate::tenant::Scope::UsageRead) {
@@ -1671,35 +1676,25 @@ async fn project_usage_axum(
                         crate::product::auth_failure_response(&e),
                     );
                 }
-                // The path must name the PRINCIPAL's project — usage is
-                // per-project data, and under shared cells the tenant
-                // in the URL is a claim to be checked, not a router
-                // hint. Same not-found shape as a foreign project.
-                if crate::tenant::ProjectId::new(&project)
-                    .map(|pid| pid != p.project_id)
-                    .unwrap_or(true)
-                {
-                    return crate::product::with_product_cors(crate::product::perr(
-                        StatusCode::NOT_FOUND,
-                        "unknown_project",
-                        "the credential does not belong to this project",
-                        None,
-                        false,
-                    ));
-                }
+                p.project_id
             }
             Err(r) => return crate::product::with_product_cors(r),
         }
-    } else if !authorized(&state, req.headers()) {
-        return crate::product::with_product_cors(crate::product::perr(
-            StatusCode::UNAUTHORIZED,
-            "unauthorized",
-            "bearer token required",
-            None,
-            false,
-        ));
-    }
-    crate::product::with_product_cors(crate::product::project_usage(state, project, &query).await)
+    } else {
+        if !authorized(&state, req.headers()) {
+            return crate::product::with_product_cors(crate::product::perr(
+                StatusCode::UNAUTHORIZED,
+                "unauthorized",
+                "bearer token required",
+                None,
+                false,
+            ));
+        }
+        state.tenant.clone()
+    };
+    crate::product::with_product_cors(
+        crate::product::project_usage(state, &authority, project, &query).await,
+    )
 }
 
 /// Prisma product surface (spec Stage 8): everything under /v1/streams/.
@@ -1838,7 +1833,17 @@ async fn stream_entry_inner(
             r
         }
         Method::POST => {
-            let r = append(state.clone(), name.clone(), headers, body, None, None, None).await;
+            let r = append(
+                state.clone(),
+                state.sref(&name),
+                name.clone(),
+                headers,
+                body,
+                None,
+                None,
+                None,
+            )
+            .await;
             // Operation count only (§4.5) — the BILLED ingest bytes are
             // the committer's, atomic with the records themselves.
             if r.status().is_success()
@@ -1850,7 +1855,10 @@ async fn stream_entry_inner(
         }
         Method::GET => read(state, name, params, headers, false).await,
         Method::HEAD => read(state, name, params, headers, true).await,
-        Method::DELETE => delete_stream(state, name).await,
+        Method::DELETE => {
+            let sref = state.sref(&name);
+            delete_stream(state, sref).await
+        }
         Method::OPTIONS => Response::builder()
             .status(StatusCode::NO_CONTENT)
             .header("access-control-allow-origin", "*")
@@ -2479,20 +2487,29 @@ fn fresh_desc(
 /// config.
 pub(crate) fn fresh_desc_product(
     state: &AppState,
+    tenant: &crate::tenant::ProjectId,
     name: &str,
     key: &StreamKey,
     content_type: String,
     ttl_secs: Option<u64>,
     expires_at_ms: Option<i64>,
 ) -> StreamDesc {
-    fresh_desc(state, name, key, content_type, ttl_secs, expires_at_ms)
+    // Stage 5d: the descriptor is BORN into the request's project —
+    // the deployment tenant must never leak into a principal-created
+    // stream's identity.
+    let mut d = fresh_desc(state, name, key, content_type, ttl_secs, expires_at_ms);
+    d.project_id = tenant.clone();
+    d
 }
 
 /// R2 ring-ownership check shared by both creation surfaces.
-pub(crate) fn ring_owner_check(state: &Arc<AppState>, name: &str) -> Option<Response> {
+pub(crate) fn ring_owner_check(
+    state: &Arc<AppState>,
+    sref: &crate::tenant::TenantStreamRef,
+) -> Option<Response> {
     let prefix = shard_for_hash(
         &state.shard_prefixes,
-        &crate::crypto::RouteHash::for_stream(&state.sref(name)).0,
+        &crate::crypto::RouteHash::for_stream(sref).0,
     );
     if let Some(owner) = state.effective_owner(&prefix)
         && owner != state.instance_name
@@ -2511,8 +2528,12 @@ pub(crate) fn ring_owner_check(state: &Arc<AppState>, name: &str) -> Option<Resp
 }
 
 /// Product DELETE maps to the one collection-delete implementation.
-pub(crate) async fn product_delete(state: Arc<AppState>, name: String) -> Response {
-    delete_stream(state, name).await
+pub(crate) async fn product_delete(
+    state: Arc<AppState>,
+    tenant: &crate::tenant::ProjectId,
+    name: String,
+) -> Response {
+    delete_stream(state, tenant.stream_ref(&name)).await
 }
 
 pub(crate) async fn create_stream(
@@ -3518,8 +3539,9 @@ pub(crate) async fn create_stream(
     resp.body(Body::empty()).unwrap()
 }
 
-async fn delete_stream(state: Arc<AppState>, name: String) -> Response {
-    let existing = match state.registry.get(&state.sref(&name)).await {
+async fn delete_stream(state: Arc<AppState>, sref: crate::tenant::TenantStreamRef) -> Response {
+    let name = sref.name().as_str().to_string();
+    let existing = match state.registry.get(&sref).await {
         Ok(v) => v,
         Err(e) => {
             return err_resp(
@@ -4409,6 +4431,7 @@ fn parse_ts_hint(headers: &HeaderMap) -> Option<i64> {
 /// the core path directly with zero overhead.
 pub(crate) async fn append(
     state: Arc<AppState>,
+    sref: crate::tenant::TenantStreamRef,
     name: String,
     headers: HeaderMap,
     body: Body,
@@ -4420,7 +4443,7 @@ pub(crate) async fn append(
     seal_auth: Option<SealAuthz>,
 ) -> Response {
     let wrapped = matches!(
-        state.registry.get(&state.sref(&name)).await,
+        state.registry.get(&sref).await,
         Ok(Some(d)) if d
             .segments
             .as_ref()
@@ -4429,6 +4452,7 @@ pub(crate) async fn append(
     if !wrapped {
         return append_core(
             state,
+            sref,
             name,
             headers,
             body,
@@ -4445,6 +4469,7 @@ pub(crate) async fn append(
     for attempt in 0..4u32 {
         let r = append_core(
             state.clone(),
+            sref.clone(),
             name.clone(),
             headers.clone(),
             Body::from(body_bytes.clone()),
@@ -4456,8 +4481,8 @@ pub(crate) async fn append(
         if !(r.status() == StatusCode::CONFLICT && r.headers().contains_key("stream-closed")) {
             return r;
         }
-        state.registry.invalidate(&state.sref(&name));
-        let Ok(Some(d)) = state.registry.get(&state.sref(&name)).await else {
+        state.registry.invalidate(&sref);
+        let Ok(Some(d)) = state.registry.get(&sref).await else {
             return r;
         };
         let rk = product_key.clone().unwrap_or_default();
@@ -4622,8 +4647,10 @@ pub(crate) async fn fence_segment_for_key(
     }
 }
 
+#[allow(clippy::too_many_arguments)] // request context, not tunables
 async fn append_core(
     state: Arc<AppState>,
+    sref: crate::tenant::TenantStreamRef,
     name: String,
     headers: HeaderMap,
     body: Body,
@@ -4639,7 +4666,7 @@ async fn append_core(
     // observe the transition beyond a few ms of latency.
     // (LEGACY path, pre-v3 descriptors only; unified-model streams
     // resolve segments in-process below — docs/ROUTING-V3.md §2.)
-    let mut desc = match state.registry.get(&state.sref(&name)).await {
+    let mut desc = match state.registry.get(&sref).await {
         Ok(Some(d)) if desc_alive(&d) && initializing(&d) => {
             return creating_resp();
         }
@@ -4830,8 +4857,13 @@ async fn append_core(
         // Renewal re-allocates the generation, so the resume can never
         // be fenced out by a takeover reservation that aborted after
         // this operation's original attempt.
-        match crate::product::renew_owed_claim(&state, &name, &this_close_op, &desc.stream_epoch)
-            .await
+        match crate::product::renew_owed_claim(
+            &state,
+            &desc.sref(),
+            &this_close_op,
+            &desc.stream_epoch,
+        )
+        .await
         {
             Ok(Some(g)) => raw_seal_gen = Some(g),
             Ok(None) => {
@@ -5046,8 +5078,13 @@ async fn append_core(
                 final_committed: false,
             }
         };
-        match crate::product::begin_sealing_for_close(&state, &name, intent, &desc.stream_epoch)
-            .await
+        match crate::product::begin_sealing_for_close(
+            &state,
+            &desc.sref(),
+            intent,
+            &desc.stream_epoch,
+        )
+        .await
         {
             Ok(g) => {
                 if let Some(g) = g {
@@ -5409,7 +5446,7 @@ async fn append_core(
             && let Some(g) = raw_seal_gen
             && let Err(m) = crate::product::abandon_seal_intent(
                 &state,
-                &name,
+                &desc.sref(),
                 &this_close_op,
                 &desc.stream_epoch,
                 g,
@@ -5438,7 +5475,7 @@ async fn append_core(
                 && let Some(g) = raw_seal_gen
                 && let Err(m) = crate::product::abandon_seal_intent(
                     &state,
-                    &name,
+                    &desc.sref(),
                     &this_close_op,
                     &desc.stream_epoch,
                     g,
@@ -5492,7 +5529,7 @@ async fn append_core(
                     let g = raw_seal_gen.unwrap_or_default();
                     if let Err(e) = crate::product::mark_final_committed(
                         &state,
-                        &name,
+                        &desc.sref(),
                         &this_close_op,
                         &desc.stream_epoch,
                         g,
@@ -5527,7 +5564,8 @@ async fn append_core(
                 // against a sibling's renewal.
                 let run_gen = if owns_final { raw_seal_gen } else { None };
                 if let Err(e) =
-                    crate::product::run_seal(&state, &name, op, &desc.stream_epoch, run_gen).await
+                    crate::product::run_seal(&state, &desc.sref(), op, &desc.stream_epoch, run_gen)
+                        .await
                 {
                     // The segment is closed but the collection is not
                     // sealed. Answering success is how the two surfaces
@@ -6171,8 +6209,10 @@ async fn read(
         );
     }
     params.key = Some(String::new());
+    let sref = state.sref(&name);
     read_inner(
         state,
+        sref,
         name,
         params,
         headers,
@@ -6188,12 +6228,16 @@ async fn read(
 /// fresh descriptor shows successors or a pending transition, the
 /// closure is a split seal and the caller must redispatch instead of
 /// reporting it. `false` = redispatch (the fresh descriptor is cached).
-async fn genuine_closure(state: &Arc<AppState>, name: &str, may_refresh: bool) -> bool {
+async fn genuine_closure(
+    state: &Arc<AppState>,
+    sref: &crate::tenant::TenantStreamRef,
+    may_refresh: bool,
+) -> bool {
     if !may_refresh {
         return true;
     }
-    state.registry.invalidate(&state.sref(name));
-    match state.registry.get(&state.sref(name)).await {
+    state.registry.invalidate(sref);
+    match state.registry.get(sref).await {
         Ok(Some(d)) => !d
             .segments
             .as_ref()
@@ -6208,8 +6252,10 @@ async fn genuine_closure(state: &Arc<AppState>, name: &str, may_refresh: bool) -
 /// successors). Only the freshest descriptor tells them apart, and only
 /// genuine closure may reach the client: a topology transition may
 /// delay a reader, but it must never look like permanent end-of-stream.
+#[allow(clippy::too_many_arguments)] // request context, not tunables
 pub(crate) async fn read_inner(
     state: Arc<AppState>,
+    sref: crate::tenant::TenantStreamRef,
     name: String,
     params: ReadParams,
     headers: HeaderMap,
@@ -6217,7 +6263,7 @@ pub(crate) async fn read_inner(
     may_refresh: bool,
     surface: SseSurface,
 ) -> Response {
-    let desc = match state.registry.get(&state.sref(&name)).await {
+    let desc = match state.registry.get(&sref).await {
         Ok(Some(d)) if desc_alive(&d) => d,
         Ok(d) => return gone_or_missing(d.as_ref()),
         Err(e) => {
@@ -6297,9 +6343,9 @@ pub(crate) async fn read_inner(
     };
 
     if head_only {
-        if closed && !genuine_closure(&state, &name, may_refresh).await {
+        if closed && !genuine_closure(&state, &sref, may_refresh).await {
             return Box::pin(read_inner(
-                state, name, params, headers, head_only, false, surface,
+                state, sref, name, params, headers, head_only, false, surface,
             ))
             .await;
         }
@@ -6379,9 +6425,9 @@ pub(crate) async fn read_inner(
             // Instant tail snapshot for plain reads; long-poll from `now`
             // falls through with scan_from = current end.
             if live.is_none() {
-                if closed && !genuine_closure(&state, &name, may_refresh).await {
+                if closed && !genuine_closure(&state, &sref, may_refresh).await {
                     return Box::pin(read_inner(
-                        state, name, params, headers, head_only, false, surface,
+                        state, sref, name, params, headers, head_only, false, surface,
                     ))
                     .await;
                 }
@@ -6470,9 +6516,9 @@ pub(crate) async fn read_inner(
             }
         }
         if end <= scan_from {
-            if closed && !genuine_closure(&state, &name, may_refresh).await {
+            if closed && !genuine_closure(&state, &sref, may_refresh).await {
                 return Box::pin(read_inner(
-                    state, name, params, headers, head_only, false, surface,
+                    state, sref, name, params, headers, head_only, false, surface,
                 ))
                 .await;
             }
@@ -6592,9 +6638,9 @@ pub(crate) async fn read_inner(
     // A drained read of a closed handle is the response that would carry
     // Stream-Closed — discriminate a split seal from a user close BEFORE
     // metering, so a redispatched read is billed exactly once.
-    if up_to_date && closed && !genuine_closure(&state, &name, may_refresh).await {
+    if up_to_date && closed && !genuine_closure(&state, &sref, may_refresh).await {
         return Box::pin(read_inner(
-            state, name, params, headers, head_only, false, surface,
+            state, sref, name, params, headers, head_only, false, surface,
         ))
         .await;
     }
@@ -6808,7 +6854,7 @@ pub(crate) fn sse_lineage_response(
                             let will_end = out.completed && pos_after >= seg_end && is_last;
                             let report_closed = closed
                                 && will_end
-                                && genuine_closure(&state, &desc.name, true).await;
+                                && genuine_closure(&state, &desc.sref(), true).await;
                             let n = out.recs.len();
                             let bill_id = crate::billing::identity_of(&state, &desc);
                             for (i, r) in out.recs.iter().enumerate() {
@@ -6880,7 +6926,7 @@ pub(crate) fn sse_lineage_response(
                     // transition ends the connection silently and the
                     // reconnect follows the successors.
                     let report_closed =
-                        closed && at_end && genuine_closure(&state, &desc.name, true).await;
+                        closed && at_end && genuine_closure(&state, &desc.sref(), true).await;
                     let ctl = match surface {
                         SseSurface::Raw => sse_control_tok(
                             &seg_tok(sg.seg_id, scan_from),
@@ -6907,7 +6953,7 @@ pub(crate) fn sse_lineage_response(
                         return;
                     }
                 } else if closed && at_end && sent_any {
-                    if genuine_closure(&state, &desc.name, true).await {
+                    if genuine_closure(&state, &desc.sref(), true).await {
                         return; // final flags rode the last per-data control
                     }
                     return; // transition: silent end, reconnect follows successors
@@ -7036,7 +7082,7 @@ async fn sse_response(
                         let pos_after = out.last.map(|l| l + 1).unwrap_or(pos);
                         let will_end = out.completed && pos_after >= end;
                         let report_closed =
-                            closed && will_end && genuine_closure(&state, &desc.name, true).await;
+                            closed && will_end && genuine_closure(&state, &desc.sref(), true).await;
                         let n = out.recs.len();
                         let bill_id = crate::billing::identity_of(&state, &desc);
                         for (i, r) in out.recs.iter().enumerate() {
@@ -7100,7 +7146,7 @@ async fn sse_response(
                 // connection WITHOUT it and the reconnect's fresh
                 // dispatch serves the successors.
                 let report_closed =
-                    closed && at_end && genuine_closure(&state, &desc.name, true).await;
+                    closed && at_end && genuine_closure(&state, &desc.sref(), true).await;
                 let ctl = match surface {
                     SseSurface::Raw => sse_control(pos, cursor.as_deref(), at_end, report_closed),
                     SseSurface::Product => sse_control_product(
@@ -7381,6 +7427,7 @@ async fn internal_segment_read(
     }
     read_inner(
         state,
+        sref,
         name,
         params,
         headers,

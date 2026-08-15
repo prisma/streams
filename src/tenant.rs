@@ -158,6 +158,21 @@ impl<'de> serde::Deserialize<'de> for WorkspaceId {
     }
 }
 
+impl ProjectId {
+    /// Registry identity of `canonical_name` INSIDE this project —
+    /// the per-request addressing primitive (MULTITENANCY Stage 5d):
+    /// the verified principal's project selects the tenant-qualified
+    /// storage identity; the deployment tenant no longer addresses
+    /// customer data on principal-carrying paths.
+    pub fn stream_ref(&self, canonical_name: &str) -> TenantStreamRef {
+        TenantStreamRef::new(
+            self.clone(),
+            CanonicalStreamName::new(canonical_name)
+                .expect("caller passed a canonical stream name"),
+        )
+    }
+}
+
 /// The reserved project id that owns system streams (_usage,
 /// _ops_events, _ops_metrics, _audit_events — MULTITENANCY §10.4).
 /// Registry paths for it live under `system/v1/cells/<cell-id>/`,

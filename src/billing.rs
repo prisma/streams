@@ -2697,6 +2697,7 @@ pub async fn system_append(
     // Local attempt (create lazily on 404).
     let mut r = crate::http::append(
         state.clone(),
+        state.sref(stream),
         stream.to_string(),
         hdrs.clone(),
         axum::body::Body::from(body.clone()),
@@ -2723,6 +2724,7 @@ pub async fn system_append(
         } else {
             r = crate::http::append(
                 state.clone(),
+                state.sref(stream),
                 stream.to_string(),
                 hdrs.clone(),
                 axum::body::Body::from(body.clone()),
@@ -2781,6 +2783,7 @@ pub async fn system_read(
     };
     let resp = crate::http::read_inner(
         state.clone(),
+        state.sref(stream),
         stream.to_string(),
         params,
         hdrs,

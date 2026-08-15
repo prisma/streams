@@ -10776,7 +10776,7 @@ async fn topology_transitions_are_fenced_by_sealing() {
             .unwrap()
             .unwrap()
             .stream_epoch;
-        crate::product::run_seal(&state, "fenced", None, &ep, None)
+        crate::product::run_seal(&state, &state.sref("fenced"), None, &ep, None)
             .await
             .unwrap();
     }
@@ -10999,7 +10999,7 @@ async fn a_parked_split_cannot_publish_under_a_sealed_collection() {
                 .unwrap()
                 .unwrap()
                 .stream_epoch;
-            crate::product::run_seal(&st2, "parked", None, &ep, None).await
+            crate::product::run_seal(&st2, &st2.sref("parked"), None, &ep, None).await
         })
     };
     tokio::time::sleep(std::time::Duration::from_millis(200)).await;
@@ -12578,9 +12578,10 @@ async fn a_superseded_close_cannot_write_or_close() {
         request_hash: "b-op".into(),
         final_committed: false,
     };
-    let claim = crate::product::claim_seal(&state, "lease1", "b-op", &b_intent, &epoch)
-        .await
-        .unwrap();
+    let claim =
+        crate::product::claim_seal(&state, &state.sref("lease1"), "b-op", &b_intent, &epoch)
+            .await
+            .unwrap();
     let b_gen = match claim {
         crate::product::EnterSeal::Installed { generation } => generation,
         other => panic!("takeover did not install: {other:?}"),
@@ -12743,7 +12744,7 @@ async fn an_exact_retry_renews_its_lease() {
         request_hash: "op-r".into(),
         final_committed: false,
     };
-    let g1 = match crate::product::claim_seal(&state, "renew", "op-r", &intent, &epoch)
+    let g1 = match crate::product::claim_seal(&state, &state.sref("renew"), "op-r", &intent, &epoch)
         .await
         .unwrap()
     {
@@ -12764,7 +12765,7 @@ async fn an_exact_retry_renews_its_lease() {
         .unwrap();
     state.registry.invalidate(&state.sref("renew"));
     // …but the owner retries: renewed, and with a HIGHER generation.
-    let g2 = match crate::product::claim_seal(&state, "renew", "op-r", &intent, &epoch)
+    let g2 = match crate::product::claim_seal(&state, &state.sref("renew"), "op-r", &intent, &epoch)
         .await
         .unwrap()
     {
@@ -12778,7 +12779,7 @@ async fn an_exact_retry_renews_its_lease() {
         request_hash: "op-x".into(),
         final_committed: false,
     };
-    let out = crate::product::claim_seal(&state, "renew", "op-x", &rival, &epoch)
+    let out = crate::product::claim_seal(&state, &state.sref("renew"), "op-x", &rival, &epoch)
         .await
         .unwrap();
     assert!(
@@ -13241,7 +13242,7 @@ async fn a_fence_waits_for_durability_before_reporting_closed() {
     let st2 = state.clone();
     let ep2 = epoch.clone();
     let b = tokio::spawn(async move {
-        crate::product::claim_seal(&st2, "dur9", "b-op-9", &b_intent, &ep2).await
+        crate::product::claim_seal(&st2, &st2.sref("dur9"), "b-op-9", &b_intent, &ep2).await
     });
 
     // While durability is held, the takeover MUST NOT have concluded:
@@ -13386,7 +13387,7 @@ async fn a_lower_takeover_reservation_cannot_install() {
     // moved past it.
     let installed_a = crate::product::install_reserved_claim(
         &state,
-        "race9",
+        &state.sref("race9"),
         &epoch,
         &old.operation_id,
         old.claim_generation,
@@ -13743,7 +13744,7 @@ async fn scaler_heat_and_terminal_proof_are_incarnation_scoped() {
     assert!(d.sealed);
     let err = crate::product::run_seal(
         &state,
-        "heat9",
+        &state.sref("heat9"),
         Some("someone-else".into()),
         &fresh.stream_epoch,
         None,
@@ -17826,6 +17827,205 @@ async fn volume_quotas_meter_appends_and_reads() {
     engine_shutdown(&state).await;
 }
 
+/// Stage 5d (review item 1): ONE enforce-mode cell serves TWO
+/// projects. The verified principal — not the deployment tenant —
+/// selects the storage identity, so both projects create the SAME
+/// stream name, write distinct records, and each reads back only its
+/// own; the catalog shows each credential its own project's streams
+/// only. This is the request path the layout-4 storage was built for.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn one_cell_serves_two_projects_with_full_isolation() {
+    const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
+    const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
+    let now = crate::shard::now_ms() / 1000;
+    let svc = std::sync::Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        "mp-1".to_string(),
+        jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+    );
+    svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys,
+        fetched_at_unix: now,
+    });
+    let scopes = "streams.create streams.records.append streams.records.read \
+                  streams.metadata.read streams.catalog.read";
+    let mut projects = std::collections::HashMap::new();
+    let mut credentials = std::collections::HashMap::new();
+    for (proj, ws, cred) in [("proj-test", "ws_a", "c_a"), ("proj-b", "ws_b", "c_b")] {
+        let pid = crate::tenant::ProjectId::new(proj).unwrap();
+        projects.insert(
+            pid.clone(),
+            crate::project_policy::ProjectPolicy {
+                project_id: pid.clone(),
+                workspace_id: crate::tenant::WorkspaceId::new(ws).unwrap(),
+                cell_id: std::sync::Arc::from("test-cell"),
+                project_policy_version: 1,
+                ownership_version: 1,
+                status: crate::project_policy::ProjectStatus::Active,
+                quotas: crate::project_policy::ProjectQuotas::default(),
+            },
+        );
+        credentials.insert(
+            std::sync::Arc::from(cred),
+            crate::project_policy::CredentialGrant {
+                credential_id: std::sync::Arc::from(cred),
+                project_id: pid,
+                grant_version: 1,
+                status: crate::project_policy::CredentialStatus::Active,
+                scopes: crate::tenant::ScopeSet::parse(scopes).0,
+                grant: crate::tenant::StreamGrant::All,
+                expires_at: None,
+            },
+        );
+    }
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects,
+        fetched_at_unix: now,
+        feed_version: 1,
+    });
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials,
+        fetched_at_unix: now,
+        feed_version: 1,
+    });
+    let (state, addr) = http_rig_with_auth_service(mem(), svc).await;
+
+    #[derive(serde::Serialize)]
+    struct C<'a> {
+        iss: &'a str,
+        aud: &'a str,
+        sub: &'a str,
+        credential_id: &'a str,
+        project_id: &'a str,
+        workspace_id: &'a str,
+        cell_id: &'a str,
+        ownership_version: u64,
+        grant_version: u64,
+        scope: &'a str,
+        jti: &'a str,
+        iat: i64,
+        exp: i64,
+    }
+    let mint = |cred: &str, proj: &str, ws: &str| {
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        header.kid = Some("mp-1".into());
+        jsonwebtoken::encode(
+            &header,
+            &C {
+                iss: "https://auth.prisma.io",
+                aud: "prisma-streams-data",
+                sub: "u",
+                credential_id: cred,
+                project_id: proj,
+                workspace_id: ws,
+                cell_id: "test-cell",
+                ownership_version: 1,
+                grant_version: 1,
+                scope: scopes,
+                jti: "t",
+                iat: now - 60,
+                exp: now + 600,
+            },
+            &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
+        )
+        .unwrap()
+    };
+    let ta = format!("Bearer {}", mint("c_a", "proj-test", "ws_a"));
+    let tb = format!("Bearer {}", mint("c_b", "proj-b", "ws_b"));
+    let auth_a = ("authorization", ta.as_str());
+    let auth_b = ("authorization", tb.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let body = br#"{"format":{"kind":"json"}}"#;
+
+    // Both projects create the SAME name on the SAME cell — two
+    // streams, not one.
+    let (st, _, b) = preq(addr, "PUT", "/v1/streams/shared", &[ekey, auth_a], body).await;
+    assert_eq!(st, 201, "A create: {}", String::from_utf8_lossy(&b));
+    let (st, _, b) = preq(addr, "PUT", "/v1/streams/shared", &[ekey, auth_b], body).await;
+    assert_eq!(st, 201, "B create: {}", String::from_utf8_lossy(&b));
+
+    // Distinct writes...
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/shared/records",
+        &[ekey, auth_a],
+        br#"{"who":"a"}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/shared/records",
+        &[ekey, auth_b],
+        br#"{"who":"b"}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+
+    // ...and each principal reads back ONLY its own project's records.
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        "/v1/streams/shared/records",
+        &[ekey, auth_a],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let sa = String::from_utf8_lossy(&b).to_string();
+    assert!(sa.contains(r#""who":"a""#), "A sees its record: {sa}");
+    assert!(!sa.contains(r#""who":"b""#), "A must not see B's: {sa}");
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        "/v1/streams/shared/records",
+        &[ekey, auth_b],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let sb = String::from_utf8_lossy(&b).to_string();
+    assert!(sb.contains(r#""who":"b""#), "B sees its record: {sb}");
+    assert!(!sb.contains(r#""who":"a""#), "B must not see A's: {sb}");
+
+    // A second stream only in B: A's catalog never shows it.
+    let (st, _, _) = preq(addr, "PUT", "/v1/streams/only-b", &[ekey, auth_b], body).await;
+    assert_eq!(st, 201);
+    let names = |b: &[u8]| -> Vec<String> {
+        serde_json::from_slice::<serde_json::Value>(b).unwrap()["streams"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .map(|s| s["name"].as_str().unwrap().to_string())
+            .collect()
+    };
+    let (st, _, b) = preq(addr, "GET", "/v1/streams", &[auth_a], b"").await;
+    assert_eq!(st, 200);
+    let na = names(&b);
+    assert!(
+        na.contains(&"shared".to_string()) && !na.contains(&"only-b".to_string()),
+        "A catalog: {na:?}"
+    );
+    let (st, _, b) = preq(addr, "GET", "/v1/streams", &[auth_b], b"").await;
+    assert_eq!(st, 200);
+    let nb = names(&b);
+    assert!(
+        nb.contains(&"shared".to_string()) && nb.contains(&"only-b".to_string()),
+        "B catalog: {nb:?}"
+    );
+    engine_shutdown(&state).await;
+}
+
 /// MT Stage 4 same-project rule: stored references (fork parentage,
 /// dead-letter targets) bind inside the REFERRING stream's project. A
 /// foreign project's stream with the SAME name — even one carrying the
@@ -18315,7 +18515,7 @@ async fn a_seal_in_flight_never_closes_a_later_incarnation() {
     // and a collection nobody asked to close.
     let claim = crate::product::enter_sealing_cas(
         &state,
-        "abaseal",
+        &state.sref("abaseal"),
         "stale-op",
         &crate::registry::SealIntent::Empty,
         &old.stream_epoch,
@@ -21954,6 +22154,7 @@ async fn ops_events_journal_end_to_end() {
     );
     let resp = crate::http::read_inner(
         state.clone(),
+        state.sref("_ops_events"),
         "_ops_events".to_string(),
         crate::http::ReadParams::default(),
         hdrs,
@@ -22178,6 +22379,7 @@ async fn telemetry_crash_points_and_cost_gates() {
     );
     let r = crate::http::append(
         state.clone(),
+        state.sref("_usage"),
         "_usage".to_string(),
         hdrs,
         axum::body::Body::from(serde_json::to_vec(&[env]).unwrap()),
