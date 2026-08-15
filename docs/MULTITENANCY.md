@@ -1,6 +1,6 @@
 # Prisma Streams — Shared-Cell Multitenancy Implementation Plan
 
-**Status:** FROZEN CONTRACT (Stage 0, committed 2026-08-15)
+**Status:** FROZEN CONTRACT (Stage 0, committed 2026-08-15; revision 1, 2026-08-15 — see Revision log)
 **Author:** Søren Bramer Schmidt (implementation plan, delivered 2026-08-15)
 **Target:** Many projects in each Prisma Streams cell
 **Migration posture:** Clean layout switch; no mixed-layout operation
@@ -12,6 +12,13 @@
 > decision record is in `docs/READINESS.md`. Changes to THIS document
 > after Stage 0 require an explicit contract-revision commit — it is
 > the arbiter when implementation questions arise.
+
+**Revision log**
+- r1 (2026-08-15): added the `route-child-v1` domain for split-child
+  placement (the conversion map found scaler split-child routes uncovered
+  by the original five domains); froze the ProjectId/WorkspaceId/cell-id
+  grammar; replaced ambiguous empty-prefix-set semantics with the
+  explicit `StreamGrant` type.
 
 ---
 
@@ -112,6 +119,18 @@ cell ID:      1–128 bytes
 stream name:  existing canonical stream-name rules
 ```
 
+Frozen grammar (r1) for workspace, project, and cell ids — a strict
+ASCII allowlist until a shared Control Plane parser exists, at which
+point the shared parser supersedes it (it may only tighten, never
+widen, this grammar):
+
+```text
+id      = 1*128( ALPHA / DIGIT / "_" / "-" )
+```
+
+Unicode whitespace, bidi controls, zero-width characters, and every
+byte outside the allowlist are rejected at construction.
+
 ### 2.1 Canonical binary encoding
 
 Do not concatenate identities with delimiters.
@@ -127,6 +146,7 @@ Domain-separate all hashes:
 
 ```text
 route-v1
+route-child-v1
 storage-v1
 segment-v1
 catalog-cursor-v1
@@ -144,6 +164,9 @@ storage hash:
 
 segment identity:
   segment-v1 + project_id + stream_name + stream_epoch + segment_id
+
+split-child route hash (r1; scaler-minted placement of a child segment):
+  route-child-v1 + project_id + stream_name + child_segment_id + salt
 ```
 
 Workspace transfer must not change any of these values.
@@ -427,6 +450,22 @@ maximum prefix length
 canonical component separators
 no empty or overlapping redundant prefixes
 ```
+
+Grant semantics (r1): a credential's stream grant is an explicit type,
+never an overloaded empty set —
+
+```rust
+enum StreamGrant {
+    All,
+    Prefixes(Arc<[CanonicalPrefix]>),
+}
+```
+
+In the access token, an ABSENT `stream_prefixes` claim means
+`StreamGrant::All` (every stream in the project, subject to scopes).
+An empty `stream_prefixes` array is INVALID and the token is rejected:
+"no streams" is expressed by not issuing the credential, and an empty
+array is far more likely to be an issuer bug than an intent.
 
 Prefix matching is component-aware:
 

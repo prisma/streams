@@ -28,13 +28,15 @@ Reading notes from the critic pass:
 
 ## Contract questions raised by the map
 
-1. **Split-child route domain tag.** `scaler3::resume` mints child
+1. **RESOLVED (contract r1):** `route-child-v1` added over
+   `project_id + stream_name + child_segment_id + salt`. Original
+   finding: **Split-child route domain tag.** `scaler3::resume` mints child
    routes as `stream_hash(name+"\0segroute\0"+child+"\0"+salt)`.
    The contract's five domain tags (§2.1) do not cover this
    derivation. Proposed: a sixth tag `route-child-v1` over
    `project_id + name + child_seg + salt` — needs a contract-revision
    commit before Stage 3 touches scaler3.
-2. **`touch.rs` close_shard hash-domain mismatch (pre-existing bug,
+2. **FIX IN FLIGHT (isolated pre-MT commit):** **`touch.rs` close_shard hash-domain mismatch (pre-existing bug,
    independent of tenancy).** `close_shard` matches ROUTE-hash-space
    shard prefixes against journals keyed by STORAGE hash
    (`desc.storage_hash()` at http.rs:5050 / product.rs:6172).
