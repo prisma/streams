@@ -483,3 +483,27 @@ campaign's.
 - A body far above the ceiling (64 MiB) is answered with a connection
   reset rather than a 413, because the server stops reading. Clients see
   a transport error instead of a clear refusal.
+
+## R23-9 rerun (2026-08-16, local, commit a0d5bf6f)
+
+The deferred "rerun hostile + SIGKILL on the final binary" item,
+executed on the current slate HEAD (post-multitenancy Stage 8) against
+a local MinIO store at the campaign posture
+(`MAX_REQUEST_BODY_BYTES=1048576`, auth Off — the posture these gates
+were written for):
+
+- **Hostile surface: 58/58 PASS** (`bench/chaos/hostile-surface.sh`,
+  grown from the campaign's 42 checks). One setup finding, not a
+  server defect: the oversized-body check assumes a sub-2 MiB ceiling —
+  against a default 32 MiB namespace it reports a false FAIL (200 for
+  a 2 MiB body is correct there). Run the gate at the campaign
+  posture, and note the harness bakes that assumption in.
+- The R23-2 namespace-immutable ceiling verified itself in passing:
+  booting the 1 MiB posture against the default-ceiling namespace was
+  REFUSED at startup with the documented error; the rerun used a
+  fresh namespace born at 1 MiB.
+- **SIGKILL consistency: 4/4 rounds PASS** against ONE store, never
+  reset (`bench/chaos/kill9-consistency.py`): 2,224 + 2,235 + 2,241 +
+  2,240 = 8,940 ACKed records across 16 stream instances, every one
+  present exactly once and in order after kill+restart; 0 phantom
+  writes out of ~57k ambiguous in-flight appends.
