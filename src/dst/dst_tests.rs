@@ -17644,7 +17644,7 @@ async fn project_rate_quota_backstop_answers_429() {
 /// project_rate_limit. No sleeps: the legs spend a 2-token budget and
 /// probe both the batch-count and the drained-bucket refusals.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn append_volume_quota_meters_exact_record_counts() {
+async fn volume_quotas_meter_appends_and_reads() {
     const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
     const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
     let now = crate::shard::now_ms() / 1000;
@@ -17678,6 +17678,7 @@ async fn append_volume_quota_meters_exact_record_counts() {
             status: crate::project_policy::ProjectStatus::Active,
             quotas: crate::project_policy::ProjectQuotas {
                 append_records_per_sec: 2,
+                read_bytes_per_sec: 8,
                 ..Default::default()
             },
         },
@@ -17696,7 +17697,8 @@ async fn append_volume_quota_meters_exact_record_counts() {
             grant_version: 1,
             status: crate::project_policy::CredentialStatus::Active,
             scopes: crate::tenant::ScopeSet::parse(
-                "streams.create streams.records.append streams.metadata.read",
+                "streams.create streams.records.append streams.records.read \
+                 streams.metadata.read",
             )
             .0,
             grant: crate::tenant::StreamGrant::All,
@@ -17740,7 +17742,8 @@ async fn append_volume_quota_meters_exact_record_counts() {
             cell_id: "test-cell",
             ownership_version: 1,
             grant_version: 1,
-            scope: "streams.create streams.records.append streams.metadata.read",
+            scope: "streams.create streams.records.append streams.records.read \
+                    streams.metadata.read",
             jti: "t",
             iat: now - 60,
             exp: now + 600,
@@ -17808,6 +17811,16 @@ async fn append_volume_quota_meters_exact_record_counts() {
         br#"{"n":6}"#,
     )
     .await;
+    assert_eq!(st, 429, "{}", String::from_utf8_lossy(&b));
+    assert_eq!(code(&b), "project_rate_limit");
+
+    // Read volume is POST-HOC: the first read serves (no debt yet) and
+    // its response — larger than the 64 B/s budget — leaves the bucket
+    // in debt, so the SECOND read is refused with the same 429 class.
+    let (st, _, b) = preq(addr, "GET", "/v1/streams/vq/records", &[ekey, auth], b"").await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    assert!(b.len() > 8, "response must exceed the budget: {}", b.len());
+    let (st, _, b) = preq(addr, "GET", "/v1/streams/vq/records", &[ekey, auth], b"").await;
     assert_eq!(st, 429, "{}", String::from_utf8_lossy(&b));
     assert_eq!(code(&b), "project_rate_limit");
     engine_shutdown(&state).await;

@@ -61,7 +61,12 @@ pub struct ProjectAdmission {
     /// §17.2 volume backstops: append payload bytes and records.
     append_bytes: Mutex<Bucket>,
     append_records: Mutex<Bucket>,
+    /// Read volume is debited POST-HOC (the response size is known
+    /// only after serving), so this bucket runs negative and reads are
+    /// refused while it is in debt.
+    read_bytes: Mutex<Bucket>,
     inflight: AtomicU64,
+    live_subs: AtomicU64,
 }
 
 #[derive(Debug)]
@@ -76,7 +81,7 @@ pub enum QuotaRefusal {
 
 /// Releases the inflight slot on drop — hold it for the handler's
 /// lifetime. (Streaming response bodies outlive the handler; their
-/// long-lived cost is the 6b live-subscription dimension, not this
+/// long-lived cost is the live-subscription dimension, not this
 /// counter.)
 pub struct QuotaGuard {
     admission: Arc<ProjectAdmission>,
@@ -85,6 +90,19 @@ pub struct QuotaGuard {
 impl Drop for QuotaGuard {
     fn drop(&mut self) {
         self.admission.inflight.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// One live subscription (§17.2). Attached to the STREAMING response
+/// body, so it releases when the stream ends or the client goes away —
+/// not when the handler returns.
+pub struct SubscriptionGuard {
+    admission: Arc<ProjectAdmission>,
+}
+
+impl Drop for SubscriptionGuard {
+    fn drop(&mut self) {
+        self.admission.live_subs.fetch_sub(1, Ordering::Relaxed);
     }
 }
 
@@ -130,7 +148,12 @@ impl QuotaRegistry {
                             level: quotas.append_records_per_sec as f64,
                             last_ms: now_ms,
                         }),
+                        read_bytes: Mutex::new(Bucket {
+                            level: quotas.read_bytes_per_sec as f64,
+                            last_ms: now_ms,
+                        }),
                         inflight: AtomicU64::new(0),
+                        live_subs: AtomicU64::new(0),
                     });
                     m.insert(project.clone(), a.clone());
                     a
@@ -227,6 +250,72 @@ impl QuotaRegistry {
             }
         }
         Ok(())
+    }
+
+    /// Read admission (§17.2): reads are refused while the project's
+    /// read-byte bucket is IN DEBT from earlier responses. The check is
+    /// cheap and runs before serving; the debit lands after.
+    pub fn check_read(
+        &self,
+        project: &ProjectId,
+        quotas: &ProjectQuotas,
+        now_ms: i64,
+    ) -> Result<(), QuotaRefusal> {
+        if quotas.read_bytes_per_sec == 0 {
+            return Ok(());
+        }
+        let Some(admission) = self.tracked(project) else {
+            return Ok(()); // request-rate admit tracks first
+        };
+        let rate = quotas.read_bytes_per_sec as f64;
+        let mut b = admission.read_bytes.lock().unwrap();
+        let _ = b.take(rate, 0.0, now_ms); // refill only
+        if b.level < 0.0 {
+            return Err(QuotaRefusal::Rate {
+                retry_after_secs: ((-b.level / rate).ceil().max(1.0)) as u64,
+            });
+        }
+        Ok(())
+    }
+
+    /// Post-hoc read debit with the SERVED byte count. Deliberately
+    /// unconditional and negative-capable: the response was already
+    /// sent, so the debt is real either way.
+    pub fn debit_read(&self, project: &ProjectId, quotas: &ProjectQuotas, bytes: u64, now_ms: i64) {
+        if quotas.read_bytes_per_sec == 0 || bytes == 0 {
+            return;
+        }
+        if let Some(admission) = self.tracked(project) {
+            let rate = quotas.read_bytes_per_sec as f64;
+            let mut b = admission.read_bytes.lock().unwrap();
+            let _ = b.take(rate, 0.0, now_ms); // refill first
+            b.level -= bytes as f64;
+        }
+    }
+
+    /// §17.2 subscriptions: acquire one live-subscription slot. The
+    /// guard rides the streaming response body.
+    pub fn admit_subscription(
+        &self,
+        project: &ProjectId,
+        quotas: &ProjectQuotas,
+    ) -> Result<Option<SubscriptionGuard>, QuotaRefusal> {
+        if quotas.max_live_subscriptions == 0 {
+            return Ok(None);
+        }
+        let Some(admission) = self.tracked(project) else {
+            return Ok(None);
+        };
+        let prev = admission.live_subs.fetch_add(1, Ordering::Relaxed);
+        if prev >= quotas.max_live_subscriptions {
+            admission.live_subs.fetch_sub(1, Ordering::Relaxed);
+            return Err(QuotaRefusal::Concurrency);
+        }
+        Ok(Some(SubscriptionGuard { admission }))
+    }
+
+    fn tracked(&self, project: &ProjectId) -> Option<Arc<ProjectAdmission>> {
+        self.projects.lock().unwrap().get(project).cloned()
     }
 
     /// Operator visibility: (projects tracked, total inflight).
@@ -352,6 +441,50 @@ mod tests {
         }
         // ...and clears after the debt window.
         assert!(r.admit_append(&p, &quotas, 50, 0, 7_000).is_ok());
+    }
+
+    #[test]
+    fn read_debit_runs_negative_and_blocks_until_refilled() {
+        let r = QuotaRegistry::default();
+        let p = pid("proj_r");
+        let quotas = ProjectQuotas {
+            read_bytes_per_sec: 100,
+            ..Default::default()
+        };
+        let _g = r.admit(&p, &quotas, 1_000).unwrap();
+        // First read passes (no debt), serves 350 bytes -> level -250.
+        assert!(r.check_read(&p, &quotas, 1_000).is_ok());
+        r.debit_read(&p, &quotas, 350, 1_000);
+        match r.check_read(&p, &quotas, 1_000) {
+            Err(QuotaRefusal::Rate { retry_after_secs }) => {
+                assert!(retry_after_secs >= 2, "debt horizon: {retry_after_secs}")
+            }
+            _ => panic!("in-debt bucket must refuse reads"),
+        }
+        // 2.6s later the 250-byte debt has refilled past zero.
+        assert!(r.check_read(&p, &quotas, 3_600).is_ok());
+    }
+
+    #[test]
+    fn subscription_slots_release_with_the_guard() {
+        let r = QuotaRegistry::default();
+        let p = pid("proj_s");
+        let quotas = ProjectQuotas {
+            max_live_subscriptions: 1,
+            ..Default::default()
+        };
+        let _g = r.admit(&p, &quotas, 1_000).unwrap();
+        let s1 = r.admit_subscription(&p, &quotas).unwrap();
+        assert!(s1.is_some());
+        assert!(matches!(
+            r.admit_subscription(&p, &quotas),
+            Err(QuotaRefusal::Concurrency)
+        ));
+        drop(s1);
+        assert!(r.admit_subscription(&p, &quotas).unwrap().is_some());
+        // Unlimited (0) never allocates a guard.
+        let unlimited = ProjectQuotas::default();
+        assert!(r.admit_subscription(&p, &unlimited).unwrap().is_none());
     }
 
     #[test]

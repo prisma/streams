@@ -758,6 +758,62 @@ pub(crate) fn project_admission(
         .map_err(|r| quota_refusal_response(&r))
 }
 
+/// Read admission: refuse while the project's read-byte bucket is in
+/// debt from earlier responses (§17.2 post-hoc volume metering).
+fn check_read_quota(
+    state: &AppState,
+    principal: Option<&crate::auth::RequestPrincipal>,
+) -> Option<Response> {
+    let p = principal?;
+    let quotas = state.auth.quotas_for(&p.project_id)?;
+    state
+        .quotas
+        .check_read(&p.project_id, &quotas, crate::shard::now_ms())
+        .err()
+        .map(|r| quota_refusal_response(&r))
+}
+
+/// Debit the SERVED read bytes (sized bodies only — streaming bodies
+/// are governed by the live-subscription slot instead).
+fn debit_read_response(
+    state: &AppState,
+    principal: Option<&crate::auth::RequestPrincipal>,
+    resp: &Response,
+) {
+    let Some(p) = principal else { return };
+    if !resp.status().is_success() {
+        return;
+    }
+    // The handler-built Response carries no content-length header (the
+    // server stamps it at serve time); a SIZED body reports its exact
+    // length through the size hint. Streaming bodies (no exact size)
+    // are governed by the subscription slot instead.
+    let Some(bytes) = axum::body::HttpBody::size_hint(resp.body()).exact() else {
+        return;
+    };
+    if let Some(quotas) = state.auth.quotas_for(&p.project_id) {
+        state
+            .quotas
+            .debit_read(&p.project_id, &quotas, bytes, crate::shard::now_ms());
+    }
+}
+
+/// Attach a live-subscription slot to a STREAMING response: the guard
+/// travels inside the body stream's state and releases when the stream
+/// ends or the client disconnects — not when the handler returns.
+fn attach_subscription_guard(resp: Response, guard: crate::quota::SubscriptionGuard) -> Response {
+    if !resp.status().is_success() {
+        return resp; // a refused subscribe holds no slot
+    }
+    use futures_util::StreamExt;
+    let (parts, body) = resp.into_parts();
+    let guarded = futures_util::stream::unfold(
+        (body.into_data_stream(), guard),
+        |(mut inner, guard)| async move { inner.next().await.map(|frame| (frame, (inner, guard))) },
+    );
+    Response::from_parts(parts, Body::from_stream(guarded))
+}
+
 /// §17.3 refusal classes on the wire.
 fn quota_refusal_response(refusal: &crate::quota::QuotaRefusal) -> Response {
     match refusal {
@@ -964,12 +1020,43 @@ pub async fn product_entry(
                     meter_op_if_ok(&state, &name, ok, OpKind::Append).await;
                     r
                 }
-                (Method::GET, None) => product_read(state, name, headers, &query, None).await,
+                (Method::GET, None) => {
+                    if let Some(r) = check_read_quota(&state, principal.as_ref()) {
+                        return r;
+                    }
+                    let resp = product_read(state.clone(), name, headers, &query, None).await;
+                    debit_read_response(&state, principal.as_ref(), &resp);
+                    resp
+                }
                 (Method::GET, Some("long-poll")) => {
-                    product_read(state, name, headers, &query, Some("long-poll")).await
+                    if let Some(r) = check_read_quota(&state, principal.as_ref()) {
+                        return r;
+                    }
+                    let resp =
+                        product_read(state.clone(), name, headers, &query, Some("long-poll")).await;
+                    debit_read_response(&state, principal.as_ref(), &resp);
+                    resp
                 }
                 (Method::GET, Some("sse")) => {
-                    product_read(state, name, headers, &query, Some("sse")).await
+                    // A live subscription consumes a §17.2 slot for the
+                    // STREAM's lifetime, not the handler's.
+                    let sub = match principal
+                        .as_ref()
+                        .and_then(|p| state.auth.quotas_for(&p.project_id).map(|q| (p, q)))
+                    {
+                        Some((p, quotas)) => {
+                            match state.quotas.admit_subscription(&p.project_id, &quotas) {
+                                Ok(g) => g,
+                                Err(refusal) => return quota_refusal_response(&refusal),
+                            }
+                        }
+                        None => None,
+                    };
+                    let resp = product_read(state, name, headers, &query, Some("sse")).await;
+                    match sub {
+                        Some(g) => attach_subscription_guard(resp, g),
+                        None => resp,
+                    }
                 }
                 _ => perr(
                     StatusCode::METHOD_NOT_ALLOWED,
