@@ -28,7 +28,7 @@ use crate::project_policy::{
     CredentialGrant, CredentialStatus, GrantSnapshot, GrantSource, PolicySnapshot, PolicySource,
     ProjectPolicy, ProjectQuotas, ProjectStatus,
 };
-use crate::tenant::{CanonicalPrefix, ProjectId, ScopeSet, StreamGrant, WorkspaceId};
+use crate::tenant::{ProjectId, ScopeSet, StreamGrant, WorkspaceId};
 
 /// Verification keys, mirroring `PolicySource`/`GrantSource`.
 #[async_trait::async_trait]
@@ -112,15 +112,22 @@ pub fn parse_keys(json: &str, now: i64) -> anyhow::Result<JwksSnapshot> {
     let mut keys = HashMap::new();
     for k in doc.keys {
         anyhow::ensure!(!k.kid.is_empty(), "key with empty kid");
-        let dk = match k.alg.as_str() {
-            "RS256" => jsonwebtoken::DecodingKey::from_rsa_pem(k.pem.as_bytes())
-                .map_err(|e| anyhow::anyhow!("kid {:?}: bad RSA pem: {e}", k.kid))?,
-            "EdDSA" => jsonwebtoken::DecodingKey::from_ed_pem(k.pem.as_bytes())
-                .map_err(|e| anyhow::anyhow!("kid {:?}: bad Ed25519 pem: {e}", k.kid))?,
+        let (alg, dk) = match k.alg.as_str() {
+            "RS256" => (
+                jsonwebtoken::Algorithm::RS256,
+                jsonwebtoken::DecodingKey::from_rsa_pem(k.pem.as_bytes())
+                    .map_err(|e| anyhow::anyhow!("kid {:?}: bad RSA pem: {e}", k.kid))?,
+            ),
+            "EdDSA" => (
+                jsonwebtoken::Algorithm::EdDSA,
+                jsonwebtoken::DecodingKey::from_ed_pem(k.pem.as_bytes())
+                    .map_err(|e| anyhow::anyhow!("kid {:?}: bad Ed25519 pem: {e}", k.kid))?,
+            ),
             other => anyhow::bail!("kid {:?}: alg {other:?} is not in [RS256, EdDSA]", k.kid),
         };
         anyhow::ensure!(
-            keys.insert(k.kid.clone(), dk).is_none(),
+            keys.insert(k.kid.clone(), crate::auth::JwksKey { alg, key: dk })
+                .is_none(),
             "duplicate kid {:?}",
             k.kid
         );
@@ -181,13 +188,14 @@ pub fn parse_grants(json: &str, now: i64) -> anyhow::Result<GrantSnapshot> {
                 g.credential_id
             ),
             Some(v) => {
-                let mut out = Vec::with_capacity(v.len());
-                for p in &v {
-                    out.push(CanonicalPrefix::normalize(p).map_err(|e| {
-                        anyhow::anyhow!("credential {:?}: prefix {p:?}: {e}", g.credential_id)
-                    })?);
-                }
-                StreamGrant::Prefixes(out.into())
+                // Review item 6: the same SET normalizer as tokens —
+                // per-prefix grammar, the 64-prefix cap, and
+                // redundancy pruning.
+                let refs: Vec<&str> = v.iter().map(|s| s.as_str()).collect();
+                let set = crate::tenant::normalize_prefix_set(&refs).map_err(|e| {
+                    anyhow::anyhow!("credential {:?}: stream_prefixes: {e:?}", g.credential_id)
+                })?;
+                StreamGrant::Prefixes(set.into())
             }
         };
         let cred = CredentialGrant {

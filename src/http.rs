@@ -1551,6 +1551,29 @@ async fn product_list_axum(
 /// opened synchronously at startup, so a 503 here means startup-order
 /// bugs or a lost OnceLock, and the platform should not route yet.
 async fn health_axum(State(state): State<Arc<AppState>>) -> Response {
+    // Review item 6: in shadow/enforce an instance is NOT ready until
+    // every auth feed has published an INITIAL snapshot — routing
+    // traffic to a cell that would fail-closed (or shadow-count
+    // nothing but noise) helps nobody.
+    if state.auth.mode != crate::auth::AuthMode::Off {
+        let feeds = state.auth.feed_json(crate::shard::now_ms() / 1000);
+        let unpublished = [
+            ("jwks", &feeds["jwks"]["ageSecs"]),
+            ("policies", &feeds["policies"]["ageSecs"]),
+            ("grants", &feeds["grants"]["ageSecs"]),
+        ]
+        .iter()
+        .filter(|(_, age)| age.is_null())
+        .map(|(n, _)| *n)
+        .collect::<Vec<_>>();
+        if !unpublished.is_empty() {
+            return (
+                StatusCode::SERVICE_UNAVAILABLE,
+                format!("auth feeds not yet published: {}", unpublished.join(", ")),
+            )
+                .into_response();
+        }
+    }
     // A process that has never opened a shard cannot serve a single
     // append; answering `ok` keeps it in the load balancer forever
     // (CHAOS-2). Report unready so rollouts halt and traffic drains.

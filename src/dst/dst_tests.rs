@@ -16817,7 +16817,10 @@ async fn shadow_mode_observes_without_enforcing() {
     let mut keys = std::collections::HashMap::new();
     keys.insert(
         "shadow-1".to_string(),
-        jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+        crate::auth::JwksKey {
+            alg: jsonwebtoken::Algorithm::RS256,
+            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+        },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
         keys,
@@ -16985,7 +16988,10 @@ async fn enforce_mode_gates_the_product_surface() {
     let mut keys = std::collections::HashMap::new();
     keys.insert(
         "enf-1".to_string(),
-        jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+        crate::auth::JwksKey {
+            alg: jsonwebtoken::Algorithm::RS256,
+            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+        },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
         keys,
@@ -17591,7 +17597,10 @@ async fn project_rate_quota_backstop_answers_429() {
     let mut keys = std::collections::HashMap::new();
     keys.insert(
         "q-1".to_string(),
-        jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+        crate::auth::JwksKey {
+            alg: jsonwebtoken::Algorithm::RS256,
+            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+        },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
         keys,
@@ -17731,7 +17740,10 @@ async fn volume_quotas_meter_appends_and_reads() {
     let mut keys = std::collections::HashMap::new();
     keys.insert(
         "v-1".to_string(),
-        jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+        crate::auth::JwksKey {
+            alg: jsonwebtoken::Algorithm::RS256,
+            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+        },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
         keys,
@@ -17924,7 +17936,10 @@ async fn one_cell_serves_two_projects_with_full_isolation() {
     let mut keys = std::collections::HashMap::new();
     keys.insert(
         "mp-1".to_string(),
-        jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+        crate::auth::JwksKey {
+            alg: jsonwebtoken::Algorithm::RS256,
+            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+        },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
         keys,

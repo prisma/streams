@@ -194,10 +194,12 @@ pub fn verify_watch_capability(
     let Ok(exp) = exp_s.parse::<i64>() else {
         return false;
     };
-    if exp + WATCH_CAP_SKEW_SECS <= now_unix {
+    // Untrusted i64: saturating math so extreme exp values fail
+    // closed instead of overflowing (review item 6).
+    if exp.saturating_add(WATCH_CAP_SKEW_SECS) <= now_unix {
         return false; // expired
     }
-    if exp - now_unix > WATCH_CAP_MAX_LIFETIME_SECS + WATCH_CAP_SKEW_SECS {
+    if exp.saturating_sub(now_unix) > WATCH_CAP_MAX_LIFETIME_SECS + WATCH_CAP_SKEW_SECS {
         return false; // minted beyond the maximum lifetime
     }
     let expect = watch_capability_sig(

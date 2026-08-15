@@ -42,6 +42,10 @@ pub const MAX_TOKEN_LIFETIME_SECS: i64 = 24 * 3600;
 /// closed. Generous relative to the 30–60s refresh cadence so a brief
 /// Control Plane blip does not take the data plane down with it.
 pub const POLICY_STALENESS_MAX_SECS: i64 = 300;
+/// Keys rotate far slower than policy, but a cell that cannot refresh
+/// its key set for this long must stop trusting it (review item 6) —
+/// a revoked signing key must not verify forever on a wedged feed.
+pub const JWKS_STALENESS_MAX_SECS: i64 = 21_600;
 
 /// Separate trust boundaries (§14): three audiences, three verify
 /// entry points. A customer token can never satisfy an internal or
@@ -118,6 +122,7 @@ pub enum AuthError {
     GrantVersionMismatch,
     PolicyStale,
     GrantsStale,
+    KeysStale,
     /// Post-verification authorization denials (scope / prefix).
     MissingScope(Scope),
     PrefixDenied,
@@ -151,6 +156,7 @@ impl AuthError {
             AuthError::GrantVersionMismatch => "grant_version_mismatch",
             AuthError::PolicyStale => "policy_stale",
             AuthError::GrantsStale => "grants_stale",
+            AuthError::KeysStale => "keys_stale",
             AuthError::MissingScope(_) => "missing_scope",
             AuthError::PrefixDenied => "prefix_denied",
         }
@@ -219,8 +225,17 @@ pub struct InternalPrincipal {
 /// `feed_version` orders generations for the monotonic-publication
 /// rule (review item 2) — key sets change on rotation, and an
 /// out-of-order feed must not resurrect a retired signing key.
+/// One verification key with its PINNED algorithm (review item 6):
+/// the token header's alg must equal the key's declared alg — the
+/// allowlist alone still permitted verifying an RSA key under any
+/// allowlisted algorithm the header claimed.
+pub struct JwksKey {
+    pub alg: Algorithm,
+    pub key: DecodingKey,
+}
+
 pub struct JwksSnapshot {
-    pub keys: HashMap<String, DecodingKey>,
+    pub keys: HashMap<String, JwksKey>,
     pub fetched_at_unix: i64,
     pub feed_version: u64,
 }
@@ -386,6 +401,7 @@ impl AuthService {
     fn verify_signature<T: serde::de::DeserializeOwned>(
         &self,
         token: &str,
+        now: i64,
     ) -> Result<T, AuthError> {
         if token.len() > MAX_TOKEN_BYTES {
             return Err(AuthError::TokenTooLarge);
@@ -396,13 +412,25 @@ impl AuthService {
         }
         let kid = header.kid.ok_or(AuthError::KidMissing)?;
         let jwks = self.jwks.load();
-        let key = match jwks.keys.get(&kid) {
+        // Bounded key-set staleness (review item 6): fail closed like
+        // policies and grants — retryable, not a credential error.
+        if now.saturating_sub(jwks.fetched_at_unix) > JWKS_STALENESS_MAX_SECS {
+            return Err(AuthError::KeysStale);
+        }
+        let entry = match jwks.keys.get(&kid) {
             Some(k) => k,
             None => {
                 self.unknown_kid_seen.fetch_add(1, Ordering::Relaxed);
                 return Err(AuthError::KidUnknown);
             }
         };
+        // The header's alg must equal the KEY's pinned alg — the
+        // allowlist alone still let a header pick any allowed alg for
+        // whatever key material the kid names.
+        if header.alg != entry.alg {
+            return Err(AuthError::AlgNotAllowed);
+        }
+        let key = &entry.key;
         // jsonwebtoken verifies the signature with EXACTLY the header
         // alg (already allowlisted). Time and audience checks are done
         // by us against the injected clock, so tests are deterministic
@@ -417,18 +445,21 @@ impl AuthService {
     }
 
     fn check_times(&self, iat: i64, nbf: Option<i64>, exp: i64, now: i64) -> Result<(), AuthError> {
-        if exp + CLOCK_SKEW_SECS <= now {
+        // Review item 6: these are UNTRUSTED i64s — saturating
+        // arithmetic, so i64::MIN/MAX claims fail closed instead of
+        // overflowing.
+        if exp.saturating_add(CLOCK_SKEW_SECS) <= now {
             return Err(AuthError::Expired);
         }
         if let Some(nbf) = nbf
-            && nbf - CLOCK_SKEW_SECS > now
+            && nbf.saturating_sub(CLOCK_SKEW_SECS) > now
         {
             return Err(AuthError::NotYetValid);
         }
-        if iat - CLOCK_SKEW_SECS > now {
+        if iat.saturating_sub(CLOCK_SKEW_SECS) > now {
             return Err(AuthError::ClaimInvalid("iat in the future"));
         }
-        if exp - iat > MAX_TOKEN_LIFETIME_SECS + CLOCK_SKEW_SECS {
+        if exp.saturating_sub(iat) > MAX_TOKEN_LIFETIME_SECS + CLOCK_SKEW_SECS {
             return Err(AuthError::LifetimeTooLong);
         }
         Ok(())
@@ -437,7 +468,7 @@ impl AuthService {
     /// §5 + §7.1: the customer-token pipeline. Pure in (token, now,
     /// published snapshots) — no ambient clock, no I/O.
     pub fn verify_customer(&self, token: &str, now: i64) -> Result<RequestPrincipal, AuthError> {
-        let c: RawClaims = self.verify_signature(token)?;
+        let c: RawClaims = self.verify_signature(token, now)?;
         if c.iss != self.issuer {
             return Err(AuthError::WrongIssuer);
         }
@@ -466,14 +497,13 @@ impl AuthService {
             None => StreamGrant::All,
             Some(v) if v.is_empty() => return Err(AuthError::EmptyPrefixArray),
             Some(v) => {
-                let mut out = Vec::with_capacity(v.len());
-                for p in v {
-                    out.push(
-                        CanonicalPrefix::normalize(p)
-                            .map_err(|_| AuthError::ClaimInvalid("stream_prefixes"))?,
-                    );
-                }
-                StreamGrant::Prefixes(out.into())
+                // Review item 6: the SET normalizer — per-prefix
+                // grammar PLUS the 64-prefix cap and redundancy
+                // pruning, same rules as the grant feed.
+                let refs: Vec<&str> = v.iter().map(|s| s.as_str()).collect();
+                let set = crate::tenant::normalize_prefix_set(&refs)
+                    .map_err(|_| AuthError::ClaimInvalid("stream_prefixes"))?;
+                StreamGrant::Prefixes(set.into())
             }
         };
         let (token_scopes, _unknown) = ScopeSet::parse(&c.scope);
@@ -563,7 +593,7 @@ impl AuthService {
     /// §14.1: fleet workload token (separate audience; no project
     /// authority — target binding is Stage 4's delegated capability).
     pub fn verify_internal(&self, token: &str, now: i64) -> Result<InternalPrincipal, AuthError> {
-        let c: RawInternalClaims = self.verify_signature(token)?;
+        let c: RawInternalClaims = self.verify_signature(token, now)?;
         if c.iss != self.issuer {
             return Err(AuthError::WrongIssuer);
         }
@@ -763,7 +793,10 @@ mod tests {
         let mut keys = HashMap::new();
         keys.insert(
             KID.to_string(),
-            DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            JwksKey {
+                alg: Algorithm::RS256,
+                key: DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            },
         );
         svc.publish_jwks(JwksSnapshot {
             keys,
@@ -1283,7 +1316,10 @@ mod tests {
         let mut keys = HashMap::new();
         keys.insert(
             KID.to_string(),
-            DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            JwksKey {
+                alg: Algorithm::RS256,
+                key: DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            },
         );
         assert!(
             svc.publish_jwks(JwksSnapshot {
@@ -1297,6 +1333,66 @@ mod tests {
         assert_eq!(
             svc.verify_customer(&sign(&claims()), NOW).unwrap_err(),
             AuthError::KidUnknown
+        );
+    }
+
+    /// Review item 6: the header's alg must equal the KEY's pinned
+    /// alg — a valid RS256 signature under a key the feed declared
+    /// EdDSA must refuse.
+    #[test]
+    fn header_alg_must_match_the_keys_pinned_alg() {
+        let svc = service();
+        let mut keys = HashMap::new();
+        keys.insert(
+            KID.to_string(),
+            JwksKey {
+                alg: Algorithm::EdDSA, // pinned differently
+                key: DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            },
+        );
+        svc.publish_jwks(JwksSnapshot {
+            keys,
+            fetched_at_unix: NOW,
+            feed_version: 2,
+        })
+        .unwrap();
+        assert_eq!(
+            svc.verify_customer(&sign(&claims()), NOW).unwrap_err(),
+            AuthError::AlgNotAllowed
+        );
+    }
+
+    /// Review item 6: a key set older than the JWKS staleness bound
+    /// fails CLOSED — a revoked signing key must not verify forever on
+    /// a wedged feed.
+    #[test]
+    fn stale_key_set_fails_closed() {
+        let svc = service();
+        assert!(svc.verify_customer(&sign(&claims()), NOW).is_ok());
+        assert_eq!(
+            svc.verify_customer(&sign(&claims()), NOW + JWKS_STALENESS_MAX_SECS + 1)
+                .unwrap_err(),
+            AuthError::KeysStale
+        );
+    }
+
+    /// Review item 6: extreme untrusted timestamps fail closed instead
+    /// of overflowing, and an over-cap prefix claim is refused.
+    #[test]
+    fn hostile_claims_fail_closed() {
+        let svc = service();
+        let mut c = claims();
+        c.exp = i64::MAX;
+        assert!(svc.verify_customer(&sign(&c), NOW).is_err());
+        let mut c = claims();
+        c.iat = i64::MIN;
+        c.exp = i64::MAX;
+        assert!(svc.verify_customer(&sign(&c), NOW).is_err());
+        let mut c = claims();
+        c.stream_prefixes = Some((0..65).map(|i| format!("p{i}")).collect());
+        assert_eq!(
+            svc.verify_customer(&sign(&c), NOW).unwrap_err(),
+            AuthError::ClaimInvalid("stream_prefixes")
         );
     }
 
