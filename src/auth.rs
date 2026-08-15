@@ -428,11 +428,15 @@ impl AuthService {
         if policy.cell_id.as_ref() != self.cell_id.as_ref() || c.cell_id != *self.cell_id {
             return Err(AuthError::WrongCell);
         }
-        if policy.status != ProjectStatus::Active {
-            return Err(AuthError::ProjectNotActive(policy.status));
-        }
+        // Ownership BEFORE status: a token minted under a previous owner
+        // must not learn the CURRENT owner's project state (a stale
+        // post-transfer token seeing "suspended" is an information
+        // leak about someone else's project).
         if c.ownership_version != policy.ownership_version {
             return Err(AuthError::OwnershipVersionMismatch);
+        }
+        if policy.status != ProjectStatus::Active {
+            return Err(AuthError::ProjectNotActive(policy.status));
         }
         if workspace_id != policy.workspace_id {
             return Err(AuthError::WorkspaceMismatch);

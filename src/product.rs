@@ -737,47 +737,45 @@ pub(crate) fn enforce_customer(
     Ok(principal)
 }
 
+/// Ok(None): allowed without a principal (Off/Shadow modes, preflights,
+/// §15 capability carriers). Ok(Some(p)): enforce-mode verified — the
+/// principal travels to handlers for the body-visible scope checks
+/// (§6.1 Stage-5c block). Err: the refusal response.
 pub(crate) fn product_auth_gate(
     state: &AppState,
     path: &str,
     method: &Method,
     query: &str,
     headers: &HeaderMap,
-) -> Option<Response> {
+) -> Result<Option<crate::auth::RequestPrincipal>, Response> {
     if method == Method::OPTIONS {
-        return None; // preflights carry no credentials, by definition
+        return Ok(None); // preflights carry no credentials, by definition
     }
     if watch_capability_carrier(path, method, query, headers) {
-        return None; // §15: the capability is the credential
+        return Ok(None); // §15: the capability is the credential
     }
     if state.auth.mode == crate::auth::AuthMode::Enforce {
         // §9 order: the exact route parses FIRST (grammar errors are
         // not authentication outcomes), then authenticate, then
         // authorize scope + prefix. No legacy fallback: in enforce the
         // customer token is the only product credential.
-        let route = match classify_route(path) {
-            Ok(r) => r,
-            Err(resp) => return Some(resp),
-        };
-        let principal = match enforce_customer(state, headers) {
-            Ok(p) => p,
-            Err(r) => return Some(r),
-        };
+        let route = classify_route(path)?;
+        let principal = enforce_customer(state, headers)?;
         let (_, verb) = strip_verb(path);
         if let Some(scope) = required_scope(&route, verb, method)
             && let Err(e) = principal.require(scope)
         {
-            return Some(auth_failure_response(&e));
+            return Err(auth_failure_response(&e));
         }
         if let Err(e) = principal.require_stream(route_stream_name(&route)) {
-            return Some(auth_failure_response(&e));
+            return Err(auth_failure_response(&e));
         }
-        return None;
+        return Ok(Some(principal));
     }
     if crate::http::authorized(state, headers) {
-        return None;
+        return Ok(None);
     }
-    Some(perr(
+    Err(perr(
         StatusCode::UNAUTHORIZED,
         "unauthorized",
         "bearer token required",
@@ -841,6 +839,7 @@ pub async fn product_entry(
     headers: HeaderMap,
     query: String,
     body: Bytes,
+    principal: Option<crate::auth::RequestPrincipal>,
 ) -> Response {
     // Browser preflight: answered before authorization, because a
     // preflight carries no credentials by definition (the browser sends
@@ -869,10 +868,12 @@ pub async fn product_entry(
     }
     // Authorized by PARSED route (see product_auth_gate). The wrapper
     // already ran this before reading the body; repeating it is cheap
-    // and keeps direct callers safe.
-    if let Some(r) = product_auth_gate(&state, &path, &method, &query, &headers) {
-        return r;
-    }
+    // and keeps direct callers safe. The wrapper's principal (if any)
+    // wins; the re-run only re-derives one for direct callers.
+    let principal = match product_auth_gate(&state, &path, &method, &query, &headers) {
+        Ok(p2) => principal.or(p2),
+        Err(r) => return r,
+    };
     if let Some(r) = reject_legacy_inputs(&headers, &query, &method) {
         return r;
     }
@@ -919,7 +920,8 @@ pub async fn product_entry(
         } => {
             return match (method.clone(), verb.as_deref()) {
                 (Method::PUT, None) => {
-                    product_consumer_put(state, name, cname, headers, body).await
+                    product_consumer_put(state, name, cname, headers, body, principal.as_ref())
+                        .await
                 }
                 (Method::GET, None) => product_consumer_get(state, name, cname, headers).await,
                 (Method::DELETE, None) => {
@@ -1003,7 +1005,7 @@ pub async fn product_entry(
         Err(r) => return r,
     };
     match (method.clone(), verb.as_deref()) {
-        (Method::PUT, None) => product_create(state, name, headers, body).await,
+        (Method::PUT, None) => product_create(state, name, headers, body, principal.as_ref()).await,
         (Method::GET, None) => product_metadata(state, name).await,
         (Method::DELETE, None) => crate::http::product_delete(state, name).await,
         (Method::POST, Some("seal")) => product_seal(state, name, headers, body).await,
@@ -1085,6 +1087,7 @@ async fn product_create(
     name: String,
     headers: HeaderMap,
     body: Bytes,
+    principal: Option<&crate::auth::RequestPrincipal>,
 ) -> Response {
     let Some(key_b64) = product_key(&headers) else {
         return perr(
@@ -1103,6 +1106,16 @@ async fn product_create(
         Ok(c) => c,
         Err(r) => return r,
     };
+    // §6.1 Stage-5c: watch definitions ride the create BODY, so the
+    // watches.manage scope is only checkable here — streams.create
+    // alone must not attach watches (their capabilities are then
+    // derivable offline by any key holder, §15).
+    if !cfg.watches.is_empty()
+        && let Some(p) = principal
+        && let Err(e) = p.require(crate::tenant::Scope::WatchesManage)
+    {
+        return auth_failure_response(&e);
+    }
     if let Some(r) = crate::http::ring_owner_check(&state, &name) {
         return r;
     }
@@ -4167,6 +4180,7 @@ async fn product_consumer_put(
     cname: String,
     headers: HeaderMap,
     body: Bytes,
+    principal: Option<&crate::auth::RequestPrincipal>,
 ) -> Response {
     let (desc, _k, epoch) = match consumer_ctx(&state, &name, &headers).await {
         Ok(v) => v,
@@ -4207,6 +4221,14 @@ async fn product_consumer_put(
         cfg.max_batch_records = v.clamp(1, 1_000);
     }
     if let Some(d) = doc.dead_letter_stream {
+        // §6.1 Stage-5c: the DLQ link is configured through the BODY —
+        // consumers.configure authorizes the consumer, dlq.configure
+        // authorizes wiring a dead-letter target.
+        if let Some(p) = principal
+            && let Err(e) = p.require(crate::tenant::Scope::DlqConfigure)
+        {
+            return auth_failure_response(&e);
+        }
         if canonical_name(&d).is_err() {
             return perr(
                 StatusCode::BAD_REQUEST,
@@ -6359,38 +6381,25 @@ async fn product_watch_wait(
     headers: HeaderMap,
     query: &str,
 ) -> Response {
-    let desc = match state.registry.get(&state.sref(&name)).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => {
-            if crate::http::initializing(&d) {
-                return perr(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "creating",
-                    "stream is still being created; retry",
-                    None,
-                    true,
-                );
-            }
-            d
-        }
-        _ => {
-            return perr(
-                StatusCode::NOT_FOUND,
-                "not_found",
-                "stream not found",
-                None,
-                false,
-            );
-        }
-    };
-    if !desc.watch_definitions.iter().any(|d| d.name == w) {
-        return perr(
-            StatusCode::NOT_FOUND,
-            "unknown_watch",
-            "no such watch definition",
+    // ONE refusal for every "no valid capability for this URL" shape —
+    // missing stream, deleted stream, bad/expired/forged capability —
+    // so an unauthenticated prober cannot use this route (reachable
+    // without any token, §15) as a stream-existence oracle. Existence-
+    // revealing answers (creating, unknown watch) come only AFTER the
+    // capability or key verifies.
+    let refuse = || {
+        perr(
+            StatusCode::FORBIDDEN,
+            "watch_unauthorized",
+            "a valid observation capability or Prisma-Encryption-Key is required",
             None,
             false,
-        );
-    }
+        )
+    };
+    let desc = match state.registry.get(&state.sref(&name)).await {
+        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
+        _ => return refuse(),
+    };
     let key_hex = key_hex.trim_end_matches('/').to_ascii_lowercase();
     if key_hex.len() != 16 || u64::from_str_radix(&key_hex, 16).is_err() {
         return perr(
@@ -6463,14 +6472,28 @@ async fn product_watch_wait(
             )
         });
         if !key_ok {
-            return perr(
-                StatusCode::FORBIDDEN,
-                "watch_unauthorized",
-                "a valid observation capability or Prisma-Encryption-Key is required",
-                None,
-                false,
-            );
+            return refuse();
         }
+    }
+    // Authorized from here on: these answers reveal state and must not
+    // be reachable by an unauthenticated probe.
+    if crate::http::initializing(&desc) {
+        return perr(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "creating",
+            "stream is still being created; retry",
+            None,
+            true,
+        );
+    }
+    if !desc.watch_definitions.iter().any(|d| d.name == w) {
+        return perr(
+            StatusCode::NOT_FOUND,
+            "unknown_watch",
+            "no such watch definition",
+            None,
+            false,
+        );
     }
     // Cache the key for sig derivation on later keyless waits.
     if let Some(kb) = product_key(&headers)

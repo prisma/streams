@@ -17048,6 +17048,22 @@ async fn enforce_mode_gates_the_product_surface() {
             "streams.metadata.read streams.create",
             G::All,
         ),
+        // Body-visible scopes (§6.1 Stage 5c): create WITHOUT
+        // watches.manage; consumers WITHOUT dlq.configure; and their
+        // enabled counterparts.
+        (
+            "c_watch",
+            "proj-test",
+            "streams.create streams.watches.manage",
+            G::All,
+        ),
+        ("c_cons", "proj-test", "streams.consumers.configure", G::All),
+        (
+            "c_consdlq",
+            "proj-test",
+            "streams.consumers.configure streams.dlq.configure",
+            G::All,
+        ),
         ("c_susp", "proj_off", full, G::All),
         ("c_far", "proj_far", full, G::All),
     ] {
@@ -17139,6 +17155,39 @@ async fn enforce_mode_gates_the_product_surface() {
             "ws_789",
             "test-cell",
             "streams.metadata.read streams.create",
+            None
+        )
+    );
+    let t_watch = format!(
+        "Bearer {}",
+        mint(
+            "c_watch",
+            "proj-test",
+            "ws_789",
+            "test-cell",
+            "streams.create streams.watches.manage",
+            None
+        )
+    );
+    let t_cons = format!(
+        "Bearer {}",
+        mint(
+            "c_cons",
+            "proj-test",
+            "ws_789",
+            "test-cell",
+            "streams.consumers.configure",
+            None
+        )
+    );
+    let t_consdlq = format!(
+        "Bearer {}",
+        mint(
+            "c_consdlq",
+            "proj-test",
+            "ws_789",
+            "test-cell",
+            "streams.consumers.configure streams.dlq.configure",
             None
         )
     );
@@ -17275,6 +17324,62 @@ async fn enforce_mode_gates_the_product_surface() {
         "prefix cred must not see out-of-grant names: {names:?}"
     );
 
+    // §6.1 Stage 5c — body-visible scopes. Watch definitions ride the
+    // create body: streams.create alone must not attach them.
+    let watch_body = br#"{"format":{"kind":"json"},"watches":[{"name":"w","fields":["/id"]}]}"#;
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/wenf",
+        &[ekey, auth_full],
+        watch_body,
+    )
+    .await;
+    assert_eq!(st, 403, "{}", String::from_utf8_lossy(&b));
+    assert_eq!(code(&b), "missing_scope");
+    let auth_watch = ("authorization", t_watch.as_str());
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/wenf",
+        &[ekey, auth_watch],
+        watch_body,
+    )
+    .await;
+    assert_eq!(st, 201, "{}", String::from_utf8_lossy(&b));
+
+    // The DLQ link is body-visible too: consumers.configure authorizes
+    // the consumer, dlq.configure authorizes the dead-letter wiring.
+    let auth_cons = ("authorization", t_cons.as_str());
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/enf1/consumers/c1",
+        &[ekey, auth_cons],
+        br#"{"deadLetterStream":"enfdlq"}"#,
+    )
+    .await;
+    assert_eq!(st, 403, "{}", String::from_utf8_lossy(&b));
+    assert_eq!(code(&b), "missing_scope");
+    // With dlq.configure the same request proceeds to the normal link
+    // validation (the target exists — created under the full cred).
+    let (st, _, _) = preq(addr, "PUT", "/v1/streams/enfdlq", &[ekey, auth_full], body).await;
+    assert_eq!(st, 201);
+    let auth_consdlq = ("authorization", t_consdlq.as_str());
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/enf1/consumers/c1",
+        &[ekey, auth_consdlq],
+        br#"{"deadLetterStream":"enfdlq"}"#,
+    )
+    .await;
+    assert!(
+        st == 200 || st == 201,
+        "{st}: {}",
+        String::from_utf8_lossy(&b)
+    );
+
     // Suspension fails closed at authorization.
     let auth_susp = ("authorization", t_susp.as_str());
     let (st, _, b) = preq(addr, "PUT", "/v1/streams/offs", &[ekey, auth_susp], body).await;
@@ -17352,6 +17457,29 @@ async fn enforce_mode_gates_the_product_surface() {
     )
     .await;
     assert_eq!(st, 401);
+    // No existence oracle: a MISSING stream probed with a garbage
+    // capability answers exactly like an existing one — the uniform
+    // watch_unauthorized refusal, never a 404.
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        "/v1/streams/enf-nosuch/watches/w/keys/deadbeefdeadbeef?cap=1.234",
+        &[],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 403, "{}", String::from_utf8_lossy(&b));
+    assert_eq!(code(&b), "watch_unauthorized");
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        "/v1/streams/enf1/watches/w/keys/deadbeefdeadbeef?cap=1.234",
+        &[],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 403, "{}", String::from_utf8_lossy(&b));
+    assert_eq!(code(&b), "watch_unauthorized");
 
     // The cell's OWN staleness fails closed as retryable 503 — not as
     // a client credential problem.

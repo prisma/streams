@@ -1711,9 +1711,11 @@ async fn product_entry_axum(
     // let an unauthenticated caller make the server allocate 32 MiB per
     // request; the gate needs only the path, method, query and headers.
     crate::product::shadow_observe_request(&state, &name, &method, &query, &headers);
-    if let Some(r) = crate::product::product_auth_gate(&state, &name, &method, &query, &headers) {
-        return crate::product::with_product_cors(r);
-    }
+    let principal =
+        match crate::product::product_auth_gate(&state, &name, &method, &query, &headers) {
+            Ok(p) => p,
+            Err(r) => return crate::product::with_product_cors(r),
+        };
     // System namespace guard (docs/OBSERVABILITY-BILLING.md §8/§15) —
     // same rule as the raw surface: the leading `_` segment belongs to
     // the telemetry planes and no customer credential reaches it. After
@@ -1742,7 +1744,7 @@ async fn product_entry_axum(
         }
     };
     crate::product::with_product_cors(
-        crate::product::product_entry(state, name, method, headers, query, body).await,
+        crate::product::product_entry(state, name, method, headers, query, body, principal).await,
     )
 }
 

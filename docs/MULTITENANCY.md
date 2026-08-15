@@ -438,25 +438,28 @@ streams.forks.create
 
 DLQ configuration must authorize the source consumer and destination stream independently.
 
-**Stage 5c (body-visible scopes) — follow-ups.** The request gate sees
+**Stage 5c (body-visible scopes) — status.** The request gate sees
 only route + method + query, so scopes that depend on the request BODY
-are enforced where the body is parsed, not at the gate:
+are enforced where the body is parsed. The gate now returns the
+verified `RequestPrincipal` and the entry threads it to handlers:
 
-* fork creation → `streams.forks.create` + read on the source;
-* DLQ configuration → `streams.dlq.configure` on the target;
-* watch creation → `streams.watches.manage`. Watch definitions ride the
-  PUT stream-create body, so today a `streams.create` credential can
-  attach watches without holding `watches.manage`; enforce it in
-  `product_create` where `cfg.watches` is visible (needs the principal
-  threaded to the handler — same plumbing as the others).
+* watch creation → `streams.watches.manage` — ENFORCED in
+  `product_create` (watch definitions ride the PUT create body;
+  `streams.create` alone no longer attaches them);
+* DLQ configuration → `streams.dlq.configure` — ENFORCED in
+  `product_consumer_put` beside `consumers.configure`;
+* fork creation → `streams.forks.create` + read on the source —
+  PENDING: forks are created on the raw DS surface, which is not yet
+  principal-gated; lands with raw-surface enforcement.
 
-Threading the verified `RequestPrincipal` into handlers (rather than
-re-deriving at the gate) is the shared prerequisite; it also lets the
-watch-observation route return a uniform refusal instead of revealing
-stream existence before the capability/key check, and lets the
-data-plane address storage by the principal's project rather than the
-deployment tenant (the Stage-5b gate currently bridges that with a
-`principal.project == cell tenant` check).
+The watch-observation route now returns ONE refusal
+(`watch_unauthorized`) for every no-valid-capability shape — missing
+stream, deleted stream, forged/expired capability — so the token-free
+§15 route is not a stream-existence oracle; existence-revealing
+answers (creating, unknown watch) come only after the capability or
+key verifies. Remaining principal work: address storage by the
+principal's project rather than the deployment tenant (the Stage-5b
+`principal.project == cell tenant` bridge stands until Stage 7).
 
 ### 6.2 Prefix grants
 
