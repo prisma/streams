@@ -6186,9 +6186,11 @@ async fn product_watch_wait(
     {
         state.keys.put(desc.storage_hash(), k, e);
     }
-    let journal = state
-        .touch
-        .journal(desc.storage_hash(), &watch_pinned(&desc));
+    let journal = state.touch.journal(
+        desc.storage_hash(),
+        crate::crypto::RouteHash::of(&desc.name),
+        &watch_pinned(&desc),
+    );
     let cursor = q
         .get("cursor")
         .map(String::as_str)

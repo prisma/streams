@@ -5045,9 +5045,11 @@ async fn append_core(
         // the invalidation-after-visibility invariant. One aggregate
         // journal per COLLECTION (storage identity), coarse across
         // segments (§3.7).
-        let journal = state
-            .touch
-            .journal(desc.storage_hash(), &crate::product::watch_pinned(&desc));
+        let journal = state.touch.journal(
+            desc.storage_hash(),
+            crate::crypto::RouteHash::of(&desc.name),
+            &crate::product::watch_pinned(&desc),
+        );
         let mut key_ids: Vec<u32> = Vec::new();
         for raw in &entries {
             if let Ok(v) = serde_json::from_slice::<serde_json::Value>(raw) {

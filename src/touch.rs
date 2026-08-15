@@ -470,30 +470,51 @@ fn remove_waiter(inner: &mut Inner, id: u64) -> Option<Waiter> {
 }
 
 /// Per-process registry of journals for state-protocol streams.
+///
+/// Map KEY is the collection's STORAGE identity (delete/recreate
+/// isolation: a recreated stream must not inherit the old
+/// incarnation's journal, pinned templates, or cursor validity). The
+/// stored value carries the stream's shard ROUTE hash, because shard
+/// bit-prefixes partition the ROUTE space — matching them against
+/// storage hashes is the same hash-domain trap that broke the D3
+/// victim pick in fleet.rs (see the regression note there) and, here,
+/// made close_shard close a random unrelated slice of journals on
+/// every fence.
+/// One registry slot: the stream's shard route (for close_shard
+/// matching) alongside its journal.
+type JournalSlot = (crate::crypto::RouteHash, Arc<TouchJournal>);
+
 #[derive(Default)]
 pub struct TouchRegistry {
-    map: Mutex<HashMap<[u8; 16], Arc<TouchJournal>>>,
+    map: Mutex<HashMap<[u8; 16], JournalSlot>>,
 }
 
 impl TouchRegistry {
-    pub fn journal(&self, hash: [u8; 16], pinned: &[(String, Vec<String>)]) -> Arc<TouchJournal> {
+    pub fn journal(
+        &self,
+        hash: [u8; 16],
+        route: crate::crypto::RouteHash,
+        pinned: &[(String, Vec<String>)],
+    ) -> Arc<TouchJournal> {
         let mut map = self.map.lock().unwrap();
         map.entry(hash)
-            .or_insert_with(|| TouchJournal::start(pinned))
+            .or_insert_with(|| (route, TouchJournal::start(pinned)))
+            .1
             .clone()
     }
 
-    /// Fence/move of a shard: close + drop every journal whose stream hash
-    /// falls in the shard's bit-prefix, waking all their waiters with stale.
+    /// Fence/move of a shard: close + drop every journal whose stream's
+    /// shard ROUTE hash falls in the shard's bit-prefix, waking all
+    /// their waiters with stale.
     pub fn close_shard(&self, prefix: &str) {
         let mut map = self.map.lock().unwrap();
         let closing: Vec<[u8; 16]> = map
-            .keys()
-            .filter(|h| crate::registry::shard_prefix_matches(prefix, h))
-            .copied()
+            .iter()
+            .filter(|(_, (route, _))| crate::registry::shard_prefix_matches(prefix, &route.0))
+            .map(|(h, _)| *h)
             .collect();
         for h in closing {
-            if let Some(j) = map.remove(&h) {
+            if let Some((_, j)) = map.remove(&h) {
                 j.close();
             }
         }

@@ -9032,6 +9032,180 @@ async fn product_consumer_drains_lineage_across_split() {
 /// wakes only when a MATCHING record commits (after durability); the
 /// derived URL sig is a valid observation capability; a stale cursor is
 /// an explicit resync.
+///
+/// close_shard must match by the stream's ROUTE hash, not the
+/// storage-hash map key: fencing the route-owning shard resyncs a
+/// parked watch wait immediately, and fencing the shard that merely
+/// contains the STORAGE hash must not touch the journal. Pre-fix this
+/// failed both ways (route-vs-storage hash-domain mismatch: journals
+/// keyed by storage_hash, close matched route-space prefixes).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn touch_close_shard_matches_route_hash_not_storage_hash() {
+    let store = mem();
+    // 1-bit prefixes: every hash belongs to "0" or "1".
+    let (state, addr) = http_rig_opts(
+        store,
+        vec!["0".into(), "1".into()],
+        crate::shard::ShardConfig::default(),
+    )
+    .await;
+
+    // Find a stream whose route- and storage-space shard prefixes
+    // DISAGREE (stream_epoch is random, so probe; ~50% per name).
+    let mut picked = None;
+    for i in 0..64 {
+        let name = format!("wtc-{i}");
+        let (st, _, b) = preq(
+            addr,
+            "PUT",
+            &format!("/v1/streams/{name}"),
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            br#"{"format":{"kind":"json"},"watches":[{"name":"by-customer","fields":["/customerId"]}]}"#,
+        )
+        .await;
+        assert_eq!(st, 201, "{}", String::from_utf8_lossy(&b));
+        let desc = state.registry.get(&name).await.unwrap().unwrap();
+        let rp = crate::registry::shard_for_hash(
+            &state.shard_prefixes,
+            &crate::crypto::stream_hash(&name),
+        );
+        let sp = crate::registry::shard_for_hash(&state.shard_prefixes, &desc.storage_hash());
+        if rp != sp {
+            picked = Some((name, rp, sp));
+            break;
+        }
+    }
+    let (name, route_prefix, storage_prefix) = picked.expect("straddling stream in 64 tries");
+
+    // Plant the journal via the REAL writer path: matching append ->
+    // TouchFeed -> post-durability acker ingest.
+    let fields = vec!["/customerId".to_string()];
+    let khex = crate::product::watch_key_hex("by-customer", &fields, &["\"c42\"".to_string()]);
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        &format!("/v1/streams/{name}/records"),
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", "c42"),
+        ],
+        b"{\"customerId\":\"c42\",\"total\":1}",
+    )
+    .await;
+    assert_eq!(st, 200);
+
+    // Park a waiter.
+    let path =
+        format!("/v1/streams/{name}/watches/by-customer/keys/{khex}?cursor=now&timeoutMs=8000");
+    let wait = tokio::spawn({
+        let path = path.clone();
+        async move {
+            preq(
+                addr,
+                "GET",
+                &path,
+                &[("prisma-encryption-key", PRISMA_KEY)],
+                b"",
+            )
+            .await
+        }
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+
+    // Direction A: fencing the STORAGE-prefix shard must be a no-op —
+    // prove the journal survived by waking the waiter with a REAL
+    // touch afterwards (not a resync).
+    state.touch.close_shard(&storage_prefix);
+    tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        &format!("/v1/streams/{name}/records"),
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", "c42"),
+        ],
+        b"{\"customerId\":\"c42\",\"total\":2}",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let (st, _, b) = wait.await.unwrap();
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["invalidated"], true, "{v}");
+    assert_ne!(
+        v["reason"], "resync",
+        "journal must survive a storage-prefix close: {v}"
+    );
+
+    // Direction B: fence the ROUTE-prefix shard; a parked waiter must
+    // wake promptly. The acker's post-durability journal ingest can
+    // land AFTER the append's 200 (H2 hook), so the cursor from A's
+    // wake may trail late ingests — settle first: short waits until a
+    // clean timeout proves no unseen generations remain, then park on
+    // that baseline.
+    let mut cursor_a = v["cursor"].as_str().unwrap().to_string();
+    let mut settled = false;
+    for _ in 0..10 {
+        let p = format!(
+            "/v1/streams/{name}/watches/by-customer/keys/{khex}?cursor={cursor_a}&timeoutMs=300"
+        );
+        let (st, _, b) = preq(
+            addr,
+            "GET",
+            &p,
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            b"",
+        )
+        .await;
+        assert_eq!(st, 200);
+        let sv: serde_json::Value = serde_json::from_slice(&b).unwrap();
+        cursor_a = sv["cursor"].as_str().unwrap().to_string();
+        if sv["invalidated"] == false {
+            settled = true;
+            break;
+        }
+    }
+    assert!(settled, "journal generation never settled");
+    let path2 = format!(
+        "/v1/streams/{name}/watches/by-customer/keys/{khex}?cursor={cursor_a}&timeoutMs=8000"
+    );
+    let wait = tokio::spawn(async move {
+        preq(
+            addr,
+            "GET",
+            &path2,
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            b"",
+        )
+        .await
+    });
+    tokio::time::sleep(std::time::Duration::from_millis(1000)).await;
+    if wait.is_finished() {
+        let (st, _, b) = wait.await.unwrap();
+        panic!(
+            "spurious wake before fence: st={st} body={}",
+            String::from_utf8_lossy(&b)
+        );
+    }
+    let t0 = std::time::Instant::now();
+    state.touch.close_shard(&route_prefix);
+    let (st, _, b) = wait.await.unwrap();
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    // A fence wake may resolve as an explicit resync (Stale) or, when
+    // the post-close re-fetch observes an advanced generation, as a
+    // proven change — both are PROMPT invalidations. The bug's symptom
+    // was neither: the waiter dangled to its full long-poll timeout
+    // with invalidated:false because close_shard never matched.
+    assert_eq!(v["invalidated"], true, "fence must invalidate: {v}");
+    assert!(
+        t0.elapsed() < std::time::Duration::from_secs(4),
+        "fence wake must be immediate, not the 8s long-poll timeout (got {v})"
+    );
+    engine_shutdown(&state).await;
+}
+
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn product_watch_wakes_on_matching_append() {
     let store = mem();
