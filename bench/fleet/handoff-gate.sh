@@ -32,8 +32,38 @@ LB=$(cat "$S/url-fleet-lb.txt")
 GEN_PORT=8085
 
 hdr() { echo "== $* =="; }
-jload() { # instance url -> debug/load JSON (empty on failure)
-  curl -s -m 15 -H "Authorization: Bearer $AUTH" "$1/v1/debug/load" 2>/dev/null || true
+jload() { # instance url -> debug/load JSON (retries transport blips)
+  # Retry until the body PARSES: a local flap used to hand an empty
+  # body to the one unguarded json.loads (binary.sha) and kill the
+  # whole gate under set -e (20260815, three attempts in a row). A
+  # persistent failure still returns empty after ~2 min — consumers
+  # with try/except degrade to 0 as before.
+  local body t
+  for t in 1 2 3 4 5 6 7 8; do
+    body=$(curl -s -m 15 -H "Authorization: Bearer $AUTH" "$1/v1/debug/load" 2>/dev/null) || body=""
+    if [ -n "$body" ] && printf '%s' "$body" | python3 -c "import json,sys;json.loads(sys.stdin.read())" 2>/dev/null; then
+      printf '%s' "$body"
+      return 0
+    fi
+    sleep 15
+  done
+  printf ''
+}
+
+pausectl() { # <instance url> <on|off> <label> — POST until HTTP 200
+  # A missed pause breaks the frozen-gauge invariant silently and a
+  # missed resume wedges the drain, so both retry to a REAL 200; a
+  # flap-killed single POST used to abort the gate under set -e.
+  local u=$1 on=$2 lbl=$3 t code
+  for t in 1 2 3 4 5 6 7 8 9 10 11 12; do
+    code=$(curl -s -m 15 -o /dev/null -w '%{http_code}' -X POST \
+      -H "Authorization: Bearer $AUTH" \
+      "$u/v1/debug/absorb-pause?on=$on" 2>/dev/null) || code=000
+    [ "$code" = 200 ] && { echo "  $lbl: 200"; return 0; }
+    sleep 10
+  done
+  echo "HANDOFF FAILED: $lbl never returned 200 (last $code)"
+  exit 1
 }
 
 hdr "handoff-$RUN  LB=$LB  peak target=${PEAK_MB}MB"
@@ -44,9 +74,19 @@ hdr "handoff-$RUN  LB=$LB  peak target=${PEAK_MB}MB"
 # instead of dying mid-pause with a curl exit code (R30 attempt 3).
 for i in 1 2 3 4; do
   U=$(cat "$S/url-fleet-s$i.txt")
-  L=$(curl -s -m 20 "$U/livez" 2>/dev/null | head -c 5 || true)
-  if [ "$L" != "alive" ]; then
-    echo "HANDOFF PRECHECK FAILED: fleet-s$i is not alive ('$L') — revive it:"
+  # Retry before declaring a corpse: a local transport blip returns an
+  # EMPTY body and used to fail the preflight against a healthy fleet
+  # (20260815 — s3 answered bee7cc82 on /readyz two minutes earlier).
+  # A real corpse keeps serving its crash diagnostic, so persistent
+  # non-"alive" across retries still fails with the remedy.
+  ALIVE=0
+  for PT in 1 2 3 4 5 6; do
+    LZ=$(curl -s -m 20 "$U/livez" 2>/dev/null | head -c 5 || true)
+    [ "$LZ" = "alive" ] && { ALIVE=1; break; }
+    sleep 15
+  done
+  if [ "$ALIVE" != 1 ]; then
+    echo "HANDOFF PRECHECK FAILED: fleet-s$i is not alive ('$LZ' after 6 probes) — revive it:"
     echo "  ONLY=$i deploy-fleet.sh servers && deploy-fleet.sh urls && deploy-fleet.sh lb"
     exit 1
   fi
@@ -90,7 +130,9 @@ hdr "target owner: s$TARGET ($TARGET_URL, ingest=$BEST)"
 # RC identity: record the binary this gate actually exercised
 # (rc-certify.sh compares it against the release build).
 jload "$TARGET_URL" | python3 -c "import json,sys
-print(json.loads(sys.stdin.read()).get('binary_sha256',''))" > "$OUT/binary.sha"
+try: print(json.loads(sys.stdin.read()).get('binary_sha256',''))
+except Exception: print('')" > "$OUT/binary.sha"
+[ -s "$OUT/binary.sha" ] && [ -n "$(tr -d '\n' < "$OUT/binary.sha")" ] || { echo "HANDOFF FAILED: could not read fleet binary identity"; exit 1; }
 echo "  fleet binary: $(cut -c1-16 "$OUT/binary.sha")"
 
 # 2b) steady-state fleet ledger baseline (pre-pause): the drain
@@ -123,8 +165,7 @@ BAND=$((BASE * 2 + 33554432))   # 2x baseline + 32MB slack
 # post-kill ingest on top, never absorption underneath (R29).
 for i in 1 2 3 4; do
   U=$(cat "$S/url-fleet-s$i.txt")
-  curl -s -m 15 -X POST -H "Authorization: Bearer $AUTH" \
-    "$U/v1/debug/absorb-pause?on=1" -o /dev/null -w "  s$i absorb-pause: %{http_code}\n"
+  pausectl "$U" 1 "s$i absorb-pause"
 done
 T0=$(date +%s)
 while :; do
@@ -152,7 +193,8 @@ print('pre-kill shards:', {k: v>>20 for k,v in rows.items()}, 'MB')"
 PRE_SUM=$(python3 -c "import json; print(sum(json.load(open('$OUT/prekill-shards.json')).values()))")
 hdr "aborting s$TARGET with $((PRE_SUM>>20))MB durable backlog"
 date +%s > "$OUT/kill.ts"
-curl -s -m 15 -X POST -H "Authorization: Bearer $AUTH" "$TARGET_URL/v1/debug/abort" | head -c 60; echo
+ABODY=$(curl -s -m 15 -X POST -H "Authorization: Bearer $AUTH" "$TARGET_URL/v1/debug/abort" 2>/dev/null || true)
+printf '%s\n' "${ABODY:0:60}"
 
 # 5) poll survivors for gauge restoration.
 python3 - "$S" "$OUT" "$TARGET" "$AUTH" <<'PY'
@@ -224,8 +266,7 @@ PY
 for i in 1 2 3 4; do
   [ "$i" = "$TARGET" ] && continue
   U=$(cat "$S/url-fleet-s$i.txt")
-  curl -s -m 15 -X POST -H "Authorization: Bearer $AUTH" \
-    "$U/v1/debug/absorb-pause?on=0" -o /dev/null -w "  s$i absorb-resume: %{http_code}\n"
+  pausectl "$U" 0 "s$i absorb-resume"
 done
 hdr "waiting for drain (generator still offering load)"
 T0=$(date +%s)

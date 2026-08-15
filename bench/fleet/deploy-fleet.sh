@@ -56,14 +56,24 @@ svc_arg() { # existing service id for a name, if any
   if [ -s "$f" ]; then echo "--service $(cat "$f")"; fi
 }
 record_svc() { # name -> id after first deploy
-  "$CCLI" services list --project "$P" 2>/dev/null \
-    | awk -v n="$1" '$0 ~ n {print $1; exit}' > "$S/svc-$1.txt" || true
+  # Never clobber the cache with a flap: an empty `services list`
+  # during a transient failure used to overwrite a good id with
+  # nothing, and the NEXT deploy then tried to CREATE the service
+  # ("An app named ... already exists") — the 20260815 fleet redeploy
+  # lost s2 and s3 exactly this way.
+  local id
+  id=$("$CCLI" services list --project "$P" 2>/dev/null \
+    | awk -v n="$1" '$0 ~ n {print $1; exit}') || true
+  [ -n "$id" ] && echo "$id" > "$S/svc-$1.txt"
 }
 resolve_url() { # service name -> running preview URL
-  local id; id=$(cat "$S/svc-$1.txt")
-  "$CCLI" versions list --project "$P" --service "$id" 2>/dev/null \
-    | awk '$2=="running"{print "https://"$3; exit}' > "$S/url-$1.txt"
-  cat "$S/url-$1.txt"
+  # Same no-clobber contract as record_svc: a flap must not blank a
+  # known-good URL (empty SELF_URL/UPSTREAMS then break later deploys).
+  local id u; id=$(cat "$S/svc-$1.txt")
+  u=$("$CCLI" versions list --project "$P" --service "$id" 2>/dev/null \
+    | awk '$2=="running"{print "https://"$3; exit}') || true
+  [ -n "$u" ] && echo "$u" > "$S/url-$1.txt"
+  cat "$S/url-$1.txt" 2>/dev/null || true
 }
 
 if [ "$STEP" = servers ]; then
@@ -73,8 +83,21 @@ if [ "$STEP" = servers ]; then
   # every URL mid-campaign).
   for i in ${ONLY:-1 2 3 4}; do
     KA=(); [ "$i" = 1 ] && KA=(--env KEEP_AWAKE=1)
+    # Empty --env values are rejected by the CLI ("String must contain
+    # at least 1 character(s)") — a clobbered url file must mean "omit
+    # SELF_URL" (the urls step republishes after resolve), not a dead
+    # deploy.
+    SELFARG=()
+    SELF=$(cat "$S/url-fleet-s$i.txt" 2>/dev/null || true)
+    [ -n "$SELF" ] && SELFARG=(--env "SELF_URL=$SELF")
     echo "== deploying fleet-s$i =="
-    "$CCLI" deploy --project "$P" $(svc_arg "fleet-s$i") \
+    # Per-deploy retry: the 20260815 local network flapped on a
+    # minutes-long period (connects refused in ~10ms at the gateway,
+    # then clean 200s). One down-phase must cost one retry, not the
+    # whole fleet deploy from s1.
+    DOK=0
+    for DATT in 1 2 3 4 5 6 7 8; do
+    if "$CCLI" deploy --project "$P" $(svc_arg "fleet-s$i") \
       --region "$REGION" --path . --http-port 8080 --service-name "fleet-s$i" \
       --env SERVER_BINARY_S3_KEY="bin/streams-$BIN_TAG-x64" \
       --env BIN_S3_ENDPOINT="$BINEP" --env BIN_S3_BUCKET="$BINBKT" --env BIN_S3_REGION=auto \
@@ -90,7 +113,7 @@ if [ "$STEP" = servers ]; then
       --env ACCOUNT_ID=acct_fleet_soak --env PROJECT_ID=proj_fleet_soak --env CELL_ID="fra-fleet-$i" \
       $([ "$i" = 1 ] && echo "--env ROLLUP=1") \
       --env PATH_PREFIX="${FLEET_DATA_PREFIX:-fleetd2}" --env INSTANCE_NAME="streams-$i" \
-      --env SELF_URL="$(cat "$S/url-fleet-s$i.txt" 2>/dev/null || true)" \
+      ${SELFARG[@]+"${SELFARG[@]}"} \
       --env FLEET_PREFIX=fleetops --env FLEET_MAX=4 \
       --env SCALE_OUT_CPU_PCT=30 --env SCALE_CPU_SUSTAIN_SECS=10 \
       --env SCALE_IN_CPU_PCT=5 --env SCALE_IN_SECS=900 \
@@ -107,14 +130,22 @@ if [ "$STEP" = servers ]; then
       ${MEMFLAGS[@]+"${MEMFLAGS[@]}"} \
       ${KA[@]+"${KA[@]}"} \
       --env RESOLV_OVERRIDE="$RESOLV" 2>&1 | grep -viE 'resolving|resolved|saved' | tail -2
+    then DOK=1; break; fi
+    echo "  fleet-s$i deploy attempt $DATT failed; retrying in 20s" >&2
+    sleep 20
+    done
+    [ "$DOK" = 1 ] || { echo "fleet-s$i deploy failed after 8 attempts" >&2; exit 1; }
     record_svc "fleet-s$i"
     echo "fleet-s$i -> $(resolve_url "fleet-s$i")"
   done
 elif [ "$STEP" = lb ]; then
   UP="$(cat "$S/url-fleet-s1.txt"),$(cat "$S/url-fleet-s2.txt"),$(cat "$S/url-fleet-s3.txt"),$(cat "$S/url-fleet-s4.txt")"
   echo "UPSTREAMS=$UP"
+  case "$UP" in *,,*|,*|*,) echo "refusing LB deploy: an upstream URL is empty ($UP)" >&2; exit 1;; esac
   cd "$S/fleet-app-lb"
-  "$CCLI" deploy --project "$P" $(svc_arg fleet-lb) \
+  DOK=0
+  for DATT in 1 2 3 4 5 6 7 8; do
+  if "$CCLI" deploy --project "$P" $(svc_arg fleet-lb) \
     --region "$REGION" --path . --http-port 8080 --service-name "fleet-lb" \
     --env LB_BINARY_S3_KEY="bin/pilot-$PILOT_TAG-x64" \
     --env BIN_S3_ENDPOINT="$BINEP" --env BIN_S3_BUCKET="$BINBKT" --env BIN_S3_REGION=auto \
@@ -126,6 +157,11 @@ elif [ "$STEP" = lb ]; then
     --env ROUTER_NAME=router-1 --env UPSTREAMS="$UP" \
     --env KEEP_AWAKE=1 \
     --env RESOLV_OVERRIDE="$RESOLV" 2>&1 | grep -viE 'resolving|resolved|saved' | tail -2
+  then DOK=1; break; fi
+  echo "  fleet-lb deploy attempt $DATT failed; retrying in 20s" >&2
+  sleep 20
+  done
+  [ "$DOK" = 1 ] || { echo "fleet-lb deploy failed after 8 attempts" >&2; exit 1; }
   record_svc fleet-lb
   echo "fleet-lb -> $(resolve_url fleet-lb)"
 elif [ "$STEP" = urls ]; then

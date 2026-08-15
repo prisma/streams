@@ -63,7 +63,7 @@ v = json.load(open(f"{d}/capacity-verdict.json"))
 assert v.get("PASS") is True, f"capacity verdict not PASS: {v}"
 rec = json.load(open(f"{d}/reconcile.json"))
 assert all(r.get("verdict") == "OK" for r in rec), f"reconcile not OK: {rec}"
-print(f"  capacity: PASS on {srv[0][:16]} (peak {v['peak_ledger_bytes']>>20}MB, "
+print(f"  capacity: PASS on {rc[:16]} (peak {v['peak_ledger_bytes']>>20}MB, "
       f"shed {v['maintenance_shed_total']}, catchup {v['catchup_over_ingest']})")
 PY
 
