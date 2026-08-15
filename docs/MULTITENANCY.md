@@ -1192,12 +1192,14 @@ deletion sagas and the Control-Plane feed remain platform-side.)*
 * [x] Bound project trackers. *(1024-project cap; over it, NEW
   projects get 503 `project_tracker_capacity`, tracked ones are
   untouched.)*
-* [ ] Run noisy-neighbor campaigns. *(Blocked as a true two-project
-  WIRE campaign: handlers address storage under the deployment tenant
-  behind the Stage-5b `principal.project == cell tenant` bridge, so a
-  second project cannot make data-plane requests until Stage 7
-  per-request tenanting. Bucket/tracker isolation across projects is
-  pinned at the unit level meanwhile. Volume dimensions are live:
+* [x] Run noisy-neighbor campaigns. *(Mechanism level DONE, unblocked
+  by Stage 5d: two projects on one enforce cell, a hostile flood
+  (tight quotas, 300 flat-out appends) runs CONCURRENTLY with a paced
+  compliant load — the flood is mostly refused with project-scoped
+  429s, every compliant request succeeds, and compliant worst-case
+  latency stays bounded. The at-scale binary campaign with real load
+  and latency percentiles remains a field exercise for the release
+  push. Bucket/tracker isolation is also pinned at the unit level. Volume dimensions are live:
   append bytes/records metered with exact parsed counts at the append
   site; read bytes debited POST-HOC from the served body size (sized
   bodies; refusal while in debt); SSE subscriptions hold a
