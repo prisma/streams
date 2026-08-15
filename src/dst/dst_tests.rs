@@ -5404,6 +5404,7 @@ async fn http_rig_inner(
         }),
         cell_id: "cell_test".to_string(),
         region: "test".to_string(),
+        quotas: crate::quota::QuotaRegistry::default(),
     });
     let app = crate::http::router(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -17498,6 +17499,142 @@ async fn enforce_mode_gates_the_product_surface() {
     .await;
     assert_eq!(st, 503);
     assert_eq!(code(&b), "policy_stale");
+    engine_shutdown(&state).await;
+}
+
+/// MT Stage 6a (§17.3): the server-side project admission backstop on
+/// the wire. A verified project with `requests_per_sec: 2` in the
+/// CURRENT policy gets two requests and then 429 `project_rate_limit`
+/// with a Retry-After — scoped to that project alone (bucket isolation
+/// is pinned at the unit level).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn project_rate_quota_backstop_answers_429() {
+    const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
+    const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
+    let now = crate::shard::now_ms() / 1000;
+    let svc = std::sync::Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        "q-1".to_string(),
+        jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+    );
+    svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys,
+        fetched_at_unix: now,
+    });
+    let pid = crate::tenant::ProjectId::new("proj-test").unwrap();
+    let mut projects = std::collections::HashMap::new();
+    projects.insert(
+        pid.clone(),
+        crate::project_policy::ProjectPolicy {
+            project_id: pid.clone(),
+            workspace_id: crate::tenant::WorkspaceId::new("ws_789").unwrap(),
+            cell_id: std::sync::Arc::from("test-cell"),
+            project_policy_version: 1,
+            ownership_version: 1,
+            status: crate::project_policy::ProjectStatus::Active,
+            quotas: crate::project_policy::ProjectQuotas {
+                requests_per_sec: 2,
+                ..Default::default()
+            },
+        },
+    );
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects,
+        fetched_at_unix: now,
+        feed_version: 1,
+    });
+    let mut credentials = std::collections::HashMap::new();
+    credentials.insert(
+        std::sync::Arc::from("cq"),
+        crate::project_policy::CredentialGrant {
+            credential_id: std::sync::Arc::from("cq"),
+            project_id: pid,
+            grant_version: 1,
+            status: crate::project_policy::CredentialStatus::Active,
+            scopes: crate::tenant::ScopeSet::parse("streams.metadata.read streams.create").0,
+            grant: crate::tenant::StreamGrant::All,
+            expires_at: None,
+        },
+    );
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials,
+        fetched_at_unix: now,
+        feed_version: 1,
+    });
+    let (state, addr) = http_rig_with_auth_service(mem(), svc).await;
+
+    #[derive(serde::Serialize)]
+    struct C<'a> {
+        iss: &'a str,
+        aud: &'a str,
+        sub: &'a str,
+        credential_id: &'a str,
+        project_id: &'a str,
+        workspace_id: &'a str,
+        cell_id: &'a str,
+        ownership_version: u64,
+        grant_version: u64,
+        scope: &'a str,
+        jti: &'a str,
+        iat: i64,
+        exp: i64,
+    }
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some("q-1".into());
+    let jwt = jsonwebtoken::encode(
+        &header,
+        &C {
+            iss: "https://auth.prisma.io",
+            aud: "prisma-streams-data",
+            sub: "u",
+            credential_id: "cq",
+            project_id: "proj-test",
+            workspace_id: "ws_789",
+            cell_id: "test-cell",
+            ownership_version: 1,
+            grant_version: 1,
+            scope: "streams.metadata.read streams.create",
+            jti: "t",
+            iat: now - 60,
+            exp: now + 600,
+        },
+        &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
+    )
+    .unwrap();
+    let bearer = format!("Bearer {jwt}");
+    let auth = ("authorization", bearer.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qb",
+        &[ekey, auth],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, _) = preq(addr, "GET", "/v1/streams/qb", &[ekey, auth], b"").await;
+    assert_eq!(st, 200);
+    // Third request inside the same second: the project's bucket is
+    // dry — 429 project_rate_limit, Retry-After present, retryable.
+    let (st, h, b) = preq(addr, "GET", "/v1/streams/qb", &[ekey, auth], b"").await;
+    assert_eq!(st, 429, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "project_rate_limit");
+    assert_eq!(v["error"]["retryable"], true);
+    assert!(
+        h.get("retry-after").and_then(|s| s.parse::<u64>().ok()) >= Some(1),
+        "retry-after header: {h:?}"
+    );
     engine_shutdown(&state).await;
 }
 

@@ -741,6 +741,51 @@ pub(crate) fn enforce_customer(
 /// §15 capability carriers). Ok(Some(p)): enforce-mode verified — the
 /// principal travels to handlers for the body-visible scope checks
 /// (§6.1 Stage-5c block). Err: the refusal response.
+/// §17.3 server backstop: acquire the project's admission slot for
+/// this request. Off/shadow requests (no verified project) pass — the
+/// gateway and cell safety limits own them; the backstop exists so a
+/// verified project cannot starve its neighbors on a shared cell.
+pub(crate) fn project_admission(
+    state: &AppState,
+    principal: Option<&crate::auth::RequestPrincipal>,
+) -> Result<Option<crate::quota::QuotaGuard>, Response> {
+    let Some(p) = principal else { return Ok(None) };
+    let quotas = state.auth.quotas_for(&p.project_id).unwrap_or_default();
+    match state
+        .quotas
+        .admit(&p.project_id, &quotas, crate::shard::now_ms())
+    {
+        Ok(g) => Ok(Some(g)),
+        Err(crate::quota::QuotaRefusal::Rate { retry_after_secs }) => {
+            let mut r = perr(
+                StatusCode::TOO_MANY_REQUESTS,
+                "project_rate_limit",
+                "the project's request rate quota is exhausted; retry",
+                None,
+                true,
+            );
+            if let Ok(v) = axum::http::HeaderValue::from_str(&retry_after_secs.to_string()) {
+                r.headers_mut().insert("retry-after", v);
+            }
+            Err(r)
+        }
+        Err(crate::quota::QuotaRefusal::Concurrency) => Err(perr(
+            StatusCode::TOO_MANY_REQUESTS,
+            "project_concurrency_limit",
+            "too many inflight requests for this project; retry",
+            None,
+            true,
+        )),
+        Err(crate::quota::QuotaRefusal::TrackerCapacity) => Err(perr(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "project_tracker_capacity",
+            "this instance cannot track additional projects right now; retry",
+            None,
+            true,
+        )),
+    }
+}
+
 pub(crate) fn product_auth_gate(
     state: &AppState,
     path: &str,

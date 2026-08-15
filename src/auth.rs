@@ -538,6 +538,21 @@ impl AuthService {
         }
     }
 
+    /// The CURRENT policy quotas for a project (§17.2: enforcement
+    /// reads the policy, never token claims). None = project not in
+    /// the snapshot; callers treat that as no-quota because the
+    /// request already passed verification against the same snapshot.
+    pub fn quotas_for(
+        &self,
+        project: &crate::tenant::ProjectId,
+    ) -> Option<crate::project_policy::ProjectQuotas> {
+        self.projects
+            .load()
+            .projects
+            .get(project)
+            .map(|p| p.quotas.clone())
+    }
+
     /// Snapshot freshness for the operator surface: whether each feed
     /// has EVER been published, how old it is against the fail-closed
     /// window, and what it contains.

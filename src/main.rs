@@ -18,6 +18,7 @@ mod product_cursor;
 mod project_policy;
 mod protocol_pin;
 mod queue;
+mod quota;
 mod registry;
 mod rollup;
 mod scaler3;
@@ -1468,6 +1469,7 @@ async fn async_main() -> anyhow::Result<()> {
         auth: auth_service.clone(),
         cell_id: args.cell_id.clone(),
         region: args.telemetry_region.clone(),
+        quotas: crate::quota::QuotaRegistry::default(),
     });
     let _ = state_slot.set(Arc::downgrade(&state));
     // MULTITENANCY Stage 5: feed refresher — an immediate first fetch,

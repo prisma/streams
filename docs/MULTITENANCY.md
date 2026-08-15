@@ -1169,9 +1169,16 @@ deletion sagas and the Control-Plane feed remain platform-side.)*
 
 * [ ] Implement gateway quota affinity.
 * [ ] Add workspace/project rate limits.
-* [ ] Add server-side project concurrency.
-* [ ] Remove overflow coupling.
-* [ ] Bound project trackers.
+* [x] Add server-side project concurrency. *(6a: src/quota.rs —
+  per-project request-rate bucket (429 `project_rate_limit` +
+  Retry-After) and inflight ceiling (429 `project_concurrency_limit`),
+  acquired in the product wrapper after the enforce gate and BEFORE
+  body buffering, quotas read from the CURRENT policy snapshot.)*
+* [x] Remove overflow coupling. *(Projects never share a bucket; a
+  full tracker refuses to TRACK new projects rather than merging.)*
+* [x] Bound project trackers. *(1024-project cap; over it, NEW
+  projects get 503 `project_tracker_capacity`, tracked ones are
+  untouched.)*
 * [ ] Run noisy-neighbor campaigns.
 
 **Exit:** one project cannot materially degrade a compliant neighbor.

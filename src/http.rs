@@ -213,6 +213,8 @@ pub struct AppState {
     /// MULTITENANCY Stage 5: the auth service — inert in Off mode,
     /// observing in Shadow, gating (Stage 5b) in Enforce.
     pub auth: std::sync::Arc<crate::auth::AuthService>,
+    /// §17.3 server backstops: bounded per-project admission.
+    pub quotas: crate::quota::QuotaRegistry,
     /// The deployment's tenant (MULTITENANCY transition posture):
     /// until enforce-mode principals carry per-request projects, a
     /// dedicated cell serves exactly ONE project, configured
@@ -917,9 +919,11 @@ async fn debug_auth(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
         );
     }
     let now = crate::shard::now_ms() / 1000;
+    let (tracked, inflight) = state.quotas.stats();
     axum::Json(serde_json::json!({
         "shadow": state.auth.shadow_json(),
         "feeds": state.auth.feed_json(now),
+        "admission": { "trackedProjects": tracked, "inflight": inflight },
     }))
     .into_response()
 }
@@ -1716,6 +1720,13 @@ async fn product_entry_axum(
             Ok(p) => p,
             Err(r) => return crate::product::with_product_cors(r),
         };
+    // §17.3: acquire project admission BEFORE reading the body. Only
+    // enforce-mode requests carry a verified project; the guard holds
+    // the inflight slot for the handler's lifetime.
+    let _quota_guard = match crate::product::project_admission(&state, principal.as_ref()) {
+        Ok(g) => g,
+        Err(r) => return crate::product::with_product_cors(r),
+    };
     // System namespace guard (docs/OBSERVABILITY-BILLING.md §8/§15) —
     // same rule as the raw surface: the leading `_` segment belongs to
     // the telemetry planes and no customer credential reaches it. After
