@@ -742,6 +742,32 @@ _audit_events
 
 Only internal workload identity may construct or access these resources.
 
+#### 10.4.1 `_audit_events` semantics *(revision, Stage 7)*
+
+* **Scope.** The journal records enforce-mode **denials of the
+  caller**: token verification failures (401), verified-but-denied
+  authorization (403 — scope, prefix, suspension, key mismatch,
+  capability refusals, cross-project usage probes), quota refusals
+  (§17.3), and reserved-name refusals. It deliberately excludes
+  `wrong_cell` (421 is placement per §8.1 — the credential is fine)
+  and the cell's own feed-staleness 503s (§7.1) — neither is a denial
+  of the caller, and journaling them would let placement churn or a
+  feed outage evict real security events from the bounded queue.
+* **Identity.** `project_id` on an event is filled **only** from a
+  verified principal. An unverified token's claims never reach the
+  journal as identity; unauthenticated denials journal without a
+  project.
+* **Delivery.** The journal is **at-least-once**: an ambiguous append
+  (timeout/408 after commit, relay response lost) is retried, so the
+  same event can land twice. Every event carries a unique
+  `event_id`; consumers MUST deduplicate by it. Queue overflow is
+  recorded by `audit_gap` marker events whose `dropped` field carries
+  the exact loss.
+* **Availability.** The journal requires the system ledger key. A
+  cell running enforce without one still refuses correctly but
+  journals nothing; denials are counted in
+  `audit_events_dropped_total` and the condition is warned at boot.
+
 ---
 
 ## 11. Project policy
@@ -1213,12 +1239,23 @@ deletion sagas and the Control-Plane feed remain platform-side.)*
 ### Stage 7 — Billing and audit
 
 * [ ] Remove workspace/account fallbacks from billing identity.
-* [ ] Emit ownership-change events.
-* [ ] Split stored byte-time at transfer.
-* [ ] Authorize usage through the project principal.
-* [ ] Add `_audit_events`.
-* [ ] Run same-name cross-project invoice tests.
-* [ ] Run invoice reconciliation.
+      *(Partial: identity is workspace-at-event with a COUNTED
+      deployment fallback on feed misses — unowned_meter_events_total
+      + segment_identity_drift_total exported; segment identity
+      re-stamps split-safe at month boundaries. Full removal rides
+      the platform feed + transfer-split work below.)*
+* [ ] Emit ownership-change events. *(Platform feed.)*
+* [ ] Split stored byte-time at transfer. *(Platform feed; mid-month
+      account switches without a split would double-count absolute
+      rollup deltas, so the cell heals identity only at month
+      boundaries until then.)*
+* [x] Authorize usage through the project principal.
+* [x] Add `_audit_events`. *(§10.4.1; fleet relay path included.)*
+* [x] Run same-name cross-project invoice tests. *(Two foreign
+      projects, exact ingest attribution, workspace-at-event
+      accountIds, live-stream storage-gauge invariants.)*
+* [x] Run invoice reconciliation. *(rollup reconcile_month +
+      GET /v1/debug/usage-reconcile + corruption-detecting DST.)*
 
 **Exit:** every billable unit belongs to exactly one project and one workspace-at-event.
 
