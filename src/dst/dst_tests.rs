@@ -16731,7 +16731,7 @@ async fn a_stale_fork_release_does_not_touch_a_recreated_source() {
     // A release carrying the OLD source epoch is conclusive and leaves
     // the replacement untouched — not soft-deleted, not tombstoned.
     let conclusive =
-        crate::http::release_fork_ref_for_test(&state, "frk14src", "ghost", &old_epoch)
+        crate::http::release_fork_ref_for_test(&state, state.sref("frk14src"), "ghost", &old_epoch)
             .await
             .unwrap();
     assert!(conclusive, "a stale release should be conclusive");
@@ -16749,6 +16749,184 @@ async fn a_stale_fork_release_does_not_touch_a_recreated_source() {
         "a stale release mutated the replacement's children"
     );
     assert_eq!(d.stream_epoch, fresh.stream_epoch);
+    engine_shutdown(&state).await;
+}
+
+/// MT Stage 4 same-project rule: stored references (fork parentage,
+/// dead-letter targets) bind inside the REFERRING stream's project. A
+/// foreign project's stream with the SAME name — even one carrying the
+/// same fork id, conditioned so an unscoped release would tombstone
+/// it — is invisible: each release touches exactly its own project's
+/// descriptor, and a DLQ link cannot be configured against a target
+/// that exists only in another project.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stored_references_bind_inside_the_referring_project() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let po = crate::tenant::ProjectId::new("proj-other").unwrap();
+    let foreign = |name: &str| {
+        crate::tenant::TenantStreamRef::new(
+            po.clone(),
+            crate::tenant::CanonicalStreamName::new(name).unwrap(),
+        )
+    };
+    let foreign_desc = |name: &str, epoch: &str| crate::registry::StreamDesc {
+        seal_gen_counter: 0,
+        account_id: None,
+        project_id: po.clone(),
+        name: name.to_string(),
+        stream_epoch: epoch.to_string(),
+        key_fingerprint: "fp".into(),
+        created_ms: 1,
+        expires_at_ms: None,
+        deleted: false,
+        soft_deleted: false,
+        logical_close_ms: None,
+        forked_from: None,
+        fork_children: Vec::new(),
+        init: None,
+        sealing: None,
+        seal_op: None,
+        content_type: "application/json".into(),
+        ttl_secs: None,
+        segments: None,
+        sealed: false,
+        watch_definitions: Vec::new(),
+        watch_sig_key: None,
+        parent_ref_pending: false,
+        layout_version: crate::registry::LAYOUT_VERSION,
+    };
+
+    // ---- Fork-release leg ----
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/frk4d-src", &ct, br#"[{"n":0}]"#).await;
+    assert!(st == 200 || st == 201);
+    state
+        .registry
+        .cas_update(&state.sref("frk4d-src"), |d| {
+            d.fork_children = vec!["child-ref".into()];
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate(&state.sref("frk4d-src"));
+    let ea = state
+        .registry
+        .get(&state.sref("frk4d-src"))
+        .await
+        .unwrap()
+        .unwrap()
+        .stream_epoch;
+    // The look-alike: same name, same fork id, soft-deleted — an
+    // unscoped release would remove its last child and TOMBSTONE it.
+    let eb = format!("{:032x}", 0xb4d_u64);
+    let mut lk = foreign_desc("frk4d-src", &eb);
+    lk.fork_children = vec!["child-ref".into()];
+    lk.soft_deleted = true;
+    state.registry.create(lk).await.unwrap();
+
+    // Release against the FOREIGN identity: only the foreign
+    // descriptor changes (tombstoned, by its own lifecycle).
+    let ok = crate::http::release_fork_ref_for_test(&state, foreign("frk4d-src"), "child-ref", &eb)
+        .await
+        .unwrap();
+    assert!(ok);
+    let fd = state
+        .registry
+        .get(&foreign("frk4d-src"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(
+        fd.deleted,
+        "the foreign release tombstones the foreign desc"
+    );
+    state.registry.invalidate(&state.sref("frk4d-src"));
+    let td = state
+        .registry
+        .get(&state.sref("frk4d-src"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert_eq!(
+        td.fork_children,
+        vec!["child-ref".to_string()],
+        "a foreign-project release touched this project's source"
+    );
+    assert!(!td.deleted && !td.soft_deleted);
+    assert_eq!(td.stream_epoch, ea);
+
+    // Release against THIS project's identity: reference removed here,
+    // stream stays alive (it was never soft-deleted).
+    let ok =
+        crate::http::release_fork_ref_for_test(&state, state.sref("frk4d-src"), "child-ref", &ea)
+            .await
+            .unwrap();
+    assert!(ok);
+    state.registry.invalidate(&state.sref("frk4d-src"));
+    let td = state
+        .registry
+        .get(&state.sref("frk4d-src"))
+        .await
+        .unwrap()
+        .unwrap();
+    assert!(td.fork_children.is_empty() && !td.deleted);
+
+    // ---- DLQ-binding leg ----
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/dlq4d-main",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    // The target exists ONLY in the foreign project.
+    state
+        .registry
+        .create(foreign_desc("dlq4d-tgt", &format!("{:032x}", 0xd1_u64)))
+        .await
+        .unwrap();
+    let (st, _, body) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/dlq4d-main/consumers/c1",
+        &key,
+        br#"{"deadLetterStream":"dlq4d-tgt"}"#,
+    )
+    .await;
+    assert_eq!(st, 400, "{}", String::from_utf8_lossy(&body));
+    let e: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(
+        e["error"]["code"], "unknown_dead_letter_stream",
+        "a foreign project's same-named stream must be invisible to the DLQ link"
+    );
+    // Creating the target in THIS project (same key) makes the exact
+    // same config valid.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/dlq4d-tgt",
+        &key,
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, body) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/dlq4d-main/consumers/c1",
+        &key,
+        br#"{"deadLetterStream":"dlq4d-tgt"}"#,
+    )
+    .await;
+    assert!(
+        st == 200 || st == 201,
+        "{st}: {}",
+        String::from_utf8_lossy(&body)
+    );
     engine_shutdown(&state).await;
 }
 
@@ -16797,7 +16975,8 @@ async fn a_release_parked_across_recreation_cannot_touch_the_replacement() {
     let st2 = state.clone();
     let ea = epoch_a.clone();
     let rel = tokio::spawn(async move {
-        crate::http::release_fork_ref_for_test(&st2, "frk15src", "frk15-ghost-fork", &ea).await
+        crate::http::release_fork_ref_for_test(&st2, st2.sref("frk15src"), "frk15-ghost-fork", &ea)
+            .await
     });
     while crate::http::fork_failpoints::parked(
         crate::http::fork_failpoints::Fp::ReleaseAfterEpochCheck,

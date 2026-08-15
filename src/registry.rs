@@ -438,6 +438,22 @@ impl StreamDesc {
         )
     }
 
+    /// Registry identity of a stream REFERENCED by this descriptor —
+    /// fork parentage (`ForkRef.source`) and dead-letter targets
+    /// (`ConsumerConfig.dead_letter_stream`) store bare names by
+    /// contract, and those names bind inside the REFERRING stream's
+    /// project. Every stored-reference resolution goes through here,
+    /// which is what makes a cross-project reference unrepresentable
+    /// rather than merely checked (MULTITENANCY Stage 4 same-project
+    /// fork/DLQ rule).
+    pub fn ref_in_project(&self, name: &str) -> crate::tenant::TenantStreamRef {
+        crate::tenant::TenantStreamRef::new(
+            self.project_id.clone(),
+            crate::tenant::CanonicalStreamName::new(name)
+                .expect("stored stream references are canonical (validated when written)"),
+        )
+    }
+
     /// Storage identity (layout 4, MULTITENANCY §2.1):
     /// storage-v1 + project_id + name + stream_epoch — so a recreated
     /// stream gets a fresh keyspace (delete/recreate isolation) and two

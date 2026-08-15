@@ -4016,7 +4016,9 @@ async fn product_consumer_put(
                 false,
             );
         }
-        let target = match state.registry.get(&state.sref(&d)).await {
+        // The link binds inside the SOURCE collection's project — a
+        // dead-letter target in another project is unrepresentable.
+        let target = match state.registry.get(&desc.ref_in_project(&d)).await {
             Ok(Some(t)) if crate::http::desc_alive(&t) && !crate::http::initializing(&t) => t,
             Ok(_) => {
                 return perr(
@@ -5356,7 +5358,7 @@ async fn dlq_and_settle(
     let mut blocked = 0usize;
     // The target must still be the incarnation that was configured.
     let dlq_identity_ok = match (&cfg.dead_letter_stream, &cfg.dead_letter_epoch) {
-        (Some(dlq), Some(want)) => match state.registry.get(&state.sref(dlq)).await {
+        (Some(dlq), Some(want)) => match state.registry.get(&desc.ref_in_project(dlq)).await {
             Ok(Some(t)) => &t.stream_epoch == want,
             _ => false,
         },

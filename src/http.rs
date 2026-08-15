@@ -2010,15 +2010,18 @@ fn fork_chain_of(
             }
             let boundary = cur.forked_from.as_ref().map(|f| f.fork_offset).unwrap_or(0);
             let epoch = cur.epoch_bytes().ok_or("bad epoch in fork chain")?;
-            let parent = cur
-                .forked_from
-                .as_ref()
-                .map(|f| (f.source.clone(), f.source_epoch.clone()));
+            let parent = cur.forked_from.as_ref().map(|f| {
+                (
+                    f.source.clone(),
+                    cur.ref_in_project(&f.source),
+                    f.source_epoch.clone(),
+                )
+            });
             chain.push((cur, boundary, epoch));
             match parent {
                 None => break,
-                Some((src, want_epoch)) => {
-                    let d = match state_reg.registry.get(&state_reg.sref(&src)).await {
+                Some((src, src_ref, want_epoch)) => {
+                    let d = match state_reg.registry.get(&src_ref).await {
                         Ok(Some(d)) if !d.deleted => d,
                         _ => return Err(format!("fork source '{src}' is gone")),
                     };
@@ -2148,13 +2151,13 @@ pub(crate) async fn read_stitched(
 /// name is not an identity).
 async fn clear_parent_debt(
     state: &Arc<AppState>,
-    name: &str,
+    sref: &crate::tenant::TenantStreamRef,
     expect_epoch: &str,
     expect_ref: Option<(&str, &str)>,
 ) -> Result<(), String> {
     let _ = state
         .registry
-        .mutate_incarnation(&state.sref(name), expect_epoch, |x| {
+        .mutate_incarnation(sref, expect_epoch, |x| {
             let debt_matches = match expect_ref {
                 Some((src, fid)) => x
                     .forked_from
@@ -2174,7 +2177,7 @@ async fn clear_parent_debt(
         })
         .await
         .map_err(|e| e.to_string())?;
-    state.registry.invalidate(&state.sref(name));
+    state.registry.invalidate(sref);
     Ok(())
 }
 
@@ -3152,7 +3155,7 @@ pub(crate) async fn create_stream(
         fork_failpoints::pause_fork_before_source_ref(&name).await;
         match state
             .registry
-            .cas_update_retry(&state.sref(&fc.source), |d| {
+            .cas_update_retry(&fc.source_desc.sref(), |d| {
                 // The reference is installed on the incarnation the
                 // child actually forked. Between validating the
                 // source and getting here it can be recreated,
@@ -3205,7 +3208,7 @@ pub(crate) async fn create_stream(
                 );
             }
         }
-        state.registry.invalidate(&state.sref(&fc.source));
+        state.registry.invalidate(&fc.source_desc.sref());
         #[cfg(test)]
         fork_failpoints::pause_fork_after_source_ref(&name).await;
         // Post-install: the child can have been deleted between the
@@ -3215,9 +3218,13 @@ pub(crate) async fn create_stream(
         match state.registry.get(&state.sref(&name)).await {
             Ok(Some(c)) if desc_alive(&c) && c.stream_epoch == desc.stream_epoch => {}
             _ => {
-                if let Err(m) =
-                    release_fork_ref(&state, &fc.source, &fork_id, &fc.source_desc.stream_epoch)
-                        .await
+                if let Err(m) = release_fork_ref(
+                    &state,
+                    fc.source_desc.sref(),
+                    &fork_id,
+                    &fc.source_desc.stream_epoch,
+                )
+                .await
                 {
                     tracing::error!(stream = %name, "releasing a dead child's fresh reference: {m}");
                 }
@@ -3228,7 +3235,7 @@ pub(crate) async fn create_stream(
                 );
             }
         }
-        match state.registry.get(&state.sref(&fc.source)).await {
+        match state.registry.get(&fc.source_desc.sref()).await {
             Ok(Some(sd)) if sd.fork_children.iter().any(|c| c == &fork_id) => {}
             Ok(_) => {
                 return err_resp(
@@ -3406,8 +3413,13 @@ pub(crate) async fn create_stream(
                 // initialization installed, so the parent is not held by
                 // a child that will never exist.
                 if let Some(fr) = desc.forked_from.as_ref().filter(|f| !f.fork_id.is_empty())
-                    && let Err(m) =
-                        release_fork_ref(&state, &fr.source, &fr.fork_id, &fr.source_epoch).await
+                    && let Err(m) = release_fork_ref(
+                        &state,
+                        desc.ref_in_project(&fr.source),
+                        &fr.fork_id,
+                        &fr.source_epoch,
+                    )
+                    .await
                 {
                     tracing::error!(stream = %name, "releasing an abandoned fork claim: {m}");
                 }
@@ -3940,7 +3952,7 @@ pub(crate) mod fork_failpoints {
 #[cfg(test)]
 pub(crate) async fn release_fork_ref_for_test(
     state: &Arc<AppState>,
-    src: &str,
+    src: crate::tenant::TenantStreamRef,
     fork_id: &str,
     expect_source_epoch: &str,
 ) -> Result<bool, String> {
@@ -3949,12 +3961,11 @@ pub(crate) async fn release_fork_ref_for_test(
 
 fn release_fork_ref(
     state: &Arc<AppState>,
-    src: &str,
+    src_ref: crate::tenant::TenantStreamRef,
     fork_id: &str,
     expect_source_epoch: &str,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<bool, String>> + Send>> {
     let state = state.clone();
-    let src = src.to_string();
     let fork_id = fork_id.to_string();
     let expect_source_epoch = expect_source_epoch.to_string();
     Box::pin(async move {
@@ -3976,7 +3987,7 @@ fn release_fork_ref(
         // legitimately fenced, wrong identity).
         let cur = state
             .registry
-            .get(&state.sref(&src))
+            .get(&src_ref)
             .await
             .map_err(|e| e.to_string())?;
         let Some(cur) = cur else {
@@ -3989,7 +4000,7 @@ fn release_fork_ref(
         }
         let source_epoch = cur.stream_epoch.clone();
         #[cfg(test)]
-        fork_failpoints::pause_release_after_epoch_check(&src).await;
+        fork_failpoints::pause_release_after_epoch_check(src_ref.name().as_str()).await;
         // Release BY ID: a retried delete removes an id that is already
         // gone (a no-op), where an anonymous decrement would have
         // double-released and freed a still-live fork's data.
@@ -4003,10 +4014,21 @@ fn release_fork_ref(
         if cur.deleted {
             if cur.parent_ref_pending
                 && let Some(gp) = cur.forked_from.as_ref()
-                && release_fork_ref(&state, &gp.source, &gp.fork_id, &gp.source_epoch).await?
+                && release_fork_ref(
+                    &state,
+                    cur.ref_in_project(&gp.source),
+                    &gp.fork_id,
+                    &gp.source_epoch,
+                )
+                .await?
             {
-                clear_parent_debt(&state, &src, &source_epoch, Some((&gp.source, &gp.fork_id)))
-                    .await?;
+                clear_parent_debt(
+                    &state,
+                    &src_ref,
+                    &source_epoch,
+                    Some((&gp.source, &gp.fork_id)),
+                )
+                .await?;
             }
             // A hard-deleted source holds no live references.
             return Ok(true);
@@ -4023,7 +4045,7 @@ fn release_fork_ref(
         // attempt. The verdict is `(removed_ref, tombstoned)`.
         let outcome = state
             .registry
-            .mutate_incarnation(&state.sref(&src), &source_epoch, |x| {
+            .mutate_incarnation(&src_ref, &source_epoch, |x| {
                 let before = x.fork_children.len();
                 let mut next = x.clone();
                 next.fork_children.retain(|c| c != &fork_id);
@@ -4057,13 +4079,13 @@ fn release_fork_ref(
             // check at the top, so recreated-source debt converges.
             crate::registry::MutationResult::Missing
             | crate::registry::MutationResult::IncarnationChanged => {
-                state.registry.invalidate(&state.sref(&src));
+                state.registry.invalidate(&src_ref);
                 return Ok(true);
             }
         };
-        state.registry.invalidate(&state.sref(&src));
+        state.registry.invalidate(&src_ref);
         #[cfg(test)]
-        if tombstoned && fork_failpoints::should_stop_after_tombstone(&src) {
+        if tombstoned && fork_failpoints::should_stop_after_tombstone(src_ref.name().as_str()) {
             // "Crash" here: the tombstone and its debt are durable, the
             // recursive release has not run.
             return Ok(removed_ref);
@@ -4075,15 +4097,26 @@ fn release_fork_ref(
             // ForkRef's own recorded source epoch.
             if let Some(after) = state
                 .registry
-                .get(&state.sref(&src))
+                .get(&src_ref)
                 .await
                 .map_err(|e| e.to_string())?
                 && after.stream_epoch == source_epoch
                 && let Some(gf) = after.forked_from.as_ref()
-                && release_fork_ref(&state, &gf.source, &gf.fork_id, &gf.source_epoch).await?
+                && release_fork_ref(
+                    &state,
+                    after.ref_in_project(&gf.source),
+                    &gf.fork_id,
+                    &gf.source_epoch,
+                )
+                .await?
             {
-                clear_parent_debt(&state, &src, &source_epoch, Some((&gf.source, &gf.fork_id)))
-                    .await?;
+                clear_parent_debt(
+                    &state,
+                    &src_ref,
+                    &source_epoch,
+                    Some((&gf.source, &gf.fork_id)),
+                )
+                .await?;
             }
         }
         Ok(removed_ref)
@@ -4129,8 +4162,9 @@ fn delete_lifecycle(
                 // retry is what repairs that crash later. A source
                 // recreated since the fork is conclusive too — the
                 // incarnation this debt was owed to is gone.
-                if release_fork_ref(&state, &src, &fid, &sep).await? {
-                    clear_parent_debt(&state, &name, &d.stream_epoch, Some((&src, &fid))).await?;
+                if release_fork_ref(&state, d.ref_in_project(&src), &fid, &sep).await? {
+                    clear_parent_debt(&state, &d.sref(), &d.stream_epoch, Some((&src, &fid)))
+                        .await?;
                 }
             }
             // Then walk UP. A crashed cascade leaves the debt on a
@@ -4138,12 +4172,15 @@ fn delete_lifecycle(
             // client will ever retry is the original delete of the leaf.
             // Repairing only this descriptor left the ancestor pinned
             // and reported success.
-            let mut next = d.forked_from.clone();
+            // Each hop resolves in the project of the descriptor that
+            // HOLDS the reference (chain-invariant today, structurally
+            // per-hop).
+            let mut next = d.forked_from.as_ref().map(|f| d.ref_in_project(&f.source));
             for _ in 0..64 {
-                let Some(f) = next else { break };
+                let Some(anc_ref) = next else { break };
                 let Some(anc) = state
                     .registry
-                    .get(&state.sref(&f.source))
+                    .get(&anc_ref)
                     .await
                     .map_err(|e| e.to_string())?
                 else {
@@ -4154,7 +4191,13 @@ fn delete_lifecycle(
                 }
                 let conclusive = match anc.forked_from.as_ref() {
                     Some(gp) => {
-                        release_fork_ref(&state, &gp.source, &gp.fork_id, &gp.source_epoch).await?
+                        release_fork_ref(
+                            &state,
+                            anc.ref_in_project(&gp.source),
+                            &gp.fork_id,
+                            &gp.source_epoch,
+                        )
+                        .await?
                     }
                     None => true,
                 };
@@ -4165,13 +4208,16 @@ fn delete_lifecycle(
                         .map(|gp| (gp.source.clone(), gp.fork_id.clone()));
                     clear_parent_debt(
                         &state,
-                        &f.source,
+                        &anc_ref,
                         &anc.stream_epoch,
                         debt.as_ref().map(|(a, b)| (a.as_str(), b.as_str())),
                     )
                     .await?;
                 }
-                next = anc.forked_from.clone();
+                next = anc
+                    .forked_from
+                    .as_ref()
+                    .map(|g| anc.ref_in_project(&g.source));
             }
             return Ok(());
         }
@@ -4261,8 +4307,8 @@ fn delete_lifecycle(
             // absent-on-live-source release keeps the debt: the
             // child's creator may still install the reference, and the
             // next DELETE of this tombstone retries and removes it.
-            if release_fork_ref(&state, &src, &fid, &sep).await? {
-                clear_parent_debt(&state, &name, &epoch, Some((&src, &fid))).await?;
+            if release_fork_ref(&state, d.ref_in_project(&src), &fid, &sep).await? {
+                clear_parent_debt(&state, &d.sref(), &epoch, Some((&src, &fid))).await?;
             }
         }
         Ok(())

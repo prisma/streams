@@ -1096,7 +1096,11 @@ Add weighted deficit round-robin inside shard committers only if noisy-neighbor 
 * [x] Convert internal RPC targets. *(Stage 4a:
   `streams-internal-project` on the wire; receivers rebuild registry
   identity from the header and verify it against the descriptor.)*
-* [ ] Implement same-project fork/DLQ checks.
+* [x] Implement same-project fork/DLQ checks. *(Stored references —
+  `ForkRef.source`, `dead_letter_stream` — resolve exclusively through
+  `StreamDesc::ref_in_project`, so a cross-project reference is
+  unrepresentable rather than checked; isolation test drives a
+  same-named same-fork-id foreign look-alike.)*
 * [x] Replace watch URL secret design. *(Stage 4b: §15 short-lived
   fully-bound capabilities, `Prisma-Watch` / `cap=`; `sig=` retired;
   cross-language vector pinned.)*
