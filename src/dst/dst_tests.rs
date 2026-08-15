@@ -19141,8 +19141,16 @@ async fn shared_cell_certification_smoke() {
     let _xr = crate::billing::billing_clock_lock().read().await;
     const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
     const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
-    const N: usize = 128;
-    const NOISY: usize = 16;
+    // Suite default = 128 (fast gate). The at-scale certification leg
+    // (contract Stage 8: >= 1,000 projects, 32-64 noisy) runs the SAME
+    // test with MT_CERT_PROJECTS=1000 — one code path, two postures.
+    #[allow(non_snake_case)]
+    let N: usize = std::env::var("MT_CERT_PROJECTS")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(128);
+    #[allow(non_snake_case)]
+    let NOISY: usize = if N >= 1000 { 48 } else { 16 };
     let now = crate::shard::now_ms() / 1000;
     let svc = std::sync::Arc::new(
         crate::auth::AuthService::new(
