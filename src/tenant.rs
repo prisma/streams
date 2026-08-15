@@ -39,9 +39,11 @@ pub enum IdentityError {
         max: usize,
         got: usize,
     },
-    /// Whitespace, control bytes, and DEL are rejected in ids: ids are
-    /// hex-encoded in registry paths so charset is not a path-safety
-    /// issue, but an id with invisible bytes is an operator trap.
+    /// Byte outside the contract-r1 allowlist [A-Za-z0-9_-]. Strict on
+    /// purpose: ids are hex-encoded in registry paths so charset is
+    /// not a path-safety issue, but Unicode confusables, bidi
+    /// controls, and zero-width characters in a tenant id are a
+    /// security trap, and the Control Plane only mints ASCII ids.
     ForbiddenByte {
         at: usize,
     },
@@ -57,7 +59,7 @@ impl fmt::Display for IdentityError {
             IdentityError::ForbiddenByte { at } => {
                 write!(
                     f,
-                    "identifier contains a control/whitespace byte at offset {at}"
+                    "identifier contains a byte outside [A-Za-z0-9_-] at offset {at}"
                 )
             }
         }
@@ -74,7 +76,15 @@ fn validate_id(raw: &str, max: usize) -> Result<(), IdentityError> {
             got: raw.len(),
         });
     }
-    if let Some(at) = raw.bytes().position(|b| b <= 0x20 || b == 0x7f) {
+    // Contract r1 frozen grammar: 1*128( ALPHA / DIGIT / "_" / "-" ).
+    // A strict allowlist, not a denylist: Unicode whitespace, bidi
+    // controls, and zero-width characters are all multi-byte UTF-8 and
+    // fall outside it byte-by-byte. Supersedable only by a SHARED
+    // Control Plane parser, and only in the tightening direction.
+    if let Some(at) = raw
+        .bytes()
+        .position(|b| !(b.is_ascii_alphanumeric() || b == b'_' || b == b'-'))
+    {
         return Err(IdentityError::ForbiddenByte { at });
     }
     Ok(())
@@ -494,6 +504,8 @@ pub enum PrefixError {
     /// leading/trailing/double slash — the grant must be a canonical
     /// component path, matching the stream-name component rules.
     EmptyComponent,
+    DotComponent,
+    ReservedRoot,
     ForbiddenChar {
         at: usize,
     },
@@ -509,6 +521,18 @@ impl fmt::Display for PrefixError {
             PrefixError::Empty => write!(f, "prefix is empty"),
             PrefixError::TooLong { max, got } => {
                 write!(f, "prefix is {got} bytes; maximum is {max}")
+            }
+            PrefixError::DotComponent => {
+                write!(
+                    f,
+                    "'.' and '..' components are not allowed in a prefix grant"
+                )
+            }
+            PrefixError::ReservedRoot => {
+                write!(
+                    f,
+                    "prefix grants may not target the reserved {RESERVED_ROOT} namespace"
+                )
             }
             PrefixError::EmptyComponent => {
                 write!(
@@ -546,11 +570,33 @@ impl CanonicalPrefix {
                 got: raw.len(),
             });
         }
-        if let Some(at) = raw.bytes().position(|b| b <= 0x20 || b == 0x7f) {
+        if let Some(at) = raw
+            .char_indices()
+            .find(|(_, c)| c.is_control() || *c == ' ')
+            .map(|(i, _)| i)
+        {
             return Err(PrefixError::ForbiddenChar { at });
         }
-        if raw.split('/').any(str::is_empty) {
-            return Err(PrefixError::EmptyComponent);
+        // A prefix grant follows the stream-name COMPONENT rules
+        // (shared `valid_component`): a grant of `.`/`..`/`a//b` can
+        // never match a canonical name and is an issuer bug, and a
+        // grant rooted in the reserved system namespace must not
+        // exist. Deliberately NOT the full stream-name validator:
+        // final-segment addressability rules (records/consumers/
+        // watches, subresource grammar) do not apply to a prefix — a
+        // grant `a/records` legitimately narrows to streams UNDER
+        // `a/records/…` even though no stream may be NAMED exactly
+        // that.
+        let mut first = true;
+        for comp in raw.split('/') {
+            valid_component(comp).map_err(|e| match e {
+                NameError::EmptyComponent => PrefixError::EmptyComponent,
+                _ => PrefixError::DotComponent,
+            })?;
+            if first && comp == RESERVED_ROOT {
+                return Err(PrefixError::ReservedRoot);
+            }
+            first = false;
         }
         Ok(Self(Arc::from(raw)))
     }
@@ -645,6 +691,16 @@ mod tests {
             ProjectId::new("a\tb"),
             Err(IdentityError::ForbiddenByte { at: 1 })
         );
+        // Allowlist, not denylist: zero-width space, bidi override,
+        // dot, slash, and '+' are all outside [A-Za-z0-9_-].
+        for bad in ["a\u{200b}b", "a\u{202e}b", "a.b", "a/b", "a+b"] {
+            assert_eq!(
+                ProjectId::new(bad),
+                Err(IdentityError::ForbiddenByte { at: 1 }),
+                "{bad:?} must be rejected"
+            );
+        }
+        assert!(ProjectId::new("proj_ABC-123").is_ok());
         assert!(WorkspaceId::new("ws_789").is_ok());
         assert!(validate_cell_id("fra-cell-07").is_ok());
     }
@@ -758,6 +814,31 @@ mod tests {
             Err(PrefixError::ForbiddenChar { at: 1 })
         );
         assert!(CanonicalPrefix::normalize(&"x".repeat(257)).is_err());
+        // Shared component rules with stream names (review round):
+        assert_eq!(
+            CanonicalPrefix::normalize("."),
+            Err(PrefixError::DotComponent)
+        );
+        assert_eq!(
+            CanonicalPrefix::normalize(".."),
+            Err(PrefixError::DotComponent)
+        );
+        assert_eq!(
+            CanonicalPrefix::normalize("a/../b"),
+            Err(PrefixError::DotComponent)
+        );
+        assert_eq!(
+            CanonicalPrefix::normalize("__ds"),
+            Err(PrefixError::ReservedRoot)
+        );
+        assert_eq!(
+            CanonicalPrefix::normalize("__ds/x"),
+            Err(PrefixError::ReservedRoot)
+        );
+        // Only the ROOT is reserved, and addressability finals are
+        // deliberately legal in prefixes:
+        assert!(CanonicalPrefix::normalize("a/__ds").is_ok());
+        assert!(CanonicalPrefix::normalize("a/records").is_ok());
     }
 
     #[test]
