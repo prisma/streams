@@ -545,9 +545,17 @@ pub(crate) fn product_auth_gate(
     if method == Method::OPTIONS {
         return None; // preflights carry no credentials, by definition
     }
+    // §15: the observation capability arrives as `Authorization:
+    // Prisma-Watch <cap>` (preferred) or, for EventSource clients, a
+    // SHORT-LIVED `cap=` query parameter. The retired unexpiring
+    // `sig=` design is gone — clean switch.
     let capability = matches!(classify_route(path), Ok(ProductRoute::WatchWait { .. }))
         && method == Method::GET
-        && query.split('&').any(|kv| kv.starts_with("sig="));
+        && (query.split('&').any(|kv| kv.starts_with("cap="))
+            || headers
+                .get(axum::http::header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .is_some_and(|v| v.starts_with("Prisma-Watch ")));
     if capability || crate::http::authorized(state, headers) {
         return None;
     }
@@ -6173,7 +6181,7 @@ async fn product_watch_wait(
             false,
         );
     }
-    let q = match strict_query(query, &["cursor", "sig", "timeoutMs"]) {
+    let q = match strict_query(query, &["cursor", "cap", "timeoutMs"]) {
         Ok(q) => q,
         Err(r) => return r,
     };
@@ -6186,16 +6194,26 @@ async fn product_watch_wait(
             true,
         );
     };
-    // Auth: the derived URL sig (observation capability), or the full
-    // encryption key.
-    // The sig chain is derivable by any stream-key holder, offline:
-    //   touch_token(key, epoch) -> wait_sig_key -> wait_url_sig(keyHex).
-    // The server holds no stream keys, so it verifies against the
-    // wait_sig_key persisted in the descriptor at create. That is what
-    // makes an issued URL durable: it keeps working across restarts,
-    // on a process that has never seen this stream, and for a
-    // collection that has not been appended to in days.
-    let sig_ok = q.get("sig").is_some_and(|sig| {
+    // Auth (§15): a watch-observation CAPABILITY, or the full
+    // encryption key. The capability chain is derivable by any
+    // stream-key holder, offline:
+    //   touch_token(key, epoch) -> wait_sig_key -> watch_capability_sig
+    // and the server verifies against the wait_sig_key persisted in
+    // the descriptor at create — no stream keys held server-side, so
+    // capabilities keep working across restarts and cold processes.
+    // Unlike the retired `sig=` design the capability is bound to
+    // project + name + epoch + watch + key + METHOD + EXPIRY, expires
+    // in <=5 minutes, and is accepted from the Prisma-Watch
+    // Authorization scheme (preferred) or a `cap=` query parameter
+    // for EventSource clients. REDACTION: never log the query string
+    // or Authorization header of this route.
+    let cap = headers
+        .get(header::AUTHORIZATION)
+        .and_then(|v| v.to_str().ok())
+        .and_then(|v| v.strip_prefix("Prisma-Watch "))
+        .map(str::to_string)
+        .or_else(|| q.get("cap").cloned());
+    let cap_ok = cap.is_some_and(|c| {
         use base64::Engine;
         let Some(stored) = desc.watch_sig_key.as_deref() else {
             return false;
@@ -6206,18 +6224,18 @@ async fn product_watch_wait(
         let Ok(sk) = <[u8; 32]>::try_from(raw.as_slice()) else {
             return false;
         };
-        let expect = crate::crypto::wait_url_sig(&sk, &key_hex);
-        // Constant-time: a byte-at-a-time comparison would leak the
-        // signature one probe at a time to a caller who can time it.
-        let got = sig.trim().to_ascii_lowercase();
-        expect.len() == got.len()
-            && expect
-                .bytes()
-                .zip(got.bytes())
-                .fold(0u8, |acc, (a, b)| acc | (a ^ b))
-                == 0
+        crate::crypto::verify_watch_capability(
+            &c,
+            &sk,
+            &desc.sref(),
+            &desc.stream_epoch,
+            &w,
+            &key_hex,
+            "GET",
+            crate::shard::now_ms() / 1000,
+        )
     });
-    if !sig_ok {
+    if !cap_ok {
         let key_ok = product_key(&headers).is_some_and(|kb| {
             matches!(
                 crate::http::check_key(Some(&kb), &desc),
@@ -6228,7 +6246,7 @@ async fn product_watch_wait(
             return perr(
                 StatusCode::FORBIDDEN,
                 "watch_unauthorized",
-                "a valid sig or Prisma-Encryption-Key is required",
+                "a valid observation capability or Prisma-Encryption-Key is required",
                 None,
                 false,
             );
@@ -6314,6 +6332,9 @@ async fn product_watch_wait(
         .status(status)
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::CACHE_CONTROL, "no-store")
+        // §15: observation responses must never leak the capability
+        // through a Referer header.
+        .header("referrer-policy", "no-referrer")
         .body(Body::from(body.to_string()))
         .unwrap()
 }

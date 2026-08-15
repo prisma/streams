@@ -106,13 +106,98 @@ pub fn wait_sig_key(token: &[u8; 32], stream_epoch: &[u8; EPOCH_LEN]) -> [u8; 32
 /// GET /touch/key/{watchKeyHex}?sig={this}. Constant per (token, key) so a
 /// cohort sharing the token collapses at the CDN, while URL possession is
 /// the observation capability (cache hits never consult origin auth).
-pub fn wait_url_sig(sig_key: &[u8; 32], watch_key_hex: &str) -> String {
+/// §15 watch-observation capability limits: enforced at VERIFICATION
+/// (issuance is offline by stream-key holders, so the server bounds
+/// what it accepts, not what clients mint).
+#[allow(dead_code)] // unused only in the crypto-sharing side bins
+pub const WATCH_CAP_MAX_LIFETIME_SECS: i64 = 300;
+#[allow(dead_code)] // unused only in the crypto-sharing side bins
+pub const WATCH_CAP_SKEW_SECS: i64 = 30;
+
+/// The layout-4 watch-observation capability signature: HMAC-SHA256
+/// under the descriptor's wait_sig_key over the DOMAIN-SEPARATED,
+/// length-prefixed §2.1 encoding of every §15 binding —
+/// project + stream name + stream epoch + watch name + key + METHOD +
+/// expiry. Unlike the retired `?sig=` design, nothing about this
+/// capability is reusable outside its exact (resource, method, time)
+/// tuple, and a workspace transfer does not invalidate it (project is
+/// the binding, per the contract).
+// 8 arguments: each is a DISTINCT §15 capability binding (project,
+// stream, epoch, watch, key, method, expiry) plus the signing key; a
+// params struct would rename the count without changing it.
+#[allow(clippy::too_many_arguments)]
+#[allow(dead_code)] // unused only in the crypto-sharing side bins
+pub fn watch_capability_sig(
+    sig_key: &[u8; 32],
+    sref: &crate::tenant::TenantStreamRef,
+    stream_epoch_hex: &str,
+    watch_name: &str,
+    watch_key_hex: &str,
+    method: &str,
+    expires_unix: i64,
+) -> String {
     use hmac::{Hmac, Mac};
+    let input = crate::tenant::encode_hash_input(
+        crate::tenant::HashDomain::WatchCapabilityV1,
+        &[
+            sref.project_id().as_bytes(),
+            sref.name().as_bytes(),
+            stream_epoch_hex.as_bytes(),
+            watch_name.as_bytes(),
+            watch_key_hex.as_bytes(),
+            method.as_bytes(),
+            &expires_unix.to_be_bytes(),
+        ],
+    );
     let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(sig_key).expect("hmac key");
-    mac.update(b"wait-url\0");
-    mac.update(watch_key_hex.as_bytes());
+    mac.update(&input);
     let out = mac.finalize().into_bytes();
-    hex(&out[..8])
+    hex(&out[..16])
+}
+
+/// Capability wire form: `<exp_unix>.<sig_hex32>`. Verification is
+/// constant-time over the signature and enforces the §15 lifetime
+/// window against the caller-supplied clock.
+#[allow(clippy::too_many_arguments)]
+#[allow(dead_code)] // unused only in the crypto-sharing side bins
+pub fn verify_watch_capability(
+    cap: &str,
+    sig_key: &[u8; 32],
+    sref: &crate::tenant::TenantStreamRef,
+    stream_epoch_hex: &str,
+    watch_name: &str,
+    watch_key_hex: &str,
+    method: &str,
+    now_unix: i64,
+) -> bool {
+    let Some((exp_s, got)) = cap.trim().split_once('.') else {
+        return false;
+    };
+    let Ok(exp) = exp_s.parse::<i64>() else {
+        return false;
+    };
+    if exp + WATCH_CAP_SKEW_SECS <= now_unix {
+        return false; // expired
+    }
+    if exp - now_unix > WATCH_CAP_MAX_LIFETIME_SECS + WATCH_CAP_SKEW_SECS {
+        return false; // minted beyond the maximum lifetime
+    }
+    let expect = watch_capability_sig(
+        sig_key,
+        sref,
+        stream_epoch_hex,
+        watch_name,
+        watch_key_hex,
+        method,
+        exp,
+    );
+    let got = got.to_ascii_lowercase();
+    expect.len() == got.len()
+        && expect
+            .bytes()
+            .zip(got.bytes())
+            .fold(0u8, |acc, (a, b)| acc | (a ^ b))
+            == 0
 }
 
 pub fn hex(b: &[u8]) -> String {
@@ -426,6 +511,40 @@ pub fn decrypt_frame(
             .map_err(|e| format!("frame decompression failed: {e}"));
     }
     Ok(pt)
+}
+
+#[cfg(test)]
+mod capability_vector {
+    /// Cross-language pin: the SDK mirrors watch_capability_sig
+    /// byte-for-byte (encodeCapabilityInput + HMAC-SHA256[..16]).
+    /// sdk-vector.mjs in the repo scratch reproduces this exact
+    /// output; changing either side breaks this test or that script.
+    #[test]
+    fn watch_capability_vector_is_pinned() {
+        let sk = [7u8; 32];
+        let sref = crate::tenant::TenantStreamRef::new(
+            crate::tenant::ProjectId::new("proj-test").unwrap(),
+            crate::tenant::CanonicalStreamName::new("orders").unwrap(),
+        );
+        let sig = super::watch_capability_sig(
+            &sk,
+            &sref,
+            "00112233445566778899aabbccddeeff",
+            "by-customer",
+            "0011223344556677",
+            "GET",
+            1_786_600_000,
+        );
+        // Pinned vector (do not regenerate casually: every issued
+        // capability derives through this construction).
+        assert_eq!(sig.len(), 32);
+        insta_pin(&sig);
+    }
+
+    fn insta_pin(sig: &str) {
+        const PINNED: &str = "381d52c5438c2b10393c4697a001e5a5";
+        assert_eq!(sig, PINNED);
+    }
 }
 
 #[cfg(test)]

@@ -109,6 +109,22 @@ fn client() -> reqwest::Client {
         .unwrap()
 }
 
+// BIT-ROT NOTICE: this bench targets the RETIRED pre-product raw
+// touch surface (stream-profile / /touch/key routes deleted in the
+// product cutover) and cannot run against the current server. The
+// retired wait-url signature is kept LOCALLY here only so the bin
+// compiles; the live watch surface uses §15 capabilities
+// (crypto::watch_capability_sig). Candidate for deletion.
+fn legacy_wait_url_sig(sig_key: &[u8; 32], watch_key_hex: &str) -> String {
+    use hmac::{Hmac, Mac};
+    use sha2::Sha256;
+    let mut mac = <Hmac<Sha256> as Mac>::new_from_slice(sig_key).expect("hmac key");
+    mac.update(b"wait-url\0");
+    mac.update(watch_key_hex.as_bytes());
+    let out = mac.finalize().into_bytes();
+    crypto::hex(&out[..8])
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
@@ -200,7 +216,7 @@ async fn main() -> anyhow::Result<()> {
     for w in 0..args.fine_waiters {
         let tenant_idx = w % args.tenants;
         let watch = touch_keys::key_hex(touch_keys::watch_key(tpl_id, &[format!("t{tenant_idx}")]));
-        let sig = crypto::wait_url_sig(&sig_key, &watch);
+        let sig = legacy_wait_url_sig(&sig_key, &watch);
         let http = http.clone();
         let shared = shared.clone();
         let observed_slot = final_observed.clone();
@@ -266,7 +282,7 @@ async fn main() -> anyhow::Result<()> {
         }));
     }
     let table_key = touch_keys::key_hex(touch_keys::table_key(&args.entity));
-    let table_sig = crypto::wait_url_sig(&sig_key, &table_key);
+    let table_sig = legacy_wait_url_sig(&sig_key, &table_key);
     for _ in 0..args.coarse_waiters {
         let http = http.clone();
         let shared = shared.clone();

@@ -9412,15 +9412,71 @@ async fn product_watch_wakes_on_matching_append() {
     let epoch = desc.epoch_bytes().unwrap();
     let tok = crate::crypto::touch_token(&skey_local, &epoch);
     let sk = crate::crypto::wait_sig_key(&tok, &epoch);
-    let sig = crate::crypto::wait_url_sig(&sk, &khex);
+    let exp = crate::shard::now_ms() / 1000 + 120;
+    let cap = format!(
+        "{exp}.{}",
+        crate::crypto::watch_capability_sig(
+            &sk,
+            &state.sref("wt"),
+            &desc.stream_epoch,
+            "by-customer",
+            &khex,
+            "GET",
+            exp,
+        )
+    );
     let path = format!(
-        "/v1/streams/wt/watches/by-customer/keys/{khex}?cursor={cursor}&timeoutMs=200&sig={sig}"
+        "/v1/streams/wt/watches/by-customer/keys/{khex}?cursor={cursor}&timeoutMs=200&cap={cap}"
     );
     let (st, _, b) = preq(addr, "GET", &path, &[], b"").await;
     assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
-    // Wrong sig, no key: 403.
+    // The Prisma-Watch Authorization scheme is the preferred carrier.
+    let path_hdr =
+        format!("/v1/streams/wt/watches/by-customer/keys/{khex}?cursor=now&timeoutMs=200");
+    let hdr = format!("Prisma-Watch {cap}");
+    let (st, _, b) = preq(addr, "GET", &path_hdr, &[("authorization", &hdr)], b"").await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    // An EXPIRED capability is refused (§15: <=5 min lifetime).
+    let old_exp = crate::shard::now_ms() / 1000 - 3600;
+    let stale = format!(
+        "{old_exp}.{}",
+        crate::crypto::watch_capability_sig(
+            &sk,
+            &state.sref("wt"),
+            &desc.stream_epoch,
+            "by-customer",
+            &khex,
+            "GET",
+            old_exp,
+        )
+    );
     let path = format!(
-        "/v1/streams/wt/watches/by-customer/keys/{khex}?cursor=now&timeoutMs=200&sig=deadbeef"
+        "/v1/streams/wt/watches/by-customer/keys/{khex}?cursor=now&timeoutMs=200&cap={stale}"
+    );
+    let (st, _, _) = preq(addr, "GET", &path, &[], b"").await;
+    assert_eq!(st, 403, "expired capability must be refused");
+    // A capability minted BEYOND the 5-minute maximum is refused too.
+    let far = crate::shard::now_ms() / 1000 + 86_400;
+    let long = format!(
+        "{far}.{}",
+        crate::crypto::watch_capability_sig(
+            &sk,
+            &state.sref("wt"),
+            &desc.stream_epoch,
+            "by-customer",
+            &khex,
+            "GET",
+            far,
+        )
+    );
+    let path = format!(
+        "/v1/streams/wt/watches/by-customer/keys/{khex}?cursor=now&timeoutMs=200&cap={long}"
+    );
+    let (st, _, _) = preq(addr, "GET", &path, &[], b"").await;
+    assert_eq!(st, 403, "over-lifetime capability must be refused");
+    // Wrong cap, no key: 403.
+    let path = format!(
+        "/v1/streams/wt/watches/by-customer/keys/{khex}?cursor=now&timeoutMs=200&cap=1.deadbeef"
     );
     let (st, _, _) = preq(addr, "GET", &path, &[], b"").await;
     assert_eq!(st, 403);
@@ -9845,13 +9901,25 @@ async fn watch_urls_verify_on_a_process_that_never_saw_the_key() {
         &[r#""c1""#.to_string()],
     );
     let tok = crate::crypto::touch_token(&key, &epoch);
-    let sig = crate::crypto::wait_url_sig(&crate::crypto::wait_sig_key(&tok, &epoch), &khex);
+    let exp = crate::shard::now_ms() / 1000 + 120;
 
     // A second server over the same store: never saw the key, never
     // absorbed a record, never issued this URL.
     let (state2, addr2) = http_rig(store).await;
+    let cap = format!(
+        "{exp}.{}",
+        crate::crypto::watch_capability_sig(
+            &crate::crypto::wait_sig_key(&tok, &epoch),
+            &state2.sref("wsig"),
+            epoch_hex,
+            "by-customer",
+            &khex,
+            "GET",
+            exp,
+        )
+    );
     let path = format!(
-        "/v1/streams/wsig/watches/by-customer/keys/{khex}?cursor=now&timeoutMs=150&sig={sig}"
+        "/v1/streams/wsig/watches/by-customer/keys/{khex}?cursor=now&timeoutMs=150&cap={cap}"
     );
     let (st, _, b) = preq(addr2, "GET", &path, &[], b"").await;
     assert_eq!(
@@ -9861,9 +9929,10 @@ async fn watch_urls_verify_on_a_process_that_never_saw_the_key() {
         String::from_utf8_lossy(&b)
     );
 
-    // A forged signature is refused, on both.
+    // A forged capability is refused, on both.
+    let bad_exp = crate::shard::now_ms() / 1000 + 120;
     let bad = format!(
-        "/v1/streams/wsig/watches/by-customer/keys/{khex}?cursor=now&timeoutMs=150&sig=0000000000000000"
+        "/v1/streams/wsig/watches/by-customer/keys/{khex}?cursor=now&timeoutMs=150&cap={bad_exp}.00000000000000000000000000000000"
     );
     let (st, _, _) = preq(addr2, "GET", &bad, &[], b"").await;
     assert_eq!(st, 403);
@@ -10120,15 +10189,19 @@ async fn only_the_exact_signed_watch_route_skips_the_token() {
     .await;
     assert_eq!(st, 200);
 
-    // Without the token, with a sig pasted on, every one of these is 401.
+    // Without the token, with a capability pasted on, every one of
+    // these is 401 — the observation exception is EXACTLY the watch
+    // wait route, and the retired sig= spelling buys nothing anywhere.
     let key_only = [("prisma-encryption-key", PRISMA_KEY)];
     for path in [
-        format!("/v1/streams/{evil}?sig=anything"),
+        format!("/v1/streams/{evil}?cap=1.aa"),
+        format!("/v1/streams/{evil}/records?cap=1.aa"),
+        format!("/v1/streams/{evil}/records?routingKey=&cap=1.aa"),
+        format!("/v1/streams/{evil}/watches?cap=1.aa"),
+        format!("/v1/streams/{evil}/consumers/c?cap=1.aa"),
         format!("/v1/streams/{evil}/records?sig=anything"),
-        format!("/v1/streams/{evil}/records?routingKey=&sig=anything"),
-        format!("/v1/streams/{evil}/watches?sig=anything"),
-        format!("/v1/streams/{evil}/consumers/c?sig=anything"),
         // a watch-shaped path with EXTRA segments after the key
+        "/v1/streams/acme/watches/w/keys/0011223344556677/extra?cap=1.aa".to_string(),
         "/v1/streams/acme/watches/w/keys/0011223344556677/extra?sig=x".to_string(),
     ] {
         let (st, _, b) = preq(addr, "GET", &path, &key_only, b"").await;
@@ -10170,9 +10243,21 @@ async fn only_the_exact_signed_watch_route_skips_the_token() {
     let key = crate::crypto::StreamKey::from_b64(PRISMA_KEY).unwrap();
     let khex = crate::product::watch_key_hex("w", &["/id".to_string()], &[r#""a""#.to_string()]);
     let tok = crate::crypto::touch_token(&key, &epoch);
-    let sig = crate::crypto::wait_url_sig(&crate::crypto::wait_sig_key(&tok, &epoch), &khex);
+    let exp = crate::shard::now_ms() / 1000 + 120;
+    let cap = format!(
+        "{exp}.{}",
+        crate::crypto::watch_capability_sig(
+            &crate::crypto::wait_sig_key(&tok, &epoch),
+            &state.sref("wauth"),
+            meta["epoch"].as_str().unwrap(),
+            "w",
+            &khex,
+            "GET",
+            exp,
+        )
+    );
     let path =
-        format!("/v1/streams/wauth/watches/w/keys/{khex}?cursor=now&timeoutMs=150&sig={sig}");
+        format!("/v1/streams/wauth/watches/w/keys/{khex}?cursor=now&timeoutMs=150&cap={cap}");
     let (st, _, b) = preq(addr, "GET", &path, &[], b"").await;
     assert_eq!(
         st,

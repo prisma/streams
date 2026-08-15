@@ -27,6 +27,12 @@
 export interface StreamsClientOptions {
   url: string;
   token?: string;
+  /**
+   * The stream's project id. Required for minting watch-observation
+   * capabilities (the capability is bound to
+   * project + stream + epoch + watch + key + method + expiry).
+   */
+  project?: string;
   fetch?: typeof fetch;
 }
 
@@ -299,6 +305,7 @@ export class ProducerSequenceReusedError extends StreamsError {
 interface Ctx {
   base: string;
   token?: string;
+  project?: string;
   fetch: typeof fetch;
 }
 
@@ -415,6 +422,7 @@ export class StreamsClient {
   constructor(options: StreamsClientOptions) {
     this.ctx = {
       base: options.url.replace(/\/$/, ""),
+      project: options.project,
       token: options.token,
       fetch: options.fetch ?? fetch.bind(globalThis),
     };
@@ -779,8 +787,22 @@ export class Stream<T = unknown> {
       );
     }
     const keyHex = await deriveWatchKey(name, def.fields, values);
-    const sig = await watchUrlSig(this.key, await this._epoch(), keyHex);
-    return new Watch(this.ctx, this, name, keyHex, sig);
+    if (!this.ctx.project) {
+      throw new StreamsError(
+        400,
+        "project_required",
+        "watch capabilities are project-bound; set StreamsClientOptions.project",
+        false,
+      );
+    }
+    return new Watch(
+      this.ctx,
+      this,
+      name,
+      keyHex,
+      this.key,
+      await this._epoch(),
+    );
   }
 
   /** Definitions are immutable for one incarnation, so fetch them once. */
@@ -1262,14 +1284,55 @@ async function hkdf32(
  * management rights — and the server verifies it against the verifier
  * it persisted at create.
  */
-async function watchUrlSig(
+/**
+ * The §2.1 canonical length-prefixed encoding, mirrored from the
+ * server's tenant::encode_hash_input: every component (the domain tag
+ * first) is prefixed with its 4-byte big-endian length, so component
+ * boundaries can never alias.
+ */
+function encodeCapabilityInput(components: (Uint8Array | string)[]): Uint8Array {
+  const parts: Uint8Array[] = [];
+  let total = 0;
+  for (const c of components) {
+    const b = typeof c === "string" ? new TextEncoder().encode(c) : c;
+    const len = new Uint8Array(4);
+    new DataView(len.buffer).setUint32(0, b.length, false);
+    parts.push(len, b);
+    total += 4 + b.length;
+  }
+  const out = new Uint8Array(total);
+  let at = 0;
+  for (const p of parts) {
+    out.set(p, at);
+    at += p.length;
+  }
+  return out;
+}
+
+async function watchCapability(
   encryptionKeyB64: string,
   epochHex: string,
+  project: string,
+  streamName: string,
+  watchName: string,
   watchKeyHex: string,
+  expiresUnix: number,
 ): Promise<string> {
   const epoch = hexToBytes(epochHex);
   const token = await hkdf32(b64ToBytes(encryptionKeyB64), epoch, "touch-capability-v1");
   const sigKey = await hkdf32(token, epoch, "wait-sig-v1");
+  const expBytes = new Uint8Array(8);
+  new DataView(expBytes.buffer).setBigInt64(0, BigInt(expiresUnix), false);
+  const input = encodeCapabilityInput([
+    "watch-capability-v1",
+    project,
+    streamName,
+    epochHex,
+    watchName,
+    watchKeyHex,
+    "GET",
+    expBytes,
+  ]);
   const mac = await subtle().importKey(
     "raw",
     ab(sigKey),
@@ -1277,14 +1340,15 @@ async function watchUrlSig(
     false,
     ["sign"],
   );
-  const out = new Uint8Array(
-    await subtle().sign("HMAC", mac, ab(bytesOf("wait-url\0", watchKeyHex))),
-  );
-  return toHex(out.subarray(0, 8));
+  const out = new Uint8Array(await subtle().sign("HMAC", mac, ab(input)));
+  return `${expiresUnix}.${toHex(out.subarray(0, 16))}`;
 }
 
 // ---------------------------------------------------------------------
 // Watch observation
+
+/** §15: capabilities are SHORT-LIVED; default mint horizon. */
+const WATCH_CAP_TTL_SECS = 240;
 
 export class Watch {
   private ctx: Ctx;
@@ -1292,37 +1356,66 @@ export class Watch {
   readonly name: string;
   /** The derived 64-bit watch key, 16 lowercase hex. */
   readonly key: string;
-  /** The observation capability for this key. */
-  readonly sig: string;
+  private encryptionKey: string;
+  private epochHex: string;
 
   constructor(
     ctx: Ctx,
     stream: Stream<unknown>,
     name: string,
     key: string,
-    sig: string,
+    encryptionKey: string,
+    epochHex: string,
   ) {
     this.ctx = ctx;
     this.stream = stream;
     this.name = name;
     this.key = key;
-    this.sig = sig;
+    this.encryptionKey = encryptionKey;
+    this.epochHex = epochHex;
   }
 
   /**
-   * The absolute observation URL. Safe to hand to an untrusted client:
-   * it carries no stream key and no account token, and observes this
-   * one key only.
+   * Mint a fresh observation capability for this key: bound to
+   * project + stream + epoch + watch + key + GET + expiry, valid for
+   * at most 5 minutes (server-enforced). It grants observation of
+   * this one key and nothing else — no decryption, append, consumer
+   * or management rights.
    */
-  url(options?: { cursor?: string; timeoutMs?: number }): string {
-    return `${this.ctx.base}${this.path(options)}`;
+  async capability(ttlSecs: number = WATCH_CAP_TTL_SECS): Promise<string> {
+    const exp = Math.floor(Date.now() / 1000) + Math.min(ttlSecs, 300);
+    return watchCapability(
+      this.encryptionKey,
+      this.epochHex,
+      this.ctx.project!,
+      this.stream.name,
+      this.name,
+      this.key,
+      exp,
+    );
   }
 
-  private path(options?: { cursor?: string; timeoutMs?: number }): string {
+  /**
+   * An absolute observation URL carrying a FRESH short-lived
+   * capability (<=5 minutes). Safe to hand to an untrusted client —
+   * it carries no stream key and no account token, observes this one
+   * key only, and expires — but treat it as a secret while live:
+   * never log it, and prefer `capability()` with the
+   * `Authorization: Prisma-Watch` header where the client can set
+   * headers.
+   */
+  async url(options?: { cursor?: string; timeoutMs?: number }): Promise<string> {
+    return `${this.ctx.base}${await this.path(options)}`;
+  }
+
+  private async path(options?: {
+    cursor?: string;
+    timeoutMs?: number;
+  }): Promise<string> {
     const q = new URLSearchParams();
     q.set("cursor", options?.cursor ?? "now");
     if (options?.timeoutMs) q.set("timeoutMs", String(options.timeoutMs));
-    q.set("sig", this.sig);
+    q.set("cap", await this.capability());
     return this.stream._path(
       `/watches/${encodeURIComponent(this.name)}/keys/${this.key}?${q}`,
     );
@@ -1336,7 +1429,7 @@ export class Watch {
     const res = await req(
       this.ctx,
       "GET",
-      this.path(options),
+      await this.path(options),
       {},
       undefined,
       options?.signal,
