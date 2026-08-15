@@ -88,9 +88,21 @@ commit provenance) were unaffected; only a print statement was.
 
 Certification consumed ~14 launches over 2026-08-14/15 against a
 control-plane outage, an expired platform token (the CLI masks the
-401 as "Unable to connect"), and recurring local network-flap waves
-(connects to Cloudflare-fronted hosts refused in ~10ms at the local
-gateway for minutes at a time). Every failure hardened the harness:
+401 as "Unable to connect"), and recurring waves of **local
+ephemeral-port exhaustion**: a concurrent `phase2-cost-gate --profile
+full` benchmark (separate repo) held ~16.5k connections to its
+loopback S3 daemon — 13,206 of them SYN_SENT — against macOS's
+16,384-port ephemeral pool, so every local `connect()` failed with
+EADDRNOTAVAIL for minutes at a time, indistinguishable in curl exit
+codes from the remote hosts being down. The waves were initially
+misread as a flapping network path (the tag-time commit messages say
+so); corrected 2026-08-15 after Søren's diagnosis — even connects to
+the LAN gateway failed with "Can't assign requested address", which
+no router issue produces. The reconcile Errno 49 backoff (`69e61688`)
+had already treated the same phenomenon at smaller scale, self-inflicted
+by our own walker. Diagnostic lesson: before blaming the network,
+count the port pool (`netstat -an -p tcp | grep -c SYN_SENT`).
+Every failure hardened the harness:
 kill-proof capacity pause controls, confirm-before-retire receipt
 teardown, stamped-at-creation projects, retrying deploys that print
 CLI output, no-clobber service/URL caches, corpse-vs-flap preflight,

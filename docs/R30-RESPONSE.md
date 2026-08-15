@@ -132,8 +132,12 @@ frame-byte reconciliation is clean end to end.
 ## 4. Campaign operations: nine launches to one verdict
 
 2026-08-14 delivered a control-plane outage (~09:00–15:56Z,
-data plane unaffected), an afternoon of minutes-long network waves, and
-finally a platform-token expiry. Each failed launch exposed a harness
+data plane unaffected — genuinely platform-side: the API returned 000
+while google and the fleet answered 200 throughout, which port
+exhaustion cannot produce), an afternoon of minutes-long connect-failure
+waves (later traced to local ephemeral-port exhaustion by a concurrent
+benchmark — see the §5 correction), and finally a platform-token
+expiry. Each failed launch exposed a harness
 fragility that is now fixed and committed. Abridged ledger:
 
 | Run / event | Failed at | Root cause → fix (commit) |
@@ -165,10 +169,14 @@ catch it; non-gating.
 ## 5. Handoff leg: PASSED (post-token, post-flap)
 
 > Written mid-campaign while blocked; kept for the record. The token
-> was refreshed, and after a second campaign of local network-flap
-> waves (a flapping path to Cloudflare-fronted hosts: platform API and
-> Tigris refused connects in ~10ms at the local gateway for minutes at
-> a time), run `handoff-fh033626` passed on the certified binary:
+> was refreshed, and after a second campaign of connect-failure waves
+> — **post-round correction (2026-08-15)**: those were not a network
+> path problem but local ephemeral-port exhaustion by a concurrent
+> `phase2-cost-gate --profile full` benchmark holding ~16.5k loopback
+> connections against macOS's 16,384-port pool (EADDRNOTAVAIL even
+> toward the LAN gateway; the "Cloudflare path"/router theory in
+> earlier status updates was wrong) — run `handoff-fh033626` passed
+> on the certified binary:
 > target owner aborted at **342MB** durable backlog, replacement
 > restored **8/8 shards to exactly 100%** of frozen pre-kill gauges
 > (ratio 1.0), caught up under continued load, drained to 5MB after
