@@ -210,7 +210,6 @@ pub struct AppState {
     /// deployment config — never inferred from stream names. Persisted
     /// into every descriptor at creation.
     pub account_id: String,
-    pub project_id: String,
     /// The deployment's tenant (MULTITENANCY transition posture):
     /// until enforce-mode principals carry per-request projects, a
     /// dedicated cell serves exactly ONE project, configured

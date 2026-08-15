@@ -6623,7 +6623,15 @@ pub async fn project_usage(state: Arc<AppState>, project: String, query: &str) -
             true,
         );
     };
-    if project != state.project_id {
+    // Stage 4c: one source of truth for "this cell's project" — the
+    // typed AppState.tenant. The {project} segment goes through the
+    // frozen ID grammar first; a grammatically invalid ID gets the
+    // same not-found answer as a foreign one so the response is no
+    // grammar oracle.
+    let names_this_cell = crate::tenant::ProjectId::new(&project)
+        .map(|p| p == state.tenant)
+        .unwrap_or(false);
+    if !names_this_cell {
         return perr(
             StatusCode::NOT_FOUND,
             "unknown_project",

@@ -1415,7 +1415,6 @@ async fn async_main() -> anyhow::Result<()> {
             },
         )),
         account_id: args.account_id.clone(),
-        project_id: args.project_id.clone(),
         cell_id: args.cell_id.clone(),
         region: args.telemetry_region.clone(),
     });

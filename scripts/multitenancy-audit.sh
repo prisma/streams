@@ -16,9 +16,12 @@
 #                      every name-derived identity roots here; Stage 3
 #                      shrinks this to the allowlisted exceptions
 #                      (history.rs tick-stagger, routing-key hashing)
-#   registry-bare-name registry API calls that identify a stream by
-#                      bare &str name; Stage 3 flips these to
-#                      TenantStreamRef and DELETES the &str overloads
+#   registry-bare-name what could REINTRODUCE bare-name registry
+#                      identity now that Stage 3 deleted the &str
+#                      overloads (the type system carries converted
+#                      call sites): registry calls passing a string
+#                      literal, and registry methods declared over
+#                      &str names
 #   global-name-maps   process-global maps keyed by bare stream name
 #                      (scaler sketches/cooldowns/hot keys)
 #   tenant-fallback    deployment-global tenant identity (env
@@ -48,8 +51,11 @@ collect() {
     scan stream-hash 'stream_hash\(' src/*.rs src/dst/*.rs src/bin/*.rs |
       grep -v $'\tsrc/crypto.rs\t' || true
     scan registry-bare-name \
-      'registry[[:space:]]*\.[[:space:]]*(get|create|recreate|update|cas_update[a-z_]*|mutate_incarnation|invalidate|list_page)\(' \
+      'registry[[:space:]]*\.[[:space:]]*(get|recreate|update|cas_update[a-z_]*|mutate_incarnation|invalidate|list_page)\("' \
       src/*.rs src/dst/*.rs
+    scan registry-bare-name \
+      'fn (get|recreate|update|cas_update[a-z_]*|mutate_incarnation|invalidate|list_page)[^(]*\([^)]*name[^)]*&str' \
+      src/registry.rs
     scan global-name-maps 'HashMap<String' src/scaler3.rs src/registry.rs
     scan tenant-fallback '(acct_local|proj_local|"ACCOUNT_ID"|"PROJECT_ID")' src/*.rs
     scan internal-target 'streams-internal-(epoch|seg|identity|project)' src/*.rs

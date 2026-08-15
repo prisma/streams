@@ -1086,12 +1086,22 @@ Add weighted deficit round-robin inside shard committers only if noisy-neighbor 
 
 ### Stage 4 — Public and internal surface conversion
 
-* [ ] Convert raw and product handlers to `TenantStreamRef`.
-* [ ] Scope catalog and usage.
-* [ ] Convert internal RPC targets.
+* [x] Convert raw and product handlers to `TenantStreamRef`. *(Stage 3
+  switch: every handler resolves through `state.sref()` / registry
+  refs; bare-name overloads deleted.)*
+* [x] Scope catalog and usage. *(Catalog pages are project-prefixed
+  since Stage 3; the project-usage route authorizes against the typed
+  `AppState.tenant` — the parallel `project_id: String` field is
+  deleted.)*
+* [x] Convert internal RPC targets. *(Stage 4a:
+  `streams-internal-project` on the wire; receivers rebuild registry
+  identity from the header and verify it against the descriptor.)*
 * [ ] Implement same-project fork/DLQ checks.
-* [ ] Replace watch URL secret design.
-* [ ] Update SDK.
+* [x] Replace watch URL secret design. *(Stage 4b: §15 short-lived
+  fully-bound capabilities, `Prisma-Watch` / `cap=`; `sig=` retired;
+  cross-language vector pinned.)*
+* [ ] Update SDK. *(Watch capability + project option landed with 4b;
+  tokenProvider + 421 wrong-cell handling remain.)*
 
 **Exit:** the complete cross-project isolation matrix passes.
 

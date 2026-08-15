@@ -5366,7 +5366,6 @@ async fn http_rig_inner(
             },
         )),
         account_id: "acct_test".to_string(),
-        project_id: "proj_test".to_string(),
         cell_id: "cell_test".to_string(),
         region: "test".to_string(),
     });
@@ -20626,6 +20625,26 @@ async fn usage_pipeline_end_to_end_exactly_once() {
         "appendRequests",
     ] {
         assert_eq!(v2[f], v[f], "replay changed {f}: {before} vs {v2}");
+    }
+
+    // MT Stage 4c: the project-level answer authorizes against the
+    // typed cell tenant (AppState.tenant), not a parallel string. The
+    // cell's own project aggregates the same drained data; a foreign
+    // project, the retired divergent rig string "proj_test", and a
+    // grammatically invalid ID all get the SAME not-found answer — the
+    // response distinguishes neither foreignness nor grammar.
+    let (st, _, body) = preq(addr, "GET", "/v1/projects/proj-test/usage", &key, b"").await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&body));
+    let pv: serde_json::Value = serde_json::from_slice(&body).unwrap();
+    assert_eq!(pv["projectId"], "proj-test");
+    assert_eq!(pv["ingestRecords"], 2);
+    assert_eq!(pv["ingestPayloadBytes"], 2 * p1.len() as u64);
+    for foreign in ["proj-other", "proj_test", "pr..j"] {
+        let path = format!("/v1/projects/{foreign}/usage");
+        let (st, _, body) = preq(addr, "GET", &path, &key, b"").await;
+        assert_eq!(st, 404, "{foreign}: {}", String::from_utf8_lossy(&body));
+        let e: serde_json::Value = serde_json::from_slice(&body).unwrap();
+        assert_eq!(e["error"]["code"], "unknown_project", "{foreign}");
     }
 
     // The ledger itself never appears in its own books (§8.4).
