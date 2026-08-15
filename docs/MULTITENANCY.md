@@ -1128,7 +1128,11 @@ Add weighted deficit round-robin inside shard committers only if noisy-neighbor 
 * [x] Convert internal RPC targets. *(Stage 4a:
   `streams-internal-project` on the wire; receivers rebuild registry
   identity from the header and verify it against the descriptor.)*
-* [x] Implement same-project fork/DLQ checks. *(Stored references —
+* [x] Implement same-project fork/DLQ checks. *(Review item 4: the
+  DLQ compound rule is complete — source consumer authorization at the
+  gate, `streams.dlq.configure` + the credential's PREFIX grant over
+  the DESTINATION at config time. Fork's compound rule waits on the
+  raw-surface principal.)* *(Stored references —
   `ForkRef.source`, `dead_letter_stream` — resolve exclusively through
   `StreamDesc::ref_in_project`, so a cross-project reference is
   unrepresentable rather than checked; isolation test drives a

@@ -17076,6 +17076,14 @@ async fn enforce_mode_gates_the_product_surface() {
             "streams.consumers.configure streams.dlq.configure",
             G::All,
         ),
+        // Review item 4: right scopes, but the grant covers only
+        // acme/** — the DLQ destination must ALSO be inside it.
+        (
+            "c_dlqpfx",
+            "proj-test",
+            "streams.create streams.consumers.configure streams.dlq.configure",
+            G::Prefixes(vec![crate::tenant::CanonicalPrefix::normalize("acme").unwrap()].into()),
+        ),
         ("c_susp", "proj_off", full, G::All),
         ("c_far", "proj_far", full, G::All),
     ] {
@@ -17202,6 +17210,17 @@ async fn enforce_mode_gates_the_product_surface() {
             "test-cell",
             "streams.consumers.configure streams.dlq.configure",
             None
+        )
+    );
+    let t_dlqpfx = format!(
+        "Bearer {}",
+        mint(
+            "c_dlqpfx",
+            "proj-test",
+            "ws_789",
+            "test-cell",
+            "streams.create streams.consumers.configure streams.dlq.configure",
+            Some(vec!["acme"])
         )
     );
     let t_susp = format!(
@@ -17392,6 +17411,42 @@ async fn enforce_mode_gates_the_product_surface() {
         "{st}: {}",
         String::from_utf8_lossy(&b)
     );
+
+    // Review item 4: the compound DLQ rule — the destination needs the
+    // credential's PREFIX grant independently of the scopes. Source
+    // inside the grant, destination outside: 403 prefix_denied. A
+    // destination inside the grant proceeds to normal link validation
+    // (here: 400 unknown target, proving the authz leg passed).
+    let auth_dlqpfx = ("authorization", t_dlqpfx.as_str());
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/acme/src",
+        &[ekey, auth_dlqpfx],
+        body,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/acme/src/consumers/c1",
+        &[ekey, auth_dlqpfx],
+        br#"{"deadLetterStream":"enfdlq"}"#,
+    )
+    .await;
+    assert_eq!(st, 403, "{}", String::from_utf8_lossy(&b));
+    assert_eq!(code(&b), "prefix_denied");
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/acme/src/consumers/c1",
+        &[ekey, auth_dlqpfx],
+        br#"{"deadLetterStream":"acme/dlq"}"#,
+    )
+    .await;
+    assert_eq!(st, 400, "{}", String::from_utf8_lossy(&b));
+    assert_eq!(code(&b), "unknown_dead_letter_stream");
 
     // Suspension fails closed at authorization.
     let auth_susp = ("authorization", t_susp.as_str());

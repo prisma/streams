@@ -4506,13 +4506,19 @@ async fn product_consumer_put(
         cfg.max_batch_records = v.clamp(1, 1_000);
     }
     if let Some(d) = doc.dead_letter_stream {
-        // §6.1 Stage-5c: the DLQ link is configured through the BODY —
-        // consumers.configure authorizes the consumer, dlq.configure
-        // authorizes wiring a dead-letter target.
-        if let Some(p) = principal
-            && let Err(e) = p.require(crate::tenant::Scope::DlqConfigure)
-        {
-            return auth_failure_response(&e);
+        // §6.1 review item 4 — the compound rule, each leg independent:
+        // the GATE already authorized the source consumer
+        // (consumers.configure + prefix over the source); wiring a
+        // dead-letter target additionally takes dlq.configure AND the
+        // credential's prefix grant over the DESTINATION stream —
+        // same-project lookup alone is not authorization.
+        if let Some(p) = principal {
+            if let Err(e) = p.require(crate::tenant::Scope::DlqConfigure) {
+                return auth_failure_response(&e);
+            }
+            if let Err(e) = p.require_stream(&d) {
+                return auth_failure_response(&e);
+            }
         }
         if canonical_name(&d).is_err() {
             return perr(
