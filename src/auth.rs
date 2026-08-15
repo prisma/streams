@@ -210,9 +210,13 @@ pub struct InternalPrincipal {
 }
 
 /// One published JWKS generation: kid -> verification key.
+/// `feed_version` orders generations for the monotonic-publication
+/// rule (review item 2) — key sets change on rotation, and an
+/// out-of-order feed must not resurrect a retired signing key.
 pub struct JwksSnapshot {
     pub keys: HashMap<String, DecodingKey>,
     pub fetched_at_unix: i64,
+    pub feed_version: u64,
 }
 
 impl JwksSnapshot {
@@ -220,6 +224,7 @@ impl JwksSnapshot {
         Self {
             keys: HashMap::new(),
             fetched_at_unix: 0,
+            feed_version: 0,
         }
     }
 }
@@ -301,15 +306,73 @@ impl AuthService {
         })
     }
 
-    pub fn publish_jwks(&self, snapshot: JwksSnapshot) {
+    /// Monotonic publication (review item 2, authorization P0): a
+    /// stale or out-of-order feed must never restore an earlier
+    /// authorization state — an earlier workspace owner, a revoked
+    /// credential, a removed scope, a retired signing key. Each
+    /// publish REFUSES a snapshot that would move any version
+    /// backward; the refused snapshot is dropped, the current one
+    /// keeps aging toward the §7.1 staleness refusal, and the
+    /// refresher logs the refusal. Entries ABSENT from the new
+    /// snapshot are removals (fail-closed); versions are only
+    /// comparable while an entry is present on both sides, so the
+    /// FEED must not resurrect removed entries at lower versions —
+    /// recorded as the feed contract.
+    pub fn publish_jwks(&self, snapshot: JwksSnapshot) -> Result<(), &'static str> {
+        let cur = self.jwks.load();
+        if snapshot.feed_version < cur.feed_version {
+            return Err("jwks feed_version regressed");
+        }
         self.jwks.store(Arc::new(snapshot));
         self.unknown_kid_seen.store(0, Ordering::Relaxed);
+        Ok(())
     }
-    pub fn publish_policies(&self, snapshot: PolicySnapshot) {
+
+    pub fn publish_policies(&self, snapshot: PolicySnapshot) -> Result<(), &'static str> {
+        let cur = self.projects.load();
+        if snapshot.feed_version < cur.feed_version {
+            return Err("policy feed_version regressed");
+        }
+        for (pid, np) in &snapshot.projects {
+            if let Some(op) = cur.projects.get(pid) {
+                if np.ownership_version < op.ownership_version {
+                    return Err("ownership_version regressed");
+                }
+                if np.project_policy_version < op.project_policy_version {
+                    return Err("project_policy_version regressed");
+                }
+            }
+        }
         self.projects.store(Arc::new(snapshot));
+        Ok(())
     }
-    pub fn publish_grants(&self, snapshot: GrantSnapshot) {
+
+    pub fn publish_grants(&self, snapshot: GrantSnapshot) -> Result<(), &'static str> {
+        let cur = self.credentials.load();
+        if snapshot.feed_version < cur.feed_version {
+            return Err("grant feed_version regressed");
+        }
+        for (id, nc) in &snapshot.credentials {
+            if let Some(oc) = cur.credentials.get(id) {
+                if nc.grant_version < oc.grant_version {
+                    return Err("grant_version regressed");
+                }
+                let was_dead = matches!(
+                    oc.status,
+                    CredentialStatus::Revoked | CredentialStatus::Disabled
+                );
+                if was_dead
+                    && nc.status == CredentialStatus::Active
+                    && nc.grant_version <= oc.grant_version
+                {
+                    // Un-revocation is an explicit act, never a replay:
+                    // it must arrive under a STRICTLY newer version.
+                    return Err("revoked credential reactivated without a newer grant_version");
+                }
+            }
+        }
         self.credentials.store(Arc::new(snapshot));
+        Ok(())
     }
 
     /// Signature + structural verification shared by all audiences.
@@ -697,7 +760,9 @@ mod tests {
         svc.publish_jwks(JwksSnapshot {
             keys,
             fetched_at_unix: NOW,
-        });
+            feed_version: 1,
+        })
+        .unwrap();
         let pid = ProjectId::new("proj_456").unwrap();
         let mut projects = HashMap::new();
         projects.insert(
@@ -716,7 +781,8 @@ mod tests {
             projects,
             fetched_at_unix: NOW,
             feed_version: 40,
-        });
+        })
+        .unwrap();
         let mut credentials = HashMap::new();
         credentials.insert(
             Arc::from("strcred_123"),
@@ -742,7 +808,8 @@ mod tests {
             credentials,
             fetched_at_unix: NOW,
             feed_version: 7,
-        });
+        })
+        .unwrap();
         svc
     }
 
@@ -913,7 +980,7 @@ mod tests {
                 .get_mut(&ProjectId::new("proj_456").unwrap())
                 .unwrap()
                 .status = ProjectStatus::Suspended;
-            svc.publish_policies(snap);
+            svc.publish_policies(snap).unwrap();
             assert_eq!(
                 svc.verify_customer(&sign(&claims()), NOW).unwrap_err(),
                 AuthError::ProjectNotActive(ProjectStatus::Suspended)
@@ -923,7 +990,7 @@ mod tests {
         let svc = service();
         let mut snap = svc.projects.load().as_ref().clone();
         snap.fetched_at_unix = NOW - POLICY_STALENESS_MAX_SECS - 1;
-        svc.publish_policies(snap);
+        svc.publish_policies(snap).unwrap();
         assert_eq!(
             svc.verify_customer(&sign(&claims()), NOW).unwrap_err(),
             AuthError::PolicyStale
@@ -1002,6 +1069,227 @@ mod tests {
         } else {
             assert!(enforce.is_ok());
         }
+    }
+
+    /// Review item 2 red tests: a STALE snapshot must never restore an
+    /// earlier authorization state.
+    #[test]
+    fn stale_snapshot_cannot_unrevoke_a_credential() {
+        let svc = service();
+        // The stale snapshot: the credential still Active at grant v7.
+        let stale = {
+            let mut credentials = HashMap::new();
+            credentials.insert(
+                Arc::from("strcred_123"),
+                CredentialGrant {
+                    credential_id: Arc::from("strcred_123"),
+                    project_id: ProjectId::new("proj_456").unwrap(),
+                    grant_version: 7,
+                    status: CredentialStatus::Active,
+                    scopes: ScopeSet::parse("streams.records.read").0,
+                    grant: StreamGrant::All,
+                    expires_at: None,
+                },
+            );
+            GrantSnapshot {
+                credentials,
+                fetched_at_unix: NOW,
+                feed_version: 8,
+            }
+        };
+        // REVOKE at grant v8, feed v9.
+        let mut credentials = HashMap::new();
+        credentials.insert(
+            Arc::from("strcred_123"),
+            CredentialGrant {
+                credential_id: Arc::from("strcred_123"),
+                project_id: ProjectId::new("proj_456").unwrap(),
+                grant_version: 8,
+                status: CredentialStatus::Revoked,
+                scopes: ScopeSet::parse("streams.records.read").0,
+                grant: StreamGrant::All,
+                expires_at: None,
+            },
+        );
+        svc.publish_grants(GrantSnapshot {
+            credentials,
+            fetched_at_unix: NOW,
+            feed_version: 9,
+        })
+        .unwrap();
+        // The stale replay is REFUSED on feed_version alone...
+        assert!(svc.publish_grants(stale.clone()).is_err());
+        // ...and even a same-feed-version forgery that re-activates at
+        // the same grant_version is refused by the un-revocation rule.
+        let mut forged = stale.clone();
+        forged.feed_version = 9;
+        forged.credentials.insert(
+            Arc::from("strcred_123"),
+            CredentialGrant {
+                credential_id: Arc::from("strcred_123"),
+                project_id: ProjectId::new("proj_456").unwrap(),
+                grant_version: 8,
+                status: CredentialStatus::Active,
+                scopes: ScopeSet::parse("streams.records.read").0,
+                grant: StreamGrant::All,
+                expires_at: None,
+            },
+        );
+        assert!(svc.publish_grants(forged).is_err());
+        // The credential stays revoked.
+        let c = claims();
+        let mut c = c;
+        c.grant_version = 8;
+        assert_eq!(
+            svc.verify_customer(&sign(&c), NOW).unwrap_err(),
+            AuthError::CredentialNotActive(CredentialStatus::Revoked)
+        );
+    }
+
+    #[test]
+    fn stale_snapshot_cannot_restore_a_previous_owner() {
+        let svc = service();
+        // Transfer: ownership_version 12 -> 13, new workspace.
+        let pid = ProjectId::new("proj_456").unwrap();
+        let mut projects = HashMap::new();
+        projects.insert(
+            pid.clone(),
+            ProjectPolicy {
+                project_id: pid.clone(),
+                workspace_id: WorkspaceId::new("ws_NEW").unwrap(),
+                cell_id: Arc::from(CELL),
+                project_policy_version: 41,
+                ownership_version: 13,
+                status: ProjectStatus::Active,
+                quotas: ProjectQuotas::default(),
+            },
+        );
+        svc.publish_policies(PolicySnapshot {
+            projects: projects.clone(),
+            fetched_at_unix: NOW,
+            feed_version: 41,
+        })
+        .unwrap();
+        // A stale snapshot carrying the PREVIOUS owner (ownership 12,
+        // ws_789) at a newer feed_version — the per-project rule
+        // refuses it even when the feed counter says "newer".
+        let mut old_projects = HashMap::new();
+        old_projects.insert(
+            pid.clone(),
+            ProjectPolicy {
+                project_id: pid.clone(),
+                workspace_id: WorkspaceId::new("ws_789").unwrap(),
+                cell_id: Arc::from(CELL),
+                project_policy_version: 40,
+                ownership_version: 12,
+                status: ProjectStatus::Active,
+                quotas: ProjectQuotas::default(),
+            },
+        );
+        assert!(
+            svc.publish_policies(PolicySnapshot {
+                projects: old_projects,
+                fetched_at_unix: NOW,
+                feed_version: 42,
+            })
+            .is_err()
+        );
+        // Tokens minted under the OLD ownership stay dead.
+        let c = claims(); // ownership_version 12
+        assert_eq!(
+            svc.verify_customer(&sign(&c), NOW).unwrap_err(),
+            AuthError::OwnershipVersionMismatch
+        );
+    }
+
+    #[test]
+    fn stale_snapshot_cannot_restore_removed_scopes() {
+        let svc = service();
+        // Narrow the credential: records.read only, grant v8.
+        let mut credentials = HashMap::new();
+        credentials.insert(
+            Arc::from("strcred_123"),
+            CredentialGrant {
+                credential_id: Arc::from("strcred_123"),
+                project_id: ProjectId::new("proj_456").unwrap(),
+                grant_version: 8,
+                status: CredentialStatus::Active,
+                scopes: ScopeSet::parse("streams.records.read").0,
+                grant: StreamGrant::All,
+                expires_at: None,
+            },
+        );
+        svc.publish_grants(GrantSnapshot {
+            credentials,
+            fetched_at_unix: NOW,
+            feed_version: 8,
+        })
+        .unwrap();
+        // The stale wide-scope snapshot (grant v7) is refused.
+        let mut wide = HashMap::new();
+        wide.insert(
+            Arc::from("strcred_123"),
+            CredentialGrant {
+                credential_id: Arc::from("strcred_123"),
+                project_id: ProjectId::new("proj_456").unwrap(),
+                grant_version: 7,
+                status: CredentialStatus::Active,
+                scopes: ScopeSet::parse(
+                    "streams.records.read streams.records.append streams.create",
+                )
+                .0,
+                grant: StreamGrant::All,
+                expires_at: None,
+            },
+        );
+        assert!(
+            svc.publish_grants(GrantSnapshot {
+                credentials: wide,
+                fetched_at_unix: NOW,
+                feed_version: 9,
+            })
+            .is_err()
+        );
+        // A v8 token authorizes with ONLY the narrowed scope.
+        let mut c = claims();
+        c.grant_version = 8;
+        c.scope = "streams.records.read streams.records.append".into();
+        let p = svc.verify_customer(&sign(&c), NOW).unwrap();
+        assert!(p.scopes.has(Scope::RecordsRead));
+        assert!(
+            !p.scopes.has(Scope::RecordsAppend),
+            "removed scope stays gone"
+        );
+    }
+
+    #[test]
+    fn stale_jwks_cannot_resurrect_a_retired_key() {
+        let svc = service(); // publishes feed_version 1 keys
+        let fresh = JwksSnapshot {
+            keys: HashMap::new(), // rotation: the old kid is GONE
+            fetched_at_unix: NOW,
+            feed_version: 2,
+        };
+        svc.publish_jwks(fresh).unwrap();
+        // The stale set (feed 1, containing the retired key) is refused.
+        let mut keys = HashMap::new();
+        keys.insert(
+            KID.to_string(),
+            DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+        );
+        assert!(
+            svc.publish_jwks(JwksSnapshot {
+                keys,
+                fetched_at_unix: NOW,
+                feed_version: 1,
+            })
+            .is_err()
+        );
+        // Tokens under the retired kid stay dead.
+        assert_eq!(
+            svc.verify_customer(&sign(&claims()), NOW).unwrap_err(),
+            AuthError::KidUnknown
+        );
     }
 
     #[test]

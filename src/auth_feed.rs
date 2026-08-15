@@ -42,6 +42,8 @@ pub trait KeySource: Send + Sync {
 #[derive(serde::Deserialize)]
 #[serde(deny_unknown_fields)]
 struct KeysDoc {
+    #[serde(default)]
+    feed_version: u64,
     keys: Vec<KeyDoc>,
 }
 
@@ -126,6 +128,7 @@ pub fn parse_keys(json: &str, now: i64) -> anyhow::Result<JwksSnapshot> {
     Ok(JwksSnapshot {
         keys,
         fetched_at_unix: now,
+        feed_version: doc.feed_version,
     })
 }
 
@@ -262,15 +265,27 @@ pub async fn refresh_once(
     grants: &dyn GrantSource,
 ) {
     match keys.fetch().await {
-        Ok(s) => auth.publish_jwks(s),
+        Ok(s) => {
+            if let Err(why) = auth.publish_jwks(s) {
+                tracing::warn!("auth feed: keys snapshot REFUSED ({why}); previous ages");
+            }
+        }
         Err(e) => tracing::warn!("auth feed: keys fetch failed (previous snapshot ages): {e}"),
     }
     match policies.fetch().await {
-        Ok(s) => auth.publish_policies(s),
+        Ok(s) => {
+            if let Err(why) = auth.publish_policies(s) {
+                tracing::warn!("auth feed: policy snapshot REFUSED ({why}); previous ages");
+            }
+        }
         Err(e) => tracing::warn!("auth feed: policy fetch failed (previous snapshot ages): {e}"),
     }
     match grants.fetch().await {
-        Ok(s) => auth.publish_grants(s),
+        Ok(s) => {
+            if let Err(why) = auth.publish_grants(s) {
+                tracing::warn!("auth feed: grants snapshot REFUSED ({why}); previous ages");
+            }
+        }
         Err(e) => tracing::warn!("auth feed: grants fetch failed (previous snapshot ages): {e}"),
     }
 }

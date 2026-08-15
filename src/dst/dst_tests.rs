@@ -16819,7 +16819,9 @@ async fn shadow_mode_observes_without_enforcing() {
     svc.publish_jwks(crate::auth::JwksSnapshot {
         keys,
         fetched_at_unix: now,
-    });
+        feed_version: 1,
+    })
+    .unwrap();
     let pid = crate::tenant::ProjectId::new("proj_456").unwrap();
     let mut projects = std::collections::HashMap::new();
     projects.insert(
@@ -16838,7 +16840,8 @@ async fn shadow_mode_observes_without_enforcing() {
         projects,
         fetched_at_unix: now,
         feed_version: 40,
-    });
+    })
+    .unwrap();
     let mut credentials = std::collections::HashMap::new();
     credentials.insert(
         std::sync::Arc::from("strcred_123"),
@@ -16856,7 +16859,8 @@ async fn shadow_mode_observes_without_enforcing() {
         credentials,
         fetched_at_unix: now,
         feed_version: 7,
-    });
+    })
+    .unwrap();
 
     let (state, addr) = http_rig_with_auth_service(mem(), svc.clone()).await;
 
@@ -16983,7 +16987,9 @@ async fn enforce_mode_gates_the_product_surface() {
     svc.publish_jwks(crate::auth::JwksSnapshot {
         keys,
         fetched_at_unix: now,
-    });
+        feed_version: 1,
+    })
+    .unwrap();
 
     let policy = |proj: &str, ws: &str, cell: &str, status| crate::project_policy::ProjectPolicy {
         project_id: crate::tenant::ProjectId::new(proj).unwrap(),
@@ -17010,7 +17016,8 @@ async fn enforce_mode_gates_the_product_surface() {
         projects,
         fetched_at_unix: now,
         feed_version: 1,
-    });
+    })
+    .unwrap();
 
     let cred = |id: &str, proj: &str, scopes: &str, grant| crate::project_policy::CredentialGrant {
         credential_id: std::sync::Arc::from(id),
@@ -17075,7 +17082,8 @@ async fn enforce_mode_gates_the_product_surface() {
         credentials,
         fetched_at_unix: now,
         feed_version: 7,
-    });
+    })
+    .unwrap();
 
     let (state, addr) = http_rig_with_auth_service(mem(), svc.clone()).await;
 
@@ -17489,7 +17497,8 @@ async fn enforce_mode_gates_the_product_surface() {
         projects: std::collections::HashMap::new(),
         fetched_at_unix: now - crate::auth::POLICY_STALENESS_MAX_SECS - 10,
         feed_version: 2,
-    });
+    })
+    .unwrap();
     let (st, _, b) = preq(
         addr,
         "GET",
@@ -17529,7 +17538,9 @@ async fn project_rate_quota_backstop_answers_429() {
     svc.publish_jwks(crate::auth::JwksSnapshot {
         keys,
         fetched_at_unix: now,
-    });
+        feed_version: 1,
+    })
+    .unwrap();
     let pid = crate::tenant::ProjectId::new("proj-test").unwrap();
     let mut projects = std::collections::HashMap::new();
     projects.insert(
@@ -17551,7 +17562,8 @@ async fn project_rate_quota_backstop_answers_429() {
         projects,
         fetched_at_unix: now,
         feed_version: 1,
-    });
+    })
+    .unwrap();
     let mut credentials = std::collections::HashMap::new();
     credentials.insert(
         std::sync::Arc::from("cq"),
@@ -17569,7 +17581,8 @@ async fn project_rate_quota_backstop_answers_429() {
         credentials,
         fetched_at_unix: now,
         feed_version: 1,
-    });
+    })
+    .unwrap();
     let (state, addr) = http_rig_with_auth_service(mem(), svc).await;
 
     #[derive(serde::Serialize)]
@@ -17665,7 +17678,9 @@ async fn volume_quotas_meter_appends_and_reads() {
     svc.publish_jwks(crate::auth::JwksSnapshot {
         keys,
         fetched_at_unix: now,
-    });
+        feed_version: 1,
+    })
+    .unwrap();
     let pid = crate::tenant::ProjectId::new("proj-test").unwrap();
     let mut projects = std::collections::HashMap::new();
     projects.insert(
@@ -17688,7 +17703,8 @@ async fn volume_quotas_meter_appends_and_reads() {
         projects,
         fetched_at_unix: now,
         feed_version: 1,
-    });
+    })
+    .unwrap();
     let mut credentials = std::collections::HashMap::new();
     credentials.insert(
         std::sync::Arc::from("cv"),
@@ -17710,7 +17726,8 @@ async fn volume_quotas_meter_appends_and_reads() {
         credentials,
         fetched_at_unix: now,
         feed_version: 1,
-    });
+    })
+    .unwrap();
     let (state, addr) = http_rig_with_auth_service(mem(), svc).await;
 
     #[derive(serde::Serialize)]
@@ -17854,7 +17871,9 @@ async fn one_cell_serves_two_projects_with_full_isolation() {
     svc.publish_jwks(crate::auth::JwksSnapshot {
         keys,
         fetched_at_unix: now,
-    });
+        feed_version: 1,
+    })
+    .unwrap();
     let scopes = "streams.create streams.records.append streams.records.read \
                   streams.metadata.read streams.catalog.read";
     let mut projects = std::collections::HashMap::new();
@@ -17890,12 +17909,14 @@ async fn one_cell_serves_two_projects_with_full_isolation() {
         projects,
         fetched_at_unix: now,
         feed_version: 1,
-    });
+    })
+    .unwrap();
     svc.publish_grants(crate::project_policy::GrantSnapshot {
         credentials,
         fetched_at_unix: now,
         feed_version: 1,
-    });
+    })
+    .unwrap();
     let (state, addr) = http_rig_with_auth_service(mem(), svc).await;
 
     #[derive(serde::Serialize)]
