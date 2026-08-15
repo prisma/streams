@@ -743,10 +743,11 @@ pub(crate) fn project_admission(
     principal: Option<&crate::auth::RequestPrincipal>,
 ) -> Result<Option<crate::quota::QuotaGuard>, Response> {
     let Some(p) = principal else { return Ok(None) };
-    let quotas = state.auth.quotas_for(&p.project_id).unwrap_or_default();
+    // Review item 5: the quotas rode in on the principal — the exact
+    // snapshot this request verified against, never a second read.
     state
         .quotas
-        .admit(&p.project_id, &quotas, crate::shard::now_ms())
+        .admit(&p.project_id, &p.quotas, crate::shard::now_ms())
         .map(Some)
         .map_err(|r| quota_refusal_response(&r))
 }
@@ -758,10 +759,9 @@ fn check_read_quota(
     principal: Option<&crate::auth::RequestPrincipal>,
 ) -> Option<Response> {
     let p = principal?;
-    let quotas = state.auth.quotas_for(&p.project_id)?;
     state
         .quotas
-        .check_read(&p.project_id, &quotas, crate::shard::now_ms())
+        .check_read(&p.project_id, &p.quotas, crate::shard::now_ms())
         .err()
         .map(|r| quota_refusal_response(&r))
 }
@@ -784,11 +784,9 @@ fn debit_read_response(
     let Some(bytes) = axum::body::HttpBody::size_hint(resp.body()).exact() else {
         return;
     };
-    if let Some(quotas) = state.auth.quotas_for(&p.project_id) {
-        state
-            .quotas
-            .debit_read(&p.project_id, &quotas, bytes, crate::shard::now_ms());
-    }
+    state
+        .quotas
+        .debit_read(&p.project_id, &p.quotas, bytes, crate::shard::now_ms());
 }
 
 /// Attach a live-subscription slot to a STREAMING response: the guard
@@ -1057,12 +1055,9 @@ pub async fn product_entry(
                 (Method::GET, Some("sse")) => {
                     // A live subscription consumes a §17.2 slot for the
                     // STREAM's lifetime, not the handler's.
-                    let sub = match principal
-                        .as_ref()
-                        .and_then(|p| state.auth.quotas_for(&p.project_id).map(|q| (p, q)))
-                    {
-                        Some((p, quotas)) => {
-                            match state.quotas.admit_subscription(&p.project_id, &quotas) {
+                    let sub = match principal.as_ref() {
+                        Some(p) => {
+                            match state.quotas.admit_subscription(&p.project_id, &p.quotas) {
                                 Ok(g) => g,
                                 Err(refusal) => return quota_refusal_response(&refusal),
                             }
@@ -3071,10 +3066,9 @@ async fn product_append_inner(
     // Internal writers (DLQ delivery, the seal's final record) carry
     // no principal and are bounded by their own mechanisms.
     if let Some(p) = principal
-        && let Some(quotas) = state.auth.quotas_for(&p.project_id)
         && let Err(refusal) = state.quotas.admit_append(
             &p.project_id,
-            &quotas,
+            &p.quotas,
             body.len() as u64,
             count as u64,
             crate::shard::now_ms(),

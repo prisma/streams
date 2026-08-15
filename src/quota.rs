@@ -34,6 +34,12 @@ use crate::tenant::ProjectId;
 /// any near-term cell packing; revisit with real shared-cell density.
 pub const MAX_TRACKED_PROJECTS: usize = 1024;
 
+/// A tracked project with no admission attempts for this long (and no
+/// inflight work) may be evicted under tracker pressure. Its buckets
+/// restart full — an idle project lost no accumulated debt worth
+/// keeping at this horizon.
+pub const IDLE_EVICT_MS: i64 = 300_000;
+
 struct Bucket {
     /// Fractional tokens currently available.
     level: f64,
@@ -57,6 +63,8 @@ impl Bucket {
 }
 
 pub struct ProjectAdmission {
+    /// Last admission attempt (ms) — the idle-eviction clock.
+    last_seen_ms: std::sync::atomic::AtomicI64,
     bucket: Mutex<Bucket>,
     /// §17.2 volume backstops: append payload bytes and records.
     append_bytes: Mutex<Bucket>,
@@ -128,12 +136,26 @@ impl QuotaRegistry {
                 Some(a) => a.clone(),
                 None => {
                     if m.len() >= MAX_TRACKED_PROJECTS {
-                        // Refuse to TRACK, never to merge: an untracked
-                        // project sharing a bucket with strangers would
-                        // couple their fates (§17.3).
-                        return Err(QuotaRefusal::TrackerCapacity);
+                        // Review item 5: EVICT idle entries before
+                        // refusing — a tracker that filled once must
+                        // not refuse project 1,025 until restart.
+                        // Never evict a project with inflight requests
+                        // or live subscriptions; their guards point at
+                        // the Arc we would orphan.
+                        m.retain(|_, a| {
+                            a.inflight.load(Ordering::Relaxed) > 0
+                                || a.live_subs.load(Ordering::Relaxed) > 0
+                                || now_ms - a.last_seen_ms.load(Ordering::Relaxed) < IDLE_EVICT_MS
+                        });
+                        if m.len() >= MAX_TRACKED_PROJECTS {
+                            // Refuse to TRACK, never to merge: an
+                            // untracked project sharing a bucket with
+                            // strangers would couple their fates.
+                            return Err(QuotaRefusal::TrackerCapacity);
+                        }
                     }
                     let a = Arc::new(ProjectAdmission {
+                        last_seen_ms: std::sync::atomic::AtomicI64::new(now_ms),
                         bucket: Mutex::new(Bucket {
                             // A fresh project starts with a full
                             // second's burst.
@@ -161,6 +183,7 @@ impl QuotaRegistry {
             }
         };
 
+        admission.last_seen_ms.store(now_ms, Ordering::Relaxed);
         // Request-rate token bucket: refill rps/sec continuously,
         // capped at one second's worth (burst == rate). The rate is
         // re-read from the CURRENT quotas every admit, so a policy
@@ -218,36 +241,55 @@ impl QuotaRegistry {
                 None => return Err(QuotaRefusal::TrackerCapacity),
             }
         };
-        let oversize = |cost: f64, rate: f64, b: &mut Bucket| {
-            // Full bucket + oversized op: admit once, go negative.
+        // Review item 5: the two debits are ATOMIC — both buckets are
+        // held, both refilled, both CHECKED, and only then both
+        // charged. The first cut charged bytes before records could
+        // refuse, so a refused batch still burned byte budget.
+        let mut bytes_b = admission.append_bytes.lock().unwrap();
+        let mut recs_b = admission.append_records.lock().unwrap();
+        let mut plan: [Option<(f64, f64)>; 2] = [None, None]; // (rate, cost)
+        let check = |b: &mut Bucket,
+                     rate_u: u64,
+                     cost: f64,
+                     slot: &mut Option<(f64, f64)>|
+         -> Result<(), QuotaRefusal> {
+            if rate_u == 0 {
+                return Ok(());
+            }
+            let rate = rate_u as f64;
+            let _ = b.take(rate, 0.0, now_ms); // refill only
             let full = b.level >= rate - f64::EPSILON;
             if full && cost > rate {
-                b.level -= cost;
-                b.last_ms = now_ms;
-                return true;
+                // Oversized single op from a full bucket: admit once,
+                // go negative; later ops wait the debt out.
+                *slot = Some((rate, cost));
+                return Ok(());
             }
-            false
+            if b.level < cost {
+                return Err(QuotaRefusal::Rate {
+                    retry_after_secs: (((cost - b.level) / rate).ceil().max(1.0)) as u64,
+                });
+            }
+            *slot = Some((rate, cost));
+            Ok(())
         };
-        if quotas.append_bytes_per_sec > 0 {
-            let rate = quotas.append_bytes_per_sec as f64;
-            let mut b = admission.append_bytes.lock().unwrap();
-            // Refill before the oversize check so "full" is current.
-            let _ = b.take(rate, 0.0, now_ms);
-            if !oversize(payload_bytes as f64, rate, &mut b)
-                && let Err(retry_after_secs) = b.take(rate, payload_bytes as f64, now_ms)
-            {
-                return Err(QuotaRefusal::Rate { retry_after_secs });
-            }
+        check(
+            &mut bytes_b,
+            quotas.append_bytes_per_sec,
+            payload_bytes as f64,
+            &mut plan[0],
+        )?;
+        check(
+            &mut recs_b,
+            quotas.append_records_per_sec,
+            records as f64,
+            &mut plan[1],
+        )?;
+        if let Some((_, cost)) = plan[0] {
+            bytes_b.level -= cost;
         }
-        if quotas.append_records_per_sec > 0 {
-            let rate = quotas.append_records_per_sec as f64;
-            let mut b = admission.append_records.lock().unwrap();
-            let _ = b.take(rate, 0.0, now_ms);
-            if !oversize(records as f64, rate, &mut b)
-                && let Err(retry_after_secs) = b.take(rate, records as f64, now_ms)
-            {
-                return Err(QuotaRefusal::Rate { retry_after_secs });
-            }
+        if let Some((_, cost)) = plan[1] {
+            recs_b.level -= cost;
         }
         Ok(())
     }
@@ -485,6 +527,56 @@ mod tests {
         // Unlimited (0) never allocates a guard.
         let unlimited = ProjectQuotas::default();
         assert!(r.admit_subscription(&p, &unlimited).unwrap().is_none());
+    }
+
+    #[test]
+    fn refused_batch_charges_nothing_atomic_debit() {
+        // Review item 5: bytes budget generous, records budget tiny.
+        // A batch that the RECORDS bucket refuses must not burn BYTES.
+        let r = QuotaRegistry::default();
+        let p = pid("proj_at");
+        let quotas = ProjectQuotas {
+            append_bytes_per_sec: 1_000,
+            append_records_per_sec: 2,
+            ..Default::default()
+        };
+        let _g = r.admit(&p, &quotas, 1_000).unwrap();
+        // Spend one record so the records bucket is NOT full (the
+        // oversized-from-full rule must not apply).
+        assert!(r.admit_append(&p, &quotas, 100, 1, 1_000).is_ok());
+        // Refused on records (needs 2, has 1) — bytes must be
+        // untouched by the refused attempt.
+        assert!(matches!(
+            r.admit_append(&p, &quotas, 800, 2, 1_000),
+            Err(QuotaRefusal::Rate { .. })
+        ));
+        // Exactly the remaining byte budget still fits: had the
+        // refused batch charged bytes, this would fail.
+        assert!(r.admit_append(&p, &quotas, 900, 1, 1_000).is_ok());
+    }
+
+    #[test]
+    fn tracker_evicts_idle_projects_never_active_ones() {
+        let r = QuotaRegistry::default();
+        // Fill the tracker at t=0; keep p0 ACTIVE via a held guard.
+        let g0 = r.admit(&pid("p0"), &q(0, 0), 0).unwrap();
+        for i in 1..MAX_TRACKED_PROJECTS {
+            let _ = r.admit(&pid(&format!("p{i}")), &q(0, 0), 0).unwrap();
+        }
+        // Before the idle horizon: full tracker refuses the newcomer.
+        assert!(matches!(
+            r.admit(&pid("p_new"), &q(0, 0), IDLE_EVICT_MS - 1),
+            Err(QuotaRefusal::TrackerCapacity)
+        ));
+        // Past the horizon: idle entries evict, the newcomer fits...
+        assert!(r.admit(&pid("p_new"), &q(0, 0), IDLE_EVICT_MS + 1).is_ok());
+        // ...and ONLY the project with INFLIGHT work survived the
+        // sweep beside the newcomer (p_new's own guard dropped at the
+        // assert, so p0's held guard is the one live slot).
+        let (tracked, inflight) = r.stats();
+        assert_eq!(tracked, 2, "p0 (active) + p_new: {tracked}");
+        assert_eq!(inflight, 1, "p0's held guard: {inflight}");
+        drop(g0);
     }
 
     #[test]

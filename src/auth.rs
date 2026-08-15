@@ -167,6 +167,12 @@ impl AuthError {
 pub struct RequestPrincipal {
     pub workspace_id: WorkspaceId,
     pub project_id: ProjectId,
+    /// Review item 5: the quotas from the EXACT policy snapshot this
+    /// request verified against — quota admission must never re-read
+    /// a later snapshot (a project vanishing between the two reads
+    /// used to yield unlimited quotas).
+    pub quotas: crate::project_policy::ProjectQuotas,
+    pub project_policy_version: u64,
     pub cell_id: Arc<str>,
     pub credential_id: Arc<str>,
     pub subject: Arc<str>,
@@ -538,6 +544,8 @@ impl AuthService {
 
         Ok(RequestPrincipal {
             workspace_id,
+            quotas: policy.quotas.clone(),
+            project_policy_version: policy.project_policy_version,
             project_id,
             cell_id: self.cell_id.clone(),
             credential_id: Arc::from(c.credential_id.as_str()),
