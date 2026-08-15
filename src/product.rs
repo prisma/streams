@@ -696,7 +696,15 @@ pub(crate) fn auth_failure_response(e: &crate::auth::AuthError) -> Response {
             axum::http::HeaderValue::from_static("wrong_cell"),
         );
     }
-    crate::audit::tag(r, e.kind())
+    // Journal scope (§10.4): wrong_cell is PLACEMENT (§8.1 — the
+    // credential is fine) and the stale classes are the cell's OWN
+    // feed health — neither is a denial of the caller. Journaling
+    // them would let placement churn or a feed outage flood the
+    // bounded queue and evict real security events.
+    match e {
+        E::WrongCell | E::PolicyStale | E::GrantsStale | E::KeysStale => r,
+        _ => crate::audit::tag(r, e.kind()),
+    }
 }
 
 /// Enforce-mode authentication: the customer token IS the product
@@ -1376,12 +1384,15 @@ async fn product_create(
             .and_then(|v| v.try_into().ok())
             .unwrap_or_default();
         if d.key_fingerprint != key.fingerprint(&epoch) {
-            return Err(perr(
-                StatusCode::FORBIDDEN,
+            return Err(crate::audit::tag(
+                perr(
+                    StatusCode::FORBIDDEN,
+                    "wrong_key",
+                    "encryption key mismatch",
+                    None,
+                    false,
+                ),
                 "wrong_key",
-                "encryption key mismatch",
-                None,
-                false,
             ));
         }
         Ok(d)
@@ -1639,12 +1650,15 @@ async fn product_seal(
                 crate::http::check_key(Some(&key_b64), &validated),
                 crate::http::KeyCheck::Ok(..)
             ) {
-                return perr(
-                    StatusCode::FORBIDDEN,
+                return crate::audit::tag(
+                    perr(
+                        StatusCode::FORBIDDEN,
+                        "wrong_key",
+                        "encryption key mismatch",
+                        None,
+                        false,
+                    ),
                     "wrong_key",
-                    "encryption key mismatch",
-                    None,
-                    false,
                 );
             }
             // Everything that can PERMANENTLY prevent the promised
@@ -3366,6 +3380,12 @@ async fn translate_append_response(
     if let Some(ra) = retry_after {
         r.headers_mut().insert("retry-after", ra.clone());
     }
+    // §10.4: the shared append core answers key mismatches as a bare
+    // 403, restated here — key-guessing probes on the append path
+    // journal like every other denial.
+    if code == "stale_or_wrong_credentials" {
+        r = crate::audit::tag(r, "stale_or_wrong_credentials");
+    }
     r
 }
 
@@ -3578,6 +3598,13 @@ fn translate_read_error(raw: Response) -> Response {
     if let Some(ra) = raw.headers().get("retry-after") {
         r.headers_mut().insert("retry-after", ra.clone());
     }
+    // §10.4: shared-core key mismatches surface here (the core answers
+    // a bare 403); key-guessing probes journal like every other
+    // denial. The other codes are availability/positioning, not
+    // denials of the caller.
+    if code == "wrong_key" {
+        r = crate::audit::tag(r, "wrong_key");
+    }
     r
 }
 
@@ -3697,12 +3724,15 @@ async fn product_read(
     let (skey, epoch) = match crate::http::check_key(Some(&key_b64), &desc) {
         crate::http::KeyCheck::Ok(k, e) => (k, e),
         crate::http::KeyCheck::Wrong => {
-            return perr(
-                StatusCode::FORBIDDEN,
+            return crate::audit::tag(
+                perr(
+                    StatusCode::FORBIDDEN,
+                    "wrong_key",
+                    "encryption key mismatch",
+                    None,
+                    false,
+                ),
                 "wrong_key",
-                "encryption key mismatch",
-                None,
-                false,
             );
         }
         _ => {
@@ -3989,12 +4019,15 @@ async fn product_scan(
     let (skey, epoch) = match crate::http::check_key(Some(&key_b64), &desc) {
         crate::http::KeyCheck::Ok(k, e) => (k, e),
         crate::http::KeyCheck::Wrong => {
-            return perr(
-                StatusCode::FORBIDDEN,
+            return crate::audit::tag(
+                perr(
+                    StatusCode::FORBIDDEN,
+                    "wrong_key",
+                    "encryption key mismatch",
+                    None,
+                    false,
+                ),
                 "wrong_key",
-                "encryption key mismatch",
-                None,
-                false,
             );
         }
         _ => {
@@ -4392,12 +4425,15 @@ async fn consumer_ctx(
     };
     match crate::http::check_key(Some(&key_b64), &desc) {
         crate::http::KeyCheck::Ok(k, e) => Ok((desc, k, e)),
-        crate::http::KeyCheck::Wrong => Err(perr(
-            StatusCode::FORBIDDEN,
+        crate::http::KeyCheck::Wrong => Err(crate::audit::tag(
+            perr(
+                StatusCode::FORBIDDEN,
+                "wrong_key",
+                "encryption key mismatch",
+                None,
+                false,
+            ),
             "wrong_key",
-            "encryption key mismatch",
-            None,
-            false,
         )),
         _ => Err(perr(
             StatusCode::BAD_REQUEST,
@@ -5519,12 +5555,15 @@ async fn product_consumer_delete(
         crate::http::check_key(Some(&key_b64), &desc),
         crate::http::KeyCheck::Ok(..)
     ) {
-        return perr(
-            StatusCode::FORBIDDEN,
+        return crate::audit::tag(
+            perr(
+                StatusCode::FORBIDDEN,
+                "wrong_key",
+                "encryption key mismatch",
+                None,
+                false,
+            ),
             "wrong_key",
-            "encryption key mismatch",
-            None,
-            false,
         );
     }
     // Collection-wide deletion as a GENERATION-FENCED SAGA (rounds
@@ -6717,12 +6756,19 @@ async fn product_watch_wait(
     // revealing answers (creating, unknown watch) come only AFTER the
     // capability or key verifies.
     let refuse = || {
-        perr(
-            StatusCode::FORBIDDEN,
+        // Journaled (§10.4): capability probing is exactly the class a
+        // security review reconstructs. No project — the refusal fires
+        // BEFORE anything verifies, and unverified claims are never
+        // identity.
+        crate::audit::tag(
+            perr(
+                StatusCode::FORBIDDEN,
+                "watch_unauthorized",
+                "a valid observation capability or Prisma-Encryption-Key is required",
+                None,
+                false,
+            ),
             "watch_unauthorized",
-            "a valid observation capability or Prisma-Encryption-Key is required",
-            None,
-            false,
         )
     };
     // Review item 3: a capability CARRIES its project (wire v2), so a
@@ -7263,12 +7309,21 @@ pub async fn project_usage(
         .map(|p| p == *authority)
         .unwrap_or(false);
     if !names_authority {
-        return perr(
-            StatusCode::NOT_FOUND,
-            "unknown_project",
-            "the path does not name this request's project",
-            None,
-            false,
+        // Journaled (§10.4): a verified principal probing FOREIGN
+        // project usage is the single most review-relevant denial
+        // class, deliberately shaped as 404 on the wire.
+        return crate::audit::tag_project(
+            crate::audit::tag(
+                perr(
+                    StatusCode::NOT_FOUND,
+                    "unknown_project",
+                    "the path does not name this request's project",
+                    None,
+                    false,
+                ),
+                "unknown_project",
+            ),
+            authority,
         );
     }
     let Some(rollup) = state.rollup.get() else {

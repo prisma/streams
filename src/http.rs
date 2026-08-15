@@ -1880,9 +1880,16 @@ async fn product_entry_axum_inner(
             ));
         }
     };
-    crate::product::with_product_cors(
-        crate::product::product_entry(state, name, method, headers, query, body, principal).await,
-    )
+    // §10.4: fill the VERIFIED principal's project into any tagged
+    // denial the handlers produced (fill-only-if-absent), so classifier
+    // sites never need identity plumbing of their own.
+    let proj = principal.as_ref().map(|p| p.project_id.clone());
+    let mut resp =
+        crate::product::product_entry(state, name, method, headers, query, body, principal).await;
+    if let Some(p) = proj {
+        resp = crate::audit::tag_project(resp, &p);
+    }
+    crate::product::with_product_cors(resp)
 }
 
 async fn stream_entry(

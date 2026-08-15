@@ -1156,6 +1156,19 @@ async fn async_main() -> anyhow::Result<()> {
             "STREAMS_AUTH_MODE={} requires STREAMS_AUTH_KEYS_FILE,              STREAMS_AUTH_POLICY_FILE and STREAMS_AUTH_GRANTS_FILE",
             args.streams_auth_mode
         );
+        // §10.4: the denial journal drains through the system ledger
+        // key. Without one, enforce still refuses correctly but the
+        // journal is VOID — denials are only counted, never durably
+        // recorded. Loud at boot so a preview cell cannot mistake
+        // itself for an audited one.
+        if args.usage_stream_key.is_none() {
+            tracing::warn!(
+                "STREAMS_AUTH_MODE={} without USAGE_STREAM_KEY: the _audit_events \
+                 denial journal is DISABLED (denials appear only in \
+                 audit_events_dropped_total)",
+                args.streams_auth_mode
+            );
+        }
         // The refresher cadence must clear the staleness window with
         // room for a failed fetch or two, or the cell oscillates into
         // fail-closed refusals on schedule.

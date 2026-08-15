@@ -19004,6 +19004,43 @@ async fn enforce_denials_journal_to_audit_events() {
     )
     .await;
     assert_eq!(st, 401);
+    // Wrong ENCRYPTION key on an authorized append: 403 wrong_key —
+    // key-guessing probes journal too, and the entry wrapper fills the
+    // verified project into the event.
+    let wkey = (
+        "prisma-encryption-key",
+        "CAgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAg=",
+    );
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/audj-probe/records",
+        &[wkey, auth],
+        br#"{"x":1}"#,
+    )
+    .await;
+    assert_eq!(st, 403);
+
+    // Journal scope (§8.1/§7.1): placement and own-feed staleness are
+    // NOT denials of the caller and must never be tagged; real
+    // verification failures are.
+    for e in [
+        crate::auth::AuthError::WrongCell,
+        crate::auth::AuthError::PolicyStale,
+        crate::auth::AuthError::KeysStale,
+    ] {
+        let r = crate::product::auth_failure_response(&e);
+        assert!(
+            r.extensions().get::<crate::audit::DenialTag>().is_none(),
+            "{} must not journal",
+            e.kind()
+        );
+    }
+    let r = crate::product::auth_failure_response(&crate::auth::AuthError::Expired);
+    assert!(
+        r.extensions().get::<crate::audit::DenialTag>().is_some(),
+        "expired must journal"
+    );
 
     // Drain the (process-global) queue to this rig's `_audit_events`.
     let mut appended = 0usize;
@@ -19067,6 +19104,15 @@ async fn enforce_denials_journal_to_audit_events() {
             .iter()
             .any(|e| e["status"] == 401 && e["project_id"].is_null()),
         "unverified denial (without identity) missing from journal: {events:?}"
+    );
+    assert!(
+        probe
+            .iter()
+            .any(|e| e["code"] == "stale_or_wrong_credentials"
+                && e["project_id"] == "proj-audj"
+                && e["method"] == "POST"
+                && e["status"] == 403),
+        "wrong-key probe with wrapper-filled project missing: {events:?}"
     );
     assert!(
         !probe

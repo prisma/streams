@@ -40,14 +40,36 @@ pub fn tag(mut resp: axum::response::Response, code: &'static str) -> axum::resp
 
 /// Fill the VERIFIED project on an already-tagged refusal (a no-op on
 /// untagged responses, so call sites never need to know the class).
+/// Fill-only-if-absent: the entry wrapper calls this with the gate's
+/// principal for EVERY outgoing response, and it must never clobber a
+/// classifier's more specific attribution.
 pub fn tag_project(
     mut resp: axum::response::Response,
     project: &crate::tenant::ProjectId,
 ) -> axum::response::Response {
-    if let Some(t) = resp.extensions_mut().get_mut::<DenialTag>() {
+    if let Some(t) = resp.extensions_mut().get_mut::<DenialTag>()
+        && t.project.is_none()
+    {
         t.project = Some(project.as_str().to_string());
     }
     resp
+}
+
+/// Journaled route strings are bounded: the route is attacker-sized
+/// (wildcard path remainder), and an unbounded copy would let an
+/// unauthenticated denial storm pin queue memory and oversize drain
+/// batches past the append body limit (a permanent drain wedge).
+const ROUTE_MAX: usize = 256;
+
+fn bounded_route(route: &str) -> String {
+    if route.len() <= ROUTE_MAX {
+        return route.to_string();
+    }
+    let mut end = ROUTE_MAX;
+    while !route.is_char_boundary(end) {
+        end -= 1;
+    }
+    route[..end].to_string()
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize)]
@@ -64,6 +86,11 @@ pub struct AuditEvent {
     pub route: String,
     pub method: String,
     pub status: u16,
+    /// Gap markers only: how many denials were dropped at the queue
+    /// cap. Carried as a FIELD (never only in the id) so a requeue
+    /// overflow can restore the magnitude to the pending counter.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub dropped: Option<u64>,
 }
 
 static SEQ: AtomicU64 = AtomicU64::new(0);
@@ -90,6 +117,13 @@ pub fn observe_denial(
     let Some(t) = resp.extensions().get::<DenialTag>() else {
         return;
     };
+    // No usage key = no drain will EVER run: count the loss instead of
+    // pinning the queue at cap for the process lifetime. The boot path
+    // warns loudly that enforce without a usage key voids the journal.
+    if state.usage_key.is_none() {
+        AUDIT_DROPPED.fetch_add(1, Ordering::Relaxed);
+        return;
+    }
     let ev = AuditEvent {
         v: 1,
         event_id: format!(
@@ -101,9 +135,10 @@ pub fn observe_denial(
         cell: state.cell_id.clone(),
         code: t.code.to_string(),
         project_id: t.project.clone(),
-        route: route.to_string(),
+        route: bounded_route(route),
         method: method.to_string(),
         status: resp.status().as_u16(),
+        dropped: None,
     };
     let mut g = q().lock().unwrap();
     if g.len() >= AUDIT_QUEUE_CAP {
@@ -129,9 +164,17 @@ pub async fn drain_audit_once(
     };
     let gap = GAP_PENDING.swap(0, Ordering::Relaxed);
     if gap > 0 {
+        // The id uses the shared SEQ, never the drop count: two gap
+        // episodes with equal counts must not collide under the
+        // mandatory dedupe-by-id, and the magnitude rides in the
+        // `dropped` field so a requeue overflow can restore it.
         batch.push(AuditEvent {
             v: 1,
-            event_id: format!("deny-gap/{}/{}", crate::billing::boot_id(), gap),
+            event_id: format!(
+                "deny-gap/{}/{}",
+                crate::billing::boot_id(),
+                SEQ.fetch_add(1, Ordering::Relaxed)
+            ),
             event_time_ms: crate::shard::now_ms(),
             cell: state.cell_id.clone(),
             code: "audit_gap".into(),
@@ -139,6 +182,7 @@ pub async fn drain_audit_once(
             route: String::new(),
             method: String::new(),
             status: 0,
+            dropped: Some(gap),
         });
     }
     if batch.is_empty() {
@@ -154,6 +198,11 @@ pub async fn drain_audit_once(
             for ev in batch.into_iter().rev() {
                 if g.len() < AUDIT_QUEUE_CAP {
                     g.push_front(ev);
+                } else if let Some(n) = ev.dropped {
+                    // A displaced gap MARKER: restore its magnitude to
+                    // the pending counter (the events it summarized
+                    // were already counted when they dropped).
+                    GAP_PENDING.fetch_add(n, Ordering::Relaxed);
                 } else {
                     AUDIT_DROPPED.fetch_add(1, Ordering::Relaxed);
                     GAP_PENDING.fetch_add(1, Ordering::Relaxed);
