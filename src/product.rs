@@ -751,38 +751,43 @@ pub(crate) fn project_admission(
 ) -> Result<Option<crate::quota::QuotaGuard>, Response> {
     let Some(p) = principal else { return Ok(None) };
     let quotas = state.auth.quotas_for(&p.project_id).unwrap_or_default();
-    match state
+    state
         .quotas
         .admit(&p.project_id, &quotas, crate::shard::now_ms())
-    {
-        Ok(g) => Ok(Some(g)),
-        Err(crate::quota::QuotaRefusal::Rate { retry_after_secs }) => {
+        .map(Some)
+        .map_err(|r| quota_refusal_response(&r))
+}
+
+/// §17.3 refusal classes on the wire.
+fn quota_refusal_response(refusal: &crate::quota::QuotaRefusal) -> Response {
+    match refusal {
+        crate::quota::QuotaRefusal::Rate { retry_after_secs } => {
             let mut r = perr(
                 StatusCode::TOO_MANY_REQUESTS,
                 "project_rate_limit",
-                "the project's request rate quota is exhausted; retry",
+                "the project's rate quota is exhausted; retry",
                 None,
                 true,
             );
             if let Ok(v) = axum::http::HeaderValue::from_str(&retry_after_secs.to_string()) {
                 r.headers_mut().insert("retry-after", v);
             }
-            Err(r)
+            r
         }
-        Err(crate::quota::QuotaRefusal::Concurrency) => Err(perr(
+        crate::quota::QuotaRefusal::Concurrency => perr(
             StatusCode::TOO_MANY_REQUESTS,
             "project_concurrency_limit",
             "too many inflight requests for this project; retry",
             None,
             true,
-        )),
-        Err(crate::quota::QuotaRefusal::TrackerCapacity) => Err(perr(
+        ),
+        crate::quota::QuotaRefusal::TrackerCapacity => perr(
             StatusCode::SERVICE_UNAVAILABLE,
             "project_tracker_capacity",
             "this instance cannot track additional projects right now; retry",
             None,
             true,
-        )),
+        ),
     }
 }
 
@@ -932,13 +937,29 @@ pub async fn product_entry(
         ProductRoute::Records { name } => {
             return match (method.clone(), verb.as_deref()) {
                 (Method::POST, None) => {
-                    let r = product_append(state.clone(), name.clone(), headers, body, false).await;
+                    let r = product_append(
+                        state.clone(),
+                        name.clone(),
+                        headers,
+                        body,
+                        false,
+                        principal.as_ref(),
+                    )
+                    .await;
                     let ok = r.status().is_success();
                     meter_op_if_ok(&state, &name, ok, OpKind::Append).await;
                     r
                 }
                 (Method::POST, Some("batch")) => {
-                    let r = product_append(state.clone(), name.clone(), headers, body, true).await;
+                    let r = product_append(
+                        state.clone(),
+                        name.clone(),
+                        headers,
+                        body,
+                        true,
+                        principal.as_ref(),
+                    )
+                    .await;
                     let ok = r.status().is_success();
                     meter_op_if_ok(&state, &name, ok, OpKind::Append).await;
                     r
@@ -2680,6 +2701,9 @@ async fn product_append_sealing(
             generation,
             epoch,
         }),
+        // Internal: the seal's final record is lifecycle work, not
+        // customer append volume.
+        None,
     )
     .await
 }
@@ -2715,10 +2739,12 @@ async fn product_append(
     headers: HeaderMap,
     body: Bytes,
     batch: bool,
+    principal: Option<&crate::auth::RequestPrincipal>,
 ) -> Response {
-    product_append_inner(state, name, headers, body, batch, false, None).await
+    product_append_inner(state, name, headers, body, batch, false, None, principal).await
 }
 
+#[allow(clippy::too_many_arguments)] // request context, not tunables
 async fn product_append_inner(
     state: Arc<AppState>,
     name: String,
@@ -2729,6 +2755,7 @@ async fn product_append_inner(
     // TRUSTED: the seal operation whose final record this is, with the
     // claim generation and incarnation its write is fenced under.
     seal_auth: Option<crate::http::SealAuthz>,
+    principal: Option<&crate::auth::RequestPrincipal>,
 ) -> Response {
     let Some(key_b64) = product_key(&headers) else {
         return perr(
@@ -2866,6 +2893,22 @@ async fn product_append_inner(
         }
         (body.clone(), 1)
     };
+    // §17.2 append-volume backstop, with the EXACT parsed shape: the
+    // request payload size and the true record count (batch-aware).
+    // Internal writers (DLQ delivery, the seal's final record) carry
+    // no principal and are bounded by their own mechanisms.
+    if let Some(p) = principal
+        && let Some(quotas) = state.auth.quotas_for(&p.project_id)
+        && let Err(refusal) = state.quotas.admit_append(
+            &p.project_id,
+            &quotas,
+            body.len() as u64,
+            count as u64,
+            crate::shard::now_ms(),
+        )
+    {
+        return quota_refusal_response(&refusal);
+    }
 
     // Drive the ONE shared append path with internally-constructed
     // inputs (this is product parsing feeding the engine surface, not a
@@ -5698,8 +5741,15 @@ async fn dlq_and_settle(
             }
             ih.insert("producer-epoch", axum::http::HeaderValue::from_static("1"));
             ih.insert("producer-seq", axum::http::HeaderValue::from_static("0"));
-            let resp =
-                product_append(state.clone(), dlq.clone(), ih, Bytes::from(body), false).await;
+            let resp = product_append(
+                state.clone(),
+                dlq.clone(),
+                ih,
+                Bytes::from(body),
+                false,
+                None,
+            )
+            .await;
             if !resp.status().is_success() {
                 // DLQ append not durable: leave the lease; the key stays
                 // blocked and a later pass retries idempotently. The

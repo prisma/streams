@@ -17638,6 +17638,181 @@ async fn project_rate_quota_backstop_answers_429() {
     engine_shutdown(&state).await;
 }
 
+/// MT Stage 6b (§17.2 volume backstop): append records are metered
+/// with the EXACT parsed count — a batch of 3 is 3, not 1 — against
+/// the policy's append_records_per_sec, and refusal is the same 429
+/// project_rate_limit. No sleeps: the legs spend a 2-token budget and
+/// probe both the batch-count and the drained-bucket refusals.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn append_volume_quota_meters_exact_record_counts() {
+    const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
+    const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
+    let now = crate::shard::now_ms() / 1000;
+    let svc = std::sync::Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        "v-1".to_string(),
+        jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+    );
+    svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys,
+        fetched_at_unix: now,
+    });
+    let pid = crate::tenant::ProjectId::new("proj-test").unwrap();
+    let mut projects = std::collections::HashMap::new();
+    projects.insert(
+        pid.clone(),
+        crate::project_policy::ProjectPolicy {
+            project_id: pid.clone(),
+            workspace_id: crate::tenant::WorkspaceId::new("ws_789").unwrap(),
+            cell_id: std::sync::Arc::from("test-cell"),
+            project_policy_version: 1,
+            ownership_version: 1,
+            status: crate::project_policy::ProjectStatus::Active,
+            quotas: crate::project_policy::ProjectQuotas {
+                append_records_per_sec: 2,
+                ..Default::default()
+            },
+        },
+    );
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects,
+        fetched_at_unix: now,
+        feed_version: 1,
+    });
+    let mut credentials = std::collections::HashMap::new();
+    credentials.insert(
+        std::sync::Arc::from("cv"),
+        crate::project_policy::CredentialGrant {
+            credential_id: std::sync::Arc::from("cv"),
+            project_id: pid,
+            grant_version: 1,
+            status: crate::project_policy::CredentialStatus::Active,
+            scopes: crate::tenant::ScopeSet::parse(
+                "streams.create streams.records.append streams.metadata.read",
+            )
+            .0,
+            grant: crate::tenant::StreamGrant::All,
+            expires_at: None,
+        },
+    );
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials,
+        fetched_at_unix: now,
+        feed_version: 1,
+    });
+    let (state, addr) = http_rig_with_auth_service(mem(), svc).await;
+
+    #[derive(serde::Serialize)]
+    struct C<'a> {
+        iss: &'a str,
+        aud: &'a str,
+        sub: &'a str,
+        credential_id: &'a str,
+        project_id: &'a str,
+        workspace_id: &'a str,
+        cell_id: &'a str,
+        ownership_version: u64,
+        grant_version: u64,
+        scope: &'a str,
+        jti: &'a str,
+        iat: i64,
+        exp: i64,
+    }
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some("v-1".into());
+    let jwt = jsonwebtoken::encode(
+        &header,
+        &C {
+            iss: "https://auth.prisma.io",
+            aud: "prisma-streams-data",
+            sub: "u",
+            credential_id: "cv",
+            project_id: "proj-test",
+            workspace_id: "ws_789",
+            cell_id: "test-cell",
+            ownership_version: 1,
+            grant_version: 1,
+            scope: "streams.create streams.records.append streams.metadata.read",
+            jti: "t",
+            iat: now - 60,
+            exp: now + 600,
+        },
+        &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
+    )
+    .unwrap();
+    let bearer = format!("Bearer {jwt}");
+    let auth = ("authorization", bearer.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let code = |b: &[u8]| -> String {
+        serde_json::from_slice::<serde_json::Value>(b)
+            .map(|v| v["error"]["code"].as_str().unwrap_or("").to_string())
+            .unwrap_or_default()
+    };
+
+    // Create is not append volume.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/vq",
+        &[ekey, auth],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    // One record: budget 2 -> ~1 left.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/vq/records",
+        &[ekey, auth],
+        br#"{"n":1}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    // A 3-record batch is THREE records, and 3 > 1: refused — the
+    // count is the parsed batch size, not "one request".
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/vq/records:batch",
+        &[ekey, auth],
+        br#"[{"n":2},{"n":3},{"n":4}]"#,
+    )
+    .await;
+    assert_eq!(st, 429, "{}", String::from_utf8_lossy(&b));
+    assert_eq!(code(&b), "project_rate_limit");
+    // A refused batch consumed nothing: one single record still fits.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/vq/records",
+        &[ekey, auth],
+        br#"{"n":5}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+    // Bucket drained: the next record is refused.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/vq/records",
+        &[ekey, auth],
+        br#"{"n":6}"#,
+    )
+    .await;
+    assert_eq!(st, 429, "{}", String::from_utf8_lossy(&b));
+    assert_eq!(code(&b), "project_rate_limit");
+    engine_shutdown(&state).await;
+}
+
 /// MT Stage 4 same-project rule: stored references (fork parentage,
 /// dead-letter targets) bind inside the REFERRING stream's project. A
 /// foreign project's stream with the SAME name — even one carrying the

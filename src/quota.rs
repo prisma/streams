@@ -40,8 +40,27 @@ struct Bucket {
     last_ms: i64,
 }
 
+impl Bucket {
+    /// Refill at `rate`/sec (capped at one second's burst) and try to
+    /// take `cost` tokens. On refusal returns seconds until enough
+    /// tokens exist (Retry-After).
+    fn take(&mut self, rate: f64, cost: f64, now_ms: i64) -> Result<(), u64> {
+        let dt_s = ((now_ms - self.last_ms).max(0) as f64) / 1000.0;
+        self.level = (self.level + dt_s * rate).min(rate);
+        self.last_ms = now_ms;
+        if self.level < cost {
+            return Err((((cost - self.level) / rate).ceil().max(1.0)) as u64);
+        }
+        self.level -= cost;
+        Ok(())
+    }
+}
+
 pub struct ProjectAdmission {
     bucket: Mutex<Bucket>,
+    /// §17.2 volume backstops: append payload bytes and records.
+    append_bytes: Mutex<Bucket>,
+    append_records: Mutex<Bucket>,
     inflight: AtomicU64,
 }
 
@@ -103,6 +122,14 @@ impl QuotaRegistry {
                             level: quotas.requests_per_sec as f64,
                             last_ms: now_ms,
                         }),
+                        append_bytes: Mutex::new(Bucket {
+                            level: quotas.append_bytes_per_sec as f64,
+                            last_ms: now_ms,
+                        }),
+                        append_records: Mutex::new(Bucket {
+                            level: quotas.append_records_per_sec as f64,
+                            last_ms: now_ms,
+                        }),
                         inflight: AtomicU64::new(0),
                     });
                     m.insert(project.clone(), a.clone());
@@ -116,17 +143,15 @@ impl QuotaRegistry {
         // re-read from the CURRENT quotas every admit, so a policy
         // update takes effect on the next request without any
         // republish handshake.
-        if quotas.requests_per_sec > 0 {
-            let rate = quotas.requests_per_sec as f64;
-            let mut b = admission.bucket.lock().unwrap();
-            let dt_s = ((now_ms - b.last_ms).max(0) as f64) / 1000.0;
-            b.level = (b.level + dt_s * rate).min(rate);
-            b.last_ms = now_ms;
-            if b.level < 1.0 {
-                let retry_after_secs = ((1.0 - b.level) / rate).ceil().max(1.0) as u64;
-                return Err(QuotaRefusal::Rate { retry_after_secs });
-            }
-            b.level -= 1.0;
+        if quotas.requests_per_sec > 0
+            && let Err(retry_after_secs) =
+                admission
+                    .bucket
+                    .lock()
+                    .unwrap()
+                    .take(quotas.requests_per_sec as f64, 1.0, now_ms)
+        {
+            return Err(QuotaRefusal::Rate { retry_after_secs });
         }
 
         if quotas.max_inflight_requests > 0 {
@@ -142,6 +167,66 @@ impl QuotaRegistry {
             admission.inflight.fetch_add(1, Ordering::Relaxed);
         }
         Ok(QuotaGuard { admission })
+    }
+
+    /// §17.2 append-volume backstop, checked at the APPEND site with
+    /// the exact buffered payload size — after the request-rate admit,
+    /// before the write is dispatched. A single append larger than one
+    /// second's budget is still admitted when the bucket is full
+    /// (otherwise it could never succeed); it drives the bucket
+    /// negative and later appends wait it out.
+    pub fn admit_append(
+        &self,
+        project: &ProjectId,
+        quotas: &ProjectQuotas,
+        payload_bytes: u64,
+        records: u64,
+        now_ms: i64,
+    ) -> Result<(), QuotaRefusal> {
+        if quotas.append_bytes_per_sec == 0 && quotas.append_records_per_sec == 0 {
+            return Ok(());
+        }
+        let admission = {
+            let m = self.projects.lock().unwrap();
+            match m.get(project) {
+                Some(a) => a.clone(),
+                // admit() ran first on this request; absence means the
+                // tracker refused it there.
+                None => return Err(QuotaRefusal::TrackerCapacity),
+            }
+        };
+        let oversize = |cost: f64, rate: f64, b: &mut Bucket| {
+            // Full bucket + oversized op: admit once, go negative.
+            let full = b.level >= rate - f64::EPSILON;
+            if full && cost > rate {
+                b.level -= cost;
+                b.last_ms = now_ms;
+                return true;
+            }
+            false
+        };
+        if quotas.append_bytes_per_sec > 0 {
+            let rate = quotas.append_bytes_per_sec as f64;
+            let mut b = admission.append_bytes.lock().unwrap();
+            // Refill before the oversize check so "full" is current.
+            let _ = b.take(rate, 0.0, now_ms);
+            if !oversize(payload_bytes as f64, rate, &mut b)
+                && let Err(retry_after_secs) = b.take(rate, payload_bytes as f64, now_ms)
+            {
+                return Err(QuotaRefusal::Rate { retry_after_secs });
+            }
+        }
+        if quotas.append_records_per_sec > 0 {
+            let rate = quotas.append_records_per_sec as f64;
+            let mut b = admission.append_records.lock().unwrap();
+            let _ = b.take(rate, 0.0, now_ms);
+            if !oversize(records as f64, rate, &mut b)
+                && let Err(retry_after_secs) = b.take(rate, records as f64, now_ms)
+            {
+                return Err(QuotaRefusal::Rate { retry_after_secs });
+            }
+        }
+        Ok(())
     }
 
     /// Operator visibility: (projects tracked, total inflight).
@@ -218,6 +303,55 @@ mod tests {
         ));
         drop(g1);
         assert!(r.admit(&p, &quotas, 1_000).is_ok());
+    }
+
+    #[test]
+    fn append_volume_buckets_meter_bytes_and_records() {
+        let r = QuotaRegistry::default();
+        let p = pid("proj_v");
+        let quotas = ProjectQuotas {
+            append_bytes_per_sec: 1_000,
+            append_records_per_sec: 10,
+            ..Default::default()
+        };
+        // Track the project first (as the request-rate admit does).
+        let _g = r.admit(&p, &quotas, 1_000).unwrap();
+        assert!(r.admit_append(&p, &quotas, 600, 5, 1_000).is_ok());
+        assert!(r.admit_append(&p, &quotas, 400, 5, 1_000).is_ok());
+        // Bytes bucket dry (and records bucket dry).
+        assert!(matches!(
+            r.admit_append(&p, &quotas, 1, 1, 1_000),
+            Err(QuotaRefusal::Rate { .. })
+        ));
+        // Half a second later: 500 bytes / 5 records refilled.
+        assert!(r.admit_append(&p, &quotas, 500, 5, 1_500).is_ok());
+        assert!(matches!(
+            r.admit_append(&p, &quotas, 1, 0, 1_500),
+            Err(QuotaRefusal::Rate { .. })
+        ));
+    }
+
+    #[test]
+    fn oversized_single_append_admits_once_then_waits() {
+        let r = QuotaRegistry::default();
+        let p = pid("proj_o");
+        let quotas = ProjectQuotas {
+            append_bytes_per_sec: 100,
+            ..Default::default()
+        };
+        let _g = r.admit(&p, &quotas, 1_000).unwrap();
+        // 5x one second's budget: admitted from a full bucket (it
+        // could otherwise never succeed), driving the bucket negative.
+        assert!(r.admit_append(&p, &quotas, 500, 1, 1_000).is_ok());
+        // The debt is real: even a tiny append waits it out...
+        match r.admit_append(&p, &quotas, 1, 0, 1_000) {
+            Err(QuotaRefusal::Rate { retry_after_secs }) => {
+                assert!(retry_after_secs >= 4, "debt horizon: {retry_after_secs}")
+            }
+            _ => panic!("bucket must be in debt"),
+        }
+        // ...and clears after the debt window.
+        assert!(r.admit_append(&p, &quotas, 50, 0, 7_000).is_ok());
     }
 
     #[test]
