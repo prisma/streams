@@ -664,6 +664,24 @@ impl AuthService {
             .map(|p| p.workspace_id.clone())
     }
 
+    /// CURRENT status + quotas for a project — the policy a verified
+    /// CAPABILITY principal is held to (SR-3): the capability is a
+    /// bearer credential, so suspension and admission apply to it the
+    /// same instant they apply to token principals.
+    pub fn status_and_quotas(
+        &self,
+        project: &crate::tenant::ProjectId,
+    ) -> Option<(
+        crate::project_policy::ProjectStatus,
+        crate::project_policy::ProjectQuotas,
+    )> {
+        self.projects
+            .load()
+            .projects
+            .get(project)
+            .map(|p| (p.status, p.quotas.clone()))
+    }
+
     /// Snapshot freshness for the operator surface: whether each feed
     /// has EVER been published, how old it is against the fail-closed
     /// window, and what it contains.

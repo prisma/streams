@@ -6738,6 +6738,27 @@ async fn product_watch_get(
 /// URL sig is an OBSERVATION capability derived from the stream key —
 /// it grants no decryption, append, consumer, or management rights;
 /// holders of the stream key authenticate directly.
+/// Global pre-auth token bucket for capability-driven registry
+/// lookups (SR-3): generous for real clients, a hard wall for forged-
+/// capability scanning. 500/s refill, 1000 burst.
+fn cap_lookup_allowed() -> bool {
+    static B: std::sync::OnceLock<std::sync::Mutex<(f64, i64)>> = std::sync::OnceLock::new();
+    const RATE: f64 = 500.0;
+    const BURST: f64 = 1000.0;
+    let now = crate::shard::now_ms();
+    let m = B.get_or_init(|| std::sync::Mutex::new((BURST, now)));
+    let mut g = m.lock().unwrap();
+    let dt = ((now - g.1).max(0) as f64) / 1000.0;
+    g.0 = (g.0 + dt * RATE).min(BURST);
+    g.1 = now;
+    if g.0 >= 1.0 {
+        g.0 -= 1.0;
+        true
+    } else {
+        false
+    }
+}
+
 async fn product_watch_wait(
     state: Arc<AppState>,
     tenant: &crate::tenant::ProjectId,
@@ -6792,6 +6813,13 @@ async fn product_watch_wait(
         },
         None => None,
     };
+    // SR-3 pre-auth backstop: a forged capability drives one
+    // project-qualified registry lookup BEFORE anything verifies.
+    // Bound the global rate so capability probing cannot become
+    // registry pressure; the uniform refusal keeps the non-oracle.
+    if cap_tenant.is_some() && !cap_lookup_allowed() {
+        return refuse();
+    }
     let lookup_tenant = cap_tenant.as_ref().unwrap_or(tenant);
     let desc = match state.registry.get(&lookup_tenant.stream_ref(&name)).await {
         Ok(Some(d)) if crate::http::desc_alive(&d) => d,
@@ -6874,6 +6902,51 @@ async fn product_watch_wait(
     }
     // Authorized from here on: these answers reveal state and must not
     // be reachable by an unauthenticated probe.
+    //
+    // SR-3 (Søren review): the verified capability IS a restricted
+    // principal for lookup_tenant's project. Hold it to the CURRENT
+    // project policy and occupy the project's admission capacity for
+    // the WHOLE wait — a suspended project's capabilities die with the
+    // policy, and capability waiters cannot bypass the §17.3 ceilings.
+    let _cap_admission = if state.auth.mode == crate::auth::AuthMode::Enforce {
+        match state.auth.status_and_quotas(lookup_tenant) {
+            None => {
+                // Not in this cell's policy snapshot: not served here.
+                return crate::audit::tag_project(refuse(), lookup_tenant);
+            }
+            Some((status, quotas)) => {
+                if !matches!(status, crate::project_policy::ProjectStatus::Active) {
+                    return crate::audit::tag_project(
+                        crate::audit::tag(
+                            perr(
+                                StatusCode::FORBIDDEN,
+                                "project_not_active",
+                                "the project is not active",
+                                None,
+                                false,
+                            ),
+                            "project_not_active",
+                        ),
+                        lookup_tenant,
+                    );
+                }
+                match state
+                    .quotas
+                    .admit(lookup_tenant, &quotas, crate::shard::now_ms())
+                {
+                    Ok(g) => Some(g),
+                    Err(r) => {
+                        return crate::audit::tag_project(
+                            quota_refusal_response(&r),
+                            lookup_tenant,
+                        );
+                    }
+                }
+            }
+        }
+    } else {
+        None
+    };
     if crate::http::initializing(&desc) {
         return perr(
             StatusCode::SERVICE_UNAVAILABLE,
@@ -7008,6 +7081,13 @@ pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMa
             );
         }
         None
+    };
+    // SR-3: the catalog is a customer route like any other — it holds
+    // the project's admission slot for the handler's duration instead
+    // of offering a quota-free side door.
+    let _admission = match project_admission(&state, principal.as_ref()) {
+        Ok(g) => g,
+        Err(r) => return r,
     };
     let q = match strict_query(&query, &["limit", "cursor", "prefix"]) {
         Ok(q) => q,

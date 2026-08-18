@@ -20067,6 +20067,210 @@ async fn seal_fence_resolves_the_owning_project() {
     engine_shutdown(&state).await;
 }
 
+/// RED (Søren review): a verified watch capability is a bearer
+/// credential for its project, but the wait path never consults the
+/// CURRENT project policy — a capability keeps working after the
+/// project is suspended, until its own expiry.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn watch_capability_respects_project_suspension() {
+    let scopes = "streams.create streams.records.append streams.records.read \
+                  streams.metadata.read streams.watches.manage";
+    let (state, addr, tok) = sr_rig("proj-capb", "ws_capb", "c_capb", "cap-1", scopes).await;
+    let auth = ("authorization", tok.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/orders",
+        &[ekey, auth],
+        br#"{"format":{"kind":"json"},"watches":[{"name":"by-x","fields":["/id"]}]}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let bref = crate::tenant::ProjectId::new("proj-capb")
+        .unwrap()
+        .stream_ref("orders");
+    let desc = state.registry.get(&bref).await.unwrap().unwrap();
+    let epoch = desc.epoch_bytes().unwrap();
+    let khex = format!("{:016x}", 7u64);
+    let tokk = crate::crypto::touch_token(&skey(), &epoch);
+    let sk = crate::crypto::wait_sig_key(&tokk, &epoch);
+    let exp = crate::shard::now_ms() / 1000 + 120;
+    let cap = format!(
+        "proj-capb.{exp}.{}",
+        crate::crypto::watch_capability_sig(
+            &sk,
+            &bref,
+            &desc.stream_epoch,
+            "by-x",
+            &khex,
+            "GET",
+            exp,
+        )
+    );
+    let path =
+        format!("/v1/streams/orders/watches/by-x/keys/{khex}?cursor=now&timeoutMs=100&cap={cap}");
+    // Active: the capability authorizes the wait.
+    let (st, _, b) = preq(addr, "GET", &path, &[], b"").await;
+    assert_eq!(st, 200, "active wait: {}", String::from_utf8_lossy(&b));
+
+    // Suspend the project (policy feed v2). The capability has not
+    // expired — the CURRENT policy must refuse the wait anyway.
+    let pid = crate::tenant::ProjectId::new("proj-capb").unwrap();
+    let mut projects = std::collections::HashMap::new();
+    projects.insert(
+        pid.clone(),
+        crate::project_policy::ProjectPolicy {
+            project_id: pid,
+            workspace_id: crate::tenant::WorkspaceId::new("ws_capb").unwrap(),
+            cell_id: std::sync::Arc::from("test-cell"),
+            project_policy_version: 2,
+            ownership_version: 1,
+            status: crate::project_policy::ProjectStatus::Suspended,
+            quotas: crate::project_policy::ProjectQuotas::default(),
+        },
+    );
+    state
+        .auth
+        .publish_policies(crate::project_policy::PolicySnapshot {
+            projects,
+            fetched_at_unix: crate::shard::now_ms() / 1000,
+            feed_version: 2,
+        })
+        .unwrap();
+    let (st, _, b) = preq(addr, "GET", &path, &[], b"").await;
+    assert_eq!(
+        st,
+        403,
+        "a suspended project's capability must be refused: {} {}",
+        st,
+        String::from_utf8_lossy(&b)
+    );
+    engine_shutdown(&state).await;
+}
+
+/// RED (Søren review): capability waits bypass project admission — a
+/// project at its inflight ceiling can still open unbounded 25-second
+/// waiters through capability URLs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn watch_capability_waits_occupy_project_admission() {
+    let scopes = "streams.create streams.records.append streams.records.read \
+                  streams.metadata.read streams.watches.manage";
+    let (state, addr, tok) = sr_rig("proj-capq", "ws_capq", "c_capq", "capq-1", scopes).await;
+    let auth = ("authorization", tok.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/orders",
+        &[ekey, auth],
+        br#"{"format":{"kind":"json"},"watches":[{"name":"by-x","fields":["/id"]}]}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    // Tighten the project's inflight ceiling to 1 AFTER setup.
+    let pid = crate::tenant::ProjectId::new("proj-capq").unwrap();
+    let mut projects = std::collections::HashMap::new();
+    projects.insert(
+        pid.clone(),
+        crate::project_policy::ProjectPolicy {
+            project_id: pid,
+            workspace_id: crate::tenant::WorkspaceId::new("ws_capq").unwrap(),
+            cell_id: std::sync::Arc::from("test-cell"),
+            project_policy_version: 2,
+            ownership_version: 1,
+            status: crate::project_policy::ProjectStatus::Active,
+            quotas: crate::project_policy::ProjectQuotas {
+                max_inflight_requests: 1,
+                ..Default::default()
+            },
+        },
+    );
+    state
+        .auth
+        .publish_policies(crate::project_policy::PolicySnapshot {
+            projects,
+            fetched_at_unix: crate::shard::now_ms() / 1000,
+            feed_version: 2,
+        })
+        .unwrap();
+    let bref = crate::tenant::ProjectId::new("proj-capq")
+        .unwrap()
+        .stream_ref("orders");
+    let desc = state.registry.get(&bref).await.unwrap().unwrap();
+    let epoch = desc.epoch_bytes().unwrap();
+    let khex = format!("{:016x}", 9u64);
+    let tokk = crate::crypto::touch_token(&skey(), &epoch);
+    let sk = crate::crypto::wait_sig_key(&tokk, &epoch);
+    let exp = crate::shard::now_ms() / 1000 + 120;
+    let cap = format!(
+        "proj-capq.{exp}.{}",
+        crate::crypto::watch_capability_sig(
+            &sk,
+            &bref,
+            &desc.stream_epoch,
+            "by-x",
+            &khex,
+            "GET",
+            exp,
+        )
+    );
+    // Waiter 1 holds the project's single admission slot for ~3s.
+    let long_path =
+        format!("/v1/streams/orders/watches/by-x/keys/{khex}?cursor=now&timeoutMs=3000&cap={cap}");
+    let h = tokio::spawn(async move { preq(addr, "GET", &long_path, &[], b"").await });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // Waiter 2 must be refused with the project concurrency class.
+    let short_path =
+        format!("/v1/streams/orders/watches/by-x/keys/{khex}?cursor=now&timeoutMs=100&cap={cap}");
+    let (st, _, b) = preq(addr, "GET", &short_path, &[], b"").await;
+    assert_eq!(
+        st,
+        429,
+        "the second capability wait must hit the project ceiling: {} {}",
+        st,
+        String::from_utf8_lossy(&b)
+    );
+    let _ = h.await;
+    engine_shutdown(&state).await;
+}
+
+/// Regression for the scaler conversion (Søren review, blocker 3): a
+/// NON-DEPLOYMENT project's pending split resumes under its own ref.
+/// Pre-sweep, resume(name) resolved the deployment tenant and the
+/// pending transition never completed for any other project.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn nondeployment_pending_split_resumes() {
+    let scopes = "streams.create streams.records.append streams.records.read \
+                  streams.metadata.read";
+    let (state, addr, tok) = sr_rig("proj-spl", "ws_spl", "c_spl", "spl-1", scopes).await;
+    let auth = ("authorization", tok.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/orders",
+        &[ekey, auth],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let bref = crate::tenant::ProjectId::new("proj-spl")
+        .unwrap()
+        .stream_ref("orders");
+    // Execute a full split on B's OWN collection.
+    let done = crate::scaler3::execute_split(&state, &bref, 0, 0x8000_0000_0000_0000).await;
+    assert!(done, "a non-deployment project's split must execute");
+    state.registry.invalidate(&bref);
+    let d = state.registry.get(&bref).await.unwrap().unwrap();
+    let map = d.segments.as_ref().expect("split materialized a map");
+    assert!(map.pending.is_none(), "transition completed: {map:?}");
+    let live = map.segments.iter().filter(|s| s.is_live()).count();
+    assert_eq!(live, 2, "two live children after the split: {map:?}");
+    engine_shutdown(&state).await;
+}
+
 /// MT Stage 4 same-project rule: stored references (fork parentage,
 /// dead-letter targets) bind inside the REFERRING stream's project. A
 /// foreign project's stream with the SAME name — even one carrying the

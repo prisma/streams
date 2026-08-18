@@ -1776,6 +1776,7 @@ async fn project_usage_axum_inner(
     // authority the handler compares the path against (the URL tenant
     // is a claim to check, never a router hint). Off/shadow keep the
     // deployment tenant + legacy bearer.
+    let mut _admission = None;
     let authority = if state.auth.mode == crate::auth::AuthMode::Enforce {
         match crate::product::enforce_customer(&state, req.headers()) {
             Ok(p) => {
@@ -1784,6 +1785,12 @@ async fn project_usage_axum_inner(
                         crate::product::auth_failure_response(&e),
                         &p.project_id,
                     ));
+                }
+                // SR-3: usage queries occupy the project's admission
+                // slot like every other customer request.
+                match crate::product::project_admission(&state, Some(&p)) {
+                    Ok(g) => _admission = g,
+                    Err(r) => return crate::product::with_product_cors(r),
                 }
                 p.project_id
             }
