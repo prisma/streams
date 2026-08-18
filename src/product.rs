@@ -665,7 +665,7 @@ pub(crate) fn auth_failure_response(e: &crate::auth::AuthError) -> Response {
             "this cell does not serve the project; re-resolve the              project's endpoint (the credential itself is fine)",
             false,
         ),
-        E::PolicyStale | E::GrantsStale => (
+        E::PolicyStale | E::GrantsStale | E::KeysStale => (
             StatusCode::SERVICE_UNAVAILABLE,
             "this cell's authorization data is stale; retry",
             true,
@@ -2092,12 +2092,11 @@ pub(crate) async fn claim_seal(
     intent: &crate::registry::SealIntent,
     expect_epoch: &str,
 ) -> Result<EnterSeal, String> {
-    let name = sref.name().as_str();
     for _ in 0..6 {
         match enter_sealing_cas(state, sref, op_id, intent, expect_epoch).await? {
             EnterSeal::PendingTopology => {
                 // Finish the transition, then race for the intent again.
-                crate::scaler3::resume(state, name).await;
+                crate::scaler3::resume(state, sref).await;
                 state.registry.invalidate(sref);
             }
             EnterSeal::AbandonedClaim {
@@ -2160,7 +2159,6 @@ async fn take_over_abandoned(
     old_gen: u64,
     old_intent: &crate::registry::SealIntent,
 ) -> Result<Option<EnterSeal>, String> {
-    let name = sref.name().as_str();
     // 1. Reserve.
     let mut reserved = 0u64;
     let same_claim = |sl: &crate::registry::SealState| {
@@ -2189,7 +2187,7 @@ async fn take_over_abandoned(
         crate::registry::SealIntent::Empty => String::new(),
     };
     let closed =
-        crate::http::fence_segment_for_key(state, name, expect_epoch, &routing_key, reserved)
+        crate::http::fence_segment_for_key(state, sref, expect_epoch, &routing_key, reserved)
             .await?;
     if closed {
         // The old operation's close committed: its record is durable

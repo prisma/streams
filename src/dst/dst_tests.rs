@@ -5653,7 +5653,8 @@ async fn rig_in_seal_gap(
         let state = state.clone();
         let name = stream.to_string();
         tokio::spawn(async move {
-            crate::scaler3::execute_split(&state, &name, 0, 0x8000_0000_0000_0000).await
+            crate::scaler3::execute_split(&state, &state.sref(&name), 0, 0x8000_0000_0000_0000)
+                .await
         })
     };
     // The gap is entered once the parent identity's engine handle is
@@ -5848,7 +5849,8 @@ async fn seal_gap_long_poll_wakes_without_closure() {
     let split = {
         let state = state.clone();
         tokio::spawn(async move {
-            crate::scaler3::execute_split(&state, "gappoll", 0, 0x8000_0000_0000_0000).await
+            crate::scaler3::execute_split(&state, &state.sref("gappoll"), 0, 0x8000_0000_0000_0000)
+                .await
         })
     };
     let (st, h, _) = poll.await.unwrap();
@@ -5963,7 +5965,8 @@ async fn seal_gap_stale_descriptor_redispatches() {
     let split = {
         let state = state.clone();
         tokio::spawn(async move {
-            crate::scaler3::execute_split(&state, "gapstale", 0, 0x8000_0000_0000_0000).await
+            crate::scaler3::execute_split(&state, &state.sref("gapstale"), 0, 0x8000_0000_0000_0000)
+                .await
         })
     };
     // Wait for the seal, then plant the STALE descriptor over the fresh
@@ -6611,7 +6614,8 @@ async fn split_children_land_on_distinct_engines() {
         }
     }
     assert!(
-        crate::scaler3::execute_split(&state, "cap-routes", 0, 0x8000_0000_0000_0000).await,
+        crate::scaler3::execute_split(&state, &state.sref("cap-routes"), 0, 0x8000_0000_0000_0000)
+            .await,
         "split executes"
     );
     state.registry.invalidate(&state.sref("cap-routes"));
@@ -6754,7 +6758,8 @@ async fn post_split_throughput_scales() {
     };
 
     assert!(
-        crate::scaler3::execute_split(&state, "cap-scale", 0, 0x8000_0000_0000_0000).await,
+        crate::scaler3::execute_split(&state, &state.sref("cap-scale"), 0, 0x8000_0000_0000_0000)
+            .await,
         "split executes"
     );
     // Verify distinct engines before measuring.
@@ -6868,7 +6873,8 @@ async fn merge_rejoins_cold_children_with_exact_lineage() {
         append_round(addr, &keys, r, &mut per_key).await;
     }
     assert!(
-        crate::scaler3::execute_split(&state, "mergeback", 0, 0x8000_0000_0000_0000).await,
+        crate::scaler3::execute_split(&state, &state.sref("mergeback"), 0, 0x8000_0000_0000_0000)
+            .await,
         "split"
     );
     for r in 6..10 {
@@ -6890,7 +6896,7 @@ async fn merge_rejoins_cold_children_with_exact_lineage() {
     };
     assert_eq!(live.len(), 2);
     assert!(
-        crate::scaler3::execute_merge(&state, "mergeback", live[0], live[1]).await,
+        crate::scaler3::execute_merge(&state, &state.sref("mergeback"), live[0], live[1]).await,
         "merge executes"
     );
     state.registry.invalidate(&state.sref("mergeback"));
@@ -6980,7 +6986,10 @@ async fn sse_follows_lineage_across_split() {
             .await;
         }
     }
-    assert!(crate::scaler3::execute_split(&state, "sselin", 0, 0x8000_0000_0000_0000).await);
+    assert!(
+        crate::scaler3::execute_split(&state, &state.sref("sselin"), 0, 0x8000_0000_0000_0000)
+            .await
+    );
     for r in 5..10 {
         for k in ["ga", "gb"] {
             let body = format!("{{\"k\":\"{k}\",\"n\":{r}}}");
@@ -7832,7 +7841,9 @@ async fn product_read_follows_split_lineage() {
             assert_eq!(st, 200);
         }
     }
-    assert!(crate::scaler3::execute_split(&state, "lin", 0, 0x8000_0000_0000_0000).await);
+    assert!(
+        crate::scaler3::execute_split(&state, &state.sref("lin"), 0, 0x8000_0000_0000_0000).await
+    );
     for n in 5..10 {
         for k in ["ga", "gb"] {
             let body = format!("{{\"k\":\"{k}\",\"n\":{n}}}");
@@ -8303,7 +8314,10 @@ async fn product_scan_traverses_split_lineage() {
             assert_eq!(st, 200);
         }
     }
-    assert!(crate::scaler3::execute_split(&state, "scnlin", 0, 0x8000_0000_0000_0000).await);
+    assert!(
+        crate::scaler3::execute_split(&state, &state.sref("scnlin"), 0, 0x8000_0000_0000_0000)
+            .await
+    );
     for n in 5..10 {
         for k in ["ga", "gb"] {
             let body = format!("{{\"k\":\"{k}\",\"n\":{n}}}");
@@ -8620,7 +8634,9 @@ async fn product_producer_hash_survives_split() {
     ];
     let (st, _, _) = preq(addr, "POST", "/v1/streams/psp/records", &hdrs, b"{\"a\":1}").await;
     assert_eq!(st, 200);
-    assert!(crate::scaler3::execute_split(&state, "psp", 0, 0x8000_0000_0000_0000).await);
+    assert!(
+        crate::scaler3::execute_split(&state, &state.sref("psp"), 0, 0x8000_0000_0000_0000).await
+    );
     // Exact retry lands on the successor: chain lookup finds the row
     // (with its hash) on the sealed parent.
     let (st, _, b) = preq(addr, "POST", "/v1/streams/psp/records", &hdrs, b"{\"a\":1}").await;
@@ -9077,7 +9093,9 @@ async fn product_consumer_drains_lineage_across_split() {
             assert_eq!(st, 200);
         }
     }
-    assert!(crate::scaler3::execute_split(&state, "cl", 0, 0x8000_0000_0000_0000).await);
+    assert!(
+        crate::scaler3::execute_split(&state, &state.sref("cl"), 0, 0x8000_0000_0000_0000).await
+    );
     for n in 3..6 {
         for k in ["ga", "gb"] {
             let body = format!("{{\"k\":\"{k}\",\"n\":{n}}}");
@@ -10767,7 +10785,8 @@ async fn topology_transitions_are_fenced_by_sealing() {
         .unwrap();
     state.registry.invalidate(&state.sref("fenced"));
     assert!(
-        !crate::scaler3::execute_split(&state, "fenced", 0, 0x8000_0000_0000_0000).await,
+        !crate::scaler3::execute_split(&state, &state.sref("fenced"), 0, 0x8000_0000_0000_0000)
+            .await,
         "a split started under Sealing"
     );
     // …and once sealed, still refused.
@@ -10785,7 +10804,8 @@ async fn topology_transitions_are_fenced_by_sealing() {
     }
     state.registry.invalidate(&state.sref("fenced"));
     assert!(
-        !crate::scaler3::execute_split(&state, "fenced", 0, 0x8000_0000_0000_0000).await,
+        !crate::scaler3::execute_split(&state, &state.sref("fenced"), 0, 0x8000_0000_0000_0000)
+            .await,
         "a split started under Sealed"
     );
     engine_shutdown(&state).await;
@@ -10973,7 +10993,7 @@ async fn a_parked_split_cannot_publish_under_a_sealed_collection() {
     let split = {
         let st2 = state.clone();
         tokio::spawn(async move {
-            crate::scaler3::execute_split(&st2, "parked", 0, 0x8000_0000_0000_0000).await
+            crate::scaler3::execute_split(&st2, &st2.sref("parked"), 0, 0x8000_0000_0000_0000).await
         })
     };
     // Wait for the intent to become durable.
@@ -11633,7 +11653,7 @@ async fn a_seal_never_installs_over_a_pending_transition() {
     let split = {
         let st2 = state.clone();
         tokio::spawn(async move {
-            crate::scaler3::execute_split(&st2, "deadl", 0, 0x8000_0000_0000_0000).await
+            crate::scaler3::execute_split(&st2, &st2.sref("deadl"), 0, 0x8000_0000_0000_0000).await
         })
     };
     let mut pending = false;
@@ -13119,7 +13139,7 @@ async fn stale_scaler_and_ttl_decisions_decline_after_recreate() {
     // spans the full range), so the epoch is the only thing refusing.
     let did = crate::scaler3::execute_split_fenced(
         &state,
-        "stale1",
+        &state.sref("stale1"),
         &old.stream_epoch,
         0,
         0x8000_0000_0000_0000,
@@ -13362,7 +13382,7 @@ async fn a_lower_takeover_reservation_cannot_install() {
         .await
         .unwrap();
     state.registry.invalidate(&state.sref("race9"));
-    let closed = crate::http::fence_segment_for_key(&state, "race9", &epoch, "", g_a)
+    let closed = crate::http::fence_segment_for_key(&state, &state.sref("race9"), &epoch, "", g_a)
         .await
         .unwrap();
     assert!(!closed);
@@ -13380,7 +13400,7 @@ async fn a_lower_takeover_reservation_cannot_install() {
         .unwrap();
     state.registry.invalidate(&state.sref("race9"));
     assert!(g_b > g_a);
-    let closed = crate::http::fence_segment_for_key(&state, "race9", &epoch, "", g_b)
+    let closed = crate::http::fence_segment_for_key(&state, &state.sref("race9"), &epoch, "", g_b)
         .await
         .unwrap();
     assert!(!closed);
@@ -13461,7 +13481,7 @@ async fn a_fence_survives_handle_eviction() {
     let engine = state.engine_for(&route).await.unwrap();
 
     // Raise the fence to 10, then evict every idle handle.
-    let closed = crate::http::fence_segment_for_key(&state, "evict9", &epoch, "", 10)
+    let closed = crate::http::fence_segment_for_key(&state, &state.sref("evict9"), &epoch, "", 10)
         .await
         .unwrap();
     assert!(!closed);
@@ -13718,7 +13738,9 @@ async fn scaler_heat_and_terminal_proof_are_incarnation_scoped() {
     for _ in 0..12 {
         let (decisions, _) = crate::scaler3::evaluate(crate::shard::now_ms());
         assert!(
-            !decisions.iter().any(|(n, _, _, _)| n == "heat9"),
+            !decisions
+                .iter()
+                .any(|(n, _, _, _)| n.name().as_str() == "heat9"),
             "a recreated stream inherited the old incarnation's heat: {decisions:?}"
         );
     }
@@ -14001,7 +14023,7 @@ async fn a_fence_outlives_the_maintenance_sweep() {
     let route = desc.segment_route_by_id(seg.seg_id);
     let engine = state.engine_for(&route).await.unwrap();
 
-    let closed = crate::http::fence_segment_for_key(&state, "sweep11", &epoch, "", 10)
+    let closed = crate::http::fence_segment_for_key(&state, &state.sref("sweep11"), &epoch, "", 10)
         .await
         .unwrap();
     assert!(!closed);
@@ -14587,7 +14609,7 @@ async fn a_fence_in_a_failed_group_reports_failure_not_closed() {
     let ep_f = epoch.clone();
     let g_f = claim.claim_generation;
     let fence = tokio::spawn(async move {
-        crate::http::fence_segment_for_key(&st_f, "sel021", &ep_f, "", g_f).await
+        crate::http::fence_segment_for_key(&st_f, &st_f.sref("sel021"), &ep_f, "", g_f).await
     });
     while engine.appends_enqueued() < base + 2 {
         tokio::time::sleep(std::time::Duration::from_millis(2)).await;
@@ -14854,7 +14876,8 @@ async fn merge_phase_b_declines_under_sealing() {
         assert_eq!(st, 200);
     }
     assert!(
-        crate::scaler3::execute_split(&state, "sel019", 0, 0x8000_0000_0000_0000).await,
+        crate::scaler3::execute_split(&state, &state.sref("sel019"), 0, 0x8000_0000_0000_0000)
+            .await,
         "split failed"
     );
     state.registry.invalidate(&state.sref("sel019"));
@@ -14881,8 +14904,9 @@ async fn merge_phase_b_declines_under_sealing() {
     let pbefore = crate::scaler3::failpoints::publish_parked_count();
     crate::scaler3::failpoints::arm_before_publish();
     let (st2, a, b) = (state.clone(), live[0], live[1]);
-    let merge =
-        tokio::spawn(async move { crate::scaler3::execute_merge(&st2, "sel019", a, b).await });
+    let merge = tokio::spawn(async move {
+        crate::scaler3::execute_merge(&st2, &st2.sref("sel019"), a, b).await
+    });
     // Entered-proof: the merge REACHED phase B (parents sealed, parked
     // before publication) before the seal claim is planted.
     while crate::scaler3::failpoints::publish_parked_count() <= pbefore {
@@ -14929,7 +14953,7 @@ async fn merge_phase_b_declines_under_sealing() {
         .unwrap();
     state.registry.invalidate(&state.sref("sel019"));
     assert!(
-        crate::scaler3::resume(&state, "sel019").await,
+        crate::scaler3::resume(&state, &state.sref("sel019")).await,
         "resume failed"
     );
     state.registry.invalidate(&state.sref("sel019"));
@@ -16234,7 +16258,7 @@ async fn a_split_consumers_deletion_fails_one_segment_then_retries_clean() {
     // segments, so the consumer's leases live one per child (a
     // pre-split append would put both leases in the sealed parent).
     assert!(
-        crate::scaler3::execute_split(&state, "qc16s", 0, mid).await,
+        crate::scaler3::execute_split(&state, &state.sref("qc16s"), 0, mid).await,
         "split"
     );
     for k in [&lo_key, &hi_key] {
@@ -19417,6 +19441,632 @@ async fn shared_cell_certification_smoke() {
     engine_shutdown(&state).await;
 }
 
+/// RED (Søren review, blocker 1): a product DELETE authorized for
+/// project B must operate on B end to end. Today delete_stream loads
+/// B's descriptor and then hands delete_lifecycle the BARE NAME, which
+/// reloads and CAS-mutates state.sref(name) — the DEPLOYMENT tenant.
+/// D-is-A variant: the deployment tenant also owns "orders", so the
+/// bug deletes A and leaves B alive behind a 204.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn delete_stays_inside_the_requesting_project() {
+    const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
+    const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
+    let now = crate::shard::now_ms() / 1000;
+    let svc = std::sync::Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        "del-1".to_string(),
+        crate::auth::JwksKey {
+            alg: jsonwebtoken::Algorithm::RS256,
+            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+        },
+    );
+    svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let scopes = "streams.create streams.records.append streams.records.read \
+                  streams.metadata.read streams.lifecycle.manage";
+    let pid = crate::tenant::ProjectId::new("proj-delb").unwrap();
+    let mut projects = std::collections::HashMap::new();
+    projects.insert(
+        pid.clone(),
+        crate::project_policy::ProjectPolicy {
+            project_id: pid.clone(),
+            workspace_id: crate::tenant::WorkspaceId::new("ws_delb").unwrap(),
+            cell_id: std::sync::Arc::from("test-cell"),
+            project_policy_version: 1,
+            ownership_version: 1,
+            status: crate::project_policy::ProjectStatus::Active,
+            quotas: crate::project_policy::ProjectQuotas::default(),
+        },
+    );
+    let mut credentials = std::collections::HashMap::new();
+    credentials.insert(
+        std::sync::Arc::from("c_delb"),
+        crate::project_policy::CredentialGrant {
+            credential_id: std::sync::Arc::from("c_delb"),
+            project_id: pid,
+            grant_version: 1,
+            status: crate::project_policy::CredentialStatus::Active,
+            scopes: crate::tenant::ScopeSet::parse(scopes).0,
+            grant: crate::tenant::StreamGrant::All,
+            expires_at: None,
+        },
+    );
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let (state, addr) = http_rig_with_auth_service(mem(), svc).await;
+
+    #[derive(serde::Serialize)]
+    struct C<'a> {
+        iss: &'a str,
+        aud: &'a str,
+        sub: &'a str,
+        credential_id: &'a str,
+        project_id: &'a str,
+        workspace_id: &'a str,
+        cell_id: &'a str,
+        ownership_version: u64,
+        grant_version: u64,
+        scope: &'a str,
+        jti: &'a str,
+        iat: i64,
+        exp: i64,
+    }
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some("del-1".into());
+    let token = jsonwebtoken::encode(
+        &header,
+        &C {
+            iss: "https://auth.prisma.io",
+            aud: "prisma-streams-data",
+            sub: "u",
+            credential_id: "c_delb",
+            project_id: "proj-delb",
+            workspace_id: "ws_delb",
+            cell_id: "test-cell",
+            ownership_version: 1,
+            grant_version: 1,
+            scope: scopes,
+            jti: "t",
+            iat: now - 60,
+            exp: now + 600,
+        },
+        &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
+    )
+    .unwrap();
+    let auth_hdr = format!("Bearer {token}");
+    let auth = ("authorization", auth_hdr.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+
+    // D (deployment tenant) owns "orders" via the raw surface, SAME
+    // encryption key as B — a different key would turn an identity bug
+    // into a 403 and hide the cross-project write.
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/orders", &ct, br#"[{"d":1}]"#).await;
+    assert!(st == 200 || st == 201, "raw create: {st}");
+    // B owns "orders" via the product surface.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/orders",
+        &[ekey, auth],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "product create for B");
+
+    // B deletes ITS stream.
+    let (st, _, b) = preq(addr, "DELETE", "/v1/streams/orders", &[ekey, auth], b"").await;
+    assert_eq!(st, 204, "B's delete: {st} {}", String::from_utf8_lossy(&b));
+
+    // B's stream must be GONE on the product surface...
+    let (st, _, _) = preq(
+        addr,
+        "GET",
+        "/v1/streams/orders/records",
+        &[ekey, auth],
+        b"",
+    )
+    .await;
+    assert!(
+        st == 404 || st == 410,
+        "B's stream must be deleted for B, got {st}"
+    );
+    // ...and the DEPLOYMENT stream must be untouched.
+    let d = state
+        .registry
+        .get(&state.sref("orders"))
+        .await
+        .expect("registry read");
+    assert!(
+        d.as_ref().is_some_and(crate::http::desc_alive),
+        "deployment tenant's same-named stream must be untouched by B's delete: {d:?}"
+    );
+    engine_shutdown(&state).await;
+}
+
+/// One-project enforce rig for the Søren-review red tests: publishes
+/// jwks+policy+grant for a single project and mints one token.
+async fn sr_rig(
+    project: &str,
+    ws: &str,
+    cred: &str,
+    kid: &str,
+    scopes: &str,
+) -> (
+    std::sync::Arc<crate::http::AppState>,
+    std::net::SocketAddr,
+    String,
+) {
+    const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
+    const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
+    let now = crate::shard::now_ms() / 1000;
+    let svc = std::sync::Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        kid.to_string(),
+        crate::auth::JwksKey {
+            alg: jsonwebtoken::Algorithm::RS256,
+            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+        },
+    );
+    svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let pid = crate::tenant::ProjectId::new(project).unwrap();
+    let mut projects = std::collections::HashMap::new();
+    projects.insert(
+        pid.clone(),
+        crate::project_policy::ProjectPolicy {
+            project_id: pid.clone(),
+            workspace_id: crate::tenant::WorkspaceId::new(ws).unwrap(),
+            cell_id: std::sync::Arc::from("test-cell"),
+            project_policy_version: 1,
+            ownership_version: 1,
+            status: crate::project_policy::ProjectStatus::Active,
+            quotas: crate::project_policy::ProjectQuotas::default(),
+        },
+    );
+    let mut credentials = std::collections::HashMap::new();
+    credentials.insert(
+        std::sync::Arc::from(cred),
+        crate::project_policy::CredentialGrant {
+            credential_id: std::sync::Arc::from(cred),
+            project_id: pid,
+            grant_version: 1,
+            status: crate::project_policy::CredentialStatus::Active,
+            scopes: crate::tenant::ScopeSet::parse(scopes).0,
+            grant: crate::tenant::StreamGrant::All,
+            expires_at: None,
+        },
+    );
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let (state, addr) = http_rig_with_auth_service(mem(), svc).await;
+
+    #[derive(serde::Serialize)]
+    struct C<'a> {
+        iss: &'a str,
+        aud: &'a str,
+        sub: &'a str,
+        credential_id: &'a str,
+        project_id: &'a str,
+        workspace_id: &'a str,
+        cell_id: &'a str,
+        ownership_version: u64,
+        grant_version: u64,
+        scope: &'a str,
+        jti: &'a str,
+        iat: i64,
+        exp: i64,
+    }
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some(kid.to_string());
+    let token = jsonwebtoken::encode(
+        &header,
+        &C {
+            iss: "https://auth.prisma.io",
+            aud: "prisma-streams-data",
+            sub: "u",
+            credential_id: cred,
+            project_id: project,
+            workspace_id: ws,
+            cell_id: "test-cell",
+            ownership_version: 1,
+            grant_version: 1,
+            scope: scopes,
+            jti: "t",
+            iat: now - 60,
+            exp: now + 600,
+        },
+        &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
+    )
+    .unwrap();
+    (state, addr, format!("Bearer {token}"))
+}
+
+/// RED (Søren review, blocker 2): an append whose resolved segment is
+/// sealed mid-transition refreshes the descriptor via state.sref(name)
+/// — the DEPLOYMENT tenant — and adopts it without any project/epoch
+/// revalidation. With A and B same-named and (validly) sharing an
+/// encryption key, B's append lands durably in A's stream.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn transition_append_stays_inside_the_requesting_project() {
+    let scopes = "streams.create streams.records.append streams.records.read \
+                  streams.metadata.read";
+    let (state, addr, tok) = sr_rig("proj-trab", "ws_trab", "c_trab", "tra-1", scopes).await;
+    let auth = ("authorization", tok.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let ct = [("content-type", "application/json")];
+
+    // A (deployment tenant) owns "orders", alive and OPEN, same key.
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/orders", &ct, br#"[{"who":"a"}]"#).await;
+    assert!(st == 200 || st == 201, "raw create: {st}");
+    // B owns "orders" on the product surface.
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/orders",
+        &[ekey, auth],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "B create: {}", String::from_utf8_lossy(&b));
+
+    // Stage B mid-split: its only segment is SEALED with no successor
+    // published yet — the exact state the append refresh path handles.
+    let bref = crate::tenant::ProjectId::new("proj-trab")
+        .unwrap()
+        .stream_ref("orders");
+    state
+        .registry
+        .cas_update(&bref, |d| {
+            d.segments = Some(crate::segmap::SegmentMap {
+                version: 1,
+                next_seg_id: 1,
+                segments: vec![crate::segmap::SegmentDesc {
+                    seg_id: 0,
+                    lo: 0,
+                    hi: crate::segmap::KEYSPACE_END,
+                    shard_prefix: String::new(),
+                    route_hash: [0u8; 16],
+                    created_ms: 1,
+                    predecessors: Vec::new(),
+                    successors: Vec::new(),
+                    sealed_ms: Some(1),
+                    sealed_next_offset: Some(0),
+                }],
+                pending: None,
+            });
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate(&bref);
+
+    // B appends into ITS mid-transition stream.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/orders/records",
+        &[ekey, auth],
+        br#"{"who":"b-crossed"}"#,
+    )
+    .await;
+    // Fixed behavior: a 503 segment_transition retry (B's successor is
+    // not published). Broken behavior: 200 — the record went SOMEWHERE.
+    // Either way, the isolation invariant below is what must hold.
+    let _ = st;
+
+    // A's stream must contain none of B's bytes — and must still be
+    // READABLE: today the adopted-descriptor append poisons A's
+    // segment state badly enough that A's own read answers 500.
+    let (st, _, body) = hreq(addr, "GET", "/v1/stream/orders", &[], b"").await;
+    assert_eq!(
+        st,
+        200,
+        "A's stream must remain readable after B's transition append: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let text = String::from_utf8_lossy(&body);
+    assert!(
+        !text.contains("b-crossed"),
+        "B's mid-transition append leaked into the deployment tenant's stream: {text}"
+    );
+    engine_shutdown(&state).await;
+}
+
+/// RED (Søren review, blocker 2, read side): a read cursor naming a
+/// segment outside the stream's lineage refreshes via state.sref(name)
+/// and recurses into the DEPLOYMENT tenant's descriptor. With same
+/// name and (validly) the same key, B's read serves A's records.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stale_lineage_read_stays_inside_the_requesting_project() {
+    let scopes = "streams.create streams.records.append streams.records.read \
+                  streams.metadata.read";
+    let (state, addr, tok) = sr_rig("proj-lrb", "ws_lrb", "c_lrb", "lrb-1", scopes).await;
+    let auth = ("authorization", tok.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let ct = [("content-type", "application/json")];
+
+    // A (deployment tenant) owns "orders" and holds a segment id (1)
+    // that B's lineage does not know.
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/orders", &ct, b"[]").await;
+    assert!(st == 200 || st == 201, "raw create: {st}");
+    state
+        .registry
+        .cas_update(&state.sref("orders"), |d| {
+            d.segments = Some(crate::segmap::SegmentMap {
+                version: 1,
+                next_seg_id: 2,
+                segments: vec![crate::segmap::SegmentDesc {
+                    seg_id: 1,
+                    lo: 0,
+                    hi: crate::segmap::KEYSPACE_END,
+                    shard_prefix: String::new(),
+                    route_hash: [0u8; 16],
+                    created_ms: 1,
+                    predecessors: Vec::new(),
+                    successors: Vec::new(),
+                    sealed_ms: None,
+                    sealed_next_offset: None,
+                }],
+                pending: None,
+            });
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate(&state.sref("orders"));
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/orders",
+        &ct,
+        br#"[{"who":"a-secret"}]"#,
+    )
+    .await;
+    assert!(st == 200 || st == 204, "raw append to A: {st}");
+
+    // B owns "orders" with its own single-segment MAP (segment 0,
+    // live) — the v3 lineage read path, same key.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/orders",
+        &[ekey, auth],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let bref = crate::tenant::ProjectId::new("proj-lrb")
+        .unwrap()
+        .stream_ref("orders");
+    state
+        .registry
+        .cas_update(&bref, |d| {
+            d.segments = Some(crate::segmap::SegmentMap {
+                version: 2,
+                next_seg_id: 3,
+                segments: vec![
+                    crate::segmap::SegmentDesc {
+                        seg_id: 0,
+                        lo: 0,
+                        hi: crate::segmap::KEYSPACE_END,
+                        shard_prefix: String::new(),
+                        route_hash: [0u8; 16],
+                        created_ms: 1,
+                        predecessors: Vec::new(),
+                        successors: vec![2],
+                        sealed_ms: Some(1),
+                        sealed_next_offset: Some(0),
+                    },
+                    crate::segmap::SegmentDesc {
+                        seg_id: 2,
+                        lo: 0,
+                        hi: crate::segmap::KEYSPACE_END,
+                        shard_prefix: String::new(),
+                        route_hash: [0u8; 16],
+                        created_ms: 2,
+                        predecessors: vec![0],
+                        successors: Vec::new(),
+                        sealed_ms: None,
+                        sealed_next_offset: None,
+                    },
+                ],
+                pending: None,
+            });
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate(&bref);
+
+    // B reads with a VALID, B-bound signed cursor naming segment 1 —
+    // a segment the cell's cached lineage for B has not seen (the
+    // cursor is legitimate; only the cell's map knowledge is stale).
+    let bdesc = state.registry.get(&bref).await.unwrap().unwrap();
+    let epoch: [u8; 16] = crate::crypto::unhex(&bdesc.stream_epoch)
+        .unwrap()
+        .try_into()
+        .unwrap();
+    let skey = crate::crypto::StreamKey::from_b64(PRISMA_KEY).unwrap();
+    let cur = crate::product_cursor::KeyCursor {
+        epoch,
+        key_hash: crate::crypto::stream_hash(""),
+        seg_id: 1,
+        offset: 0,
+    }
+    .encode(&crate::tenant::ProjectId::new("proj-lrb").unwrap(), &skey);
+    let (st, _, body) = preq(
+        addr,
+        "GET",
+        &format!("/v1/streams/orders/records?cursor={cur}"),
+        &[ekey, auth],
+        b"",
+    )
+    .await;
+    let text = String::from_utf8_lossy(&body);
+    // Fixed behavior: invalid_offset (the segment is not in B's
+    // lineage, and the refresh must stay inside B). Broken behavior:
+    // the refresh adopts A's descriptor and serves A's records.
+    assert!(
+        !text.contains("a-secret"),
+        "B's stale-lineage read served the deployment tenant's records \
+         (status {st}): {text}"
+    );
+    engine_shutdown(&state).await;
+}
+
+/// RED (Søren review): stale JWKS is a CELL fault — the token is
+/// fine. Mapping it to 401 tells clients to refresh a valid
+/// credential during a key-feed outage; it must be a retryable 503
+/// like the other own-feed staleness classes.
+#[test]
+fn stale_jwks_maps_to_retryable_503() {
+    let r = crate::product::auth_failure_response(&crate::auth::AuthError::KeysStale);
+    assert_eq!(
+        r.status(),
+        axum::http::StatusCode::SERVICE_UNAVAILABLE,
+        "KeysStale must answer 503, not {}",
+        r.status()
+    );
+}
+
+/// RED (Søren review): TTL slides reconstruct identity from the bare
+/// name — the slide task CASes state.sref(name), the DEPLOYMENT
+/// tenant. A non-deployment project's active stream fails the epoch
+/// fence and expires despite traffic; same-name projects suppress one
+/// another's slides through the global name-keyed in-flight set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn ttl_slide_stays_inside_the_owning_project() {
+    let scopes = "streams.create streams.records.append streams.records.read \
+                  streams.metadata.read";
+    let (state, addr, tok) = sr_rig("proj-ttlb", "ws_ttlb", "c_ttlb", "ttl-1", scopes).await;
+    let auth = ("authorization", tok.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let ct = [("content-type", "application/json")];
+
+    // D (deployment) owns a same-named stream WITHOUT a TTL.
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/orders", &ct, b"[]").await;
+    assert!(st == 200 || st == 201);
+    // B owns "orders" with a TTL whose window is nearly exhausted.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/orders",
+        &[ekey, auth],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let bref = crate::tenant::ProjectId::new("proj-ttlb")
+        .unwrap()
+        .stream_ref("orders");
+    let now = crate::shard::now_ms();
+    state
+        .registry
+        .cas_update(&bref, |d| {
+            d.ttl_secs = Some(60);
+            d.expires_at_ms = Some(now + 5_000);
+            true
+        })
+        .await
+        .unwrap();
+    state.registry.invalidate(&bref);
+
+    // Drive the slide exactly as B's traffic would.
+    let bdesc = state.registry.get(&bref).await.unwrap().unwrap();
+    crate::http::touch_ttl(&state, &bdesc);
+    tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    state.registry.invalidate(&bref);
+    let after = state.registry.get(&bref).await.unwrap().unwrap();
+    assert!(
+        after.expires_at_ms.unwrap_or(0) > now + 40_000,
+        "B's active stream must have its TTL slid (got {:?}, wanted ~{})",
+        after.expires_at_ms,
+        now + 60_000
+    );
+    engine_shutdown(&state).await;
+}
+
+/// RED (Søren review): the seal fence resolves the collection via
+/// state.sref(name). For any non-deployment project the fence loads
+/// the WRONG (or no) descriptor and the seal machinery reports "the
+/// collection no longer exists" for a perfectly healthy stream — the
+/// D-has-no-orders fixture variant that detects silent misdirection.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn seal_fence_resolves_the_owning_project() {
+    let scopes = "streams.create streams.records.append streams.records.read \
+                  streams.metadata.read streams.lifecycle.manage";
+    let (state, addr, tok) = sr_rig("proj-fenb", "ws_fenb", "c_fenb", "fen-1", scopes).await;
+    let auth = ("authorization", tok.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+
+    // ONLY B owns "orders" — the deployment tenant has no such stream.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/orders",
+        &[ekey, auth],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let bref = crate::tenant::ProjectId::new("proj-fenb")
+        .unwrap()
+        .stream_ref("orders");
+    let bdesc = state.registry.get(&bref).await.unwrap().unwrap();
+    let fenced =
+        crate::http::fence_segment_for_key(&state, &bref, &bdesc.stream_epoch, "", 1).await;
+    assert!(
+        fenced.is_ok(),
+        "the fence must resolve B's own collection: {fenced:?}"
+    );
+    engine_shutdown(&state).await;
+}
+
 /// MT Stage 4 same-project rule: stored references (fork parentage,
 /// dead-letter targets) bind inside the REFERRING stream's project. A
 /// foreign project's stream with the SAME name — even one carrying the
@@ -20929,11 +21579,12 @@ async fn fork_lifecycle_is_idempotent_and_epoch_checked() {
     // Neither member of the chain may split (stitched reads resolve one
     // segment per ancestor).
     assert!(
-        !crate::scaler3::execute_split(&state, "fk-src", 0, 0x8000_0000_0000_0000).await,
+        !crate::scaler3::execute_split(&state, &state.sref("fk-src"), 0, 0x8000_0000_0000_0000)
+            .await,
         "a stream with live forks must not split"
     );
     assert!(
-        !crate::scaler3::execute_split(&state, "fk-a", 0, 0x8000_0000_0000_0000).await,
+        !crate::scaler3::execute_split(&state, &state.sref("fk-a"), 0, 0x8000_0000_0000_0000).await,
         "a fork must not split"
     );
 
@@ -21047,7 +21698,10 @@ async fn raw_route_is_the_default_key_view_across_splits() {
     assert!(recs.iter().all(|r| r.get("raw").is_some()));
 
     // Split the collection through the product surface.
-    assert!(crate::scaler3::execute_split(&state, "dualkey", 0, 0x8000_0000_0000_0000).await);
+    assert!(
+        crate::scaler3::execute_split(&state, &state.sref("dualkey"), 0, 0x8000_0000_0000_0000)
+            .await
+    );
     for i in 3..6 {
         let body = format!("[{{\"raw\":{i}}}]");
         let (st, _, _) = hreq(addr, "POST", "/v1/stream/dualkey", &ct, body.as_bytes()).await;
@@ -24899,7 +25553,8 @@ async fn split_child_sheds_while_sibling_child_admits() {
         assert!(st == 200 || st == 204);
     }
     assert!(
-        crate::scaler3::execute_split(&state, "shed-split", 0, 0x8000_0000_0000_0000).await,
+        crate::scaler3::execute_split(&state, &state.sref("shed-split"), 0, 0x8000_0000_0000_0000)
+            .await,
         "split executes"
     );
     state.registry.invalidate(&state.sref("shed-split"));

@@ -99,12 +99,12 @@ const SKETCH_SWEEP_EVERY: u64 = 4_096;
 static SKETCH_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 struct State {
-    sketches: HashMap<(String, u32), SegSketch>,
+    sketches: HashMap<(crate::tenant::TenantStreamRef, u32), SegSketch>,
     /// Per-stream cooldown clock (ms of the last transition we drove or
     /// observed).
-    last_transition_ms: HashMap<String, i64>,
+    last_transition_ms: HashMap<crate::tenant::TenantStreamRef, i64>,
     /// Detected unsplittable hot keys: stream → key hash.
-    hot_keys: HashMap<String, RoutingKeyHash>,
+    hot_keys: HashMap<crate::tenant::TenantStreamRef, RoutingKeyHash>,
 }
 
 fn state() -> &'static Mutex<State> {
@@ -120,11 +120,11 @@ fn state() -> &'static Mutex<State> {
 
 /// The detected hot key for a stream, if any (observability + the
 /// per-key limit surface).
-pub fn hot_key(name: &str) -> Option<RoutingKeyHash> {
-    state().lock().unwrap().hot_keys.get(name).copied()
+pub fn hot_key(sref: &crate::tenant::TenantStreamRef) -> Option<RoutingKeyHash> {
+    state().lock().unwrap().hot_keys.get(sref).copied()
 }
 
-pub fn hot_keys_all() -> Vec<(String, RoutingKeyHash)> {
+pub fn hot_keys_all() -> Vec<(crate::tenant::TenantStreamRef, RoutingKeyHash)> {
     state()
         .lock()
         .unwrap()
@@ -155,7 +155,7 @@ pub fn note_append(desc: &StreamDesc, seg: &crate::registry::SegRoute, bytes: u6
         g.sketches
             .retain(|_, e| now - e.last_fed_ms < SKETCH_IDLE_MS);
     }
-    let key = (desc.name.clone(), seg.seg_id);
+    let key = (desc.sref(), seg.seg_id);
     if !g.sketches.contains_key(&key) && g.sketches.len() >= SKETCH_MAX {
         // Automatic scaling must not silently stop at the cap (review
         // finding 8): evict the least-recently-fed sketch to admit the
@@ -196,13 +196,18 @@ pub fn note_append(desc: &StreamDesc, seg: &crate::registry::SegRoute, bytes: u6
 
 /// One evaluation pass over every sketched segment. Returns the split
 /// decisions taken (stream, seg_id) — the driver executes them.
-pub(crate) fn evaluate(now_ms: i64) -> (Vec<(String, String, u32, u64)>, Vec<(String, String)>) {
+pub(crate) fn evaluate(
+    now_ms: i64,
+) -> (
+    Vec<(crate::tenant::TenantStreamRef, String, u32, u64)>,
+    Vec<(crate::tenant::TenantStreamRef, String)>,
+) {
     let pol = policy();
     let lim = crate::usage::limits();
     let mut out = Vec::new();
     let mut g = state().lock().unwrap();
     let cooldowns = g.last_transition_ms.clone();
-    let mut hot_updates: Vec<(String, Option<RoutingKeyHash>)> = Vec::new();
+    let mut hot_updates: Vec<(crate::tenant::TenantStreamRef, Option<RoutingKeyHash>)> = Vec::new();
     for ((name, seg_id), sk) in g.sketches.iter_mut() {
         let bytes_rate = sk.dist.bytes.value(now_ms);
         let reqs_rate = sk.dist.reqs.value(now_ms);
@@ -276,7 +281,8 @@ pub(crate) fn evaluate(now_ms: i64) -> (Vec<(String, String, u32, u64)>, Vec<(St
     // Merge candidates: streams with >= 2 sketched segments, EVERY one
     // cold for 4x the split patience, respecting the same cooldown. The
     // driver validates adjacency and ages against the live map.
-    let mut per_stream: HashMap<&String, (usize, bool, String)> = HashMap::new();
+    let mut per_stream: HashMap<&crate::tenant::TenantStreamRef, (usize, bool, String)> =
+        HashMap::new();
     for ((name, _), sk) in g.sketches.iter() {
         let e = per_stream
             .entry(name)
@@ -287,7 +293,7 @@ pub(crate) fn evaluate(now_ms: i64) -> (Vec<(String, String, u32, u64)>, Vec<(St
         // the decision would be about two different collections.
         e.1 &= e.2 == sk.epoch;
     }
-    let merge_candidates: Vec<(String, String)> = per_stream
+    let merge_candidates: Vec<(crate::tenant::TenantStreamRef, String)> = per_stream
         .into_iter()
         .filter(|(name, (n, all_cold, _))| {
             *n >= 2
@@ -368,14 +374,14 @@ async fn seal_identity(
 /// direct calls that just created or inspected the stream.
 pub async fn execute_split(
     st: &std::sync::Arc<crate::http::AppState>,
-    name: &str,
+    sref: &crate::tenant::TenantStreamRef,
     seg_id: u32,
     split_at: u64,
 ) -> bool {
-    let Ok(Some(d)) = st.registry.get(&st.sref(name)).await else {
+    let Ok(Some(d)) = st.registry.get(sref).await else {
         return false;
     };
-    execute_split_fenced(st, name, &d.stream_epoch, seg_id, split_at).await
+    execute_split_fenced(st, sref, &d.stream_epoch, seg_id, split_at).await
 }
 
 /// The fenced form: the split decision was computed from ONE
@@ -386,7 +392,7 @@ pub async fn execute_split(
 /// epoch of the descriptor its decision came from.
 pub async fn execute_split_fenced(
     st: &std::sync::Arc<crate::http::AppState>,
-    name: &str,
+    sref: &crate::tenant::TenantStreamRef,
     expect_epoch: &str,
     seg_id: u32,
     split_at: u64,
@@ -394,7 +400,7 @@ pub async fn execute_split_fenced(
     // Phase A: persist the intent (materializing the implicit map).
     let ok = st
         .registry
-        .cas_update_incarnation(&st.sref(name), expect_epoch, |d| {
+        .cas_update_incarnation(sref, expect_epoch, |d| {
             // Fork chains stay single-segment (audit P0): stitched fork
             // reads resolve each ancestor through its ONE empty-key
             // segment, so a post-fork split would make inherited data
@@ -442,9 +448,9 @@ pub async fn execute_split_fenced(
         .await
         .unwrap_or(false);
     if !ok {
-        return resume(st, name).await; // maybe someone else's pending
+        return resume(st, sref).await; // maybe someone else's pending
     }
-    resume(st, name).await
+    resume(st, sref).await
 }
 
 /// Execute (or resume) one MERGE of two adjacent live segments.
@@ -452,28 +458,28 @@ pub async fn execute_split_fenced(
 /// parents, publish the child. Idempotent at every step.
 pub async fn execute_merge(
     st: &std::sync::Arc<crate::http::AppState>,
-    name: &str,
+    sref: &crate::tenant::TenantStreamRef,
     a_id: u32,
     b_id: u32,
 ) -> bool {
-    let Ok(Some(d)) = st.registry.get(&st.sref(name)).await else {
+    let Ok(Some(d)) = st.registry.get(sref).await else {
         return false;
     };
-    execute_merge_fenced(st, name, &d.stream_epoch, a_id, b_id).await
+    execute_merge_fenced(st, sref, &d.stream_epoch, a_id, b_id).await
 }
 
 /// See [`execute_split_fenced`] — the same incarnation fence, for the
 /// same reason.
 pub async fn execute_merge_fenced(
     st: &std::sync::Arc<crate::http::AppState>,
-    name: &str,
+    sref: &crate::tenant::TenantStreamRef,
     expect_epoch: &str,
     a_id: u32,
     b_id: u32,
 ) -> bool {
     let ok = st
         .registry
-        .cas_update_incarnation(&st.sref(name), expect_epoch, |d| {
+        .cas_update_incarnation(sref, expect_epoch, |d| {
             // A sealing or sealed collection has a fixed topology. A
             // transition that started just before the seal could
             // otherwise publish a successor AFTER the seal took its
@@ -513,17 +519,20 @@ pub async fn execute_merge_fenced(
         .await
         .unwrap_or(false);
     if !ok {
-        return resume(st, name).await;
+        return resume(st, sref).await;
     }
-    resume(st, name).await
+    resume(st, sref).await
 }
 
 /// Complete whatever transition the descriptor's `pending` records:
 /// seal the parents (idempotent), then CAS the successor publication.
 /// Safe to call from any instance at any time.
-pub async fn resume(st: &std::sync::Arc<crate::http::AppState>, name: &str) -> bool {
-    st.registry.invalidate(&st.sref(name));
-    let Ok(Some(desc)) = st.registry.get(&st.sref(name)).await else {
+pub async fn resume(
+    st: &std::sync::Arc<crate::http::AppState>,
+    sref: &crate::tenant::TenantStreamRef,
+) -> bool {
+    st.registry.invalidate(sref);
+    let Ok(Some(desc)) = st.registry.get(sref).await else {
         return false;
     };
     let Some(map) = &desc.segments else {
@@ -561,7 +570,7 @@ pub async fn resume(st: &std::sync::Arc<crate::http::AppState>, name: &str) -> b
     // onto the replacement.
     let published = st
         .registry
-        .cas_update_incarnation(&st.sref(name), &desc.stream_epoch, |d| {
+        .cas_update_incarnation(&desc.sref(), &desc.stream_epoch, |d| {
             // Phase B is a SECOND durable step, so it re-checks the
             // lifecycle. Fencing only phase A left this race: publish
             // pending -> seal the parent -> pause -> the collection
@@ -635,8 +644,8 @@ pub async fn resume(st: &std::sync::Arc<crate::http::AppState>, name: &str) -> b
             .lock()
             .unwrap()
             .sketches
-            .remove(&(name.to_string(), seg_id));
-        st.registry.invalidate(&st.sref(name));
+            .remove(&(desc.sref(), seg_id));
+        st.registry.invalidate(&desc.sref());
         SEGMENT_MAP_REFRESHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     published
@@ -661,10 +670,9 @@ async fn resume_merge(
     };
     #[cfg(test)]
     failpoints::pause_before_publish().await;
-    let name = &desc.name;
     let published = st
         .registry
-        .cas_update_incarnation(&st.sref(name), &desc.stream_epoch, |d| {
+        .cas_update_incarnation(&desc.sref(), &desc.stream_epoch, |d| {
             // Phase B is a SECOND durable step, so it re-checks the
             // lifecycle. Fencing only phase A left this race: publish
             // pending -> seal the parent -> pause -> the collection
@@ -703,10 +711,10 @@ async fn resume_merge(
         SEGMENT_MERGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         {
             let mut g = state().lock().unwrap();
-            g.sketches.remove(&(name.to_string(), a_id));
-            g.sketches.remove(&(name.to_string(), b_id));
+            g.sketches.remove(&(desc.sref(), a_id));
+            g.sketches.remove(&(desc.sref(), b_id));
         }
-        st.registry.invalidate(&st.sref(name));
+        st.registry.invalidate(&desc.sref());
         SEGMENT_MAP_REFRESHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     published
@@ -782,12 +790,13 @@ pub fn start(st: std::sync::Weak<crate::http::AppState>) {
                             "split_committed",
                             format!("split/{epoch}/{seg_id}"),
                         )
-                        .stream(&epoch, &name)
-                        .fields(serde_json::json!({"segId": seg_id, "splitAt": split_at})),
+                        .stream(&epoch, name.name().as_str())
+                        .fields(serde_json::json!({"segId": seg_id, "splitAt": split_at, "projectId": name.project_id().as_str()})),
                     );
                 }
                 tracing::info!(
-                    stream = %name,
+                    project = %name.project_id().as_str(),
+                    stream = %name.name().as_str(),
                     seg_id,
                     split_at,
                     done,
@@ -801,7 +810,7 @@ pub fn start(st: std::sync::Weak<crate::http::AppState>) {
                 // fenced to the incarnation the cold sketches belong
                 // to — a replacement under the same name is not merged
                 // on a dead collection's silence.
-                let Ok(Some(desc)) = st.registry.get(&st.sref(&name)).await else {
+                let Ok(Some(desc)) = st.registry.get(&name).await else {
                     continue;
                 };
                 if desc.stream_epoch != epoch {
@@ -829,11 +838,11 @@ pub fn start(st: std::sync::Weak<crate::http::AppState>) {
                                 "merge_committed",
                                 format!("merge/{epoch}/{a}/{b}"),
                             )
-                            .stream(&epoch, &name)
-                            .fields(serde_json::json!({"a": a, "b": b})),
+                            .stream(&epoch, name.name().as_str())
+                            .fields(serde_json::json!({"a": a, "b": b, "projectId": name.project_id().as_str()})),
                         );
                     }
-                    tracing::info!(stream = %name, a, b, done, "unified scaler merge");
+                    tracing::info!(project = %name.project_id().as_str(), stream = %name.name().as_str(), a, b, done, "unified scaler merge");
                 }
             }
         }
@@ -844,7 +853,14 @@ pub fn stats_json() -> serde_json::Value {
     use std::sync::atomic::Ordering::Relaxed;
     let hot: Vec<String> = hot_keys_all()
         .into_iter()
-        .map(|(n, k)| format!("{}:{}", n, crate::crypto::hex(&k.0[..4])))
+        .map(|(n, k)| {
+            format!(
+                "{}/{}:{}",
+                n.project_id().as_str(),
+                n.name().as_str(),
+                crate::crypto::hex(&k.0[..4])
+            )
+        })
         .collect();
     serde_json::json!({
         "segment_splits": SEGMENT_SPLITS.load(Relaxed),
@@ -902,13 +918,10 @@ mod tests {
             let seg = desc.resolve_segment("k");
             note_append(&desc, &seg, 100, 1);
         }
+        let newest_key = (test_desc(&format!("cap-seg-{}", over - 1)).sref(), 0);
         let (tracked, has_newest) = {
             let g = state().lock().unwrap();
-            (
-                g.sketches.len(),
-                g.sketches
-                    .contains_key(&(format!("cap-seg-{}", over - 1), 0)),
-            )
+            (g.sketches.len(), g.sketches.contains_key(&newest_key))
         };
         assert!(tracked <= SKETCH_MAX, "population bounded: {tracked}");
         assert!(

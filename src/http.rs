@@ -2451,17 +2451,23 @@ pub(crate) fn touch_ttl(state: &Arc<AppState>, desc: &StreamDesc) {
     // One in-flight slide per stream: without this, every request in
     // the window between spawn and CAS completion spawns ANOTHER CAS —
     // a herd against the registry under rapid op sequences.
-    fn sliding() -> &'static std::sync::Mutex<std::collections::HashSet<String>> {
-        static S: std::sync::OnceLock<std::sync::Mutex<std::collections::HashSet<String>>> =
-            std::sync::OnceLock::new();
+    // Søren review: keyed by the PROJECT-QUALIFIED ref — a bare-name
+    // set let same-name projects suppress one another's slides, and
+    // the spawned CAS below extended (or epoch-fenced into a no-op
+    // against) the deployment tenant's descriptor instead of this one.
+    fn sliding()
+    -> &'static std::sync::Mutex<std::collections::HashSet<crate::tenant::TenantStreamRef>> {
+        static S: std::sync::OnceLock<
+            std::sync::Mutex<std::collections::HashSet<crate::tenant::TenantStreamRef>>,
+        > = std::sync::OnceLock::new();
         S.get_or_init(|| std::sync::Mutex::new(std::collections::HashSet::new()))
     }
-    if !sliding().lock().unwrap().insert(desc.name.clone()) {
+    let sref = desc.sref();
+    if !sliding().lock().unwrap().insert(sref.clone()) {
         return; // a slide is already in flight
     }
     let target = now + window_ms;
     let state = state.clone();
-    let name = desc.name.clone();
     let expect_epoch = desc.stream_epoch.clone();
     tokio::spawn(async move {
         // cas_update is single-shot; a slide can race another descriptor
@@ -2471,7 +2477,7 @@ pub(crate) fn touch_ttl(state: &Arc<AppState>, desc: &StreamDesc) {
         // name while the task sat on the runtime.
         if let Err(e) = state
             .registry
-            .cas_update_incarnation(&state.sref(&name), &expect_epoch, |d| {
+            .cas_update_incarnation(&sref, &expect_epoch, |d| {
                 if d.ttl_secs.is_none() {
                     return false;
                 }
@@ -2485,10 +2491,14 @@ pub(crate) fn touch_ttl(state: &Arc<AppState>, desc: &StreamDesc) {
             })
             .await
         {
-            tracing::warn!(stream = %name, "ttl slide lost: {e}");
+            tracing::warn!(
+                project = %sref.project_id().as_str(),
+                stream = %sref.name().as_str(),
+                "ttl slide lost: {e}"
+            );
         }
-        state.registry.invalidate(&state.sref(&name));
-        sliding().lock().unwrap().remove(&name);
+        state.registry.invalidate(&sref);
+        sliding().lock().unwrap().remove(&sref);
     });
 }
 
@@ -2830,14 +2840,14 @@ pub(crate) async fn create_stream(
         // broke idempotence — a completed fork whose response was lost
         // could not be re-PUT once its source was retained, because the
         // soft-delete check fired first.
-        let resuming_child = match state.registry.get(&state.sref(&name)).await {
+        let resuming_child = match state.registry.get(&project.stream_ref(&name)).await {
             Ok(Some(c)) if !c.deleted => c
                 .forked_from
                 .clone()
                 .filter(|f| f.source == src_name && !f.fork_id.is_empty()),
             _ => None,
         };
-        let src = match state.registry.get(&state.sref(&src_name)).await {
+        let src = match state.registry.get(&project.stream_ref(&src_name)).await {
             Ok(Some(d)) if desc_alive(&d) => d,
             // Retained for this very child: same incarnation, and the
             // reference this child installed is still on it.
@@ -3333,18 +3343,19 @@ pub(crate) async fn create_stream(
             let mut already = false;
             let stamped = match state
                 .registry
-                .cas_update_incarnation(&state.sref(&name), &desc.stream_epoch, |d| {
-                    match d.forked_from.as_mut() {
-                        Some(f) if f.fork_id.is_empty() => {
-                            f.fork_id = fid.clone();
-                            true
-                        }
-                        Some(f) => {
-                            already = f.fork_id == fid;
-                            false
-                        }
-                        None => false,
+                .cas_update_incarnation(&project.stream_ref(&name), &desc.stream_epoch, |d| match d
+                    .forked_from
+                    .as_mut()
+                {
+                    Some(f) if f.fork_id.is_empty() => {
+                        f.fork_id = fid.clone();
+                        true
                     }
+                    Some(f) => {
+                        already = f.fork_id == fid;
+                        false
+                    }
+                    None => false,
                 })
                 .await
             {
@@ -3357,7 +3368,7 @@ pub(crate) async fn create_stream(
                     );
                 }
             };
-            state.registry.invalidate(&state.sref(&name));
+            state.registry.invalidate(&project.stream_ref(&name));
             // A declined CAS here means the child was deleted (or
             // re-forked) underneath us. Installing a source
             // reference for it anyway would pin the source's data
@@ -3386,7 +3397,7 @@ pub(crate) async fn create_stream(
         // repaired by the tombstone's RETAINED debt. The park sits
         // BETWEEN the check and the install so tests can drive
         // exactly that window.
-        match state.registry.get(&state.sref(&name)).await {
+        match state.registry.get(&project.stream_ref(&name)).await {
             Ok(Some(c)) if desc_alive(&c) && c.stream_epoch == desc.stream_epoch => {}
             _ => {
                 return err_resp(
@@ -3460,7 +3471,7 @@ pub(crate) async fn create_stream(
         // pre-check and the install CAS. Release the reference this
         // request just installed — its tombstone's retained debt
         // covers the crash variant of the same window.
-        match state.registry.get(&state.sref(&name)).await {
+        match state.registry.get(&project.stream_ref(&name)).await {
             Ok(Some(c)) if desc_alive(&c) && c.stream_epoch == desc.stream_epoch => {}
             _ => {
                 if let Err(m) = release_fork_ref(
@@ -3617,7 +3628,7 @@ pub(crate) async fn create_stream(
         fork_failpoints::pause_create_before_ready(&name).await;
         let published = match state
             .registry
-            .cas_update_incarnation(&state.sref(&name), &desc.stream_epoch, |d| {
+            .cas_update_incarnation(&project.stream_ref(&name), &desc.stream_epoch, |d| {
                 // Our OWN claim, on OUR incarnation. Clearing `init`
                 // because "something is initializing" let a paused
                 // creator publish readiness for a stream that had since
@@ -3642,14 +3653,19 @@ pub(crate) async fn create_stream(
                 );
             }
         };
-        state.registry.invalidate(&state.sref(&name));
+        state.registry.invalidate(&project.stream_ref(&name));
         // A declined CAS is NOT readiness. `cas_update` refuses a
         // deleted descriptor, so a delete that won mid-initialization
         // made this return 201 for a stream that no longer exists — and
         // if the work had already installed a fork reference, the source
         // stayed pinned by a child that was never published.
         if !published {
-            let now = state.registry.get(&state.sref(&name)).await.ok().flatten();
+            let now = state
+                .registry
+                .get(&project.stream_ref(&name))
+                .await
+                .ok()
+                .flatten();
             let live_and_ready = now.as_ref().is_some_and(|d| {
                 desc_alive(d) && d.init.is_none() && d.stream_epoch == desc.stream_epoch
             });
@@ -3693,7 +3709,6 @@ pub(crate) async fn create_stream(
 }
 
 async fn delete_stream(state: Arc<AppState>, sref: crate::tenant::TenantStreamRef) -> Response {
-    let name = sref.name().as_str().to_string();
     let existing = match state.registry.get(&sref).await {
         Ok(v) => v,
         Err(e) => {
@@ -3713,13 +3728,13 @@ async fn delete_stream(state: Arc<AppState>, sref: crate::tenant::TenantStreamRe
         // interrupted cascade. Those references keep whole generations
         // of data alive forever.
         if d.deleted
-            && let Err(e) = delete_lifecycle(&state, &name).await
+            && let Err(e) = delete_lifecycle(&state, &sref).await
         {
             return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e);
         }
         return gone_or_missing(Some(&d));
     }
-    match delete_lifecycle(&state, &name).await {
+    match delete_lifecycle(&state, &sref).await {
         Ok(()) => StatusCode::NO_CONTENT.into_response(),
         Err(e) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &e),
     }
@@ -4376,17 +4391,18 @@ fn release_fork_ref(
 /// recursively up the chain.
 fn delete_lifecycle(
     state: &Arc<AppState>,
-    name: &str,
+    sref: &crate::tenant::TenantStreamRef,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<(), String>> + Send>> {
+    // Søren review blocker 1: this shared-core lifecycle routine is
+    // keyed by the caller's PROJECT-QUALIFIED ref, never a bare name.
+    // Reconstructing state.sref(name) here bound every reload and CAS
+    // to the DEPLOYMENT tenant, so a project-B delete could tombstone
+    // the deployment tenant's same-named stream while B's own survived.
     let state = state.clone();
-    let name = name.to_string();
+    let sref = sref.clone();
+    let name = sref.name().as_str().to_string();
     Box::pin(async move {
-        let d = match state
-            .registry
-            .get(&state.sref(&name))
-            .await
-            .map_err(|e| e.to_string())?
-        {
+        let d = match state.registry.get(&sref).await.map_err(|e| e.to_string())? {
             Some(d) => d,
             None => return Ok(()),
         };
@@ -4487,7 +4503,7 @@ fn delete_lifecycle(
         let close_stamp = crate::billing::billing_now_ms();
         state
             .registry
-            .cas_update_incarnation(&state.sref(&name), &epoch, |x| {
+            .cas_update_incarnation(&sref, &epoch, |x| {
                 if x.deleted {
                     return false;
                 }
@@ -4504,7 +4520,7 @@ fn delete_lifecycle(
             })
             .await
             .map_err(|e| e.to_string())?;
-        state.registry.invalidate(&state.sref(&name));
+        state.registry.invalidate(&sref);
         if !hard_deleted {
             return Ok(());
         }
@@ -4642,7 +4658,7 @@ pub(crate) async fn append(
         let seg = d.resolve_segment(&rk);
         let pending = d.segments.as_ref().is_some_and(|m| m.pending.is_some());
         if pending {
-            crate::scaler3::resume(&state, &name).await;
+            crate::scaler3::resume(&state, &sref).await;
         } else if !seg.sealed {
             // Live segment, no transition: the stream really is closed.
             return r;
@@ -4747,13 +4763,13 @@ pub(crate) struct SealAuthz {
 /// `true` means the old operation's close already committed.
 pub(crate) async fn fence_segment_for_key(
     state: &Arc<AppState>,
-    name: &str,
+    sref: &crate::tenant::TenantStreamRef,
     expect_epoch: &str,
     routing_key: &str,
     fence_to: u64,
 ) -> Result<bool, String> {
-    state.registry.invalidate(&state.sref(name));
-    let desc = match state.registry.get(&state.sref(name)).await {
+    state.registry.invalidate(sref);
+    let desc = match state.registry.get(sref).await {
         Ok(Some(d)) if d.stream_epoch == expect_epoch => d,
         Ok(_) => return Err("the collection this seal was issued against no longer exists".into()),
         Err(e) => return Err(e.to_string()),
@@ -5332,9 +5348,16 @@ async fn append_core(
         // the descriptor once and re-resolve; the successor is in the
         // CAS'd map. Still sealed after a fresh read = the transition
         // is mid-publish — tell the client to retry rather than hang.
-        state.registry.invalidate(&state.sref(&name));
-        match state.registry.get(&state.sref(&name)).await {
-            Ok(Some(d2)) if desc_alive(&d2) => {
+        // Søren review blocker 2: the refresh must retain the request's
+        // project-qualified identity AND its incarnation. Rebuilding
+        // state.sref(name) adopted the DEPLOYMENT tenant's same-named
+        // descriptor mid-flight, writing this project's ciphertext into
+        // the other project's segments. An epoch change means the
+        // collection was replaced — fall through to the 503 retry and
+        // let the client re-authorize against the new incarnation.
+        state.registry.invalidate(&sref);
+        match state.registry.get(&sref).await {
+            Ok(Some(d2)) if desc_alive(&d2) && d2.stream_epoch == desc.stream_epoch => {
                 desc = d2;
                 seg = desc.resolve_segment(&routing_key);
             }
@@ -7712,9 +7735,15 @@ async fn read_v3_lineage_inner(
                 Some(p) => (p, o.scan_from()),
                 None if may_refresh => {
                     // A successor our cached map has not seen yet.
-                    state.registry.invalidate(&state.sref(&desc.name));
-                    let fresh = match state.registry.get(&state.sref(&desc.name)).await {
-                        Ok(Some(d)) if desc_alive(&d) => d,
+                    // Søren review blocker 2: refresh the ORIGINAL
+                    // project-qualified identity at the SAME
+                    // incarnation — a name-reconstructed ref adopted
+                    // the deployment tenant's descriptor and served
+                    // its records against this project's cursor.
+                    let orig = desc.sref();
+                    state.registry.invalidate(&orig);
+                    let fresh = match state.registry.get(&orig).await {
+                        Ok(Some(d)) if desc_alive(&d) && d.stream_epoch == desc.stream_epoch => d,
                         _ => {
                             return err_resp(
                                 StatusCode::BAD_REQUEST,
@@ -7844,14 +7873,20 @@ async fn read_v3_lineage_inner(
             // fresh map.
             {
                 let st = state.clone();
-                let nm = desc.name.clone();
+                let srf = desc.sref();
                 tokio::spawn(async move {
-                    crate::scaler3::resume(&st, &nm).await;
+                    crate::scaler3::resume(&st, &srf).await;
                 });
             }
-            state.registry.invalidate(&state.sref(&desc.name));
-            if let Ok(Some(fresh)) = state.registry.get(&state.sref(&desc.name)).await
+            // Søren review blocker 2: the refresh retains the ORIGINAL
+            // project-qualified identity and the incarnation it was
+            // reading — never a name-reconstructed deployment ref, and
+            // never a silently adopted replacement.
+            let orig = desc.sref();
+            state.registry.invalidate(&orig);
+            if let Ok(Some(fresh)) = state.registry.get(&orig).await
                 && desc_alive(&fresh)
+                && fresh.stream_epoch == desc.stream_epoch
             {
                 return Box::pin(read_v3_lineage_inner(
                     state, fresh, params, headers, head_only, false, surface,
