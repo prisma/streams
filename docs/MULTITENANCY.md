@@ -1,6 +1,6 @@
 # Prisma Streams — Shared-Cell Multitenancy Implementation Plan
 
-**Status:** FROZEN CONTRACT (Stage 0, committed 2026-08-15; revision 1, 2026-08-15 — see Revision log)
+**Status:** FROZEN CONTRACT (Stage 0, committed 2026-08-15; revision 3, 2026-08-18 — see Revision log)
 **Author:** Søren Bramer Schmidt (implementation plan, delivered 2026-08-15)
 **Target:** Many projects in each Prisma Streams cell
 **Migration posture:** Clean layout switch; no mixed-layout operation
@@ -19,6 +19,16 @@
   by the original five domains); froze the ProjectId/WorkspaceId/cell-id
   grammar; replaced ambiguous empty-prefix-set semantics with the
   explicit `StreamGrant` type.
+- r2 (2026-08-16, commit fe9f6a37): §10.4.1 `_audit_events` semantics
+  (journal scope, verified-identity rule, at-least-once delivery,
+  keyless availability). *This log entry was recorded late, with r3 —
+  the revision itself landed as its own contract-revision commit.*
+- r3 (2026-08-18): §14.3 raw-surface trust boundary — the raw Durable
+  Streams surface is INTERNAL-ONLY for shared-cell GA (fleet identity
+  under enforce; no public raw carve-out; product-only forks). Closes
+  the raw-surface principal follow-up recorded in §6.1. §14.1 marked
+  the workload-JWT path live with the static token as a bridge; §14.2
+  recorded the implemented operator bearer gate.
 
 ---
 
@@ -449,8 +459,11 @@ verified `RequestPrincipal` and the entry threads it to handlers:
 * DLQ configuration → `streams.dlq.configure` — ENFORCED in
   `product_consumer_put` beside `consumers.configure`;
 * fork creation → `streams.forks.create` + read on the source —
-  PENDING: forks are created on the raw DS surface, which is not yet
-  principal-gated; lands with raw-surface enforcement.
+  RESOLVED by r3 (§14.3): fork creation exists only on the raw
+  surface, and the raw surface is internal-only under enforce, so
+  fork creation is not a customer operation at shared-cell GA. The
+  compound rule stays RESERVED for a future product-surface fork
+  exposure — the only path by which forks may become customer-facing.
 
 The watch-observation route now returns ONE refusal
 (`watch_unauthorized`) for every no-valid-capability shape — missing
@@ -465,9 +478,9 @@ born into the request's project — and the `principal.project == cell
 tenant` bridge is DELETED. Off/shadow requests and §15 capability
 carriers address the deployment tenant (single-tenant posture; the
 capability wire gains the project in review item 3). Raw Durable
-Streams routes still address the deployment tenant behind the
-deployment bearer — the raw-surface principal decision is the
-recorded follow-up. PROJECT_ID must be explicitly non-default in
+Streams routes still address the deployment tenant — under enforce
+behind FLEET identity per §14.3 (r3): the raw surface is
+internal-only and the raw-surface principal question is CLOSED. PROJECT_ID must be explicitly non-default in
 shadow/enforce.
 
 ### 6.2 Prefix grants
@@ -941,6 +954,17 @@ operation ID
 expiry
 ```
 
+*Status (r3).* The workload-JWT verifier is LIVE in the cell
+(`AuthService::verify_internal`): `aud` `prisma-streams-internal`,
+same issuer and JWKS as customer tokens, `cell_id` bound to this
+cell, `sub` required, exact `exp`/`nbf` checks. Every consumer of
+fleet identity — the `/v1/internal/*` fleet API and the raw surface
+under enforce (§14.3) — accepts a workload JWT today. The static
+`FLEET_INTERNAL_TOKEN` remains ONLY as a bridge until the platform
+mints workload JWTs; retiring it is a platform-leg GA blocker, not a
+cell change. The delegated-capability shape above stays the target
+for sensitive mutations and is not yet implemented.
+
 ### 14.2 Operator identity
 
 Operator/debug access requires:
@@ -951,6 +975,53 @@ Operator/debug access requires:
 * complete audit.
 
 Customer tokens cannot access `/v1/debug/*`, and operator credentials cannot read customer record payloads unless a separately audited break-glass role permits it.
+
+*Status (r3).* The `/v1/debug/*` operator surface is bearer-gated in
+every auth mode (SR-5): the deployment bearer is required — with no
+bearer configured only Off mode leaves it open, the sole survivor of
+the retired allow-if-unset posture. Customer JWTs are never accepted
+on it. Role separation, short expiry, and complete audit remain
+platform-leg items; the payload remains restricted (no customer
+record payloads) regardless of who authenticates.
+
+### 14.3 Raw-surface trust boundary *(revision r3)*
+
+**Decision (r3): the raw Durable Streams surface is INTERNAL-ONLY
+for shared-cell GA.** The product surface (§6) is the only public
+customer surface. There is no public raw-compatibility carve-out — a
+deployment-global bearer surface would bypass the per-project
+principal, admission, and audit machinery and cannot be tenant-safe
+in a shared cell. If public raw compatibility ever becomes
+mandatory, it must get the full principal treatment, not a carve-out.
+
+Mode matrix (implemented, `raw_surface_authorized`):
+
+* **Off** — deployment bearer; with no bearer configured the surface
+  is open. Single-tenant posture, unchanged. Allow-if-unset survives
+  ONLY here.
+* **Shadow** — the configured deployment bearer is REQUIRED.
+  Customer JWTs are tallied by the shadow observation counters but
+  do not authorize raw routes.
+* **Enforce** — fleet identity only: the static internal token
+  (bridge, §14.1) or a workload JWT. Customer tokens and the
+  deployment bearer are never accepted. Raw routes always address
+  the deployment tenant; the raw adapters are the ONLY sanctioned
+  scope for `AppState::sref` (the identity-preservation rule's
+  single carve-out).
+
+Consequences:
+
+* Forks are internal-only at GA — fork creation exists only on the
+  raw surface (§6.1). Any future customer-facing fork MUST land on
+  the product surface under the reserved compound rule
+  (`streams.forks.create` + read on the source): product-only forks.
+  The raw surface never gains a customer principal.
+* `/v1/segments` and the raw read/entry adapters sit behind the same
+  gate: fleet identity under enforce.
+* The platform leg must serve the raw surface to internal callers
+  only (private listener / workload-identity mesh); public exposure
+  of the raw listener is a release blocker. The cell-side gate is
+  defense in depth, not a substitute for network separation.
 
 ---
 
@@ -1096,6 +1167,8 @@ Add weighted deficit round-robin inside shard committers only if noisy-neighbor 
 * [x] Lock transfer semantics.
 * [x] Lock same-project-only references.
 * [x] Lock layout 4 and clean switch.
+* [x] Raw-surface principal decision. *(r3, §14.3: internal-only for
+      shared-cell GA; product-only forks.)*
 
 **Exit:** no unresolved identity, permission, or transfer decisions.
 
@@ -1157,8 +1230,9 @@ Add weighted deficit round-robin inside shard committers only if noisy-neighbor 
 * [x] Implement same-project fork/DLQ checks. *(Review item 4: the
   DLQ compound rule is complete — source consumer authorization at the
   gate, `streams.dlq.configure` + the credential's PREFIX grant over
-  the DESTINATION at config time. Fork's compound rule waits on the
-  raw-surface principal.)* *(Stored references —
+  the DESTINATION at config time. Fork's compound rule is RESERVED
+  for a product-surface fork exposure; the raw surface is
+  internal-only, §14.3 r3.)* *(Stored references —
   `ForkRef.source`, `dead_letter_stream` — resolve exclusively through
   `StreamDesc::ref_in_project`, so a cross-project reference is
   unrepresentable rather than checked; isolation test drives a

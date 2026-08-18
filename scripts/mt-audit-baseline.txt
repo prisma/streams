@@ -1,5 +1,3 @@
-global-name-maps	src/scaler3.rs hot_keys: HashMap<String, RoutingKeyHash>,	
-global-name-maps	src/scaler3.rs last_transition_ms: HashMap<String, i64>,	
 internal-target	src/product.rs "streams-internal-epoch",	
 internal-target	src/product.rs "streams-internal-identity",	
 internal-target	src/product.rs "streams-internal-project",	
