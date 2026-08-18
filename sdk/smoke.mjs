@@ -18,7 +18,8 @@ function check(name, cond, extra = "") {
   }
 }
 
-const client = new StreamsClient({ url, token });
+const project = process.env.STREAMS_PROJECT ?? "proj_local";
+const client = new StreamsClient({ url, token, project });
 
 // Create with watches; idempotent retry.
 const orders = await client.createStream("smoke/orders", {
@@ -44,14 +45,14 @@ const a2 = await producer.appendMany(
 );
 check("producer appendMany", a2.count === 2);
 // Rewind the local state to replay seq 1 with the SAME body: duplicate.
-await store.save({ stream: "smoke/orders", producerId: "checkout", routingKey: "c1" }, { epoch: 0, nextSeq: 1 });
+await store.save({ stream: "smoke/orders", producerId: "checkout", routingKey: "c1", project, endpoint: url.replace(/\/$/, "") }, { epoch: 0, nextSeq: 1 });
 const dup = await producer.appendMany(
   [{ customerId: "c1", n: 1 }, { customerId: "c1", n: 2 }],
   { routingKey: "c1" },
 );
 check("exact retry is duplicate", dup.duplicate === true);
 // Same seq, different body: conflict.
-await store.save({ stream: "smoke/orders", producerId: "checkout", routingKey: "c1" }, { epoch: 0, nextSeq: 1 });
+await store.save({ stream: "smoke/orders", producerId: "checkout", routingKey: "c1", project, endpoint: url.replace(/\/$/, "") }, { epoch: 0, nextSeq: 1 });
 let reused = false;
 try {
   await producer.append({ customerId: "c1", n: 99 }, { routingKey: "c1" });
@@ -124,11 +125,14 @@ const ev = await Promise.race([
 check("signed watch URL observes the derived key", ev.invalidated === true, JSON.stringify(ev));
 
 // The URL is a standalone capability: no key, no token, no SDK.
-const bare = await fetch(watch.url({ timeoutMs: 1000 }));
+// (Stage 4b: url() MINTS a short-lived capability, so it is async,
+// and the wire is cap=<exp>.<hex16> — sig= is retired.)
+const bareUrl = await watch.url({ timeoutMs: 1000 });
+const bare = await fetch(bareUrl);
 check("watch URL needs no credentials", bare.status === 200, `status ${bare.status}`);
-// A tampered signature is refused.
-const forged = await fetch(watch.url({ timeoutMs: 1000 }).replace(/sig=\w{4}/, "sig=0000"));
-check("forged signature refused", forged.status === 403, `status ${forged.status}`);
+// A tampered capability is refused.
+const forged = await fetch(bareUrl.replace(/cap=([^&]*)[0-9a-f]{4}/, "cap=$10000"));
+check("forged capability refused", forged.status === 403, `status ${forged.status}`);
 // Wrong value count is caught before any request.
 let cardinality = false;
 try {
