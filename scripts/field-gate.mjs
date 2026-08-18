@@ -314,7 +314,10 @@ const json = async (res) => {
     let cursor = "";
     for (let hop = 0; hop < 12; hop++) {
       const q = cursor ? `&cursor=${encodeURIComponent(cursor)}` : "";
-      const r = await P(`${name}/records?routingKey=${k}&limit=100${q}`, { headers: headers() });
+      // R23-4 strict queries: `limit` is CATALOG grammar, not records
+      // grammar — the records route pages by maxBytes. Sending limit
+      // here 400'd every keyed read (the 0/24 CI failure).
+      const r = await P(`${name}/records?routingKey=${k}${q}`, { headers: headers() });
       const page = r.status === 204 ? [] : await json(r);
       if (Array.isArray(page)) acc.push(...page);
       const next = r.headers.get("prisma-next-cursor") ?? "";
