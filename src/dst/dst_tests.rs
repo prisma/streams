@@ -20388,6 +20388,90 @@ fn unknown_kid_nudge_is_rate_limited() {
     );
 }
 
+/// SR-5 (Søren decision): the raw Durable Streams surface is
+/// INTERNAL-ONLY under enforce — no deployment-global customer bearer
+/// exists on a shared cell. The deployment posture is refused; the
+/// fleet credential and a short-lived workload JWT (§14.1, aud
+/// prisma-streams-internal) are the only raw principals. The operator
+/// surface requires a bearer in every non-Off mode.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn raw_and_operator_surfaces_are_internal_under_enforce() {
+    let scopes = "streams.create streams.records.append streams.records.read \
+                  streams.metadata.read";
+    let (state, addr, _tok) = sr_rig("proj-rawb", "ws_rawb", "c_rawb", "raw-1", scopes).await;
+    let ct = [("content-type", "application/json")];
+
+    // Unauthenticated raw create: refused (the rig has no AUTH_TOKEN,
+    // and allow-if-unset is Off-mode-only now).
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/rawx", &ct, b"[]").await;
+    assert_eq!(st, 401, "raw surface must refuse the deployment posture");
+    // Unauthenticated raw segments listing: refused.
+    let (st, _, _) = hreq(addr, "GET", "/v1/segments/rawx", &[], b"").await;
+    assert_eq!(st, 401, "segments listing must refuse too");
+    // Operator surface: refused without a bearer.
+    let (st, _, _) = hreq(addr, "GET", "/operator/data.json", &[], b"").await;
+    assert_eq!(st, 401, "operator surface must require a bearer");
+
+    // The FLEET credential authorizes the raw surface (internal use).
+    let fleet = ("authorization", "Bearer dst-internal-token");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/rawx", &[ct[0], fleet], b"[]").await;
+    assert!(st == 200 || st == 201, "fleet credential on raw: {st}");
+
+    // A short-lived WORKLOAD JWT authorizes it too (§14.1 — the
+    // static token's replacement path).
+    const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
+    let now = crate::shard::now_ms() / 1000;
+    #[derive(serde::Serialize)]
+    struct W<'a> {
+        iss: &'a str,
+        aud: &'a str,
+        sub: &'a str,
+        cell_id: &'a str,
+        exp: i64,
+    }
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some("raw-1".into());
+    let wl = jsonwebtoken::encode(
+        &header,
+        &W {
+            iss: "https://auth.prisma.io",
+            aud: "prisma-streams-internal",
+            sub: "slot-7",
+            cell_id: "test-cell",
+            exp: now + 120,
+        },
+        &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
+    )
+    .unwrap();
+    let wl_hdr = format!("Bearer {wl}");
+    let wla = ("authorization", wl_hdr.as_str());
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/rawx",
+        &[ct[0], wla],
+        br#"[{"i":1}]"#,
+    )
+    .await;
+    assert!(st == 200 || st == 204, "workload JWT on raw: {st}");
+    // A CUSTOMER-audience JWT must NOT open the raw surface.
+    let cust = format!("Bearer {_tok}");
+    let _ = cust;
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/rawx",
+        &[ct[0], ("authorization", _tok.as_str())],
+        br#"[{"i":2}]"#,
+    )
+    .await;
+    assert_eq!(
+        st, 401,
+        "a customer token must not authorize the raw surface"
+    );
+    engine_shutdown(&state).await;
+}
+
 /// MT Stage 4 same-project rule: stored references (fork parentage,
 /// dead-letter targets) bind inside the REFERRING stream's project. A
 /// foreign project's stream with the SAME name — even one carrying the

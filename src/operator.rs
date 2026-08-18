@@ -1,7 +1,7 @@
 //! Cell-wide operator dashboard, served UNSECURED at /operator (explicit
 //! product decision: on-call must see the cell without credentials).
 //!
-//! Because the route is unauthenticated, the payload is restricted to
+//! The surface is bearer-gated (SR-5); the payload REMAINS restricted to
 //! operational metadata: instance load vectors, shard-prefix bit strings,
 //! admission/shed counters, per-op store latency, and the runbook. It must
 //! never include stream names, customer identifiers, tokens, keys, or
@@ -28,7 +28,34 @@ use crate::http::AppState;
 const PAGE: &str = include_str!("operator.html");
 const RUNBOOK: &str = include_str!("../RUNBOOK.md");
 
-pub async fn page() -> Response {
+/// SR-5 (Søren review): the operator surface is authenticated in
+/// every mode — no unauthenticated metadata endpoint rides the
+/// customer-facing listener. The deployment bearer is the interim
+/// operator credential until §14.2 platform operator identity lands.
+fn operator_gate(
+    state: &crate::http::AppState,
+    headers: &axum::http::HeaderMap,
+) -> Option<Response> {
+    if crate::http::authorized(state, headers) {
+        return None;
+    }
+    Some(
+        (
+            axum::http::StatusCode::UNAUTHORIZED,
+            [("content-type", "text/plain")],
+            "operator bearer required",
+        )
+            .into_response(),
+    )
+}
+
+pub async fn page(
+    State(state): State<Arc<crate::http::AppState>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(r) = operator_gate(&state, &headers) {
+        return r;
+    }
     (
         [
             ("content-type", "text/html; charset=utf-8"),
@@ -39,7 +66,13 @@ pub async fn page() -> Response {
         .into_response()
 }
 
-pub async fn runbook() -> Response {
+pub async fn runbook(
+    State(state): State<Arc<crate::http::AppState>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
+    if let Some(r) = operator_gate(&state, &headers) {
+        return r;
+    }
     (
         [
             ("content-type", "text/markdown; charset=utf-8"),
@@ -86,7 +119,10 @@ async fn read_heartbeats(store: &Arc<dyn ObjectStore>) -> Option<Vec<Value>> {
     Some(out)
 }
 
-pub async fn data(State(state): State<Arc<AppState>>) -> Response {
+pub async fn data(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap) -> Response {
+    if let Some(r) = operator_gate(&state, &headers) {
+        return r;
+    }
     let now_ms = crate::shard::now_ms();
 
     let (heartbeats, desired) = match &state.fleet_store {

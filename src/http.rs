@@ -266,9 +266,42 @@ fn secret_eq(a: &str, b: &str) -> bool {
 /// token can never perform a product operation.
 pub(crate) fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
     match &state.auth_token {
-        None => true,
+        // SR-5 (Søren review): allow-if-unset is a LOCAL DEVELOPMENT
+        // convenience and exists only in Off mode. Shadow and enforce
+        // are multi-tenant postures — an unconfigured bearer there
+        // must close the surface, not open it.
+        None => state.auth.mode == crate::auth::AuthMode::Off,
         Some(t) => bearer(headers).map(|v| secret_eq(v, t)).unwrap_or(false),
     }
+}
+
+/// SR-5 (Søren decision): the raw Durable Streams surface is
+/// INTERNAL-ONLY for shared-cell GA. Off = deployment bearer (local
+/// development, conformance). Shadow = deployment bearer REQUIRED.
+/// Enforce = workload/fleet credentials only — no deployment-global
+/// customer bearer exists on a shared cell.
+pub(crate) fn raw_surface_authorized(state: &AppState, headers: &HeaderMap) -> bool {
+    match state.auth.mode {
+        crate::auth::AuthMode::Enforce => {
+            fleet_internal_authorized(state, headers) || workload_jwt_authorized(state, headers)
+        }
+        _ => authorized(state, headers),
+    }
+}
+
+/// Short-lived workload JWT (§14.1): aud "prisma-streams-internal",
+/// same issuer and JWKS as customer tokens, bound to this cell. The
+/// migration path off the static FLEET_INTERNAL_TOKEN.
+pub(crate) fn workload_jwt_authorized(state: &AppState, headers: &HeaderMap) -> bool {
+    if state.auth.mode == crate::auth::AuthMode::Off {
+        return false;
+    }
+    bearer(headers).is_some_and(|t| {
+        state
+            .auth
+            .verify_internal(t, crate::shard::now_ms() / 1000)
+            .is_ok()
+    })
 }
 
 /// Authorization for /v1/internal/* ONLY. Fails closed: without a
@@ -277,10 +310,14 @@ pub(crate) fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
 /// the account token. Startup refuses to enable fleet mode without this
 /// token, so "None" in production means fleet mode is off.
 pub(crate) fn fleet_internal_authorized(state: &AppState, headers: &HeaderMap) -> bool {
-    match &state.fleet_internal_token {
+    let static_ok = match &state.fleet_internal_token {
         None => false,
         Some(t) => bearer(headers).map(|v| secret_eq(v, t)).unwrap_or(false),
-    }
+    };
+    // SR-5/§14.1: short-lived workload identity is the GA credential;
+    // the static token remains only until the platform mints workload
+    // JWTs, then dies.
+    static_ok || workload_jwt_authorized(state, headers)
 }
 
 /// Uniform 401 for internal routes — never distinguishes "fleet mode
@@ -684,7 +721,7 @@ async fn get_segments(
     headers: HeaderMap,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Response {
-    if !authorized(&state, &headers) {
+    if !raw_surface_authorized(&state, &headers) {
         return err_resp(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
@@ -1182,7 +1219,7 @@ pub fn router(state: Arc<AppState>) -> Router {
         // security model claims bearer auth on all of /v1/*, and these
         // MUTATE production state — pausing absorption, occupying
         // request slots, resetting peak gauges — or expose per-stream
-        // usage). The unsecured on-call surface is /operator only.
+        // usage). SR-5: /operator is bearer-gated like the debug surface.
         .route(
             "/v1/debug/absorb-pause",
             post(
@@ -1684,7 +1721,17 @@ async fn health_axum(State(state): State<Arc<AppState>>) -> Response {
 /// pipeline healthy" — ledger reachability (last successful drain),
 /// rollup cursor progress, spool corruption, close debt, pending
 /// artifacts, and open alerts.
-async fn billing_readiness_axum(State(state): State<Arc<AppState>>) -> Response {
+async fn billing_readiness_axum(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+) -> Response {
+    if !authorized(&state, &headers) {
+        return err_resp(
+            StatusCode::UNAUTHORIZED,
+            "unauthorized",
+            "operator bearer required",
+        );
+    }
     use std::sync::atomic::Ordering;
     let now = crate::shard::now_ms();
     let spool = state.read_spool.get();
@@ -1935,7 +1982,7 @@ async fn stream_entry_inner(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    if !authorized(&state, &headers) {
+    if !raw_surface_authorized(&state, &headers) {
         return err_resp(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
