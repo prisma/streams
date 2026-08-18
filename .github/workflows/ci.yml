@@ -23,6 +23,16 @@ jobs:
       - uses: Swatinem/rust-cache@v2
       - name: Check
         run: cargo check --all-targets
+      # SR-6: the two multitenancy gates run as NAMED steps so a
+      # failure is legible at a glance. The audit is the fingerprint
+      # inventory (identity-neutral categories, baseline-diffed); the
+      # syn lint is the zero-unmarked-residual security gate and also
+      # runs inside the full suite — here it prints the reviewed
+      # exemption-marker inventory into the CI log for certification.
+      - name: Multitenancy audit (bare, never piped)
+        run: bash scripts/multitenancy-audit.sh
+      - name: Multitenancy identity lint (exemption inventory)
+        run: cargo test --release --bin streams-slate multitenancy_identity_lint -- --nocapture
       - name: Test (product conformance + dual-surface + DST + cost budgets)
         run: |
           cargo test --release 2>&1 | tee /tmp/suite.log
@@ -30,6 +40,21 @@ jobs:
           if grep -E "^test result" /tmp/suite.log | grep -qv " 0 failed"; then
             echo "suite has failures"; exit 1
           fi
+  # Job: the shared-cell certification smoke at CONTRACT scale
+  # (docs/MULTITENANCY.md §18 Stage 8 / SR-6). The suite's default run
+  # exercises the same test at 128 projects; this job runs the
+  # 1,000-project posture (48 noisy, shared workspaces, same-name
+  # streams, suspension/revocation cutoffs, reconciliation, journaled
+  # denials) on every push so the at-scale posture cannot rot.
+  mt-cert-1000:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Certification smoke at 1,000 projects
+        run: MT_CERT_PROJECTS=1000 cargo test --release --bin streams-slate shared_cell_certification_smoke -- --nocapture
+
   # Job: the SDK ships as an npm package, so CI validates the PACKAGE,
   # not the source tree: build, pack, install the tarball into a clean
   # project, and run the end-to-end smoke through the package specifier

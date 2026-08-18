@@ -30,9 +30,17 @@ use crate::project_policy::ProjectQuotas;
 use crate::tenant::ProjectId;
 
 /// Bounded tracker: beyond this many distinct projects the tracker
-/// refuses NEW ones (503) instead of growing without bound. Far above
-/// any near-term cell packing; revisit with real shared-cell density.
-pub const MAX_TRACKED_PROJECTS: usize = 1024;
+/// refuses NEW ones (503, typed `TrackerCapacity`) instead of growing
+/// without bound. SR-6 posture: Stage 8 certifies 1,000 projects per
+/// cell and eviction needs `IDLE_EVICT_MS` of quiet, so the old cap
+/// of 1,024 left 24 slots — any 25 first-seen projects inside one
+/// idle window wedged new-project admission for up to five minutes.
+/// 4,096 gives the certified density 4x headroom at ~2 MiB worst-case
+/// tracker memory (~500 B/entry). This is a deliberate HARD ceiling:
+/// refusing to track (never merging strangers into shared buckets) is
+/// the fail-closed choice; the churn test pins evict-idle-first,
+/// never-evict-active, and the typed refusal at true saturation.
+pub const MAX_TRACKED_PROJECTS: usize = 4096;
 
 /// A tracked project with no admission attempts for this long (and no
 /// inflight work) may be evicted under tracker pressure. Its buckets
@@ -382,6 +390,55 @@ mod tests {
 
     fn pid(s: &str) -> ProjectId {
         ProjectId::new(s).unwrap()
+    }
+
+    /// SR-6 tracker-capacity churn: at the cap the tracker refuses
+    /// NEW projects with the typed refusal while every entry is
+    /// recent, evicts the idle mass (never a project with live
+    /// guards) once the horizon passes, and re-tracks returning
+    /// projects — a tracker that filled once must not refuse until
+    /// restart, and must never orphan an entry whose guards are held.
+    #[test]
+    fn tracker_capacity_churn_evicts_idle_never_active() {
+        let r = QuotaRegistry::default();
+        let quotas = q(0, 2);
+        let t0: i64 = 1_000_000;
+        let name = |i: usize| pid(&format!("churn_{i}"));
+        // Pin churn_0 with BOTH its concurrency slots held live.
+        let _g0 = r.admit(&name(0), &quotas, t0).expect("pin 1");
+        let _g1 = r.admit(&name(0), &quotas, t0).expect("pin 2");
+        for i in 1..MAX_TRACKED_PROJECTS {
+            r.admit(&name(i), &quotas, t0).expect("fill");
+        }
+        // At capacity with every entry recent: typed refusal —
+        // track-or-refuse, never merge into a stranger's buckets.
+        match r.admit(&name(MAX_TRACKED_PROJECTS), &quotas, t0 + 1_000) {
+            Err(QuotaRefusal::TrackerCapacity) => {}
+            Ok(_) => panic!("expected TrackerCapacity, got admission"),
+            Err(e) => panic!("expected TrackerCapacity, got {e:?}"),
+        }
+        // Past the idle horizon the idle mass is evictable: thousands
+        // of NEW projects admit (the first triggers the sweep).
+        let t1 = t0 + IDLE_EVICT_MS + 1_000;
+        for i in 0..2_000 {
+            r.admit(&name(MAX_TRACKED_PROJECTS + 1 + i), &quotas, t1)
+                .expect("churn admit");
+        }
+        // churn_0 sat idle far past the horizon through the sweep, but
+        // its guards are live: retention is observable as its inflight
+        // count — the third admit refuses on concurrency. (Had the
+        // sweep orphaned it, a FRESH entry with inflight=0 would have
+        // admitted here.)
+        match r.admit(&name(0), &quotas, t1) {
+            Err(QuotaRefusal::Concurrency) => {}
+            Ok(_) => panic!("pinned project was evicted (fresh entry admitted)"),
+            Err(e) => panic!("pinned project was evicted: {e:?}"),
+        }
+        // An idle-evicted project simply re-tracks on return (full
+        // burst — documented, an idle project lost no debt worth
+        // keeping at this horizon).
+        r.admit(&name(1), &quotas, t1)
+            .expect("evicted project returns");
     }
 
     #[test]
