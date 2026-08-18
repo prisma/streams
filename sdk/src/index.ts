@@ -1266,14 +1266,30 @@ export class Consumer<T> {
 // signature chain. Changing either side alone silently stops matching,
 // so the smoke test derives a key here and asserts the server agrees.
 
-function subtle(): SubtleCrypto {
+let subtleCache: SubtleCrypto | undefined;
+async function subtle(): Promise<SubtleCrypto> {
+  if (subtleCache) return subtleCache;
   const c = (globalThis as { crypto?: Crypto }).crypto;
-  if (!c?.subtle) {
-    throw new Error(
-      "WebCrypto is required to derive watch URLs (Node 18+, or a browser over HTTPS)",
-    );
+  if (c?.subtle) return (subtleCache = c.subtle);
+  // Node 18 — the engines floor — ships WebCrypto only at
+  // node:crypto.webcrypto; the GLOBAL landed in Node 19. This branch
+  // is dead code wherever globalThis.crypto exists (browsers, Bun,
+  // Deno, Node 19+), so bundlers never execute the import.
+  try {
+    // Variable specifier: the package ships without Node types, and a
+    // literal import would make TS (and bundlers) try to resolve a
+    // module that only exists at runtime on Node.
+    const spec = "node:crypto";
+    const nc = (await import(/* @vite-ignore */ spec)) as {
+      webcrypto?: Crypto;
+    };
+    if (nc.webcrypto?.subtle) return (subtleCache = nc.webcrypto.subtle);
+  } catch {
+    // no node:crypto either — fall through to the error
   }
-  return c.subtle;
+  throw new Error(
+    "WebCrypto is required to derive watch URLs (Node 18+, or a browser over HTTPS)",
+  );
 }
 
 const TE = new TextEncoder();
@@ -1323,7 +1339,7 @@ function toHex(b: Uint8Array): string {
 
 /** h64: the first 8 bytes of SHA-256, big-endian, as 16 lowercase hex. */
 async function h64Hex(buf: Uint8Array): Promise<string> {
-  const d = new Uint8Array(await subtle().digest("SHA-256", ab(buf)));
+  const d = new Uint8Array(await (await subtle()).digest("SHA-256", ab(buf)));
   return toHex(d.subarray(0, 8));
 }
 
@@ -1368,8 +1384,8 @@ async function hkdf32(
   salt: Uint8Array,
   info: string,
 ): Promise<Uint8Array> {
-  const k = await subtle().importKey("raw", ab(ikm), "HKDF", false, ["deriveBits"]);
-  const bits = await subtle().deriveBits(
+  const k = await (await subtle()).importKey("raw", ab(ikm), "HKDF", false, ["deriveBits"]);
+  const bits = await (await subtle()).deriveBits(
     { name: "HKDF", hash: "SHA-256", salt: ab(salt), info: ab(TE.encode(info)) },
     k,
     256,
@@ -1433,14 +1449,14 @@ async function watchCapability(
     "GET",
     expBytes,
   ]);
-  const mac = await subtle().importKey(
+  const mac = await (await subtle()).importKey(
     "raw",
     ab(sigKey),
     { name: "HMAC", hash: "SHA-256" },
     false,
     ["sign"],
   );
-  const out = new Uint8Array(await subtle().sign("HMAC", mac, ab(input)));
+  const out = new Uint8Array(await (await subtle()).sign("HMAC", mac, ab(input)));
   // Wire v2: the capability CARRIES the project so the server resolves
   // which project's same-named stream it targets before any lookup.
   // The signature input has always bound the project, so a swapped
