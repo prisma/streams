@@ -20271,6 +20271,123 @@ async fn nondeployment_pending_split_resumes() {
     engine_shutdown(&state).await;
 }
 
+/// SR-4 (Søren review): resurrection safety survives snapshot
+/// OMISSION. The publisher contract forbids removed-then-lower
+/// reintroduction, but the cell's high-water table refuses it even
+/// when the publisher misbehaves: remove, replay, reintroduce lower,
+/// and reactivate-at-dead-version are all refused; a full identical
+/// replay is idempotent.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn feed_high_water_survives_removal_and_replay() {
+    let svc = crate::auth::AuthService::new(
+        crate::auth::AuthMode::Enforce,
+        "https://auth.prisma.io".into(),
+        "test-cell",
+    )
+    .unwrap();
+    let now = crate::shard::now_ms() / 1000;
+    let mk_policy = |ver: u64, over: u64, pver: u64| {
+        let pid = crate::tenant::ProjectId::new("proj-hw").unwrap();
+        let mut projects = std::collections::HashMap::new();
+        projects.insert(
+            pid.clone(),
+            crate::project_policy::ProjectPolicy {
+                project_id: pid,
+                workspace_id: crate::tenant::WorkspaceId::new("ws_hw").unwrap(),
+                cell_id: std::sync::Arc::from("test-cell"),
+                project_policy_version: pver,
+                ownership_version: over,
+                status: crate::project_policy::ProjectStatus::Active,
+                quotas: crate::project_policy::ProjectQuotas::default(),
+            },
+        );
+        crate::project_policy::PolicySnapshot {
+            projects,
+            fetched_at_unix: now,
+            feed_version: ver,
+        }
+    };
+    let empty_policy = |ver: u64| crate::project_policy::PolicySnapshot {
+        projects: std::collections::HashMap::new(),
+        fetched_at_unix: now,
+        feed_version: ver,
+    };
+    // Publish at ownership 12 / policy 7, remove, then try to
+    // reintroduce LOWER — refused even though the loaded snapshot no
+    // longer contains the project.
+    svc.publish_policies(mk_policy(1, 12, 7)).unwrap();
+    svc.publish_policies(empty_policy(2)).unwrap();
+    assert!(
+        svc.publish_policies(mk_policy(3, 11, 7)).is_err(),
+        "ownership below high-water must be refused after omission"
+    );
+    assert!(
+        svc.publish_policies(mk_policy(3, 12, 6)).is_err(),
+        "policy version below high-water must be refused after omission"
+    );
+    // Equal-or-higher reintroduction is fine.
+    svc.publish_policies(mk_policy(3, 12, 7)).unwrap();
+
+    let mk_grants = |ver: u64, gver: u64, status: crate::project_policy::CredentialStatus| {
+        let mut credentials = std::collections::HashMap::new();
+        credentials.insert(
+            std::sync::Arc::from("c_hw"),
+            crate::project_policy::CredentialGrant {
+                credential_id: std::sync::Arc::from("c_hw"),
+                project_id: crate::tenant::ProjectId::new("proj-hw").unwrap(),
+                grant_version: gver,
+                status,
+                scopes: crate::tenant::ScopeSet::parse("streams.records.read").0,
+                grant: crate::tenant::StreamGrant::All,
+                expires_at: None,
+            },
+        );
+        crate::project_policy::GrantSnapshot {
+            credentials,
+            fetched_at_unix: now,
+            feed_version: ver,
+        }
+    };
+    let empty_grants = |ver: u64| crate::project_policy::GrantSnapshot {
+        credentials: std::collections::HashMap::new(),
+        fetched_at_unix: now,
+        feed_version: ver,
+    };
+    use crate::project_policy::CredentialStatus as CS;
+    // Revoke at version 10, REMOVE from the feed, then reintroduce
+    // Active at 10 (same) and at 3 (lower): both refused; 11 accepted.
+    svc.publish_grants(mk_grants(1, 10, CS::Revoked)).unwrap();
+    svc.publish_grants(empty_grants(2)).unwrap();
+    assert!(
+        svc.publish_grants(mk_grants(3, 3, CS::Active)).is_err(),
+        "grant_version below high-water must be refused after omission"
+    );
+    assert!(
+        svc.publish_grants(mk_grants(3, 10, CS::Active)).is_err(),
+        "reactivation at the dead version must be refused after omission"
+    );
+    svc.publish_grants(mk_grants(3, 11, CS::Active)).unwrap();
+    // Idempotent replay of the exact same snapshot is accepted.
+    svc.publish_grants(mk_grants(3, 11, CS::Active)).unwrap();
+}
+
+/// SR-4: the unknown-kid nudge is rate-limited — the first sighting
+/// wakes the refresher, storms within the window do not.
+#[test]
+fn unknown_kid_nudge_is_rate_limited() {
+    let svc = crate::auth::AuthService::new(
+        crate::auth::AuthMode::Enforce,
+        "https://auth.prisma.io".into(),
+        "test-cell",
+    )
+    .unwrap();
+    assert!(svc.request_kid_refresh(), "first sighting nudges");
+    assert!(
+        !svc.request_kid_refresh(),
+        "a storm within the window must not re-nudge"
+    );
+}
+
 /// MT Stage 4 same-project rule: stored references (fork parentage,
 /// dead-letter targets) bind inside the REFERRING stream's project. A
 /// foreign project's stream with the SAME name — even one carrying the

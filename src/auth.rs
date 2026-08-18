@@ -308,7 +308,30 @@ pub struct AuthService {
     /// Unknown-kid sightings since the last JWKS refresh — the
     /// refresher's rate-limited signal to fetch out of cadence (§7.1).
     pub unknown_kid_seen: AtomicU64,
+    /// SR-4: fired (rate-limited) when an unknown kid is seen, so the
+    /// refresher fetches a freshly rotated key out of cadence instead
+    /// of failing requests until the next tick.
+    pub kid_wakeup: tokio::sync::Notify,
+    last_kid_wake_ms: std::sync::atomic::AtomicI64,
+    /// SR-4: bounded per-ID high-water marks retained ACROSS snapshot
+    /// omissions — the publisher contract says removed entries never
+    /// resurrect at lower versions, but a security boundary does not
+    /// depend on the publisher staying perfect. FIFO-bounded; evicting
+    /// an ancient id only returns it to publisher-contract protection.
+    high_water: std::sync::Mutex<HighWater>,
     pub shadow: ShadowCounters,
+}
+
+const HIGH_WATER_MAX: usize = 65_536;
+
+#[derive(Default)]
+struct HighWater {
+    /// project → (max ownership_version, max policy_version) ever seen.
+    projects: std::collections::HashMap<crate::tenant::ProjectId, (u64, u64)>,
+    p_order: std::collections::VecDeque<crate::tenant::ProjectId>,
+    /// credential → (max grant_version, max version seen NOT Active).
+    credentials: std::collections::HashMap<Arc<str>, (u64, Option<u64>)>,
+    c_order: std::collections::VecDeque<Arc<str>>,
 }
 
 impl AuthService {
@@ -323,6 +346,9 @@ impl AuthService {
             projects: ArcSwap::from_pointee(PolicySnapshot::empty()),
             credentials: ArcSwap::from_pointee(GrantSnapshot::empty()),
             unknown_kid_seen: AtomicU64::new(0),
+            kid_wakeup: tokio::sync::Notify::new(),
+            last_kid_wake_ms: std::sync::atomic::AtomicI64::new(0),
+            high_water: std::sync::Mutex::new(HighWater::default()),
             shadow: ShadowCounters::default(),
         })
     }
@@ -354,7 +380,20 @@ impl AuthService {
         if snapshot.feed_version < cur.feed_version {
             return Err("policy feed_version regressed");
         }
+        // SR-4: versions are compared against the retained HIGH-WATER
+        // marks, not just the currently loaded snapshot — an entry
+        // omitted from intermediate snapshots cannot resurrect at a
+        // lower version.
+        let mut hw = self.high_water.lock().unwrap();
         for (pid, np) in &snapshot.projects {
+            if let Some(&(o_hw, p_hw)) = hw.projects.get(pid) {
+                if np.ownership_version < o_hw {
+                    return Err("ownership_version below high-water");
+                }
+                if np.project_policy_version < p_hw {
+                    return Err("project_policy_version below high-water");
+                }
+            }
             if let Some(op) = cur.projects.get(pid) {
                 if np.ownership_version < op.ownership_version {
                     return Err("ownership_version regressed");
@@ -364,6 +403,27 @@ impl AuthService {
                 }
             }
         }
+        for (pid, np) in &snapshot.projects {
+            match hw.projects.get_mut(pid) {
+                Some(e) => {
+                    e.0 = e.0.max(np.ownership_version);
+                    e.1 = e.1.max(np.project_policy_version);
+                }
+                None => {
+                    if hw.projects.len() >= HIGH_WATER_MAX
+                        && let Some(old) = hw.p_order.pop_front()
+                    {
+                        hw.projects.remove(&old);
+                    }
+                    hw.projects.insert(
+                        pid.clone(),
+                        (np.ownership_version, np.project_policy_version),
+                    );
+                    hw.p_order.push_back(pid.clone());
+                }
+            }
+        }
+        drop(hw);
         self.projects.store(Arc::new(snapshot));
         Ok(())
     }
@@ -373,7 +433,23 @@ impl AuthService {
         if snapshot.feed_version < cur.feed_version {
             return Err("grant feed_version regressed");
         }
+        // SR-4: high-water checks survive snapshot omission — a revoked
+        // credential removed from the feed and later reintroduced
+        // Active at an old (or the same) version is refused; only a
+        // STRICTLY newer grant_version than any version it was ever
+        // seen dead at can reactivate it.
+        let mut hw = self.high_water.lock().unwrap();
         for (id, nc) in &snapshot.credentials {
+            if let Some(&(v_hw, dead_hw)) = hw.credentials.get(id.as_ref()) {
+                if nc.grant_version < v_hw {
+                    return Err("grant_version below high-water");
+                }
+                if nc.status == CredentialStatus::Active
+                    && dead_hw.is_some_and(|d| nc.grant_version <= d)
+                {
+                    return Err("revoked credential reactivated without a newer grant_version");
+                }
+            }
             if let Some(oc) = cur.credentials.get(id) {
                 if nc.grant_version < oc.grant_version {
                     return Err("grant_version regressed");
@@ -392,8 +468,53 @@ impl AuthService {
                 }
             }
         }
+        for (id, nc) in &snapshot.credentials {
+            let dead = !matches!(nc.status, CredentialStatus::Active);
+            match hw.credentials.get_mut(id.as_ref()) {
+                Some(e) => {
+                    e.0 = e.0.max(nc.grant_version);
+                    if dead {
+                        e.1 = Some(e.1.map_or(nc.grant_version, |d| d.max(nc.grant_version)));
+                    }
+                }
+                None => {
+                    if hw.credentials.len() >= HIGH_WATER_MAX
+                        && let Some(old) = hw.c_order.pop_front()
+                    {
+                        hw.credentials.remove(&old);
+                    }
+                    hw.credentials.insert(
+                        id.clone(),
+                        (nc.grant_version, dead.then_some(nc.grant_version)),
+                    );
+                    hw.c_order.push_back(id.clone());
+                }
+            }
+        }
+        drop(hw);
         self.credentials.store(Arc::new(snapshot));
         Ok(())
+    }
+
+    /// SR-4: nudge the refresher out of cadence — at most once per 30s
+    /// — so a freshly rotated signing key is fetched when its first
+    /// token arrives instead of failing requests until the next tick.
+    /// Returns whether the nudge fired (rate-limit observable in tests).
+    pub fn request_kid_refresh(&self) -> bool {
+        let now = crate::shard::now_ms();
+        let last = self.last_kid_wake_ms.load(Ordering::Relaxed);
+        if now - last < 30_000 {
+            return false;
+        }
+        if self
+            .last_kid_wake_ms
+            .compare_exchange(last, now, Ordering::Relaxed, Ordering::Relaxed)
+            .is_err()
+        {
+            return false; // a concurrent sighting won the nudge
+        }
+        self.kid_wakeup.notify_waiters();
+        true
     }
 
     /// Signature + structural verification shared by all audiences.
@@ -421,6 +542,7 @@ impl AuthService {
             Some(k) => k,
             None => {
                 self.unknown_kid_seen.fetch_add(1, Ordering::Relaxed);
+                self.request_kid_refresh();
                 return Err(AuthError::KidUnknown);
             }
         };

@@ -313,7 +313,13 @@ pub fn spawn_refresher(
         let mut tick = tokio::time::interval(every);
         tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
         loop {
-            tick.tick().await;
+            // SR-4: the cadence is the FALLBACK; an unknown-kid nudge
+            // (rate-limited in AuthService) refreshes immediately so a
+            // rotated key's first token doesn't wait a full interval.
+            tokio::select! {
+                _ = tick.tick() => {}
+                _ = auth.kid_wakeup.notified() => {}
+            }
             refresh_once(&auth, keys.as_ref(), policies.as_ref(), grants.as_ref()).await;
         }
     });
