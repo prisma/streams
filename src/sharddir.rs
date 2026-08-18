@@ -84,6 +84,7 @@ static LAST_OPEN_ERROR: Mutex<Option<String>> = Mutex::new(None);
 /// prefixes makes the claim true: three DIFFERENT shards failing with
 /// zero lifetime successes is a broken data plane; one shard failing
 /// three times is one broken shard.
+// mt-lint: allow(name-keyed-map): shard prefixes, not stream names
 static FAILED_PREFIXES: Mutex<Option<std::collections::BTreeSet<String>>> = Mutex::new(None);
 
 fn note_failed_prefix(prefix: &str) {
@@ -236,8 +237,10 @@ fn holdoff_for(strikes: u32) -> Duration {
 }
 
 struct GateInner {
+    // mt-lint: allow(name-keyed-map): shard prefix -> engine
     shards: Arc<RwLock<HashMap<String, Arc<ShardEngine>>>>,
     opener: OpenFn,
+    // mt-lint: allow(name-keyed-map): shard prefix -> open/park gate
     st: Mutex<HashMap<String, PrefixGate>>,
     /// Ceiling on one open attempt (see OPEN_DEADLINE_DEFAULT).
     open_deadline: Duration,

@@ -44,6 +44,7 @@ pub struct ConsumerState {
 
 #[derive(Debug, Clone, Default)]
 pub struct QueueState {
+    // mt-lint: allow(name-keyed-map): consumer name inside ONE stream's queue state — project-scoped by containment
     pub consumers: HashMap<String, ConsumerState>,
     pub loaded: bool,
 }

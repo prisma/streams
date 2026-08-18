@@ -790,7 +790,7 @@ pub fn start(st: std::sync::Weak<crate::http::AppState>) {
                             "split_committed",
                             format!("split/{epoch}/{seg_id}"),
                         )
-                        .stream(&epoch, name.name().as_str())
+                        .stream(&name, &epoch)
                         .fields(serde_json::json!({"segId": seg_id, "splitAt": split_at, "projectId": name.project_id().as_str()})),
                     );
                 }
@@ -838,7 +838,7 @@ pub fn start(st: std::sync::Weak<crate::http::AppState>) {
                                 "merge_committed",
                                 format!("merge/{epoch}/{a}/{b}"),
                             )
-                            .stream(&epoch, name.name().as_str())
+                            .stream(&name, &epoch)
                             .fields(serde_json::json!({"a": a, "b": b, "projectId": name.project_id().as_str()})),
                         );
                     }

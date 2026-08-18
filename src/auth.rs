@@ -202,6 +202,7 @@ impl RequestPrincipal {
     }
 
     /// §6.2 component-aware prefix authorization.
+    // mt-lint: allow(name-param-shared-core): authorization predicate — evaluates the name against THIS principal's own prefix grant; the project is the principal itself
     pub fn require_stream(&self, canonical_name: &str) -> Result<(), AuthError> {
         if self.grant.permits(canonical_name) {
             Ok(())
@@ -235,6 +236,7 @@ pub struct JwksKey {
 }
 
 pub struct JwksSnapshot {
+    // mt-lint: allow(name-keyed-map): JWKS key id (kid), not stream identity
     pub keys: HashMap<String, JwksKey>,
     pub fetched_at_unix: i64,
     pub feed_version: u64,
@@ -330,6 +332,7 @@ struct HighWater {
     projects: std::collections::HashMap<crate::tenant::ProjectId, (u64, u64)>,
     p_order: std::collections::VecDeque<crate::tenant::ProjectId>,
     /// credential → (max grant_version, max version seen NOT Active).
+    // mt-lint: allow(name-keyed-map): credential id (feed high-water table)
     credentials: std::collections::HashMap<Arc<str>, (u64, Option<u64>)>,
     c_order: std::collections::VecDeque<Arc<str>>,
 }

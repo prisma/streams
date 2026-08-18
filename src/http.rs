@@ -117,6 +117,7 @@ pub struct AppState {
     pub shard_prefixes: Vec<String>,
     /// Serving map, shared with the fleet loop and the OpenGate's spawned
     /// open tasks (which insert into it directly — see sharddir.rs).
+    // mt-lint: allow(name-keyed-map): shard prefix -> engine (layout-4 prefixes, not stream names)
     pub shards: std::sync::Arc<std::sync::RwLock<HashMap<String, Arc<ShardEngine>>>>,
     /// Single-flight, cancellation-proof shard opens with escalating
     /// holdoff — the eu-central-1 reopen-storm fix (sharddir.rs).
@@ -176,11 +177,13 @@ pub struct AppState {
     /// Rebalancer shard-move overrides (fleet/overrides.json, CAS'd):
     /// shard prefix -> instance. Consulted before the rendezvous pick; an
     /// override whose target is not in the active set is ignored.
+    // mt-lint: allow(name-keyed-map): shard prefix -> owning instance
     pub ring_overrides: std::sync::RwLock<std::collections::HashMap<String, String>>,
     /// Fresh peers' published base URLs (heartbeat `url`, from SELF_URL),
     /// updated by the fleet loop. Segment fan-out — cross-owner lineage
     /// reads and consumer sweeps — addresses owners through this map;
     /// empty in standalone mode or when SELF_URL isn't deployed.
+    // mt-lint: allow(name-keyed-map): instance name -> base URL
     pub peer_urls: std::sync::RwLock<std::collections::HashMap<String, String>>,
     pub data_store: Arc<dyn ObjectStore>,
     pub keys: Arc<KeyCache>,
@@ -331,12 +334,18 @@ pub(crate) fn internal_unauthorized() -> Response {
 }
 
 impl AppState {
-    /// Project-qualify a canonical stream name under the deployment
-    /// tenant. `name` MUST already be canonical (`canonical_name` ran
-    /// at the route boundary); the checked construction here is the
-    /// invariant that keeps unvalidated bytes out of registry paths
-    /// and identity hashes.
-    pub fn sref(&self, canonical_name: &str) -> crate::tenant::TenantStreamRef {
+    /// Project-qualify a canonical stream name under the DEPLOYMENT
+    /// tenant — the raw-surface adapter's identity source (§14.3:
+    /// the raw surface is internal-only and always addresses the
+    /// deployment tenant). The name says the scope: ONLY the raw
+    /// adapters (`get_segments`, `stream_entry_inner`, `read`) and
+    /// test fixtures may call this; everywhere else identity comes
+    /// from the verified principal or an existing TenantStreamRef.
+    /// Enforced by mt_lint::raw_adapter_sref_is_confined (SR-6).
+    /// `name` MUST already be canonical (`canonical_name` ran at the
+    /// route boundary); the checked construction keeps unvalidated
+    /// bytes out of registry paths and identity hashes.
+    pub fn raw_adapter_sref(&self, canonical_name: &str) -> crate::tenant::TenantStreamRef {
         crate::tenant::TenantStreamRef::new(
             self.tenant.clone(),
             crate::tenant::CanonicalStreamName::new(canonical_name)
@@ -728,7 +737,7 @@ async fn get_segments(
             "bearer token required",
         );
     }
-    let desc = match state.registry.get(&state.sref(&name)).await {
+    let desc = match state.registry.get(&state.raw_adapter_sref(&name)).await {
         Ok(Some(d)) if desc_alive(&d) => d,
         Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
         Err(e) => {
@@ -1157,7 +1166,7 @@ async fn internal_telemetry_append(
         return c;
     }
     let sref = system.stream_ref(&name);
-    append(state, sref, name, hdrs, Body::from(body), None, None, None).await
+    append(state, sref, hdrs, Body::from(body), None, None, None).await
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -2019,14 +2028,14 @@ async fn stream_entry_inner(
             )
             .await;
             if r.status() == StatusCode::CREATED
-                && let Ok(Some(d)) = state.registry.get(&state.sref(&name)).await
+                && let Ok(Some(d)) = state.registry.get(&state.raw_adapter_sref(&name)).await
             {
                 crate::ops::emit(
                     crate::ops::OpsEvent::new(
                         "stream_created",
                         format!("life/{}/created", d.stream_epoch),
                     )
-                    .stream(&d.stream_epoch, &name),
+                    .stream(&d.sref(), &d.stream_epoch),
                 );
             }
             r
@@ -2034,8 +2043,7 @@ async fn stream_entry_inner(
         Method::POST => {
             let r = append(
                 state.clone(),
-                state.sref(&name),
-                name.clone(),
+                state.raw_adapter_sref(&name),
                 headers,
                 body,
                 None,
@@ -2046,7 +2054,7 @@ async fn stream_entry_inner(
             // Operation count only (§4.5) — the BILLED ingest bytes are
             // the committer's, atomic with the records themselves.
             if r.status().is_success()
-                && let Ok(Some(desc)) = state.registry.get(&state.sref(&name)).await
+                && let Ok(Some(desc)) = state.registry.get(&state.raw_adapter_sref(&name)).await
             {
                 crate::billing::meter_append_request(&state, &desc);
             }
@@ -2055,7 +2063,7 @@ async fn stream_entry_inner(
         Method::GET => read(state, name, params, headers, false).await,
         Method::HEAD => read(state, name, params, headers, true).await,
         Method::DELETE => {
-            let sref = state.sref(&name);
+            let sref = state.raw_adapter_sref(&name);
             delete_stream(state, sref).await
         }
         Method::OPTIONS => Response::builder()
@@ -4586,7 +4594,7 @@ fn delete_lifecycle(
                 "stream_hard_deleted",
                 format!("life/{}/hard_deleted", d.stream_epoch),
             )
-            .stream(&d.stream_epoch, &name),
+            .stream(&d.sref(), &d.stream_epoch),
         );
         // Billing closure (§6.2): the hard delete is the terminal
         // storage observation — advance every segment's storage clock
@@ -4655,7 +4663,6 @@ fn parse_ts_hint(headers: &HeaderMap) -> Option<i64> {
 pub(crate) async fn append(
     state: Arc<AppState>,
     sref: crate::tenant::TenantStreamRef,
-    name: String,
     headers: HeaderMap,
     body: Body,
     product_hash: Option<[u8; 16]>,
@@ -4676,7 +4683,6 @@ pub(crate) async fn append(
         return append_core(
             state,
             sref,
-            name,
             headers,
             body,
             product_hash,
@@ -4693,7 +4699,6 @@ pub(crate) async fn append(
         let r = append_core(
             state.clone(),
             sref.clone(),
-            name.clone(),
             headers.clone(),
             Body::from(body_bytes.clone()),
             product_hash,
@@ -4874,13 +4879,16 @@ pub(crate) async fn fence_segment_for_key(
 async fn append_core(
     state: Arc<AppState>,
     sref: crate::tenant::TenantStreamRef,
-    name: String,
     headers: HeaderMap,
     body: Body,
     product_hash: Option<[u8; 16]>,
     product_key: Option<String>,
     seal_auth: Option<SealAuthz>,
 ) -> Response {
+    // SR-6 (dual-identity-params): the ref is the ONLY identity input;
+    // the canonical name below exists for display, failpoints and the
+    // legacy child-name composition, never for registry lookups.
+    let name = sref.name().as_str().to_string();
     // Scaled-stream routing (SCALING.md): a parent stream with scaling on
     // never takes appends itself — the routing key maps through the
     // segment map to an internal child stream "<parent>#<seg_id>". The
@@ -6439,11 +6447,10 @@ async fn read(
         );
     }
     params.key = Some(String::new());
-    let sref = state.sref(&name);
+    let sref = state.raw_adapter_sref(&name);
     read_inner(
         state,
         sref,
-        name,
         params,
         headers,
         head_only,
@@ -6486,7 +6493,6 @@ async fn genuine_closure(
 pub(crate) async fn read_inner(
     state: Arc<AppState>,
     sref: crate::tenant::TenantStreamRef,
-    name: String,
     params: ReadParams,
     headers: HeaderMap,
     head_only: bool,
@@ -6575,7 +6581,7 @@ pub(crate) async fn read_inner(
     if head_only {
         if closed && !genuine_closure(&state, &sref, may_refresh).await {
             return Box::pin(read_inner(
-                state, sref, name, params, headers, head_only, false, surface,
+                state, sref, params, headers, head_only, false, surface,
             ))
             .await;
         }
@@ -6657,7 +6663,7 @@ pub(crate) async fn read_inner(
             if live.is_none() {
                 if closed && !genuine_closure(&state, &sref, may_refresh).await {
                     return Box::pin(read_inner(
-                        state, sref, name, params, headers, head_only, false, surface,
+                        state, sref, params, headers, head_only, false, surface,
                     ))
                     .await;
                 }
@@ -6748,7 +6754,7 @@ pub(crate) async fn read_inner(
         if end <= scan_from {
             if closed && !genuine_closure(&state, &sref, may_refresh).await {
                 return Box::pin(read_inner(
-                    state, sref, name, params, headers, head_only, false, surface,
+                    state, sref, params, headers, head_only, false, surface,
                 ))
                 .await;
             }
@@ -6870,7 +6876,7 @@ pub(crate) async fn read_inner(
     // metering, so a redispatched read is billed exactly once.
     if up_to_date && closed && !genuine_closure(&state, &sref, may_refresh).await {
         return Box::pin(read_inner(
-            state, sref, name, params, headers, head_only, false, surface,
+            state, sref, params, headers, head_only, false, surface,
         ))
         .await;
     }
@@ -7658,7 +7664,6 @@ async fn internal_segment_read(
     read_inner(
         state,
         sref,
-        name,
         params,
         headers,
         head_only,

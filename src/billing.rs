@@ -38,6 +38,7 @@ pub const AUDIT_EVENTS_STREAM: &str = "_audit_events";
 /// only through the fleet-internal telemetry path. Reserving the whole
 /// `_`-prefix (not just the three current names) keeps the namespace
 /// available for future system streams without a migration.
+// mt-lint: allow(name-param-shared-core): name-SHAPE predicate (reserved prefix), no identity derived
 pub fn is_reserved_stream(name: &str) -> bool {
     name.starts_with('_')
 }
@@ -1253,9 +1254,13 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
             // project predate layout 4 and were deployment-owned by
             // definition.
             let row_ref = if meta.project_id.is_empty() {
-                state.sref(&meta.stream_name)
+                // mt-lint: allow(raw-adapter-sref): pre-Stage-7 rows carry no
+                // project and are deployment-owned by definition (reviewed
+                // Stage 7 P0); a layout-4 GA cell boots with no such rows.
+                state.raw_adapter_sref(&meta.stream_name)
             } else {
                 match crate::tenant::ProjectId::new(&meta.project_id) {
+                    // mt-lint: allow(stream-ref-construction): the ref is rebuilt from the row's OWN persisted project — durable attribution, not a request name (Stage 7 P0)
                     Ok(p) => p.stream_ref(&meta.stream_name),
                     Err(_) => {
                         // Fail closed: defer, never close on a row we
@@ -2174,8 +2179,10 @@ impl ReadSpool {
 #[derive(Default)]
 pub struct SweepSched {
     /// prefix -> custody value for engines this scheduler holds.
+    // mt-lint: allow(name-keyed-map): shard prefix (sweep custody), not stream identity
     opened: std::sync::Mutex<std::collections::HashMap<String, u64>>,
     /// prefix -> sweeps spent resident (quantum accounting).
+    // mt-lint: allow(name-keyed-map): shard prefix (sweep quantum accounting)
     cycles: std::sync::Mutex<std::collections::HashMap<String, usize>>,
     /// Peak concurrently scheduler-held engines (per state).
     peak: std::sync::atomic::AtomicUsize,
@@ -2780,6 +2787,7 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
 /// FLEET_INTERNAL_TOKEN and carrying the system key. Ambiguity is
 /// safe end to end because every record downstream deduplicates by
 /// deterministic id / source sequence.
+// mt-lint: allow(name-param-shared-core): system ledger under the system project; names are crate constants (_usage, _ops_*), never customer input
 pub async fn system_append(
     state: &std::sync::Arc<crate::http::AppState>,
     stream: &str,
@@ -2797,8 +2805,8 @@ pub async fn system_append(
     // Local attempt (create lazily on 404).
     let mut r = crate::http::append(
         state.clone(),
+        // mt-lint: allow(stream-ref-construction): system ledger under the system project; names are crate constants
         crate::tenant::system_project().stream_ref(stream),
-        stream.to_string(),
         hdrs.clone(),
         axum::body::Body::from(body.clone()),
         None,
@@ -2825,8 +2833,8 @@ pub async fn system_append(
         } else {
             r = crate::http::append(
                 state.clone(),
+                // mt-lint: allow(stream-ref-construction): system ledger under the system project; names are crate constants
                 crate::tenant::system_project().stream_ref(stream),
-                stream.to_string(),
                 hdrs.clone(),
                 axum::body::Body::from(body.clone()),
                 None,
@@ -2866,6 +2874,7 @@ pub async fn system_append(
 /// local read; on an ownership 409, one relay hop through the
 /// incarnation-bound internal segment read. Returns (json body, next
 /// cursor).
+// mt-lint: allow(name-param-shared-core): system ledger under the system project; names are crate constants, never customer input
 pub async fn system_read(
     state: &std::sync::Arc<crate::http::AppState>,
     stream: &str,
@@ -2884,8 +2893,8 @@ pub async fn system_read(
     };
     let resp = crate::http::read_inner(
         state.clone(),
+        // mt-lint: allow(stream-ref-construction): system ledger under the system project; names are crate constants
         crate::tenant::system_project().stream_ref(stream),
-        stream.to_string(),
         params,
         hdrs,
         false,
@@ -2914,6 +2923,7 @@ pub async fn system_read(
     // Relay through the incarnation-bound internal read.
     let desc = state
         .registry
+        // mt-lint: allow(stream-ref-construction): system ledger under the system project; names are crate constants
         .get(&crate::tenant::system_project().stream_ref(stream))
         .await
         .map_err(|e| e.to_string())?

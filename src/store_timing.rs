@@ -973,12 +973,14 @@ struct HttpEv {
 
 struct HttpStats {
     ring: Mutex<VecDeque<HttpEv>>,
+    // mt-lint: allow(name-keyed-map): served-from tier label (telemetry)
     served_from: Mutex<std::collections::HashMap<String, u64>>,
     /// (region, op, class) → count. The flat map above answers "how much
     /// went where"; this one answers "WHAT went where" — during the
     /// eu-central-1 ord1 window we could not tell whether the remote PoP
     /// was serving everything (a routing/DNS problem) or only the
     /// CAS/manifest subset (a metadata-placement problem).
+    // mt-lint: allow(name-keyed-map): (tier label, op class, size class) telemetry
     served_from_class: Mutex<std::collections::HashMap<(String, u8, u8), u64>>,
 }
 

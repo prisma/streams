@@ -2473,6 +2473,7 @@ impl ShardEngine {
             /// group; absent key = untouched (read the DB). Discarded
             /// after the group either way: on success the rows are
             /// durable, on failure they never existed.
+            // mt-lint: allow(name-keyed-map): consumer name; `Local` itself is per stream (`locals` keys by the 16-byte tenant-qualified storage hash), so this is project-scoped by containment
             queue_configs: std::collections::HashMap<String, crate::queue::ConsumerRecord>,
             appended_bytes: u64,
             /// R26-2: exact encoded frame bytes this group's appends put

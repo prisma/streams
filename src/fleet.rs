@@ -94,6 +94,7 @@ pub struct Heartbeat {
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
 pub struct Overrides {
     #[serde(default)]
+    // mt-lint: allow(name-keyed-map): shard prefix -> owner override
     pub entries: std::collections::HashMap<String, OverrideEntry>,
     /// Pending-event outbox (§12.4) — same contract as Desired's.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -178,6 +179,7 @@ pub fn valid_peer_url(url: &str) -> bool {
 /// URL), so losing the published map would point relays at dead
 /// addresses until the next successful read (round-19).
 fn last_good_urls() -> &'static Mutex<std::collections::HashMap<String, String>> {
+    // mt-lint: allow(name-keyed-map): instance name -> last good base URL
     static M: OnceLock<Mutex<std::collections::HashMap<String, String>>> = OnceLock::new();
     M.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }

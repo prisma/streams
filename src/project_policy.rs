@@ -112,6 +112,7 @@ impl PolicySnapshot {
 
 #[derive(Clone, Debug)]
 pub struct GrantSnapshot {
+    // mt-lint: allow(name-keyed-map): credential id -> grant (the feed snapshot itself)
     pub credentials: HashMap<Arc<str>, CredentialGrant>,
     pub fetched_at_unix: i64,
     pub feed_version: u64,

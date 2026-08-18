@@ -446,6 +446,7 @@ impl StreamDesc {
     /// which is what makes a cross-project reference unrepresentable
     /// rather than merely checked (MULTITENANCY Stage 4 same-project
     /// fork/DLQ rule).
+    // mt-lint: allow(name-param-shared-core): THE sanctioned constructor — derives the ref from the descriptor's OWN project (stored references resolve only through here)
     pub fn ref_in_project(&self, name: &str) -> crate::tenant::TenantStreamRef {
         crate::tenant::TenantStreamRef::new(
             self.project_id.clone(),
@@ -592,6 +593,7 @@ pub struct Registry {
     /// Test-only one-shot: the NEXT `get` for a listed name returns a
     /// store error (round-18 fail-closed refresh probe).
     #[cfg(test)]
+    // mt-lint: allow(name-keyed-map): test failpoint set, canonical names of the rig's own streams
     fail_next_get: Mutex<std::collections::HashSet<String>>,
 }
 
@@ -1160,6 +1162,7 @@ impl Registry {
     /// the deletion saga must fail CLOSED when it cannot re-read the
     /// segment map after a sweep).
     #[cfg(test)]
+    // mt-lint: allow(name-param-shared-core): test failpoint arming, no identity derived
     pub fn fail_next_get(&self, name: &str) {
         self.fail_next_get.lock().unwrap().insert(name.to_string());
     }

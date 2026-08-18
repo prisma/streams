@@ -42,6 +42,7 @@ fn k_month(month: &str, account: &str, project: &str, stream_id: &str) -> Vec<u8
 fn k_month_prefix(month: &str) -> Vec<u8> {
     format!("month/{month}/").into_bytes()
 }
+// mt-lint: allow(name-param-shared-core): rollup row-key builder; the project is an explicit sibling parameter
 fn k_name(month: &str, account: &str, project: &str, name: &str) -> Vec<u8> {
     // Bare (non-tenant-qualified) hash is safe here: the key path already
     // embeds account+project, so equal names in different projects land in
@@ -936,6 +937,7 @@ impl UsageRollup {
             .and_then(|v| serde_json::from_slice(&v).ok())
     }
 
+    // mt-lint: allow(name-param-shared-core): rollup lookup; project is an explicit sibling parameter
     pub async fn name_row(
         &self,
         month: &str,
@@ -2292,8 +2294,10 @@ fn k_ops_m1(instance: &str, minute_ms: i64) -> Vec<u8> {
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
 pub struct OpsM1 {
     #[serde(default)]
+    // mt-lint: allow(name-keyed-map): metric name, not stream identity
     pub counters: std::collections::BTreeMap<String, u64>,
     #[serde(default)]
+    // mt-lint: allow(name-keyed-map): metric name, not stream identity
     pub gauges_max: std::collections::BTreeMap<String, u64>,
     #[serde(default)]
     pub samples: u32,

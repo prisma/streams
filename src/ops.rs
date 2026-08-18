@@ -45,6 +45,11 @@ pub struct OpsEvent {
     pub severity: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub instance: Option<String>,
+    /// Owning project of a customer-stream event. Type-enforced by the
+    /// `stream()` builder (SR-6): naming a stream without its project
+    /// is unrepresentable. Absent on system/cell-level events.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub stream_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -66,15 +71,20 @@ impl OpsEvent {
             event_type: event_type.to_string(),
             severity: "info".into(),
             instance: None,
+            project_id: None,
             stream_id: None,
             stream_name: None,
             shard: None,
             fields: serde_json::Value::Null,
         }
     }
-    pub fn stream(mut self, id: &str, name: &str) -> Self {
-        self.stream_id = Some(id.to_string());
-        self.stream_name = Some(name.to_string());
+    /// Stamp CUSTOMER-stream identity: the tenant-qualified ref plus
+    /// the incarnation. Taking `TenantStreamRef` (not a bare name) is
+    /// the SR-6 guarantee that no customer op event omits its project.
+    pub fn stream(mut self, sref: &crate::tenant::TenantStreamRef, epoch: &str) -> Self {
+        self.project_id = Some(sref.project_id().as_str().to_string());
+        self.stream_id = Some(epoch.to_string());
+        self.stream_name = Some(sref.name().as_str().to_string());
         self
     }
     pub fn shard(mut self, prefix: &str) -> Self {
@@ -237,7 +247,9 @@ pub struct OpsSnapshot {
     pub region: String,
     pub instance: String,
     pub role: String,
+    // mt-lint: allow(name-keyed-map): metric name, not stream identity
     pub counters: std::collections::BTreeMap<String, u64>,
+    // mt-lint: allow(name-keyed-map): metric name, not stream identity
     pub gauges: std::collections::BTreeMap<String, u64>,
 }
 
@@ -491,6 +503,7 @@ pub struct AlertState {
 }
 
 fn alerts_map() -> &'static Mutex<std::collections::HashMap<String, AlertState>> {
+    // mt-lint: allow(name-keyed-map): alert kind, not stream identity
     static A: std::sync::OnceLock<Mutex<std::collections::HashMap<String, AlertState>>> =
         std::sync::OnceLock::new();
     A.get_or_init(|| Mutex::new(std::collections::HashMap::new()))

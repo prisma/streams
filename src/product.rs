@@ -3154,7 +3154,6 @@ async fn product_append_inner(
     let raw = crate::http::append(
         state.clone(),
         tenant.stream_ref(&name),
-        name.clone(),
         ih,
         axum::body::Body::from(wire_body),
         has_producer.then_some(request_hash),
@@ -3848,7 +3847,6 @@ async fn product_read(
     let raw = crate::http::read_inner(
         state,
         tenant.stream_ref(&name),
-        name,
         params,
         ih,
         false,

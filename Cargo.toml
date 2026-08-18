@@ -41,6 +41,14 @@ tokio-stream = "0.1.18"
 jsonwebtoken = "9"
 arc-swap = "1"
 
+[dev-dependencies]
+# SR-6 identity lint (src/mt_lint.rs): parses the crate's own sources
+# and enforces ZERO unmarked residuals for the multitenancy security
+# categories. Test-only — never linked into the server binary.
+syn = { version = "2", features = ["full", "visit"] }
+proc-macro2 = { version = "1", features = ["span-locations"] }
+quote = "1"
+
 [[bin]]
 name = "streams-slate"
 path = "src/main.rs"

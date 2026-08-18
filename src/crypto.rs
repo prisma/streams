@@ -233,6 +233,7 @@ pub fn unhex(s: &str) -> Option<Vec<u8>> {
         .collect()
 }
 
+// mt-lint: allow(name-param-shared-core): the layout hash PRIMITIVE; tenant qualification happens in the layout-4 constructors above it (callers are the audited stream-hash fingerprint category)
 pub fn stream_hash(name: &str) -> [u8; 16] {
     hash16(name.as_bytes())
 }

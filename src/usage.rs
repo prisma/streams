@@ -469,6 +469,7 @@ pub fn absorb_backlog_summary() -> (usize, u64) {
 /// is eligible — the interim sparse-deferral policy was deleted in
 /// R26-1 because an ineligible residual stalls the durable no-progress
 /// clock into the instance-wide maintenance latch.
+// mt-lint: allow(name-keyed-map): shard prefix -> pending-absorb summary
 static PENDING_SUMMARY: OnceLock<Mutex<HashMap<String, (u64, u64)>>> = OnceLock::new();
 
 pub fn set_absorb_pending_summary(shard_prefix: &str, eligible: u64, oldest_eligible_secs: u64) {
@@ -532,6 +533,7 @@ pub fn absorb_lag_max() -> u64 {
 /// chosen by stream_hash(name), so that mapping is simply wrong (ladder
 /// p6b D3: victim selection never matched, no move ever fired).
 fn shard_lag_map() -> &'static Mutex<HashMap<String, u64>> {
+    // mt-lint: allow(name-keyed-map): shard prefix -> absorb lag
     static M: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
     M.get_or_init(|| Mutex::new(HashMap::new()))
 }
