@@ -16892,7 +16892,18 @@ async fn shadow_mode_observes_without_enforcing() {
     })
     .unwrap();
 
-    let (state, addr) = http_rig_with_auth_service(mem(), svc.clone()).await;
+    let (state, addr) = http_rig_inner(
+        mem(),
+        vec!["00".to_string()],
+        crate::shard::ShardConfig::default(),
+        0,
+        Some("shadow-bearer".to_string()),
+        None,
+        None,
+        None,
+        Some(svc.clone()),
+    )
+    .await;
 
     #[derive(serde::Serialize)]
     struct Claims<'a> {
@@ -16933,22 +16944,36 @@ async fn shadow_mode_observes_without_enforcing() {
     )
     .unwrap();
 
-    // Valid customer token: observed ok, request succeeds (no legacy
-    // token configured on the rig — shadow must not change that).
-    let bearer = format!("Bearer {jwt}");
+    // SR-5 posture: shadow requires the CONFIGURED deployment bearer
+    // for authorization (allow-if-unset is Off-only now). Observation
+    // still runs in the wrapper BEFORE authorization, so every bearer
+    // shape is counted regardless of the legacy gate's verdict.
+    let legacy = ("authorization", "Bearer shadow-bearer");
     let (st, _, _) = preq(
         addr,
         "PUT",
+        "/v1/streams/shadow1",
+        &[("prisma-encryption-key", PRISMA_KEY), legacy],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "the deployment bearer authorizes in shadow");
+    // Valid customer token: observed ok; the legacy gate refuses it
+    // (shadow observes — enforce is what will accept it).
+    let bearer = format!("Bearer {jwt}");
+    let (st, _, _) = preq(
+        addr,
+        "GET",
         "/v1/streams/shadow1",
         &[
             ("prisma-encryption-key", PRISMA_KEY),
             ("authorization", &bearer),
         ],
-        br#"{"format":{"kind":"json"}}"#,
+        b"",
     )
     .await;
-    assert_eq!(st, 201);
-    // Garbage bearer: observed failed, request still succeeds.
+    assert_eq!(st, 401);
+    // Garbage bearer: observed failed, refused.
     let (st, _, _) = preq(
         addr,
         "GET",
@@ -16960,8 +16985,8 @@ async fn shadow_mode_observes_without_enforcing() {
         b"",
     )
     .await;
-    assert_eq!(st, 200);
-    // No bearer at all: observed missing.
+    assert_eq!(st, 401);
+    // No bearer at all: observed missing, refused.
     let (st, _, _) = preq(
         addr,
         "GET",
@@ -16970,15 +16995,17 @@ async fn shadow_mode_observes_without_enforcing() {
         b"",
     )
     .await;
-    assert_eq!(st, 200);
+    assert_eq!(st, 401);
 
     use std::sync::atomic::Ordering;
     assert_eq!(state.auth.shadow.ok.load(Ordering::Relaxed), 1);
-    assert_eq!(state.auth.shadow.failed.load(Ordering::Relaxed), 1);
+    // failed = the garbage bearer + the deployment bearer (a non-JWT
+    // passing through the observer).
+    assert_eq!(state.auth.shadow.failed.load(Ordering::Relaxed), 2);
     assert_eq!(state.auth.shadow.missing.load(Ordering::Relaxed), 1);
 
-    // Operator surface: mode, counters, feed freshness.
-    let (st, _, body) = preq(addr, "GET", "/v1/debug/auth", &[], b"").await;
+    // Operator surface: mode, counters, feed freshness (bearer-gated).
+    let (st, _, body) = preq(addr, "GET", "/v1/debug/auth", &[legacy], b"").await;
     assert_eq!(st, 200);
     let v: serde_json::Value = serde_json::from_slice(&body).unwrap();
     assert_eq!(v["shadow"]["mode"], "shadow");
@@ -19561,9 +19588,18 @@ async fn delete_stays_inside_the_requesting_project() {
 
     // D (deployment tenant) owns "orders" via the raw surface, SAME
     // encryption key as B — a different key would turn an identity bug
-    // into a 403 and hide the cross-project write.
+    // into a 403 and hide the cross-project write. The raw surface is
+    // internal under enforce (SR-5): stage as the fleet operator.
     let ct = [("content-type", "application/json")];
-    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/orders", &ct, br#"[{"d":1}]"#).await;
+    let fleet = ("authorization", "Bearer dst-internal-token");
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/orders",
+        &[ct[0], fleet],
+        br#"[{"d":1}]"#,
+    )
+    .await;
     assert!(st == 200 || st == 201, "raw create: {st}");
     // B owns "orders" via the product surface.
     let (st, _, _) = preq(
@@ -19741,7 +19777,16 @@ async fn transition_append_stays_inside_the_requesting_project() {
     let ct = [("content-type", "application/json")];
 
     // A (deployment tenant) owns "orders", alive and OPEN, same key.
-    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/orders", &ct, br#"[{"who":"a"}]"#).await;
+    // Raw is internal under enforce: stage as the fleet operator.
+    let fleet = ("authorization", "Bearer dst-internal-token");
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/orders",
+        &[ct[0], fleet],
+        br#"[{"who":"a"}]"#,
+    )
+    .await;
     assert!(st == 200 || st == 201, "raw create: {st}");
     // B owns "orders" on the product surface.
     let (st, _, b) = preq(
@@ -19802,7 +19847,7 @@ async fn transition_append_stays_inside_the_requesting_project() {
     // A's stream must contain none of B's bytes — and must still be
     // READABLE: today the adopted-descriptor append poisons A's
     // segment state badly enough that A's own read answers 500.
-    let (st, _, body) = hreq(addr, "GET", "/v1/stream/orders", &[], b"").await;
+    let (st, _, body) = hreq(addr, "GET", "/v1/stream/orders", &[fleet], b"").await;
     assert_eq!(
         st,
         200,
@@ -19831,8 +19876,10 @@ async fn stale_lineage_read_stays_inside_the_requesting_project() {
     let ct = [("content-type", "application/json")];
 
     // A (deployment tenant) owns "orders" and holds a segment id (1)
-    // that B's lineage does not know.
-    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/orders", &ct, b"[]").await;
+    // that B's lineage does not know. Raw is internal under enforce:
+    // stage as the fleet operator.
+    let fleet = ("authorization", "Bearer dst-internal-token");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/orders", &[ct[0], fleet], b"[]").await;
     assert!(st == 200 || st == 201, "raw create: {st}");
     state
         .registry
@@ -19863,7 +19910,7 @@ async fn stale_lineage_read_stays_inside_the_requesting_project() {
         addr,
         "POST",
         "/v1/stream/orders",
-        &ct,
+        &[ct[0], fleet],
         br#"[{"who":"a-secret"}]"#,
     )
     .await;
@@ -19988,8 +20035,10 @@ async fn ttl_slide_stays_inside_the_owning_project() {
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let ct = [("content-type", "application/json")];
 
-    // D (deployment) owns a same-named stream WITHOUT a TTL.
-    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/orders", &ct, b"[]").await;
+    // D (deployment) owns a same-named stream WITHOUT a TTL. Raw is
+    // internal under enforce: stage as the fleet operator.
+    let fleet = ("authorization", "Bearer dst-internal-token");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/orders", &[ct[0], fleet], b"[]").await;
     assert!(st == 200 || st == 201);
     // B owns "orders" with a TTL whose window is nearly exhausted.
     let (st, _, _) = preq(
