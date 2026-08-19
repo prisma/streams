@@ -18,6 +18,7 @@
 // regressed/drifted/resurrected feed publications refused, operation-
 // scoped workload JWTs, per-cell workload rotation.
 import { spawn, execSync } from "node:child_process";
+import { createHash } from "node:crypto";
 import { mkdtempSync, readFileSync } from "node:fs";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -84,6 +85,8 @@ const cellEnv = (cellId, dir, refreshSecs) => {
     CELL_ID: cellId,
     PROJECT_ID: "proj-deploy-e2e",
     USAGE_STREAM_KEY: KEY_B64,
+    OUTBOX_SWEEP_SECS: "2", // §15 item 7: reconciliation leg polls the rollup
+    ROLLUP: "1",             // single-instance cells host their own rollup consumer
   };
   delete env.FLEET_INTERNAL_TOKEN;
   return env;
@@ -121,10 +124,10 @@ const gwBase = `http://127.0.0.1:${GW_PORT}`;
 const aBase = `http://127.0.0.1:${A_PORT}`;
 const bBase = `http://127.0.0.1:${B_PORT}`;
 const cBase = `http://127.0.0.1:${C_PORT}`;
-const mkCred = async (pid, name) =>
+const mkCred = async (pid, name, scopes) =>
   j(await sfetch(`${emuBase}/v1/projects/${pid}/streams/credentials`, {
     method: "POST", headers: { "content-type": "application/json" },
-    body: JSON.stringify({ displayName: name }),
+    body: JSON.stringify({ displayName: name, ...(scopes ? { scopes } : {}) }),
   }));
 const exchange = (secret) =>
   sfetch(`${emuBase}/v1/token/streams`, { method: "POST", headers: { authorization: `StreamsCredential ${secret}` } });
@@ -300,6 +303,33 @@ check("retired-kid resurrection refused: old-kid token stays dead", (await readR
 check("refused snapshot does not clobber good state: current-kid token still serves",
   (await readRecords(bBase, "e2e/orders", tokB2.body.accessToken)).status === 200);
 
+// ---- §15 item 7: billing reconciliation through the usage surface ---------
+// proj-b (workspace never changed — rows land under workspace-at-event,
+// so the transferred project would legitimately read zero) appended one
+// record earlier; the outbox sweeps every 2s here, the rollup applies
+// every 2s, so the project row must show ingest bytes within ~20s.
+const credU = await mkCred("proj-b", "usage probe",
+  ["streams.usage.read", "streams.records.append", "streams.records.read"]);
+const tokU = await j(await exchange(credU.body.secret));
+await sleep(1500);
+let usage = null;
+let lastProbe = "";
+for (let i = 0; i < 15; i++) {
+  const r = await sfetch(`${gwBase}/v1/projects/proj-b/usage`, { headers: { authorization: `Bearer ${tokU.body.accessToken}` } });
+  const text = await r.text().catch(() => "");
+  lastProbe = `status ${r.status} body ${text.slice(0, 300)}`;
+  if (r.status === 200) {
+    const bodyU = JSON.parse(text || "null");
+    if (bodyU && Number(bodyU.ingestPayloadBytes) > 0) { usage = bodyU; break; }
+  }
+  await sleep(1500);
+}
+check("usage rollup reconciles the project's ingest (billing surface)",
+  usage !== null && usage.projectId === "proj-b" && usage.accountId === "ws-b",
+  lastProbe);
+const foreignUsage = await sfetch(`${bBase}/v1/projects/proj-e2e/usage`, { headers: { authorization: `Bearer ${tokU.body.accessToken}` } });
+check("foreign-project usage probe answers 404 (no grammar oracle)", foreignUsage.status === 404, `status ${foreignUsage.status}`);
+
 // ---- Operation-scoped workload identity -----------------------------------
 const wlNone = await j(await sfetch(`${emuBase}/admin/mint-workload`, {
   method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify({ cell: "cell-a", operations: [] }),
@@ -330,5 +360,8 @@ async function streamCreateRaw(base, name, token) {
 }
 
 kill();
+// §15 item 8: record the exact server binary and contract version the
+// battery certified.
+const binDigest = createHash("sha256").update(readFileSync("./target/release/streams-slate")).digest("hex");
 if (failures) { console.error(`PLATFORM_E2E_FAIL (${failures})`); process.exit(1); }
-console.log("PLATFORM_E2E_OK");
+console.log(`PLATFORM_E2E_OK binary=sha256:${binDigest} contract=streams-platform/v1`);

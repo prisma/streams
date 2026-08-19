@@ -35,7 +35,7 @@ The end-to-end battery (`node scripts/platform-e2e.mjs`) starts the
 emulator, the gateway, and THREE REAL `streams-slate` cells under the
 full release posture (`STREAMS_AUTH_MODE=enforce`,
 `FLEET_AUTH_MODE=workload`, `STREAMS_RELEASE_POSTURE=1`, no static
-fleet token) and proves the §14.5 scenario families — 43 checks:
+fleet token) and proves the §14.5 scenario families — 45 checks:
 
 - **Credential lifecycle** (through the gateway): secret-shown-once,
   wrong-secret refusal, exchange, SDK create/append/read via
@@ -63,6 +63,12 @@ fleet token) and proves the §14.5 scenario families — 43 checks:
 - **Fleet identity**: operation-scoped workload JWTs (empty operations
   grant nothing), customer tokens refused on the internal surface,
   per-cell atomic workload rotation.
+- **Billing reconciliation** (§15 item 7): each cell runs its own
+  usage rollup (`ROLLUP=1`, 2s outbox sweep); the usage API reports
+  the project's ingest under its workspace-at-event, and a verified
+  principal probing a foreign project's usage gets the deliberate
+  404 no-grammar-oracle shape. The receipt line records the exact
+  server binary digest and contract version (§15 item 8).
 
 V1 notes (deliberate scope):
 - plain ESM JavaScript for a zero-build first version; the TypeScript
