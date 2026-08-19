@@ -126,8 +126,15 @@ pub fn parse_keys(json: &str, now: i64) -> anyhow::Result<JwksSnapshot> {
             other => anyhow::bail!("kid {:?}: alg {other:?} is not in [RS256, EdDSA]", k.kid),
         };
         anyhow::ensure!(
-            keys.insert(k.kid.clone(), crate::auth::JwksKey { alg, key: dk })
-                .is_none(),
+            keys.insert(
+                k.kid.clone(),
+                crate::auth::JwksKey {
+                    alg,
+                    key: dk,
+                    fp: crate::auth::key_fp(k.pem.as_bytes()),
+                },
+            )
+            .is_none(),
             "duplicate kid {:?}",
             k.kid
         );

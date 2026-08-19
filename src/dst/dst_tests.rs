@@ -17085,6 +17085,7 @@ async fn shadow_mode_observes_without_enforcing() {
         crate::auth::JwksKey {
             alg: jsonwebtoken::Algorithm::RS256,
             key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
         },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
@@ -17284,6 +17285,7 @@ async fn enforce_mode_gates_the_product_surface() {
         crate::auth::JwksKey {
             alg: jsonwebtoken::Algorithm::RS256,
             key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
         },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
@@ -17893,6 +17895,7 @@ async fn project_rate_quota_backstop_answers_429() {
         crate::auth::JwksKey {
             alg: jsonwebtoken::Algorithm::RS256,
             key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
         },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
@@ -18036,6 +18039,7 @@ async fn volume_quotas_meter_appends_and_reads() {
         crate::auth::JwksKey {
             alg: jsonwebtoken::Algorithm::RS256,
             key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
         },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
@@ -18232,6 +18236,7 @@ async fn one_cell_serves_two_projects_with_full_isolation() {
         crate::auth::JwksKey {
             alg: jsonwebtoken::Algorithm::RS256,
             key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
         },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
@@ -18441,6 +18446,7 @@ async fn noisy_neighbor_cannot_degrade_a_compliant_project() {
         crate::auth::JwksKey {
             alg: jsonwebtoken::Algorithm::RS256,
             key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
         },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
@@ -18691,6 +18697,7 @@ async fn same_name_cross_project_usage_attributes_exactly() {
         crate::auth::JwksKey {
             alg: jsonwebtoken::Algorithm::RS256,
             key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
         },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
@@ -18909,6 +18916,7 @@ async fn invoice_reconciliation_balances_and_detects_corruption() {
         crate::auth::JwksKey {
             alg: jsonwebtoken::Algorithm::RS256,
             key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
         },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
@@ -19160,6 +19168,7 @@ async fn enforce_denials_journal_to_audit_events() {
         crate::auth::JwksKey {
             alg: jsonwebtoken::Algorithm::RS256,
             key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
         },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
@@ -19459,6 +19468,7 @@ async fn shared_cell_certification_smoke() {
         crate::auth::JwksKey {
             alg: jsonwebtoken::Algorithm::RS256,
             key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
         },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
@@ -19735,6 +19745,7 @@ async fn delete_stays_inside_the_requesting_project() {
         crate::auth::JwksKey {
             alg: jsonwebtoken::Algorithm::RS256,
             key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
         },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
@@ -19914,6 +19925,7 @@ async fn sr_rig(
         crate::auth::JwksKey {
             alg: jsonwebtoken::Algorithm::RS256,
             key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
         },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
@@ -27525,6 +27537,7 @@ async fn dab_rig(
         crate::auth::JwksKey {
             alg: jsonwebtoken::Algorithm::RS256,
             key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
         },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
@@ -28438,6 +28451,7 @@ async fn jwt_only_fleet_relay_succeeds() {
         crate::auth::JwksKey {
             alg: jsonwebtoken::Algorithm::RS256,
             key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
         },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
@@ -28551,6 +28565,7 @@ async fn rotated_workload_jwt_refreshes_and_retries() {
         crate::auth::JwksKey {
             alg: jsonwebtoken::Algorithm::RS256,
             key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
         },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
@@ -28670,6 +28685,7 @@ async fn quota_rig(
         crate::auth::JwksKey {
             alg: jsonwebtoken::Algorithm::RS256,
             key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
         },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
@@ -29019,6 +29035,7 @@ async fn static_token_is_dead_in_workload_mode() {
         crate::auth::JwksKey {
             alg: jsonwebtoken::Algorithm::RS256,
             key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
         },
     );
     svc.publish_jwks(crate::auth::JwksSnapshot {
@@ -29296,4 +29313,129 @@ async fn max_streams_transition_seeds_from_reality() {
         String::from_utf8_lossy(&b)
     );
     engine_shutdown(&state).await;
+}
+
+#[test]
+fn jwks_kid_lifecycle_rules() {
+    const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
+    let svc = crate::auth::AuthService::new(
+        crate::auth::AuthMode::Enforce,
+        "https://auth.prisma.io".into(),
+        "test-cell",
+    )
+    .unwrap();
+    let key = |pem: &str| crate::auth::JwksKey {
+        alg: jsonwebtoken::Algorithm::RS256,
+        key: jsonwebtoken::DecodingKey::from_rsa_pem(pem.as_bytes()).unwrap(),
+        fp: crate::auth::key_fp(pem.as_bytes()),
+    };
+    let snap = |ver: u64, kids: &[&str]| {
+        let mut keys = std::collections::HashMap::new();
+        for k in kids {
+            keys.insert(k.to_string(), key(PUB));
+        }
+        crate::auth::JwksSnapshot {
+            keys,
+            fetched_at_unix: 1_000_000,
+            feed_version: ver,
+        }
+    };
+    // Overlap rotation: {A} -> {A,B} -> {B}: all accepted.
+    svc.publish_jwks(snap(1, &["kid-a"])).unwrap();
+    svc.publish_jwks(snap(2, &["kid-a", "kid-b"])).unwrap();
+    svc.publish_jwks(snap(3, &["kid-b"])).unwrap();
+    // Identical generation replay: accepted.
+    svc.publish_jwks(snap(3, &["kid-b"])).unwrap();
+    // Same generation, different key SET: refused.
+    assert!(
+        svc.publish_jwks(snap(3, &["kid-b", "kid-c"])).is_err(),
+        "same generation with a different key set must refuse"
+    );
+    // Retired kid reintroduced at a HIGHER generation: refused.
+    assert!(
+        svc.publish_jwks(snap(4, &["kid-a", "kid-b"])).is_err(),
+        "a retired kid must never return"
+    );
+    // Same kid, DIFFERENT key material: refused. (A second RSA key is
+    // synthesized by fingerprint tampering at the type level being
+    // impossible — so use the ed25519 test key's PEM as different
+    // material under the same kid.)
+    let mut keys = std::collections::HashMap::new();
+    let mut k = key(PUB);
+    k.fp = crate::auth::key_fp(b"different-material");
+    keys.insert("kid-b".to_string(), k);
+    let r = svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys,
+        fetched_at_unix: 1_000_000,
+        feed_version: 5,
+    });
+    assert!(r.is_err(), "kid rebound to different material must refuse");
+    // Fresh kid at a new generation still works (rotation continues).
+    svc.publish_jwks(snap(6, &["kid-b", "kid-d"])).unwrap();
+}
+
+/// Round-3 finding (feeds): an entry ADDED under an already-published
+/// generation is refused by the generation digest — per-ID checks
+/// alone cannot see it.
+#[test]
+fn same_feed_generation_cannot_gain_entries() {
+    let svc = crate::auth::AuthService::new(
+        crate::auth::AuthMode::Enforce,
+        "https://auth.prisma.io".into(),
+        "test-cell",
+    )
+    .unwrap();
+    let proj = |ids: &[&str]| {
+        let mut m = std::collections::HashMap::new();
+        for id in ids {
+            let pid = crate::tenant::ProjectId::new(id).unwrap();
+            m.insert(
+                pid.clone(),
+                crate::project_policy::ProjectPolicy {
+                    project_id: pid,
+                    workspace_id: crate::tenant::WorkspaceId::new("ws-g").unwrap(),
+                    cell_id: std::sync::Arc::from("test-cell"),
+                    project_policy_version: 1,
+                    ownership_version: 1,
+                    status: crate::project_policy::ProjectStatus::Active,
+                    quotas: crate::project_policy::ProjectQuotas::default(),
+                },
+            );
+        }
+        crate::project_policy::PolicySnapshot {
+            projects: m,
+            fetched_at_unix: 1_000_000,
+            feed_version: 9,
+        }
+    };
+    svc.publish_policies(proj(&["proj-ga"])).unwrap();
+    // Identical replay of generation 9: fine.
+    svc.publish_policies(proj(&["proj-ga"])).unwrap();
+    // Generation 9 grows a NEW project: refused.
+    assert!(
+        svc.publish_policies(proj(&["proj-ga", "proj-gb"])).is_err(),
+        "an entry added under a published generation must refuse"
+    );
+}
+
+/// RED (round-3 hardening): an unknown-kid nudge fired BETWEEN two
+/// refresher iterations must not be lost. notify_one stores a permit
+/// for the next waiter; notify_waiters does not — the nudge
+/// evaporated and the rotated key waited out the polling interval.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn kid_nudge_fired_before_the_waiter_is_not_lost() {
+    let svc = crate::auth::AuthService::new(
+        crate::auth::AuthMode::Enforce,
+        "https://auth.prisma.io".into(),
+        "test-cell",
+    )
+    .unwrap();
+    assert!(svc.request_kid_refresh(), "the nudge fires");
+    // The refresher arrives LATE: the stored permit must wake it.
+    tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        svc.kid_wakeup.notified(),
+    )
+    .await
+    .expect("a pre-fired nudge must wake a late waiter (permit stored)");
 }

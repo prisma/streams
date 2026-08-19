@@ -233,6 +233,19 @@ pub struct InternalPrincipal {
 pub struct JwksKey {
     pub alg: Algorithm,
     pub key: DecodingKey,
+    /// SR3-3: canonical fingerprint of the key MATERIAL (sha256 of the
+    /// PEM bytes, computed at parse). A `kid` names one algorithm and
+    /// one public key FOREVER — same kid + different fp is a publisher
+    /// defect and the snapshot is refused.
+    pub fp: [u8; 32],
+}
+
+/// SR3-3: the key-material fingerprint stored per kid.
+pub fn key_fp(pem: &[u8]) -> [u8; 32] {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(pem);
+    h.finalize().into()
 }
 
 pub struct JwksSnapshot {
@@ -370,6 +383,27 @@ struct HighWater {
     // mt-lint: allow(name-keyed-map): credential id (feed high-water table)
     credentials: std::collections::HashMap<Arc<str>, CredHw>,
     c_order: std::collections::VecDeque<Arc<str>>,
+    /// SR3-3: every kid EVER seen, with its material fingerprint and
+    /// whether it has been retired (omitted from a full snapshot). A
+    /// retired kid never returns, at ANY generation; a known kid never
+    /// changes material.
+    // mt-lint: allow(name-keyed-map): JWKS key id (kid), not stream identity
+    kids: std::collections::HashMap<String, KidHw>,
+    k_order: std::collections::VecDeque<String>,
+    /// SR3-3: per-feed (generation, canonical digest) of the LAST
+    /// accepted snapshot — the same generation must always carry the
+    /// same digest (catches an entry ADDED under a published
+    /// generation, which per-ID checks cannot see).
+    jwks_gen: Option<(u64, [u8; 32])>,
+    policy_gen: Option<(u64, [u8; 32])>,
+    grant_gen: Option<(u64, [u8; 32])>,
+}
+
+#[derive(Clone)]
+struct KidHw {
+    fp: [u8; 32],
+    alg_dbg: String,
+    retired: bool,
 }
 
 /// Canonical semantic fingerprint. Debug formatting is deterministic
@@ -434,6 +468,77 @@ impl AuthService {
         if snapshot.feed_version < cur.feed_version {
             return Err("jwks feed_version regressed");
         }
+        // SR3-3 (round-3 finding 3): signing-key lifecycle rules —
+        //   * a kid names ONE algorithm and ONE public key forever;
+        //   * once omitted from a full snapshot, a kid is RETIRED and
+        //     never returns, at ANY later generation;
+        //   * the same generation always carries the same canonical
+        //     digest (identical replay ok; content drift refused).
+        // ALL checks run before ANY mutation.
+        let digest = {
+            use sha2::Digest;
+            let mut kids: Vec<_> = snapshot
+                .keys
+                .iter()
+                .map(|(k, v)| (k.clone(), format!("{:?}", v.alg), v.fp))
+                .collect();
+            kids.sort();
+            let mut h = sha2::Sha256::new();
+            for (k, a, fp) in &kids {
+                h.update(k.as_bytes());
+                h.update([0u8]);
+                h.update(a.as_bytes());
+                h.update([0u8]);
+                h.update(fp);
+            }
+            let out: [u8; 32] = h.finalize().into();
+            out
+        };
+        let mut hw = self.high_water.lock().unwrap();
+        if let Some((g, d)) = hw.jwks_gen
+            && snapshot.feed_version == g
+            && digest != d
+        {
+            return Err("same jwks generation with a different key set");
+        }
+        for (kid, key) in &snapshot.keys {
+            if let Some(k) = hw.kids.get(kid.as_str()) {
+                if k.retired {
+                    return Err("retired kid reintroduced (SR3 tombstone)");
+                }
+                if k.fp != key.fp || k.alg_dbg != format!("{:?}", key.alg) {
+                    return Err("kid rebound to different key material");
+                }
+            }
+        }
+        for (kid, key) in &snapshot.keys {
+            if !hw.kids.contains_key(kid.as_str()) {
+                if hw.kids.len() >= HIGH_WATER_MAX
+                    && let Some(old) = hw.k_order.pop_front()
+                {
+                    hw.kids.remove(&old);
+                }
+                hw.kids.insert(
+                    kid.clone(),
+                    KidHw {
+                        fp: key.fp,
+                        alg_dbg: format!("{:?}", key.alg),
+                        retired: false,
+                    },
+                );
+                hw.k_order.push_back(kid.clone());
+            }
+        }
+        // Retire every kid the FULL snapshot dropped.
+        for kid in cur.keys.keys() {
+            if !snapshot.keys.contains_key(kid)
+                && let Some(k) = hw.kids.get_mut(kid.as_str())
+            {
+                k.retired = true;
+            }
+        }
+        hw.jwks_gen = Some((snapshot.feed_version, digest));
+        drop(hw);
         self.jwks.store(Arc::new(snapshot));
         self.unknown_kid_seen.store(0, Ordering::Relaxed);
         Ok(())
@@ -451,6 +556,24 @@ impl AuthService {
         // IDENTICAL content. ALL checks run before ANY mutation — a
         // refused snapshot leaves no trace.
         let mut hw = self.high_water.lock().unwrap();
+        // SR3-3: the same policy generation must carry the same
+        // canonical digest — a NEW project slipped under an
+        // already-published generation is invisible to per-ID checks.
+        let digest = {
+            let mut rows: Vec<_> = snapshot
+                .projects
+                .values()
+                .map(|p| format!("{p:?}"))
+                .collect();
+            rows.sort();
+            feed_fp(&rows)
+        };
+        if let Some((g, d)) = hw.policy_gen
+            && snapshot.feed_version == g
+            && digest != d
+        {
+            return Err("same policy generation with different content");
+        }
         for (pid, np) in &snapshot.projects {
             if let Some(e) = hw.projects.get(pid) {
                 if np.ownership_version < e.o_hw {
@@ -533,6 +656,7 @@ impl AuthService {
                 ));
             }
         }
+        hw.policy_gen = Some((snapshot.feed_version, digest));
         drop(hw);
         self.projects.store(Arc::new(snapshot));
         Ok(())
@@ -549,6 +673,22 @@ impl AuthService {
         // STRICTLY newer grant_version than any version it was ever
         // seen dead at can reactivate it.
         let mut hw = self.high_water.lock().unwrap();
+        // SR3-3: generation digest, as for policies.
+        let digest = {
+            let mut rows: Vec<_> = snapshot
+                .credentials
+                .values()
+                .map(|c| format!("{c:?}"))
+                .collect();
+            rows.sort();
+            feed_fp(&rows)
+        };
+        if let Some((g, d)) = hw.grant_gen
+            && snapshot.feed_version == g
+            && digest != d
+        {
+            return Err("same grant generation with different content");
+        }
         for (id, nc) in &snapshot.credentials {
             if let Some(e) = hw.credentials.get(id.as_ref()) {
                 if nc.grant_version < e.v_hw {
@@ -633,6 +773,7 @@ impl AuthService {
                 );
             }
         }
+        hw.grant_gen = Some((snapshot.feed_version, digest));
         drop(hw);
         self.credentials.store(Arc::new(snapshot));
         Ok(())
@@ -655,7 +796,11 @@ impl AuthService {
         {
             return false; // a concurrent sighting won the nudge
         }
-        self.kid_wakeup.notify_waiters();
+        // SR3-5: notify_one STORES a permit when no task is waiting —
+        // notify_waiters does not, so an unknown-kid sighting landing
+        // between two refresher iterations was silently lost and fell
+        // back to the polling interval.
+        self.kid_wakeup.notify_one();
         true
     }
 
@@ -1102,6 +1247,7 @@ mod tests {
             JwksKey {
                 alg: Algorithm::RS256,
                 key: DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+                fp: crate::auth::key_fp(PUB.as_bytes()),
             },
         );
         svc.publish_jwks(JwksSnapshot {
@@ -1334,6 +1480,9 @@ mod tests {
                 // publisher defect and the feed refuses it.
                 p.project_policy_version += 1;
             }
+            // SR3-3: content change also means a NEW feed generation —
+            // the same generation must always carry the same digest.
+            snap.feed_version += 1;
             svc.publish_policies(snap).unwrap();
             assert_eq!(
                 svc.verify_customer(&sign(&claims()), NOW).unwrap_err(),
@@ -1632,6 +1781,7 @@ mod tests {
             JwksKey {
                 alg: Algorithm::RS256,
                 key: DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+                fp: crate::auth::key_fp(PUB.as_bytes()),
             },
         );
         assert!(
@@ -1654,19 +1804,29 @@ mod tests {
     /// EdDSA must refuse.
     #[test]
     fn header_alg_must_match_the_keys_pinned_alg() {
-        let svc = service();
+        // SR3-3 note: kid permanence means the SAME kid can no longer
+        // be republished under a different pinned alg — so this pin
+        // mismatch is staged on a FRESH service as the kid's first
+        // and only binding.
+        let svc = AuthService::new(
+            AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap();
         let mut keys = HashMap::new();
         keys.insert(
             KID.to_string(),
             JwksKey {
                 alg: Algorithm::EdDSA, // pinned differently
                 key: DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+                fp: crate::auth::key_fp(PUB.as_bytes()),
             },
         );
         svc.publish_jwks(JwksSnapshot {
             keys,
             fetched_at_unix: NOW,
-            feed_version: 2,
+            feed_version: 1,
         })
         .unwrap();
         assert_eq!(

@@ -286,9 +286,11 @@ impl<'a, 'ast> Visit<'ast> for Lint<'a> {
         if let syn::Member::Named(m) = &f.member
             && m == "tenant"
         {
-            let recv = norm_type(&f.base);
-            if (recv == "state" || recv == "st" || recv == "self" || recv.ends_with(".state"))
-                && !self.fn_stack.iter().any(|n| n == "raw_adapter_sref")
+            // Round-3: RECEIVER-BLIND — any field access named `tenant`
+            // counts, whatever the variable is called (`app.tenant`,
+            // `ctx.tenant`, ...). The legitimate set is tiny and every
+            // member carries a marker.
+            if !self.fn_stack.iter().any(|n| n == "raw_adapter_sref")
                 && !self.marker(m.span().start().line, "state-tenant-read")
             {
                 self.flag(
