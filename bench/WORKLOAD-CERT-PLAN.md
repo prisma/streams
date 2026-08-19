@@ -112,17 +112,40 @@ harness.
 3. Instance tier: **1 GiB is the only tier** — L4 dropped; the verdict
    is expressed as K × 1-GiB instances (or named slimming work).
 
-Early P0/P1 measurements (same day):
-- Fresh-instance sub-capacity control: **0.000% shed** in 90,980
-  attempts (505 rps, p50 75 ms) — the W4 target is measurable and the
-  warm-shed is an accumulation effect (leg 2 characterizes it).
-- Parked-subscription cost, local 10k ladder: first-rung 6.8 KB/sub
-  including one-time pools; **marginal ~1.3 KB/sub** (5k→10k rung).
-  At the margin, 1M subs ≈ 1.3 GB spread over ~3 instances by memory
-  — field L2 (musl + real edge) decides the honest S_max.
-- Fan-out shape: appends into a 1,000-parked-subscriber stream ack in
-  5–24 ms (fan-out is off the write path); 5,000 deliveries cost
-  ~176 KB transient.
+P0/P1 results (2026-08-19; the earlier same-day bullet claiming
+~1.3 KB/sub was a PROBE BUG — it measured idle keep-alive connections;
+the product surface takes `:sse` as a COLON VERB, and a plain read at
+tail returns `[]` immediately. Corrected below, all on true `:sse`):
+
+- **P0 CLEARED**: sub-capacity shed is 0.000% on a FRESH instance
+  (90,980 attempts, 505 rps, p50 75 ms) AND on a WARM one (after a
+  10-min capacity burn: 0.000%, p50 76 ms). The one 30%-shed
+  observation followed a much heavier 7-stage/2M-append accumulation
+  and did not reproduce; suspected mechanism is absorber catch-up
+  reservations against the shed line in the post-overload recovery
+  window — a watch-item for L1/L3, not an open gate.
+- **True parked-SSE cost: ~55–70 KB resident per subscription**
+  (5k rung: +276 MB; 10k rung: 780 MB total RSS). Each subscription
+  spawns a dedicated tokio task whose async state machine inlines two
+  large read branches and captures its own StreamDesc clone, plus a
+  64-slot Bytes channel. Consequence: **S_max(1 GiB) ≈ 8–9k parked
+  subscriptions today**, and crossing it sheds WRITES (observed
+  directly: at ~21k local subs the marker append got 429) — parked
+  subscribers spend the same shed-line budget writes need.
+  1M subscribers at current cost ≈ 110+ instances.
+- **Named slimming items** (the deciding lever, est. 5–15× cheaper):
+  (1) Box::pin the two read branches so the parked future is small;
+  (2) share one Arc<StreamDesc> per stream instead of a clone per
+  subscription; (3) channel 64→8 slots (also caps worst-case queued
+  frames per slow subscriber 64 KiB→8 KiB); (4) longer-term: one
+  reader task PER STREAM fanning to N subscriber channels — collapses
+  per-sub cost to channel+response state (~2–4 KB), putting 1M in the
+  4–8 instance range.
+- **Fan-out latency is a non-issue at the workload's shape**: 1,000
+  subscribers on one stream all received an appended marker with
+  lag p50 23 ms / p99 33 ms from append start (append ack 32 ms);
+  tail-parking is a shared per-stream Notify (no busy-poll), and
+  appends into 1,000-parked-sub streams ack in 5–24 ms.
 
 ## 4. Superseded: original asks
 
