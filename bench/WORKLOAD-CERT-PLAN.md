@@ -186,6 +186,23 @@ gather I/O off the commit runtime. Acceptance: L1d3 posture reruns
 at ≤ 0.1% shed with absorb_lag bounded, plus a deterministic DST
 regression pinning append p99 during a forced sparse-absorption wave.
 
+Post-verdict runs (overnight 2026-08-20): L1d5 (same posture as
+L1d3) = **0.85%** — run-to-run variance on the best posture is
+0.85–1.56%, so the fix's acceptance is the LAG CORRELATION vanishing,
+not a lucky absolute. L1d6 (SLATEDB_RT_THREADS=4) = 5.38% — more
+slatedb runtime threads do NOT remove the stalls (and cannot be
+distinguished from harm at N=1), falsifying thread starvation and
+leaving slatedb-INTERNAL serialization between the gather read path
+and WAL writes as the mechanism. The new DST gate
+(sparse_absorption_wave_bounds_append_latency) EXONERATES the
+streams-side committer lane and tokio runtime: baseline p99 21 ms vs
+during-wave 24 ms. Every zero-code axis is now mapped: memory diet,
+shard count, admit headroom, absorber deferral, slatedb threads.
+The fix is OUR-side gather micro-pacing — split sweeps into small
+per-pass slices with append windows between, bounding any
+slatedb-internal serialization to one micro-pass — plus the committed
+DST gate as the permanent regression.
+
 W2 interim verdict: **1,000 wps over 10k tenants runs at 1.56% shed
 on the best documented posture — fails the 0.1% gate pending the
 absorber item.** L2/L3 (subscribers) wait behind it: they inherit the
