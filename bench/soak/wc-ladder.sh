@@ -144,8 +144,10 @@ deploy server \
   --env LIMIT_RECS_PER_SEC=100000 \
   --env ABSORB_BYTES=${WC_ABSORB_BYTES:-4194304} --env ABSORB_AGE_SECS=${WC_ABSORB_AGE:-60} \
   --env ABSORB_PASS_BYTES=${WC_ABSORB_PASS:-67108864} --env TRIM_PER_OP=65536 \
+  --env ABSORB_PACE_EVERY=${WC_PACE_EVERY:-32} --env ABSORB_PACE_MS=${WC_PACE_MS:-5} \
   --env POOL_IDLE_SECS=4 --env KEEP_AWAKE=1 --env CELL_ID="$CELL" \
   --env PROJECT_ID=proj-mt-deploy \
+  --env SLATEDB_RT_THREADS=${WC_SLATE_RT:-2} \
   --env STREAMS_AUTH_MODE=enforce \
   --env STREAMS_AUTH_ISSUER=https://auth.prisma.io \
   --env STREAMS_AUTH_KEYS_FILE=/tmp/feeds/keys.json \

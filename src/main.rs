@@ -343,6 +343,15 @@ struct Args {
     #[arg(long, env = "ABSORB_GATHER_MAX_BYTES", default_value_t = 32 * 1024 * 1024)]
     absorb_gather_max_bytes: usize,
 
+    /// Duty-cycle the gather read phase: after this many frame reads the
+    /// gather parks ABSORB_PACE_MS so append WAL writes queued behind the
+    /// reads inside SlateDB drain (0 = unpaced). Bounds the absorber's
+    /// append-latency impact at sparse-many-stream shapes (#266).
+    #[arg(long, env = "ABSORB_PACE_EVERY", default_value_t = 32)]
+    absorb_pace_every: usize,
+    #[arg(long, env = "ABSORB_PACE_MS", default_value_t = 5)]
+    absorb_pace_ms: u64,
+
     /// Conformance/dev only: use this stream key (base64url, 32 bytes) for
     /// requests that carry no Stream-Encryption-Key header. The upstream
     /// conformance suite cannot send custom headers.
@@ -1472,6 +1481,8 @@ async fn async_main() -> anyhow::Result<()> {
         let absorb_age = args.absorb_age_secs;
         let absorb_pass_bytes = args.absorb_pass_bytes;
         let absorb_concurrency = args.absorb_concurrency;
+        let absorb_pace_every = args.absorb_pace_every;
+        let absorb_pace_ms = args.absorb_pace_ms;
         let absorb_small_bytes = args.absorb_small_bytes;
         // Startup invariant (OOM disposition 2): the per-gather packing
         // cap must fit the process budget after the build multiplier,
@@ -1614,6 +1625,8 @@ async fn async_main() -> anyhow::Result<()> {
                             concurrency: absorb_concurrency,
                             small_pass_bytes: absorb_small_bytes,
                             gather_max_bytes: absorb_gather_max_bytes,
+                            gather_pace_every: absorb_pace_every,
+                            gather_pace: Duration::from_millis(absorb_pace_ms),
                             ..Default::default()
                         },
                         absorb_rx,

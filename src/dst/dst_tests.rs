@@ -3215,6 +3215,104 @@ async fn wait_all_absorbed(engine: &Arc<crate::shard::ShardEngine>, hashes: &[[u
 }
 
 /// P0 (static audit): the v2 gather previously accumulated up to
+/// #266 pacing pin: with gather micro-pacing configured, a wide sparse
+/// gather (a) still settles exactly the same streams to exactly the
+/// same boundaries as an unpaced one, and (b) actually parks between
+/// frame reads — the duty cycle is real, not a dead knob. The parks are
+/// hard sleeps, so the elapsed lower bound is deterministic even on a
+/// loaded runner; no upper bound is asserted (that would flake). The
+/// FIELD effect (append shed under real SlateDB contention) is
+/// validated by the L1 certification ladder, not reproducible against
+/// an in-memory store.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gather_pacing_preserves_outcomes_and_opens_windows() {
+    const N: usize = 96;
+    let key = skey();
+    let mk_hashes = || -> Vec<[u8; 16]> {
+        (0..N)
+            .map(|i| {
+                let mut h = [0u8; 16];
+                h[0] = 0xA8;
+                h[1] = (i / 256) as u8;
+                h[2] = (i % 256) as u8;
+                h
+            })
+            .collect()
+    };
+    // Two rigs, identical data shape, differing ONLY in pacing.
+    let rig = |path: &'static str, cfg: crate::history::AbsorberConfig| {
+        let key = key.clone();
+        let hashes = mk_hashes();
+        async move {
+            let store = mem();
+            let db = slatedb::Db::builder(path, store.clone() as Arc<dyn ObjectStore>)
+                .with_settings(slatedb::config::Settings {
+                    flush_interval: Some(std::time::Duration::from_millis(5)),
+                    manifest_poll_interval: std::time::Duration::from_millis(50),
+                    ..Default::default()
+                })
+                .build()
+                .await
+                .expect("open db");
+            let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+            let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+                .await
+                .expect("load maintenance");
+            let engine = crate::shard::ShardEngine::start(
+                path.to_string(),
+                Arc::new(db),
+                store.clone(),
+                crate::shard::ShardConfig::default(),
+                absorb_tx,
+                None,
+                __maint,
+            );
+            for h in &hashes {
+                append_sized(&engine, *h, &key, "", 2048).await;
+            }
+            let absorber = crate::history::Absorber::new(
+                store.clone(),
+                engine.clone(),
+                Arc::new(crate::history::KeyCache::default()),
+                cfg,
+            );
+            let t0 = std::time::Instant::now();
+            let outcome = absorber.absorb_gather_v2(&hashes).await.expect("gather");
+            let mut advanced: Vec<([u8; 16], u64)> = outcome
+                .advanced
+                .iter()
+                .map(|(h, upto, _)| (*h, *upto))
+                .collect();
+            advanced.sort_unstable();
+            (advanced, t0.elapsed(), engine)
+        }
+    };
+
+    let paced_cfg = crate::history::AbsorberConfig {
+        gather_pace_every: 8,
+        gather_pace: std::time::Duration::from_millis(4),
+        ..Default::default()
+    };
+    let unpaced_cfg = crate::history::AbsorberConfig {
+        gather_pace_every: 0,
+        ..Default::default()
+    };
+    let (adv_paced, t_paced, _e1) = rig("dst-pace-on", paced_cfg).await;
+    let (adv_unpaced, _t_unpaced, _e2) = rig("dst-pace-off", unpaced_cfg).await;
+
+    assert_eq!(adv_paced.len(), N, "paced gather must settle every stream");
+    assert_eq!(
+        adv_paced, adv_unpaced,
+        "pacing must not change WHAT is absorbed, only when reads issue"
+    );
+    // 96 reads / pace_every 8 => parks before reads 9,17,..,89 = 11 parks
+    // x 4 ms = 44 ms of guaranteed sleep. Assert with margin below it.
+    assert!(
+        t_paced >= std::time::Duration::from_millis(40),
+        "paced gather finished in {t_paced:?} — the pace knob is dead"
+    );
+}
+
 /// WC #266 gate: a forced sparse-absorption wave over MANY tiny
 /// streams must not blow append latency through the shared per-shard
 /// committer lane. Storage carries Tigris-shaped latency on EVERY op;
