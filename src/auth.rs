@@ -383,6 +383,21 @@ fn feed_fp(debug: impl std::fmt::Debug) -> [u8; 32] {
     h.finalize().into()
 }
 
+/// Read `exp` from a JWT WITHOUT verifying it — used only to schedule
+/// refreshes of this instance's OWN outbound workload token (§14.1);
+/// authorization always happens at the receiving peer.
+pub fn unverified_exp(token: &str) -> Option<i64> {
+    use base64::Engine;
+    let mid = token.split('.').nth(1)?;
+    let raw = base64::engine::general_purpose::URL_SAFE_NO_PAD
+        .decode(mid.as_bytes())
+        .ok()?;
+    serde_json::from_slice::<serde_json::Value>(&raw)
+        .ok()?
+        .get("exp")?
+        .as_i64()
+}
+
 impl AuthService {
     pub fn new(mode: AuthMode, issuer: String, cell_id: &str) -> anyhow::Result<Self> {
         validate_cell_id(cell_id)

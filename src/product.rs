@@ -5024,10 +5024,14 @@ async fn relay_sweep_segment(
         for (k, v) in target.headers() {
             req = req.header(k, v);
         }
-        if let Some(t) = &state.fleet_internal_token {
-            req = req.header("authorization", format!("Bearer {t}"));
-        }
-        let reply: Option<serde_json::Value> = match req.send().await {
+        let mk = |bearer: Option<&str>| {
+            let mut req = req.try_clone().expect("fleet sweep request is clonable");
+            if let Some(t) = bearer {
+                req = req.header("authorization", format!("Bearer {t}"));
+            }
+            req
+        };
+        let reply: Option<serde_json::Value> = match crate::http::send_fleet(state, mk).await {
             Ok(r) if r.status().is_success() => r.json().await.ok(),
             _ => None,
         };
@@ -5244,10 +5248,14 @@ async fn relay_queue_cursor(
     for (k, v) in target.headers() {
         req = req.header(k, v);
     }
-    if let Some(t) = &state.fleet_internal_token {
-        req = req.header("authorization", format!("Bearer {t}"));
-    }
-    let v: serde_json::Value = match req.send().await {
+    let mk = |bearer: Option<&str>| {
+        let mut req = req.try_clone().expect("fleet GET request is clonable");
+        if let Some(t) = bearer {
+            req = req.header("authorization", format!("Bearer {t}"));
+        }
+        req
+    };
+    let v: serde_json::Value = match crate::http::send_fleet(state, mk).await {
         Ok(r) if r.status().is_success() => r.json().await.ok()?,
         _ => return None,
     };
@@ -5396,10 +5404,14 @@ async fn relay_segment_scan(
     for (k, v) in target.headers() {
         req = req.header(k, v);
     }
-    if let Some(t) = &state.fleet_internal_token {
-        req = req.header("authorization", format!("Bearer {t}"));
-    }
-    let v: serde_json::Value = match req.send().await {
+    let mk = |bearer: Option<&str>| {
+        let mut req = req.try_clone().expect("fleet GET request is clonable");
+        if let Some(t) = bearer {
+            req = req.header("authorization", format!("Bearer {t}"));
+        }
+        req
+    };
+    let v: serde_json::Value = match crate::http::send_fleet(state, mk).await {
         Ok(r) if r.status().is_success() => r.json().await.ok()?,
         _ => return None,
     };
@@ -5448,10 +5460,14 @@ async fn relay_segment_tail(
     for (k, v) in target.headers() {
         req = req.header(k, v);
     }
-    if let Some(t) = &state.fleet_internal_token {
-        req = req.header("authorization", format!("Bearer {t}"));
-    }
-    let r = match req.send().await {
+    let mk = |bearer: Option<&str>| {
+        let mut req = req.try_clone().expect("fleet GET request is clonable");
+        if let Some(t) = bearer {
+            req = req.header("authorization", format!("Bearer {t}"));
+        }
+        req
+    };
+    let r = match crate::http::send_fleet(state, mk).await {
         Ok(r) if r.status().is_success() => r,
         _ => return None,
     };

@@ -244,6 +244,43 @@ pub struct AppState {
     /// authorize a product operation. Required whenever fleet mode is on
     /// (startup refuses otherwise); None = internal routes fail closed.
     pub fleet_internal_token: Option<String>,
+    /// §14.1 (SR2 finding 1, outbound half): the workload-identity
+    /// source this instance presents to PEERS. `Fn(force_refresh) ->
+    /// token`; the source caches and refreshes (file-backed in
+    /// production — the platform rotates the file). When set, outbound
+    /// relays prefer it over the static bridge token; a 401 from a
+    /// peer forces one refresh-and-retry (key rotation).
+    pub fleet_token_source: Option<FleetTokenSource>,
+}
+
+/// See `AppState::fleet_token_source`.
+pub type FleetTokenSource = std::sync::Arc<dyn Fn(bool) -> Option<String> + Send + Sync>;
+
+/// The bearer this instance presents to peers: workload identity when
+/// a source is configured, else the static bridge token.
+pub(crate) fn outbound_fleet_bearer(state: &AppState, force_refresh: bool) -> Option<String> {
+    if let Some(src) = &state.fleet_token_source {
+        return src(force_refresh);
+    }
+    state.fleet_internal_token.clone()
+}
+
+/// Send one fleet-internal request built by `mk` (which receives the
+/// bearer to attach, if any). On a 401 with a workload source
+/// configured, the token is force-refreshed and the request retried
+/// ONCE — the rotated-credential path (§14.1). Any other outcome
+/// returns as-is.
+pub(crate) async fn send_fleet(
+    state: &AppState,
+    mk: impl Fn(Option<&str>) -> reqwest::RequestBuilder,
+) -> Result<reqwest::Response, reqwest::Error> {
+    let t = outbound_fleet_bearer(state, false);
+    let resp = mk(t.as_deref()).send().await?;
+    if resp.status() == reqwest::StatusCode::UNAUTHORIZED && state.fleet_token_source.is_some() {
+        let t2 = outbound_fleet_bearer(state, true);
+        return mk(t2.as_deref()).send().await;
+    }
+    Ok(resp)
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
@@ -7601,33 +7638,40 @@ async fn relay_segment_read(
     if head_only {
         q.push_str("&head=1");
     }
-    let mut req = peer_client()
-        .get(format!(
-            "{base}/v1/internal/segment-read/{}?{q}",
-            encode_stream_name_path(&desc.name)
-        ))
-        .timeout(std::time::Duration::from_secs(40));
     // Incarnation binding: the peer refuses outright if this name now
     // holds a different stream (round-19 ABA).
     let target = crate::product::InternalTarget::of(desc, seg_id)?;
-    for (k, v) in target.headers() {
-        req = req.header(k, v);
-    }
-    if let Some(t) = &state.fleet_internal_token {
-        req = req.header("authorization", format!("Bearer {t}"));
-    }
-    for h in ["stream-encryption-key", "prisma-encryption-key"] {
-        if let Some(v) = headers.get(h) {
-            req = req.header(h, v.clone());
+    let mk = |bearer: Option<&str>| {
+        let mut req = peer_client()
+            .get(format!(
+                "{base}/v1/internal/segment-read/{}?{q}",
+                encode_stream_name_path(&desc.name)
+            ))
+            .timeout(std::time::Duration::from_secs(40));
+        for (k, v) in target.headers() {
+            req = req.header(k, v);
         }
-    }
-    if let Some(mb) = params.max_bytes {
-        req = req.header("streams-internal-max-bytes", mb.to_string());
-    }
-    if params.deliver == crate::shard::Deliver::Applied {
-        req = req.header("streams-internal-deliver", "applied");
-    }
-    match req.send().await {
+        if let Some(t) = bearer {
+            req = req.header("authorization", format!("Bearer {t}"));
+        }
+        req
+    };
+    let mk = |bearer: Option<&str>| {
+        let mut req = mk(bearer);
+        for h in ["stream-encryption-key", "prisma-encryption-key"] {
+            if let Some(v) = headers.get(h) {
+                req = req.header(h, v.clone());
+            }
+        }
+        if let Some(mb) = params.max_bytes {
+            req = req.header("streams-internal-max-bytes", mb.to_string());
+        }
+        if params.deliver == crate::shard::Deliver::Applied {
+            req = req.header("streams-internal-deliver", "applied");
+        }
+        req
+    };
+    match send_fleet(state, mk).await {
         Ok(r) => {
             let mut out = Response::builder().status(r.status().as_u16());
             for (k, v) in r.headers() {

@@ -5152,6 +5152,7 @@ async fn http_rig_auth(
         None,
         None,
         None,
+        None,
     )
     .await
 }
@@ -5167,6 +5168,7 @@ async fn http_rig_full(
         prefixes,
         shard_cfg,
         per_segment_slots,
+        None,
         None,
         None,
         None,
@@ -5193,6 +5195,7 @@ async fn http_rig_named(
         None,
         None,
         None,
+        None,
     )
     .await
 }
@@ -5214,6 +5217,7 @@ async fn http_rig_park(
         None,
         None,
         Some(park),
+        None,
         None,
         None,
     )
@@ -5244,6 +5248,7 @@ async fn http_rig_cold_absorb(
             ..Default::default()
         }),
         None,
+        None,
     )
     .await
 }
@@ -5263,6 +5268,7 @@ async fn http_rig_with_auth_service(
         None,
         None,
         Some(svc),
+        None,
     )
     .await
 }
@@ -5278,6 +5284,9 @@ async fn http_rig_inner(
     open_park: Option<Arc<tokio::sync::Mutex<()>>>,
     absorber_cfg: Option<crate::history::AbsorberConfig>,
     auth_service: Option<Arc<crate::auth::AuthService>>,
+    // (static fleet token, workload token source); None = the default
+    // static-bridge rig posture.
+    fleet_auth: Option<(Option<String>, Option<crate::http::FleetTokenSource>)>,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
     let registry = crate::registry::Registry::new(store.clone(), "test-cell");
     let keys = Arc::new(crate::history::KeyCache::default());
@@ -5380,7 +5389,11 @@ async fn http_rig_inner(
         default_key: None,
         auth_token: auth,
         origin_marker: "dst-instance".to_string(),
-        fleet_internal_token: Some("dst-internal-token".to_string()),
+        fleet_internal_token: match &fleet_auth {
+            Some((t, _)) => t.clone(),
+            None => Some("dst-internal-token".to_string()),
+        },
+        fleet_token_source: fleet_auth.and_then(|(_, s)| s),
         usage_key: Some(PRISMA_KEY.to_string()),
         rollup: std::sync::OnceLock::new(),
         read_spool: std::sync::OnceLock::new(),
@@ -17130,6 +17143,7 @@ async fn shadow_mode_observes_without_enforcing() {
         None,
         None,
         Some(svc.clone()),
+        None,
     )
     .await;
 
@@ -28399,4 +28413,230 @@ async fn stale_policy_fails_watch_capabilities_closed() {
         String::from_utf8_lossy(&b)
     );
     engine_shutdown(&state).await;
+}
+
+/// RED (review finding 1, outbound half): a two-instance fleet where
+/// the SENDER holds NO static fleet token relays a system append to
+/// the owner using a workload JWT from its token source — §14.1
+/// outbound identity, end to end through the receiver's
+/// operation-scoped gate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn jwt_only_fleet_relay_succeeds() {
+    const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
+    let now = crate::shard::now_ms() / 1000;
+    let svc = std::sync::Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        "wl-1".to_string(),
+        crate::auth::JwksKey {
+            alg: jsonwebtoken::Algorithm::RS256,
+            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+        },
+    );
+    svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+
+    let store = mem();
+    // Receiver A: owns its shard, static bridge token configured (the
+    // receiving posture is irrelevant to the claim — the SENDER is
+    // token-free).
+    let (state_a, addr_a) = http_rig_inner(
+        store.clone(),
+        vec!["00".to_string()],
+        crate::shard::ShardConfig::default(),
+        0,
+        None,
+        Some("rig-a".to_string()),
+        None,
+        None,
+        Some(svc.clone()),
+        None,
+    )
+    .await;
+    // Sender B: NO static fleet token; its outbound identity is a
+    // workload JWT minted by the source with EXACTLY telemetry-append.
+    let src_calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let sc = src_calls.clone();
+    let src: crate::http::FleetTokenSource = std::sync::Arc::new(move |_force: bool| {
+        sc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        Some(sr2_workload_jwt(
+            "wl-1",
+            &["telemetry-append"],
+            crate::shard::now_ms() / 1000,
+        ))
+    });
+    let (state_b, _addr_b) = http_rig_inner(
+        store.clone(),
+        vec!["00".to_string()],
+        crate::shard::ShardConfig::default(),
+        0,
+        None,
+        Some("rig-b".to_string()),
+        None,
+        None,
+        Some(svc.clone()),
+        Some((None, Some(src))),
+    )
+    .await;
+    // B's ring says A owns the shard; B's peer map resolves A's URL.
+    *state_b.ring_active.write().unwrap() = vec!["rig-a".to_string(), "rig-b".to_string()];
+    state_b
+        .ring_overrides
+        .write()
+        .unwrap()
+        .insert("00".to_string(), "rig-a".to_string());
+    state_b
+        .peer_urls
+        .write()
+        .unwrap()
+        .insert("rig-a".to_string(), format!("http://{addr_a}"));
+
+    // Prime: the OWNER creates the system stream (production owners
+    // do this on their own telemetry path); B's local attempt then
+    // refuses on OWNERSHIP with streams-replay-to, not existence.
+    crate::billing::system_append(
+        &state_a,
+        "_ops_events",
+        PRISMA_KEY,
+        br#"[{"v":1,"eventId":"prime-0","eventTimeMs":1,"eventType":"t"}]"#.to_vec(),
+    )
+    .await
+    .expect("owner-side prime");
+
+    crate::billing::system_append(
+        &state_b,
+        "_ops_events",
+        PRISMA_KEY,
+        br#"[{"v":1,"eventId":"jwt-relay-1","eventTimeMs":1,"eventType":"t"}]"#.to_vec(),
+    )
+    .await
+    .expect("JWT-only relay must land on the owner");
+    assert!(
+        src_calls.load(std::sync::atomic::Ordering::SeqCst) >= 1,
+        "the relay must have drawn its bearer from the workload source"
+    );
+    engine_shutdown(&state_a).await;
+    engine_shutdown(&state_b).await;
+}
+
+/// RED (review finding 1, rotation): the sender's first token is
+/// EXPIRED — the peer 401s, the source is force-refreshed exactly
+/// once, and the retried relay succeeds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn rotated_workload_jwt_refreshes_and_retries() {
+    const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
+    let now = crate::shard::now_ms() / 1000;
+    let svc = std::sync::Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        "wl-1".to_string(),
+        crate::auth::JwksKey {
+            alg: jsonwebtoken::Algorithm::RS256,
+            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+        },
+    );
+    svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let store = mem();
+    let (state_a, addr_a) = http_rig_inner(
+        store.clone(),
+        vec!["00".to_string()],
+        crate::shard::ShardConfig::default(),
+        0,
+        None,
+        Some("rig-a".to_string()),
+        None,
+        None,
+        Some(svc.clone()),
+        None,
+    )
+    .await;
+    let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let forced = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
+    let (c2, f2) = (calls.clone(), forced.clone());
+    let src: crate::http::FleetTokenSource = std::sync::Arc::new(move |force: bool| {
+        c2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let now = crate::shard::now_ms() / 1000;
+        if force {
+            f2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            Some(sr2_workload_jwt("wl-1", &["telemetry-append"], now))
+        } else {
+            // The cached token has ROTATED OUT: already expired.
+            Some(sr2_workload_jwt("wl-1", &["telemetry-append"], now - 700))
+        }
+    });
+    let (state_b, _addr_b) = http_rig_inner(
+        store.clone(),
+        vec!["00".to_string()],
+        crate::shard::ShardConfig::default(),
+        0,
+        None,
+        Some("rig-b".to_string()),
+        None,
+        None,
+        Some(svc.clone()),
+        Some((None, Some(src))),
+    )
+    .await;
+    *state_b.ring_active.write().unwrap() = vec!["rig-a".to_string(), "rig-b".to_string()];
+    state_b
+        .ring_overrides
+        .write()
+        .unwrap()
+        .insert("00".to_string(), "rig-a".to_string());
+    state_b
+        .peer_urls
+        .write()
+        .unwrap()
+        .insert("rig-a".to_string(), format!("http://{addr_a}"));
+
+    // Prime: the OWNER creates the system stream (production owners
+    // do this on their own telemetry path); B's local attempt then
+    // refuses on OWNERSHIP with streams-replay-to, not existence.
+    crate::billing::system_append(
+        &state_a,
+        "_ops_events",
+        PRISMA_KEY,
+        br#"[{"v":1,"eventId":"prime-0","eventTimeMs":1,"eventType":"t"}]"#.to_vec(),
+    )
+    .await
+    .expect("owner-side prime");
+
+    crate::billing::system_append(
+        &state_b,
+        "_ops_events",
+        PRISMA_KEY,
+        br#"[{"v":1,"eventId":"jwt-rotate-1","eventTimeMs":1,"eventType":"t"}]"#.to_vec(),
+    )
+    .await
+    .expect("rotated token must refresh and retry to success");
+    assert_eq!(
+        forced.load(std::sync::atomic::Ordering::SeqCst),
+        1,
+        "exactly one forced refresh"
+    );
+    engine_shutdown(&state_a).await;
+    engine_shutdown(&state_b).await;
 }

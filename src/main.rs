@@ -383,10 +383,30 @@ struct Args {
     streams_cursor_key: Option<String>,
 
     /// Fleet-internal credential for /v1/internal/* peer RPCs. REQUIRED
-    /// when fleet mode is on (startup refuses otherwise), MUST differ
-    /// from --auth-token, and is never accepted on a product route.
+    /// when fleet mode is on with FLEET_AUTH_MODE=static (startup
+    /// refuses otherwise), MUST differ from --auth-token, and is never
+    /// accepted on a product route.
     #[arg(long, env = "FLEET_INTERNAL_TOKEN")]
     fleet_internal_token: Option<String>,
+
+    /// §14.1 (SR2): how this instance authenticates to PEERS.
+    /// "static" = the shared bridge token (NAMED legacy posture;
+    /// refused under STREAMS_RELEASE_POSTURE=1); "workload" =
+    /// short-lived workload JWTs read from WORKLOAD_TOKEN_FILE (the
+    /// platform rotates the file), attached to every relay and
+    /// force-refreshed once on a peer 401.
+    #[arg(long, env = "FLEET_AUTH_MODE", default_value = "static")]
+    fleet_auth_mode: String,
+
+    /// Path to the platform-rotated workload JWT (FLEET_AUTH_MODE=
+    /// workload). Read lazily with an expiry-aware cache.
+    #[arg(long, env = "WORKLOAD_TOKEN_FILE")]
+    workload_token_file: Option<std::path::PathBuf>,
+
+    /// Release posture: refuse boot configurations that are bridges,
+    /// not GA shapes (today: FLEET_AUTH_MODE=static in fleet mode).
+    #[arg(long, env = "STREAMS_RELEASE_POSTURE", default_value_t = false)]
+    release_posture: bool,
 
     /// Billing tenant boundary: the account every stream created on
     /// this deployment bills to (docs/OBSERVABILITY-BILLING.md §3.2).
@@ -1208,17 +1228,39 @@ async fn async_main() -> anyhow::Result<()> {
     // one — a fleet that silently accepted the public bearer on those
     // routes would let any customer token corrupt any consumer.
     if fleet_mode {
-        match (&args.fleet_internal_token, &args.auth_token) {
-            (None, _) => anyhow::bail!(
-                "fleet mode requires FLEET_INTERNAL_TOKEN (a credential distinct from                  AUTH_TOKEN) — /v1/internal/* must not be reachable with a customer bearer"
-            ),
-            (Some(t), _) if t.len() < 16 => {
-                anyhow::bail!("FLEET_INTERNAL_TOKEN must be at least 16 characters")
+        match args.fleet_auth_mode.as_str() {
+            "static" => {
+                if args.release_posture {
+                    anyhow::bail!(
+                        "FLEET_AUTH_MODE=static is the bridge posture and is refused under                          STREAMS_RELEASE_POSTURE=1 — configure workload identity (§14.1)"
+                    );
+                }
+                tracing::warn!(
+                    "FLEET_AUTH_MODE=static: the shared bridge token is a NAMED legacy                      posture; the release posture requires workload identity (§14.1)"
+                );
+                match (&args.fleet_internal_token, &args.auth_token) {
+                    (None, _) => anyhow::bail!(
+                        "fleet mode (static) requires FLEET_INTERNAL_TOKEN (a credential distinct from                          AUTH_TOKEN) — /v1/internal/* must not be reachable with a customer bearer"
+                    ),
+                    (Some(t), _) if t.len() < 16 => {
+                        anyhow::bail!("FLEET_INTERNAL_TOKEN must be at least 16 characters")
+                    }
+                    (Some(t), Some(a)) if t == a => anyhow::bail!(
+                        "FLEET_INTERNAL_TOKEN must differ from AUTH_TOKEN — they are separate                          trust boundaries"
+                    ),
+                    _ => {}
+                }
             }
-            (Some(t), Some(a)) if t == a => anyhow::bail!(
-                "FLEET_INTERNAL_TOKEN must differ from AUTH_TOKEN — they are separate                  trust boundaries"
-            ),
-            _ => {}
+            "workload" => {
+                if args.workload_token_file.is_none() {
+                    anyhow::bail!(
+                        "FLEET_AUTH_MODE=workload requires WORKLOAD_TOKEN_FILE (the                          platform-rotated workload JWT)"
+                    );
+                }
+                // The static token MAY coexist during migration; it is
+                // not required.
+            }
+            other => anyhow::bail!("FLEET_AUTH_MODE must be static|workload, got {other:?}"),
         }
     }
     let initial_shards = match args.initial_shards {
@@ -1497,6 +1539,28 @@ async fn async_main() -> anyhow::Result<()> {
             args.instance_name.clone()
         },
         fleet_internal_token: args.fleet_internal_token.clone(),
+        fleet_token_source: args.workload_token_file.as_ref().map(|path| {
+            // Expiry-aware file cache: the platform rotates the file;
+            // this re-reads when forced (peer 401) or within 30s of
+            // the cached token's exp. The exp is read WITHOUT
+            // verification — freshness scheduling only; peers verify.
+            let path = path.clone();
+            let cache: std::sync::Mutex<Option<(String, i64)>> = std::sync::Mutex::new(None);
+            std::sync::Arc::new(move |force: bool| {
+                let now = chrono::Utc::now().timestamp();
+                let mut c = cache.lock().unwrap();
+                if !force
+                    && let Some((tok, exp)) = c.as_ref()
+                    && now < exp - 30
+                {
+                    return Some(tok.clone());
+                }
+                let tok = std::fs::read_to_string(&path).ok()?.trim().to_string();
+                let exp = crate::auth::unverified_exp(&tok).unwrap_or(now);
+                *c = Some((tok.clone(), exp));
+                Some(tok)
+            }) as crate::http::FleetTokenSource
+        }),
         usage_key: args.usage_stream_key.clone(),
         rollup: std::sync::OnceLock::new(),
         read_spool: std::sync::OnceLock::new(),

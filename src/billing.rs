@@ -2849,19 +2849,22 @@ pub async fn system_append(
     }
     // Ownership bounce: relay once to the owner.
     if let Some((_, base)) = crate::http::replay_peer_url(state, &r) {
-        let mut req = crate::http::peer_client()
-            .post(format!(
-                "{base}/v1/internal/telemetry-append/{}",
-                crate::http::encode_stream_name_path(stream)
-            ))
-            .timeout(std::time::Duration::from_secs(20))
-            .header("stream-encryption-key", key)
-            .header("content-type", "application/json")
-            .body(body);
-        if let Some(t) = &state.fleet_internal_token {
-            req = req.header("authorization", format!("Bearer {t}"));
-        }
-        match req.send().await {
+        let mk = |bearer: Option<&str>| {
+            let mut req = crate::http::peer_client()
+                .post(format!(
+                    "{base}/v1/internal/telemetry-append/{}",
+                    crate::http::encode_stream_name_path(stream)
+                ))
+                .timeout(std::time::Duration::from_secs(20))
+                .header("stream-encryption-key", key)
+                .header("content-type", "application/json")
+                .body(body.clone());
+            if let Some(t) = bearer {
+                req = req.header("authorization", format!("Bearer {t}"));
+            }
+            req
+        };
+        match crate::http::send_fleet(state, mk).await {
             Ok(resp) if resp.status().is_success() => return Ok(()),
             Ok(resp) => return Err(format!("telemetry relay {stream}: {}", resp.status())),
             Err(e) => return Err(format!("telemetry relay {stream}: {e}")),
@@ -2934,20 +2937,23 @@ pub async fn system_read(
     let q = offset
         .map(|o| format!("?offset={}", urlencode(&o)))
         .unwrap_or_default();
-    let mut req = crate::http::peer_client()
-        .get(format!(
-            "{base}/v1/internal/segment-read/{}{q}",
-            crate::http::encode_stream_name_path(stream)
-        ))
-        .timeout(std::time::Duration::from_secs(20))
-        .header("stream-encryption-key", key);
-    for (k, v) in target.headers() {
-        req = req.header(k, v);
-    }
-    if let Some(t) = &state.fleet_internal_token {
-        req = req.header("authorization", format!("Bearer {t}"));
-    }
-    match req.send().await {
+    let mk = |bearer: Option<&str>| {
+        let mut req = crate::http::peer_client()
+            .get(format!(
+                "{base}/v1/internal/segment-read/{}{q}",
+                crate::http::encode_stream_name_path(stream)
+            ))
+            .timeout(std::time::Duration::from_secs(20))
+            .header("stream-encryption-key", key);
+        for (k, v) in target.headers() {
+            req = req.header(k, v);
+        }
+        if let Some(t) = bearer {
+            req = req.header("authorization", format!("Bearer {t}"));
+        }
+        req
+    };
+    match crate::http::send_fleet(state, mk).await {
         Ok(resp) if resp.status().is_success() => {
             let next = resp
                 .headers()
