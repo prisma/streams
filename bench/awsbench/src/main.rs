@@ -983,6 +983,14 @@ async fn stats_server(stats: Arc<Stats>) {
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
+    if args.shape == "cert" {
+        // Workload-cert shape (bench/WORKLOAD-CERT-PLAN.md): rotating
+        // writers + parked SSE subscriber swarm + fan-out overlap,
+        // with an EXACT offered-ops denominator for shed accounting.
+        let stats = Stats::new();
+        tokio::spawn(stats_server(stats.clone()));
+        return run_cert(&args, stats).await;
+    }
     if args.shape == "wide" {
         // MT campaigns deploy wide: the stats server must serve the
         // JSONL (and platform liveness) exactly like the tiered shapes.
@@ -1252,6 +1260,377 @@ fn wide_batch(batch: usize, record_bytes: usize) -> Vec<serde_json::Value> {
                 "b": b,
                 "pad": "x".repeat(record_bytes.saturating_sub(40).max(1)),
             })
+        })
+        .collect()
+}
+
+
+// ---- workload-cert shape (BENCH_SHAPE=cert, prisma product only) ----------
+// Tenants [0, SUB_TENANTS) are SUBSCRIBER tenants: each owns one hot
+// stream "{prefix}s{t}" carrying its parked :sse subscriptions, and
+// fan-out writes land there. Tenants [SUB_TENANTS, TENANTS) own plain
+// writer streams "{prefix}w{t}". Every window of WINDOW_MS, ACTIVE
+// writers are active: FANOUT_ACTIVE drawn round-robin from the
+// subscriber range, the rest round-robin from the plain range; each
+// active tenant offers WPS/ACTIVE writes/s. `offered` increments at
+// SCHEDULE time — the shed denominator counts intent, not sends.
+async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
+    use futures_util::StreamExt;
+    let tenants: usize = wide_env("BENCH_CERT_TENANTS", 10_000);
+    let sub_tenants: usize = wide_env("BENCH_CERT_SUB_TENANTS", 1_000);
+    let subs_n: usize = wide_env("BENCH_CERT_SUBS_N", 0);
+    let active: usize = wide_env("BENCH_CERT_ACTIVE", 100);
+    let fanout_active: usize = wide_env("BENCH_CERT_FANOUT_ACTIVE", 10);
+    let window_ms: u64 = wide_env("BENCH_CERT_WINDOW_MS", 5_000);
+    let wps: u64 = wide_env("BENCH_CERT_WPS", 1_000);
+    let secs: u64 = wide_env("BENCH_CERT_SECS", 300);
+    let setup_conc: usize = wide_env("BENCH_WIDE_SETUP_CONC", 64);
+    anyhow::ensure!(sub_tenants <= tenants && fanout_active <= active);
+    anyhow::ensure!(fanout_active == 0 || sub_tenants > 0);
+    let record_bytes = args.record_bytes;
+
+    let tokens_path =
+        std::env::var("BENCH_TOKENS_FILE").context("cert shape requires BENCH_TOKENS_FILE")?;
+    let doc: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(&tokens_path)?)?;
+    let tokens: Arc<Vec<String>> = Arc::new(
+        doc.iter()
+            .map(|e| e["token"].as_str().unwrap_or_default().to_string())
+            .collect(),
+    );
+    anyhow::ensure!(tokens.len() >= tenants, "need >= {tenants} tokens");
+
+    let http = reqwest::Client::builder()
+        .pool_max_idle_per_host(4096)
+        .pool_idle_timeout(Duration::from_secs(30))
+        .tcp_nodelay(true)
+        .timeout(Duration::from_secs(30))
+        .build()?;
+    let base = args.target.clone();
+    let key = args.stream_key.clone();
+    let prefix = args.stream.clone();
+    let mut out = std::fs::File::create(&args.out)?;
+    use std::io::Write as _;
+    let stream_of = |t: usize| -> String {
+        if t < sub_tenants {
+            format!("{prefix}s{t}")
+        } else {
+            format!("{prefix}w{t}")
+        }
+    };
+
+    // Phase 1: create every stream the run can touch.
+    eprintln!("CERT: creating {tenants} streams (conc {setup_conc})");
+    let t_create = Instant::now();
+    for chunk in (0..tenants).collect::<Vec<_>>().chunks(10_000) {
+        let fails: usize = futures_util::stream::iter(chunk.iter().map(|&t| {
+            let http = http.clone();
+            let url = format!("{base}/v1/streams/{}", stream_of(t));
+            let auth = format!("Bearer {}", tokens[t]);
+            let key = key.clone();
+            async move {
+                for attempt in 0..4u32 {
+                    let r = http
+                        .put(&url)
+                        .header("authorization", auth.clone())
+                        .header("prisma-encryption-key", key.clone())
+                        .header("content-type", "application/json")
+                        .json(&serde_json::json!({"format": {"kind": "json"}}))
+                        .send()
+                        .await;
+                    if matches!(&r, Ok(resp) if resp.status().is_success()) {
+                        return 0usize;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100 << attempt)).await;
+                }
+                1usize
+            }
+        }))
+        .buffer_unordered(setup_conc)
+        .fold(0usize, |a, b| async move { a + b })
+        .await;
+        anyhow::ensure!(fails == 0, "{fails} creates failed");
+    }
+    let create_ms = t_create.elapsed().as_millis();
+    eprintln!("CERT: creates done in {create_ms}ms");
+
+    // Phase 2: park the subscriber swarm (durable-cursor :sse at tail).
+    let delivered = Arc::new(AtomicU64::new(0));
+    let reconnects = Arc::new(AtomicU64::new(0));
+    let subs_open = Arc::new(AtomicU64::new(0));
+    let lag_hist = WideHist::new();
+    let stop = Arc::new(AtomicU64::new(0));
+    for j in 0..subs_n {
+        let t = j % sub_tenants;
+        let http = http.clone();
+        let base = base.clone();
+        let name = stream_of(t);
+        let auth = format!("Bearer {}", tokens[t]);
+        let key = key.clone();
+        let (delivered, reconnects, subs_open, lag_hist, stop) = (
+            delivered.clone(),
+            reconnects.clone(),
+            subs_open.clone(),
+            lag_hist.clone(),
+            stop.clone(),
+        );
+        tokio::spawn(async move {
+            let mut first = true;
+            while stop.load(Ordering::Relaxed) == 0 {
+                // (Re)learn the tail, then park.
+                let tail = match http
+                    .get(format!("{base}/v1/streams/{name}/records"))
+                    .header("authorization", auth.clone())
+                    .header("prisma-encryption-key", key.clone())
+                    .send()
+                    .await
+                {
+                    Ok(r) => r
+                        .headers()
+                        .get("prisma-next-cursor")
+                        .and_then(|v| v.to_str().ok())
+                        .unwrap_or("")
+                        .to_string(),
+                    Err(_) => {
+                        tokio::time::sleep(Duration::from_millis(500)).await;
+                        continue;
+                    }
+                };
+                let resp = http
+                    .get(format!(
+                        "{base}/v1/streams/{name}/records:sse?cursor={}",
+                        urlencoding_min(&tail)
+                    ))
+                    .header("authorization", auth.clone())
+                    .header("prisma-encryption-key", key.clone())
+                    .send()
+                    .await;
+                let Ok(r) = resp else {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue;
+                };
+                if r.status().as_u16() != 200 {
+                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    continue;
+                }
+                if first {
+                    subs_open.fetch_add(1, Ordering::Relaxed);
+                    first = false;
+                } else {
+                    reconnects.fetch_add(1, Ordering::Relaxed);
+                }
+                let mut r = r;
+                while let Ok(Some(b)) = r.chunk().await {
+                    // Delivery lag: writers embed {"t":<unix_ms>}.
+                    let text = String::from_utf8_lossy(&b);
+                    for m in text.match_indices("\"t\":") {
+                        let rest = &text[m.0 + 4..];
+                        let end = rest
+                            .find(|c: char| !c.is_ascii_digit())
+                            .unwrap_or(rest.len());
+                        if let Ok(sent_ms) = rest[..end].parse::<u128>() {
+                            let lag = (now_ms() as u128).saturating_sub(sent_ms) as u64;
+                            lag_hist.rec(lag * 1000); // hist is in micros
+                            delivered.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                    if stop.load(Ordering::Relaxed) != 0 {
+                        break;
+                    }
+                }
+            }
+        });
+        if j % 200 == 199 {
+            tokio::time::sleep(Duration::from_millis(40)).await;
+        }
+    }
+    if subs_n > 0 {
+        // Give the swarm a moment to park before offering load.
+        for _ in 0..100 {
+            if subs_open.load(Ordering::Relaxed) as usize >= subs_n * 95 / 100 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(200)).await;
+        }
+        eprintln!("CERT: {} subscriptions parked", subs_open.load(Ordering::Relaxed));
+    }
+
+    // Phase 3: rotating writers.
+    let offered = Arc::new(AtomicU64::new(0));
+    let ok = Arc::new(AtomicU64::new(0));
+    let thr = Arc::new(AtomicU64::new(0));
+    let err = Arc::new(AtomicU64::new(0));
+    let ap_hist = WideHist::new();
+    let sem = Arc::new(tokio::sync::Semaphore::new(768));
+    let per_tenant_interval =
+        Duration::from_millis((1000 * active as u64 / wps.max(1)).max(1));
+    let plain = tenants - sub_tenants;
+    let deadline = Instant::now() + Duration::from_secs(secs);
+    let writer = {
+        let (http, base, key, tokens, offered, ok, thr, err, ap_hist, sem, stop) = (
+            http.clone(),
+            base.clone(),
+            key.clone(),
+            tokens.clone(),
+            offered.clone(),
+            ok.clone(),
+            thr.clone(),
+            err.clone(),
+            ap_hist.clone(),
+            sem.clone(),
+            stop.clone(),
+        );
+        let stream_of = move |t: usize| -> String {
+            if t < sub_tenants {
+                format!("{prefix}s{t}")
+            } else {
+                format!("{prefix}w{t}")
+            }
+        };
+        tokio::spawn(async move {
+            let mut window: u64 = 0;
+            while Instant::now() < deadline && stop.load(Ordering::Relaxed) == 0 {
+                // Deterministic active set for this window.
+                let mut set = Vec::with_capacity(active);
+                for i in 0..fanout_active {
+                    set.push(((window as usize * fanout_active) + i) % sub_tenants.max(1));
+                }
+                for i in 0..active - fanout_active {
+                    set.push(
+                        sub_tenants
+                            + (((window as usize) * (active - fanout_active) + i) % plain.max(1)),
+                    );
+                }
+                let window_end = Instant::now() + Duration::from_millis(window_ms);
+                let mut next_fire = Instant::now();
+                while Instant::now() < window_end
+                    && Instant::now() < deadline
+                    && stop.load(Ordering::Relaxed) == 0
+                {
+                    tokio::time::sleep_until(tokio::time::Instant::from_std(next_fire)).await;
+                    next_fire += per_tenant_interval;
+                    for &t in &set {
+                        offered.fetch_add(1, Ordering::Relaxed);
+                        let http = http.clone();
+                        let url = format!("{base}/v1/streams/{}/records", stream_of(t));
+                        let auth = format!("Bearer {}", tokens[t]);
+                        let key = key.clone();
+                        let (ok, thr, err, ap_hist) =
+                            (ok.clone(), thr.clone(), err.clone(), ap_hist.clone());
+                        let pad = record_bytes.saturating_sub(40);
+                        let permit = sem.clone().acquire_owned().await.unwrap();
+                        tokio::spawn(async move {
+                            let _p = permit;
+                            let body = format!(
+                                "{{\"t\":{},\"pad\":\"{}\"}}",
+                                now_ms(),
+                                "x".repeat(pad)
+                            );
+                            let t0 = Instant::now();
+                            match http
+                                .post(&url)
+                                .header("authorization", auth)
+                                .header("prisma-encryption-key", key)
+                                .header("content-type", "application/json")
+                                .body(body)
+                                .send()
+                                .await
+                            {
+                                Ok(r) if r.status().is_success() => {
+                                    ok.fetch_add(1, Ordering::Relaxed);
+                                    ap_hist.rec(t0.elapsed().as_micros() as u64);
+                                }
+                                Ok(r) if r.status().as_u16() == 429 || r.status().as_u16() == 503 => {
+                                    thr.fetch_add(1, Ordering::Relaxed);
+                                }
+                                _ => {
+                                    err.fetch_add(1, Ordering::Relaxed);
+                                }
+                            }
+                        });
+                    }
+                }
+                window += 1;
+            }
+        })
+    };
+
+    // Reporter until the deadline.
+    let started = Instant::now();
+    while Instant::now() < deadline {
+        let left = deadline - Instant::now();
+        tokio::time::sleep(Duration::from_secs(20).min(left)).await;
+        let ap = ap_hist.drain_sorted();
+        let lags = lag_hist.drain_sorted();
+        let offered_v = offered.load(Ordering::Relaxed);
+        let thr_v = thr.load(Ordering::Relaxed);
+        let line = serde_json::json!({
+            "phase": "cert",
+            "offered": offered_v,
+            "apOk": ok.load(Ordering::Relaxed),
+            "apThr": thr_v,
+            "apErr": err.load(Ordering::Relaxed),
+            "shedPctCum": if offered_v > 0 { 100.0 * thr_v as f64 / offered_v as f64 } else { 0.0 },
+            "apWinP50Ms": pctl_ms(&ap, 0.5),
+            "apWinP99Ms": pctl_ms(&ap, 0.99),
+            "subsOpen": subs_open.load(Ordering::Relaxed),
+            "delivered": delivered.load(Ordering::Relaxed),
+            "reconnects": reconnects.load(Ordering::Relaxed),
+            "lagWinP50Ms": pctl_ms(&lags, 0.5),
+            "lagWinP99Ms": pctl_ms(&lags, 0.99),
+            "tenants": tenants, "subTenants": sub_tenants, "subsN": subs_n,
+            "active": active, "fanoutActive": fanout_active,
+            "windowMs": window_ms, "wps": wps, "recordBytes": record_bytes,
+            "elapsedS": started.elapsed().as_secs(),
+            "ts": now_ms()/1000,
+        });
+        eprintln!("{line}");
+        writeln!(out, "{line}")?;
+        out.flush()?;
+        stats.lines.lock().unwrap().push(line.to_string());
+    }
+    stop.store(1, Ordering::Relaxed);
+    let _ = tokio::time::timeout(Duration::from_secs(5), writer).await;
+    let offered_v = offered.load(Ordering::Relaxed);
+    let thr_v = thr.load(Ordering::Relaxed);
+    let done = serde_json::json!({
+        "phase": "cert_done",
+        "offered": offered_v,
+        "apOk": ok.load(Ordering::Relaxed),
+        "apThr": thr_v,
+        "apErr": err.load(Ordering::Relaxed),
+        "shedPct": if offered_v > 0 { 100.0 * thr_v as f64 / offered_v as f64 } else { 0.0 },
+        "delivered": delivered.load(Ordering::Relaxed),
+        "reconnects": reconnects.load(Ordering::Relaxed),
+        "subsOpen": subs_open.load(Ordering::Relaxed),
+        "createMs": create_ms,
+        "steadySecs": secs,
+        "tenants": tenants, "subTenants": sub_tenants, "subsN": subs_n,
+        "active": active, "fanoutActive": fanout_active,
+        "windowMs": window_ms, "wps": wps, "recordBytes": record_bytes,
+        "binSha256": std::env::var("APP_BINARY_SHA256").unwrap_or_default(),
+        "ts": now_ms()/1000,
+    });
+    eprintln!("{done}");
+    writeln!(out, "{done}")?;
+    out.flush()?;
+    stats.lines.lock().unwrap().push(done.to_string());
+    eprintln!("CERT_DONE");
+    if std::env::var("BENCH_HOLD").as_deref() == Ok("1") {
+        eprintln!("CERT_DONE (holding for scrape)");
+        loop {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+        }
+    }
+    Ok(())
+}
+
+/// Percent-encode the handful of cursor bytes that matter in a query
+/// value (base64url cursors only ever need '=' handled, but be safe).
+fn urlencoding_min(s: &str) -> String {
+    s.chars()
+        .flat_map(|c| match c {
+            'A'..='Z' | 'a'..='z' | '0'..='9' | '-' | '_' | '.' | '~' => vec![c],
+            _ => format!("%{:02X}", c as u32).chars().collect(),
         })
         .collect()
 }
