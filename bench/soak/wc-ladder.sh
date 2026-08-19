@@ -40,6 +40,22 @@ while IFS='=' read -r key value; do
   MEMFLAGS+=(--env "$key=$value")
 done < "$ROOT/deploy/profiles/compute-1g.env"
 
+# WC_DIET=1: the 10k-resident-stream memory diet (L1 finding: 456MB
+# steady RSS vs the 600MB shed line left no headroom for absorber
+# reservations — 36% bursty admit_shed). Later --env wins, so these
+# override the profile. TAIL_RING off for writes-only stages; L3
+# revisits (subscribers want the ring).
+DIETFLAGS=()
+if [ "${WC_DIET:-0}" = "1" ]; then
+  DIETFLAGS=(
+    --env SHARED_CACHE_BYTES=67108864
+    --env POSTINGS_CACHE_BYTES=16777216
+    --env HISTORY_CACHE_BYTES=16777216
+    --env TAIL_RING_BYTES=0
+    --env HANDLE_MAX_RESIDENT=6000
+  )
+fi
+
 "$HERE/build-upload.sh"
 
 MTDIR="$S/wc-$SOAK_RUN_ID"
@@ -137,7 +153,8 @@ deploy server \
   --env STREAMS_AUTH_GRANTS_FILE=/tmp/feeds/grants.json \
   --env STREAMS_AUTH_REFRESH_SECS=60 \
   --env FEEDS_S3_KEY="wc/$SOAK_RUN_ID/feeds.json" \
-  ${MEMFLAGS[@]+"${MEMFLAGS[@]}"}
+  ${MEMFLAGS[@]+"${MEMFLAGS[@]}"} \
+  ${DIETFLAGS[@]+"${DIETFLAGS[@]}"}
 verify_server_live
 curl -sf --max-time 20 -H "authorization: Bearer $AUTH" \
   "$(cat "$S/url-server-$R.txt")/v1/debug/load" > "$OUT/server-before-$STAGE.json" || true
