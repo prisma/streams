@@ -283,19 +283,59 @@ pub(crate) fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
 /// development, conformance). Shadow = deployment bearer REQUIRED.
 /// Enforce = workload/fleet credentials only — no deployment-global
 /// customer bearer exists on a shared cell.
-pub(crate) fn raw_surface_authorized(state: &AppState, headers: &HeaderMap) -> bool {
-    match state.auth.mode {
-        crate::auth::AuthMode::Enforce => {
-            fleet_internal_authorized(state, headers) || workload_jwt_authorized(state, headers)
+/// §14.1 (SR2 finding 1): the least-privilege operations an internal
+/// principal can hold. A workload JWT authorizes EXACTLY the
+/// operations its `operations` claim names — an EMPTY or UNKNOWN list
+/// grants nothing, and every internal route demands one exact
+/// operation. The static bridge token retains full authority until
+/// the platform mints workload identity (its retirement is a GA
+/// blocker); a workload token is never a cell-wide credential.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub(crate) enum InternalOperation {
+    RawRead,
+    RawAppend,
+    RawLifecycle,
+    SegmentRead,
+    SegmentScan,
+    QueueCursor,
+    ConsumerSweep,
+    TelemetryAppend,
+}
+
+impl InternalOperation {
+    pub(crate) fn claim(self) -> &'static str {
+        match self {
+            Self::RawRead => "raw-read",
+            Self::RawAppend => "raw-append",
+            Self::RawLifecycle => "raw-lifecycle",
+            Self::SegmentRead => "segment-read",
+            Self::SegmentScan => "segment-scan",
+            Self::QueueCursor => "queue-cursor",
+            Self::ConsumerSweep => "consumer-sweep",
+            Self::TelemetryAppend => "telemetry-append",
         }
+    }
+}
+
+/// Raw-surface authorization for ONE operation (§14.3 + §14.1): under
+/// enforce the raw surface takes fleet identity scoped to the exact
+/// raw operation the request performs; other modes keep the
+/// deployment-bearer posture.
+pub(crate) fn raw_surface_authorized(
+    state: &AppState,
+    headers: &HeaderMap,
+    op: InternalOperation,
+) -> bool {
+    match state.auth.mode {
+        crate::auth::AuthMode::Enforce => fleet_operation_authorized(state, headers, op),
         _ => authorized(state, headers),
     }
 }
 
 /// Short-lived workload JWT (§14.1): aud "prisma-streams-internal",
-/// same issuer and JWKS as customer tokens, bound to this cell. The
-/// migration path off the static FLEET_INTERNAL_TOKEN.
-pub(crate) fn workload_jwt_authorized(state: &AppState, headers: &HeaderMap) -> bool {
+/// same issuer and JWKS as customer tokens, bound to this cell — and
+/// authorized for EXACTLY the operations its claim names.
+fn workload_jwt_operation(state: &AppState, headers: &HeaderMap, op: InternalOperation) -> bool {
     if state.auth.mode == crate::auth::AuthMode::Off {
         return false;
     }
@@ -303,24 +343,26 @@ pub(crate) fn workload_jwt_authorized(state: &AppState, headers: &HeaderMap) -> 
         state
             .auth
             .verify_internal(t, crate::shard::now_ms() / 1000)
-            .is_ok()
+            .is_ok_and(|p| p.operations.iter().any(|o| o == op.claim()))
     })
 }
 
-/// Authorization for /v1/internal/* ONLY. Fails closed: without a
-/// configured fleet-internal token there is no internal surface at all,
-/// and the customer bearer is never accepted here even when it matches
-/// the account token. Startup refuses to enable fleet mode without this
-/// token, so "None" in production means fleet mode is off.
-pub(crate) fn fleet_internal_authorized(state: &AppState, headers: &HeaderMap) -> bool {
+/// Authorization for /v1/internal/* and the enforce-mode raw surface,
+/// for ONE exact operation. Fails closed: without a configured fleet
+/// token the static leg is dead, the customer bearer is never
+/// accepted here, and a workload JWT whose operations claim does not
+/// name `op` is refused — least privilege is enforced per route, not
+/// per audience.
+pub(crate) fn fleet_operation_authorized(
+    state: &AppState,
+    headers: &HeaderMap,
+    op: InternalOperation,
+) -> bool {
     let static_ok = match &state.fleet_internal_token {
         None => false,
         Some(t) => bearer(headers).map(|v| secret_eq(v, t)).unwrap_or(false),
     };
-    // SR-5/§14.1: short-lived workload identity is the GA credential;
-    // the static token remains only until the platform mints workload
-    // JWTs, then dies.
-    static_ok || workload_jwt_authorized(state, headers)
+    static_ok || workload_jwt_operation(state, headers, op)
 }
 
 /// Uniform 401 for internal routes — never distinguishes "fleet mode
@@ -730,7 +772,7 @@ async fn get_segments(
     headers: HeaderMap,
     axum::extract::Path(name): axum::extract::Path<String>,
 ) -> Response {
-    if !raw_surface_authorized(&state, &headers) {
+    if !raw_surface_authorized(&state, &headers, InternalOperation::SegmentRead) {
         return err_resp(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
@@ -1127,7 +1169,7 @@ async fn internal_telemetry_append(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if !fleet_internal_authorized(&state, &headers) {
+    if !fleet_operation_authorized(&state, &headers, InternalOperation::TelemetryAppend) {
         return internal_unauthorized();
     }
     if !crate::billing::is_reserved_stream(&name) {
@@ -1991,7 +2033,14 @@ async fn stream_entry_inner(
     headers: HeaderMap,
     body: Body,
 ) -> Response {
-    if !raw_surface_authorized(&state, &headers) {
+    // §14.1: the raw operation is derived from the METHOD — a
+    // lifecycle token cannot append, an append token cannot delete.
+    let raw_op = match method {
+        Method::PUT | Method::DELETE => InternalOperation::RawLifecycle,
+        Method::POST => InternalOperation::RawAppend,
+        _ => InternalOperation::RawRead,
+    };
+    if !raw_surface_authorized(&state, &headers, raw_op) {
         return err_resp(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
@@ -7613,7 +7662,7 @@ async fn internal_segment_read(
     uri: axum::http::Uri,
     headers: HeaderMap,
 ) -> Response {
-    if !fleet_internal_authorized(&state, &headers) {
+    if !fleet_operation_authorized(&state, &headers, InternalOperation::SegmentRead) {
         return internal_unauthorized();
     }
     params.no_fanout = true;

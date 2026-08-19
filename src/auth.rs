@@ -326,15 +326,61 @@ pub struct AuthService {
 
 const HIGH_WATER_MAX: usize = 65_536;
 
+/// Per-project retained feed history (SR-4 + SR2 finding 2).
+#[derive(Clone)]
+struct ProjHw {
+    /// Max (ownership_version, policy_version) ever seen.
+    o_hw: u64,
+    p_hw: u64,
+    /// Version pair at the moment the project was last OMITTED from a
+    /// full snapshot. Reintroduction requires strictly exceeding one
+    /// of them — a replayed pre-omission snapshot cannot resurrect it.
+    omitted_at: Option<(u64, u64)>,
+    /// Semantic fingerprint of the last content seen at (o_hw, p_hw):
+    /// an EQUAL version pair must carry identical content — versions
+    /// pin bytes, and a same-version status or quota flip is a
+    /// publisher defect, refused.
+    fp_at: (u64, u64),
+    fp: [u8; 32],
+}
+
+/// Per-credential retained feed history (SR-4 + SR2 finding 2).
+#[derive(Clone)]
+struct CredHw {
+    /// Max grant_version ever seen.
+    v_hw: u64,
+    /// Max version ever seen NOT Active (revoked/disabled/expired).
+    dead: Option<u64>,
+    /// grant_version at the last omission from a full snapshot.
+    omitted_at: Option<u64>,
+    /// Semantic fingerprint of the content at v_hw.
+    fp_at: u64,
+    fp: [u8; 32],
+}
+
+/// PROCESS-LOCAL, BOUNDED (`HIGH_WATER_MAX` FIFO). The durable
+/// security guarantee is the Control-Plane feed contract (versions
+/// only move forward; full snapshots); this table is defense in depth
+/// against a MISBEHAVING PUBLISHER within one process lifetime — a
+/// restart or FIFO eviction resets it, deliberately and documented.
 #[derive(Default)]
 struct HighWater {
-    /// project → (max ownership_version, max policy_version) ever seen.
-    projects: std::collections::HashMap<crate::tenant::ProjectId, (u64, u64)>,
+    projects: std::collections::HashMap<crate::tenant::ProjectId, ProjHw>,
     p_order: std::collections::VecDeque<crate::tenant::ProjectId>,
-    /// credential → (max grant_version, max version seen NOT Active).
     // mt-lint: allow(name-keyed-map): credential id (feed high-water table)
-    credentials: std::collections::HashMap<Arc<str>, (u64, Option<u64>)>,
+    credentials: std::collections::HashMap<Arc<str>, CredHw>,
     c_order: std::collections::VecDeque<Arc<str>>,
+}
+
+/// Canonical semantic fingerprint. Debug formatting is deterministic
+/// for these derive(Debug) scalar/vec types, and the table never
+/// crosses a process boundary, so the encoding cannot skew between
+/// writer and checker.
+fn feed_fp(debug: impl std::fmt::Debug) -> [u8; 32] {
+    use sha2::Digest;
+    let mut h = sha2::Sha256::new();
+    h.update(format!("{debug:?}").as_bytes());
+    h.finalize().into()
 }
 
 impl AuthService {
@@ -383,18 +429,33 @@ impl AuthService {
         if snapshot.feed_version < cur.feed_version {
             return Err("policy feed_version regressed");
         }
-        // SR-4: versions are compared against the retained HIGH-WATER
-        // marks, not just the currently loaded snapshot — an entry
-        // omitted from intermediate snapshots cannot resurrect at a
-        // lower version.
+        // SR-4 + SR2 finding 2: versions are compared against the
+        // retained HIGH-WATER marks; an OMISSION from a full snapshot
+        // tombstones the entry at its last version pair (strictly
+        // newer to reintroduce); an EQUAL version pair must carry
+        // IDENTICAL content. ALL checks run before ANY mutation — a
+        // refused snapshot leaves no trace.
         let mut hw = self.high_water.lock().unwrap();
         for (pid, np) in &snapshot.projects {
-            if let Some(&(o_hw, p_hw)) = hw.projects.get(pid) {
-                if np.ownership_version < o_hw {
+            if let Some(e) = hw.projects.get(pid) {
+                if np.ownership_version < e.o_hw {
                     return Err("ownership_version below high-water");
                 }
-                if np.project_policy_version < p_hw {
+                if np.project_policy_version < e.p_hw {
                     return Err("project_policy_version below high-water");
+                }
+                if let Some((oo, op)) = e.omitted_at
+                    && np.ownership_version <= oo
+                    && np.project_policy_version <= op
+                {
+                    return Err(
+                        "omitted project reintroduced without a newer version (SR2 tombstone)",
+                    );
+                }
+                if (np.ownership_version, np.project_policy_version) == e.fp_at
+                    && feed_fp(np) != e.fp
+                {
+                    return Err("same project version with different content");
                 }
             }
             if let Some(op) = cur.projects.get(pid) {
@@ -407,10 +468,21 @@ impl AuthService {
             }
         }
         for (pid, np) in &snapshot.projects {
+            let vpair = (np.ownership_version, np.project_policy_version);
             match hw.projects.get_mut(pid) {
                 Some(e) => {
-                    e.0 = e.0.max(np.ownership_version);
-                    e.1 = e.1.max(np.project_policy_version);
+                    e.o_hw = e.o_hw.max(np.ownership_version);
+                    e.p_hw = e.p_hw.max(np.project_policy_version);
+                    if vpair >= e.fp_at {
+                        e.fp_at = vpair;
+                        e.fp = feed_fp(np);
+                    }
+                    // A strictly newer version clears the tombstone.
+                    if let Some((oo, op)) = e.omitted_at
+                        && (np.ownership_version > oo || np.project_policy_version > op)
+                    {
+                        e.omitted_at = None;
+                    }
                 }
                 None => {
                     if hw.projects.len() >= HIGH_WATER_MAX
@@ -420,10 +492,30 @@ impl AuthService {
                     }
                     hw.projects.insert(
                         pid.clone(),
-                        (np.ownership_version, np.project_policy_version),
+                        ProjHw {
+                            o_hw: np.ownership_version,
+                            p_hw: np.project_policy_version,
+                            omitted_at: None,
+                            fp_at: vpair,
+                            fp: feed_fp(np),
+                        },
                     );
                     hw.p_order.push_back(pid.clone());
                 }
+            }
+        }
+        // Tombstone every project the FULL snapshot dropped.
+        for (pid, op) in &cur.projects {
+            if !snapshot.projects.contains_key(pid)
+                && let Some(e) = hw.projects.get_mut(pid)
+            {
+                e.omitted_at = Some((
+                    e.omitted_at
+                        .map_or(op.ownership_version, |(a, _)| a.max(op.ownership_version)),
+                    e.omitted_at.map_or(op.project_policy_version, |(_, b)| {
+                        b.max(op.project_policy_version)
+                    }),
+                ));
             }
         }
         drop(hw);
@@ -443,14 +535,22 @@ impl AuthService {
         // seen dead at can reactivate it.
         let mut hw = self.high_water.lock().unwrap();
         for (id, nc) in &snapshot.credentials {
-            if let Some(&(v_hw, dead_hw)) = hw.credentials.get(id.as_ref()) {
-                if nc.grant_version < v_hw {
+            if let Some(e) = hw.credentials.get(id.as_ref()) {
+                if nc.grant_version < e.v_hw {
                     return Err("grant_version below high-water");
                 }
                 if nc.status == CredentialStatus::Active
-                    && dead_hw.is_some_and(|d| nc.grant_version <= d)
+                    && e.dead.is_some_and(|d| nc.grant_version <= d)
                 {
                     return Err("revoked credential reactivated without a newer grant_version");
+                }
+                if e.omitted_at.is_some_and(|o| nc.grant_version <= o) {
+                    return Err(
+                        "omitted credential reintroduced without a newer grant_version (SR2 tombstone)",
+                    );
+                }
+                if nc.grant_version == e.fp_at && feed_fp(nc) != e.fp {
+                    return Err("same grant_version with different content");
                 }
             }
             if let Some(oc) = cur.credentials.get(id) {
@@ -475,9 +575,16 @@ impl AuthService {
             let dead = !matches!(nc.status, CredentialStatus::Active);
             match hw.credentials.get_mut(id.as_ref()) {
                 Some(e) => {
-                    e.0 = e.0.max(nc.grant_version);
+                    e.v_hw = e.v_hw.max(nc.grant_version);
                     if dead {
-                        e.1 = Some(e.1.map_or(nc.grant_version, |d| d.max(nc.grant_version)));
+                        e.dead = Some(e.dead.map_or(nc.grant_version, |d| d.max(nc.grant_version)));
+                    }
+                    if nc.grant_version >= e.fp_at {
+                        e.fp_at = nc.grant_version;
+                        e.fp = feed_fp(nc);
+                    }
+                    if e.omitted_at.is_some_and(|o| nc.grant_version > o) {
+                        e.omitted_at = None;
                     }
                 }
                 None => {
@@ -488,10 +595,27 @@ impl AuthService {
                     }
                     hw.credentials.insert(
                         id.clone(),
-                        (nc.grant_version, dead.then_some(nc.grant_version)),
+                        CredHw {
+                            v_hw: nc.grant_version,
+                            dead: dead.then_some(nc.grant_version),
+                            omitted_at: None,
+                            fp_at: nc.grant_version,
+                            fp: feed_fp(nc),
+                        },
                     );
                     hw.c_order.push_back(id.clone());
                 }
+            }
+        }
+        // Tombstone every credential the FULL snapshot dropped.
+        for (id, oc) in &cur.credentials {
+            if !snapshot.credentials.contains_key(id)
+                && let Some(e) = hw.credentials.get_mut(id.as_ref())
+            {
+                e.omitted_at = Some(
+                    e.omitted_at
+                        .map_or(oc.grant_version, |o| o.max(oc.grant_version)),
+                );
             }
         }
         drop(hw);
@@ -793,18 +917,32 @@ impl AuthService {
     /// CAPABILITY principal is held to (SR-3): the capability is a
     /// bearer credential, so suspension and admission apply to it the
     /// same instant they apply to token principals.
+    /// Project status + quotas for a NON-JWT principal (watch
+    /// capabilities). SR2 finding 3: this must carry the SAME
+    /// freshness contract as JWT verification — a capability holding
+    /// a policy older than the staleness window fails CLOSED
+    /// (`PolicyStale` -> retryable 503), never open on a stale
+    /// `Active`. `Ok(None)` = the project is not in a FRESH snapshot
+    /// (not served here); the caller's uniform refusal applies.
     pub fn status_and_quotas(
         &self,
         project: &crate::tenant::ProjectId,
-    ) -> Option<(
-        crate::project_policy::ProjectStatus,
-        crate::project_policy::ProjectQuotas,
-    )> {
-        self.projects
-            .load()
+        now: i64,
+    ) -> Result<
+        Option<(
+            crate::project_policy::ProjectStatus,
+            crate::project_policy::ProjectQuotas,
+        )>,
+        AuthError,
+    > {
+        let policies = self.projects.load();
+        if now - policies.fetched_at_unix > POLICY_STALENESS_MAX_SECS {
+            return Err(AuthError::PolicyStale);
+        }
+        Ok(policies
             .projects
             .get(project)
-            .map(|p| (p.status, p.quotas.clone()))
+            .map(|p| (p.status, p.quotas.clone())))
     }
 
     /// Snapshot freshness for the operator surface: whether each feed
@@ -1170,10 +1308,17 @@ mod tests {
         // Suspended project fails closed.
         {
             let mut snap = svc.projects.load().as_ref().clone();
-            snap.projects
-                .get_mut(&ProjectId::new("proj_456").unwrap())
-                .unwrap()
-                .status = ProjectStatus::Suspended;
+            {
+                let p = snap
+                    .projects
+                    .get_mut(&ProjectId::new("proj_456").unwrap())
+                    .unwrap();
+                p.status = ProjectStatus::Suspended;
+                // SR2 finding 2: a status change MUST ride a new
+                // policy version — same-version content drift is a
+                // publisher defect and the feed refuses it.
+                p.project_policy_version += 1;
+            }
             svc.publish_policies(snap).unwrap();
             assert_eq!(
                 svc.verify_customer(&sign(&claims()), NOW).unwrap_err(),

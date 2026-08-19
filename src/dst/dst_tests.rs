@@ -20602,8 +20602,15 @@ async fn feed_high_water_survives_removal_and_replay() {
         svc.publish_policies(mk_policy(3, 12, 6)).is_err(),
         "policy version below high-water must be refused after omission"
     );
-    // Equal-or-higher reintroduction is fine.
-    svc.publish_policies(mk_policy(3, 12, 7)).unwrap();
+    // SR2 finding 2 SUPERSEDES the original equal-version allowance:
+    // an OMITTED project cannot return at its unchanged version pair —
+    // omission is a tombstone and reintroduction is an explicit act
+    // under a strictly newer version.
+    assert!(
+        svc.publish_policies(mk_policy(3, 12, 7)).is_err(),
+        "equal-version reintroduction after omission must be refused"
+    );
+    svc.publish_policies(mk_policy(3, 12, 8)).unwrap();
 
     let mk_grants = |ver: u64, gver: u64, status: crate::project_policy::CredentialStatus| {
         let mut credentials = std::collections::HashMap::new();
@@ -20722,6 +20729,9 @@ async fn raw_and_operator_surfaces_are_internal_under_enforce() {
     .unwrap();
     let wl_hdr = format!("Bearer {wl}");
     let wla = ("authorization", wl_hdr.as_str());
+    // SR2 finding 1: this token carries NO operations claim — under
+    // §14.1 least privilege it opens NOTHING (it used to be a
+    // cell-wide credential; that behavior is retired).
     let (st, _, _) = hreq(
         addr,
         "POST",
@@ -20730,7 +20740,29 @@ async fn raw_and_operator_surfaces_are_internal_under_enforce() {
         br#"[{"i":1}]"#,
     )
     .await;
-    assert!(st == 200 || st == 204, "workload JWT on raw: {st}");
+    assert_eq!(
+        st, 401,
+        "operation-less workload JWT must open nothing: {st}"
+    );
+    // The SAME identity WITH the raw-append operation performs it.
+    let now2 = crate::shard::now_ms() / 1000;
+    let wl_op = format!(
+        "Bearer {}",
+        sr2_workload_jwt("raw-1", &["raw-append"], now2)
+    );
+    let wopa = ("authorization", wl_op.as_str());
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/rawx",
+        &[ct[0], wopa],
+        br#"[{"i":1}]"#,
+    )
+    .await;
+    assert!(
+        st == 200 || st == 204,
+        "raw-append workload JWT on raw: {st}"
+    );
     // A CUSTOMER-audience JWT must NOT open the raw surface.
     let cust = format!("Bearer {_tok}");
     let _ = cust;
@@ -27967,4 +27999,404 @@ async fn dab_seal_intent_crash_leaves_foreign_stream_intact() {
     );
     let after_recover = dab_view(addr, &b, &ekey, "fpx").await;
     assert_eq!(after_recover, base, "B changed under A's seal recovery");
+}
+
+// ---------------------------------------------------------------------------
+// SR2 (second review round): red tests. Written BEFORE the fixes and
+// confirmed FAILING at ce475426 — findings 1-3 of the follow-up review.
+// ---------------------------------------------------------------------------
+
+/// Mint a workload JWT with an explicit operations claim (§14.1).
+fn sr2_workload_jwt(kid: &str, operations: &[&str], now: i64) -> String {
+    const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
+    #[derive(serde::Serialize)]
+    struct W<'a> {
+        iss: &'a str,
+        aud: &'a str,
+        sub: &'a str,
+        cell_id: &'a str,
+        operations: Vec<&'a str>,
+        exp: i64,
+    }
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some(kid.to_string());
+    jsonwebtoken::encode(
+        &header,
+        &W {
+            iss: "https://auth.prisma.io",
+            aud: "prisma-streams-internal",
+            sub: "slot-op",
+            cell_id: "test-cell",
+            operations: operations.to_vec(),
+            exp: now + 300,
+        },
+        &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
+    )
+    .unwrap()
+}
+
+/// RED (review finding 1): a workload JWT's `operations` claim must
+/// SCOPE what the token can do. Today every gate reduces verification
+/// to a boolean, so a token minted for nothing at all — or for
+/// segment reads only — is a cell-wide administrator credential.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn workload_jwt_operations_scope_the_internal_surface() {
+    let scopes = "streams.create streams.records.append streams.records.read";
+    let (_state, addr, _tok) = sr_rig("proj-opsc", "ws_opsc", "c_opsc", "opsc-1", scopes).await;
+    let now = crate::shard::now_ms() / 1000;
+    let ct = ("content-type", "application/json");
+    let fleet = ("authorization", "Bearer dst-internal-token");
+
+    // Stage a raw stream as the static fleet operator (bridge posture).
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/opx", &[ct, fleet], br#"[{"i":0}]"#).await;
+    assert!(st == 200 || st == 201, "stage: {st}");
+
+    // A token with an EMPTY operations claim grants NOTHING.
+    let none = format!("Bearer {}", sr2_workload_jwt("opsc-1", &[], now));
+    let na = ("authorization", none.as_str());
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/opx", &[ct, na], br#"[{"i":1}]"#).await;
+    assert_eq!(st, 401, "empty-operations token appended via raw: {st}");
+    let (st, _, _) = hreq(addr, "GET", "/v1/stream/opx", &[na], b"").await;
+    assert_eq!(st, 401, "empty-operations token read via raw: {st}");
+    let (st, _, _) = hreq(addr, "GET", "/v1/segments/opx", &[na], b"").await;
+    assert_eq!(st, 401, "empty-operations token listed segments: {st}");
+
+    // segment-read authorizes EXACTLY segment reads: the internal
+    // segment-read gate passes (any downstream 4xx is fine — the claim
+    // under test is the authorization boundary), while raw appends,
+    // telemetry appends, and unrelated internal routes refuse.
+    let sr = format!(
+        "Bearer {}",
+        sr2_workload_jwt("opsc-1", &["segment-read"], now)
+    );
+    let sa = ("authorization", sr.as_str());
+    let (st, _, _) = hreq(addr, "GET", "/v1/internal/segment-read/opx", &[sa], b"").await;
+    assert_ne!(
+        st, 401,
+        "segment-read token refused its own operation: {st}"
+    );
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/opx", &[ct, sa], br#"[{"i":2}]"#).await;
+    assert_eq!(st, 401, "segment-read token appended via raw: {st}");
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/internal/telemetry-append/_usage",
+        &[ct, sa],
+        br#"[]"#,
+    )
+    .await;
+    assert_eq!(st, 401, "segment-read token reached telemetry-append: {st}");
+
+    // consumer-sweep must not open segment scans.
+    let cs = format!(
+        "Bearer {}",
+        sr2_workload_jwt("opsc-1", &["consumer-sweep"], now)
+    );
+    let ca = ("authorization", cs.as_str());
+    let (st, _, _) = hreq(addr, "GET", "/v1/internal/segment-scan/opx", &[ca], b"").await;
+    assert_eq!(st, 401, "consumer-sweep token reached segment-scan: {st}");
+
+    // An UNKNOWN operation name grants nothing.
+    let junk = format!(
+        "Bearer {}",
+        sr2_workload_jwt("opsc-1", &["everything"], now)
+    );
+    let ja = ("authorization", junk.as_str());
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/opx", &[ct, ja], br#"[{"i":3}]"#).await;
+    assert_eq!(st, 401, "unknown-operation token appended via raw: {st}");
+}
+
+/// RED (review finding 2): omission from a full snapshot must
+/// tombstone the entry at its last observed version — reintroducing it
+/// at the SAME version must refuse. Today the high-water loops only
+/// inspect IDs PRESENT in the incoming snapshot, so omitted-then-
+/// replayed entries walk straight back in.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn active_credential_omitted_then_same_version_active_is_refused() {
+    let svc = crate::auth::AuthService::new(
+        crate::auth::AuthMode::Enforce,
+        "https://auth.prisma.io".into(),
+        "test-cell",
+    )
+    .unwrap();
+    let now = crate::shard::now_ms() / 1000;
+    let cred = |ver: u64| {
+        let mut m = std::collections::HashMap::new();
+        m.insert(
+            std::sync::Arc::from("c-omit"),
+            crate::project_policy::CredentialGrant {
+                credential_id: std::sync::Arc::from("c-omit"),
+                project_id: crate::tenant::ProjectId::new("proj-omit").unwrap(),
+                grant_version: ver,
+                status: crate::project_policy::CredentialStatus::Active,
+                scopes: crate::tenant::ScopeSet::parse("streams.records.read").0,
+                grant: crate::tenant::StreamGrant::All,
+                expires_at: None,
+            },
+        );
+        m
+    };
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials: cred(7),
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    // Full snapshot WITHOUT the credential: fails closed, and must
+    // tombstone it at version 7.
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials: std::collections::HashMap::new(),
+        fetched_at_unix: now + 1,
+        feed_version: 2,
+    })
+    .unwrap();
+    // Same-version reintroduction: a publisher replaying stale state.
+    let r = svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials: cred(7),
+        fetched_at_unix: now + 2,
+        feed_version: 3,
+    });
+    assert!(
+        r.is_err(),
+        "omitted credential reintroduced at its old grant_version was accepted"
+    );
+    // A strictly newer version is the legitimate path back.
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials: cred(8),
+        fetched_at_unix: now + 3,
+        feed_version: 4,
+    })
+    .expect("newer grant_version must reintroduce cleanly");
+}
+
+/// RED (review finding 2, project leg): same omission rule for the
+/// policy snapshot — a project dropped from the feed cannot return at
+/// an unchanged version pair.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn project_omitted_then_same_policy_version_is_refused() {
+    let svc = crate::auth::AuthService::new(
+        crate::auth::AuthMode::Enforce,
+        "https://auth.prisma.io".into(),
+        "test-cell",
+    )
+    .unwrap();
+    let now = crate::shard::now_ms() / 1000;
+    let proj = |ppv: u64, status: crate::project_policy::ProjectStatus| {
+        let pid = crate::tenant::ProjectId::new("proj-pomit").unwrap();
+        let mut m = std::collections::HashMap::new();
+        m.insert(
+            pid.clone(),
+            crate::project_policy::ProjectPolicy {
+                project_id: pid,
+                workspace_id: crate::tenant::WorkspaceId::new("ws_pomit").unwrap(),
+                cell_id: std::sync::Arc::from("test-cell"),
+                project_policy_version: ppv,
+                ownership_version: 1,
+                status,
+                quotas: crate::project_policy::ProjectQuotas::default(),
+            },
+        );
+        m
+    };
+    use crate::project_policy::ProjectStatus as PS;
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects: proj(4, PS::Active),
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects: std::collections::HashMap::new(),
+        fetched_at_unix: now + 1,
+        feed_version: 2,
+    })
+    .unwrap();
+    let r = svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects: proj(4, PS::Active),
+        fetched_at_unix: now + 2,
+        feed_version: 3,
+    });
+    assert!(
+        r.is_err(),
+        "omitted project reintroduced at its old policy version was accepted"
+    );
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects: proj(5, PS::Active),
+        fetched_at_unix: now + 3,
+        feed_version: 4,
+    })
+    .expect("newer project_policy_version must reintroduce cleanly");
+}
+
+/// RED (review finding 2, semantic leg): an EQUAL version with
+/// DIFFERENT content is a publisher defect — versions must pin bytes.
+/// Identical replay at the same version stays accepted (at-least-once
+/// feeds re-send).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn same_version_with_changed_content_is_refused() {
+    let svc = crate::auth::AuthService::new(
+        crate::auth::AuthMode::Enforce,
+        "https://auth.prisma.io".into(),
+        "test-cell",
+    )
+    .unwrap();
+    let now = crate::shard::now_ms() / 1000;
+    let cred = |scopes: &str| {
+        let mut m = std::collections::HashMap::new();
+        m.insert(
+            std::sync::Arc::from("c-sem"),
+            crate::project_policy::CredentialGrant {
+                credential_id: std::sync::Arc::from("c-sem"),
+                project_id: crate::tenant::ProjectId::new("proj-sem").unwrap(),
+                grant_version: 7,
+                status: crate::project_policy::CredentialStatus::Active,
+                scopes: crate::tenant::ScopeSet::parse(scopes).0,
+                grant: crate::tenant::StreamGrant::All,
+                expires_at: None,
+            },
+        );
+        m
+    };
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials: cred("streams.records.read"),
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    // Identical replay: accepted (at-least-once delivery).
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials: cred("streams.records.read"),
+        fetched_at_unix: now + 1,
+        feed_version: 2,
+    })
+    .expect("identical same-version replay must stay accepted");
+    // Same grant_version, WIDER scopes: refused.
+    let r = svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials: cred("streams.records.read streams.records.append"),
+        fetched_at_unix: now + 2,
+        feed_version: 3,
+    });
+    assert!(
+        r.is_err(),
+        "same grant_version with changed scopes was accepted"
+    );
+
+    // Project leg: same policy version, Suspended -> Active.
+    use crate::project_policy::ProjectStatus as PS;
+    let proj = |status: PS| {
+        let pid = crate::tenant::ProjectId::new("proj-sem2").unwrap();
+        let mut m = std::collections::HashMap::new();
+        m.insert(
+            pid.clone(),
+            crate::project_policy::ProjectPolicy {
+                project_id: pid,
+                workspace_id: crate::tenant::WorkspaceId::new("ws_sem2").unwrap(),
+                cell_id: std::sync::Arc::from("test-cell"),
+                project_policy_version: 4,
+                ownership_version: 1,
+                status,
+                quotas: crate::project_policy::ProjectQuotas::default(),
+            },
+        );
+        m
+    };
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects: proj(PS::Suspended),
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let r = svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects: proj(PS::Active),
+        fetched_at_unix: now + 1,
+        feed_version: 2,
+    });
+    assert!(
+        r.is_err(),
+        "same project_policy_version with changed status was accepted"
+    );
+}
+
+/// RED (review finding 3): watch capabilities must FAIL CLOSED when
+/// project policy is stale, exactly like customer-JWT requests do.
+/// Today status_and_quotas reads the last-loaded snapshot without a
+/// freshness check, so capability traffic keeps serving on a policy
+/// that may be minutes past a suspension the cell never heard about.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stale_policy_fails_watch_capabilities_closed() {
+    let scopes = "streams.create streams.records.append streams.records.read \
+                  streams.metadata.read streams.watches.manage";
+    let (state, addr, tok) = sr_rig("proj-stalec", "ws_stalec", "c_stalec", "stc-1", scopes).await;
+    let auth = ("authorization", tok.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/orders",
+        &[ekey, auth],
+        br#"{"format":{"kind":"json"},"watches":[{"name":"by-x","fields":["/id"]}]}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let bref = crate::tenant::ProjectId::new("proj-stalec")
+        .unwrap()
+        .stream_ref("orders");
+    let desc = state.registry.get(&bref).await.unwrap().unwrap();
+    let epoch = desc.epoch_bytes().unwrap();
+    let khex = format!("{:016x}", 7u64);
+    let tokk = crate::crypto::touch_token(&skey(), &epoch);
+    let sk = crate::crypto::wait_sig_key(&tokk, &epoch);
+    let exp = crate::shard::now_ms() / 1000 + 120;
+    let cap = format!(
+        "proj-stalec.{exp}.{}",
+        crate::crypto::watch_capability_sig(
+            &sk,
+            &bref,
+            &desc.stream_epoch,
+            "by-x",
+            &khex,
+            "GET",
+            exp
+        )
+    );
+    let path =
+        format!("/v1/streams/orders/watches/by-x/keys/{khex}?cursor=now&timeoutMs=100&cap={cap}");
+    // Fresh Active policy: the wait serves.
+    let (st, _, b) = preq(addr, "GET", &path, &[], b"").await;
+    assert_eq!(st, 200, "fresh wait: {}", String::from_utf8_lossy(&b));
+
+    // Republish Active — but STALE: fetched past the freshness window.
+    // Customer JWTs already 503 in this state; the capability must too.
+    let pid = crate::tenant::ProjectId::new("proj-stalec").unwrap();
+    let mut projects = std::collections::HashMap::new();
+    projects.insert(
+        pid.clone(),
+        crate::project_policy::ProjectPolicy {
+            project_id: pid,
+            workspace_id: crate::tenant::WorkspaceId::new("ws_stalec").unwrap(),
+            cell_id: std::sync::Arc::from("test-cell"),
+            project_policy_version: 2,
+            ownership_version: 1,
+            status: crate::project_policy::ProjectStatus::Active,
+            quotas: crate::project_policy::ProjectQuotas::default(),
+        },
+    );
+    state
+        .auth
+        .publish_policies(crate::project_policy::PolicySnapshot {
+            projects,
+            fetched_at_unix: crate::shard::now_ms() / 1000
+                - crate::auth::POLICY_STALENESS_MAX_SECS
+                - 1,
+            feed_version: 2,
+        })
+        .unwrap();
+    let (st, _, b) = preq(addr, "GET", &path, &[], b"").await;
+    assert_eq!(
+        st,
+        503,
+        "stale policy must fail the capability CLOSED (got {st}: {})",
+        String::from_utf8_lossy(&b)
+    );
+    engine_shutdown(&state).await;
 }

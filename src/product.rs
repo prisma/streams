@@ -5059,7 +5059,11 @@ pub(crate) async fn internal_sweep_segment(
     headers: HeaderMap,
     body: Bytes,
 ) -> Response {
-    if !crate::http::fleet_internal_authorized(&state, &headers) {
+    if !crate::http::fleet_operation_authorized(
+        &state,
+        &headers,
+        crate::http::InternalOperation::ConsumerSweep,
+    ) {
         return crate::http::internal_unauthorized();
     }
     #[derive(serde::Deserialize)]
@@ -5158,7 +5162,11 @@ pub(crate) async fn internal_queue_cursor(
     axum::extract::Path(name): axum::extract::Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    if !crate::http::fleet_internal_authorized(&state, &headers) {
+    if !crate::http::fleet_operation_authorized(
+        &state,
+        &headers,
+        crate::http::InternalOperation::QueueCursor,
+    ) {
         return crate::http::internal_unauthorized();
     }
     let q = |h: &str| {
@@ -5256,7 +5264,11 @@ pub(crate) async fn internal_segment_scan(
     axum::extract::Path(name): axum::extract::Path<String>,
     headers: HeaderMap,
 ) -> Response {
-    if !crate::http::fleet_internal_authorized(&state, &headers) {
+    if !crate::http::fleet_operation_authorized(
+        &state,
+        &headers,
+        crate::http::InternalOperation::SegmentScan,
+    ) {
         return crate::http::internal_unauthorized();
     }
     let q = |h: &str| {
@@ -6907,12 +6919,30 @@ async fn product_watch_wait(
     // the WHOLE wait — a suspended project's capabilities die with the
     // policy, and capability waiters cannot bypass the §17.3 ceilings.
     let _cap_admission = if state.auth.mode == crate::auth::AuthMode::Enforce {
-        match state.auth.status_and_quotas(lookup_tenant) {
-            None => {
-                // Not in this cell's policy snapshot: not served here.
+        match state
+            .auth
+            .status_and_quotas(lookup_tenant, crate::shard::now_ms() / 1000)
+        {
+            Err(_) => {
+                // SR2 finding 3: stale policy fails the capability
+                // CLOSED — the same retryable 503 a customer JWT gets,
+                // never service on a stale Active.
+                return crate::audit::tag_project(
+                    perr(
+                        StatusCode::SERVICE_UNAVAILABLE,
+                        "policy_stale",
+                        "project policy is stale; retry shortly",
+                        None,
+                        true,
+                    ),
+                    lookup_tenant,
+                );
+            }
+            Ok(None) => {
+                // Not in a FRESH policy snapshot: not served here.
                 return crate::audit::tag_project(refuse(), lookup_tenant);
             }
-            Some((status, quotas)) => {
+            Ok(Some((status, quotas))) => {
                 if !matches!(status, crate::project_policy::ProjectStatus::Active) {
                     return crate::audit::tag_project(
                         crate::audit::tag(
