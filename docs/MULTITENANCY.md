@@ -1,6 +1,6 @@
 # Prisma Streams — Shared-Cell Multitenancy Implementation Plan
 
-**Status:** FROZEN CONTRACT (Stage 0, committed 2026-08-15; revision 3, 2026-08-18 — see Revision log)
+**Status:** FROZEN CONTRACT (Stage 0, committed 2026-08-15; revision 4, 2026-08-19 — see Revision log)
 **Author:** Søren Bramer Schmidt (implementation plan, delivered 2026-08-15)
 **Target:** Many projects in each Prisma Streams cell
 **Migration posture:** Clean layout switch; no mixed-layout operation
@@ -29,6 +29,14 @@
   the raw-surface principal follow-up recorded in §6.1. §14.1 marked
   the workload-JWT path live with the static token as a bridge; §14.2
   recorded the implemented operator bearer gate.
+- r4 (2026-08-19, second review round): §14.1 operation-scoped
+  workload authority IMPLEMENTED inbound and outbound (eight typed
+  operations; empty/unknown claims grant nothing; FLEET_AUTH_MODE
+  static|workload with static refused under the release posture);
+  §4.5 omission tombstones + version-pins-bytes fingerprints on both
+  feeds; §7.1/§15 capability freshness parity (stale policy fails
+  capability waits CLOSED); §17.3 max_streams, queued_append_bytes,
+  and capability-wait subscription accounting enforced.
 
 ---
 
@@ -350,6 +358,32 @@ credential_id
 ```
 
 `jti` remains useful for audit and exceptional single-token revocation, but the system should not require publishing every short-lived token issuance.
+
+---
+
+### 4.5 Omission tombstones and version fingerprints *(revision r4)*
+
+The feeds publish FULL snapshots. Two publisher defects are refused
+at the cell (r4, implemented in `publish_policies`/`publish_grants`;
+ALL checks run before ANY mutation):
+
+* **Omission is a tombstone.** An entry present in the current
+  snapshot but absent from the incoming one is tombstoned at its last
+  observed version. Reintroducing it requires a STRICTLY newer
+  version (credentials: `grant_version`; projects: either of the
+  version pair). A replayed pre-omission snapshot cannot resurrect a
+  removed credential or project.
+* **A version pins bytes.** Each (id, version) carries a semantic
+  fingerprint; an EQUAL version with different content — scopes
+  widened at the same `grant_version`, `Suspended -> Active` at the
+  same policy version — is refused. Identical replay stays accepted
+  (feeds are at-least-once).
+
+The retained table is PROCESS-LOCAL and bounded (65,536/kind FIFO):
+the durable security guarantee is the Control-Plane feed contract
+itself; this mechanism is defense in depth against a misbehaving
+publisher within one process lifetime, and a restart deliberately
+resets it.
 
 ---
 
@@ -954,16 +988,32 @@ operation ID
 expiry
 ```
 
-*Status (r3).* The workload-JWT verifier is LIVE in the cell
-(`AuthService::verify_internal`): `aud` `prisma-streams-internal`,
-same issuer and JWKS as customer tokens, `cell_id` bound to this
-cell, `sub` required, exact `exp`/`nbf` checks. Every consumer of
-fleet identity — the `/v1/internal/*` fleet API and the raw surface
-under enforce (§14.3) — accepts a workload JWT today. The static
-`FLEET_INTERNAL_TOKEN` remains ONLY as a bridge until the platform
-mints workload JWTs; retiring it is a platform-leg GA blocker, not a
-cell change. The delegated-capability shape above stays the target
-for sensitive mutations and is not yet implemented.
+*Status (r4).* The workload-JWT verifier is LIVE and its
+`operations` claim is ENFORCED per route. The operation vocabulary:
+
+```text
+raw-read  raw-append  raw-lifecycle  segment-read
+segment-scan  queue-cursor  consumer-sweep  telemetry-append
+```
+
+Rules (implemented, `fleet_operation_authorized`): an EMPTY or
+UNKNOWN operations list grants nothing; every internal route demands
+one exact operation; the raw surface derives its operation from the
+method (PUT/DELETE -> raw-lifecycle, POST -> raw-append, GET/HEAD ->
+raw-read; `/v1/segments` -> segment-read). A workload token is never
+a cell-wide credential.
+
+OUTBOUND, the cell presents workload identity itself: relays draw
+their bearer from a refreshing token source (`WORKLOAD_TOKEN_FILE`,
+platform-rotated, expiry-aware cache) and a peer 401 forces exactly
+one refresh-and-retry. `FLEET_AUTH_MODE` names the postures: `static`
+is the legacy bridge (full authority, boot WARNING, REFUSED under
+`STREAMS_RELEASE_POSTURE=1`); `workload` runs with no static token at
+all. The platform leg is minting the JWTs into the file; the cell no
+longer needs code changes to drop the static token.
+
+The delegated-capability shape above stays the target for sensitive
+mutations and is not yet implemented.
 
 ### 14.2 Operator identity
 
@@ -1049,6 +1099,14 @@ project, stream epoch, watch, and expiry binding
 ```
 
 A watch capability includes the stable `project_id`; it does not depend on the current workspace.
+
+*Freshness (r4).* Capability authorization carries the SAME policy
+freshness contract as customer JWTs (§7.1): a policy snapshot older
+than the staleness window fails the wait CLOSED with a retryable 503
+(`policy_stale`) — never service on a stale `Active`. Capability
+waits also occupy the project's live-subscription pool for their
+whole duration (§17.3): watches have no side door around the
+ceiling.
 
 ---
 
@@ -1142,6 +1200,18 @@ Reject only the offending project:
 ```
 
 Never merge unrelated projects into one overflow token bucket.
+
+*Enforced ceilings (r4).* Beyond the rate/volume buckets, three
+declared quotas are live:
+
+* `max_streams` — reserved race-safely at CREATE (losers of a
+  concurrent burst refuse typed); the count seeds lazily from the
+  catalog (alive non-child descriptors); soft-deleted fork-retained
+  sources still count and release only at their terminal hard delete.
+* `queued_append_bytes` — the request body is charged to the project
+  BEFORE the committer sees it and released when the append DECIDES.
+* `max_live_subscriptions` — SSE subscriptions AND capability watch
+  waits draw from the same pool.
 
 ### 17.4 Fairness
 
