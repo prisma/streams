@@ -5684,7 +5684,11 @@ async fn rig_in_seal_gap(
         .unwrap()
         .unwrap();
     let identity = desc.resolve_segment("").identity;
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    // 30s, not 10: CI's loaded runners take multiples of a laptop's
+    // wall time through this path; the deadline exists to fail fast on
+    // a REAL wedge (which parks forever), not to race the scheduler
+    // (seal_gap_get raced it at 10s on 2/3 CI runs, 2026-08-19).
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         let closed = match state
             .engine_for_scaler(
@@ -5723,7 +5727,7 @@ async fn rig_in_seal_gap(
 
 /// Wait until the withheld publication lands after release.
 async fn await_published(state: &Arc<crate::http::AppState>, stream: &str) {
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         state.registry.invalidate(&state.raw_adapter_sref(stream));
         let d = state
