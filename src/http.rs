@@ -1941,6 +1941,7 @@ async fn project_usage_axum_inner(
                 false,
             ));
         }
+        // mt-lint: allow(state-tenant-read): Off/Shadow single-tenant fallback for the usage route (Stage 5d posture)
         state.tenant.clone()
     };
     crate::product::with_product_cors(
@@ -2107,6 +2108,7 @@ async fn stream_entry_inner(
             };
             let r = create_stream(
                 state.clone(),
+                // mt-lint: allow(state-tenant-read): raw adapter create path (SS14.3 scope)
                 state.tenant.clone(),
                 name.clone(),
                 headers,
@@ -2758,6 +2760,7 @@ fn fresh_desc(
     StreamDesc {
         name: name.to_string(),
         account_id: Some(state.account_id.clone()),
+        // mt-lint: allow(state-tenant-read): the RAW descriptor builder — raw creates are deployment-tenant by definition (SS14.3)
         project_id: state.tenant.clone(),
         stream_epoch: hex(&epoch),
         seal_gen_counter: 0,

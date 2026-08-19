@@ -1025,6 +1025,7 @@ pub async fn product_entry(
     let tenant: crate::tenant::ProjectId = principal
         .as_ref()
         .map(|p| p.project_id.clone())
+        // mt-lint: allow(state-tenant-read): Off/Shadow single-tenant posture (Stage 5d) — enforce-mode requests always carry a principal
         .unwrap_or_else(|| state.tenant.clone());
     if let Some(r) = reject_legacy_inputs(&headers, &query, &method) {
         return r;
@@ -7253,6 +7254,7 @@ pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMa
     let list_project = principal
         .as_ref()
         .map(|p| p.project_id.clone())
+        // mt-lint: allow(state-tenant-read): Off/Shadow single-tenant posture (Stage 5d) — enforce-mode requests always carry a principal
         .unwrap_or_else(|| state.tenant.clone());
     // Review item 3: the cursor is versioned, PROJECT-BOUND and (when
     // the deployment key is set) signed — a cursor from another

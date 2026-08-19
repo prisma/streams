@@ -2695,6 +2695,7 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
     loop {
         let page = match state
             .registry
+            // mt-lint: allow(state-tenant-read): deployment-tenant catalog sweep — terminal-closure reconciliation walks the raw surface's own rows
             .list_page_raw(&state.tenant, after.as_deref(), 256)
             .await
         {

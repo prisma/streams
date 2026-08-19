@@ -39,6 +39,11 @@
 //! * `dual-identity-params` — no fn takes BOTH a `TenantStreamRef`
 //!   and a bare name param; the review's "remove dual (sref, name)
 //!   params". No markers.
+//! * `state-tenant-read` — reading `AppState::tenant` IS adopting the
+//!   deployment tenant's identity; it is sanctioned only inside
+//!   `raw_adapter_sref` itself. Every other read carries a marker
+//!   naming its posture, so `state.tenant.stream_ref(name)` can never
+//!   slip into a product helper unmarked, even in the ingress files.
 //!
 //! Scope: src/*.rs. Excluded: src/dst.rs + src/dst/ (the DST harness
 //! and tests — fixture staging legitimately uses raw identity),
@@ -277,6 +282,28 @@ impl<'a, 'ast> Visit<'ast> for Lint<'a> {
         syn::visit::visit_expr_method_call(self, c);
     }
 
+    fn visit_expr_field(&mut self, f: &'ast syn::ExprField) {
+        if let syn::Member::Named(m) = &f.member
+            && m == "tenant"
+        {
+            let recv = norm_type(&f.base);
+            if (recv == "state" || recv == "st" || recv == "self" || recv.ends_with(".state"))
+                && !self.fn_stack.iter().any(|n| n == "raw_adapter_sref")
+                && !self.marker(m.span().start().line, "state-tenant-read")
+            {
+                self.flag(
+                    m.span().start().line,
+                    "state-tenant-read",
+                    format!(
+                        "deployment-tenant identity adopted (in {})",
+                        self.fn_stack.last().map(|s| s.as_str()).unwrap_or("?")
+                    ),
+                );
+            }
+        }
+        syn::visit::visit_expr_field(self, f);
+    }
+
     fn visit_expr_struct(&mut self, e: &'ast syn::ExprStruct) {
         if self.file != "ops.rs"
             && e.path
@@ -310,15 +337,26 @@ fn multitenancy_identity_lint() {
     let mut violations = Vec::new();
     let mut markers = Vec::new();
     let mut scanned = 0usize;
-    let mut entries: Vec<_> = std::fs::read_dir(&root)
-        .unwrap()
-        .filter_map(|e| e.ok())
-        .map(|e| e.path())
-        .filter(|p| {
-            p.extension().is_some_and(|x| x == "rs")
-                && !SCAN_SKIP.contains(&p.file_name().unwrap().to_str().unwrap())
-        })
-        .collect();
+    // Recursive: new submodules are scanned the day they appear.
+    // src/dst/ (harness + tests) and src/bin/ (single-tenant client
+    // tools) stay out by directory.
+    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()) {
+            let p = e.path();
+            let name = p.file_name().unwrap().to_str().unwrap().to_string();
+            if p.is_dir() {
+                if name != "dst" && name != "bin" {
+                    walk(&p, out);
+                }
+            } else if p.extension().is_some_and(|x| x == "rs")
+                && !SCAN_SKIP.contains(&name.as_str())
+            {
+                out.push(p);
+            }
+        }
+    }
+    let mut entries: Vec<std::path::PathBuf> = Vec::new();
+    walk(&root, &mut entries);
     entries.sort();
     for path in entries {
         let src = std::fs::read_to_string(&path).unwrap();

@@ -4,6 +4,11 @@ on:
   push:
     branches: [main, slate]
   pull_request:
+  schedule:
+    # SR2-5: the noisy-neighbor campaign runs NIGHTLY (03:17 UTC), not
+    # as a one-time recorded receipt. Locked thresholds live in the
+    # script; a regression fails this workflow.
+    - cron: "17 3 * * *"
 
 # Product-surface spec appendix §7: the required CI topology. The
 # dual-surface equivalence corpus, DST scenarios, and product
@@ -40,6 +45,23 @@ jobs:
           if grep -E "^test result" /tmp/suite.log | grep -qv " 0 failed"; then
             echo "suite has failures"; exit 1
           fi
+  # Job: the REAL enforce-mode noisy-neighbor campaign (SR2-5),
+  # nightly. Reduced herd for the 4-core runner (24 noisy, 100 idle)
+  # with the SAME locked thresholds; the contract-scale 48/200 run is
+  # part of RC promotion (scripts/promote-rc.sh).
+  noisy-campaign:
+    if: github.event_name == 'schedule'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Noisy-neighbor campaign (locked thresholds)
+        run: NOISY=24 IDLE=100 WINDOW_SECS=20 node scripts/mt-noisy-campaign.mjs
+
   # Job: the shared-cell certification smoke at CONTRACT scale
   # (docs/MULTITENANCY.md §18 Stage 8 / SR-6). The suite's default run
   # exercises the same test at 128 projects; this job runs the
