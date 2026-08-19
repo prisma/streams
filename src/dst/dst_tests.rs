@@ -3215,6 +3215,122 @@ async fn wait_all_absorbed(engine: &Arc<crate::shard::ShardEngine>, hashes: &[[u
 }
 
 /// P0 (static audit): the v2 gather previously accumulated up to
+/// WC #266 gate: a forced sparse-absorption wave over MANY tiny
+/// streams must not blow append latency through the shared per-shard
+/// committer lane. Storage carries Tigris-shaped latency on EVERY op;
+/// paced appends run before the wave (baseline) and during it (wave).
+/// The bound is generous — the field failure was multi-second stalls
+/// piling 2,048 in-flight, not a 2x degradation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn sparse_absorption_wave_bounds_append_latency() {
+    let inner = mem();
+    let store = FaultStore::uniform(
+        inner.clone(),
+        4242,
+        FaultPlan {
+            error_pct: 0,
+            lost_response_pct: 0,
+            latency_pct: 100,
+            latency_ms: (5, 15),
+        },
+    );
+    let key = skey();
+    const N: usize = 192;
+    let hashes: Vec<[u8; 16]> = (0..N)
+        .map(|i| {
+            let mut h = [0u8; 16];
+            h[0] = 0xA6;
+            h[1] = (i / 256) as u8;
+            h[2] = (i % 256) as u8;
+            h
+        })
+        .collect();
+
+    let db = slatedb::Db::builder("dst-wave", store.clone() as Arc<dyn ObjectStore>)
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
+    let engine = crate::shard::ShardEngine::start(
+        "dst-wave".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+        __maint,
+    );
+    // Sparse seed: ~2 KiB per stream — the 10k-tenant field shape in
+    // miniature.
+    for h in &hashes {
+        append_sized(&engine, *h, &key, "", 2048).await;
+    }
+
+    let absorber = crate::history::Absorber::new(
+        store.clone(),
+        engine.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig::default(),
+    );
+
+    let pctl = |mut v: Vec<u128>, p: f64| -> u128 {
+        v.sort_unstable();
+        v[((v.len() as f64 - 1.0) * p) as usize]
+    };
+    let paced_appends = |tag: &'static str| {
+        let engine = engine.clone();
+        let key = key.clone();
+        let probe: [u8; 16] = [0xA7; 16];
+        async move {
+            let mut lat = Vec::with_capacity(30);
+            for _ in 0..30 {
+                let t0 = std::time::Instant::now();
+                append_sized(&engine, probe, &key, "", 1024).await;
+                lat.push(t0.elapsed().as_millis());
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+            }
+            eprintln!(
+                "{tag}: p50={}ms p99={}ms",
+                pctl(lat.clone(), 0.5),
+                pctl(lat.clone(), 0.99)
+            );
+            lat
+        }
+    };
+    // Probe stream must exist before measuring.
+    append_sized(&engine, [0xA7; 16], &key, "", 1024).await;
+
+    let base = paced_appends("baseline").await;
+
+    // The WAVE: one gather sweeping every sparse stream, concurrent
+    // with the paced appends on the shared 2-worker runtime.
+    let wave_task = {
+        let absorber = absorber;
+        let hashes = hashes.clone();
+        tokio::spawn(async move {
+            let _ = absorber.absorb_gather_v2(&hashes).await;
+        })
+    };
+    let during = paced_appends("during-wave").await;
+    let _ = wave_task.await;
+
+    let base_p99 = pctl(base, 0.99) as f64;
+    let wave_p99 = pctl(during, 0.99) as f64;
+    assert!(
+        wave_p99 <= base_p99 * 4.0 + 150.0,
+        "append p99 under a sparse absorption wave must stay bounded: \
+         baseline {base_p99}ms vs wave {wave_p99}ms"
+    );
+}
+
 /// V2_LANE_PER_TICK x 4 MiB (~4 GiB) in ONE WriteBatch before any
 /// backpressure could apply. The aggregate budget must pack streams up
 /// to gather_max_bytes and defer the rest to later gathers — with no
