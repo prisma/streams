@@ -42,6 +42,17 @@ const sfetch = async (...args) => {
   }
 };
 const j = async (r) => ({ status: r.status, body: await r.json().catch(() => ({})) });
+// Retry RETRYABLE refusals (503 temporarily_unavailable / 429) the way
+// a real client does — engine warm-up on loaded CI runners answers the
+// first touch with a retryable. Auth verdicts (401/403/421) return
+// immediately: the battery's strictness lives there.
+const rfetch = async (url, opts) => {
+  for (let i = 0; ; i++) {
+    const r = await sfetch(url, opts);
+    if ((r.status !== 503 && r.status !== 429) || i >= 8) return r;
+    await sleep(500);
+  }
+};
 
 const root = mkdtempSync(join(tmpdir(), "platform-e2e-"));
 const dirA = join(root, "a"), dirB = join(root, "b"), dirC = join(root, "c");
@@ -133,7 +144,7 @@ const mkCred = async (pid, name, scopes) =>
 const exchange = (secret) =>
   sfetch(`${emuBase}/v1/token/streams`, { method: "POST", headers: { authorization: `StreamsCredential ${secret}` } });
 const readRecords = (base, name, token) =>
-  sfetch(`${base}/v1/streams/${name}/records`, { headers: { authorization: `Bearer ${token}`, "prisma-encryption-key": KEY_B64 } });
+  rfetch(`${base}/v1/streams/${name}/records`, { headers: { authorization: `Bearer ${token}`, "prisma-encryption-key": KEY_B64 } });
 
 // ---- Phase A: credential lifecycle through the GATEWAY -------------------
 const created = await mkCred("proj-e2e", "e2e ingest");
@@ -189,14 +200,14 @@ const tokB = await j(await exchange(SECRET_B));
 check("cell-b project exchanges", tokB.status === 200);
 await sleep(1500);
 const tb = tokB.body.accessToken;
-const bCreate = await sfetch(`${gwBase}/v1/streams/e2e/orders`, {
+const bCreate = await rfetch(`${gwBase}/v1/streams/e2e/orders`, {
   method: "PUT",
   headers: { authorization: `Bearer ${tb}`, "content-type": "application/json", "prisma-encryption-key": KEY_B64 },
   body: JSON.stringify({ format: { kind: "json" } }),
 });
 check("proj-b creates its own e2e/orders through the gateway", bCreate.status === 200 || bCreate.status === 201,
   `status ${bCreate.status} body ${await bCreate.text().catch(() => "")}`);
-const bAppend = await sfetch(`${gwBase}/v1/streams/e2e/orders/records`, {
+const bAppend = await rfetch(`${gwBase}/v1/streams/e2e/orders/records`, {
   method: "POST",
   headers: { authorization: `Bearer ${tb}`, "content-type": "application/json", "prisma-encryption-key": KEY_B64 },
   body: JSON.stringify({ src: "cell-b" }),
@@ -399,7 +410,7 @@ const wB2 = readFileSync(join(dirB, "workload.jwt"), "utf8");
 check("workload JWTs rotate atomically on every cell", wA1 !== wA2 && wB1 !== wB2 && wA2.split(".").length === 3 && wB2.split(".").length === 3);
 
 async function streamCreateRaw(base, name, token) {
-  const r = await sfetch(`${base}/v1/streams/${name}`, {
+  const r = await rfetch(`${base}/v1/streams/${name}`, {
     method: "PUT",
     headers: { authorization: `Bearer ${token}`, "content-type": "application/json", "prisma-encryption-key": KEY_B64 },
     body: JSON.stringify({ format: { kind: "json" } }),
