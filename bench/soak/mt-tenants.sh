@@ -46,6 +46,13 @@ while IFS='=' read -r key value; do
   MEMFLAGS+=(--env "$key=$value")
 done < "$ROOT/deploy/profiles/compute-1g.env"
 
+# ---- 0. provision (project + bucket + key, region-pinned receipt) ---------
+# The previous campaign's teardown removes its project; every run
+# provisions its own (provision.py refuses cross-run receipt reuse).
+python3 "$HERE/provision.py" --run-id "$SOAK_RUN_ID" "$R"
+rm -f "$S/projects/$(cat "$S/proj-$R.txt")"/svc-*-"$R".txt 2>/dev/null || true
+P=$(cat "$S/proj-$R.txt")
+
 # ---- 1. binaries ----------------------------------------------------------
 "$HERE/build-upload.sh"
 
@@ -70,8 +77,22 @@ for path, key in [(sys.argv[1], sys.argv[2]), (sys.argv[3], sys.argv[4])]:
 PY
 
 # ---- deploy helpers (deploy-region.sh's traps, campaign-scoped) ------------
-svc_id() { # role -> cached+revalidated service id or empty
+svc_id() { # role -> cached+REVALIDATED service id or empty
   local ROLE=$1 SVCFILE="$S/projects/$P/svc-$ROLE-$R.txt"
+  mkdir -p "$S/projects/$P"
+  # Revalidate exactly like deploy-region.sh: a cached id must appear
+  # in THIS project's list under the expected name — a torn-down
+  # campaign leaves stale cps_ ids that deploy as "Resource Not Found"
+  # (this exact failure, 2026-08-19).
+  if [ -f "$SVCFILE" ]; then
+    local CACHED=$(cat "$SVCFILE")
+    local LISTED=$(bunx --bun @prisma/compute-cli@0.39.0 services list --project "$P" 2>/dev/null \
+                   | awk -v id="$CACHED" -v n="soak-$ROLE-$R" '$1==id && $2==n {print $1}')
+    if [ -z "$LISTED" ]; then
+      echo "stale service cache for $ROLE-$R (id $CACHED); dropping" >&2
+      rm -f "$SVCFILE"
+    fi
+  fi
   if [ ! -f "$SVCFILE" ]; then
     local EX=$(bunx --bun @prisma/compute-cli@0.39.0 services list --project "$P" 2>/dev/null \
                | awk -v n="soak-$ROLE-$R" '$2==n {print $1; exit}') || true
@@ -94,6 +115,15 @@ deploy() { # role, then --env args...
     done
     [ "$DEPLOYED" = 1 ] || { echo "deploy failed for $ROLE" >&2; exit 1; }
   )
+  # First deploy of a role CREATES the service by name; cache its id so
+  # every later redeploy targets the same service (deploying by
+  # --service-name twice fails with "already exists").
+  local SVCFILE="$S/projects/$P/svc-$ROLE-$R.txt"
+  if [ ! -f "$SVCFILE" ]; then
+    local NEWID=$(bunx --bun @prisma/compute-cli@0.39.0 services list --project "$P" 2>/dev/null \
+                  | awk -v n="soak-$ROLE-$R" '$2==n {print $1; exit}')
+    [ -n "$NEWID" ] && echo "$NEWID" > "$SVCFILE"
+  fi
   "$HERE/resolve-urls.sh" "$R" "$ROLE" > /dev/null
 }
 SERVER_COMMON=(
@@ -115,7 +145,22 @@ SERVER_COMMON=(
   --env ABSORB_PASS_BYTES=67108864 --env TRIM_PER_OP=65536
   --env POOL_IDLE_SECS=4 --env KEEP_AWAKE=1
   --env CELL_ID="$CELL"
+  # Enforce refuses to boot with a default deployment project id; the
+  # 2026-08-19 stage-1 crash-loop was exactly this refusal (correct
+  # behavior — billing must never land on a placeholder project).
+  --env PROJECT_ID=proj-mt-deploy
 )
+verify_server_live() { # retry /livez until 200 or fail loudly
+  local URL=$(cat "$S/url-server-$R.txt")
+  for i in $(seq 1 24); do
+    local CODE=$(curl -s -o /dev/null -w '%{http_code}' --max-time 10 "$URL/livez" || true)
+    [ "$CODE" = 200 ] && { echo "server live ($URL)"; return 0; }
+    sleep 5
+  done
+  echo "SERVER NOT LIVE after deploy — diagnostic:" >&2
+  curl -s --max-time 10 "$URL/livez" | head -c 600 >&2 || true
+  exit 1
+}
 gen_env_common() { # stage prefix
   local PFX=$1
   GEN_COMMON=(
@@ -164,7 +209,7 @@ for N in $STAGES; do
   if [ "$N" = 0 ]; then
     echo "== stage 0: server AUTH OFF (raw-surface regression control)"
     deploy server "${SERVER_COMMON[@]}" --env STREAMS_AUTH_MODE=off ${MEMFLAGS[@]+"${MEMFLAGS[@]}"}
-    sleep 20
+    verify_server_live
     gen_env_common "mt0x-"
     deploy gen "${GEN_COMMON[@]}"
   else
@@ -179,7 +224,7 @@ for N in $STAGES; do
         --env STREAMS_AUTH_REFRESH_SECS=60 \
         --env FEEDS_S3_KEY="mt/$SOAK_RUN_ID/feeds.json" \
         ${MEMFLAGS[@]+"${MEMFLAGS[@]}"}
-      sleep 20
+      verify_server_live
       touch "$OUT/.enforce-deployed"
     fi
     echo "== stage $N: $N active project(s), product surface"
