@@ -28640,3 +28640,358 @@ async fn rotated_workload_jwt_refreshes_and_retries() {
     engine_shutdown(&state_a).await;
     engine_shutdown(&state_b).await;
 }
+
+/// Build an enforce rig with ONE project whose quotas are custom —
+/// the SR2-4 quota-enforcement fixture.
+async fn quota_rig(
+    tag: &str,
+    scopes: &str,
+    quotas: crate::project_policy::ProjectQuotas,
+) -> (
+    std::sync::Arc<crate::http::AppState>,
+    std::net::SocketAddr,
+    String,
+) {
+    const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
+    const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
+    let now = crate::shard::now_ms() / 1000;
+    let svc = std::sync::Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    let kid = format!("q-{tag}");
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        kid.clone(),
+        crate::auth::JwksKey {
+            alg: jsonwebtoken::Algorithm::RS256,
+            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+        },
+    );
+    svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let pid = crate::tenant::ProjectId::new(&format!("proj-q-{tag}")).unwrap();
+    let mut projects = std::collections::HashMap::new();
+    projects.insert(
+        pid.clone(),
+        crate::project_policy::ProjectPolicy {
+            project_id: pid.clone(),
+            workspace_id: crate::tenant::WorkspaceId::new(&format!("ws-q-{tag}")).unwrap(),
+            cell_id: std::sync::Arc::from("test-cell"),
+            project_policy_version: 1,
+            ownership_version: 1,
+            status: crate::project_policy::ProjectStatus::Active,
+            quotas,
+        },
+    );
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let mut credentials = std::collections::HashMap::new();
+    let cred: std::sync::Arc<str> = std::sync::Arc::from(format!("c-q-{tag}"));
+    credentials.insert(
+        cred.clone(),
+        crate::project_policy::CredentialGrant {
+            credential_id: cred,
+            project_id: pid,
+            grant_version: 1,
+            status: crate::project_policy::CredentialStatus::Active,
+            scopes: crate::tenant::ScopeSet::parse(scopes).0,
+            grant: crate::tenant::StreamGrant::All,
+            expires_at: None,
+        },
+    );
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let (state, addr) = http_rig_with_auth_service(mem(), svc).await;
+    #[derive(serde::Serialize)]
+    struct C<'a> {
+        iss: &'a str,
+        aud: &'a str,
+        sub: &'a str,
+        credential_id: &'a str,
+        project_id: &'a str,
+        workspace_id: &'a str,
+        cell_id: &'a str,
+        ownership_version: u64,
+        grant_version: u64,
+        scope: &'a str,
+        jti: &'a str,
+        iat: i64,
+        exp: i64,
+    }
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some(kid);
+    let tok = jsonwebtoken::encode(
+        &header,
+        &C {
+            iss: "https://auth.prisma.io",
+            aud: "prisma-streams-data",
+            sub: "u",
+            credential_id: &format!("c-q-{tag}"),
+            project_id: &format!("proj-q-{tag}"),
+            workspace_id: &format!("ws-q-{tag}"),
+            cell_id: "test-cell",
+            ownership_version: 1,
+            grant_version: 1,
+            scope: scopes,
+            jti: "t",
+            iat: now - 60,
+            exp: now + 3600,
+        },
+        &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
+    )
+    .unwrap();
+    (state, addr, format!("Bearer {tok}"))
+}
+
+/// RED (review, declared quotas): max_streams is enforced RACE-SAFELY
+/// at create. Sequential creates beyond the cap refuse typed; a
+/// concurrent burst admits exactly the cap; a hard delete releases a
+/// slot. Soft-deleted fork-retained names still count until their
+/// terminal hard delete (posture: they hold storage and the name).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn max_streams_is_enforced_at_create() {
+    let quotas = crate::project_policy::ProjectQuotas {
+        max_streams: 3,
+        ..Default::default()
+    };
+    let scopes = "streams.create streams.records.append streams.records.read \
+                  streams.metadata.read streams.lifecycle.manage";
+    let (_state, addr, auth) = quota_rig("ms", scopes, quotas).await;
+    let a = ("authorization", auth.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let body = br#"{"format":{"kind":"json"}}"#;
+    for i in 0..3 {
+        let (st, _, b) = preq(
+            addr,
+            "PUT",
+            &format!("/v1/streams/ms-{i}"),
+            &[ekey, a],
+            body,
+        )
+        .await;
+        assert_eq!(st, 201, "create {i}: {}", String::from_utf8_lossy(&b));
+    }
+    let (st, _, b) = preq(addr, "PUT", "/v1/streams/ms-3", &[ekey, a], body).await;
+    assert_eq!(
+        st,
+        429,
+        "create beyond max_streams must refuse typed: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    assert!(
+        String::from_utf8_lossy(&b).contains("stream_limit"),
+        "typed code: {}",
+        String::from_utf8_lossy(&b)
+    );
+    // Idempotent re-create of an EXISTING stream is not a new stream.
+    let (st, _, _) = preq(addr, "PUT", "/v1/streams/ms-0", &[ekey, a], body).await;
+    assert!(st == 200 || st == 201, "idempotent recreate: {st}");
+    // A hard delete releases the slot.
+    let (st, _, _) = preq(addr, "DELETE", "/v1/streams/ms-2", &[ekey, a], b"").await;
+    assert!(st == 200 || st == 204, "delete: {st}");
+    let (st, _, b) = preq(addr, "PUT", "/v1/streams/ms-3", &[ekey, a], body).await;
+    assert_eq!(
+        st,
+        201,
+        "slot released by hard delete: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+
+    // Concurrent burst on a FRESH project: 6 racing creates, cap 3 —
+    // exactly 3 win. (Same rig, distinct names; the 3 already-created
+    // streams occupy the cap, so first free the project by deleting.)
+    for n in ["ms-0", "ms-1", "ms-3"] {
+        let (st, _, _) = preq(addr, "DELETE", &format!("/v1/streams/{n}"), &[ekey, a], b"").await;
+        assert!(st == 200 || st == 204);
+    }
+    let mut handles = Vec::new();
+    for i in 0..6 {
+        let auth2 = auth.clone();
+        let h = tokio::spawn(async move {
+            let a2 = ("authorization", auth2.as_str());
+            let ekey2 = ("prisma-encryption-key", PRISMA_KEY);
+            let (st, _, _) = preq(
+                addr,
+                "PUT",
+                &format!("/v1/streams/burst-{i}"),
+                &[ekey2, a2],
+                br#"{"format":{"kind":"json"}}"#,
+            )
+            .await;
+            st
+        });
+        handles.push(h);
+    }
+    let mut created = 0;
+    for h in handles {
+        let st = h.await.unwrap();
+        if st == 201 {
+            created += 1;
+        } else {
+            assert_eq!(st, 429, "loser must refuse typed: {st}");
+        }
+    }
+    assert_eq!(created, 3, "exactly the cap may win the burst");
+}
+
+/// RED (review, declared quotas): queued append bytes are charged to
+/// the project BEFORE the committer sees the record and released when
+/// the append is DECIDED. A 1-byte budget refuses even one small
+/// append; a modest budget survives many sequential appends whose
+/// TOTAL far exceeds it (release works — a leak would wedge).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn queued_append_bytes_charge_and_release() {
+    let scopes = "streams.create streams.records.append streams.records.read";
+    let tiny = crate::project_policy::ProjectQuotas {
+        queued_append_bytes: 1,
+        ..Default::default()
+    };
+    let (_s1, addr, auth) = quota_rig("qb1", scopes, tiny).await;
+    let a = ("authorization", auth.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let ct = ("content-type", "application/json");
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/qb",
+        &[ekey, a],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/qb/records",
+        &[ekey, a, ct],
+        br#"{"n":1}"#,
+    )
+    .await;
+    assert_eq!(
+        st,
+        429,
+        "a 1-byte queued budget must refuse the append typed: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    assert!(
+        String::from_utf8_lossy(&b).contains("queued_bytes"),
+        "typed code: {}",
+        String::from_utf8_lossy(&b)
+    );
+
+    let modest = crate::project_policy::ProjectQuotas {
+        queued_append_bytes: 4096,
+        ..Default::default()
+    };
+    let (_s2, addr2, auth2) = quota_rig("qb2", scopes, modest).await;
+    let a2 = ("authorization", auth2.as_str());
+    let (st, _, _) = preq(
+        addr2,
+        "PUT",
+        "/v1/streams/qb",
+        &[ekey, a2],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    // 50 sequential ~300B appends = ~15KB total through a 4KB budget:
+    // passes ONLY if every decided append releases its charge.
+    let payload = format!("{{\"pad\":\"{}\"}}", "x".repeat(280));
+    for i in 0..50 {
+        let (st, _, b) = preq(
+            addr2,
+            "POST",
+            "/v1/streams/qb/records",
+            &[ekey, a2, ct],
+            payload.as_bytes(),
+        )
+        .await;
+        assert_eq!(
+            st,
+            200,
+            "decided appends must release their charge (i={i}): {st} {}",
+            String::from_utf8_lossy(&b)
+        );
+    }
+}
+
+/// RED (review, declared quotas): capability watch WAITS occupy the
+/// project's live-subscription pool — a project cannot hold unbounded
+/// long polls through capabilities.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn watch_waits_occupy_the_subscription_pool() {
+    let scopes = "streams.create streams.records.append streams.records.read \
+                  streams.metadata.read streams.watches.manage";
+    let quotas = crate::project_policy::ProjectQuotas {
+        max_live_subscriptions: 1,
+        ..Default::default()
+    };
+    let (state, addr, auth) = quota_rig("ww", scopes, quotas).await;
+    let a = ("authorization", auth.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/orders",
+        &[ekey, a],
+        br#"{"format":{"kind":"json"},"watches":[{"name":"by-x","fields":["/id"]}]}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let bref = crate::tenant::ProjectId::new("proj-q-ww")
+        .unwrap()
+        .stream_ref("orders");
+    let desc = state.registry.get(&bref).await.unwrap().unwrap();
+    let epoch = desc.epoch_bytes().unwrap();
+    let khex = format!("{:016x}", 7u64);
+    let tokk = crate::crypto::touch_token(&skey(), &epoch);
+    let sk = crate::crypto::wait_sig_key(&tokk, &epoch);
+    let exp = crate::shard::now_ms() / 1000 + 120;
+    let cap = format!(
+        "proj-q-ww.{exp}.{}",
+        crate::crypto::watch_capability_sig(
+            &sk,
+            &bref,
+            &desc.stream_epoch,
+            "by-x",
+            &khex,
+            "GET",
+            exp
+        )
+    );
+    let path_long =
+        format!("/v1/streams/orders/watches/by-x/keys/{khex}?cursor=now&timeoutMs=5000&cap={cap}");
+    let path_short =
+        format!("/v1/streams/orders/watches/by-x/keys/{khex}?cursor=now&timeoutMs=100&cap={cap}");
+    // Occupy the single subscription slot with a LONG wait...
+    let long = tokio::spawn(async move { preq(addr, "GET", &path_long, &[], b"").await });
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    // ...the second concurrent wait must refuse typed, not stack.
+    let (st, _, b) = preq(addr, "GET", &path_short, &[], b"").await;
+    assert_eq!(
+        st,
+        429,
+        "second capability wait must refuse when the pool is full: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    let (st_long, _, _) = long.await.unwrap();
+    assert_eq!(st_long, 200, "the FIRST wait still completes");
+    engine_shutdown(&state).await;
+}

@@ -819,6 +819,20 @@ fn attach_subscription_guard(resp: Response, guard: crate::quota::SubscriptionGu
 /// §17.3 refusal classes on the wire.
 fn quota_refusal_response(refusal: &crate::quota::QuotaRefusal) -> Response {
     let resp = match refusal {
+        crate::quota::QuotaRefusal::StreamLimit => perr(
+            StatusCode::TOO_MANY_REQUESTS,
+            "stream_limit",
+            "the project is at its max_streams quota",
+            None,
+            false,
+        ),
+        crate::quota::QuotaRefusal::QueuedBytes => perr(
+            StatusCode::TOO_MANY_REQUESTS,
+            "queued_bytes",
+            "the project's queued append bytes are at the ceiling; retry",
+            None,
+            true,
+        ),
         crate::quota::QuotaRefusal::Rate { retry_after_secs } => {
             let mut r = perr(
                 StatusCode::TOO_MANY_REQUESTS,
@@ -853,6 +867,8 @@ fn quota_refusal_response(refusal: &crate::quota::QuotaRefusal) -> Response {
             crate::quota::QuotaRefusal::Rate { .. } => "project_rate_limit",
             crate::quota::QuotaRefusal::Concurrency => "project_concurrency_limit",
             crate::quota::QuotaRefusal::TrackerCapacity => "project_tracker_capacity",
+            crate::quota::QuotaRefusal::StreamLimit => "project_stream_limit",
+            crate::quota::QuotaRefusal::QueuedBytes => "project_queued_bytes",
         },
     )
 }
@@ -1334,6 +1350,35 @@ async fn product_create(
     if let Some(r) = crate::http::ring_owner_check(&state, &tenant.stream_ref(&name)) {
         return r;
     }
+    // SR2-4 max_streams: reserve a slot BEFORE creating, race-safely.
+    // Only a genuinely NEW stream needs one — the idempotent-replay
+    // path (an alive descriptor already holds this name) skips it, and
+    // a reservation whose create turns out NOT to be the true init is
+    // rolled back on drop. Split children ('#'-composed) never pass
+    // through here and are not counted.
+    let mut stream_reservation: Option<crate::quota::StreamReservation> = None;
+    if let Some(p) = principal
+        && p.quotas.max_streams > 0
+    {
+        let sref = tenant.stream_ref(&name);
+        let exists = matches!(
+            state.registry.get(&sref).await,
+            Ok(Some(d)) if crate::http::desc_alive(&d)
+        );
+        if !exists {
+            let seed = if state.quotas.needs_stream_seed(&p.project_id) {
+                Some(count_project_streams(&state, tenant).await)
+            } else {
+                None
+            };
+            match state.quotas.reserve_stream(&p.project_id, &p.quotas, seed) {
+                Ok(r) => stream_reservation = r,
+                Err(r) => {
+                    return crate::audit::tag_project(quota_refusal_response(&r), &p.project_id);
+                }
+            }
+        }
+    }
 
     let build_fresh = || {
         let mut d = crate::http::fresh_desc_product(
@@ -1477,7 +1522,41 @@ async fn product_create(
     } else {
         StatusCode::OK
     };
+    // SR2-4: keep the +1 only when THIS request was the true init;
+    // replays and losers roll back on drop.
+    if created && let Some(r) = stream_reservation.take() {
+        r.commit();
+    }
     metadata_response(&desc, status)
+}
+
+/// SR2-4: count the project's live product streams for the max_streams
+/// seed — catalog truth, alive non-child descriptors only (split
+/// children are the parent's capacity, not new streams; soft-deleted
+/// fork-retained sources DO count until their terminal hard delete).
+async fn count_project_streams(state: &AppState, project: &crate::tenant::ProjectId) -> u64 {
+    let mut n = 0u64;
+    let mut after: Option<String> = None;
+    loop {
+        let page = match state
+            .registry
+            .list_page(project, after.as_deref(), 512)
+            .await
+        {
+            Ok(p) => p,
+            Err(_) => break,
+        };
+        n += page
+            .streams
+            .iter()
+            .filter(|d| (crate::http::desc_alive(d) || d.soft_deleted) && !d.name.contains('#'))
+            .count() as u64;
+        if page.exhausted || page.next_after.is_none() {
+            break;
+        }
+        after = page.next_after;
+    }
+    n
 }
 
 fn metadata_response(desc: &StreamDesc, status: StatusCode) -> Response {
@@ -2968,6 +3047,23 @@ async fn product_append_inner(
             false,
         );
     };
+    // SR2-4 queued_append_bytes: the body is charged to the project
+    // BEFORE the committer sees it and released when this handler's
+    // awaited append DECIDES (the guard drops on return, every path).
+    let _queued_charge = if let Some(p) = principal {
+        match state
+            .quotas
+            .charge_queued(&p.project_id, &p.quotas, body.len() as u64)
+        {
+            Ok(g) => g,
+            Err(r) => {
+                return crate::audit::tag_project(quota_refusal_response(&r), &p.project_id);
+            }
+        }
+    } else {
+        None
+    };
+
     let routing_key = headers
         .get("prisma-routing-key")
         .and_then(|v| v.to_str().ok())
@@ -6974,18 +7070,31 @@ async fn product_watch_wait(
                         lookup_tenant,
                     );
                 }
-                match state
+                let g = match state
                     .quotas
                     .admit(lookup_tenant, &quotas, crate::shard::now_ms())
                 {
-                    Ok(g) => Some(g),
+                    Ok(g) => g,
                     Err(r) => {
                         return crate::audit::tag_project(
                             quota_refusal_response(&r),
                             lookup_tenant,
                         );
                     }
-                }
+                };
+                // SR2-4: a capability LONG POLL occupies the project's
+                // live-subscription pool for its whole wait — watches
+                // get no unbounded side door around the ceiling.
+                let sub = match state.quotas.admit_subscription(lookup_tenant, &quotas) {
+                    Ok(sg) => sg,
+                    Err(r) => {
+                        return crate::audit::tag_project(
+                            quota_refusal_response(&r),
+                            lookup_tenant,
+                        );
+                    }
+                };
+                Some((g, sub))
             }
         }
     } else {

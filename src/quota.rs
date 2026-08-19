@@ -83,6 +83,59 @@ pub struct ProjectAdmission {
     read_bytes: Mutex<Bucket>,
     inflight: AtomicU64,
     live_subs: AtomicU64,
+    /// SR2-4 max_streams accounting. Seeded LAZILY from the durable
+    /// catalog on the first limited create after boot (the count is
+    /// process-local; the catalog is the truth it re-derives from).
+    /// Soft-deleted fork-retained sources still count — they hold
+    /// storage and the name — and release only on their terminal
+    /// hard delete.
+    streams: Mutex<StreamCount>,
+    /// SR2-4 queued_append_bytes: bytes admitted but not yet decided.
+    queued_bytes: AtomicU64,
+}
+
+#[derive(Default)]
+struct StreamCount {
+    seeded: bool,
+    count: u64,
+}
+
+/// Holds one reserved stream slot until the create DECIDES: `commit`
+/// keeps the +1 (the caller truly created a new stream), drop rolls
+/// it back (replay, refusal, error).
+pub struct StreamReservation {
+    admission: Arc<ProjectAdmission>,
+    committed: bool,
+}
+
+impl StreamReservation {
+    pub fn commit(mut self) {
+        self.committed = true;
+    }
+}
+
+impl Drop for StreamReservation {
+    fn drop(&mut self) {
+        if !self.committed {
+            let mut st = self.admission.streams.lock().unwrap();
+            st.count = st.count.saturating_sub(1);
+        }
+    }
+}
+
+/// Releases the queued-byte charge when the append is DECIDED (the
+/// handler's await returns, success or failure).
+pub struct QueuedBytesGuard {
+    admission: Arc<ProjectAdmission>,
+    bytes: u64,
+}
+
+impl Drop for QueuedBytesGuard {
+    fn drop(&mut self) {
+        self.admission
+            .queued_bytes
+            .fetch_sub(self.bytes, Ordering::Relaxed);
+    }
 }
 
 #[derive(Debug)]
@@ -93,6 +146,11 @@ pub enum QuotaRefusal {
     },
     Concurrency,
     TrackerCapacity,
+    /// SR2-4: the project holds `max_streams` live streams.
+    StreamLimit,
+    /// SR2-4: the project's committer-queued append bytes are at the
+    /// ceiling; retry after in-flight appends decide.
+    QueuedBytes,
 }
 
 /// Releases the inflight slot on drop — hold it for the handler's
@@ -184,6 +242,8 @@ impl QuotaRegistry {
                         }),
                         inflight: AtomicU64::new(0),
                         live_subs: AtomicU64::new(0),
+                        streams: Mutex::new(StreamCount::default()),
+                        queued_bytes: AtomicU64::new(0),
                     });
                     m.insert(project.clone(), a.clone());
                     a
@@ -362,6 +422,88 @@ impl QuotaRegistry {
             return Err(QuotaRefusal::Concurrency);
         }
         Ok(Some(SubscriptionGuard { admission }))
+    }
+
+    /// SR2-4: does the project's stream count still need its catalog
+    /// seed? The caller counts (async, catalog pages) only when this
+    /// says so, then passes the count to `reserve_stream`.
+    pub fn needs_stream_seed(&self, project: &ProjectId) -> bool {
+        self.tracked(project)
+            .map(|a| !a.streams.lock().unwrap().seeded)
+            .unwrap_or(false)
+    }
+
+    /// SR2-4: reserve one stream slot under `max_streams`, race-safely
+    /// (count checked and bumped under one lock; concurrent racers
+    /// serialize here, losers refuse typed). `seed` supplies the
+    /// catalog count when this project has not been seeded since boot;
+    /// the first reservation wins the seed, later ones ignore theirs.
+    pub fn reserve_stream(
+        &self,
+        project: &ProjectId,
+        quotas: &ProjectQuotas,
+        seed: Option<u64>,
+    ) -> Result<Option<StreamReservation>, QuotaRefusal> {
+        if quotas.max_streams == 0 {
+            return Ok(None);
+        }
+        let Some(admission) = self.tracked(project) else {
+            return Ok(None);
+        };
+        let mut st = admission.streams.lock().unwrap();
+        if !st.seeded {
+            let Some(n) = seed else {
+                // Caller must seed first; refuse closed rather than
+                // guess (a wrong zero would admit past the cap).
+                return Err(QuotaRefusal::StreamLimit);
+            };
+            st.seeded = true;
+            st.count = n;
+        }
+        if st.count >= quotas.max_streams {
+            return Err(QuotaRefusal::StreamLimit);
+        }
+        st.count += 1;
+        drop(st);
+        Ok(Some(StreamReservation {
+            admission,
+            committed: false,
+        }))
+    }
+
+    /// SR2-4: a terminal hard delete frees the slot. Unseeded (or
+    /// untracked) projects no-op — their next seed recounts the
+    /// catalog, which already reflects the deletion.
+    pub fn release_stream(&self, project: &ProjectId) {
+        if let Some(a) = self.tracked(project) {
+            let mut st = a.streams.lock().unwrap();
+            if st.seeded {
+                st.count = st.count.saturating_sub(1);
+            }
+        }
+    }
+
+    /// SR2-4: charge `bytes` to the project's committer-queue budget
+    /// BEFORE the append is enqueued; the guard releases when the
+    /// append DECIDES. 0 = not configured.
+    pub fn charge_queued(
+        &self,
+        project: &ProjectId,
+        quotas: &ProjectQuotas,
+        bytes: u64,
+    ) -> Result<Option<QueuedBytesGuard>, QuotaRefusal> {
+        if quotas.queued_append_bytes == 0 {
+            return Ok(None);
+        }
+        let Some(admission) = self.tracked(project) else {
+            return Ok(None);
+        };
+        let new = admission.queued_bytes.fetch_add(bytes, Ordering::Relaxed) + bytes;
+        if new > quotas.queued_append_bytes {
+            admission.queued_bytes.fetch_sub(bytes, Ordering::Relaxed);
+            return Err(QuotaRefusal::QueuedBytes);
+        }
+        Ok(Some(QueuedBytesGuard { admission, bytes }))
     }
 
     fn tracked(&self, project: &ProjectId) -> Option<Arc<ProjectAdmission>> {

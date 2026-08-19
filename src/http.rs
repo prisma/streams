@@ -4672,6 +4672,13 @@ fn delete_lifecycle(
         if !hard_deleted {
             return Ok(());
         }
+        // SR2-4: the terminal hard delete frees the project's
+        // max_streams slot (split children were never counted;
+        // soft-retained sources release HERE when their cascade
+        // finally lands).
+        if !name.contains('#') {
+            state.quotas.release_stream(sref.project_id());
+        }
         // Ops journal (§12.3): the lifecycle transition, id'd by the
         // incarnation — a retried delete re-emits the same id and the
         // rollup deduplicates.

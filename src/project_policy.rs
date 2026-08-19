@@ -53,6 +53,11 @@ pub struct ProjectQuotas {
     pub max_live_subscriptions: u64,
     #[serde(default)]
     pub max_streams: u64,
+    /// SR2-4: ceiling on this project's bytes sitting in committer
+    /// queues awaiting a decision (charged before enqueue, released
+    /// when the append is decided). 0 = not configured.
+    #[serde(default)]
+    pub queued_append_bytes: u64,
 }
 
 #[derive(Clone, Debug)]
