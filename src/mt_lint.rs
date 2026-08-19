@@ -366,6 +366,13 @@ fn multitenancy_identity_lint() {
             Ok(a) => a,
             Err(e) => panic!("mt-lint: cannot parse {}: {e}", path.display()),
         };
+        // A file-module whose INNER attribute is #![cfg(test)] is the
+        // file-split form of `#[cfg(test)] mod` — same gate. (The
+        // declaring `mod` line's outer attr lives in another file,
+        // invisible to this per-file walk.)
+        if is_test_gated(&ast.attrs) {
+            continue;
+        }
         let mut lint = Lint {
             file: path.file_name().unwrap().to_str().unwrap().to_string(),
             lines: src.lines().collect(),

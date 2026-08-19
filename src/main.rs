@@ -6,6 +6,7 @@ mod billing;
 mod crypto;
 #[cfg(test)]
 mod dst;
+mod failpoints;
 mod fleet;
 mod history;
 mod http;

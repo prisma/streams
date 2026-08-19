@@ -1857,7 +1857,7 @@ async fn product_seal(
                 final_committed: false,
             };
             #[cfg(test)]
-            crate::http::fork_failpoints::pause_product_seal_before_claim(&name).await;
+            crate::failpoints::pause_product_seal_before_claim(&name).await;
             let ticket = match enter_sealing(
                 &state,
                 &tenant.stream_ref(&name),
@@ -1894,7 +1894,7 @@ async fn product_seal(
                 }
             }
             #[cfg(test)]
-            crate::http::fork_failpoints::pause_product_final_before_append(&name).await;
+            crate::failpoints::pause_product_final_before_append(&name).await;
             let resp = product_append_sealing(
                 state.clone(),
                 &tenant.stream_ref(&name),
@@ -2705,7 +2705,7 @@ async fn product_seal_only(
     // documented recovery story.) The epoch is the one the KEY was
     // validated against, not a fresh read.
     #[cfg(test)]
-    crate::http::fork_failpoints::pause_product_seal_before_claim(&name).await;
+    crate::failpoints::pause_product_seal_before_claim(&name).await;
     match run_seal(
         &state,
         &tenant.stream_ref(&name),
@@ -5917,7 +5917,7 @@ async fn product_consumer_delete(
         let mut swept_ids: Vec<u32> = segs.iter().map(|(id, ..)| *id).collect();
         swept_ids.sort_unstable();
         #[cfg(test)]
-        crate::http::fork_failpoints::pause_consumer_saga_before_refresh(&name).await;
+        crate::failpoints::pause_consumer_saga_before_refresh(&name).await;
         // FAIL-CLOSED refresh (round 18). Completion is proven by a
         // SUCCESSFUL post-sweep read of the authoritative map: the
         // segments swept this round must equal the segments visible
@@ -6352,7 +6352,7 @@ async fn product_consumer_pull(
                 covered_to = covered_to.max(r.off + 1);
             }
             #[cfg(test)]
-            crate::http::fork_failpoints::pause_pull_before_receive(&desc.name).await;
+            crate::failpoints::pause_pull_before_receive(&desc.name).await;
             let qout = engine
                 .submit_queue(
                     identity,

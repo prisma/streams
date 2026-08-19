@@ -551,11 +551,11 @@ pub async fn resume(
     let Some(frozen) = seal_identity(st, &desc, seg_id, tg).await else {
         return false;
     };
-    // Deterministic failpoint for the seal-to-publication gap tests:
-    // while armed, EVERY resume parks here (readers only ever spawn
-    // resume, so no request blocks on this).
+    // Deterministic failpoint for the seal-to-publication gap tests
+    // (#108 registry): parks per PARENT STREAM NAME, so parallel gap
+    // tests never wake on each other's transitions.
     #[cfg(test)]
-    failpoints::pause_before_publish().await;
+    crate::failpoints::pause_scaler_before_publish(&desc.name).await;
     // Phase B: publish successors + clear the intent, with REAL routes
     // (review blocker 1: children on the parent's route add lineage but
     // zero capacity). The low child inherits the parent's route — its
@@ -669,7 +669,7 @@ async fn resume_merge(
         return false;
     };
     #[cfg(test)]
-    failpoints::pause_before_publish().await;
+    crate::failpoints::pause_scaler_before_publish(&desc.name).await;
     let published = st
         .registry
         .cas_update_incarnation(&desc.sref(), &desc.stream_epoch, |d| {
@@ -718,53 +718,6 @@ async fn resume_merge(
         SEGMENT_MAP_REFRESHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
     }
     published
-}
-
-/// Test failpoints for the two-phase transition (spec review: the
-/// seal-to-publication gap must be observable deterministically).
-#[cfg(test)]
-pub(crate) mod failpoints {
-    use std::sync::OnceLock;
-    use std::sync::atomic::{AtomicBool, Ordering};
-
-    static ARMED: AtomicBool = AtomicBool::new(false);
-
-    fn gate() -> &'static tokio::sync::Notify {
-        static N: OnceLock<tokio::sync::Notify> = OnceLock::new();
-        N.get_or_init(tokio::sync::Notify::new)
-    }
-
-    /// Park every resume() between parent seal and successor CAS.
-    pub fn arm_before_publish() {
-        ARMED.store(true, Ordering::SeqCst);
-    }
-
-    /// Release every parked resume and let future ones pass.
-    pub fn release_before_publish() {
-        ARMED.store(false, Ordering::SeqCst);
-        gate().notify_waiters();
-    }
-
-    /// Entered-proof: resumes currently parked before publication.
-    pub fn publish_parked_count() -> usize {
-        PUBLISH_PARKED.load(Ordering::SeqCst)
-    }
-    static PUBLISH_PARKED: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-    pub(super) async fn pause_before_publish() {
-        let mut counted = false;
-        while ARMED.load(Ordering::SeqCst) {
-            if !counted {
-                counted = true;
-                PUBLISH_PARKED.fetch_add(1, Ordering::SeqCst);
-            }
-            let n = gate().notified();
-            if !ARMED.load(Ordering::SeqCst) {
-                break;
-            }
-            n.await;
-        }
-    }
 }
 
 /// The evaluation loop (one per instance).
