@@ -104,7 +104,27 @@ on one stream should park on ONE wakeup source, not 1,000 — and edge
 multiplexing). Campaign becomes the repeatable `workload-cert`
 harness.
 
-## 3. What I need from Søren
+## 3. Contract fixed (Søren, 2026-08-19)
+
+1. Fan-out overlap: **10 wps onto fully-subscribed streams** (10k
+   deliveries/s at 1 KiB) — CONFIRMED.
+2. Certification mode: **durable-cursor subscribe** — CONFIRMED.
+3. Instance tier: **1 GiB is the only tier** — L4 dropped; the verdict
+   is expressed as K × 1-GiB instances (or named slimming work).
+
+Early P0/P1 measurements (same day):
+- Fresh-instance sub-capacity control: **0.000% shed** in 90,980
+  attempts (505 rps, p50 75 ms) — the W4 target is measurable and the
+  warm-shed is an accumulation effect (leg 2 characterizes it).
+- Parked-subscription cost, local 10k ladder: first-rung 6.8 KB/sub
+  including one-time pools; **marginal ~1.3 KB/sub** (5k→10k rung).
+  At the margin, 1M subs ≈ 1.3 GB spread over ~3 instances by memory
+  — field L2 (musl + real edge) decides the honest S_max.
+- Fan-out shape: appends into a 1,000-parked-subscriber stream ack in
+  5–24 ms (fan-out is off the write path); 5,000 deliveries cost
+  ~176 KB transient.
+
+## 4. Superseded: original asks
 
 1. Confirm the **fan-out overlap** default (10 wps onto
    fully-subscribed streams). Any number implies deliveries/s =
