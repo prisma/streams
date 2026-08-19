@@ -182,8 +182,8 @@ DEADLINE=$(( $(date +%s) + SECS + 1500 ))
 # RSS timeline: correlate memory peaks with shed windows.
 ( while :; do
     TS=$(date +%s)
-    RSS=$(curl -sf --max-time 8 -H "authorization: Bearer $AUTH" "$SURL/v1/debug/load"           | python3 -c "import json,sys; print(json.load(sys.stdin).get('rss_mb',-1))" 2>/dev/null || echo -1)
-    echo "{\"ts\":$TS,\"rss_mb\":$RSS}" >> "$OUT/rss-timeline-$STAGE.jsonl"
+    LOAD=$(curl -sf --max-time 8 -H "authorization: Bearer $AUTH" "$SURL/v1/debug/load" 2>/dev/null || echo "{}")
+    echo "{\"ts\":$TS,\"load\":$LOAD}" >> "$OUT/rss-timeline-$STAGE.jsonl"
     sleep 10
   done ) &
 RSSPID=$!
