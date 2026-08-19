@@ -159,7 +159,39 @@ tail returns `[]` immediately. Corrected below, all on true `:sse`):
   tail-parking is a shared per-stream Notify (no busy-poll), and
   appends into 1,000-parked-sub streams ack in 5–24 ms.
 
-## 4. Superseded: original asks
+## 4. L1 verdict (writes-only gate, 2026-08-19 — five 30-min runs)
+
+| run | posture | shed | evidence |
+|---|---|---|---|
+| L1 | default 1-GiB survival posture | 36.44% | RSS 456 MB vs 600 MB shed line straddled by reservations |
+| L1diet | + memory diet (caches −160 MB, ring off, handles 6k) | 14.88% | RSS 381 MB but bursts persist |
+| L1d2 | diet + 2 shards | 17.51% | fewer commit lanes ⇒ deeper stall pileups (RSS ≤ 406 — line never crossed; hypothesis falsified) |
+| **L1d3** | **diet + 4 shards + ADMIT_MAX_INFLIGHT 2048** | **1.56%** | shed ~0 until t≈1340 s, then escalating bursts tracking absorb_lag 3 s→128 s |
+| L1d4 | + ABSORB_AGE 300 s / PASS 16 MB | 5.18% | deferral synchronizes 10k streams into thundering-herd gathers (lag 169 s) |
+
+**Mechanism (triangulated):** the write path holds 1,000 wps at
+p50 ~100 ms with ZERO errors in all five runs; every refusal is
+admission shed from IN-FLIGHT PILEUP during commit-path stalls, and
+the dominant stall source at this shape is the ABSORBER: 10k sparse
+streams accumulating ~1 KB/s each are its documented worst case, and
+its gather passes contend with the append path — as unabsorbed debt
+grows, passes lengthen and the bursts escalate. Memory is NOT the
+binding constraint under the diet posture (RSS ≤ 414 MB throughout).
+
+**Named code item (gates L1 and everything above it):** bound the
+absorber's append-latency impact at sparse-many-stream shapes —
+yield/pacing between per-stream gathers, cap streams per pass,
+jittered age thresholds (never synchronized waves), and/or move
+gather I/O off the commit runtime. Acceptance: L1d3 posture reruns
+at ≤ 0.1% shed with absorb_lag bounded, plus a deterministic DST
+regression pinning append p99 during a forced sparse-absorption wave.
+
+W2 interim verdict: **1,000 wps over 10k tenants runs at 1.56% shed
+on the best documented posture — fails the 0.1% gate pending the
+absorber item.** L2/L3 (subscribers) wait behind it: they inherit the
+same commit path.
+
+## 5. Superseded: original asks
 
 1. Confirm the **fan-out overlap** default (10 wps onto
    fully-subscribed streams). Any number implies deliveries/s =
