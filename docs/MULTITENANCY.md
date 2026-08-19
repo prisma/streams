@@ -1,6 +1,6 @@
 # Prisma Streams — Shared-Cell Multitenancy Implementation Plan
 
-**Status:** FROZEN CONTRACT (Stage 0, committed 2026-08-15; revision 4, 2026-08-19 — see Revision log)
+**Status:** FROZEN CONTRACT (Stage 0, committed 2026-08-15; revision 5, 2026-08-19 — see Revision log)
 **Author:** Søren Bramer Schmidt (implementation plan, delivered 2026-08-15)
 **Target:** Many projects in each Prisma Streams cell
 **Migration posture:** Clean layout switch; no mixed-layout operation
@@ -43,6 +43,14 @@
   feeds; §7.1/§15 capability freshness parity (stale policy fails
   capability waits CLOSED); §17.3 max_streams, queued_append_bytes,
   and capability-wait subscription accounting enforced.
+- r5 (2026-08-19, round 3): §4.5 extended — per-feed GENERATION
+  DIGESTS (the same generation always carries the same canonical
+  digest, all three feeds) and the JWKS lifecycle (a kid names one
+  algorithm and one key forever; omission retires it permanently;
+  rotation is an old+new overlap generation). §14.1: the delegated
+  target-bound mutation capability is FORMALLY DEFERRED past
+  shared-cell GA with the recorded threat-model rationale — an
+  explicit decision, revisitable, not an omission.
 
 ---
 
@@ -384,6 +392,20 @@ ALL checks run before ANY mutation):
   widened at the same `grant_version`, `Suspended -> Active` at the
   same policy version — is refused. Identical replay stays accepted
   (feeds are at-least-once).
+
+**Generation digests (r5).** Each feed's generation pins its
+CANONICAL DIGEST: publishing the same `feed_version` with different
+content — including an entry ADDED under an already-published
+generation, which per-ID checks cannot see — is refused. Identical
+replay stays accepted.
+
+**JWKS lifecycle (r5, implemented in `publish_jwks`).** A `kid`
+names ONE algorithm and ONE public key forever (the key-material
+fingerprint is captured at parse); once omitted from a full snapshot
+a kid is RETIRED and never returns at any later generation; rotation
+publishes an overlap generation carrying old and new keys, and the
+old key is removed only after the maximum token lifetime plus
+propagation margin (docs/CONTROL-PLANE-INTEGRATION.md §7.5).
 
 The retained table is PROCESS-LOCAL and bounded (65,536/kind FIFO):
 the durable security guarantee is the Control-Plane feed contract
@@ -1018,8 +1040,20 @@ is the legacy bridge (full authority, boot WARNING, REFUSED under
 all. The platform leg is minting the JWTs into the file; the cell no
 longer needs code changes to drop the static token.
 
-The delegated-capability shape above stays the target for sensitive
-mutations and is not yet implemented.
+**Delegated target-bound capabilities: DEFERRED past shared-cell GA
+(r5, round-3 disposition).** The rationale, recorded so this is a
+decision and not an omission: operation scoping already confines a
+workload token to one operation class; the token is cell-bound,
+short-lived (≤5 min), and minted per instance by the platform; and
+the operations in scope act on internal maintenance state whose
+blast radius is availability within one cell, not cross-project data
+disclosure (customer reads/writes always re-verify project identity
+at the descriptor). Target-bound capabilities (§14.1 shape: op +
+project + stream + epoch + segment + operation id + expiry) become
+REQUIRED when any internal operation can mutate customer-visible
+data across project boundaries, and land with the platform's
+delegated-capability issuer. Revisit at the external security
+review; Søren can veto this deferral.
 
 ### 14.2 Operator identity
 
