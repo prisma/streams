@@ -31,16 +31,19 @@ use crate::tenant::ProjectId;
 
 /// Bounded tracker: beyond this many distinct projects the tracker
 /// refuses NEW ones (503, typed `TrackerCapacity`) instead of growing
-/// without bound. SR-6 posture: Stage 8 certifies 1,000 projects per
-/// cell and eviction needs `IDLE_EVICT_MS` of quiet, so the old cap
-/// of 1,024 left 24 slots — any 25 first-seen projects inside one
-/// idle window wedged new-project admission for up to five minutes.
-/// 4,096 gives the certified density 4x headroom at ~2 MiB worst-case
-/// tracker memory (~500 B/entry). This is a deliberate HARD ceiling:
-/// refusing to track (never merging strangers into shared buckets) is
+/// without bound. The cap must hold the certified TENANT POPULATION,
+/// not just its active window: the workload-cert rotation (10,000
+/// tenants, 100 active per 5s window ⇒ 20 first-seen projects/s)
+/// demands 20/s x IDLE_EVICT_MS = 6,000 un-evictable entries at
+/// steady state — the previous cap of 4,096 shed 19% of that
+/// rotation with typed TrackerCapacity (2026-08-19 churn rung; the
+/// cert_rotation test below pins the shape). 16,384 holds the 10k
+/// population outright with headroom, at ~8 MiB worst-case tracker
+/// memory (~500 B/entry). Still a deliberate HARD ceiling: refusing
+/// to track (never merging strangers into shared buckets) remains
 /// the fail-closed choice; the churn test pins evict-idle-first,
 /// never-evict-active, and the typed refusal at true saturation.
-pub const MAX_TRACKED_PROJECTS: usize = 4096;
+pub const MAX_TRACKED_PROJECTS: usize = 16_384;
 
 /// A tracked project with no admission attempts for this long (and no
 /// inflight work) may be evicted under tracker pressure. Its buckets
@@ -539,6 +542,35 @@ mod tests {
 
     fn pid(s: &str) -> ProjectId {
         ProjectId::new(s).unwrap()
+    }
+
+    /// Workload-cert W1xW2 shape (bench/WORKLOAD-CERT-PLAN.md): 10,000
+    /// resident tenants, 100 active per 5s window rotating over the
+    /// whole population = 20 first-seen projects/s sustained. With
+    /// IDLE_EVICT_MS of un-evictable recency, steady-state demand is
+    /// 20/s x 300s = 6,000 tracked entries — the cap must hold the
+    /// certified tenant population, not just its active window.
+    #[test]
+    fn cert_rotation_over_ten_thousand_tenants_never_hits_tracker_capacity() {
+        let r = QuotaRegistry::default();
+        let quotas = ProjectQuotas::default();
+        let t0: i64 = 1_000_000;
+        let name = |i: usize| pid(&format!("cert_{i}"));
+        let mut refused = 0usize;
+        // 10,000 distinct projects, 20 new per second (cert pacing),
+        // each holding its guard only for the request instant.
+        for i in 0..10_000usize {
+            let now = t0 + (i as i64) * 50; // 20/s
+            match r.admit(&name(i), &quotas, now) {
+                Ok(_g) => {}
+                Err(QuotaRefusal::TrackerCapacity) => refused += 1,
+                Err(e) => panic!("unexpected refusal {e:?}"),
+            }
+        }
+        assert_eq!(
+            refused, 0,
+            "the certification rotation must never see TrackerCapacity"
+        );
     }
 
     /// SR-6 tracker-capacity churn: at the cap the tracker refuses

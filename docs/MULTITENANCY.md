@@ -1399,9 +1399,11 @@ deletion sagas and the Control-Plane feed remain platform-side.)*
   body buffering, quotas read from the CURRENT policy snapshot.)*
 * [x] Remove overflow coupling. *(Projects never share a bucket; a
   full tracker refuses to TRACK new projects rather than merging.)*
-* [x] Bound project trackers. *(4,096-project cap since SR-6 — the
-  1,000-project certification needs 4x headroom against the 300s
-  evict-idle window; over it, NEW projects get 503
+* [x] Bound project trackers. *(16,384-project cap since the
+  workload-cert round — the cap holds the certified TENANT POPULATION,
+  not just its active window: a 10,000-tenant rotation at 20 first-seen
+  projects/s demands 20/s x 300s = 6,000 un-evictable entries, which
+  the old 4,096 cap shed at 19%; over the cap, NEW projects get 503
   `project_tracker_capacity`, tracked ones are untouched.)*
 * [x] Run noisy-neighbor campaigns. *(Mechanism level DONE, unblocked
   by Stage 5d: two projects on one enforce cell, a hostile flood

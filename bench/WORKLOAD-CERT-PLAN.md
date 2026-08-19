@@ -141,6 +141,18 @@ tail returns `[]` immediately. Corrected below, all on true `:sse`):
   reader task PER STREAM fanning to N subscriber channels — collapses
   per-sub cost to channel+response state (~2–4 KB), putting 1M in the
   4–8 instance range.
+- **W1 blocker FOUND AND FIXED — tracker capacity vs the rotation.**
+  The 10k-project residency itself is cheap (0.6 s boot-to-live,
+  48 MB RSS, 3.8 MB feeds), but the certification rotation demands
+  20 first-seen projects/s × 300 s un-evictable recency = 6,000
+  tracked admission entries against the old 4,096 cap: a
+  cert-pacing churn probe shed 19% with typed TrackerCapacity
+  (matching arithmetic exactly). Fixed red-first —
+  cert_rotation_over_ten_thousand_tenants_never_hits_tracker_capacity
+  pins the shape (red: 1,904/10,000 refused) — by raising
+  MAX_TRACKED_PROJECTS to 16,384 (~8 MiB worst case; the cap now
+  holds the certified tenant POPULATION). MULTITENANCY tracker
+  posture updated.
 - **Fan-out latency is a non-issue at the workload's shape**: 1,000
   subscribers on one stream all received an appended marker with
   lag p50 23 ms / p99 33 ms from append start (append ack 32 ms);
