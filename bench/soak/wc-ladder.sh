@@ -137,7 +137,7 @@ deploy server \
   --env SLATE_S3_SECRET_ACCESS_KEY="$(j secretAccessKey)" \
   --env AUTH_TOKEN="$AUTH" \
   --env PATH_PREFIX="$SOAK_RUN_ID" --env INSTANCE_NAME=streams-1 \
-  --env INITIAL_SHARDS=4 \
+  --env INITIAL_SHARDS=${WC_SHARDS:-4} \
   --env WAL_GROUP_COMMIT=1 --env WAL_FLUSH_GAP_MS=10 --env FLUSH_INTERVAL_MS=25 \
   --env WAL_POST_ACK_GATHER_MS=6 --env FRAME_COMPRESS=1 \
   --env ADMIT_MAX_INFLIGHT=512 --env ADMIT_MAX_INFLIGHT_PER_STREAM=256 \
@@ -177,7 +177,17 @@ deploy gen \
   --env BENCH_STREAM="wc$STAGE-" --env KEEP_AWAKE=1
 
 GURL=$(cat "$S/url-gen-$R.txt")
+SURL=$(cat "$S/url-server-$R.txt")
 DEADLINE=$(( $(date +%s) + SECS + 1500 ))
+# RSS timeline: correlate memory peaks with shed windows.
+( while :; do
+    TS=$(date +%s)
+    RSS=$(curl -sf --max-time 8 -H "authorization: Bearer $AUTH" "$SURL/v1/debug/load"           | python3 -c "import json,sys; print(json.load(sys.stdin).get('rss_mb',-1))" 2>/dev/null || echo -1)
+    echo "{\"ts\":$TS,\"rss_mb\":$RSS}" >> "$OUT/rss-timeline-$STAGE.jsonl"
+    sleep 10
+  done ) &
+RSSPID=$!
+trap 'kill $RSSPID 2>/dev/null' EXIT
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
   sleep 30
   BODY=$(curl -sf --max-time 15 "$GURL/" || true)
