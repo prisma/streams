@@ -1,0 +1,195 @@
+openapi: 3.1.0
+info:
+  title: Prisma Streams platform surface (starter)
+  version: 0.1.0
+  description: |
+    Starter description of the platform-side HTTP surface from
+    docs/CONTROL-PLANE-INTEGRATION.md: the Management API for Streams
+    credentials (§5), the Prisma-Auth token exchange (§6), and the
+    internal feed snapshot endpoints (§7.1). Exact public paths and the
+    error envelope are OPEN DECISION 1 in §16 — this file records the
+    shapes the reference emulator implements today so producer and
+    consumer teams have one executable starting point, not a frozen
+    contract. Feed *documents* and token *claims* are normatively
+    described by the sibling JSON Schemas; endpoints marked
+    `x-internal` are cell/gateway-facing, and everything under
+    /admin/faults or /admin/mint-workload is `x-test-only` (emulator
+    with --enable-fault-api; never a production surface).
+paths:
+  /v1/projects/{projectId}/streams/credentials:
+    parameters:
+      - { name: projectId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Create a Streams credential
+      description: >
+        The durable secret appears EXACTLY once, in this response.
+        Storage retains only a password-grade hash (§5.3).
+      requestBody:
+        content:
+          application/json:
+            schema:
+              type: object
+              properties:
+                displayName: { type: string }
+                scopes: { type: array, items: { type: string } }
+                streamPrefixes: { type: array, items: { type: string } }
+                expiresAt: { type: [string, "null"], format: date-time }
+      responses:
+        "201":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [credential, secret]
+                properties:
+                  credential: { $ref: "#/components/schemas/Credential" }
+                  secret:
+                    type: string
+                    description: One-time presentation; never retrievable again.
+    get:
+      summary: List credentials (no secrets, hints only)
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  credentials:
+                    type: array
+                    items: { $ref: "#/components/schemas/Credential" }
+  /v1/projects/{projectId}/streams/credentials/{credentialId}/rotate:
+    parameters:
+      - { name: projectId, in: path, required: true, schema: { type: string } }
+      - { name: credentialId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Rotate the secret (grant_version increments; old tokens die at the cell)
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [credential, secret]
+                properties:
+                  credential: { $ref: "#/components/schemas/Credential" }
+                  secret: { type: string }
+  /v1/projects/{projectId}/streams/credentials/{credentialId}/revoke:
+    parameters:
+      - { name: projectId, in: path, required: true, schema: { type: string } }
+      - { name: credentialId, in: path, required: true, schema: { type: string } }
+    post:
+      summary: Revoke (terminal; exchange refused, live tokens cut off after feed publication)
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                properties:
+                  credential: { $ref: "#/components/schemas/Credential" }
+  /v1/token/streams:
+    post:
+      summary: Prisma-Auth token exchange (§6)
+      description: >
+        Authorization: StreamsCredential <secret>. Refuses non-active
+        credentials (403) and any project not in status active — a
+        saga's first step (transfer_pending, deleting) already refuses
+        here. Claims per customer-token-claims.schema.json.
+      responses:
+        "200":
+          content:
+            application/json:
+              schema:
+                type: object
+                required: [accessToken, tokenType, expiresIn, projectId]
+                properties:
+                  accessToken: { type: string }
+                  tokenType: { type: string, const: Bearer }
+                  expiresIn: { type: integer }
+                  projectId: { type: string }
+                  endpoint:
+                    type: [string, "null"]
+                    description: Stable gateway endpoint; direct cell endpoints are not customer contract (§6.3).
+        "401": { description: Missing/malformed header or bad secret }
+        "403": { description: Credential or project not active }
+  /internal/streams/cells/{cellId}/jwks:
+    get:
+      x-internal: true
+      summary: JWKS snapshot for one cell (document = keys.schema.json)
+      responses: { "200": { description: Full snapshot + Prisma-Streams-Feed-Generation header } }
+  /internal/streams/cells/{cellId}/project-policies:
+    get:
+      x-internal: true
+      summary: Project-policy snapshot (project-policies.schema.json; only this cell's projects)
+      responses: { "200": { description: Full snapshot + generation header } }
+  /internal/streams/cells/{cellId}/credential-grants:
+    get:
+      x-internal: true
+      summary: Credential-grant snapshot (credential-grants.schema.json)
+      responses: { "200": { description: Full snapshot + generation header } }
+  /admin/placement:
+    get:
+      x-internal: true
+      summary: Authoritative project→cell placement (gateway routing source)
+      responses: { "200": { description: "cells[] + projects{id → {cell_id,status,workspace_id}}" } }
+  /admin/projects/{projectId}/transfer:
+    post:
+      x-internal: true
+      summary: "Ownership-transfer saga step 1 (§10): transfer_pending, token exchange stops"
+      responses: { "200": { description: status transfer_pending }, "409": { description: not active } }
+  /admin/projects/{projectId}/transfer/complete:
+    post:
+      x-internal: true
+      summary: "Saga completion: ownership_version++, workspace swap, revoke-all, publish, active"
+      responses: { "200": { description: new ownership_version + workspace } }
+  /admin/projects/{projectId}/delete:
+    post:
+      x-internal: true
+      summary: "Deletion saga (§11): authorization cutoff first, then omission from all feeds"
+      responses: { "200": { description: status deleted } }
+  /admin/rotate-jwks:
+    post:
+      x-internal: true
+      summary: "JWKS lifecycle: {phase: overlap} adds+signs with a new kid; {phase: retire} drops old kids permanently"
+      responses: { "200": { description: kid list with retired flags } }
+  /admin/rotate-workload:
+    post:
+      x-internal: true
+      summary: Atomically re-mint workload JWT file(s) ({cell} optional)
+      responses: { "200": { description: rotated } }
+  /admin/mint-workload:
+    post:
+      x-test-only: true
+      summary: Mint an arbitrary-operations workload JWT (negative testing only)
+      responses: { "200": { description: "{jwt}" }, "403": { description: fault API not enabled } }
+  /admin/faults:
+    post:
+      x-test-only: true
+      summary: Deliberate feed-contract violations (emulator --enable-fault-api)
+      description: >
+        kinds: partial-write (torn live-path write), freeze (stale
+        feeds), generation-regression (replay previous publication),
+        same-gen-drift (same feed_version, changed content),
+        resurrect-kid (retired kid re-added at a new generation),
+        clear (drop modes + clean republication). The cell must refuse
+        every one of these and keep its previous accepted snapshot —
+        proven by scripts/platform-e2e.mjs.
+      responses: { "200": { description: fault applied }, "403": { description: fault API not enabled } }
+components:
+  schemas:
+    Credential:
+      type: object
+      required: [id, projectId, displayName, scopes, grantVersion, status, valueHint, createdAt]
+      properties:
+        id: { type: string }
+        projectId: { type: string }
+        displayName: { type: string }
+        scopes: { type: array, items: { type: string } }
+        streamPrefixes: { type: [array, "null"], items: { type: string } }
+        grantVersion: { type: integer }
+        status: { type: string, enum: [active, revoked] }
+        valueHint: { type: string, description: Last characters only; never the secret. }
+        createdAt: { type: string, format: date-time }
+        lastUsedAt: { type: [string, "null"], format: date-time }
+        expiresAt: { type: [string, "null"], format: date-time }
