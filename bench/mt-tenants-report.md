@@ -76,6 +76,33 @@ p50 757ms @ 1000 closed-loop streams, fra, compute-1g**. Nothing in
 this run contradicts the R25-H-era envelopes; the known ~4.9k rec/s
 plateau was a batched shape and is not comparable record-for-record.
 
+## Controls (added after review question: why is MB/s low / p50 high?)
+
+Two 3-minute control stages on the SAME warm rig (100 tenants,
+product surface), answering the question by measurement:
+
+| control | shape | offered | achieved | payload MB/s | p50 | p99 |
+|---|---|---|---|---|---|---|
+| sub500 | 1 KiB, offered 500 rps (under capacity) | 500 rps | 348 rps | 0.36 | **73 ms** | 216 ms |
+| fat32k | 32 KiB, offered 2,000 rps | 2,000 rps | 491 rps | **16.1** | 1,085 ms | 2,093 ms |
+
+- **The campaign's ~750–1,050 ms p50 was queueing, not service time.**
+  Under capacity the same rig serves at **p50 73 ms** (in-region,
+  inside the documented 30–200 ms fra append envelope — every ack
+  waits for its commit group's object-store PUT). At saturation,
+  Little's law fixes p50 ≈ outstanding/throughput: 1000/1331 = 751 ms
+  vs 757 ms measured (within 1% on stages 0/1/10).
+- **The campaign's ~1 MB/s was record size, not a byte ceiling.** At
+  32 KiB records the same instance moves **16 MB/s** payload (12×)
+  while req/s drops only 2.7× — the server is REQUEST-bound at 1 KiB
+  (~1.3k req/s) and byte-bound only far higher. The sinmax 27 MB/s
+  envelope (~41 KiB records) is the same arithmetic.
+- Observation: sub500 shed ~30% (typed admission shed, flat p50s —
+  the designed R25 behavior) despite running under capacity; the
+  instance was warm from ~2M appends across seven stages on the
+  1-GiB survival profile. Worth a restart-and-rerun if we want a
+  clean sub-capacity shed-free baseline.
+
 ## Caveats
 
 - Closed-loop-per-stream (coordinated omission): latencies are
