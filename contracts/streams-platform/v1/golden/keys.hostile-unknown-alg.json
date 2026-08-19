@@ -1,0 +1,5 @@
+{
+  "_comment": "HOSTILE: alg outside [RS256, EdDSA] — the cell refuses the whole snapshot at parse (alg allowlist, MULTITENANCY §7).",
+  "feed_version": 2,
+  "keys": [{ "kid": "bad-1", "alg": "HS256", "pem": "-----BEGIN PUBLIC KEY-----\nnot-a-key\n-----END PUBLIC KEY-----" }]
+}

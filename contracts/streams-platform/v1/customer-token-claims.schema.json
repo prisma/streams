@@ -1,0 +1,27 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prisma.io/streams-platform/v1/customer-token-claims.schema.json",
+  "title": "Streams customer access-token claims",
+  "type": "object",
+  "required": [
+    "iss", "aud", "sub", "credential_id", "project_id", "workspace_id",
+    "cell_id", "ownership_version", "grant_version", "scope", "jti", "iat", "exp"
+  ],
+  "properties": {
+    "iss": { "type": "string", "format": "uri" },
+    "aud": { "const": "prisma-streams-data" },
+    "sub": { "type": "string", "minLength": 1 },
+    "credential_id": { "type": "string", "minLength": 1 },
+    "project_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "workspace_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "cell_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "ownership_version": { "type": "integer", "minimum": 1 },
+    "grant_version": { "type": "integer", "minimum": 1 },
+    "scope": { "type": "string" },
+    "stream_prefixes": { "type": "array", "minItems": 1, "items": { "type": "string" } },
+    "jti": { "type": "string", "minLength": 1 },
+    "iat": { "type": "integer" },
+    "nbf": { "type": "integer" },
+    "exp": { "type": "integer" }
+  }
+}

@@ -404,8 +404,10 @@ struct Args {
     workload_token_file: Option<std::path::PathBuf>,
 
     /// Release posture: refuse boot configurations that are bridges,
-    /// not GA shapes (today: FLEET_AUTH_MODE=static in fleet mode).
-    #[arg(long, env = "STREAMS_RELEASE_POSTURE", default_value_t = false)]
+    /// not GA shapes. Accepts 1/0/true/false — every runbook writes
+    /// STREAMS_RELEASE_POSTURE=1 and a posture flag that fails to
+    /// parse the documented form would refuse the SAFE configuration.
+    #[arg(long, env = "STREAMS_RELEASE_POSTURE", default_value = "false", value_parser = parse_bool_flag)]
     release_posture: bool,
 
     /// Billing tenant boundary: the account every stream created on
@@ -886,6 +888,14 @@ fn shard_settings(args: &Args) -> Settings {
 /// the AppState wiring), and the release posture is validated whether
 /// or not fleet mode is on: a single-instance deployment mounts the
 /// same raw and internal routes, so it gets the same rules.
+fn parse_bool_flag(s: &str) -> Result<bool, String> {
+    match s {
+        "1" | "true" | "yes" => Ok(true),
+        "0" | "false" | "no" => Ok(false),
+        other => Err(format!("expected 1/0/true/false, got {other:?}")),
+    }
+}
+
 fn validate_fleet_auth(args: &Args, fleet_mode: bool) -> anyhow::Result<()> {
     match args.fleet_auth_mode.as_str() {
         "static" => {

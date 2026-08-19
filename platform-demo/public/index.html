@@ -1,0 +1,23 @@
+<!doctype html>
+<meta charset="utf-8">
+<title>Streams platform emulator</title>
+<style>
+  body { font: 14px/1.5 system-ui; max-width: 720px; margin: 3rem auto; padding: 0 1rem; }
+  code, pre { background: #8882; padding: 2px 5px; border-radius: 4px; }
+  table { border-collapse: collapse; width: 100%; } td, th { border: 1px solid #8884; padding: 4px 8px; text-align: left; }
+</style>
+<h1>Streams platform emulator</h1>
+<p>Reference Control-Plane / Auth / feed-projector for local development
+(<code>docs/CONTROL-PLANE-INTEGRATION.md</code> §14). Credentials listed
+here never show their secret — it is returned exactly once at creation.</p>
+<h2>Credentials</h2>
+<div id="creds">loading…</div>
+<script>
+  const pid = new URLSearchParams(location.search).get("project") ?? "proj-e2e";
+  fetch(`/v1/projects/${pid}/streams/credentials`).then(r => r.json()).then(d => {
+    const rows = (d.credentials ?? []).map(c =>
+      `<tr><td>${c.id}</td><td>${c.displayName}</td><td>${c.status}</td><td>v${c.grantVersion}</td><td>${c.valueHint}</td><td>${c.lastUsedAt ?? "—"}</td></tr>`).join("");
+    document.getElementById("creds").innerHTML =
+      `<table><tr><th>id</th><th>name</th><th>status</th><th>grant</th><th>hint</th><th>last used</th></tr>${rows}</table>`;
+  });
+</script>

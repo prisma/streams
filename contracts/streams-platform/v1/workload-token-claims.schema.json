@@ -1,0 +1,24 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prisma.io/streams-platform/v1/workload-token-claims.schema.json",
+  "title": "Streams workload (fleet-internal) token claims",
+  "type": "object",
+  "required": ["iss", "aud", "sub", "cell_id", "operations", "exp"],
+  "properties": {
+    "iss": { "type": "string", "format": "uri" },
+    "aud": { "const": "prisma-streams-internal" },
+    "sub": { "type": "string", "minLength": 1 },
+    "cell_id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" },
+    "operations": {
+      "type": "array",
+      "items": {
+        "enum": [
+          "raw-read", "raw-append", "raw-lifecycle", "segment-read",
+          "segment-scan", "queue-cursor", "consumer-sweep", "telemetry-append"
+        ]
+      }
+    },
+    "nbf": { "type": "integer" },
+    "exp": { "type": "integer" }
+  }
+}

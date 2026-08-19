@@ -62,6 +62,25 @@ jobs:
       - name: Noisy-neighbor campaign (locked thresholds)
         run: NOISY=24 IDLE=100 WINDOW_SECS=20 node scripts/mt-noisy-campaign.mjs
 
+  # Job: the platform end-to-end battery (docs/CONTROL-PLANE-
+  # INTEGRATION.md §15) — the TS emulator mints real credentials,
+  # tokens and feed files; a REAL streams-slate consumes them under
+  # the full release posture (workload identity, no static token);
+  # the SDK exchanges through tokenProvider. Phase-A scenarios.
+  platform-e2e:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Build SDK dist
+        run: cd sdk && npm ci && npm run build
+      - name: Platform end-to-end battery
+        run: node scripts/platform-e2e.mjs
+
   # Job: the shared-cell certification smoke at CONTRACT scale
   # (docs/MULTITENANCY.md §18 Stage 8 / SR-6). The suite's default run
   # exercises the same test at 128 projects; this job runs the

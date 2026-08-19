@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prisma.io/streams-platform/v1/project-policies.schema.json",
+  "title": "Streams project-policy feed snapshot (full, per cell)",
+  "type": "object",
+  "required": ["feed_version", "projects"],
+  "additionalProperties": false,
+  "properties": {
+    "feed_version": { "type": "integer", "minimum": 1 },
+    "projects": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": [
+          "project_id", "workspace_id", "cell_id",
+          "project_policy_version", "ownership_version", "status", "quotas"
+        ],
+        "additionalProperties": false,
+        "properties": {
+          "project_id": { "$ref": "#/$defs/id" },
+          "workspace_id": { "$ref": "#/$defs/id" },
+          "cell_id": { "$ref": "#/$defs/id" },
+          "project_policy_version": { "type": "integer", "minimum": 1 },
+          "ownership_version": { "type": "integer", "minimum": 1 },
+          "status": { "enum": ["active", "suspended", "transfer_pending", "deleting", "deleted"] },
+          "quotas": {
+            "type": "object",
+            "additionalProperties": false,
+            "properties": {
+              "requests_per_sec": { "type": "integer", "minimum": 0 },
+              "append_bytes_per_sec": { "type": "integer", "minimum": 0 },
+              "append_records_per_sec": { "type": "integer", "minimum": 0 },
+              "read_bytes_per_sec": { "type": "integer", "minimum": 0 },
+              "max_inflight_requests": { "type": "integer", "minimum": 0 },
+              "max_live_subscriptions": { "type": "integer", "minimum": 0 },
+              "max_streams": { "type": "integer", "minimum": 0 },
+              "queued_append_bytes": { "type": "integer", "minimum": 0 }
+            }
+          }
+        }
+      }
+    }
+  },
+  "$defs": {
+    "id": { "type": "string", "pattern": "^[A-Za-z0-9_-]{1,128}$" }
+  }
+}

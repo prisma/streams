@@ -1,0 +1,25 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://prisma.io/streams-platform/v1/keys.schema.json",
+  "title": "Streams JWKS feed snapshot",
+  "type": "object",
+  "required": ["feed_version", "keys"],
+  "additionalProperties": false,
+  "properties": {
+    "feed_version": { "type": "integer", "minimum": 1 },
+    "keys": {
+      "type": "array",
+      "minItems": 1,
+      "items": {
+        "type": "object",
+        "required": ["kid", "alg", "pem"],
+        "additionalProperties": false,
+        "properties": {
+          "kid": { "type": "string", "minLength": 1, "maxLength": 128 },
+          "alg": { "enum": ["RS256", "EdDSA"] },
+          "pem": { "type": "string", "pattern": "^-----BEGIN PUBLIC KEY-----" }
+        }
+      }
+    }
+  }
+}
