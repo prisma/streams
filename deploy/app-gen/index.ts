@@ -58,6 +58,16 @@ try {
   await serveDownloadFailure(e);
 }
 await chmod(bin, 0o755);
+// MT campaign: the per-project customer-token map for BENCH_MT=1.
+if (process.env.TOKENS_S3_KEY) {
+  const { downloadFile } = await import("./downloader");
+  try {
+    await downloadFile(process.env.TOKENS_S3_KEY, "/tmp/tokens.json", console.log);
+  } catch (e) {
+    await serveDownloadFailure(e);
+  }
+  process.env.BENCH_TOKENS_FILE = "/tmp/tokens.json";
+}
 // R26-9 build identity: hash the downloaded binary; awsbench echoes it
 // in every stats line ("binSha256") for verify-running.
 const hasher = new Bun.CryptoHasher("sha256");

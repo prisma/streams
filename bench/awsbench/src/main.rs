@@ -984,7 +984,11 @@ async fn stats_server(stats: Arc<Stats>) {
 async fn main() -> anyhow::Result<()> {
     let args = Args::parse();
     if args.shape == "wide" {
-        return run_wide(&args).await;
+        // MT campaigns deploy wide: the stats server must serve the
+        // JSONL (and platform liveness) exactly like the tiered shapes.
+        let stats = Stats::new();
+        tokio::spawn(stats_server(stats.clone()));
+        return run_wide(&args, stats).await;
     }
     let stats = Stats::new();
     tokio::spawn(stats_server(stats.clone()));
@@ -1252,7 +1256,7 @@ fn wide_batch(batch: usize, record_bytes: usize) -> Vec<serde_json::Value> {
         .collect()
 }
 
-async fn run_wide(args: &Args) -> anyhow::Result<()> {
+async fn run_wide(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
     use futures_util::StreamExt;
     let n: usize = std::env::var("BENCH_WIDE_STREAMS")
         .context("BENCH_WIDE_STREAMS")?
@@ -1276,8 +1280,64 @@ async fn run_wide(args: &Args) -> anyhow::Result<()> {
     let mut out = std::fs::File::create(&args.out)?;
     use std::io::Write as _;
 
+    // ---- MT (multi-tenant, PRODUCT surface) ------------------------------
+    // BENCH_MT=1 drives the product surface with per-project customer
+    // JWTs: stream i belongs to project i % BENCH_PROJECTS_ACTIVE and
+    // every request carries that project's Bearer from
+    // BENCH_TOKENS_FILE (JSON [{"project":..,"token":..}, ...]).
+    // Everything else — pacing, stream count, stats — is the same
+    // experiment, so tenant cardinality is the ONLY moving axis.
+    let mt = std::env::var("BENCH_MT").as_deref() == Ok("1");
+    let mt_active: usize = if mt {
+        std::env::var("BENCH_PROJECTS_ACTIVE")
+            .context("BENCH_MT=1 requires BENCH_PROJECTS_ACTIVE")?
+            .parse()?
+    } else {
+        0
+    };
+    let mt_tokens: Vec<String> = if mt {
+        let path = std::env::var("BENCH_TOKENS_FILE").context("BENCH_TOKENS_FILE")?;
+        let doc: Vec<serde_json::Value> =
+            serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+        let toks: Vec<String> = doc
+            .iter()
+            .map(|e| e["token"].as_str().unwrap_or_default().to_string())
+            .collect();
+        anyhow::ensure!(
+            mt_active >= 1 && mt_active <= toks.len(),
+            "BENCH_PROJECTS_ACTIVE {mt_active} outside 1..={}",
+            toks.len()
+        );
+        anyhow::ensure!(args.batch == 1, "MT mode appends single records; set BENCH_BATCH=1");
+        toks
+    } else {
+        Vec::new()
+    };
+    let auth_for = |i: usize| -> String {
+        if mt {
+            format!("Bearer {}", mt_tokens[i % mt_active])
+        } else {
+            auth.clone()
+        }
+    };
+    let enc_header: &'static str = if mt { "prisma-encryption-key" } else { "stream-encryption-key" };
+    let entry_url = |i: usize| -> String {
+        if mt {
+            format!("{base}/v1/streams/{prefix}{i}")
+        } else {
+            format!("{base}/v1/stream/{prefix}{i}")
+        }
+    };
+    let append_url = |i: usize| -> String {
+        if mt {
+            format!("{base}/v1/streams/{prefix}{i}/records")
+        } else {
+            format!("{base}/v1/stream/{prefix}{i}")
+        }
+    };
+
     eprintln!(
-        "WIDE: {n} streams, {active} active, {secs}s steady, append every {interval_ms}ms, scan {scan_rps}/s"
+        "WIDE: {n} streams, {active} active, {secs}s steady, append every {interval_ms}ms, scan {scan_rps}/s, mt={mt} projectsActive={mt_active}"
     );
 
     // Phase 1a: create. Every stream must exist or the regime is void.
@@ -1287,18 +1347,22 @@ async fn run_wide(args: &Args) -> anyhow::Result<()> {
         let fails: usize = futures_util::stream::iter(
             (chunk_start..chunk_end).map(|i| {
                 let http = http.clone();
-                let url = format!("{base}/v1/stream/{prefix}{i}");
-                let auth = auth.clone();
+                let url = entry_url(i);
+                let auth = auth_for(i);
                 let key = key.clone();
+                // Product create takes the typed creation document.
+                let create_body = mt.then(|| serde_json::json!({"format": {"kind": "json"}}));
                 async move {
                     for attempt in 0..4u32 {
-                        let r = http
+                        let mut req = http
                             .put(&url)
                             .header("authorization", auth.clone())
-                            .header("stream-encryption-key", key.clone())
-                            .header("content-type", "application/json")
-                            .send()
-                            .await;
+                            .header(enc_header, key.clone())
+                            .header("content-type", "application/json");
+                        if let Some(b) = &create_body {
+                            req = req.json(b);
+                        }
+                        let r = req.send().await;
                         if matches!(&r, Ok(resp) if resp.status().is_success()) {
                             return 0usize;
                         }
@@ -1324,16 +1388,20 @@ async fn run_wide(args: &Args) -> anyhow::Result<()> {
         let fails: usize = futures_util::stream::iter(
             (chunk_start..chunk_end).map(|i| {
                 let http = http.clone();
-                let url = format!("{base}/v1/stream/{prefix}{i}");
-                let auth = auth.clone();
+                let url = append_url(i);
+                let auth = auth_for(i);
                 let key = key.clone();
                 async move {
-                    let body = wide_batch(1, record_bytes);
+                    let body = if mt {
+                        wide_batch(1, record_bytes).pop().unwrap_or_default()
+                    } else {
+                        serde_json::Value::Array(wide_batch(1, record_bytes))
+                    };
                     for attempt in 0..4u32 {
                         let r = http
                             .post(&url)
                             .header("authorization", auth.clone())
-                            .header("stream-encryption-key", key.clone())
+                            .header(enc_header, key.clone())
                             .header("content-type", "application/json")
                             .json(&body)
                             .send()
@@ -1355,15 +1423,17 @@ async fn run_wide(args: &Args) -> anyhow::Result<()> {
     }
     let seed_ms = t_seed.elapsed().as_millis();
     eprintln!("SETUP_DONE streams={n} create_ms={create_ms} seed_ms={seed_ms}");
-    writeln!(
-        out,
-        "{}",
-        serde_json::json!({
-            "phase": "setup", "streams": n, "active": active,
-            "createMs": create_ms, "seedMs": seed_ms, "ts": now_ms()/1000,
-        })
-    )?;
+    let setup_line = serde_json::json!({
+        "phase": "setup", "streams": n, "active": active,
+        "createMs": create_ms, "seedMs": seed_ms,
+        "projectsActive": mt_active,
+        "surface": if mt { "product" } else { "raw" },
+        "recordBytes": record_bytes, "intervalMs": interval_ms,
+        "ts": now_ms()/1000,
+    });
+    writeln!(out, "{setup_line}")?;
     out.flush()?;
+    stats.lines.lock().unwrap().push(setup_line.to_string());
 
     // Phase 2: steady window.
     let stop = Arc::new(AtomicU64::new(0));
@@ -1379,8 +1449,8 @@ async fn run_wide(args: &Args) -> anyhow::Result<()> {
     let mut tasks = Vec::new();
     for j in 0..active {
         let http = http.clone();
-        let url = format!("{base}/v1/stream/{prefix}{j}");
-        let auth = auth.clone();
+        let url = append_url(j);
+        let auth = auth_for(j);
         let key = key.clone();
         let stop = stop.clone();
         let (hist, ok, thr, err) =
@@ -1393,12 +1463,16 @@ async fn run_wide(args: &Args) -> anyhow::Result<()> {
             while stop.load(Ordering::Relaxed) == 0 {
                 tokio::time::sleep_until(tokio::time::Instant::from_std(next)).await;
                 next += interval;
-                let body = wide_batch(batch, record_bytes);
+                let body = if mt {
+                    wide_batch(1, record_bytes).pop().unwrap_or_default()
+                } else {
+                    serde_json::Value::Array(wide_batch(batch, record_bytes))
+                };
                 let t0 = Instant::now();
                 match http
                     .post(&url)
                     .header("authorization", auth.clone())
-                    .header("stream-encryption-key", key.clone())
+                    .header(enc_header, key.clone())
                     .header("content-type", "application/json")
                     .json(&body)
                     .send()
@@ -1494,17 +1568,47 @@ async fn run_wide(args: &Args) -> anyhow::Result<()> {
             "scWinP50Ms": pctl_ms(&sc, 0.5),
             "scWinP99Ms": pctl_ms(&sc, 0.99),
             "scRecords": sc_records.load(Ordering::Relaxed),
+            "projectsActive": mt_active,
+            "surface": if mt { "product" } else { "raw" },
+            "streams": n, "active": active,
+            "recordBytes": record_bytes, "intervalMs": interval_ms,
             "ts": now_ms()/1000,
         });
         eprintln!("{line}");
         writeln!(out, "{line}")?;
         out.flush()?;
+        stats.lines.lock().unwrap().push(line.to_string());
     }
     stop.store(1, Ordering::Relaxed);
     for t in tasks {
         let _ = tokio::time::timeout(Duration::from_secs(5), t).await;
     }
+    let done = serde_json::json!({
+        "phase": "wide_done",
+        "apOk": ap_ok.load(Ordering::Relaxed),
+        "apThr": ap_thr.load(Ordering::Relaxed),
+        "apErr": ap_err.load(Ordering::Relaxed),
+        "scOk": sc_ok.load(Ordering::Relaxed),
+        "scErr": sc_err.load(Ordering::Relaxed),
+        "projectsActive": mt_active,
+        "surface": if mt { "product" } else { "raw" },
+        "streams": n, "active": active,
+        "recordBytes": record_bytes, "intervalMs": interval_ms,
+        "steadySecs": secs,
+        "binSha256": std::env::var("APP_BINARY_SHA256").unwrap_or_default(),
+        "ts": now_ms()/1000,
+    });
+    eprintln!("{done}");
+    writeln!(out, "{done}")?;
+    out.flush()?;
+    stats.lines.lock().unwrap().push(done.to_string());
     eprintln!("WIDE_DONE");
+    if std::env::var("BENCH_HOLD").as_deref() == Ok("1") {
+        eprintln!("WIDE_DONE (holding for scrape)");
+        loop {
+            tokio::time::sleep(Duration::from_secs(3600)).await;
+        }
+    }
     Ok(())
 }
 

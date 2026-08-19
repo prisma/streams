@@ -64,3 +64,35 @@ export async function downloadBinary(key: string, dest: string, log: (s: string)
   if (!(hd[0] === 0x7f && hd[1] === 0x45 && hd[2] === 0x4c && hd[3] === 0x46)) throw new Error("not ELF");
   if (machine !== 0x3e) throw new Error(`machine ${machine} != x86_64`);
 }
+
+// Small-object variant for campaign side-files (feeds bundle, token
+// map): single GET, retries, and NO minimum-size gate — that gate is
+// binary-corruption armor and would refuse a 500 KB JSON document.
+export async function downloadFile(key: string, dest: string, log: (s: string) => void) {
+  const env = process.env;
+  // Same BIN_S3_* fallback chain as downloadBinary: the server deploy
+  // passes BIN_S3_* for the artifact bucket (S3_* is the gen's name).
+  const c = new S3Client({
+    endpoint: env.BIN_S3_ENDPOINT ?? env.S3_ENDPOINT!,
+    bucket: env.BIN_S3_BUCKET ?? env.S3_BUCKET!,
+    region: env.BIN_S3_REGION ?? env.S3_REGION ?? "auto",
+    accessKeyId: env.BIN_S3_ACCESS_KEY_ID ?? env.S3_ACCESS_KEY_ID!,
+    secretAccessKey: env.BIN_S3_SECRET_ACCESS_KEY ?? env.S3_SECRET_ACCESS_KEY!,
+  });
+  for (let attempt = 1; ; attempt++) {
+    try {
+      const b = new Uint8Array(await Promise.race([
+        c.file(key).arrayBuffer(),
+        new Promise<never>((_, rej) => setTimeout(() => rej(new Error("timeout")), 45_000)),
+      ]) as ArrayBuffer);
+      if (b.length === 0) throw new Error("empty object");
+      await Bun.write(dest, b);
+      log(`file ${key} -> ${dest} (${b.length} bytes)`);
+      return;
+    } catch (e: any) {
+      log(`file ${key} attempt ${attempt} failed: ${e?.message ?? e}`);
+      if (attempt >= 5) throw e;
+      await new Promise((r) => setTimeout(r, 500 * attempt));
+    }
+  }
+}

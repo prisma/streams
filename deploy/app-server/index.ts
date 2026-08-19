@@ -55,6 +55,28 @@ const serveDownloadFailure = (err: unknown) => {
 }
 }
 await chmod(bin, 0o755);
+// MT campaign: materialize the auth feed FILES before the binary
+// starts — enforce mode refuses to serve without them. The bundle is
+// one JSON {keys, policies, grants}; files are written atomically
+// (tmp + rename) exactly like a platform projector would.
+if (process.env.FEEDS_S3_KEY) {
+  const { downloadFile } = await import("./downloader");
+  const bundlePath = "/tmp/feeds-bundle.json";
+  try {
+    await downloadFile(process.env.FEEDS_S3_KEY, bundlePath, console.log);
+  } catch (e) {
+    await serveDownloadFailure(e);
+  }
+  const { mkdirSync, writeFileSync, renameSync } = await import("node:fs");
+  mkdirSync("/tmp/feeds", { recursive: true });
+  const bundle = JSON.parse(await Bun.file(bundlePath).text());
+  for (const [name, doc] of [["keys", bundle.keys], ["policies", bundle.policies], ["grants", bundle.grants]]) {
+    const path = `/tmp/feeds/${name}.json`;
+    writeFileSync(`${path}.tmp`, JSON.stringify(doc));
+    renameSync(`${path}.tmp`, path);
+  }
+  console.log(`feeds materialized: /tmp/feeds/{keys,policies,grants}.json gen=${bundle.keys?.feed_version}`);
+}
 // R26-9 build identity: hash the binary we actually downloaded and pass
 // it into the child's env; the server echoes it on /v1/debug/load and
 // verify-running compares it against the campaign's upload manifest.
