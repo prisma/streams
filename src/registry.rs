@@ -595,6 +595,9 @@ pub struct Registry {
     #[cfg(test)]
     // mt-lint: allow(name-keyed-map): test failpoint set, canonical names of the rig's own streams
     fail_next_get: Mutex<std::collections::HashSet<String>>,
+    /// SR3-2 test failpoint: the next list_page for this project fails.
+    // mt-lint: allow(name-keyed-map): test failpoint set, project ids armed by the rig
+    fail_next_list: Mutex<std::collections::HashSet<String>>,
 }
 
 struct CachedDesc {
@@ -684,6 +687,7 @@ impl Registry {
             cache_ttl: Duration::from_secs(5),
             #[cfg(test)]
             fail_next_get: Mutex::new(std::collections::HashSet::new()),
+            fail_next_list: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -1167,6 +1171,17 @@ impl Registry {
         self.fail_next_get.lock().unwrap().insert(name.to_string());
     }
 
+    /// SR3-2 test failpoint: fail the next catalog page walk for this
+    /// project (drives the fail-closed seed path).
+    #[cfg(test)]
+    // mt-lint: allow(name-param-shared-core): test failpoint arming, no identity derived
+    pub fn fail_next_list(&self, project: &str) {
+        self.fail_next_list
+            .lock()
+            .unwrap()
+            .insert(project.to_string());
+    }
+
     /// Force a cached entry past its TTL so tests can exercise the
     /// refresh path without sleeping through the real TTL.
     #[cfg(test)]
@@ -1186,6 +1201,13 @@ impl Registry {
         after: Option<&str>,
         limit: usize,
     ) -> Result<CatalogPage, object_store::Error> {
+        if self.fail_next_list.lock().unwrap().remove(project.as_str()) {
+            return Err(object_store::Error::Generic {
+                store: "registry",
+                source: "armed list failpoint".into(),
+            });
+        }
+
         use futures_util::TryStreamExt;
         // §10.3: a project catalog scans ONLY its own prefix — other
         // projects' keys are unreachable by construction.

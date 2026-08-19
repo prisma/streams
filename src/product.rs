@@ -1368,7 +1368,23 @@ async fn product_create(
         );
         if !exists {
             let seed = if state.quotas.needs_stream_seed(&p.project_id) {
-                Some(count_project_streams(&state, tenant).await)
+                match count_project_streams(&state, tenant).await {
+                    Ok(n) => Some(n),
+                    Err(()) => {
+                        // Fail CLOSED: a partial count must never seed
+                        // the limiter.
+                        return crate::audit::tag_project(
+                            perr(
+                                StatusCode::SERVICE_UNAVAILABLE,
+                                "catalog_unavailable",
+                                "stream count unavailable; retry",
+                                None,
+                                true,
+                            ),
+                            &p.project_id,
+                        );
+                    }
+                }
             } else {
                 None
             };
@@ -1531,33 +1547,38 @@ async fn product_create(
     metadata_response(&desc, status)
 }
 
-/// SR2-4: count the project's live product streams for the max_streams
-/// seed — catalog truth, alive non-child descriptors only (split
-/// children are the parent's capacity, not new streams; soft-deleted
-/// fork-retained sources DO count until their terminal hard delete).
-async fn count_project_streams(state: &AppState, project: &crate::tenant::ProjectId) -> u64 {
+/// SR2-4/SR3-2: count the project's streams for the max_streams seed —
+/// catalog truth, alive or soft-deleted (fork-retained sources hold
+/// storage and the name until their terminal hard delete). FAILS
+/// CLOSED: a registry error mid-walk returns Err and the create
+/// answers a retryable 503 — a partial count must never seed the
+/// limiter (round-3 finding 2.1). No name-syntax classification:
+/// layout-4 unified descriptors keep segments INSIDE the descriptor,
+/// so every registry entry here is a customer stream — including
+/// names that contain '#' (round-3 finding 2.2).
+async fn count_project_streams(
+    state: &AppState,
+    project: &crate::tenant::ProjectId,
+) -> Result<u64, ()> {
     let mut n = 0u64;
     let mut after: Option<String> = None;
     loop {
-        let page = match state
+        let page = state
             .registry
             .list_page(project, after.as_deref(), 512)
             .await
-        {
-            Ok(p) => p,
-            Err(_) => break,
-        };
+            .map_err(|_| ())?;
         n += page
             .streams
             .iter()
-            .filter(|d| (crate::http::desc_alive(d) || d.soft_deleted) && !d.name.contains('#'))
+            .filter(|d| crate::http::desc_alive(d) || d.soft_deleted)
             .count() as u64;
         if page.exhausted || page.next_after.is_none() {
             break;
         }
         after = page.next_after;
     }
-    n
+    Ok(n)
 }
 
 fn metadata_response(desc: &StreamDesc, status: StatusCode) -> Response {

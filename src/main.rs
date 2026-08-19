@@ -880,6 +880,69 @@ fn shard_settings(args: &Args) -> Settings {
     }
 }
 
+/// SR3-1: fleet-auth posture validation, extracted and GLOBAL. The
+/// selected mode determines the runtime credential state (workload
+/// mode discards any configured static token at construction — see
+/// the AppState wiring), and the release posture is validated whether
+/// or not fleet mode is on: a single-instance deployment mounts the
+/// same raw and internal routes, so it gets the same rules.
+fn validate_fleet_auth(args: &Args, fleet_mode: bool) -> anyhow::Result<()> {
+    match args.fleet_auth_mode.as_str() {
+        "static" => {
+            if args.release_posture {
+                anyhow::bail!(
+                    "FLEET_AUTH_MODE=static is the bridge posture and is refused under \
+                     STREAMS_RELEASE_POSTURE=1 — configure workload identity (§14.1)"
+                );
+            }
+            tracing::warn!(
+                "FLEET_AUTH_MODE=static: the shared bridge token is a NAMED legacy \
+                 posture; the release posture requires workload identity (§14.1)"
+            );
+            if fleet_mode {
+                match (&args.fleet_internal_token, &args.auth_token) {
+                    (None, _) => anyhow::bail!(
+                        "fleet mode (static) requires FLEET_INTERNAL_TOKEN (a credential \
+                         distinct from AUTH_TOKEN) — /v1/internal/* must not be reachable \
+                         with a customer bearer"
+                    ),
+                    (Some(t), _) if t.len() < 16 => {
+                        anyhow::bail!("FLEET_INTERNAL_TOKEN must be at least 16 characters")
+                    }
+                    (Some(t), Some(a)) if t == a => anyhow::bail!(
+                        "FLEET_INTERNAL_TOKEN must differ from AUTH_TOKEN — they are \
+                         separate trust boundaries"
+                    ),
+                    _ => {}
+                }
+            }
+        }
+        "workload" => {
+            if args.workload_token_file.is_none() {
+                anyhow::bail!(
+                    "FLEET_AUTH_MODE=workload requires WORKLOAD_TOKEN_FILE (the \
+                     platform-rotated workload JWT)"
+                );
+            }
+            if args.release_posture && args.fleet_internal_token.is_some() {
+                anyhow::bail!(
+                    "STREAMS_RELEASE_POSTURE=1 with FLEET_AUTH_MODE=workload must not \
+                     carry FLEET_INTERNAL_TOKEN — the release posture has NO permanent \
+                     shared credential (round-3 finding 1)"
+                );
+            }
+        }
+        other => anyhow::bail!("FLEET_AUTH_MODE must be static|workload, got {other:?}"),
+    }
+    if args.release_posture && args.streams_auth_mode != "enforce" {
+        anyhow::bail!(
+            "STREAMS_RELEASE_POSTURE=1 requires STREAMS_AUTH_MODE=enforce (got {:?})",
+            args.streams_auth_mode
+        );
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod config_validation_tests {
     use super::*;
@@ -891,6 +954,94 @@ mod config_validation_tests {
     /// with no environment booted, reported `/health` ok, accepted
     /// stream creation, and then failed EVERY append with a 500 for as
     /// long as the process lived.
+    /// SR3-1 (round-3 finding 1): the release posture carries NO
+    /// permanent shared credential, validated GLOBALLY — the same
+    /// rules whether or not fleet mode is on.
+    #[test]
+    fn release_posture_refuses_every_static_credential_shape() {
+        let parse = |extra: &[&str]| {
+            let mut v = vec!["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"];
+            v.extend_from_slice(extra);
+            // try_parse_from: a parse error must FAIL THE TEST, not
+            // process::exit(2) the whole suite binary.
+            Args::try_parse_from(v).expect("test args must parse")
+        };
+        // Workload + release + a coexisting static token: refused.
+        let a = parse(&[
+            "--fleet-auth-mode",
+            "workload",
+            "--workload-token-file",
+            "/run/w.jwt",
+            "--streams-auth-mode",
+            "enforce",
+            "--release-posture",
+            "--fleet-internal-token",
+            "legacy-token-0123456789",
+        ]);
+        assert!(
+            validate_fleet_auth(&a, false).is_err(),
+            "release+workload must refuse a coexisting static token"
+        );
+        // Static mode under release: refused even single-instance.
+        let a = parse(&[
+            "--fleet-auth-mode",
+            "static",
+            "--streams-auth-mode",
+            "enforce",
+            "--release-posture",
+            "--fleet-internal-token",
+            "legacy-token-0123456789",
+        ]);
+        assert!(
+            validate_fleet_auth(&a, false).is_err(),
+            "release posture must refuse static mode without fleet mode too"
+        );
+        // Release workload posture without enforce: refused.
+        let a = parse(&[
+            "--fleet-auth-mode",
+            "workload",
+            "--workload-token-file",
+            "/run/w.jwt",
+            "--release-posture",
+        ]);
+        assert!(
+            validate_fleet_auth(&a, false).is_err(),
+            "release posture requires STREAMS_AUTH_MODE=enforce"
+        );
+        // The clean release shape passes, single-instance AND fleet.
+        let a = parse(&[
+            "--fleet-auth-mode",
+            "workload",
+            "--workload-token-file",
+            "/run/w.jwt",
+            "--streams-auth-mode",
+            "enforce",
+            "--release-posture",
+        ]);
+        assert!(validate_fleet_auth(&a, false).is_ok());
+        assert!(validate_fleet_auth(&a, true).is_ok());
+        // Non-release migration coexistence stays allowed (boot only;
+        // the runtime gate still refuses the static bearer in
+        // workload mode).
+        let a = parse(&[
+            "--fleet-auth-mode",
+            "workload",
+            "--workload-token-file",
+            "/run/w.jwt",
+            "--fleet-internal-token",
+            "legacy-token-0123456789",
+        ]);
+        assert!(validate_fleet_auth(&a, false).is_ok());
+        // Static fleet mode off-release keeps its existing rules.
+        let a = parse(&["--fleet-internal-token", "legacy-token-0123456789"]);
+        assert!(validate_fleet_auth(&a, true).is_ok());
+        let a = parse(&[]);
+        assert!(
+            validate_fleet_auth(&a, true).is_err(),
+            "static fleet mode still requires the token"
+        );
+    }
+
     #[test]
     fn shipped_defaults_are_a_valid_engine_configuration() {
         let args = Args::parse_from(["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"]);
@@ -1227,42 +1378,7 @@ async fn async_main() -> anyhow::Result<()> {
     // the customer account token, and fleet mode must not start without
     // one — a fleet that silently accepted the public bearer on those
     // routes would let any customer token corrupt any consumer.
-    if fleet_mode {
-        match args.fleet_auth_mode.as_str() {
-            "static" => {
-                if args.release_posture {
-                    anyhow::bail!(
-                        "FLEET_AUTH_MODE=static is the bridge posture and is refused under                          STREAMS_RELEASE_POSTURE=1 — configure workload identity (§14.1)"
-                    );
-                }
-                tracing::warn!(
-                    "FLEET_AUTH_MODE=static: the shared bridge token is a NAMED legacy                      posture; the release posture requires workload identity (§14.1)"
-                );
-                match (&args.fleet_internal_token, &args.auth_token) {
-                    (None, _) => anyhow::bail!(
-                        "fleet mode (static) requires FLEET_INTERNAL_TOKEN (a credential distinct from                          AUTH_TOKEN) — /v1/internal/* must not be reachable with a customer bearer"
-                    ),
-                    (Some(t), _) if t.len() < 16 => {
-                        anyhow::bail!("FLEET_INTERNAL_TOKEN must be at least 16 characters")
-                    }
-                    (Some(t), Some(a)) if t == a => anyhow::bail!(
-                        "FLEET_INTERNAL_TOKEN must differ from AUTH_TOKEN — they are separate                          trust boundaries"
-                    ),
-                    _ => {}
-                }
-            }
-            "workload" => {
-                if args.workload_token_file.is_none() {
-                    anyhow::bail!(
-                        "FLEET_AUTH_MODE=workload requires WORKLOAD_TOKEN_FILE (the                          platform-rotated workload JWT)"
-                    );
-                }
-                // The static token MAY coexist during migration; it is
-                // not required.
-            }
-            other => anyhow::bail!("FLEET_AUTH_MODE must be static|workload, got {other:?}"),
-        }
-    }
+    validate_fleet_auth(&args, fleet_mode)?;
     let initial_shards = match args.initial_shards {
         Some(n) => {
             if fleet_mode && n < 4 * args.fleet_max as usize {
@@ -1538,29 +1654,40 @@ async fn async_main() -> anyhow::Result<()> {
         } else {
             args.instance_name.clone()
         },
-        fleet_internal_token: args.fleet_internal_token.clone(),
-        fleet_token_source: args.workload_token_file.as_ref().map(|path| {
-            // Expiry-aware file cache: the platform rotates the file;
-            // this re-reads when forced (peer 401) or within 30s of
-            // the cached token's exp. The exp is read WITHOUT
-            // verification — freshness scheduling only; peers verify.
-            let path = path.clone();
-            let cache: std::sync::Mutex<Option<(String, i64)>> = std::sync::Mutex::new(None);
-            std::sync::Arc::new(move |force: bool| {
-                let now = chrono::Utc::now().timestamp();
-                let mut c = cache.lock().unwrap();
-                if !force
-                    && let Some((tok, exp)) = c.as_ref()
-                    && now < exp - 30
-                {
-                    return Some(tok.clone());
-                }
-                let tok = std::fs::read_to_string(&path).ok()?.trim().to_string();
-                let exp = crate::auth::unverified_exp(&tok).unwrap_or(now);
-                *c = Some((tok.clone(), exp));
-                Some(tok)
-            }) as crate::http::FleetTokenSource
-        }),
+        // SR3-1: the MODE determines the runtime credential state — in
+        // workload mode the static token does not exist at runtime,
+        // whatever the environment carried; in static mode no source
+        // exists and relays use the bridge token.
+        fleet_internal_token: if args.fleet_auth_mode == "workload" {
+            None
+        } else {
+            args.fleet_internal_token.clone()
+        },
+        fleet_token_source: (args.fleet_auth_mode == "workload")
+            .then_some(args.workload_token_file.as_ref())
+            .flatten()
+            .map(|path| {
+                // Expiry-aware file cache: the platform rotates the file;
+                // this re-reads when forced (peer 401) or within 30s of
+                // the cached token's exp. The exp is read WITHOUT
+                // verification — freshness scheduling only; peers verify.
+                let path = path.clone();
+                let cache: std::sync::Mutex<Option<(String, i64)>> = std::sync::Mutex::new(None);
+                std::sync::Arc::new(move |force: bool| {
+                    let now = chrono::Utc::now().timestamp();
+                    let mut c = cache.lock().unwrap();
+                    if !force
+                        && let Some((tok, exp)) = c.as_ref()
+                        && now < exp - 30
+                    {
+                        return Some(tok.clone());
+                    }
+                    let tok = std::fs::read_to_string(&path).ok()?.trim().to_string();
+                    let exp = crate::auth::unverified_exp(&tok).unwrap_or(now);
+                    *c = Some((tok.clone(), exp));
+                    Some(tok)
+                }) as crate::http::FleetTokenSource
+            }),
         usage_key: args.usage_stream_key.clone(),
         rollup: std::sync::OnceLock::new(),
         read_spool: std::sync::OnceLock::new(),

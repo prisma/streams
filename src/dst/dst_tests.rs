@@ -28995,3 +28995,305 @@ async fn watch_waits_occupy_the_subscription_pool() {
     assert_eq!(st_long, 200, "the FIRST wait still completes");
     engine_shutdown(&state).await;
 }
+
+/// RED (round-3 finding 1): in WORKLOAD mode the static fleet
+/// credential is DEAD at runtime — a coexisting FLEET_INTERNAL_TOKEN
+/// must not authorize internal routes, or the "release posture has no
+/// permanent shared credential" claim is configuration-dependent
+/// fiction. The workload JWT keeps working.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn static_token_is_dead_in_workload_mode() {
+    const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
+    let now = crate::shard::now_ms() / 1000;
+    let svc = std::sync::Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        "wm-1".to_string(),
+        crate::auth::JwksKey {
+            alg: jsonwebtoken::Algorithm::RS256,
+            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+        },
+    );
+    svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    // MISCONFIGURED coexistence: a static token AND a workload source.
+    let src: crate::http::FleetTokenSource = std::sync::Arc::new(move |_| {
+        Some(sr2_workload_jwt(
+            "wm-1",
+            &["telemetry-append"],
+            crate::shard::now_ms() / 1000,
+        ))
+    });
+    let (state, addr) = http_rig_inner(
+        mem(),
+        vec!["00".to_string()],
+        crate::shard::ShardConfig::default(),
+        0,
+        None,
+        Some("rig-wm".to_string()),
+        None,
+        None,
+        Some(svc),
+        Some((Some("dst-internal-token".to_string()), Some(src.clone()))),
+    )
+    .await;
+    let ct = ("content-type", "application/json");
+    let stat = ("authorization", "Bearer dst-internal-token");
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/internal/telemetry-append/_ops_events",
+        &[ct, stat],
+        br#"[]"#,
+    )
+    .await;
+    assert_eq!(
+        st, 401,
+        "the static token must be DEAD when a workload source is configured: {st}"
+    );
+    // The workload JWT with the exact operation still authorizes.
+    let wl = format!("Bearer {}", src(false).unwrap());
+    let wla = ("authorization", wl.as_str());
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/internal/telemetry-append/_ops_events",
+        &[ct, wla],
+        br#"[]"#,
+    )
+    .await;
+    assert_ne!(st, 401, "the workload JWT must still authorize: {st}");
+    engine_shutdown(&state).await;
+}
+
+/// RED (round-3 finding 2.2): a customer may legally name a stream
+/// with '#'. It must COUNT against max_streams (after a reseed) and
+/// its hard delete must RELEASE the slot — no name-syntax
+/// classification of resource kinds.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn customer_streams_with_hash_count_and_release() {
+    let quotas = crate::project_policy::ProjectQuotas {
+        max_streams: 2,
+        ..Default::default()
+    };
+    let scopes = "streams.create streams.records.append streams.records.read \
+                  streams.metadata.read streams.lifecycle.manage";
+    let (_state, addr, auth) = quota_rig("hs", scopes, quotas).await;
+    let a = ("authorization", auth.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let body = br#"{"format":{"kind":"json"}}"#;
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/orders%23archive",
+        &[ekey, a],
+        body,
+    )
+    .await;
+    assert_eq!(st, 201, "'#' name creates");
+    let (st, _, _) = preq(addr, "PUT", "/v1/streams/plain", &[ekey, a], body).await;
+    assert_eq!(st, 201);
+    // Cap 2 reached — the '#' stream occupies a REAL slot.
+    let (st, _, _) = preq(addr, "PUT", "/v1/streams/third", &[ekey, a], body).await;
+    assert_eq!(st, 429, "'#' stream must occupy a slot: {st}");
+    // Its hard delete releases.
+    let (st, _, _) = preq(
+        addr,
+        "DELETE",
+        "/v1/streams/orders%23archive",
+        &[ekey, a],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 204, "delete '#': {st}");
+    let (st, _, _) = preq(addr, "PUT", "/v1/streams/third", &[ekey, a], body).await;
+    assert_eq!(st, 201, "'#' delete must release the slot: {st}");
+}
+
+/// RED (round-3 finding 2.1): a catalog failure during the max_streams
+/// seed fails CLOSED with a retryable 503 — a partial count must
+/// never seed the limiter.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn catalog_failure_fails_the_stream_seed_closed() {
+    let quotas = crate::project_policy::ProjectQuotas {
+        max_streams: 5,
+        ..Default::default()
+    };
+    let scopes = "streams.create streams.records.append streams.records.read";
+    let (state, addr, auth) = quota_rig("cf", scopes, quotas).await;
+    let a = ("authorization", auth.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    state.registry.fail_next_list("proj-q-cf");
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/cfx",
+        &[ekey, a],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(
+        st,
+        503,
+        "catalog failure must fail the seed closed: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    // The failpoint consumed itself: the retry succeeds.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/cfx",
+        &[ekey, a],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "retry after catalog recovery: {st}");
+    engine_shutdown(&state).await;
+}
+
+/// RED (round-3 finding 2.3): the fork CASCADE's terminal hard delete
+/// releases the max_streams slot — not only the direct delete path.
+/// Observed through the quota registry on the deployment tenant: the
+/// probe reservation at a cap of 1 succeeds only if BOTH the fork's
+/// own delete and the cascaded source tombstone released.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fork_cascade_hard_delete_releases_the_stream_slot() {
+    let (state, addr) = http_rig(mem()).await;
+    let ct = ("content-type", "application/json");
+    let auth = ("authorization", "Bearer dst-internal-token");
+    // Source with one record, then a fork of it.
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/fcq-src",
+        &[ct, auth],
+        br#"[{"i":0}]"#,
+    )
+    .await;
+    assert!(st == 200 || st == 201);
+    let (_, h, _) = hreq(addr, "GET", "/v1/stream/fcq-src", &[auth], b"").await;
+    let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
+    let fork = [
+        ct,
+        auth,
+        ("stream-forked-from", "fcq-src"),
+        ("stream-fork-offset", boundary.as_str()),
+    ];
+    let (st, _, b) = hreq(addr, "PUT", "/v1/stream/fcq-child", &fork, b"").await;
+    assert!(
+        st == 200 || st == 201,
+        "fork create: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    // Track + seed the deployment project at the CURRENT live count.
+    let tenant = state.tenant.clone();
+    let q = crate::project_policy::ProjectQuotas::default();
+    let _ = state.quotas.admit(&tenant, &q, crate::shard::now_ms());
+    let seed_q = crate::project_policy::ProjectQuotas {
+        max_streams: 100,
+        ..Default::default()
+    };
+    let live0 = 2u64; // fcq-src + fcq-child
+    drop(
+        state
+            .quotas
+            .reserve_stream(&tenant, &seed_q, Some(live0))
+            .expect("seed"),
+    );
+    // Soft delete the source (fork retains it): still counts.
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/fcq-src", &[auth], b"").await;
+    assert!(st == 200 || st == 204, "source delete: {st}");
+    // Delete the fork: its own hard delete releases one slot AND the
+    // cascade tombstones the retained source — releasing the second.
+    let (st, _, _) = hreq(addr, "DELETE", "/v1/stream/fcq-child", &[auth], b"").await;
+    assert!(st == 200 || st == 204, "fork delete: {st}");
+    // Probe: count must be back to 0 — a cap of 1 admits.
+    let probe_q = crate::project_policy::ProjectQuotas {
+        max_streams: 1,
+        ..Default::default()
+    };
+    match state.quotas.reserve_stream(&tenant, &probe_q, None) {
+        Ok(Some(r)) => drop(r),
+        other => panic!(
+            "cascade must release the retained source's slot (count stuck above 0): {:?}",
+            other.err()
+        ),
+    }
+    engine_shutdown(&state).await;
+}
+
+/// Quota transition: max_streams 0 (unlimited) -> nonzero seeds from
+/// the catalog at the FIRST limited create, counting what unlimited
+/// mode already made.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn max_streams_transition_seeds_from_reality() {
+    let scopes = "streams.create streams.records.append streams.records.read";
+    let unlimited = crate::project_policy::ProjectQuotas::default();
+    let (state, addr, auth) = quota_rig("tr", scopes, unlimited).await;
+    let a = ("authorization", auth.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    for i in 0..3 {
+        let (st, _, _) = preq(
+            addr,
+            "PUT",
+            &format!("/v1/streams/t{i}"),
+            &[ekey, a],
+            br#"{"format":{"kind":"json"}}"#,
+        )
+        .await;
+        assert_eq!(st, 201);
+    }
+    // Policy update: the limit arrives BELOW the existing count.
+    let pid = crate::tenant::ProjectId::new("proj-q-tr").unwrap();
+    let mut projects = std::collections::HashMap::new();
+    projects.insert(
+        pid.clone(),
+        crate::project_policy::ProjectPolicy {
+            project_id: pid,
+            workspace_id: crate::tenant::WorkspaceId::new("ws-q-tr").unwrap(),
+            cell_id: std::sync::Arc::from("test-cell"),
+            project_policy_version: 2,
+            ownership_version: 1,
+            status: crate::project_policy::ProjectStatus::Active,
+            quotas: crate::project_policy::ProjectQuotas {
+                max_streams: 2,
+                ..Default::default()
+            },
+        },
+    );
+    state
+        .auth
+        .publish_policies(crate::project_policy::PolicySnapshot {
+            projects,
+            fetched_at_unix: crate::shard::now_ms() / 1000,
+            feed_version: 2,
+        })
+        .unwrap();
+    // The next create seeds count=3 from the catalog and refuses.
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/t3",
+        &[ekey, a],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(
+        st,
+        429,
+        "re-enabled limit must seed from the real count: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    engine_shutdown(&state).await;
+}

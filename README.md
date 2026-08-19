@@ -19,7 +19,9 @@ The service exposes **two HTTP surfaces**:
   protocol](./CONFORMANCE.md), preserved byte-for-byte and verified against
   the upstream conformance suite. It is the raw, standards-compliant view of a
   collection's default routing key — use it for protocol interoperability, not
-  as the product API.
+  as the product API. **Under shared-cell enforcement this surface is
+  INTERNAL-ONLY** (docs/MULTITENANCY.md §14.3): it takes fleet identity, never
+  customer tokens, and the product surface is the only public customer API.
 
 > **Pre-launch posture.** This is a clean, single-format cutover: there are
 > no legacy decoders, translators, aliases, or dual layouts. Removed

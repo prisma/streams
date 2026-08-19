@@ -434,8 +434,15 @@ impl QuotaRegistry {
     }
 
     /// SR2-4: reserve one stream slot under `max_streams`, race-safely
-    /// (count checked and bumped under one lock; concurrent racers
-    /// serialize here, losers refuse typed). `seed` supplies the
+    /// WITHIN THIS PROCESS (count checked and bumped under one lock;
+    /// concurrent racers on this instance serialize here, losers
+    /// refuse typed). SR3-2 posture: this is a PER-INSTANCE SAFETY
+    /// BACKSTOP, not an exact project-wide quota — two cell instances
+    /// owning different shards can each admit against their own view
+    /// and briefly exceed the cap by the instance count. The exact
+    /// project-wide owner (durable registry counter vs gateway quota
+    /// affinity) is an open platform decision recorded in
+    /// docs/CONTROL-PLANE-INTEGRATION.md §9. `seed` supplies the
     /// catalog count when this project has not been seeded since boot;
     /// the first reservation wins the seed, later ones ignore theirs.
     pub fn reserve_stream(

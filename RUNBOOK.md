@@ -739,3 +739,26 @@ construction), `absorb_bytes_total` vs `ingest_bytes_total` (absorption
 keeping up), `rss_peak_since_scrape_mb` (inter-sample spikes),
 `read_spool_pending_bytes`, `sweep_resident_engines`. Detail:
 `GET /v1/debug/absorb` (authorized).
+
+
+## Shared-cell release posture (SR3)
+
+The release configuration carries NO permanent shared credential and
+is refused at boot otherwise:
+
+```text
+STREAMS_AUTH_MODE=enforce
+FLEET_AUTH_MODE=workload
+WORKLOAD_TOKEN_FILE=<platform-managed file>
+STREAMS_RELEASE_POSTURE=1
+FLEET_INTERNAL_TOKEN absent
+```
+
+`FLEET_AUTH_MODE=static` is a NAMED migration/test posture only; the
+binary refuses it under `STREAMS_RELEASE_POSTURE=1`, and in workload
+mode the static token does not exist at runtime even if the
+environment still carries it. Feed files (`STREAMS_AUTH_*_FILE`) and
+the workload token file MUST be replaced atomically: write a
+temporary file, flush, `rename(2)` over the live path — never
+truncate-and-rewrite in place (docs/CONTROL-PLANE-INTEGRATION.md
+§7.2/§8.2).

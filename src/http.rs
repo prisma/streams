@@ -395,9 +395,15 @@ pub(crate) fn fleet_operation_authorized(
     headers: &HeaderMap,
     op: InternalOperation,
 ) -> bool {
-    let static_ok = match &state.fleet_internal_token {
-        None => false,
-        Some(t) => bearer(headers).map(|v| secret_eq(v, t)).unwrap_or(false),
+    // SR3-1: the modes are EXCLUSIVE at runtime, not just at boot —
+    // with a workload source configured, the static credential is
+    // dead even if a legacy FLEET_INTERNAL_TOKEN leaked into the
+    // environment. Startup also refuses that coexistence under the
+    // release posture; this is the defense-in-depth layer beneath it.
+    let static_ok = match (&state.fleet_token_source, &state.fleet_internal_token) {
+        (Some(_), _) => false,
+        (None, Some(t)) => bearer(headers).map(|v| secret_eq(v, t)).unwrap_or(false),
+        (None, None) => false,
     };
     static_ok || workload_jwt_operation(state, headers, op)
 }
@@ -4495,6 +4501,14 @@ fn release_fork_ref(
                 return Ok(true);
             }
         };
+        // SR3-2 (round-3 finding 2.3): the fork CASCADE is the other
+        // terminal hard delete — a soft-retained source whose last
+        // fork reference drops tombstones HERE, not in
+        // delete_lifecycle, so the max_streams slot releases here too.
+        if tombstoned {
+            state.quotas.release_stream(src_ref.project_id());
+        }
+
         state.registry.invalidate(&src_ref);
         #[cfg(test)]
         if tombstoned && fork_failpoints::should_stop_after_tombstone(src_ref.name().as_str()) {
@@ -4675,13 +4689,12 @@ fn delete_lifecycle(
         if !hard_deleted {
             return Ok(());
         }
-        // SR2-4: the terminal hard delete frees the project's
-        // max_streams slot (split children were never counted;
-        // soft-retained sources release HERE when their cascade
-        // finally lands).
-        if !name.contains('#') {
-            state.quotas.release_stream(sref.project_id());
-        }
+        // SR2-4/SR3-2: the terminal hard delete frees the project's
+        // max_streams slot. No name-syntax check — every layout-4
+        // registry entry is a customer stream (segments live inside
+        // the descriptor), and a customer may legally name a stream
+        // with '#'.
+        state.quotas.release_stream(sref.project_id());
         // Ops journal (§12.3): the lifecycle transition, id'd by the
         // incarnation — a retried delete re-emits the same id and the
         // rollup deduplicates.

@@ -13,6 +13,12 @@
 > after Stage 0 require an explicit contract-revision commit — it is
 > the arbiter when implementation questions arise.
 
+> Operational companion: the Control Plane / Auth / gateway /
+> Console integration contract lives in
+> `docs/CONTROL-PLANE-INTEGRATION.md` (proposed r1) — §3 credentials,
+> §7.1 feeds, §8 gateway, §12 transfer, and the Stage 1/5 checklists
+> below defer to it for platform-side mechanics.
+
 **Revision log**
 - r1 (2026-08-15): added the `route-child-v1` domain for split-child
   placement (the conversion map found scaler split-child routes uncovered
@@ -1359,9 +1365,10 @@ deletion sagas and the Control-Plane feed remain platform-side.)*
   body buffering, quotas read from the CURRENT policy snapshot.)*
 * [x] Remove overflow coupling. *(Projects never share a bucket; a
   full tracker refuses to TRACK new projects rather than merging.)*
-* [x] Bound project trackers. *(1024-project cap; over it, NEW
-  projects get 503 `project_tracker_capacity`, tracked ones are
-  untouched.)*
+* [x] Bound project trackers. *(4,096-project cap since SR-6 — the
+  1,000-project certification needs 4x headroom against the 300s
+  evict-idle window; over it, NEW projects get 503
+  `project_tracker_capacity`, tracked ones are untouched.)*
 * [x] Run noisy-neighbor campaigns. *(Mechanism level DONE, unblocked
   by Stage 5d: two projects on one enforce cell, a hostile flood
   (tight quotas, 300 flat-out appends) runs CONCURRENTLY with a paced
@@ -1374,9 +1381,12 @@ deletion sagas and the Control-Plane feed remain platform-side.)*
   site; read bytes debited POST-HOC from the served body size (sized
   bodies; refusal while in debt); SSE subscriptions hold a
   `max_live_subscriptions` slot for the STREAM's lifetime via a guard
-  riding the response body. Still open: `queued_append_bytes` at the
-  committer, `max_streams` at create (needs the Stage-7 per-project
-  stream count).)*
+  riding the response body. `queued_append_bytes` and
+  `max_streams` are ENFORCED since SR2-4/SR3-2 (§17.3 r4): charge
+  before the committer / race-safe create reservation with fail-closed
+  catalog seeding — the per-instance count is a safety backstop, and
+  the exact project-wide owner is recorded as an open platform
+  decision in docs/CONTROL-PLANE-INTEGRATION.md §9.)*
 
 **Exit:** one project cannot materially degrade a compliant neighbor.
 
