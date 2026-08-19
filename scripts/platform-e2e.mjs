@@ -55,6 +55,7 @@ const emu = spawn(process.execPath, [
   "--fixture", "proj-b:ws-b:cell-b",
   "--fixture", "proj-del:ws-del:cell-b",
   "--fixture", "proj-c:ws-c:cell-c",
+  "--fixture", "proj-q:ws-q:cell-a",
   "--enable-fault-api",
 ], { stdio: ["ignore", "inherit", "inherit"] });
 const s3 = spawn("./target/release/s3lite", ["--listen", `127.0.0.1:${EMU_PORT + 3}`, "--latency-ms", "2"], { stdio: "ignore" });
@@ -302,6 +303,53 @@ await sleep(2500);
 check("retired-kid resurrection refused: old-kid token stays dead", (await readRecords(bBase, "e2e/orders", tokBOld)).status === 401);
 check("refused snapshot does not clobber good state: current-kid token still serves",
   (await readRecords(bBase, "e2e/orders", tokB2.body.accessToken)).status === 200);
+
+// ---- §14.3: shared schemas actually reject hostile shapes ------------------
+// The emulator refuses to publish schema-invalid snapshots at runtime
+// (every leg above ran through that gate); here the BATTERY exercises
+// the same validator directly on the golden vectors.
+{
+  const { validateDocument } = await import("../platform-demo/src/validate.mjs");
+  const golden = (f) => JSON.parse(readFileSync(`contracts/streams-platform/v1/golden/${f}`, "utf8"));
+  const schema = (f) => JSON.parse(readFileSync(`contracts/streams-platform/v1/${f}`, "utf8"));
+  const validOk =
+    validateDocument(golden("keys.valid.json"), schema("keys.schema.json")).length === 0 &&
+    validateDocument(golden("project-policies.valid.json"), schema("project-policies.schema.json")).length === 0 &&
+    validateDocument(golden("credential-grants.valid.json"), schema("credential-grants.schema.json")).length === 0;
+  check("golden vectors validate against the shared schemas", validOk);
+  const emptyPrefixes = validateDocument(golden("credential-grants.hostile-empty-prefixes.json"), schema("credential-grants.schema.json"));
+  check("schema catches the empty-prefixes hostile vector", emptyPrefixes.some((e) => e.includes("minItems")), JSON.stringify(emptyPrefixes));
+  const unknownAlg = validateDocument(golden("keys.hostile-unknown-alg.json"), schema("keys.schema.json"));
+  check("schema catches the unknown-alg hostile vector", unknownAlg.some((e) => e.includes("enum")), JSON.stringify(unknownAlg));
+}
+
+// ---- §14.5 quotas: feed-delivered max_streams on two instances ------------
+// The quota is a PER-INSTANCE backstop (CONTROL-PLANE-INTEGRATION §9):
+// each cell enforces the limit its own policy feed delivers, at the
+// same time, independently.
+await sfetch(`${emuBase}/admin/projects/proj-q`, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ quotas: { max_streams: 2 } }),
+});
+await sfetch(`${emuBase}/admin/projects/proj-b`, {
+  method: "POST", headers: { "content-type": "application/json" },
+  body: JSON.stringify({ quotas: { max_streams: 1 } }),
+});
+const credQ = await mkCred("proj-q", "quota probe");
+const tokQ = await j(await exchange(credQ.body.secret));
+const tokBQ = await j(await exchange(SECRET_B));
+await sleep(1500);
+const q1 = await streamCreateRaw(gwBase, "q/s1", tokQ.body.accessToken);
+const q2 = await streamCreateRaw(gwBase, "q/s2", tokQ.body.accessToken);
+const q3 = await streamCreateRaw(gwBase, "q/s3", tokQ.body.accessToken);
+check("cell A admits creates up to the feed-delivered max_streams",
+  (q1 === 200 || q1 === 201) && (q2 === 200 || q2 === 201), `q1=${q1} q2=${q2}`);
+check("cell A refuses the create beyond max_streams (429)", q3 === 429, `status ${q3}`);
+// cell B seeded from its real catalog: proj-b already holds one alive
+// stream, so a cap of 1 refuses the next create — enforced on a
+// DIFFERENT instance than proj-q's, at the same moment.
+const bOverflow = await streamCreateRaw(gwBase, "b/overflow", tokBQ.body.accessToken);
+check("cell B independently refuses beyond ITS feed-delivered cap (seeded from the catalog)", bOverflow === 429, `status ${bOverflow}`);
 
 // ---- §15 item 7: billing reconciliation through the usage surface ---------
 // proj-b (workspace never changed — rows land under workspace-at-event,

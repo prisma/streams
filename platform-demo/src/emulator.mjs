@@ -31,6 +31,19 @@ import http from "node:http";
 import { generateKeyPairSync, createSign, randomBytes, scryptSync, timingSafeEqual } from "node:crypto";
 import { writeFileSync, renameSync, mkdirSync, readFileSync } from "node:fs";
 import { dirname, join } from "node:path";
+import { validateDocument } from "./validate.mjs";
+
+// §14.3: the emulator validates every snapshot against the SHARED
+// schemas before publication — an emulator bug must crash a request,
+// never reach a feed file. (The fault API writes files directly and
+// deliberately bypasses this: that is what it is for.)
+const SCHEMA_DIR = new URL("../../contracts/streams-platform/v1/", import.meta.url);
+const SCHEMAS = Object.fromEntries(
+  ["keys", "project-policies", "credential-grants"].map((n) => [
+    n, JSON.parse(readFileSync(new URL(`${n}.schema.json`, SCHEMA_DIR))),
+  ]),
+);
+const FEED_SCHEMA = { keys: "keys", policies: "project-policies", grants: "credential-grants" };
 
 const argOne = (name, dflt) => {
   const i = process.argv.indexOf(`--${name}`);
@@ -108,11 +121,11 @@ const FEED_FILES = { keys: "keys.json", policies: "policies.json", grants: "gran
 function snapshotBodies(cellId) {
   const own = ([, p]) => p.cell_id === cellId && p.status !== "deleted"; // deletion = omission tombstone
   return {
-    keys: JSON.stringify({
+    keys: ({
       feed_version: gen.keys,
       keys: jwksKeys.filter((k) => !k.retired).map((k) => ({ kid: k.kid, alg: "RS256", pem: k.publicKey })),
     }),
-    policies: JSON.stringify({
+    policies: ({
       feed_version: gen.policies,
       projects: [...projects.entries()].filter(own).map(([project_id, p]) => ({
         project_id,
@@ -124,7 +137,7 @@ function snapshotBodies(cellId) {
         quotas: p.quotas,
       })),
     }),
-    grants: JSON.stringify({
+    grants: ({
       feed_version: gen.grants,
       credentials: [...credentials.entries()]
         .filter(([, c]) => own([c.project_id, projects.get(c.project_id) ?? { cell_id: null, status: "deleted" }]))
@@ -147,10 +160,14 @@ function project() {
   for (const [cellId, cell] of cells) {
     const mode = faultModes.get(cellId) ?? {};
     if (mode.freeze) continue;
-    const bodies = snapshotBodies(cellId);
+    const docs = snapshotBodies(cellId);
     if (!published.has(cellId)) published.set(cellId, { keys: [], policies: [], grants: [] });
     const hist = published.get(cellId);
-    for (const [feed, body] of Object.entries(bodies)) {
+    for (const [feed, doc] of Object.entries(docs)) {
+      const schemaErrs = validateDocument(doc, SCHEMAS[FEED_SCHEMA[feed]]);
+      if (schemaErrs.length)
+        throw new Error(`refusing to publish schema-invalid ${feed} snapshot: ${schemaErrs[0]}`);
+      const body = JSON.stringify(doc);
       const path = join(cell.dir, FEED_FILES[feed]);
       if (mode.partialWrite === feed) {
         // FAULT: a torn, non-atomic write of half the document straight
@@ -322,7 +339,7 @@ const server = http.createServer(async (req, res) => {
         "cache-control": "no-store",
         "prisma-streams-feed-generation": String(gen[feed]),
       });
-      return res.end(snapshotBodies(cellId)[feed]);
+      return res.end(JSON.stringify(snapshotBodies(cellId)[feed]));
     }
     // Gateway support: authoritative placement map.
     if (req.method === "GET" && url.pathname === "/admin/placement") {
@@ -373,12 +390,13 @@ const server = http.createServer(async (req, res) => {
         project(); // omission publication
         return json(res, 200, { project_id: pid, status: p.status });
       }
-      if (body.status) {
-        p.status = body.status;
+      if (body.status || body.quotas) {
+        if (body.status) p.status = body.status;
+        if (body.quotas) p.quotas = { ...p.quotas, ...body.quotas };
         p.ppv += 1;
         project();
       }
-      return json(res, 200, { project_id: pid, status: p.status, ppv: p.ppv });
+      return json(res, 200, { project_id: pid, status: p.status, ppv: p.ppv, quotas: p.quotas });
     }
     if (req.method === "POST" && url.pathname === "/admin/rotate-workload") {
       const body = JSON.parse((await readBody(req)) || "{}");
