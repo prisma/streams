@@ -5785,6 +5785,8 @@ async fn http_rig_inner(
         admit_rss_shed_mb: 0,
         rss_mb_cached: std::sync::atomic::AtomicU64::new(0),
         admit_shed: std::sync::atomic::AtomicU64::new(0),
+        admit_shed_inflight: std::sync::atomic::AtomicU64::new(0),
+        admit_shed_rss: std::sync::atomic::AtomicU64::new(0),
         admit_max_inflight_per_stream: per_segment_slots,
         stream_inflight: std::sync::Mutex::new(std::collections::HashMap::new()),
         stream_shed: std::sync::atomic::AtomicU64::new(0),
