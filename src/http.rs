@@ -6810,13 +6810,18 @@ pub(crate) async fn read_records_for_hub(
 /// #268: one prepared hub event — the combined data+control text every
 /// subscriber of this stream shares (product surface; the signed key
 /// cursor is deterministic per stream+offset, so it is shareable).
-pub(crate) fn hub_event(
+/// `ctl_at` is the control's cursor offset: mid-batch events name
+/// off+1; the batch-LAST event names the batch's scan_next so a
+/// resuming client skips trailing non-matching records (#272).
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn hub_event_at(
     desc: &StreamDesc,
     key: &StreamKey,
     epoch: [u8; 16],
     rk_hash: [u8; 16],
     seg_id: u32,
     rec: &PlainRec,
+    ctl_at: u64,
     up_to_date: bool,
     closed: bool,
 ) -> String {
@@ -6826,7 +6831,7 @@ pub(crate) fn hub_event(
             epoch,
             key_hash: rk_hash,
             seg_id,
-            offset: rec.off + 1,
+            offset: ctl_at,
         }
         .encode(&desc.project_id, key),
         up_to_date,
@@ -7147,7 +7152,8 @@ async fn sse_hub_response(
         let _sub = SubGuard(hub.clone());
         let mut pos = match start {
             StartPos::At(p) => p,
-            StartPos::Now => hub.snapshot_head(),
+            // #272: durable tail, not the hub's processed head.
+            StartPos::Now => handle.state.lock().unwrap().durable.next,
         };
         let bill_id = crate::billing::identity_of(&state, &desc);
         let status_ctl = |at: u64, utd: bool, cls: bool| {
@@ -7172,6 +7178,13 @@ async fn sse_hub_response(
         loop {
             match hub.read_from(pos) {
                 crate::livehub::HubRead::Dead => return,
+                crate::livehub::HubRead::Progress(next) => {
+                    // Scanned-no-match progress (#272): jump the cursor;
+                    // the AtHead status control conveys it to the
+                    // client.
+                    pos = next;
+                    need_utd = true;
+                }
                 crate::livehub::HubRead::BelowFloor => {
                     // Durable catch-up to the hub's captured head; the
                     // read machinery is boxed and transient (#267).
@@ -7191,8 +7204,16 @@ async fn sse_hub_response(
                         match out {
                             Ok(out) => {
                                 for r in out.recs.iter() {
-                                    let ev = hub_event(
-                                        &desc, &key, epoch, rk_hash, seg_id, r, false, false,
+                                    let ev = hub_event_at(
+                                        &desc,
+                                        &key,
+                                        epoch,
+                                        rk_hash,
+                                        seg_id,
+                                        r,
+                                        r.off + 1,
+                                        false,
+                                        false,
                                     );
                                     if !sse_send(&tx, Bytes::from(ev)).await {
                                         return;
@@ -7956,8 +7977,10 @@ async fn read_v3_lineage_inner(
                 && let Ok(handle) = engine.stream_handle(identity).await
             {
                 state.keys.put(identity, key.clone(), epoch);
+                // #272: "now" is the DURABLE tail at request time —
+                // never the hub's processed head, which can lag it.
                 let start = if scan_from == u64::MAX {
-                    StartPos::Now
+                    StartPos::At(handle.state.lock().unwrap().durable.next)
                 } else {
                     StartPos::At(scan_from)
                 };

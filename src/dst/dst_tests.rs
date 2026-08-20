@@ -30198,3 +30198,75 @@ async fn hub_subscribe_churn_never_hangs() {
             .unwrap();
     }
 }
+
+// ---- #272 hub scanned progress (Søren review F3) --------------------
+
+/// F3 red: the hub pump reads the default lane; a FOREIGN-key append
+/// advances the scan position but produced no matching records — the
+/// pre-fix pump advanced its private position without publishing, so
+/// default subscribers' control cursors stagnated (and the hub head
+/// lagged the pump forever). The subscriber must observe cursor
+/// progress within the deadline, and interleaved default records on
+/// both sides of the foreign one must all arrive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_foreign_key_appends_advance_default_cursor() {
+    use tokio::io::AsyncWriteExt;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_live_hub
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/hubmix",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
+    sck.write_all(
+        format!(
+            "GET /v1/streams/hubmix/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    let (acc0, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("upToDate")).await;
+    assert!(acc0.contains("upToDate"), "tail status:\n{acc0}");
+    assert!(state.live_hubs.hub_count() >= 1, "hub engaged");
+    // default @0
+    hub_append(addr, "hubmix", r#"{"d":0}"#).await;
+    let (acc1, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"d\":0")).await;
+    assert!(acc1.contains("\"d\":0"), "default@0:\n{acc1}");
+    // FOREIGN @1: no data for this subscriber, but its cursor must move.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/hubmix/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", "customer-a"),
+        ],
+        br#"{"f":1}"#,
+    )
+    .await;
+    assert!(st == 200 || st == 204);
+    // Each collect starts a fresh accumulator: ANY control arriving
+    // after the foreign append is the cursor advancement.
+    let (acc2, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("event: control")).await;
+    assert!(
+        acc2.contains("event: control"),
+        "a foreign-key append must advance the default subscriber's control cursor:\n{acc2}"
+    );
+    assert!(
+        !acc2.contains("\"f\":1"),
+        "the foreign record must NOT be delivered on the default lane:\n{acc2}"
+    );
+    // default @2 after the foreign one — must still arrive.
+    hub_append(addr, "hubmix", r#"{"d":2}"#).await;
+    let (acc3, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"d\":2")).await;
+    assert!(acc3.contains("\"d\":2"), "default@2 after foreign:\n{acc3}");
+}

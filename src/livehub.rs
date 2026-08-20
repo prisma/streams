@@ -43,9 +43,15 @@ pub(crate) fn hub_ring_bytes() -> usize {
 }
 
 pub(crate) struct PreparedBatch {
-    pub first: u64,
-    /// Offset after the last prepared record.
-    pub next: u64,
+    /// SCANNED range (#272): the keyed reader advances over ranges
+    /// containing no matching records, and that consumed position is
+    /// first-class — batches cover contiguous scanned ranges
+    /// (prev.scan_next == next.scan_first), not just the offsets of
+    /// matching events. Losing it lagged the hub head behind the pump
+    /// and stalled default-lane cursors under foreign-key appends.
+    pub scan_first: u64,
+    /// Offset after the last SCANNED record (out.last + 1).
+    pub scan_next: u64,
     /// (offset, combined data+control SSE bytes, payload len for the
     /// per-subscriber delivered-bytes meter) — control carries NO
     /// up-to-date/closed flags.
@@ -67,9 +73,12 @@ pub(crate) struct PreparedBatch {
 struct HubRing {
     batches: VecDeque<Arc<PreparedBatch>>,
     bytes: usize,
-    /// First offset still covered by `batches` (== batches.front().first).
+    /// First offset still covered by `batches`
+    /// (== batches.front().scan_first; == head when empty).
     floor: u64,
-    /// Offset after the newest prepared record.
+    /// The SCAN head: offset after the newest scanned record. May be
+    /// ahead of the last batch's scan_next (scanned-no-match progress
+    /// advances it without a batch).
     head: u64,
 }
 
@@ -110,6 +119,10 @@ pub(crate) enum HubRead {
     /// mid-ring event; the subscriber has NOT been told it is at
     /// head).
     Events(Vec<(Bytes, u32)>, u64, Option<(bool, bool)>),
+    /// Scanned progress with no deliverable events between `from` and
+    /// the returned scan head: advance the cursor (the subscriber's
+    /// next status control conveys it) without sending data (#272).
+    Progress(u64),
     /// `from` is below the ring floor — re-run durable catch-up.
     BelowFloor,
     /// Nothing new; park on notify. Bool = stream closed (end after
@@ -141,7 +154,7 @@ impl LiveHub {
         let mut out = Vec::new();
         let mut flagged: Option<(bool, bool)> = None;
         for (bi, b) in r.batches.iter().enumerate() {
-            if b.next <= from {
+            if b.scan_next <= from {
                 continue;
             }
             let last_batch = bi + 1 == r.batches.len();
@@ -161,27 +174,55 @@ impl LiveHub {
                 }
             }
         }
+        if out.is_empty() {
+            // `from` lies in scanned-no-match territory (foreign-key
+            // ranges, or head advanced without a batch): pure cursor
+            // progress (#272).
+            return HubRead::Progress(r.head);
+        }
         HubRead::Events(out, r.head, flagged)
     }
 
     fn publish(&self, batch: PreparedBatch) {
         let mut r = self.ring.lock().unwrap();
-        debug_assert!(r.head == 0 || batch.first <= r.head);
-        r.head = batch.next;
+        // Contiguous scanned coverage: the pump publishes every scan
+        // range in order (batches or bare head advances), so a batch
+        // always starts at the current scan head.
+        debug_assert!(
+            batch.scan_first <= r.head,
+            "scan gap: batch {} vs head {}",
+            batch.scan_first,
+            r.head
+        );
+        r.head = r.head.max(batch.scan_next);
         r.bytes += batch.bytes;
-        if r.floor == 0 && r.batches.is_empty() {
-            r.floor = batch.first;
+        if r.batches.is_empty() {
+            r.floor = batch.scan_first;
         }
         r.batches.push_back(Arc::new(batch));
         let cap = hub_ring_bytes();
         while r.bytes > cap && r.batches.len() > 1 {
             if let Some(front) = r.batches.pop_front() {
                 r.bytes -= front.bytes;
-                r.floor = front.next;
+                r.floor = front.scan_next;
             }
         }
         drop(r);
         self.notify.notify_waiters();
+    }
+
+    /// Scanned-no-match progress: advance the scan head with no batch
+    /// (#272) — parked subscribers wake and convey the new cursor.
+    fn advance_head(&self, new_head: u64) {
+        let mut r = self.ring.lock().unwrap();
+        if new_head > r.head {
+            r.head = new_head;
+            if r.batches.is_empty() {
+                r.floor = new_head;
+            }
+            drop(r);
+            self.notify.notify_waiters();
+        }
     }
 
     fn mark_closed(&self) {
@@ -362,9 +403,12 @@ async fn hub_pump(
             .await;
             match read {
                 Ok(out) => {
+                    // Scanned progress is first-class (#272): the keyed
+                    // reader advances over non-matching ranges and that
+                    // consumed position IS the batch boundary.
+                    let scan_next = out.last.map(|l| l + 1).unwrap_or(pos).max(pos);
                     if !out.recs.is_empty() {
-                        let will_end =
-                            out.completed && out.last.map(|l| l + 1).unwrap_or(pos) >= end;
+                        let will_end = out.completed && scan_next >= end;
                         let report_closed = closed
                             && will_end
                             && crate::http::genuine_closure(&state, &desc.sref(), true).await;
@@ -372,20 +416,24 @@ async fn hub_pump(
                         let mut events = Vec::with_capacity(n);
                         let mut bytes = 0usize;
                         let mut last_flagged = Bytes::new();
-                        let first = out.recs[0].off;
-                        let mut next = pos;
                         for (i, r) in out.recs.iter().enumerate() {
-                            let ev = crate::http::hub_event(
-                                &desc, &key, epoch, rk_hash, seg_id, r, false, false,
+                            let last_rec = i + 1 == n;
+                            // The LAST event's control names scan_next
+                            // — not off+1 — so a resuming client skips
+                            // trailing non-matching records (#272).
+                            let ctl_at = if last_rec { scan_next } else { r.off + 1 };
+                            let ev = crate::http::hub_event_at(
+                                &desc, &key, epoch, rk_hash, seg_id, r, ctl_at, false, false,
                             );
-                            if i + 1 == n {
-                                last_flagged = Bytes::from(crate::http::hub_event(
+                            if last_rec {
+                                last_flagged = Bytes::from(crate::http::hub_event_at(
                                     &desc,
                                     &key,
                                     epoch,
                                     rk_hash,
                                     seg_id,
                                     r,
+                                    ctl_at,
                                     will_end,
                                     report_closed,
                                 ));
@@ -393,28 +441,29 @@ async fn hub_pump(
                             let b = Bytes::from(ev);
                             bytes += b.len();
                             events.push((r.off, b, r.payload.len() as u32));
-                            next = r.off + 1;
                             // Delivered-bytes metering happens per
                             // SUBSCRIBER at send time; the pump meters
                             // nothing (decrypt/format is not delivery).
                             let _ = &bill_id;
                         }
                         hub.publish(PreparedBatch {
-                            first,
-                            next,
+                            scan_first: pos,
+                            scan_next,
                             events,
                             last_flagged,
                             flagged_flags: (will_end, report_closed),
                             bytes,
                         });
-                        pos = next;
+                        pos = scan_next;
                         if report_closed {
                             break PumpExit::Closed;
                         }
                         continue;
                     }
-                    if let Some(last) = out.last {
-                        pos = last + 1;
+                    if scan_next > pos {
+                        // Foreign-key-only range: pure cursor progress.
+                        hub.advance_head(scan_next);
+                        pos = scan_next;
                         continue;
                     }
                 }
@@ -477,8 +526,8 @@ mod tests {
             events.push((off, Bytes::from(vec![b'e'; ev_len]), ev_len as u32));
         }
         PreparedBatch {
-            first,
-            next: first + n,
+            scan_first: first,
+            scan_next: first + n,
             events,
             last_flagged: Bytes::from_static(b"FLAGGED"),
             flagged_flags: (true, false),
