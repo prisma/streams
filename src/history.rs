@@ -167,6 +167,11 @@ pub struct AbsorbBudget {
 /// die between RSS samples.
 pub const ABSORB_BUILD_MULTIPLIER: usize = 3;
 
+/// Per-stream byte cap for one gather chunk — bounds what a single
+/// stream contributes to a batch (and what one wave slot holds in
+/// flight).
+pub(crate) const GATHER_PER_STREAM_CAP: usize = 4 * 1024 * 1024;
+
 /// Per-frame encoding overhead allowance on top of the raw body:
 /// frame header + maximum routing key + length fields + AEAD tag are
 /// all well under this; rounding the reservation UP is the safe
@@ -393,6 +398,34 @@ impl AbsorbReservation {
     /// Bytes actually GRANTED (post-clamp) — what the gauges report.
     pub fn granted(&self) -> usize {
         self.bytes
+    }
+
+    /// Grow this reservation by `additional` transient bytes, waiting
+    /// on the pool like reserve() does — the wait IS the cross-shard
+    /// backpressure when a gather turns out fatter than its adaptive
+    /// estimate (#266). Clamped so the TOTAL never exceeds the pool's
+    /// capacity: a single oversized frame always fits (capacity floors
+    /// at the worst-frame transient) and a batch can't exceed it
+    /// (resolved_gather_packing_bytes caps gather_max at capacity ÷
+    /// multiplier), so a shortfall after clamping only occurs in
+    /// shapes the pre-adaptive reservation could not cover either.
+    pub async fn grow(&mut self, additional: usize) {
+        let add = additional.min(self.budget.capacity.saturating_sub(self.bytes));
+        if add == 0 {
+            return;
+        }
+        let add_permits = u32::try_from(add).expect("capacity clamped to u32 range");
+        let extra = self
+            .budget
+            .bytes
+            .acquire_many(add_permits)
+            .await
+            .expect("absorb budget semaphore closed");
+        self._bytes.merge(extra);
+        self.bytes += add;
+        self.budget
+            .reserved
+            .fetch_add(add as u64, std::sync::atomic::Ordering::Relaxed);
     }
 }
 
@@ -752,6 +785,15 @@ fn absorb_error_is_fence(msg: &str) -> bool {
 }
 
 pub struct Absorber {
+    /// Decaying max of observed per-gather transient (batch bytes x
+    /// build multiplier). CHAOS-3 measured gathers averaging 6 MB
+    /// against a 96 MiB worst-case reservation — 19% of the 1 GiB
+    /// posture's shed line held per in-flight gather, and the L1
+    /// certification ladder showed that pressure SHEDDING APPENDS for
+    /// the reservations' full hold duration (#266). The adaptive
+    /// estimate keeps the pressure line honest at sparse shapes while
+    /// grow() + the pool keep the OOM bound exact.
+    recent_transient: AtomicU64,
     data_store: Arc<dyn ObjectStore>,
     shard: Arc<ShardEngine>,
     keys: Arc<KeyCache>,
@@ -797,13 +839,56 @@ impl Absorber {
         keys: Arc<KeyCache>,
         cfg: AbsorberConfig,
     ) -> Self {
+        let seed = cfg
+            .gather_max_bytes
+            .saturating_mul(ABSORB_BUILD_MULTIPLIER)
+            .max(absorb_worst_frame_transient()) as u64;
         Absorber {
             data_store,
             shard,
             keys,
             cfg,
             submitted: std::sync::Mutex::new(HashMap::new()),
+            // Seeded at the worst-case est: boot-time gathers (restart
+            // rediscovery drains the whole backlog) reserve like the
+            // pre-adaptive code and the estimate decays toward observed
+            // reality over ~a dozen gathers.
+            recent_transient: AtomicU64::new(seed),
         }
+    }
+
+    /// The reservation estimate for the next gather: the decaying max
+    /// of observed transients, floored at one per-stream chunk's
+    /// modeled cost (so steady sparse shapes don't thrash grow()) and
+    /// capped at the worst-case est the pre-adaptive code always used.
+    pub(crate) fn adaptive_gather_est(&self) -> usize {
+        let cap = self
+            .cfg
+            .gather_max_bytes
+            .saturating_mul(ABSORB_BUILD_MULTIPLIER)
+            .max(absorb_worst_frame_transient());
+        let floor = worst_frame_transient_for(GATHER_PER_STREAM_CAP).min(cap);
+        (self
+            .recent_transient
+            .load(std::sync::atomic::Ordering::Relaxed) as usize)
+            .clamp(floor, cap)
+    }
+
+    /// Record a gather's observed transient: decaying max — jumps to a
+    /// fat observation immediately, decays an eighth per gather so a
+    /// one-off burst stops inflating the estimate within ~a dozen
+    /// ticks.
+    fn observe_gather_transient(&self, batch_bytes: usize) {
+        let observed = batch_bytes.saturating_mul(ABSORB_BUILD_MULTIPLIER) as u64;
+        let ord = std::sync::atomic::Ordering::Relaxed;
+        let prev = self.recent_transient.load(ord);
+        let decayed = prev - prev / 8;
+        self.recent_transient.store(decayed.max(observed), ord);
+    }
+
+    #[cfg(test)]
+    pub(crate) fn observe_gather_transient_for_tests(&self, batch_bytes: usize) {
+        self.observe_gather_transient(batch_bytes);
     }
 
     pub fn start(
@@ -1105,12 +1190,19 @@ impl Absorber {
                             // the build multiplier; waiting here is the
                             // intended backpressure when other shards'
                             // gathers hold the budget.
-                            let est = absorber
-                                .cfg
-                                .gather_max_bytes
-                                .saturating_mul(ABSORB_BUILD_MULTIPLIER)
-                                .max(absorb_worst_frame_transient());
-                            let _reservation = absorb_budget().reserve(est).await;
+                            // #266: adaptive estimate — the decaying
+                            // max of observed transients, not the
+                            // worst case. CHAOS-3 measured the fixed
+                            // 96 MiB reservation against 6 MB actual
+                            // gathers; held per in-flight gather it
+                            // crossed the RSS shed line and SHED
+                            // APPENDS for the hold duration (L1
+                            // ladder, bench/WORKLOAD-CERT-PLAN.md).
+                            // grow() inside the build keeps the OOM
+                            // bound exact when reality outruns the
+                            // estimate.
+                            let est = absorber.adaptive_gather_est();
+                            let mut _reservation = absorb_budget().reserve(est).await;
                             GATHER_LAST_RESERVED.store(
                                 _reservation.granted() as u64,
                                 std::sync::atomic::Ordering::Relaxed,
@@ -1118,7 +1210,10 @@ impl Absorber {
                             if absorber.shard.is_closed() {
                                 continue; // fenced while waiting for budget
                             }
-                            match absorber.absorb_gather_v2(&v2_lane).await {
+                            match absorber
+                                .absorb_gather_v2_with(&v2_lane, &mut _reservation)
+                                .await
+                            {
                                 Ok(outcome) => {
                                     // Retire ONLY what the gather settled:
                                     // covered streams advanced; no_work had
@@ -1305,11 +1400,23 @@ impl Absorber {
     /// sweep re-found it. A per-stream byte cap truncates fat streams
     /// mid-range — their boundary still advances over what was written,
     /// and the sweep or the next signal re-drives the remainder.
+    /// Test-facing wrapper: reserve adaptively, then gather. The pump
+    /// loop calls absorb_gather_v2_with directly because its
+    /// reservation must precede the post-budget fence re-check.
+    #[cfg(test)]
     pub(crate) async fn absorb_gather_v2(
         &self,
         streams: &[[u8; 16]],
     ) -> anyhow::Result<GatherOutcome> {
-        const PER_STREAM_CAP: usize = 4 * 1024 * 1024;
+        let mut reservation = absorb_budget().reserve(self.adaptive_gather_est()).await;
+        self.absorb_gather_v2_with(streams, &mut reservation).await
+    }
+
+    pub(crate) async fn absorb_gather_v2_with(
+        &self,
+        streams: &[[u8; 16]],
+        reservation: &mut AbsorbReservation,
+    ) -> anyhow::Result<GatherOutcome> {
         // Rough WriteBatch bookkeeping cost per entry, on top of key+value.
         const ENTRY_OVERHEAD: usize = 64;
         let part = self.shard.history_partition().await?;
@@ -1376,6 +1483,7 @@ impl Absorber {
                 route,
             });
         }
+        const PER_STREAM_CAP: usize = GATHER_PER_STREAM_CAP;
         let read_par = self.cfg.gather_read_par.max(1);
         let per_stream = PER_STREAM_CAP.min(self.cfg.gather_max_bytes);
         let mut pi = 0usize;
@@ -1457,6 +1565,17 @@ impl Absorber {
                     out.deferred_budget.push(*hash);
                     continue;
                 }
+                // #266 adaptive reservation: cover this chunk's modeled
+                // transient BEFORE building it. On the steady path the
+                // adaptive estimate already covers the batch and this
+                // is a no-op; when a gather turns out fatter than
+                // recent history, grow() waits on the pool — the same
+                // cross-shard backpressure reserve() gives, applied to
+                // exactly the bytes that turned real.
+                let needed = (batch_bytes + chunk_bytes).saturating_mul(ABSORB_BUILD_MULTIPLIER);
+                if needed > reservation.granted() {
+                    reservation.grow(needed - reservation.granted()).await;
+                }
                 batch_bytes += chunk_bytes;
                 #[cfg(test)]
                 if std::env::var("DST_DRAIN_TRACE").is_ok() {
@@ -1536,6 +1655,7 @@ impl Absorber {
             paced.as_millis() as u64,
             std::sync::atomic::Ordering::Relaxed,
         );
+        self.observe_gather_transient(batch_bytes);
         if out.advanced.is_empty() {
             return Ok(out);
         }
@@ -2114,6 +2234,68 @@ mod tests {
     /// heal, catch-up, survival) is the acceptance campaign's
     /// slow-compactor leg, driven via /v1/debug/history-stall — this
     /// test does NOT claim it.
+    /// #266: grow() must account exactly like reserve() — permits
+    /// held while granted, clamped at pool capacity, everything
+    /// returned on drop — and a grow that cannot fit must WAIT on the
+    /// pool (that wait is the cross-shard backpressure when a gather
+    /// outruns its adaptive estimate).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reservation_grow_accounts_clamps_and_waits() {
+        let budget: &'static AbsorbBudget = Box::leak(Box::new(AbsorbBudget::new(100, 2)));
+        let mut r = budget.reserve(30).await;
+        assert_eq!(r.granted(), 30);
+        r.grow(20).await;
+        assert_eq!(r.granted(), 50);
+        assert_eq!(budget.reserved_bytes(), 50);
+        // Clamp: asking past capacity grants only up to it.
+        r.grow(1000).await;
+        assert_eq!(r.granted(), 100);
+        // A second reservation must WAIT while the first holds all
+        // capacity, and complete once it drops.
+        let second = budget.reserve(40);
+        tokio::pin!(second);
+        assert!(
+            tokio::time::timeout(Duration::from_millis(50), &mut second)
+                .await
+                .is_err(),
+            "second reservation must block while grow holds capacity"
+        );
+        drop(r);
+        let s2 = tokio::time::timeout(Duration::from_millis(200), &mut second)
+            .await
+            .expect("released capacity must admit the waiter");
+        assert_eq!(s2.granted(), 40);
+        drop(s2);
+        assert_eq!(budget.reserved_bytes(), 0);
+    }
+
+    /// #266: a grow() blocked on the pool must also be cancellation
+    /// safe — dropping the blocked future releases nothing it didn't
+    /// hold and the original grant stays intact.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn reservation_grow_cancel_leaves_grant_intact() {
+        let budget: &'static AbsorbBudget = Box::leak(Box::new(AbsorbBudget::new(100, 2)));
+        let mut r = budget.reserve(40).await;
+        let holder = budget.reserve(60).await; // pool now full
+        {
+            let g = r.grow(30);
+            tokio::pin!(g);
+            assert!(
+                tokio::time::timeout(Duration::from_millis(50), &mut g)
+                    .await
+                    .is_err(),
+                "grow must block while the pool is full"
+            );
+            // dropping the pinned future cancels the acquire
+        }
+        assert_eq!(r.granted(), 40, "cancelled grow must not change the grant");
+        drop(holder);
+        r.grow(30).await;
+        assert_eq!(r.granted(), 70);
+        drop(r);
+        assert_eq!(budget.reserved_bytes(), 0);
+    }
+
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn absorb_budget_blocks_waiters_and_recovers_after_release() {
         let budget: &'static AbsorbBudget = Box::leak(Box::new(AbsorbBudget::new(100, 2)));

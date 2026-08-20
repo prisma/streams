@@ -3215,6 +3215,67 @@ async fn wait_all_absorbed(engine: &Arc<crate::shard::ShardEngine>, hashes: &[[u
 }
 
 /// P0 (static audit): the v2 gather previously accumulated up to
+/// #266 adaptive-estimate pin: the reservation estimate seeds at the
+/// worst case (boot gathers cover restart-rediscovery bursts), decays
+/// to the floor under sustained sparse gathers, and jumps back to a
+/// fat observation immediately. The CHAOS-3 comment measured 6 MB
+/// actual gathers against the fixed 96 MiB reservation; the L1 ladder
+/// showed that fiction crossing the RSS shed line and shedding
+/// appends whenever gathers overlapped.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn adaptive_gather_estimate_seeds_decays_and_jumps() {
+    let store = mem();
+    let db = slatedb::Db::builder("dst-est", store.clone() as Arc<dyn ObjectStore>)
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
+    let engine = crate::shard::ShardEngine::start(
+        "dst-est".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+        __maint,
+    );
+    let absorber = crate::history::Absorber::new(
+        store.clone(),
+        engine.clone(),
+        Arc::new(crate::history::KeyCache::default()),
+        crate::history::AbsorberConfig::default(),
+    );
+    let cap = crate::history::AbsorberConfig::default()
+        .gather_max_bytes
+        .saturating_mul(crate::history::ABSORB_BUILD_MULTIPLIER)
+        .max(crate::history::absorb_worst_frame_transient());
+    assert_eq!(
+        absorber.adaptive_gather_est(),
+        cap,
+        "estimate must seed at the worst case"
+    );
+    // Sustained sparse gathers decay the estimate to the floor.
+    for _ in 0..64 {
+        absorber.observe_gather_transient_for_tests(2 * 1024 * 1024);
+    }
+    let floor = crate::history::worst_frame_transient_for(4 * 1024 * 1024);
+    assert_eq!(
+        absorber.adaptive_gather_est(),
+        floor.min(cap),
+        "sustained sparse gathers must decay the estimate to the floor"
+    );
+    // One fat gather jumps it immediately (x3 build multiplier).
+    absorber.observe_gather_transient_for_tests(20 * 1024 * 1024);
+    assert_eq!(
+        absorber.adaptive_gather_est(),
+        (60 * 1024 * 1024).min(cap),
+        "a fat observation must raise the estimate immediately"
+    );
+}
+
 /// #266 read-parallelism pin: a gather with concurrent per-stream
 /// frame reads settles exactly the same streams to exactly the same
 /// boundaries as a serial one — across a db REOPEN, so plan

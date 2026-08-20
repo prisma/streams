@@ -146,6 +146,7 @@ deploy server \
   --env ABSORB_PASS_BYTES=${WC_ABSORB_PASS:-67108864} --env TRIM_PER_OP=65536 \
   --env ABSORB_PACE_WINDOW_MS=${WC_PACE_WINDOW:-50} --env ABSORB_PACE_MS=${WC_PACE_MS:-0} \
   --env ABSORB_READ_PAR=${WC_READ_PAR:-8} \
+  --env ADMIT_RSS_SHED_MB=${WC_RSS_SHED:-600} \
   --env POOL_IDLE_SECS=4 --env KEEP_AWAKE=1 --env CELL_ID="$CELL" \
   --env PROJECT_ID=proj-mt-deploy \
   --env SLATEDB_RT_THREADS=${WC_SLATE_RT:-2} \
