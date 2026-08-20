@@ -378,3 +378,16 @@ hyper floor (#269). Next: L2c1/L2c2 discriminator - same 1,000 parked,
 1 sub/stream (pure direct) vs 2 subs/stream via WC_SUB_TENANTS=500
 (pure hub) - no server change; decides the promotion-policy question
 (promote-on-first vs task-per-stream cost) on data.
+
+**L2c1 (pure direct, 1,000 subs / 1 per stream, 20 min): shed 7.22%**
+(87,941 thr / 1,218,800 offered; apErr 0; 955 parked) — WORSE than
+L2b-r2's 4.06% at 2,193 subs. Attribution flips: admit_shed_rss
+47,717 > admit_shed_inflight 40,231 (L2b-r2 was 9k/40k). Shed
+ACCELERATES at flat sub-count: thr/window 1,382 (t=600) -> 3,294
+(t=1000) -> 8,014 (t=1200) with subs pinned at ~950 — progressive
+memory pressure under the ~430 poll-reads/s direct storm, marching
+RSS to the 600 MB shed line. Direct-path polling is the confirmed
+cost driver; the hub exists to remove exactly this. L2c2 next: same
+1,000 parked over 500 streams (~500 direct + ~500 hub after F8
+promotion; a pure-hub rung is unreachable without first-sub
+reconnect — promotion leaves sub #1 on its direct conn).
