@@ -145,6 +145,13 @@ pub struct AppState {
     pub rss_mb_cached: std::sync::atomic::AtomicU64,
     /// 429s issued by the admission backstop (observability).
     pub admit_shed: std::sync::atomic::AtomicU64,
+    /// #266 attribution: admit_shed sums two mechanisms (global
+    /// in-flight cap, RSS write-shed) — L1d11 spent a night proving
+    /// which one fired from 10-second gauge samples and couldn't.
+    /// These split the SAME increments by source; admit_shed stays the
+    /// sum for dashboard continuity.
+    pub admit_shed_inflight: std::sync::atomic::AtomicU64,
+    pub admit_shed_rss: std::sync::atomic::AtomicU64,
     /// Per-stream inflight append cap (0 = off): one hot stream cannot
     /// occupy every admission slot of its shard owner. Scoped 429 +
     /// Retry-After. The counter map is bounded: entries are removed at
@@ -741,6 +748,9 @@ async fn track_inflight(
         state
             .admit_shed
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        state
+            .admit_shed_inflight
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Tarpit: a ~25 ms pause before the 429 bounds the reject rate a
         // non-compliant closed-loop client can generate (an instant 429
         // invites an instant retry — measured as a CPU-starving reject
@@ -924,6 +934,12 @@ async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
         "inflight_peak": peak,
         "rss_mb": crate::fleet::rss_bytes() as f64 / 1048576.0,
         "admit_shed": state.admit_shed.load(std::sync::atomic::Ordering::Relaxed),
+        "admit_shed_inflight": state
+            .admit_shed_inflight
+            .load(std::sync::atomic::Ordering::Relaxed),
+        "admit_shed_rss": state.admit_shed_rss.load(std::sync::atomic::Ordering::Relaxed),
+        "absorb_reserved_bytes_now": crate::history::absorb_reserved_bytes(),
+        "shed_line_mb": state.admit_rss_shed_mb,
         "maintenance_backpressure": state.maint_latch.stats_json(),
         // #266 field attribution: the wc sampler reads THIS endpoint —
         // the /v1/debug/absorb block alone left L1d7 blind on whether
@@ -4658,6 +4674,9 @@ async fn append_core(
     {
         state
             .admit_shed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        state
+            .admit_shed_rss
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         let mut r = err_resp(
