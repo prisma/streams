@@ -322,3 +322,18 @@ hub SSE increment ≈5 KB/sub over the 53 KB hyper floor; RSS after
 mass disconnect **54 MB** vs ~130 MB retained pre-F5 (the per-
 connection descriptor clones were the unreclaimable residue).
 Delivery 10/10 through one-batch reads + uncached-posture ring.
+
+**L2b (2026-08-20, FIXED hub b95170b5, 5k subs):** server side healthy
+(0.0000% shed, RSS 310 MB, hubs 683 peak -> clean teardown to 0, hub
+prepared bytes max 130 KB) — but the GEN is the blocker, on BOTH
+binaries: ~96% of writes hard-ERROR from the first 20 s window (L2a
+18,768 / L2b 19,549 errors at t=20), subsOpen collapses (peak 1,522 of
+5,000 -> single digits) with reconnects=0 (subscriber tasks die
+permanently). The L1 stages run the SAME rotation writers clean, so
+the failure is specific to SUBS_N>0 on the single 1-GiB gen instance —
+prime suspect fd exhaustion / client-side resource collapse under
+5,000 held-open SSE connections plus writer churn. Next: pull the
+gen's remote stderr (Compute logs) for the error class; likely fixes
+are gen-side setrlimit / connection budget / multi-gen topology (the
+plan's L2 shape needs several gen instances anyway — one 1-GiB client
+cannot hold 100k sockets either).
