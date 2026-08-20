@@ -144,6 +144,8 @@ pub struct AppState {
     /// instead. 0 = unlimited (tests/dev).
     pub sse_max_connections: u64,
     pub sse_connections: std::sync::atomic::AtomicU64,
+    /// #268 SSE Phase 2: per-stream live fanout hubs (SSE_LIVE_HUB=1).
+    pub live_hubs: crate::livehub::HubRegistry,
     /// RSS shed threshold (MB): writes are 429'd while resident memory
     /// exceeds this. Converts cgroup/instance OOM death (docker phase 1:
     /// RSS 218→1030 MB at full throughput, OOMKilled=true) into graceful
@@ -950,6 +952,7 @@ async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
             .load(std::sync::atomic::Ordering::Relaxed),
         "sse_max_connections": state.sse_max_connections,
         "sse_future_bytes": SSE_FUTURE_BYTES.load(std::sync::atomic::Ordering::Relaxed),
+        "sse_live_hubs": state.live_hubs.hub_count(),
         "absorb_reserved_bytes_now": crate::history::absorb_reserved_bytes(),
         "shed_line_mb": state.admit_rss_shed_mb,
         "maintenance_backpressure": state.maint_latch.stats_json(),
@@ -6154,7 +6157,7 @@ async fn read(
 /// fresh descriptor shows successors or a pending transition, the
 /// closure is a split seal and the caller must redispatch instead of
 /// reporting it. `false` = redispatch (the fresh descriptor is cached).
-async fn genuine_closure(
+pub(crate) async fn genuine_closure(
     state: &Arc<AppState>,
     sref: &crate::tenant::TenantStreamRef,
     may_refresh: bool,
@@ -6766,6 +6769,69 @@ pub(crate) enum SseSurface {
     Product,
 }
 
+/// #268: read budget re-exported for the hub pump.
+pub(crate) const MAX_READ_BYTES_PUB: usize = MAX_READ_BYTES;
+
+/// #268: the hub pump's read — the ordinary ring-preferring pipeline,
+/// product/durable, DEFAULT-key lane (Some("")): the product surface
+/// always reads a routing key and the empty key is its unfiltered
+/// lane, so the hub must filter identically or it would over-deliver
+/// keyed records the Phase-1 path never serves.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn read_records_for_hub(
+    state: &AppState,
+    desc: &StreamDesc,
+    key: &StreamKey,
+    epoch: &[u8; 16],
+    handle: &Arc<crate::shard::StreamHandle>,
+    engine: &Arc<ShardEngine>,
+    scan_from: u64,
+    max_bytes: usize,
+) -> Result<ReadOut, String> {
+    read_records(
+        state,
+        desc,
+        key,
+        epoch,
+        handle,
+        engine,
+        scan_from,
+        Some(""),
+        max_bytes,
+        crate::shard::Deliver::Durable,
+    )
+    .await
+}
+
+/// #268: one prepared hub event — the combined data+control text every
+/// subscriber of this stream shares (product surface; the signed key
+/// cursor is deterministic per stream+offset, so it is shareable).
+pub(crate) fn hub_event(
+    desc: &StreamDesc,
+    key: &StreamKey,
+    epoch: [u8; 16],
+    rk_hash: [u8; 16],
+    seg_id: u32,
+    rec: &PlainRec,
+    up_to_date: bool,
+    closed: bool,
+) -> String {
+    let mut ev = sse_data_event(desc, &rec.payload);
+    let ctl = sse_control_product(
+        &crate::product_cursor::KeyCursor {
+            epoch,
+            key_hash: rk_hash,
+            seg_id,
+            offset: rec.off + 1,
+        }
+        .encode(&desc.project_id, key),
+        up_to_date,
+        closed,
+    );
+    ev.push_str(&ctl);
+    ev
+}
+
 /// Product SSE control frame: signed key cursor + product field names.
 fn sse_control_product(cursor_tok: &str, up_to_date: bool, sealed: bool) -> String {
     let mut fields = vec![format!("\"nextCursor\":\"{cursor_tok}\"")];
@@ -7031,6 +7097,188 @@ fn sse_control(next: u64, cursor: Option<&str>, up_to_date: bool, closed: bool) 
     format!("event: control\ndata:{{{}}}\n\n", fields.join(","))
 }
 
+/// #268: hub-backed SSE subscriber. Owns a cursor and a 4-slot queue;
+/// the per-stream pump owns the read pipeline. Catch-up below the hub
+/// floor runs through boxed durable reads and re-checks the floor
+/// after (gap-free: the stream is durable and cursor-addressable, so
+/// a wrapped ring just means another catch-up round).
+#[allow(clippy::too_many_arguments)]
+async fn sse_hub_response(
+    state: Arc<AppState>,
+    desc: StreamDesc,
+    key: StreamKey,
+    epoch: [u8; 16],
+    engine: Arc<ShardEngine>,
+    handle: Arc<crate::shard::StreamHandle>,
+    start: StartPos,
+    slot: SseSlot,
+) -> Response {
+    let sse_hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
+    let mut hb = sse_heartbeat();
+    crate::billing::meter_read(&state, &desc, 0, 0);
+    let binary = {
+        let mt = crate::registry::media_type(&desc.content_type);
+        mt != "application/json" && !mt.starts_with("text/")
+    };
+    let hub = crate::livehub::HubRegistry::subscribe(
+        &state,
+        &desc,
+        key.clone(),
+        epoch,
+        engine.clone(),
+        handle.clone(),
+    );
+    struct SubGuard(Arc<crate::livehub::LiveHub>);
+    impl Drop for SubGuard {
+        fn drop(&mut self) {
+            self.0
+                .subscribers
+                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        }
+    }
+    let rk_hash = crate::postings::rk_hash("").0;
+    let seg_id = desc.resolve_segment("").seg_id;
+    tokio::spawn(async move {
+        let _sub = SubGuard(hub.clone());
+        let mut pos = match start {
+            StartPos::At(p) => p,
+            StartPos::Now => hub.snapshot_head(),
+        };
+        let bill_id = crate::billing::identity_of(&state, &desc);
+        let status_ctl = |at: u64, utd: bool, cls: bool| {
+            sse_control_product(
+                &crate::product_cursor::KeyCursor {
+                    epoch,
+                    key_hash: rk_hash,
+                    seg_id,
+                    offset: at,
+                }
+                .encode(&desc.project_id, &key),
+                utd,
+                cls,
+            )
+        };
+        let mut first = true;
+        loop {
+            match hub.read_from(pos) {
+                crate::livehub::HubRead::Dead => return,
+                crate::livehub::HubRead::BelowFloor => {
+                    // Durable catch-up to the hub's captured head; the
+                    // read machinery is boxed and transient (#267).
+                    let h0 = hub.snapshot_head();
+                    while pos < h0 {
+                        let out = Box::pin(read_records_for_hub(
+                            &state,
+                            &desc,
+                            &key,
+                            &epoch,
+                            &handle,
+                            &engine,
+                            pos,
+                            MAX_READ_BYTES,
+                        ))
+                        .await;
+                        match out {
+                            Ok(out) => {
+                                for r in out.recs.iter() {
+                                    let ev = hub_event(
+                                        &desc, &key, epoch, rk_hash, seg_id, r, false, false,
+                                    );
+                                    if !sse_send(&tx, Bytes::from(ev)).await {
+                                        return;
+                                    }
+                                    crate::billing::meter_read_chunk(
+                                        &state.billing_reads,
+                                        &bill_id,
+                                        r.payload.len() as u64,
+                                        1,
+                                    );
+                                }
+                                match out.last {
+                                    Some(l) => pos = l + 1,
+                                    None if out.completed => break,
+                                    None => {}
+                                }
+                            }
+                            Err(_) => return,
+                        }
+                    }
+                    first = false;
+                }
+                crate::livehub::HubRead::Events(evs, head, _flagged_last) => {
+                    for (b, plen) in evs {
+                        if !sse_send(&tx, b).await {
+                            return;
+                        }
+                        crate::billing::meter_read_chunk(
+                            &state.billing_reads,
+                            &bill_id,
+                            plen as u64,
+                            1,
+                        );
+                    }
+                    pos = head;
+                    first = false;
+                }
+                crate::livehub::HubRead::AtHead(closed) => {
+                    if first {
+                        // Connect-at-tail: one status-only control
+                        // (existing contract).
+                        if !sse_send(&tx, Bytes::from(status_ctl(pos, true, closed))).await {
+                            return;
+                        }
+                        first = false;
+                        if closed {
+                            return;
+                        }
+                    } else if closed {
+                        // Closure arrived while parked with no data to
+                        // carry the flags: one per-subscriber final
+                        // control.
+                        let _ = sse_send(&tx, Bytes::from(status_ctl(pos, true, true))).await;
+                        return;
+                    }
+                    let notified = hub.notify.notified();
+                    if hub.snapshot_head() > pos {
+                        continue;
+                    }
+                    tokio::select! {
+                        _ = notified => {}
+                        _ = hb.changed() => {
+                            if !sse_send(&tx, Bytes::from(": keep-alive\n\n")).await {
+                                return;
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    });
+    let sse_usage = crate::usage::counters(&sse_hash);
+    let stream = futures_util::StreamExt::map(
+        tokio_stream::wrappers::ReceiverStream::new(rx),
+        move |item| {
+            let _hold = &slot;
+            if let Ok(b) = &item {
+                sse_usage
+                    .bytes_out
+                    .fetch_add(b.len() as u64, std::sync::atomic::Ordering::Relaxed);
+            }
+            item
+        },
+    );
+    let mut r = Response::builder()
+        .status(StatusCode::OK)
+        .header(header::CONTENT_TYPE, "text/event-stream")
+        .header(header::CACHE_CONTROL, "no-cache")
+        .header("Cross-Origin-Resource-Policy", "cross-origin");
+    if binary {
+        r = r.header("Stream-SSE-Data-Encoding", "base64");
+    }
+    r.body(Body::from_stream(stream)).unwrap()
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn sse_response(
     state: Arc<AppState>,
@@ -7047,6 +7295,19 @@ async fn sse_response(
         Ok(s) => s,
         Err(r) => return *r,
     };
+    // #268: shared live fanout (SSE_LIVE_HUB=1) — see src/livehub.rs.
+    // Product-surface, unforked, unfiltered connections ride a
+    // per-stream hub that decrypts and formats each record ONCE;
+    // everything else keeps the Phase-1 path.
+    // The product layer always materializes the DEFAULT routing key as
+    // Some("") — that IS the unfiltered product lane.
+    if crate::livehub::live_hub_enabled()
+        && surface == SseSurface::Product
+        && desc.forked_from.is_none()
+        && params.key.as_deref().is_none_or(str::is_empty)
+    {
+        return sse_hub_response(state, desc, key, epoch, engine, handle, start, slot).await;
+    }
     let sse_hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
     // #267: 4 slots, not 64 — a slow client keeps a cursor and a
     // socket, not a private replay buffer (sse_send disconnects it).
@@ -7647,12 +7908,43 @@ async fn read_v3_lineage_inner(
     };
 
     if live == Some("sse") {
+        let rk = params.key.clone().unwrap_or_default();
+        // #268: single-segment, unfiltered, unforked product SSE rides
+        // the shared live hub (SSE_LIVE_HUB=1) — the product dispatch
+        // routes ALL :sse here, so this is the hub's real front door;
+        // splits, key filters and forks keep the lineage streamer. If
+        // resolution fails the RAII slot drops and the lineage path
+        // (which re-resolves inside its task) serves the connection.
+        if crate::livehub::live_hub_enabled()
+            && surface == SseSurface::Product
+            && lineage.len() == 1
+            && rk.is_empty()
+            && desc.forked_from.is_none()
+        {
+            let slot = match sse_acquire(&state) {
+                Ok(s) => s,
+                Err(r) => return *r,
+            };
+            let sg = &lineage[0];
+            let identity = desc.dynamic_segment_identity(sg.seg_id);
+            if let Some(engine) = state.engine_for_scaler(&desc.segment_route(sg)).await
+                && let Ok(handle) = engine.stream_handle(identity).await
+            {
+                state.keys.put(identity, key.clone(), epoch);
+                let start = if scan_from == u64::MAX {
+                    StartPos::Now
+                } else {
+                    StartPos::At(scan_from)
+                };
+                return sse_hub_response(state, desc, key, epoch, engine, handle, start, slot)
+                    .await;
+            }
+        }
         // Keyed SSE across lineage (review deferral, now wired): drain
         // every predecessor's matches, then live-follow the key's live
         // segment. A seal observed mid-stream that is NOT a genuine
         // close ends the connection without streamClosed — the
         // reconnect's fresh dispatch serves the successors.
-        let rk = params.key.clone().unwrap_or_default();
         return sse_lineage_response(
             state, desc, key, epoch, lineage, pos, scan_from, rk, params, surface,
         );

@@ -10,6 +10,7 @@ mod failpoints;
 mod fleet;
 mod history;
 mod http;
+mod livehub;
 #[cfg(test)]
 mod mt_lint;
 mod offsets;
@@ -1678,6 +1679,7 @@ async fn async_main() -> anyhow::Result<()> {
         admit_shed_rss: std::sync::atomic::AtomicU64::new(0),
         sse_max_connections: args.sse_max_connections,
         sse_connections: std::sync::atomic::AtomicU64::new(0),
+        live_hubs: crate::livehub::HubRegistry::new(),
         admit_max_inflight_per_stream: args.admit_max_inflight_per_stream,
         stream_inflight: std::sync::Mutex::new(HashMap::new()),
         stream_shed: std::sync::atomic::AtomicU64::new(0),

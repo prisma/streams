@@ -5810,6 +5810,7 @@ async fn http_rig_inner(
         admit_shed_rss: std::sync::atomic::AtomicU64::new(0),
         sse_max_connections: 0,
         sse_connections: std::sync::atomic::AtomicU64::new(0),
+        live_hubs: crate::livehub::HubRegistry::new(),
         admit_max_inflight_per_stream: per_segment_slots,
         stream_inflight: std::sync::Mutex::new(std::collections::HashMap::new()),
         stream_shed: std::sync::atomic::AtomicU64::new(0),

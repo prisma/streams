@@ -203,6 +203,18 @@ per-pass slices with append windows between, bounding any
 slatedb-internal serialization to one micro-pass — plus the committed
 DST gate as the permanent regression.
 
+**W1 VERDICT (2026-08-20): PASSED.** Root cause of the L1 shed was the
+RSS write-shed counting reservation FICTION: every gather reserved the
+worst case (96 MiB x up to 4 shards) against the 600 MB line while
+actual gathers ran 2-17 MB (CHAOS-3's documented trade, now measured
+end-to-end). Fixes: parallel per-stream gather reads (read phase max
+35.8 s -> 1.2 s), adaptive reservations with grow-on-demand (OOM pool
+invariant exact), split admit_shed counters. Acceptance: L1d12
+(regime B) 0.0000% shed at 976/s + L1d13 (regime A) 0.0000% at
+1,019/s — zero increments on BOTH shed classes in both regimes,
+reserved-now peaks 17-64 MB vs the old fixed 384 MB. Thirteen-run
+evidence chain in this section's history.
+
 W2 interim verdict: **1,000 wps over 10k tenants runs at 1.56% shed
 on the best documented posture — fails the 0.1% gate pending the
 absorber item.** L2/L3 (subscribers) wait behind it: they inherit the
