@@ -306,3 +306,11 @@ ring-preferring (Some("") bypasses ring_read — needs ring_read_keyed);
 env OnceLock flag should be injectable AppState state. Patch sequence
 and 15-leg red battery tracked as tasks #270-#275; L2a (5k subs, hub
 on) downgraded to prototype smoke — NOT acceptance.
+
+**L2a prototype smoke (2026-08-20, PRE-fix binary 6843b8de, 5k subs /
+1000 streams, hub on):** empirically confirms the review — subscribers
+never stabilized (peak 1,267 of 5,000, decaying; ~983 hubs = one per
+stream as designed; pumps exiting via the F1/F2 lifecycle bugs mass-
+disconnected their subscribers; delivered_total 10, max window lag
+34 s). Memory fine (304 MB, 0.0000% shed). L2 reruns AFTER the
+#270-#275 battery closes.
