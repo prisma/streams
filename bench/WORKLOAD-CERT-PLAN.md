@@ -433,3 +433,22 @@ was measured under ~equal LIVE conn counts (~60) with different
 CHURN mixes, so it primarily evidences churn/catch-up cost, not
 parked-subscriber cost - re-run behind a fixed edge before drawing
 promotion-policy conclusions.
+
+**#275 BATTERY CLOSE-OUT (2026-08-20): 15/15 legs green.** Final four:
+leg 14 workspace transfer (delivery survives, stale-ws token 401,
+re-mint works, per-batch billing lands in the workspace at event
+time, verified to rollup rows); leg 12 global ring exhaustion over
+HTTP (cap AppState-injectable, over-cap batches uncached but
+delivered, per-batch posture, both hubs alive; ring-walked gauge
+sse_hub_ring_bytes_walked added as accounting cross-check); leg 6
+cursor=now honesty (no history replay, control ack first, post-
+subscribe appends only; `offset` is a rejected legacy field on this
+surface - first draft's 400 passed a bare not-contains assert,
+now hardened to demand 200+control); leg 15 residency probe
+(bench/sse-probes/sse-1per.sh): 1000x1 direct 78.2 KB/sub vs 500x2
+hub 75.9 KB/sub at equal conns - parked cost is floor-dominated
+(#269's 53 KB), 500 live pumps measure ~free, teardown clean both
+arms, no hub-specific idle ratchet. Hub value = poll-CPU elimination
++ the field RSS-ratchet removal, not parked bytes. SSE_LIVE_HUB
+remains default-OFF per review instruction; the flag-default decision
+and the edge escalation are the two open calls. Suite 485.
