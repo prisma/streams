@@ -507,3 +507,23 @@ flows from outside). Program implication: L2/L3 gens must run
 OUT-of-region (or off-Compute) until the platform honors the opt-out
 on the internal tier; in-region product consumers are broken TODAY —
 added as ask #4 in bench/edge-repro/README.md.
+
+**MATCHED-SHAPE PROMOTION EXPERIMENT (2026-08-21, local,
+bench/sse-probes/sse-matched.sh, 4000 conns/arm):**
+| arm | shape | thr | park KB/sub | idle CPU | idle slope |
+|-----|-------|-----|-------------|----------|------------|
+| A | 4000x1 | 2 (all direct) | 27.1 | 0.8% | 1088 KB/min |
+| B | 4000x1 | 1 (4000 pumps) | 28.5 | 0.7% | 459 KB/min |
+| C | 2000x2 | 2 (2000 hubs)  | 26.3 | 0.7% | 1003 KB/min |
+Penalty side of the review's decision rule is now measured: 4000
+hub pumps cost +1.4 KB/sub and NO idle CPU vs all-direct, and the
+all-hub arm's idle RSS growth is 2.4x LOWER (direct pollers churn
+the allocator every 2-2.5 s; parked pumps are notify-woken).
+Delivery-latency column EXCLUDED (probe artifact: append-loop
+duration dominates the measurement). Still open for the win side:
+a loaded matched comparison (the field L2c1-vs-L2c2 shed split,
+7.2% vs 5.0% + RSS-ratchet elimination, points the same way but was
+churn-contaminated). Recommendation: promote-on-first is SAFE by
+these numbers; keep default 2 per the review until a loaded matched
+run (or a hairpin-fixed field canary at SSE_HUB_PROMOTE_AT=1)
+confirms the benefit.
