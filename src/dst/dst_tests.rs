@@ -5811,6 +5811,7 @@ async fn http_rig_inner(
         sse_max_connections: 0,
         sse_connections: std::sync::atomic::AtomicU64::new(0),
         live_hubs: crate::livehub::HubRegistry::new(),
+        sse_live_hub: std::sync::atomic::AtomicBool::new(false),
         admit_max_inflight_per_stream: per_segment_slots,
         stream_inflight: std::sync::Mutex::new(std::collections::HashMap::new()),
         stream_shed: std::sync::atomic::AtomicU64::new(0),
@@ -29767,4 +29768,235 @@ async fn kid_nudge_fired_before_the_waiter_is_not_lost() {
     )
     .await
     .expect("a pre-fired nudge must wake a late waiter (permit stored)");
+}
+
+// ---- #270 hub terminal state machine (Søren review F1+F4) ----------
+// Red-first against 6843b8de: the pump marked a genuinely CLOSED hub
+// dead in the same synchronous cleanup, so notified subscribers woke
+// into Dead and dropped the final batch and sealed control; catch-up
+// never conveyed upToDate.
+
+/// Drive one hub SSE subscriber over raw TCP and collect frames until
+/// `done(acc)` or body end or deadline. Returns (accumulated text,
+/// body_ended). Body end = the chunked terminal ("0\r\n\r\n") — an
+/// HTTP/1 keep-alive server ends the BODY without closing the TCP
+/// socket — or a raw EOF.
+async fn hub_sse_collect(
+    sck: &mut tokio::net::TcpStream,
+    deadline_secs: u64,
+    done: impl Fn(&str) -> bool,
+) -> (String, bool) {
+    use tokio::io::AsyncReadExt;
+    let mut buf = vec![0u8; 8192];
+    let mut acc: Vec<u8> = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(deadline_secs);
+    while std::time::Instant::now() < deadline {
+        let text = String::from_utf8_lossy(&acc).to_string();
+        if text.ends_with("0\r\n\r\n") {
+            return (text, true);
+        }
+        if done(&text) {
+            return (text, false);
+        }
+        let n = match tokio::time::timeout(std::time::Duration::from_secs(1), sck.read(&mut buf))
+            .await
+        {
+            Ok(r) => r.expect("sse read"),
+            Err(_) => continue,
+        };
+        if n == 0 {
+            return (String::from_utf8_lossy(&acc).to_string(), true);
+        }
+        acc.extend_from_slice(&buf[..n]);
+    }
+    (String::from_utf8_lossy(&acc).to_string(), false)
+}
+
+async fn hub_rig_stream(
+    name: &str,
+) -> (
+    Arc<crate::http::AppState>,
+    std::net::SocketAddr,
+    tokio::net::TcpStream,
+) {
+    use tokio::io::AsyncWriteExt;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_live_hub
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        &format!("/v1/streams/{name}"),
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let req = format!(
+        "GET /v1/streams/{name}/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
+    );
+    sck.write_all(req.as_bytes()).await.unwrap();
+    (state, addr, sck)
+}
+
+async fn hub_append(addr: std::net::SocketAddr, name: &str, body: &str) {
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        &format!("/v1/streams/{name}/records"),
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        body.as_bytes(),
+    )
+    .await;
+    assert!(st == 200 || st == 204, "append {st}");
+}
+
+/// F1 leg 1: data then seal — the subscriber must receive the final
+/// record AND exactly one sealed control, then EOF. The broken pump
+/// marked the closed hub dead first, so the subscriber saw Dead and
+/// hung up with neither.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_seal_with_data_delivers_final_flags_then_eof() {
+    let (state, addr, mut sck) = hub_rig_stream("hubseal").await;
+    hub_append(addr, "hubseal", r#"{"n":1}"#).await;
+    let (acc, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"n\":1")).await;
+    assert!(acc.contains("\"n\":1"), "first record must arrive:\n{acc}");
+    assert!(
+        state.live_hubs.hub_count() >= 1,
+        "the hub path must be engaged (not Phase 1)"
+    );
+    hub_append(addr, "hubseal", r#"{"n":2}"#).await;
+    let (acc, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"n\":2")).await;
+    assert!(acc.contains("\"n\":2"), "second record must arrive:\n{acc}");
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/hubseal:seal",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{}",
+    )
+    .await;
+    assert_eq!(st, 200, "seal");
+    let (acc, eof) = hub_sse_collect(&mut sck, 15, |_| false).await;
+    let sealed = acc.matches("\"sealed\":true").count();
+    assert_eq!(
+        sealed, 1,
+        "exactly one sealed control after genuine close, got {sealed}:\n{acc}"
+    );
+    assert!(eof, "connection must END after the sealed control:\n{acc}");
+}
+
+/// F1 leg 2: empty seal — one final control (sealed + upToDate), EOF.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_empty_seal_single_final_control() {
+    let (state, addr, mut sck) = hub_rig_stream("hubseal2").await;
+    // Connect-at-tail status control arrives first.
+    let (acc, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("upToDate")).await;
+    assert!(acc.contains("\"upToDate\":true"), "tail status:\n{acc}");
+    assert!(state.live_hubs.hub_count() >= 1, "hub must be engaged");
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/hubseal2:seal",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{}",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let (acc, eof) = hub_sse_collect(&mut sck, 15, |_| false).await;
+    assert_eq!(
+        acc.matches("\"sealed\":true").count(),
+        1,
+        "exactly one sealed control:\n{acc}"
+    );
+    assert!(eof, "EOF after the final control:\n{acc}");
+}
+
+/// F1 leg 4: a subscriber arriving AFTER the close still drains the
+/// records and the sealed control (fresh hub over a closed stream).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_late_subscriber_after_close_drains_and_seals() {
+    use tokio::io::AsyncWriteExt;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_live_hub
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/hublate",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append(addr, "hublate", r#"{"n":7}"#).await;
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/hublate:seal",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{}",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let req = format!(
+        "GET /v1/streams/hublate/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
+    );
+    sck.write_all(req.as_bytes()).await.unwrap();
+    let (acc, eof) = hub_sse_collect(&mut sck, 15, |_| false).await;
+    assert!(acc.contains("\"n\":7"), "record must arrive:\n{acc}");
+    assert_eq!(
+        acc.matches("\"sealed\":true").count(),
+        1,
+        "one sealed control:\n{acc}"
+    );
+    assert!(eof, "EOF after drain:\n{acc}");
+}
+
+/// F4: catch-up from the beginning on a stream that already has data
+/// must end with an upToDate signal while the connection stays OPEN.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_catchup_conveys_up_to_date() {
+    use tokio::io::AsyncWriteExt;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_live_hub
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/hubcu",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for n in 0..3 {
+        hub_append(addr, "hubcu", &format!("{{\"n\":{n}}}")).await;
+    }
+    let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let req = format!(
+        "GET /v1/streams/hubcu/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
+    );
+    sck.write_all(req.as_bytes()).await.unwrap();
+    let (acc, eof) = hub_sse_collect(&mut sck, 12, |t| {
+        t.contains("\"n\":2") && t.contains("\"upToDate\":true")
+    })
+    .await;
+    assert!(state.live_hubs.hub_count() >= 1, "hub must be engaged");
+    for n in 0..3 {
+        assert!(acc.contains(&format!("\"n\":{n}")), "record {n}:\n{acc}");
+    }
+    assert!(
+        acc.contains("\"upToDate\":true"),
+        "catch-up must convey upToDate:\n{acc}"
+    );
+    assert!(!eof, "stream stays open");
 }

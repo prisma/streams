@@ -146,6 +146,10 @@ pub struct AppState {
     pub sse_connections: std::sync::atomic::AtomicU64,
     /// #268 SSE Phase 2: per-stream live fanout hubs (SSE_LIVE_HUB=1).
     pub live_hubs: crate::livehub::HubRegistry,
+    /// Hub enablement — an INSTANCE field, not a process-global env
+    /// OnceLock, so hub-on and hub-off HTTP tests coexist in one suite
+    /// without order dependence (review note).
+    pub sse_live_hub: std::sync::atomic::AtomicBool,
     /// RSS shed threshold (MB): writes are 429'd while resident memory
     /// exceeds this. Converts cgroup/instance OOM death (docker phase 1:
     /// RSS 218→1030 MB at full throughput, OOMKilled=true) into graceful
@@ -7159,7 +7163,12 @@ async fn sse_hub_response(
                 cls,
             )
         };
-        let mut first = true;
+        // #270: track which terminal facts reached the client. The
+        // shared bytes cannot be inspected, so read_from reports what
+        // the flagged variant carried; catch-up and plain mid-ring
+        // events convey nothing.
+        let mut need_utd = true;
+        let mut sealed_conveyed = false;
         loop {
             match hub.read_from(pos) {
                 crate::livehub::HubRead::Dead => return,
@@ -7204,9 +7213,11 @@ async fn sse_hub_response(
                             Err(_) => return,
                         }
                     }
-                    first = false;
+                    // Catch-up events carry no flags: the upToDate
+                    // handoff happens at the AtHead recheck (#270/F4).
+                    need_utd = true;
                 }
-                crate::livehub::HubRead::Events(evs, head, _flagged_last) => {
+                crate::livehub::HubRead::Events(evs, head, flagged) => {
                     for (b, plen) in evs {
                         if !sse_send(&tx, b).await {
                             return;
@@ -7219,25 +7230,35 @@ async fn sse_hub_response(
                         );
                     }
                     pos = head;
-                    first = false;
+                    match flagged {
+                        Some((utd, cls)) => {
+                            if utd {
+                                need_utd = false;
+                            }
+                            if cls {
+                                sealed_conveyed = true;
+                            }
+                        }
+                        None => need_utd = true,
+                    }
                 }
                 crate::livehub::HubRead::AtHead(closed) => {
-                    if first {
-                        // Connect-at-tail: one status-only control
-                        // (existing contract).
-                        if !sse_send(&tx, Bytes::from(status_ctl(pos, true, closed))).await {
-                            return;
+                    if closed {
+                        // Exactly one sealed control — and only when
+                        // the flags did not already ride a flagged
+                        // data event (#270: no silence, no duplicate).
+                        if !sealed_conveyed {
+                            let _ = sse_send(&tx, Bytes::from(status_ctl(pos, true, true))).await;
                         }
-                        first = false;
-                        if closed {
-                            return;
-                        }
-                    } else if closed {
-                        // Closure arrived while parked with no data to
-                        // carry the flags: one per-subscriber final
-                        // control.
-                        let _ = sse_send(&tx, Bytes::from(status_ctl(pos, true, true))).await;
                         return;
+                    }
+                    if need_utd {
+                        // Connect-at-tail or post-catch-up: one
+                        // status-only control conveys upToDate.
+                        if !sse_send(&tx, Bytes::from(status_ctl(pos, true, false))).await {
+                            return;
+                        }
+                        need_utd = false;
                     }
                     let notified = hub.notify.notified();
                     if hub.snapshot_head() > pos {
@@ -7301,7 +7322,9 @@ async fn sse_response(
     // everything else keeps the Phase-1 path.
     // The product layer always materializes the DEFAULT routing key as
     // Some("") — that IS the unfiltered product lane.
-    if crate::livehub::live_hub_enabled()
+    if state
+        .sse_live_hub
+        .load(std::sync::atomic::Ordering::Relaxed)
         && surface == SseSurface::Product
         && desc.forked_from.is_none()
         && params.key.as_deref().is_none_or(str::is_empty)
@@ -7915,7 +7938,9 @@ async fn read_v3_lineage_inner(
         // splits, key filters and forks keep the lineage streamer. If
         // resolution fails the RAII slot drops and the lineage path
         // (which re-resolves inside its task) serves the connection.
-        if crate::livehub::live_hub_enabled()
+        if state
+            .sse_live_hub
+            .load(std::sync::atomic::Ordering::Relaxed)
             && surface == SseSurface::Product
             && lineage.len() == 1
             && rk.is_empty()

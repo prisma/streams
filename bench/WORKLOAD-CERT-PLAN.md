@@ -281,3 +281,28 @@ node idle ambition is gated on the hyper floor (100k × 53 KB ≈ 5.3 GB)
 investigation's honest fallback of 4–8 connection nodes. RSS after
 mass disconnect returns partially (mimalloc idle retention, known).
 
+
+### Phase 2 review verdict (Søren, 2026-08-20)
+
+Phase 1: real success (numbers internally consistent). Phase 2:
+right architecture, NOT ready for the 100k battery or default
+enablement — SSE_LIVE_HUB stays gated; findings 1-5 fixed before
+#265 runs as acceptance. Findings (all confirmed against the code):
+(1) closed hubs immediately marked dead — subscribers drop the final
+batch/sealed control; (2) registry keyed by name-route, not
+incarnation (delete/recreate attach + ABA removal + last-subscriber
+race); (3) filtered scan progress lost — matching-only batch ranges
+lag the pump, debug assert panics on mixed keys, offset=now derived
+from pump progress not durable tail; (4) catch-up never emits
+upToDate + duplicate final control once (1) is fixed; (5) subscribers
+still hold desc/key/engine/handle/billing clones — not cursor-only;
+(6) read_from clones the whole ring suffix per subscriber; (7) ring
+cap excludes last_flagged/overhead, keeps any-size batches, no global
+cap; (8) 100k×1 regresses vs Phase 1 (hub+pump+timer per stream) —
+adaptive promotion; (9) disconnect teardown lags 15-20s (no
+tx.closed() in park, 5s pump poll). Plus: billing identity frozen per
+subscriber (transfer regression vs Phase 1); the pump is NOT
+ring-preferring (Some("") bypasses ring_read — needs ring_read_keyed);
+env OnceLock flag should be injectable AppState state. Patch sequence
+and 15-leg red battery tracked as tasks #270-#275; L2a (5k subs, hub
+on) downgraded to prototype smoke — NOT acceptance.

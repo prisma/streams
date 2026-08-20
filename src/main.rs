@@ -521,6 +521,12 @@ struct Args {
     #[arg(long, env = "SSE_MAX_CONNECTIONS", default_value_t = 10_000)]
     sse_max_connections: u64,
 
+    /// SSE Phase 2 live-hub fanout (#268): 1 = eligible product SSE
+    /// connections ride per-stream shared hubs. Feature-gated pending
+    /// the review-battery closure (tasks #270-#275).
+    #[arg(long, env = "SSE_LIVE_HUB", default_value_t = 0)]
+    sse_live_hub: u8,
+
     /// Per-stream inflight append cap (0 = off): one hot stream cannot
     /// occupy every admission slot of its shard owner (scoped 429).
     #[arg(long, env = "ADMIT_MAX_INFLIGHT_PER_STREAM", default_value_t = 64)]
@@ -1680,6 +1686,7 @@ async fn async_main() -> anyhow::Result<()> {
         sse_max_connections: args.sse_max_connections,
         sse_connections: std::sync::atomic::AtomicU64::new(0),
         live_hubs: crate::livehub::HubRegistry::new(),
+        sse_live_hub: std::sync::atomic::AtomicBool::new(args.sse_live_hub == 1),
         admit_max_inflight_per_stream: args.admit_max_inflight_per_stream,
         stream_inflight: std::sync::Mutex::new(HashMap::new()),
         stream_shed: std::sync::atomic::AtomicU64::new(0),

@@ -42,11 +42,6 @@ pub(crate) fn hub_ring_bytes() -> usize {
     })
 }
 
-pub(crate) fn live_hub_enabled() -> bool {
-    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("SSE_LIVE_HUB").is_ok_and(|v| v == "1"))
-}
-
 pub(crate) struct PreparedBatch {
     pub first: u64,
     /// Offset after the last prepared record.
@@ -60,6 +55,11 @@ pub(crate) struct PreparedBatch {
     /// instead of the plain last event by a subscriber that parks at
     /// the hub head right after this batch.
     pub last_flagged: Bytes,
+    /// (up_to_date, closed) carried by `last_flagged` — the subscriber
+    /// cannot see inside the shared bytes, and it must know which
+    /// terminal facts were already conveyed to avoid both silence and
+    /// duplicate final controls (#270).
+    pub flagged_flags: (bool, bool),
     pub bytes: usize,
 }
 
@@ -89,9 +89,11 @@ pub(crate) struct LiveHub {
 /// What a subscriber gets when it asks for everything from `from`.
 pub(crate) enum HubRead {
     /// Prepared (event bytes, payload len) at and after `from`, plus
-    /// the head after them and whether the last returned event is the
-    /// flagged variant (subscriber parks at head after it).
-    Events(Vec<(Bytes, u32)>, u64, bool),
+    /// the head after them, plus Some((up_to_date, closed)) when the
+    /// LAST returned event is the flagged variant (None = plain
+    /// mid-ring event; the subscriber has NOT been told it is at
+    /// head).
+    Events(Vec<(Bytes, u32)>, u64, Option<(bool, bool)>),
     /// `from` is below the ring floor — re-run durable catch-up.
     BelowFloor,
     /// Nothing new; park on notify. Bool = stream closed (end after
@@ -118,7 +120,7 @@ impl LiveHub {
             return HubRead::BelowFloor;
         }
         let mut out = Vec::new();
-        let mut at_head_after = false;
+        let mut flagged: Option<(bool, bool)> = None;
         for (bi, b) in r.batches.iter().enumerate() {
             if b.next <= from {
                 continue;
@@ -131,16 +133,16 @@ impl LiveHub {
                 }
                 let last_event = last_batch && ei + 1 == n;
                 if last_event {
-                    // The caller substitutes the flagged variant only
-                    // when it will actually park at head after this.
+                    // Ring-last: the flagged variant, and the caller
+                    // learns exactly which terminal facts it conveyed.
                     out.push((b.last_flagged.clone(), *plen));
-                    at_head_after = true;
+                    flagged = Some(b.flagged_flags);
                 } else {
                     out.push((ev.clone(), *plen));
                 }
             }
         }
-        HubRead::Events(out, r.head, at_head_after)
+        HubRead::Events(out, r.head, flagged)
     }
 
     fn publish(&self, batch: PreparedBatch) {
@@ -243,6 +245,22 @@ impl HubRegistry {
     }
 }
 
+/// Why a pump stopped (#270). A CLOSED hub and a DEAD hub are
+/// different protocol states with different subscriber obligations —
+/// closed hubs stay drainable (subscribers finish with the sealed
+/// control); dead hubs disconnect (transition or fence: the client
+/// resumes by cursor). They must never share a cleanup path: the
+/// original code marked every exiting hub dead, and read_from checks
+/// dead FIRST, so notified subscribers woke into Dead and dropped the
+/// final batch and sealed control with no await in between to let
+/// them drain.
+enum PumpExit {
+    Closed,
+    Transition,
+    ReadError,
+    NoSubscribers,
+}
+
 /// One pump per subscribed stream: wake on durable advance, read once
 /// through the ordinary pipeline (ring-preferring), decrypt once,
 /// format once, publish shared bytes. Exits when the last subscriber
@@ -260,9 +278,9 @@ async fn hub_pump(
     let rk_hash = crate::postings::rk_hash("").0;
     let seg_id = desc.resolve_segment("").seg_id;
     let bill_id = crate::billing::identity_of(&state, &desc);
-    loop {
+    let exit = loop {
         if hub.subscribers.load(Ordering::Relaxed) == 0 {
-            break;
+            break PumpExit::NoSubscribers;
         }
         let (end, closed) = {
             let st = handle.state.lock().unwrap();
@@ -324,12 +342,12 @@ async fn hub_pump(
                             next,
                             events,
                             last_flagged,
+                            flagged_flags: (will_end, report_closed),
                             bytes,
                         });
                         pos = next;
                         if report_closed {
-                            hub.mark_closed();
-                            break;
+                            break PumpExit::Closed;
                         }
                         continue;
                     }
@@ -339,18 +357,15 @@ async fn hub_pump(
                     }
                 }
                 Err(_) => {
-                    hub.mark_dead();
-                    break;
+                    break PumpExit::ReadError;
                 }
             }
         }
         if closed && pos >= end {
             if crate::http::genuine_closure(&state, &desc.sref(), true).await {
-                hub.mark_closed();
-            } else {
-                hub.mark_dead();
+                break PumpExit::Closed;
             }
-            break;
+            break PumpExit::Transition;
         }
         let notified = handle.notify.notified();
         let cur = handle.state.lock().unwrap().durable.next;
@@ -362,9 +377,19 @@ async fn hub_pump(
             _ = notified => {}
             _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
         }
-    }
+    };
+    // #270: closed and dead are DIFFERENT protocol states. A closed
+    // hub stays drainable — subscribers finish with the sealed
+    // control; only transitions and read failures disconnect for
+    // cursor resume. Every exit removes the registry entry so new
+    // subscribers get a fresh hub (or fresh dispatch semantics on a
+    // closed stream).
     state.live_hubs.remove(&hub.stream_hash);
-    hub.mark_dead();
+    match exit {
+        PumpExit::Closed => hub.mark_closed(),
+        PumpExit::Transition | PumpExit::ReadError => hub.mark_dead(),
+        PumpExit::NoSubscribers => {}
+    }
 }
 
 #[cfg(test)]
@@ -394,6 +419,7 @@ mod tests {
             next: first + n,
             events,
             last_flagged: Bytes::from_static(b"FLAGGED"),
+            flagged_flags: (true, false),
             bytes: n as usize * ev_len,
         }
     }
@@ -410,7 +436,7 @@ mod tests {
         let HubRead::Events(evs, head, flagged) = h.read_from(10) else {
             panic!("expected events");
         };
-        assert_eq!((evs.len(), head, flagged), (4, 14, true));
+        assert_eq!((evs.len(), head, flagged), (4, 14, Some((true, false))));
         assert_eq!(&evs[3].0[..], b"FLAGGED");
         assert_eq!(&evs[0].0[..], &[b'e'; 8][..]);
         // Mid-ring suffix.
