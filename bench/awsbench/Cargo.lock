@@ -512,6 +512,7 @@ dependencies = [
  "clap",
  "futures-util",
  "hdrhistogram",
+ "libc",
  "reqwest",
  "serde",
  "serde_json",

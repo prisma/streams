@@ -337,3 +337,26 @@ gen's remote stderr (Compute logs) for the error class; likely fixes
 are gen-side setrlimit / connection budget / multi-gen topology (the
 plan's L2 shape needs several gen instances anyway — one 1-GiB client
 cannot hold 100k sockets either).
+
+**L2 root cause (2026-08-20, CLOSED — harness, not server):** the
+platform edge (cv-*.prisma.build) rate-limits concurrent TLS
+handshake establishment per client. Reproduced from a workstation:
+sequential connects 15/15 OK; concurrent bursts 66-76% connect
+timeouts (33/50, 76/100, 127/200); established conns unaffected
+(114/114 held through the probe). The unpaced 5k-task swarm
+(synchronized 500 ms retries) was a permanent handshake storm that
+also starved the writer pool's new connections -> ~96% apErr (client
+connect timeouts, NOT server rejections), subsOpen 0->6, delivered 21.
+Server exonerated: with the run's real stream key, appends to the
+run's own streams return 200 across s- and w-ranges; feeds fresh
+(10k credentials, age 19 s); the hub served ~968k frames to the few
+parked subscribers. (Investigation detour: probing with a WRONG
+encryption key returns 403 whose product mapping collapses wrong_key
+into stale_or_wrong_credentials - cost an hour chasing auth; noted.)
+Gen fixes (awsbench cert): BENCH_CERT_CONNECT_CONC connect-permit
+(default 48) held across tail-learn + SSE establishment, jittered
+1.5-3 s backoff, typed error classes in stats (errConnect/errTimeout/
+errStatus/errOther + subErrConnect/subErrStatus, first-3 samples to
+stderr), RLIMIT_NOFILE raised to hard max on Linux. Edge ALPN offers
+h2 (future option: multiplexed subs if per-conn stream caps allow).
+Rerun pending as L2b-r2 on tag wcfix2.

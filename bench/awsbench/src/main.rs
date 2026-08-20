@@ -1308,6 +1308,43 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
     let base = args.target.clone();
     let key = args.stream_key.clone();
     let prefix = args.stream.clone();
+    // L2 post-mortem: the platform edge throttles concurrent TLS
+    // handshakes per client. An unpaced subscriber swarm (5k tasks,
+    // 500 ms retries) melts into a permanent connect-timeout storm
+    // that also starves the writer pool (L2a/L2b: ~96% "apErr" with
+    // zero server-side rejections). Pace connection ESTABLISHMENT;
+    // requests on already-established conns are unaffected.
+    let connect_conc: usize = std::env::var("BENCH_CERT_CONNECT_CONC")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(48);
+    let connect_sem = Arc::new(tokio::sync::Semaphore::new(connect_conc));
+    // Parked SSE conns need fd headroom past a 1024 container default.
+    #[cfg(target_os = "linux")]
+    unsafe {
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) == 0 && lim.rlim_cur < lim.rlim_max {
+            lim.rlim_cur = lim.rlim_max;
+            libc::setrlimit(libc::RLIMIT_NOFILE, &lim);
+        }
+        eprintln!("CERT: nofile={}", lim.rlim_cur);
+    }
+    // Typed error classes: one opaque "err" bucket hid the edge storm
+    // for two full runs. Count by class, sample-print the first three.
+    let err_connect = Arc::new(AtomicU64::new(0));
+    let err_timeout = Arc::new(AtomicU64::new(0));
+    let err_status = Arc::new(AtomicU64::new(0));
+    let err_other = Arc::new(AtomicU64::new(0));
+    let sub_err_connect = Arc::new(AtomicU64::new(0));
+    let sub_err_status = Arc::new(AtomicU64::new(0));
+    fn bump(class: &'static str, ctr: &AtomicU64, msg: impl std::fmt::Display) {
+        if ctr.fetch_add(1, Ordering::Relaxed) < 3 {
+            eprintln!("CERT-ERR[{class}]: {msg}");
+        }
+    }
     let mut out = std::fs::File::create(&args.out)?;
     use std::io::Write as _;
     let stream_of = |t: usize| -> String {
@@ -1373,9 +1410,18 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
             lag_hist.clone(),
             stop.clone(),
         );
+        let connect_sem = connect_sem.clone();
+        let sub_err_connect = sub_err_connect.clone();
+        let sub_err_status = sub_err_status.clone();
         tokio::spawn(async move {
             let mut first = true;
+            // Jittered backoff: 5k tasks on a fixed 500 ms retry are a
+            // synchronized handshake storm against the edge limiter.
+            let backoff_ms = 1500 + (j as u64).wrapping_mul(2654435761) % 1500;
             while stop.load(Ordering::Relaxed) == 0 {
+                // Hold a connect permit across tail-learn + SSE
+                // establishment; release once parked (or on failure).
+                let permit = connect_sem.clone().acquire_owned().await.unwrap();
                 // (Re)learn the tail, then park.
                 let tail = match http
                     .get(format!("{base}/v1/streams/{name}/records"))
@@ -1390,8 +1436,10 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                         .and_then(|v| v.to_str().ok())
                         .unwrap_or("")
                         .to_string(),
-                    Err(_) => {
-                        tokio::time::sleep(Duration::from_millis(500)).await;
+                    Err(e) => {
+                        bump("sub-connect", &sub_err_connect, &e);
+                        drop(permit);
+                        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
                         continue;
                     }
                 };
@@ -1404,14 +1452,22 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                     .header("prisma-encryption-key", key.clone())
                     .send()
                     .await;
-                let Ok(r) = resp else {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
-                    continue;
+                let r = match resp {
+                    Ok(r) => r,
+                    Err(e) => {
+                        bump("sub-connect", &sub_err_connect, &e);
+                        drop(permit);
+                        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                        continue;
+                    }
                 };
                 if r.status().as_u16() != 200 {
-                    tokio::time::sleep(Duration::from_millis(500)).await;
+                    bump("sub-status", &sub_err_status, r.status());
+                    drop(permit);
+                    tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
                     continue;
                 }
+                drop(permit);
                 if first {
                     subs_open.fetch_add(1, Ordering::Relaxed);
                     first = false;
@@ -1479,6 +1535,12 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
             sem.clone(),
             stop.clone(),
         );
+        let (err_connect, err_timeout, err_status, err_other) = (
+            err_connect.clone(),
+            err_timeout.clone(),
+            err_status.clone(),
+            err_other.clone(),
+        );
         let stream_of = move |t: usize| -> String {
             if t < sub_tenants {
                 format!("{prefix}s{t}")
@@ -1516,6 +1578,12 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                         let key = key.clone();
                         let (ok, thr, err, ap_hist) =
                             (ok.clone(), thr.clone(), err.clone(), ap_hist.clone());
+                        let (err_connect, err_timeout, err_status, err_other) = (
+                            err_connect.clone(),
+                            err_timeout.clone(),
+                            err_status.clone(),
+                            err_other.clone(),
+                        );
                         let pad = record_bytes.saturating_sub(40);
                         let permit = sem.clone().acquire_owned().await.unwrap();
                         tokio::spawn(async move {
@@ -1542,7 +1610,18 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                                 Ok(r) if r.status().as_u16() == 429 || r.status().as_u16() == 503 => {
                                     thr.fetch_add(1, Ordering::Relaxed);
                                 }
-                                _ => {
+                                Ok(r) => {
+                                    bump("ap-status", &err_status, r.status());
+                                    err.fetch_add(1, Ordering::Relaxed);
+                                }
+                                Err(e) => {
+                                    if e.is_connect() {
+                                        bump("ap-connect", &err_connect, &e);
+                                    } else if e.is_timeout() {
+                                        bump("ap-timeout", &err_timeout, &e);
+                                    } else {
+                                        bump("ap-other", &err_other, &e);
+                                    }
                                     err.fetch_add(1, Ordering::Relaxed);
                                 }
                             }
@@ -1575,6 +1654,13 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
             "subsOpen": subs_open.load(Ordering::Relaxed),
             "delivered": delivered.load(Ordering::Relaxed),
             "reconnects": reconnects.load(Ordering::Relaxed),
+            "errConnect": err_connect.load(Ordering::Relaxed),
+            "errTimeout": err_timeout.load(Ordering::Relaxed),
+            "errStatus": err_status.load(Ordering::Relaxed),
+            "errOther": err_other.load(Ordering::Relaxed),
+            "subErrConnect": sub_err_connect.load(Ordering::Relaxed),
+            "subErrStatus": sub_err_status.load(Ordering::Relaxed),
+            "connectConc": connect_conc,
             "lagWinP50Ms": pctl_ms(&lags, 0.5),
             "lagWinP99Ms": pctl_ms(&lags, 0.99),
             "tenants": tenants, "subTenants": sub_tenants, "subsN": subs_n,
@@ -1602,6 +1688,13 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
         "delivered": delivered.load(Ordering::Relaxed),
         "reconnects": reconnects.load(Ordering::Relaxed),
         "subsOpen": subs_open.load(Ordering::Relaxed),
+        "errConnect": err_connect.load(Ordering::Relaxed),
+        "errTimeout": err_timeout.load(Ordering::Relaxed),
+        "errStatus": err_status.load(Ordering::Relaxed),
+        "errOther": err_other.load(Ordering::Relaxed),
+        "subErrConnect": sub_err_connect.load(Ordering::Relaxed),
+        "subErrStatus": sub_err_status.load(Ordering::Relaxed),
+        "connectConc": connect_conc,
         "createMs": create_ms,
         "steadySecs": secs,
         "tenants": tenants, "subTenants": sub_tenants, "subsN": subs_n,
