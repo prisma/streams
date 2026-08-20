@@ -476,3 +476,20 @@ actively-written streams that kept refilling the buffer. The edge
 honors X-Accel-Buffering: no — server now sends it on every SSE
 response (2fe76450, wire-asserted). L2/L3 UNBLOCKED pending rung
 validation on the workaround binary (wcfix4).
+
+**REVIEW ROUND 2 CLOSED (2026-08-21): all six findings answered.**
+V1 durable-frontier upToDate (immutable batches, last_flagged gone,
+subscriber-side status, will_end = scan_next>=end — 3 wire reds via
+the per-registry pump gate); V2 CAS cap reservation (32-thread
+barrier red showed 81,920>65,536); V3 conservative charge + logical
+gauge (red: 1.2 MiB retained under a 1 MiB bound); V4 subscription
+auth lease — live SSE terminates on transfer/suspension/revocation/
+expiry (t1 red: both paths survived a full transfer indefinitely;
+now 4 legs pin all causes; leg 14 renamed to workspace-at-event
+billing); V5 gate fail-closed (caught a parallel flake same day);
+V6 SSE_HUB_PROMOTE_AT knob (default 2 per review) + promote-at-1
+canary leg. SSE_LIVE_HUB now DEFAULT ON per pre-approval (kill
+switch = 0). Suite 494. Open from the round: the matched-shape
+promotion experiment (needs the knob rungs; probe currently uses a
+workstation path — rework with it), and the canary rollout with the
+named gauge checklist once a build ships.
