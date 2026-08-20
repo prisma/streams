@@ -150,6 +150,11 @@ pub struct AppState {
     /// OnceLock, so hub-on and hub-off HTTP tests coexist in one suite
     /// without order dependence (review note).
     pub sse_live_hub: std::sync::atomic::AtomicBool,
+    /// Hub retention accounting target + ceiling (AppState-resident
+    /// for the same reason as the flag: rigs need per-instance
+    /// control; OnceLock env knobs are process-global).
+    pub hub_total: &'static std::sync::atomic::AtomicU64,
+    pub hub_total_cap: std::sync::atomic::AtomicU64,
     /// RSS shed threshold (MB): writes are 429'd while resident memory
     /// exceeds this. Converts cgroup/instance OOM death (docker phase 1:
     /// RSS 218→1030 MB at full throughput, OOMKilled=true) into graceful
@@ -958,7 +963,8 @@ async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
         "sse_future_bytes": SSE_FUTURE_BYTES.load(std::sync::atomic::Ordering::Relaxed),
         "sse_live_hubs": state.live_hubs.hub_count(),
         "sse_hub_future_bytes": SSE_HUB_FUTURE_BYTES.load(std::sync::atomic::Ordering::Relaxed),
-        "sse_hub_total_bytes": crate::livehub::hub_total_bytes(),
+        "sse_hub_total_bytes": state.hub_total.load(std::sync::atomic::Ordering::Relaxed),
+        "sse_hub_ring_bytes_walked": state.live_hubs.ring_bytes_total(),
         "absorb_reserved_bytes_now": crate::history::absorb_reserved_bytes(),
         "shed_line_mb": state.admit_rss_shed_mb,
         "maintenance_backpressure": state.maint_latch.stats_json(),

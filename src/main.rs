@@ -1689,6 +1689,8 @@ async fn async_main() -> anyhow::Result<()> {
         sse_connections: std::sync::atomic::AtomicU64::new(0),
         live_hubs: crate::livehub::HubRegistry::new(),
         sse_live_hub: std::sync::atomic::AtomicBool::new(args.sse_live_hub == 1),
+        hub_total: crate::livehub::hub_total_global(),
+        hub_total_cap: std::sync::atomic::AtomicU64::new(crate::livehub::hub_total_cap()),
         admit_max_inflight_per_stream: args.admit_max_inflight_per_stream,
         stream_inflight: std::sync::Mutex::new(HashMap::new()),
         stream_shed: std::sync::atomic::AtomicU64::new(0),

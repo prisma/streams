@@ -50,10 +50,6 @@ pub(crate) fn hub_ring_bytes() -> usize {
 /// re-read durably).
 static HUB_TOTAL_BYTES: AtomicU64 = AtomicU64::new(0);
 
-pub(crate) fn hub_total_bytes() -> u64 {
-    HUB_TOTAL_BYTES.load(Ordering::Relaxed)
-}
-
 /// Per-batch read budget for the hub pump. Must sit WELL under the
 /// per-hub ring allowance or every live batch would trip the
 /// uncached posture (#273). Env SSE_HUB_BATCH_BYTES.
@@ -68,6 +64,12 @@ pub(crate) fn hub_batch_bytes() -> usize {
 }
 
 /// Process cap on prepared-event bytes. Env SSE_HUB_TOTAL_BYTES.
+/// Production accounting target (the process-global gauge behind
+/// /v1/debug/load). Rigs substitute a leaked private counter.
+pub(crate) fn hub_total_global() -> &'static AtomicU64 {
+    &HUB_TOTAL_BYTES
+}
+
 pub(crate) fn hub_total_cap() -> u64 {
     static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
     *V.get_or_init(|| {
@@ -157,6 +159,11 @@ pub(crate) struct LiveHub {
     /// production, a private counter in unit tests (the global is
     /// shared across the parallel test binary).
     total: &'static AtomicU64,
+    /// Global retention ceiling this hub was constructed under. A
+    /// field (not the env knob read inline) so rigs can shrink it
+    /// per-AppState: the OnceLock knob is first-read-wins across the
+    /// whole test binary and cannot vary per test.
+    cap: u64,
     /// None only in unit-test hubs that never touch a pump or
     /// subscriber path.
     pub(crate) ctx: Option<Arc<HubContext>>,
@@ -286,7 +293,7 @@ impl LiveHub {
             .total
             .load(Ordering::Relaxed)
             .saturating_add(batch.bytes as u64)
-            > hub_total_cap();
+            > self.cap;
         if over_hub || over_global {
             self.total.fetch_sub(r.bytes as u64, Ordering::Relaxed);
             r.bytes = 0;
@@ -408,6 +415,21 @@ impl HubRegistry {
         self.map.lock().unwrap().len()
     }
 
+    /// Prepared bytes retained across THIS registry's hubs, walked
+    /// from the rings themselves. In production this must track the
+    /// accounting counter (state.hub_total) exactly — debug/load
+    /// exports both so drift is visible as an accounting bug. Tests
+    /// assert against it per-rig (the process gauge is shared across
+    /// the parallel test binary).
+    pub(crate) fn ring_bytes_total(&self) -> u64 {
+        self.map
+            .lock()
+            .unwrap()
+            .values()
+            .map(|h| h.ring.lock().unwrap().bytes as u64)
+            .sum()
+    }
+
     /// Get or create the hub for a stream INCARNATION, spawning its
     /// pump on creation. Keyed by handle.hash (#271): a recreated
     /// stream's new identity can never resolve to a previous
@@ -460,7 +482,8 @@ impl HubRegistry {
                 notify: tokio::sync::Notify::new(),
                 subscribers: AtomicU64::new(1),
                 lifecycle: std::sync::atomic::AtomicU8::new(HUB_ACTIVE),
-                total: &HUB_TOTAL_BYTES,
+                total: state.hub_total,
+                cap: state.hub_total_cap.load(Ordering::Relaxed),
                 ctx: Some(ctx),
             });
             {
@@ -679,6 +702,7 @@ mod tests {
             subscribers: AtomicU64::new(1),
             lifecycle: std::sync::atomic::AtomicU8::new(HUB_ACTIVE),
             total: Box::leak(Box::new(AtomicU64::new(0))),
+            cap: hub_total_cap(),
             ctx: None,
         }
     }
@@ -776,6 +800,7 @@ mod tests_memory {
             subscribers: AtomicU64::new(1),
             lifecycle: std::sync::atomic::AtomicU8::new(HUB_ACTIVE),
             total: Box::leak(Box::new(AtomicU64::new(0))),
+            cap: hub_total_cap(),
             ctx: None,
         }
     }

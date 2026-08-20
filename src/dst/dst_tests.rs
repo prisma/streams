@@ -5812,6 +5812,11 @@ async fn http_rig_inner(
         sse_connections: std::sync::atomic::AtomicU64::new(0),
         live_hubs: crate::livehub::HubRegistry::new(),
         sse_live_hub: std::sync::atomic::AtomicBool::new(false),
+        // Per-rig accounting: the global gauge is shared across the
+        // parallel test binary and would let sibling rigs' retained
+        // bytes trip THIS rig's cap.
+        hub_total: Box::leak(Box::new(std::sync::atomic::AtomicU64::new(0))),
+        hub_total_cap: std::sync::atomic::AtomicU64::new(crate::livehub::hub_total_cap()),
         admit_max_inflight_per_stream: per_segment_slots,
         stream_inflight: std::sync::Mutex::new(std::collections::HashMap::new()),
         stream_shed: std::sync::atomic::AtomicU64::new(0),
@@ -30563,7 +30568,9 @@ async fn hub_oversized_event_delivered_via_uncached_catchup() {
         "oversized record must arrive via durable catch-up:\n{}",
         &acc[..acc.len().min(400)]
     );
-    let total = crate::livehub::hub_total_bytes();
+    // Per-rig accounting counter (the process-global gauge is shared
+    // across the parallel test binary and was a latent flake source).
+    let total = state.hub_total.load(std::sync::atomic::Ordering::Relaxed);
     assert!(
         total < 1024 * 1024,
         "the oversized range must not be retained (total={total})"
@@ -30829,5 +30836,77 @@ async fn hub_workspace_transfer_mid_subscription_bills_per_batch() {
     assert!(
         per_ws.get("ws_wxb").copied().unwrap_or(0) > 0,
         "post-transfer reads must bill to the NEW workspace (per-batch identity): {per_ws:?}"
+    );
+}
+
+/// Battery leg 12 (#275): GLOBAL RING EXHAUSTION over HTTP. When the
+/// process-wide hub retention cap is hit, later batches go UNCACHED
+/// (nothing retained, floor jumps) and parked subscribers still get
+/// every record via durable catch-up — the cap bounds MEMORY, never
+/// delivery. Cap and accounting are AppState-resident so this rig can
+/// shrink them without touching the process-global knobs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_global_cap_exhaustion_goes_uncached_but_delivers() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_live_hub
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    state
+        .hub_total_cap
+        .store(24 * 1024, std::sync::atomic::Ordering::Relaxed);
+    let mk = |name: &'static str| async move {
+        let (st, _, _) = preq(
+            addr,
+            "PUT",
+            &format!("/v1/streams/{name}"),
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            br#"{"format":{"kind":"json"}}"#,
+        )
+        .await;
+        assert_eq!(st, 201);
+        let mut promoter = hub_sse_connect(addr, name).await;
+        let (acc, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;
+        assert!(acc.contains("upToDate"), "{name} promoter parks:\n{acc}");
+        let sub = hub_sse_connect(addr, name).await;
+        (promoter, sub)
+    };
+    let (_pa, mut sa) = mk("capx-a").await;
+    let (_pb, mut sb) = mk("capx-b").await;
+    let big = "x".repeat(16 * 1024);
+
+    // Stream A's batch fits under the 24 KiB cap and is RETAINED.
+    hub_append(addr, "capx-a", &format!(r#"{{"a":1,"pad":"{big}"}}"#)).await;
+    let (acc, _) = hub_sse_collect(&mut sa, 10, |t| t.contains("\"a\":1")).await;
+    assert!(acc.contains("\"a\":1"), "A delivers:\n{acc}");
+    let retained_a = state.live_hubs.ring_bytes_total();
+    assert!(retained_a > 0, "A's batch must be retained (cap not hit)");
+    assert!(
+        retained_a <= 24 * 1024,
+        "retention within cap: {retained_a}"
+    );
+
+    // Stream B's batch would cross the cap: it goes uncached — and the
+    // parked subscriber STILL receives it (durable catch-up).
+    hub_append(addr, "capx-b", &format!(r#"{{"b":1,"pad":"{big}"}}"#)).await;
+    let (acc, _) = hub_sse_collect(&mut sb, 15, |t| t.contains("\"b\":1")).await;
+    assert!(
+        acc.contains("\"b\":1"),
+        "B must deliver despite going uncached:\n{acc}"
+    );
+    let after_b = state.live_hubs.ring_bytes_total();
+    assert!(
+        after_b <= 24 * 1024 && after_b == retained_a,
+        "B retained nothing (uncached): before={retained_a} after={after_b}"
+    );
+
+    // The posture is per batch, not a death spiral: B keeps
+    // delivering subsequent over-cap batches the same way.
+    hub_append(addr, "capx-b", &format!(r#"{{"b":2,"pad":"{big}"}}"#)).await;
+    let (acc, _) = hub_sse_collect(&mut sb, 15, |t| t.contains("\"b\":2")).await;
+    assert!(acc.contains("\"b\":2"), "B second uncached batch:\n{acc}");
+    assert!(
+        state.live_hubs.hub_count() >= 2,
+        "both hubs stay alive through cap pressure"
     );
 }
