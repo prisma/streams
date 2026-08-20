@@ -30910,3 +30910,80 @@ async fn hub_global_cap_exhaustion_goes_uncached_but_delivers() {
         "both hubs stay alive through cap pressure"
     );
 }
+
+/// Battery leg 6 (#275): CURSOR=NOW HONESTY over HTTP. A hub
+/// subscriber joining with ?cursor=now must see NOTHING from before
+/// its subscription — no replayed history, and a first control that
+/// acknowledges the position — then receive exactly the appends that
+/// land after it. (`offset` is a rejected legacy field on this
+/// surface — writing this leg with it produced a uniform 400 whose
+/// body vacuously passed a not-contains assert; the leg now demands
+/// a 200 + control frame explicitly. The durable.next exactness and
+/// the join/append race are pinned at unit level in the F3 tests.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_offset_now_delivers_only_post_subscribe_appends() {
+    use tokio::io::AsyncWriteExt;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_live_hub
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/nowx",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for i in 1..=3 {
+        hub_append(addr, "nowx", &format!(r#"{{"r":{i}}}"#)).await;
+    }
+    let sse_now = || async {
+        let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "GET /v1/streams/nowx/records:sse?cursor=now HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
+        );
+        sck.write_all(req.as_bytes()).await.unwrap();
+        sck
+    };
+    let mut promoter = sse_now().await;
+    let (acc, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("event: control")).await;
+    assert!(
+        acc.contains(" 200 ") && acc.contains("event: control"),
+        "promoter must join at now with a control ack (a 400 body \
+         passes a bare not-contains check):\n{acc}"
+    );
+    assert!(
+        !acc.contains("\"r\":1") && !acc.contains("\"r\":3"),
+        "cursor=now must not replay history (promoter):\n{acc}"
+    );
+    let mut sub = sse_now().await;
+    let (acc0, _) = hub_sse_collect(&mut sub, 8, |t| t.contains("event: control")).await;
+    assert!(
+        acc0.contains(" 200 ") && acc0.contains("event: control"),
+        "first frame acknowledges the position:\n{acc0}"
+    );
+    assert!(
+        !acc0.contains("event: data"),
+        "no data may precede the now-position ack:\n{acc0}"
+    );
+    hub_append(addr, "nowx", r#"{"r":4}"#).await;
+    let (acc1, _) = hub_sse_collect(&mut sub, 10, |t| t.contains("\"r\":4")).await;
+    let all = format!("{acc0}{acc1}");
+    assert!(
+        all.contains("\"r\":4"),
+        "post-subscribe append arrives:\n{all}"
+    );
+    for i in 1..=3 {
+        assert!(
+            !all.contains(&format!("\"r\":{i}")),
+            "history record r={i} leaked through offset=now:\n{all}"
+        );
+    }
+    assert!(
+        state.live_hubs.hub_count() >= 1,
+        "second offset=now subscriber must promote the hub"
+    );
+}
