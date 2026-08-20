@@ -391,3 +391,45 @@ cost driver; the hub exists to remove exactly this. L2c2 next: same
 1,000 parked over 500 streams (~500 direct + ~500 hub after F8
 promotion; a pure-hub rung is unreachable without first-sub
 reconnect — promotion leaves sub #1 on its direct conn).
+
+## EDGE DOSSIER (2026-08-20): the platform edge is the L2+ blocker
+
+Consolidated black-box evidence, all reproducible against a wc-ladder
+deployment (cv-*.fra.prisma.build), server-side counters healthy and
+the identical binary flawless locally:
+
+1. Handshake rate limiting (per client): sequential TLS connects
+   15/15 OK; concurrent bursts 66-76% connect-timeout (33/50, 76/100,
+   127/200). Sustained grant ~2-4 establishments/s.
+2. Zombie 200s: under bursty dials the edge completes the CLIENT leg
+   (200 + SSE headers + catch-up bytes) while the ORIGIN leg dies;
+   the client parks on a silent socket forever. Gen-side "parked"
+   955 vs 60 real server conns (L2c1/L2c2).
+3. Streaming-conn reaping under load: with writers at 1,000 rps,
+   live SSE conns cap at ~12-22 (subsLive gauge; server sse_connections
+   agrees at ~60 incl. probes) and established conns die ~35-60 s
+   after their catch-up burst. The SAME service held 90/90 probes
+   (137 total conns) flowing when idle. Not per-client: workstation
+   probes on a different IP see the same behavior only under load.
+4. Selective starvation: while loaded, plain GET /records answers in
+   0.9 s and livez in 0.7 s, but a NEW SSE request on an empty stream
+   receives ZERO bytes (not even headers) for 40 s. Locally the same
+   request answers headers + control at +0.0 s and keep-alives at
+   15 s cadence.
+
+Implications: (a) the L2/L3 subscriber ladder cannot be certified
+through the public edge - the workload target (100k concurrent
+subscribers/cell) is unreachable THROUGH THIS EDGE regardless of
+server capacity; (b) this is product-impacting for any tenant holding
+more than a few dozen SSE subscriptions on a busy cell (durable-cursor
+resume makes it survivable but turns parked fleets into reconnect
+storms). Needs platform escalation and/or an in-VPC gen->server path
+(none exists in Compute today per harness inventory).
+
+Server-side facts banked along the way (all still valid): gen pacing
+fixed (apErr 0), teardown clean at every rung, 0% shed to ~500 real
+subs; the L2c1-vs-L2c2 shed split (7.2% vs 5.0%, RSS component -84%)
+was measured under ~equal LIVE conn counts (~60) with different
+CHURN mixes, so it primarily evidences churn/catch-up cost, not
+parked-subscriber cost - re-run behind a fixed edge before drawing
+promotion-policy conclusions.
