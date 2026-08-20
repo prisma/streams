@@ -30519,7 +30519,10 @@ async fn hub_slow_client_disconnected_while_healthy_delivers() {
     // The healthy subscriber drains everything (~3.2 MB — decisively
     // past any auto-tuned loopback buffering on the slow socket).
     let (hacc, _) = hub_sse_collect(&mut healthy, 60, |t| t.contains("\"n\":199")).await;
-    assert!(hacc.contains("\"n\":199"), "healthy subscriber must keep up");
+    assert!(
+        hacc.contains("\"n\":199"),
+        "healthy subscriber must keep up"
+    );
     // The slow one is cut by the 10 s send deadline: its subscriber
     // TASK returns, the SubGuard drops, and — as the hub's only
     // subscriber — the pump retires and the hub is removed. (The
@@ -30564,5 +30567,267 @@ async fn hub_oversized_event_delivered_via_uncached_catchup() {
     assert!(
         total < 1024 * 1024,
         "the oversized range must not be retained (total={total})"
+    );
+}
+
+/// Battery leg 14 (#275): WORKSPACE TRANSFER DURING DELIVERY. The
+/// billing owner of a project changes mid-subscription (workspace
+/// swap: policy_version bump, ownership/grant versions unchanged).
+/// Contract under test:
+///   1. the parked hub subscription SURVIVES the transfer and keeps
+///      delivering (transfers are billing-plane, not data-plane);
+///   2. read billing is captured PER BATCH at event time (#274) —
+///      pre-swap batches land under the old workspace, post-swap
+///      batches under the new one. A subscription-lifetime identity
+///      would put the whole stream under whichever workspace was
+///      current at subscribe time and silently misbill transfers;
+///   3. tokens minted for the old workspace stop authorizing new
+///      requests (exact workspace match), and a re-minted token
+///      works — re-issue on transfer is the platform contract.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_workspace_transfer_mid_subscription_bills_per_batch() {
+    let _xr = crate::billing::billing_clock_lock().read().await;
+    const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
+    const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
+    let now = crate::shard::now_ms() / 1000;
+    let svc = std::sync::Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        "wtx-1".to_string(),
+        crate::auth::JwksKey {
+            alg: jsonwebtoken::Algorithm::RS256,
+            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
+        },
+    );
+    svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let scopes = "streams.create streams.records.append streams.records.read \
+                  streams.metadata.read";
+    let pid = crate::tenant::ProjectId::new("proj-wtx").unwrap();
+    let policy_in = |ws: &str, ppv: u64| crate::project_policy::ProjectPolicy {
+        project_id: pid.clone(),
+        workspace_id: crate::tenant::WorkspaceId::new(ws).unwrap(),
+        cell_id: std::sync::Arc::from("test-cell"),
+        project_policy_version: ppv,
+        ownership_version: 1,
+        status: crate::project_policy::ProjectStatus::Active,
+        quotas: crate::project_policy::ProjectQuotas::default(),
+    };
+    let mut projects = std::collections::HashMap::new();
+    projects.insert(pid.clone(), policy_in("ws_wxa", 1));
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let mut credentials = std::collections::HashMap::new();
+    credentials.insert(
+        std::sync::Arc::from("c_wx"),
+        crate::project_policy::CredentialGrant {
+            credential_id: std::sync::Arc::from("c_wx"),
+            project_id: pid.clone(),
+            grant_version: 1,
+            status: crate::project_policy::CredentialStatus::Active,
+            scopes: crate::tenant::ScopeSet::parse(scopes).0,
+            grant: crate::tenant::StreamGrant::All,
+            expires_at: None,
+        },
+    );
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let (state, addr) = http_rig_with_auth_service(mem(), svc.clone()).await;
+    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "")
+        .await
+        .unwrap();
+    let _ = state.rollup.set(std::sync::Arc::new(rollup));
+    state
+        .sse_live_hub
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+
+    #[derive(serde::Serialize)]
+    struct C<'a> {
+        iss: &'a str,
+        aud: &'a str,
+        sub: &'a str,
+        credential_id: &'a str,
+        project_id: &'a str,
+        workspace_id: &'a str,
+        cell_id: &'a str,
+        ownership_version: u64,
+        grant_version: u64,
+        scope: &'a str,
+        jti: &'a str,
+        iat: i64,
+        exp: i64,
+    }
+    let mint = |ws: &str, jti: &str| {
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        header.kid = Some("wtx-1".into());
+        jsonwebtoken::encode(
+            &header,
+            &C {
+                iss: "https://auth.prisma.io",
+                aud: "prisma-streams-data",
+                sub: "u",
+                credential_id: "c_wx",
+                project_id: "proj-wtx",
+                workspace_id: ws,
+                cell_id: "test-cell",
+                ownership_version: 1,
+                grant_version: 1,
+                scope: scopes,
+                jti,
+                iat: now - 60,
+                exp: now + 600,
+            },
+            &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
+        )
+        .unwrap()
+    };
+    let ta = format!("Bearer {}", mint("ws_wxa", "ta"));
+    let tb = format!("Bearer {}", mint("ws_wxb", "tb"));
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let auth_a = ("authorization", ta.as_str());
+    let auth_b = ("authorization", tb.as_str());
+
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/wtx",
+        &[ekey, auth_a],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+
+    // Authenticated SSE connects: promoter (direct, F8) then the hub
+    // subscriber.
+    use tokio::io::AsyncWriteExt;
+    let sse = |bearer: String| async move {
+        let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "GET /v1/streams/wtx/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nauthorization: {bearer}\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
+        );
+        sck.write_all(req.as_bytes()).await.unwrap();
+        sck
+    };
+    let mut promoter = sse(ta.clone()).await;
+    let (acc, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;
+    assert!(acc.contains("upToDate"), "promoter parks direct:\n{acc}");
+    let mut sub = sse(ta.clone()).await;
+
+    // Batch 1 while the project bills to ws_wxa.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/wtx/records",
+        &[ekey, auth_a],
+        br#"{"r":1}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let (acc, _) = hub_sse_collect(&mut sub, 10, |t| t.contains("\"r\":1")).await;
+    assert!(
+        acc.contains("\"r\":1"),
+        "pre-transfer batch arrives:\n{acc}"
+    );
+    assert!(state.live_hubs.hub_count() >= 1, "hub path must be engaged");
+
+    // WORKSPACE TRANSFER: same project, new billing owner, policy
+    // version bump; ownership and grants untouched.
+    let mut projects = std::collections::HashMap::new();
+    projects.insert(pid.clone(), policy_in("ws_wxb", 2));
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects,
+        fetched_at_unix: now + 1,
+        feed_version: 2,
+    })
+    .unwrap();
+
+    // The old-workspace token stops authorizing NEW requests (exact
+    // workspace match) ...
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/wtx/records",
+        &[ekey, auth_a],
+        br#"{"r":88}"#,
+    )
+    .await;
+    // verify_customer errors are authentication-class: 401, like the
+    // other stale-credential shapes on this surface.
+    assert_eq!(st, 401, "stale-workspace token must be refused (got {st})");
+    // ... the re-minted token works, and the ESTABLISHED subscription
+    // keeps delivering across the transfer.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/wtx/records",
+        &[ekey, auth_b],
+        br#"{"r":2}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let (acc, _) = hub_sse_collect(&mut sub, 10, |t| t.contains("\"r\":2")).await;
+    assert!(
+        acc.contains("\"r\":2"),
+        "subscription must survive the transfer and deliver:\n{acc}"
+    );
+
+    // Attribution: seal + drain + roll up, then both workspaces must
+    // hold read usage for THIS project — the batch-time capture.
+    state.billing_reads.seal_if_aged(0);
+    for _ in 0..100 {
+        if crate::billing::drain_once(&state).await.expect("drain") == 0 {
+            break;
+        }
+    }
+    for _ in 0..50 {
+        if crate::billing::rollup_step(&state).await.expect("rollup") == 0 {
+            break;
+        }
+    }
+    let (y, m) = crate::billing::utc_year_month(crate::billing::billing_now_ms());
+    let month = crate::billing::month_str(y, m);
+    let rollup = state.rollup.get().unwrap();
+    let mut per_ws: std::collections::HashMap<String, u64> = Default::default();
+    let mut iter = rollup
+        .db
+        .scan_prefix(format!("project/{month}/").as_bytes(), ..)
+        .await
+        .unwrap();
+    while let Some(kv) = iter.next().await.unwrap() {
+        let k = String::from_utf8_lossy(&kv.key).to_string();
+        if !k.ends_with("/proj-wtx") {
+            continue;
+        }
+        let row: crate::rollup::AggRow = serde_json::from_slice(&kv.value).unwrap();
+        let ws = k.split('/').nth(2).unwrap_or("?").to_string();
+        per_ws.insert(ws, row.read_records);
+    }
+    assert!(
+        per_ws.get("ws_wxa").copied().unwrap_or(0) > 0,
+        "pre-transfer reads must bill to the OLD workspace: {per_ws:?}"
+    );
+    assert!(
+        per_ws.get("ws_wxb").copied().unwrap_or(0) > 0,
+        "post-transfer reads must bill to the NEW workspace (per-batch identity): {per_ws:?}"
     );
 }
