@@ -6,7 +6,7 @@
 |---|---|
 | W1 resident tenants | 10,000 projects on one cell |
 | W2 writes | 1,000 wps aggregate; 100 tenants active per 5s window, rotating over the 10k population |
-| W3 subscribers | 1,000 tenants with live subscribers, 1,000 subscribers each → **1,000,000 concurrent subscriptions** |
+| W3 subscribers | 1,000 tenants with live subscribers, 100 subscribers each → **100,000 concurrent subscriptions** (REVISED 2026-08-20 per Søren: 1M direct SSE connections on a 1-GiB host is not a realistic target — ~1 KB/conn all-in; 1M LOGICAL subscriptions requires the edge/mux tier, Phase 3 of the SSE investigation) |
 | W4 shed budget | < 0.1% of offered work refused |
 
 ## 1. Arithmetic against measured envelopes (before any field minute)
@@ -220,3 +220,30 @@ same commit path.
    only profile we've deployed).
 
 Everything else proceeds without input; P0 and P1 start immediately.
+
+
+## SSE execution-model program (2026-08-20, from Søren's investigation)
+
+Target revised: **100k concurrent subscribers** per certification (1M
+logical = Phase 3 edge/mux tier, out of cell scope). Root cause of the
+55–70 KB/sub: each subscriber is a dormant copy of the complete read
+pipeline (inlined read future sized for the largest suspension state,
+private StreamDesc clone, 64-slot channel, private 15 s timer), not a
+cursor on a shared pipeline.
+
+- **Phase 1 (slim the current path):** box the read futures out of the
+  parked task; Arc'd compact SseContext instead of per-sub StreamDesc
+  clones; channel 64→4 with disconnect-on-lag (durable cursor resume =
+  the correct slow-consumer policy); shared heartbeat ticker; instance
+  SSE budget (SSE_MAX_CONNECTIONS / SSE_MEMORY_BUDGET_BYTES → typed 503
+  subscription_capacity) so subscriber RSS can never push the WRITE
+  path over its shed line. Expected 8–15 KB/sub.
+- **Phase 2 (shared live hubs):** per-stream LiveHub — decrypt + format
+  ONCE into reference-counted prepared batches on the existing durable
+  tail ring; subscribers hold only a cursor + generation; gap-free
+  catch-up handoff (durable catch-up → drain hub backlog → live);
+  lag = disconnect, never private buffering; hubs exist only while
+  subscribed. Expected 2–4 KB/sub application state; 100k+ per
+  connection node measured as CGROUP slope, not Rust heap.
+- **Phase 3 (edge/mux, deferred):** connection tier owns client
+  sockets; cell sees O(origin tails). Required for 1M logical.

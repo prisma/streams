@@ -137,6 +137,13 @@ pub struct AppState {
     /// multi-second p50 and timeout churn; shedding holds goodput at
     /// capacity with bounded latency). 0 = off. Health/debug are exempt.
     pub admit_max_inflight: i64,
+    /// #267 SSE Phase 1: instance connection budget for live SSE
+    /// subscriptions. Subscriber memory and the write path share ONE
+    /// RSS shed line, so unbounded subscribers make UNRELATED appends
+    /// 429 — the budget refuses NEW subscriptions with a typed 503
+    /// instead. 0 = unlimited (tests/dev).
+    pub sse_max_connections: u64,
+    pub sse_connections: std::sync::atomic::AtomicU64,
     /// RSS shed threshold (MB): writes are 429'd while resident memory
     /// exceeds this. Converts cgroup/instance OOM death (docker phase 1:
     /// RSS 218→1030 MB at full throughput, OOMKilled=true) into graceful
@@ -938,6 +945,11 @@ async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
             .admit_shed_inflight
             .load(std::sync::atomic::Ordering::Relaxed),
         "admit_shed_rss": state.admit_shed_rss.load(std::sync::atomic::Ordering::Relaxed),
+        "sse_connections": state
+            .sse_connections
+            .load(std::sync::atomic::Ordering::Relaxed),
+        "sse_max_connections": state.sse_max_connections,
+        "sse_future_bytes": SSE_FUTURE_BYTES.load(std::sync::atomic::Ordering::Relaxed),
         "absorb_reserved_bytes_now": crate::history::absorb_reserved_bytes(),
         "shed_line_mb": state.admit_rss_shed_mb,
         "maintenance_backpressure": state.maint_latch.stats_json(),
@@ -6660,6 +6672,89 @@ fn sse_control_tok(next_tok: &str, cursor: Option<&str>, up_to_date: bool, close
     format!("event: control\ndata:{{{}}}\n\n", fields.join(","))
 }
 
+/// #267 SSE Phase 1: ONE process heartbeat clock. Every parked SSE
+/// task used to own a fresh 15-second Sleep per loop iteration — a
+/// timer-wheel entry and future state per subscriber. One ticker and a
+/// watch channel replace them all; the keep-alives synchronize into a
+/// burst every 15 s, which at the 100k target is ~2 MB of ": keep-
+/// alive" writes spread by the writer pool — accepted trade for
+/// removing N independent timers.
+pub(crate) fn sse_heartbeat() -> tokio::sync::watch::Receiver<u64> {
+    static HB: std::sync::OnceLock<tokio::sync::watch::Receiver<u64>> = std::sync::OnceLock::new();
+    HB.get_or_init(|| {
+        let (tx, rx) = tokio::sync::watch::channel(0u64);
+        tokio::spawn(async move {
+            let mut n = 0u64;
+            loop {
+                tokio::time::sleep(Duration::from_secs(15)).await;
+                n += 1;
+                if tx.send(n).is_err() {
+                    return;
+                }
+            }
+        });
+        rx
+    })
+    .clone()
+}
+
+/// #267: bounded-deadline SSE send. The queue is 4 slots and the
+/// correct slow-consumer policy on a durable, cursor-addressable
+/// stream is DISCONNECT + resume-from-cursor — never a private replay
+/// buffer. Returns false when the subscriber should be dropped
+/// (receiver gone or deadline elapsed with the queue still full).
+pub(crate) async fn sse_send(
+    tx: &tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
+    b: Bytes,
+) -> bool {
+    matches!(
+        tokio::time::timeout(Duration::from_secs(10), tx.send(Ok(b))).await,
+        Ok(Ok(()))
+    )
+}
+
+/// #267 diagnostic: byte size of the LAST spawned SSE task future —
+/// the direct measure of what boxing the reads bought. The parked
+/// future used to embed the whole read machinery; after Phase 1 this
+/// should be a few hundred bytes, not tens of KB.
+pub(crate) static SSE_FUTURE_BYTES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// #267: RAII connection slot against the instance SSE budget. Held by
+/// the response stream's map closure — dropping the body releases it.
+pub(crate) struct SseSlot(pub(crate) Arc<AppState>);
+impl Drop for SseSlot {
+    fn drop(&mut self) {
+        self.0
+            .sse_connections
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+    }
+}
+
+/// Acquire an SSE connection slot or produce the typed 503. The gate
+/// exists so subscriber memory exhausts SUBSCRIPTION capacity, not the
+/// shared RSS line that sheds unrelated appends.
+pub(crate) fn sse_acquire(state: &Arc<AppState>) -> Result<SseSlot, Box<Response>> {
+    let cur = state
+        .sse_connections
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
+        + 1;
+    if state.sse_max_connections > 0 && cur > state.sse_max_connections {
+        state
+            .sse_connections
+            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+        let mut r = err_resp(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "subscription_capacity",
+            "instance at live-subscription capacity; retry another instance or later",
+        );
+        r.headers_mut()
+            .insert("retry-after", axum::http::HeaderValue::from_static("5"));
+        return Err(Box::new(r));
+    }
+    Ok(SseSlot(state.clone()))
+}
+
 /// Which wire contract an SSE connection speaks. The drain/hop/wait
 /// machinery is identical; only the CONTROL frames differ — raw
 /// connections carry protocol offset tokens, product connections carry
@@ -6696,7 +6791,14 @@ pub(crate) fn sse_lineage_response(
     params: ReadParams,
     surface: SseSurface,
 ) -> Response {
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(64);
+    let slot = match sse_acquire(&state) {
+        Ok(s) => s,
+        Err(r) => return *r,
+    };
+    // #267: 4 slots + disconnect-on-lag, shared heartbeat — see
+    // sse_response.
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
+    let mut hb = sse_heartbeat();
     let sse_hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
     // One subscribe operation; delivered bytes meter per chunk (§5).
     crate::billing::meter_read(&state, &desc, 0, 0);
@@ -6740,7 +6842,9 @@ pub(crate) fn sse_lineage_response(
                 let seg_end = sg.sealed_next_offset.unwrap_or(end);
                 let mut sent_any = false;
                 if scan_from < seg_end {
-                    match read_records(
+                    // #267: boxed out of the parked future — see
+                    // sse_response.
+                    match Box::pin(read_records(
                         &state,
                         &desc,
                         &key,
@@ -6754,7 +6858,7 @@ pub(crate) fn sse_lineage_response(
                         // session-position machinery this streamer does
                         // not have; product_read rejects the combination.
                         crate::shard::Deliver::Durable,
-                    )
+                    ))
                     .await
                     {
                         Ok(out) => {
@@ -6771,17 +6875,8 @@ pub(crate) fn sse_lineage_response(
                             let n = out.recs.len();
                             let bill_id = crate::billing::identity_of(&state, &desc);
                             for (i, r) in out.recs.iter().enumerate() {
-                                let ev = sse_data_event(&desc, &r.payload);
-                                if tx.send(Ok(Bytes::from(ev))).await.is_err() {
-                                    return;
-                                }
-                                // §4.2: each emitted payload, pre-framing.
-                                crate::billing::meter_read_chunk(
-                                    &state.billing_reads,
-                                    &bill_id,
-                                    r.payload.len() as u64,
-                                    1,
-                                );
+                                // #267: one combined data+control Bytes.
+                                let mut ev = sse_data_event(&desc, &r.payload);
                                 let last_rec = i + 1 == n && out.completed;
                                 let (utd, cls) = if last_rec {
                                     (will_end, report_closed)
@@ -6807,9 +6902,17 @@ pub(crate) fn sse_lineage_response(
                                         cls,
                                     ),
                                 };
-                                if tx.send(Ok(Bytes::from(ctl))).await.is_err() {
+                                ev.push_str(&ctl);
+                                if !sse_send(&tx, Bytes::from(ev)).await {
                                     return;
                                 }
+                                // §4.2: each emitted payload, pre-framing.
+                                crate::billing::meter_read_chunk(
+                                    &state.billing_reads,
+                                    &bill_id,
+                                    r.payload.len() as u64,
+                                    1,
+                                );
                                 sent_any = true;
                             }
                             if let Some(last) = out.last {
@@ -6859,7 +6962,7 @@ pub(crate) fn sse_lineage_response(
                             report_closed,
                         ),
                     };
-                    if tx.send(Ok(Bytes::from(ctl))).await.is_err() {
+                    if !sse_send(&tx, Bytes::from(ctl)).await {
                         return;
                     }
                     if closed && at_end {
@@ -6880,8 +6983,10 @@ pub(crate) fn sse_lineage_response(
                 }
                 tokio::select! {
                     _ = notified => {}
-                    _ = tokio::time::sleep(Duration::from_secs(15)) => {
-                        if tx.send(Ok(Bytes::from(": keep-alive\n\n"))).await.is_err() {
+                    // #267: shared process clock, not a per-subscriber
+                    // Sleep.
+                    _ = hb.changed() => {
+                        if !sse_send(&tx, Bytes::from(": keep-alive\n\n")).await {
                             return;
                         }
                     }
@@ -6893,6 +6998,8 @@ pub(crate) fn sse_lineage_response(
     let stream = futures_util::StreamExt::map(
         tokio_stream::wrappers::ReceiverStream::new(rx),
         move |item| {
+            // Slot rides the body (#267).
+            let _hold = &slot;
             if let Ok(b) = &item {
                 sse_usage
                     .bytes_out
@@ -6936,8 +7043,15 @@ async fn sse_response(
     params: ReadParams,
     surface: SseSurface,
 ) -> Response {
+    let slot = match sse_acquire(&state) {
+        Ok(s) => s,
+        Err(r) => return *r,
+    };
     let sse_hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(64);
+    // #267: 4 slots, not 64 — a slow client keeps a cursor and a
+    // socket, not a private replay buffer (sse_send disconnects it).
+    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
+    let mut hb = sse_heartbeat();
     // One subscribe operation; delivered bytes meter per chunk (§5).
     crate::billing::meter_read(&state, &desc, 0, 0);
     let binary = {
@@ -6951,7 +7065,7 @@ async fn sse_response(
         .resolve_segment(key_filter.as_deref().unwrap_or(""))
         .seg_id;
 
-    tokio::spawn(async move {
+    let sse_task = async move {
         let mut pos = match start {
             StartPos::At(p) => p,
             StartPos::Now => handle.state.lock().unwrap().durable.next,
@@ -6965,26 +7079,35 @@ async fn sse_response(
             };
             let mut sent_any = false;
             if pos < end && !from_now || (from_now && !first && pos < end) {
-                let read = if desc.forked_from.is_some() {
-                    // Fork SSE catch-up: inherited records stitch
-                    // through the ancestor chain.
-                    read_stitched(&state, &desc, &key, pos, MAX_READ_BYTES).await
-                } else {
-                    read_records(
-                        &state,
-                        &desc,
-                        &key,
-                        &epoch,
-                        &handle,
-                        &engine,
-                        pos,
-                        key_filter.as_deref(),
-                        MAX_READ_BYTES,
-                        // SSE is durable-only (see sse_lineage_response).
-                        crate::shard::Deliver::Durable,
-                    )
-                    .await
-                };
+                // #267: the read machinery is BOXED out of this task's
+                // future. Inlined, the parked task's allocation stays
+                // sized for read_stitched/read_records' largest
+                // suspension state for the connection's lifetime; boxed,
+                // the parked future holds one pointer and the read
+                // allocation exists only while a delivery is active.
+                let read = Box::pin(async {
+                    if desc.forked_from.is_some() {
+                        // Fork SSE catch-up: inherited records stitch
+                        // through the ancestor chain.
+                        read_stitched(&state, &desc, &key, pos, MAX_READ_BYTES).await
+                    } else {
+                        read_records(
+                            &state,
+                            &desc,
+                            &key,
+                            &epoch,
+                            &handle,
+                            &engine,
+                            pos,
+                            key_filter.as_deref(),
+                            MAX_READ_BYTES,
+                            // SSE is durable-only (see sse_lineage_response).
+                            crate::shard::Deliver::Durable,
+                        )
+                        .await
+                    }
+                })
+                .await;
                 match read {
                     Ok(out) => {
                         // Pinned baseline: every data event pairs with
@@ -6999,17 +7122,11 @@ async fn sse_response(
                         let n = out.recs.len();
                         let bill_id = crate::billing::identity_of(&state, &desc);
                         for (i, r) in out.recs.iter().enumerate() {
-                            let ev = sse_data_event(&desc, &r.payload);
-                            if tx.send(Ok(Bytes::from(ev))).await.is_err() {
-                                return;
-                            }
-                            // §4.2: each emitted payload, pre-framing.
-                            crate::billing::meter_read_chunk(
-                                &state.billing_reads,
-                                &bill_id,
-                                r.payload.len() as u64,
-                                1,
-                            );
+                            // #267: data + its paired control ride ONE
+                            // Bytes — identical on the wire (SSE frames
+                            // are self-delimiting), half the queue
+                            // traffic.
+                            let mut ev = sse_data_event(&desc, &r.payload);
                             let last_rec = i + 1 == n && out.completed;
                             let (utd, cls) = if last_rec {
                                 (will_end, report_closed)
@@ -7032,9 +7149,17 @@ async fn sse_response(
                                     cls,
                                 ),
                             };
-                            if tx.send(Ok(Bytes::from(ctl))).await.is_err() {
+                            ev.push_str(&ctl);
+                            if !sse_send(&tx, Bytes::from(ev)).await {
                                 return;
                             }
+                            // §4.2: each emitted payload, pre-framing.
+                            crate::billing::meter_read_chunk(
+                                &state.billing_reads,
+                                &bill_id,
+                                r.payload.len() as u64,
+                                1,
+                            );
                             sent_any = true;
                         }
                         if let Some(last) = out.last {
@@ -7074,7 +7199,7 @@ async fn sse_response(
                         report_closed,
                     ),
                 };
-                if tx.send(Ok(Bytes::from(ctl))).await.is_err() {
+                if !sse_send(&tx, Bytes::from(ctl)).await {
                     return;
                 }
                 if closed && at_end {
@@ -7092,20 +7217,29 @@ async fn sse_response(
             }
             tokio::select! {
                 _ = notified => {}
-                _ = tokio::time::sleep(Duration::from_secs(15)) => {
+                // #267: shared process clock, not a per-subscriber Sleep.
+                _ = hb.changed() => {
                     // heartbeat comment keeps proxies happy
-                    if tx.send(Ok(Bytes::from(": keep-alive\n\n"))).await.is_err() {
+                    if !sse_send(&tx, Bytes::from(": keep-alive\n\n")).await {
                         return;
                     }
                 }
             }
         }
-    });
+    };
+    SSE_FUTURE_BYTES.store(
+        std::mem::size_of_val(&sse_task) as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    tokio::spawn(sse_task);
 
     let sse_usage = crate::usage::counters(&sse_hash);
     let stream = futures_util::StreamExt::map(
         tokio_stream::wrappers::ReceiverStream::new(rx),
         move |item| {
+            // Slot rides the body: dropping the response stream frees
+            // the instance SSE budget entry (#267).
+            let _hold = &slot;
             if let Ok(b) = &item {
                 sse_usage
                     .bytes_out

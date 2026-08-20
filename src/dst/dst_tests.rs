@@ -3215,6 +3215,27 @@ async fn wait_all_absorbed(engine: &Arc<crate::shard::ShardEngine>, hashes: &[[u
 }
 
 /// P0 (static audit): the v2 gather previously accumulated up to
+/// #267 lag-disconnect pin: sse_send must give up within its bounded
+/// deadline when the subscriber queue stays full — the slow-consumer
+/// policy on a durable, cursor-addressable stream is DISCONNECT and
+/// resume-from-cursor, never unbounded buffering. Paused time makes
+/// the 10 s deadline instant.
+#[tokio::test(start_paused = true)]
+async fn sse_send_disconnects_a_stalled_subscriber() {
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(4);
+    for _ in 0..4 {
+        assert!(crate::http::sse_send(&tx, bytes::Bytes::from_static(b"x")).await);
+    }
+    // Queue full, receiver stalled: the fifth send must time out.
+    assert!(
+        !crate::http::sse_send(&tx, bytes::Bytes::from_static(b"y")).await,
+        "a full queue with a stalled receiver must disconnect, not buffer"
+    );
+    // A draining receiver keeps the subscriber alive.
+    let _ = rx.recv().await;
+    assert!(crate::http::sse_send(&tx, bytes::Bytes::from_static(b"z")).await);
+}
+
 /// #266 adaptive-estimate pin: the reservation estimate seeds at the
 /// worst case (boot gathers cover restart-rediscovery bursts), decays
 /// to the floor under sustained sparse gathers, and jumps back to a
@@ -5787,6 +5808,8 @@ async fn http_rig_inner(
         admit_shed: std::sync::atomic::AtomicU64::new(0),
         admit_shed_inflight: std::sync::atomic::AtomicU64::new(0),
         admit_shed_rss: std::sync::atomic::AtomicU64::new(0),
+        sse_max_connections: 0,
+        sse_connections: std::sync::atomic::AtomicU64::new(0),
         admit_max_inflight_per_stream: per_segment_slots,
         stream_inflight: std::sync::Mutex::new(std::collections::HashMap::new()),
         stream_shed: std::sync::atomic::AtomicU64::new(0),

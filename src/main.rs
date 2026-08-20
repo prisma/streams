@@ -512,6 +512,14 @@ struct Args {
     #[arg(long, env = "ADMIT_RSS_SHED_MB", default_value_t = 600)]
     admit_rss_shed_mb: u64,
 
+    /// Instance cap on live SSE subscriptions (#267): new subscriptions
+    /// past the cap get a typed 503 subscription_capacity instead of
+    /// subscriber RSS pushing UNRELATED appends over the write shed
+    /// line. 0 = unlimited. Default = the pre-Phase-1 measured-safe
+    /// ceiling; raise after the idle-slope probe on the slimmed path.
+    #[arg(long, env = "SSE_MAX_CONNECTIONS", default_value_t = 10_000)]
+    sse_max_connections: u64,
+
     /// Per-stream inflight append cap (0 = off): one hot stream cannot
     /// occupy every admission slot of its shard owner (scoped 429).
     #[arg(long, env = "ADMIT_MAX_INFLIGHT_PER_STREAM", default_value_t = 64)]
@@ -1668,6 +1676,8 @@ async fn async_main() -> anyhow::Result<()> {
         admit_shed: std::sync::atomic::AtomicU64::new(0),
         admit_shed_inflight: std::sync::atomic::AtomicU64::new(0),
         admit_shed_rss: std::sync::atomic::AtomicU64::new(0),
+        sse_max_connections: args.sse_max_connections,
+        sse_connections: std::sync::atomic::AtomicU64::new(0),
         admit_max_inflight_per_stream: args.admit_max_inflight_per_stream,
         stream_inflight: std::sync::Mutex::new(HashMap::new()),
         stream_shed: std::sync::atomic::AtomicU64::new(0),
