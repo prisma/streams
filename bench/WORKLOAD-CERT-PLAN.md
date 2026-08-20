@@ -464,3 +464,15 @@ through the SAME function (the suite exercises the real connection
 path; previously only out-of-tree probes did). Projected: 10k parked
 subs ~ 430 MB -> the 1-GiB class holds ~12-13k direct or ~15k+
 hub-covered subscribers before the shed line, pre-#269 it was ~7k.
+
+**EDGE ROOT CAUSE SUPERSEDES THE DOSSIER FRAMING (2026-08-20 late):**
+the four dossier findings are ONE cause — the edge buffers streaming
+responses in ~8-16 KB increments (bench/edge-repro: /sse-once passes,
+/sse never; pad bisection 4/16/32/64/128 KB; origin accepted 115/115
+while clients saw 0). "Handshake rate limiting" was buffered headers;
+"zombies" were buffered-forever streams; "streaming reaping" was the
+edge reaping buffered-idle origin legs; "~60 survivors" were subs on
+actively-written streams that kept refilling the buffer. The edge
+honors X-Accel-Buffering: no — server now sends it on every SSE
+response (2fe76450, wire-asserted). L2/L3 UNBLOCKED pending rung
+validation on the workaround binary (wcfix4).
