@@ -3215,6 +3215,137 @@ async fn wait_all_absorbed(engine: &Arc<crate::shard::ShardEngine>, hashes: &[[u
 }
 
 /// P0 (static audit): the v2 gather previously accumulated up to
+/// #266 read-parallelism pin: a gather with concurrent per-stream
+/// frame reads settles exactly the same streams to exactly the same
+/// boundaries as a serial one — across a db REOPEN, so plan
+/// collection runs against cold (non-resident) handles, the shape the
+/// field lane actually sees. NO timing assertion: three rig
+/// iterations showed a mem-store cannot isolate per-stream read
+/// latency deterministically (96 tiny streams share one SST so one
+/// fetch feeds the lane; WAL replay refills the memtable on reopen;
+/// the block cache serves just-flushed blocks). The 8x overlap is a
+/// FIELD measurement — gather_last_read_ms on /v1/debug/load, L1d10
+/// vs L1d9 in bench/WORKLOAD-CERT-PLAN.md.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn gather_parallel_reads_preserve_outcomes_across_reopen() {
+    const N: usize = 96;
+    let key = skey();
+    let mk_hashes = || -> Vec<[u8; 16]> {
+        (0..N)
+            .map(|i| {
+                let mut h = [0u8; 16];
+                h[0] = 0xA9;
+                h[1] = (i / 256) as u8;
+                h[2] = (i % 256) as u8;
+                h
+            })
+            .collect()
+    };
+    let rig = |path: &'static str, seed: u64, cfg: crate::history::AbsorberConfig| {
+        let key = key.clone();
+        let hashes = mk_hashes();
+        async move {
+            let inner = mem();
+            let store = FaultStore::uniform(
+                inner,
+                seed,
+                FaultPlan {
+                    error_pct: 0,
+                    lost_response_pct: 0,
+                    latency_pct: 100,
+                    latency_ms: (20, 20),
+                },
+            );
+            let db = slatedb::Db::builder(path, store.clone() as Arc<dyn ObjectStore>)
+                .with_settings(slatedb::config::Settings {
+                    flush_interval: Some(std::time::Duration::from_millis(5)),
+                    manifest_poll_interval: std::time::Duration::from_millis(50),
+                    ..Default::default()
+                })
+                .build()
+                .await
+                .expect("open db");
+            let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+            let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+                .await
+                .expect("load maintenance");
+            let engine = crate::shard::ShardEngine::start(
+                path.to_string(),
+                Arc::new(db),
+                store.clone(),
+                crate::shard::ShardConfig::default(),
+                absorb_tx,
+                None,
+                __maint,
+            );
+            for h in &hashes {
+                append_sized(&engine, *h, &key, "", 2048).await;
+            }
+            // Fresh appends sit in the shard memtable and just-flushed
+            // L0 blocks sit in slatedb's block cache — served from
+            // either, a read costs no store op and both rigs time
+            // identically. Flush, then REOPEN the db (CAS-fences the
+            // seeder engine, the absorption-war precedent): the second
+            // engine starts with a cold cache, so the gather's frame
+            // reads genuinely traverse the latency-injected store.
+            engine.db.flush().await.unwrap();
+            let db2 = slatedb::Db::builder(path, store.clone() as Arc<dyn ObjectStore>)
+                .with_settings(slatedb::config::Settings {
+                    flush_interval: Some(std::time::Duration::from_millis(5)),
+                    manifest_poll_interval: std::time::Duration::from_millis(50),
+                    ..Default::default()
+                })
+                .build()
+                .await
+                .expect("reopen db");
+            let (absorb_tx2, _absorb_rx2) = crate::history::absorber_channel();
+            let __maint2 = crate::shard::load_or_rebuild_maintenance(&db2)
+                .await
+                .expect("reload maintenance");
+            let engine2 = crate::shard::ShardEngine::start(
+                path.to_string(),
+                Arc::new(db2),
+                store.clone(),
+                crate::shard::ShardConfig::default(),
+                absorb_tx2,
+                None,
+                __maint2,
+            );
+            let absorber = crate::history::Absorber::new(
+                store.clone(),
+                engine2.clone(),
+                Arc::new(crate::history::KeyCache::default()),
+                cfg,
+            );
+            let outcome = absorber.absorb_gather_v2(&hashes).await.expect("gather");
+            let mut advanced: Vec<([u8; 16], u64)> = outcome
+                .advanced
+                .iter()
+                .map(|(h, upto, _)| (*h, *upto))
+                .collect();
+            advanced.sort_unstable();
+            (advanced, engine2)
+        }
+    };
+    let serial_cfg = crate::history::AbsorberConfig {
+        gather_read_par: 1,
+        gather_pace: std::time::Duration::ZERO,
+        ..Default::default()
+    };
+    let par_cfg = crate::history::AbsorberConfig {
+        gather_read_par: 8,
+        gather_pace: std::time::Duration::ZERO,
+        ..Default::default()
+    };
+    let (adv_serial, _e1) = rig("dst-rpar-1", 7501, serial_cfg).await;
+    let (adv_par, _e2) = rig("dst-rpar-8", 7501, par_cfg).await;
+    assert_eq!(adv_par.len(), N, "parallel gather must settle every stream");
+    assert_eq!(
+        adv_par, adv_serial,
+        "read parallelism must not change WHAT is absorbed"
+    );
+}
+
 /// #266 pacing pin: with gather micro-pacing configured, a wide sparse
 /// gather (a) still settles exactly the same streams to exactly the
 /// same boundaries as an unpaced one, and (b) actually parks between
@@ -3290,13 +3421,17 @@ async fn gather_pacing_preserves_outcomes_and_opens_windows() {
         }
     };
 
+    // read_par 1: parks happen between WAVES, so serial reads keep
+    // the zero-window park count exactly equal to the read count.
     let paced_cfg = crate::history::AbsorberConfig {
         gather_pace_window: std::time::Duration::ZERO,
         gather_pace: std::time::Duration::from_millis(1),
+        gather_read_par: 1,
         ..Default::default()
     };
     let unpaced_cfg = crate::history::AbsorberConfig {
         gather_pace: std::time::Duration::ZERO,
+        gather_read_par: 1,
         ..Default::default()
     };
     let (adv_paced, t_paced, _e1) = rig("dst-pace-on", paced_cfg).await;

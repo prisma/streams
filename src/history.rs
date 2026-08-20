@@ -676,6 +676,14 @@ pub struct AbsorberConfig {
     /// disables; `gather_pace_window == 0` parks after every read.
     pub gather_pace_window: Duration,
     pub gather_pace: Duration,
+    /// Concurrent per-stream frame reads within one gather (#266).
+    /// The read phase is latency-bound (a store round trip per sparse
+    /// stream) and append shed scales with its WALL TIME, so waves of
+    /// concurrent reads shrink the exposure window directly. Transient
+    /// memory is bounded by read_par x the per-stream cap, within the
+    /// caller's existing budget reservation. 1 = serial (the pre-#266
+    /// behavior).
+    pub gather_read_par: usize,
 }
 
 impl Default for AbsorberConfig {
@@ -691,7 +699,11 @@ impl Default for AbsorberConfig {
             sweep_every: 12,
             gather_max_bytes: 32 * 1024 * 1024,
             gather_pace_window: Duration::from_millis(50),
-            gather_pace: Duration::from_millis(10),
+            // L1d8 falsified pacing (stretching the read phase amplifies
+            // the append-service deficit); disabled by default, knob kept
+            // for field experiments.
+            gather_pace: Duration::ZERO,
+            gather_read_par: 8,
         }
     }
 }
@@ -1316,15 +1328,22 @@ impl Absorber {
             Vec<([u8; 16], Vec<crate::postings::AbsRun>)>,
         );
         let mut warm_installs: Vec<WarmChunk> = Vec::new();
+        // #266 phase A: plan the reads serially — resident-map lookups
+        // and lock reads only. The per-stream frame reads are the
+        // latency-bound part of the gather (store round trips), and the
+        // L1 ladder showed append shed scales with read-phase WALL TIME
+        // (L1d8: stretching the phase via pacing amplified shed 10x),
+        // so the reads run in bounded-concurrency waves below while the
+        // WriteBatch build stays serial and deterministic in lane order.
+        struct ReadPlan {
+            hash: [u8; 16],
+            handle: Arc<crate::shard::StreamHandle>,
+            from: u64,
+            upto: u64,
+            route: RouteHash,
+        }
+        let mut plans: Vec<ReadPlan> = Vec::new();
         for hash in streams {
-            // Aggregate budget: the batch is held in memory until the one
-            // flush below, so its size — not the lane's stream count — is
-            // what a 1 GiB instance actually feels. Anything deferred here
-            // stays in the pending set and gathers on a later tick.
-            if batch_bytes >= self.cfg.gather_max_bytes {
-                out.deferred_budget.push(*hash);
-                continue;
-            }
             let handle = self.shard.stream_handle(*hash).await?;
             let (from, upto, route) = {
                 let st = handle.state.lock().unwrap();
@@ -1334,7 +1353,6 @@ impl Absorber {
                     RouteHash(st.durable.route),
                 )
             };
-            let inc = SegmentHash(*hash);
             // Lane-scoped floor: trust only OUR lane's mark — a v1 mark
             // here may describe an advance the layout seal dropped, and
             // skipping past it would hide that range from the partition.
@@ -1350,116 +1368,168 @@ impl Absorber {
                 out.no_work.push(*hash);
                 continue;
             }
-            let per_stream = PER_STREAM_CAP.min(self.cfg.gather_max_bytes);
-            let chunk = read_frames_range(&self.shard, &handle, from, upto, per_stream).await?;
-            // #266: duty-cycle the read phase — see the
-            // gather_pace_window field doc. The check sits AFTER each
-            // read so one slow multi-roundtrip read still earns its
-            // park, and only real reads contend with append WAL writes
-            // (budget-deferred / nothing-pending streams never get
-            // here). The commit below is untouched — never stretch the
-            // durability-critical section.
+            plans.push(ReadPlan {
+                hash: *hash,
+                handle,
+                from,
+                upto,
+                route,
+            });
+        }
+        let read_par = self.cfg.gather_read_par.max(1);
+        let per_stream = PER_STREAM_CAP.min(self.cfg.gather_max_bytes);
+        let mut pi = 0usize;
+        while pi < plans.len() {
+            // Aggregate budget: the batch is held in memory until the one
+            // flush below, so its size — not the lane's stream count — is
+            // what a 1 GiB instance actually feels. Anything deferred here
+            // stays in the pending set and gathers on a later tick; the
+            // whole-remainder deferral also skips their reads.
+            if batch_bytes >= self.cfg.gather_max_bytes {
+                for p in &plans[pi..] {
+                    out.deferred_budget.push(p.hash);
+                }
+                break;
+            }
+            let wave_end = (pi + read_par).min(plans.len());
+            let wave = &plans[pi..wave_end];
+            pi = wave_end;
+            // Transient memory: at most read_par chunks in flight, each
+            // capped at per_stream — bounded by the same reservation the
+            // caller already holds (gather_max_bytes x build multiplier).
+            let shard = &self.shard;
+            let mut futs = Vec::with_capacity(wave.len());
+            for (k, p) in wave.iter().enumerate() {
+                futs.push(async move {
+                    (
+                        k,
+                        read_frames_range(shard, &p.handle, p.from, p.upto, per_stream).await,
+                    )
+                });
+            }
+            // The wave is already sized to read_par, so join_all IS the
+            // concurrency bound — no stream adapter needed.
+            let mut got = futures_util::future::join_all(futs).await;
+            got.sort_unstable_by_key(|(k, _)| *k);
+            // #266: optional duty-cycle between waves — see the
+            // gather_pace_window field doc. L1d8 falsified pacing as a
+            // shed fix (default now 0); the knob remains for field
+            // experiments. The commit below is untouched — never
+            // stretch the durability-critical section.
             if !self.cfg.gather_pace.is_zero() && last_park.elapsed() >= self.cfg.gather_pace_window
             {
                 tokio::time::sleep(self.cfg.gather_pace).await;
                 paced += self.cfg.gather_pace;
                 last_park = Instant::now();
             }
-            if chunk.frames.is_empty() {
-                out.no_work.push(*hash);
-                continue;
-            }
-            // This chunk's batch contribution (keyed frames store the
-            // value twice: record row + routing-key index row, whose key
-            // is 2 bytes longer than the record row's for the length
-            // prefix), plus the raw frame bytes for the tail's
-            // unabsorbed_bytes gauge.
-            let mut chunk_bytes = 0usize;
-            let mut chunk_raw = 0u64;
-            for raw in &chunk.frames {
-                if crate::crypto::decode_frame(raw).is_none() {
-                    anyhow::bail!("undecodable frame during v2 gather");
+            for (k, res) in got {
+                let p = &wave[k];
+                let hash = &p.hash;
+                let (from, upto, route) = (p.from, p.upto, p.route);
+                let inc = SegmentHash(p.hash);
+                let chunk = res?;
+                if chunk.frames.is_empty() {
+                    out.no_work.push(*hash);
+                    continue;
                 }
-                chunk_raw += raw.len() as u64;
-                // Canonical row + a conservative per-record postings
-                // allowance (~key 65 B amortized + a few varints). The
-                // full-frame keyed duplicate is GONE (ROUTING-V3 §3).
-                chunk_bytes += raw.len() + 41 + ENTRY_OVERHEAD + 24;
-            }
-            // A chunk that would blow the budget waits for a batch of its
-            // own — unless the batch is empty, in which case it proceeds
-            // alone (one oversized frame must still make progress; frame
-            // bodies can reach the 32 MiB API cap).
-            if batch_bytes > 0 && batch_bytes + chunk_bytes > self.cfg.gather_max_bytes {
-                out.deferred_budget.push(*hash);
-                continue;
-            }
-            batch_bytes += chunk_bytes;
-            #[cfg(test)]
-            if std::env::var("DST_DRAIN_TRACE").is_ok() {
-                let offs: Vec<u64> = chunk
-                    .frames
-                    .iter()
-                    .filter_map(|raw| crate::crypto::decode_frame(raw))
-                    .map(|f| f.header.offset)
-                    .collect();
-                eprintln!(
-                    "GATHER {} from={from} upto={upto} frames={offs:?}",
-                    crate::crypto::hex(&hash[..4]),
-                );
-            }
-            let mut last = from;
-            // Postings replace the covering index (ROUTING-V3 §3): the
-            // frame is stored once under its canonical offset; every
-            // routing key — INCLUDING the empty/default key — gets
-            // compact offset-run pages in the SAME WriteBatch, so the
-            // index adds no request, manifest, database, namespace or
-            // GC surface of its own.
-            let mut pages = crate::postings::PageBuilder::default();
-            for raw in &chunk.frames {
-                let Some(frame) = crate::crypto::decode_frame(raw) else {
-                    anyhow::bail!("undecodable frame during v2 gather");
-                };
-                let off = frame.header.offset;
-                wb.put(hist2_record_key(route, inc, off), raw.clone());
-                pages.note_frame(
-                    crate::postings::rk_hash(&frame.header.routing_key),
-                    off,
-                    raw.len() as u64,
-                );
-                last = off;
-            }
-            let (emitted, postings_bytes) = pages.finish();
-            POSTINGS_PAGES_WRITTEN
-                .fetch_add(emitted.len() as u64, std::sync::atomic::Ordering::Relaxed);
-            // Decode what we just encoded (cheap varints, and a free
-            // round-trip check) to hand the slice cache exactly the runs
-            // a reader would load — write-through warming (spec §7)
-            // makes first-read-after-absorb skip the index round trip.
-            let mut chunk_runs: std::collections::HashMap<[u8; 16], Vec<crate::postings::AbsRun>> =
-                std::collections::HashMap::new();
-            for (kh, bucket, first, value) in emitted {
-                match crate::postings::decode_page_abs(first, &value) {
-                    Some(abs) => {
-                        POSTINGS_RUNS_WRITTEN
-                            .fetch_add(abs.len() as u64, std::sync::atomic::Ordering::Relaxed);
-                        crate::postings::append_page_runs(chunk_runs.entry(kh.0).or_default(), abs);
+                // This chunk's batch contribution (keyed frames store the
+                // value twice: record row + routing-key index row, whose key
+                // is 2 bytes longer than the record row's for the length
+                // prefix), plus the raw frame bytes for the tail's
+                // unabsorbed_bytes gauge.
+                let mut chunk_bytes = 0usize;
+                let mut chunk_raw = 0u64;
+                for raw in &chunk.frames {
+                    if crate::crypto::decode_frame(raw).is_none() {
+                        anyhow::bail!("undecodable frame during v2 gather");
                     }
-                    None => anyhow::bail!("postings page failed self-decode during gather"),
+                    chunk_raw += raw.len() as u64;
+                    // Canonical row + a conservative per-record postings
+                    // allowance (~key 65 B amortized + a few varints). The
+                    // full-frame keyed duplicate is GONE (ROUTING-V3 §3).
+                    chunk_bytes += raw.len() + 41 + ENTRY_OVERHEAD + 24;
                 }
-                wb.put(
-                    crate::postings::postings_key(route, inc, &kh, bucket, first),
-                    value,
-                );
-            }
-            POSTINGS_BYTES_WRITTEN.fetch_add(postings_bytes, std::sync::atomic::Ordering::Relaxed);
-            CANONICAL_BYTES_WRITTEN.fetch_add(chunk_raw, std::sync::atomic::Ordering::Relaxed);
-            warm_installs.push((inc, from, last + 1, chunk_runs.into_iter().collect()));
-            out.advanced.push((*hash, last + 1, chunk_raw));
-            // Truncated by the per-stream cap: more durable data sits
-            // below `upto`. The caller must keep this stream pending.
-            if last + 1 < upto {
-                out.partial.push((*hash, upto - (last + 1)));
+                // A chunk that would blow the budget waits for a batch of its
+                // own — unless the batch is empty, in which case it proceeds
+                // alone (one oversized frame must still make progress; frame
+                // bodies can reach the 32 MiB API cap).
+                if batch_bytes > 0 && batch_bytes + chunk_bytes > self.cfg.gather_max_bytes {
+                    out.deferred_budget.push(*hash);
+                    continue;
+                }
+                batch_bytes += chunk_bytes;
+                #[cfg(test)]
+                if std::env::var("DST_DRAIN_TRACE").is_ok() {
+                    let offs: Vec<u64> = chunk
+                        .frames
+                        .iter()
+                        .filter_map(|raw| crate::crypto::decode_frame(raw))
+                        .map(|f| f.header.offset)
+                        .collect();
+                    eprintln!(
+                        "GATHER {} from={from} upto={upto} frames={offs:?}",
+                        crate::crypto::hex(&hash[..4]),
+                    );
+                }
+                let mut last = from;
+                // Postings replace the covering index (ROUTING-V3 §3): the
+                // frame is stored once under its canonical offset; every
+                // routing key — INCLUDING the empty/default key — gets
+                // compact offset-run pages in the SAME WriteBatch, so the
+                // index adds no request, manifest, database, namespace or
+                // GC surface of its own.
+                let mut pages = crate::postings::PageBuilder::default();
+                for raw in &chunk.frames {
+                    let Some(frame) = crate::crypto::decode_frame(raw) else {
+                        anyhow::bail!("undecodable frame during v2 gather");
+                    };
+                    let off = frame.header.offset;
+                    wb.put(hist2_record_key(route, inc, off), raw.clone());
+                    pages.note_frame(
+                        crate::postings::rk_hash(&frame.header.routing_key),
+                        off,
+                        raw.len() as u64,
+                    );
+                    last = off;
+                }
+                let (emitted, postings_bytes) = pages.finish();
+                POSTINGS_PAGES_WRITTEN
+                    .fetch_add(emitted.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                // Decode what we just encoded (cheap varints, and a free
+                // round-trip check) to hand the slice cache exactly the runs
+                // a reader would load — write-through warming (spec §7)
+                // makes first-read-after-absorb skip the index round trip.
+                let mut chunk_runs: std::collections::HashMap<
+                    [u8; 16],
+                    Vec<crate::postings::AbsRun>,
+                > = std::collections::HashMap::new();
+                for (kh, bucket, first, value) in emitted {
+                    match crate::postings::decode_page_abs(first, &value) {
+                        Some(abs) => {
+                            POSTINGS_RUNS_WRITTEN
+                                .fetch_add(abs.len() as u64, std::sync::atomic::Ordering::Relaxed);
+                            crate::postings::append_page_runs(
+                                chunk_runs.entry(kh.0).or_default(),
+                                abs,
+                            );
+                        }
+                        None => anyhow::bail!("postings page failed self-decode during gather"),
+                    }
+                    wb.put(
+                        crate::postings::postings_key(route, inc, &kh, bucket, first),
+                        value,
+                    );
+                }
+                POSTINGS_BYTES_WRITTEN
+                    .fetch_add(postings_bytes, std::sync::atomic::Ordering::Relaxed);
+                CANONICAL_BYTES_WRITTEN.fetch_add(chunk_raw, std::sync::atomic::Ordering::Relaxed);
+                warm_installs.push((inc, from, last + 1, chunk_runs.into_iter().collect()));
+                out.advanced.push((*hash, last + 1, chunk_raw));
+                // Truncated by the per-stream cap: more durable data sits
+                // below `upto`. The caller must keep this stream pending.
+                if last + 1 < upto {
+                    out.partial.push((*hash, upto - (last + 1)));
+                }
             }
         }
         GATHER_LAST_PACE_MS.store(

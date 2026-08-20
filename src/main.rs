@@ -351,8 +351,14 @@ struct Args {
     /// disables; window 0 parks after every read.
     #[arg(long, env = "ABSORB_PACE_WINDOW_MS", default_value_t = 50)]
     absorb_pace_window_ms: u64,
-    #[arg(long, env = "ABSORB_PACE_MS", default_value_t = 10)]
+    #[arg(long, env = "ABSORB_PACE_MS", default_value_t = 0)]
     absorb_pace_ms: u64,
+
+    /// Concurrent per-stream frame reads within one absorber gather.
+    /// Shrinks the read phase's wall time — the window during which
+    /// append service dips (#266). 1 = serial.
+    #[arg(long, env = "ABSORB_READ_PAR", default_value_t = 8)]
+    absorb_read_par: usize,
 
     /// Conformance/dev only: use this stream key (base64url, 32 bytes) for
     /// requests that carry no Stream-Encryption-Key header. The upstream
@@ -1485,6 +1491,7 @@ async fn async_main() -> anyhow::Result<()> {
         let absorb_concurrency = args.absorb_concurrency;
         let absorb_pace_window_ms = args.absorb_pace_window_ms;
         let absorb_pace_ms = args.absorb_pace_ms;
+        let absorb_read_par = args.absorb_read_par;
         let absorb_small_bytes = args.absorb_small_bytes;
         // Startup invariant (OOM disposition 2): the per-gather packing
         // cap must fit the process budget after the build multiplier,
@@ -1629,6 +1636,7 @@ async fn async_main() -> anyhow::Result<()> {
                             gather_max_bytes: absorb_gather_max_bytes,
                             gather_pace_window: Duration::from_millis(absorb_pace_window_ms),
                             gather_pace: Duration::from_millis(absorb_pace_ms),
+                            gather_read_par: absorb_read_par,
                             ..Default::default()
                         },
                         absorb_rx,
