@@ -1317,8 +1317,29 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
     let connect_conc: usize = std::env::var("BENCH_CERT_CONNECT_CONC")
         .ok()
         .and_then(|v| v.parse().ok())
-        .unwrap_or(48);
+        .unwrap_or(8);
     let connect_sem = Arc::new(tokio::sync::Semaphore::new(connect_conc));
+    // Establishment RATE gate on top of the concurrency permit: at 48
+    // concurrent dials the edge 200s the client leg while the origin
+    // leg dies instantly -> zombie subscribers (L2c1/L2c2: gen said
+    // ~955 parked, the server saw ~60 real conns). A ~3/s sequential
+    // ramp produced 90/90 real conns; pace dials, don't burst them.
+    let connect_pace = Duration::from_millis(
+        std::env::var("BENCH_CERT_CONNECT_PACE_MS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(250),
+    );
+    let pace_gate = Arc::new(tokio::sync::Mutex::new(tokio::time::Instant::now()));
+    async fn paced(gate: &tokio::sync::Mutex<tokio::time::Instant>, every: Duration) {
+        let at = {
+            let mut g = gate.lock().await;
+            let at = (*g).max(tokio::time::Instant::now());
+            *g = at + every;
+            at
+        };
+        tokio::time::sleep_until(at).await;
+    }
     // Parked SSE conns need fd headroom past a 1024 container default.
     #[cfg(target_os = "linux")]
     unsafe {
@@ -1394,6 +1415,9 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
     let delivered = Arc::new(AtomicU64::new(0));
     let reconnects = Arc::new(AtomicU64::new(0));
     let subs_open = Arc::new(AtomicU64::new(0));
+    // Live parked conns RIGHT NOW (dec on zombie/close): subsOpen only
+    // counts first-parks and can never expose edge zombies.
+    let subs_live = Arc::new(AtomicU64::new(0));
     let lag_hist = WideHist::new();
     let stop = Arc::new(AtomicU64::new(0));
     for j in 0..subs_n {
@@ -1403,14 +1427,16 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
         let name = stream_of(t);
         let auth = format!("Bearer {}", tokens[t]);
         let key = key.clone();
-        let (delivered, reconnects, subs_open, lag_hist, stop) = (
+        let (delivered, reconnects, subs_open, subs_live, lag_hist, stop) = (
             delivered.clone(),
             reconnects.clone(),
             subs_open.clone(),
+            subs_live.clone(),
             lag_hist.clone(),
             stop.clone(),
         );
         let connect_sem = connect_sem.clone();
+        let pace_gate = pace_gate.clone();
         let sub_err_connect = sub_err_connect.clone();
         let sub_err_status = sub_err_status.clone();
         tokio::spawn(async move {
@@ -1422,6 +1448,7 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                 // Hold a connect permit across tail-learn + SSE
                 // establishment; release once parked (or on failure).
                 let permit = connect_sem.clone().acquire_owned().await.unwrap();
+                paced(&pace_gate, connect_pace).await;
                 // (Re)learn the tail, then park.
                 let tail = match http
                     .get(format!("{base}/v1/streams/{name}/records"))
@@ -1474,8 +1501,15 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                 } else {
                     reconnects.fetch_add(1, Ordering::Relaxed);
                 }
+                subs_live.fetch_add(1, Ordering::Relaxed);
                 let mut r = r;
-                while let Ok(Some(b)) = r.chunk().await {
+                loop {
+                    let b = match tokio::time::timeout(Duration::from_secs(35), r.chunk()).await {
+                        Ok(Ok(Some(b))) => b,
+                        // Err = elapsed (zombie: no heartbeat in 2x the
+                        // 15 s cadence); Ok(Err)/Ok(None) = closed.
+                        _ => break,
+                    };
                     // Delivery lag: writers embed {"t":<unix_ms>}.
                     let text = String::from_utf8_lossy(&b);
                     for m in text.match_indices("\"t\":") {
@@ -1493,6 +1527,7 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                         break;
                     }
                 }
+                subs_live.fetch_sub(1, Ordering::Relaxed);
             }
         });
         if j % 200 == 199 {
@@ -1652,6 +1687,7 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
             "apWinP50Ms": pctl_ms(&ap, 0.5),
             "apWinP99Ms": pctl_ms(&ap, 0.99),
             "subsOpen": subs_open.load(Ordering::Relaxed),
+            "subsLive": subs_live.load(Ordering::Relaxed),
             "delivered": delivered.load(Ordering::Relaxed),
             "reconnects": reconnects.load(Ordering::Relaxed),
             "errConnect": err_connect.load(Ordering::Relaxed),
@@ -1688,6 +1724,7 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
         "delivered": delivered.load(Ordering::Relaxed),
         "reconnects": reconnects.load(Ordering::Relaxed),
         "subsOpen": subs_open.load(Ordering::Relaxed),
+        "subsLive": subs_live.load(Ordering::Relaxed),
         "errConnect": err_connect.load(Ordering::Relaxed),
         "errTimeout": err_timeout.load(Ordering::Relaxed),
         "errStatus": err_status.load(Ordering::Relaxed),
