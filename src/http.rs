@@ -6734,6 +6734,19 @@ pub(crate) static SSE_FUTURE_BYTES: std::sync::atomic::AtomicU64 =
 pub(crate) static SSE_HUB_FUTURE_BYTES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
 
+/// #274: attach an RAII value to a response BODY — dropped when the
+/// client disconnects or the stream ends. Used for the direct-path
+/// registration guard (the response was built by a path that cannot
+/// carry it).
+pub(crate) fn hold_on_body(resp: Response, hold: impl Send + 'static) -> Response {
+    let (parts, body) = resp.into_parts();
+    let stream = futures_util::StreamExt::map(body.into_data_stream(), move |c| {
+        let _keep = &hold;
+        c
+    });
+    Response::from_parts(parts, Body::from_stream(stream))
+}
+
 /// #267: RAII connection slot against the instance SSE budget. Held by
 /// the response stream's map closure — dropping the body releases it.
 pub(crate) struct SseSlot(pub(crate) Arc<AppState>);
@@ -7062,6 +7075,8 @@ pub(crate) fn sse_lineage_response(
                 }
                 tokio::select! {
                     _ = notified => {}
+                    // #274 F9: dropped body ends the task immediately.
+                    _ = tx.closed() => return,
                     // #267: shared process clock, not a per-subscriber
                     // Sleep.
                     _ = hb.changed() => {
@@ -7145,9 +7160,18 @@ async fn sse_hub_response(
     struct SubGuard(Arc<crate::livehub::LiveHub>);
     impl Drop for SubGuard {
         fn drop(&mut self) {
-            self.0
+            // #274 F9: the LAST subscriber out wakes the pump
+            // immediately (it parks on the handle notify) — no poll
+            // timer between mass disconnect and hub retirement.
+            if self
+                .0
                 .subscribers
-                .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
+                == 1
+                && let Some(ctx) = &self.0.ctx
+            {
+                ctx.handle.notify.notify_waiters();
+            }
         }
     }
     // #273 F5: the subscriber owns the hub Arc, a cursor and small
@@ -7301,6 +7325,9 @@ async fn sse_hub_response(
                     }
                     tokio::select! {
                         _ = notified => {}
+                        // #274 F9: a dropped body ends the task NOW,
+                        // not at the next record or heartbeat.
+                        _ = tx.closed() => return,
                         _ = hb.changed() => {
                             if !sse_send(&tx, Bytes::from(": keep-alive\n\n")).await {
                                 return;
@@ -7358,10 +7385,12 @@ async fn sse_response(
     };
     // #268: shared live fanout (SSE_LIVE_HUB=1) — see src/livehub.rs.
     // Product-surface, unforked, unfiltered connections ride a
-    // per-stream hub that decrypts and formats each record ONCE;
-    // everything else keeps the Phase-1 path.
+    // per-stream hub that decrypts and formats each record ONCE.
     // The product layer always materializes the DEFAULT routing key as
-    // Some("") — that IS the unfiltered product lane.
+    // Some("") — that IS the unfiltered product lane. #274 F8: the
+    // FIRST subscriber stays on the direct path below (guard held on
+    // the response body); the second concurrent one promotes to a hub.
+    let mut direct_guard = None;
     if state
         .sse_live_hub
         .load(std::sync::atomic::Ordering::Relaxed)
@@ -7369,7 +7398,13 @@ async fn sse_response(
         && desc.forked_from.is_none()
         && params.key.as_deref().is_none_or(str::is_empty)
     {
-        return sse_hub_response(state, desc, key, epoch, engine, handle, start, slot).await;
+        match crate::livehub::join_direct_or_promote(&state, handle.hash) {
+            Some(g) => direct_guard = Some(g),
+            None => {
+                return sse_hub_response(state, desc, key, epoch, engine, handle, start, slot)
+                    .await;
+            }
+        }
     }
     let sse_hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
     // #267: 4 slots, not 64 — a slow client keeps a cursor and a
@@ -7541,6 +7576,8 @@ async fn sse_response(
             }
             tokio::select! {
                 _ = notified => {}
+                // #274 F9: dropped body ends the task immediately.
+                _ = tx.closed() => return,
                 // #267: shared process clock, not a per-subscriber Sleep.
                 _ = hb.changed() => {
                     // heartbeat comment keeps proxies happy
@@ -7580,7 +7617,11 @@ async fn sse_response(
     if binary {
         r = r.header("Stream-SSE-Data-Encoding", "base64");
     }
-    r.body(Body::from_stream(stream)).unwrap()
+    let resp = r.body(Body::from_stream(stream)).unwrap();
+    match direct_guard {
+        Some(g) => hold_on_body(resp, g),
+        None => resp,
+    }
 }
 
 // ---- per-key ordering read surface (PER-KEY-ORDERING.md §4) ----
@@ -7986,15 +8027,28 @@ async fn read_v3_lineage_inner(
             && rk.is_empty()
             && desc.forked_from.is_none()
         {
-            let slot = match sse_acquire(&state) {
-                Ok(s) => s,
-                Err(r) => return *r,
-            };
             let sg = &lineage[0];
             let identity = desc.dynamic_segment_identity(sg.seg_id);
             if let Some(engine) = state.engine_for_scaler(&desc.segment_route(sg)).await
                 && let Ok(handle) = engine.stream_handle(identity).await
             {
+                // #274 F8: the FIRST subscriber rides the direct path
+                // (no hub, no pump — the 100k x 1 shape must not pay
+                // for shared machinery it cannot share); the SECOND
+                // concurrent subscriber promotes the stream to a hub;
+                // the existing direct one stays direct until
+                // reconnect (one duplicate reader is negligible on a
+                // fanned-out stream).
+                if let Some(guard) = crate::livehub::join_direct_or_promote(&state, handle.hash) {
+                    let resp = sse_lineage_response(
+                        state, desc, key, epoch, lineage, pos, scan_from, rk, params, surface,
+                    );
+                    return hold_on_body(resp, guard);
+                }
+                let slot = match sse_acquire(&state) {
+                    Ok(s) => s,
+                    Err(r) => return *r,
+                };
                 state.keys.put(identity, key.clone(), epoch);
                 // #272: "now" is the DURABLE tail at request time —
                 // never the hub's processed head, which can lag it.

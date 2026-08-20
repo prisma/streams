@@ -29812,14 +29812,28 @@ async fn hub_sse_collect(
     (String::from_utf8_lossy(&acc).to_string(), false)
 }
 
+async fn hub_sse_connect(addr: std::net::SocketAddr, name: &str) -> tokio::net::TcpStream {
+    use tokio::io::AsyncWriteExt;
+    let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let req = format!(
+        "GET /v1/streams/{name}/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
+    );
+    sck.write_all(req.as_bytes()).await.unwrap();
+    sck
+}
+
+/// Boot a rig, create the stream, and return a HUB subscriber. Post
+/// #274/F8 the FIRST subscriber rides the direct path, so a PROMOTER
+/// connection is opened (kept alive via the returned socket) and the
+/// returned test subscriber is the SECOND — the one on the hub.
 async fn hub_rig_stream(
     name: &str,
 ) -> (
     Arc<crate::http::AppState>,
     std::net::SocketAddr,
     tokio::net::TcpStream,
+    tokio::net::TcpStream,
 ) {
-    use tokio::io::AsyncWriteExt;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     state
@@ -29834,12 +29848,11 @@ async fn hub_rig_stream(
     )
     .await;
     assert_eq!(st, 201);
-    let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let req = format!(
-        "GET /v1/streams/{name}/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
-    );
-    sck.write_all(req.as_bytes()).await.unwrap();
-    (state, addr, sck)
+    let mut promoter = hub_sse_connect(addr, name).await;
+    let (acc, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;
+    assert!(acc.contains("upToDate"), "promoter joins direct:\n{acc}");
+    let sck = hub_sse_connect(addr, name).await;
+    (state, addr, promoter, sck)
 }
 
 async fn hub_append(addr: std::net::SocketAddr, name: &str, body: &str) {
@@ -29860,7 +29873,7 @@ async fn hub_append(addr: std::net::SocketAddr, name: &str, body: &str) {
 /// hung up with neither.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn hub_seal_with_data_delivers_final_flags_then_eof() {
-    let (state, addr, mut sck) = hub_rig_stream("hubseal").await;
+    let (state, addr, _promoter, mut sck) = hub_rig_stream("hubseal").await;
     hub_append(addr, "hubseal", r#"{"n":1}"#).await;
     let (acc, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"n\":1")).await;
     assert!(acc.contains("\"n\":1"), "first record must arrive:\n{acc}");
@@ -29892,7 +29905,7 @@ async fn hub_seal_with_data_delivers_final_flags_then_eof() {
 /// F1 leg 2: empty seal — one final control (sealed + upToDate), EOF.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn hub_empty_seal_single_final_control() {
-    let (state, addr, mut sck) = hub_rig_stream("hubseal2").await;
+    let (state, addr, _promoter, mut sck) = hub_rig_stream("hubseal2").await;
     // Connect-at-tail status control arrives first.
     let (acc, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("upToDate")).await;
     assert!(acc.contains("\"upToDate\":true"), "tail status:\n{acc}");
@@ -29981,11 +29994,10 @@ async fn hub_catchup_conveys_up_to_date() {
     for n in 0..3 {
         hub_append(addr, "hubcu", &format!("{{\"n\":{n}}}")).await;
     }
-    let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let req = format!(
-        "GET /v1/streams/hubcu/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
-    );
-    sck.write_all(req.as_bytes()).await.unwrap();
+    let mut promoter = hub_sse_connect(addr, "hubcu").await;
+    let (pacc, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;
+    assert!(pacc.contains("upToDate"));
+    let mut sck = hub_sse_connect(addr, "hubcu").await;
     let (acc, eof) = hub_sse_collect(&mut sck, 12, |t| {
         t.contains("\"n\":2") && t.contains("\"upToDate\":true")
     })
@@ -30114,7 +30126,9 @@ async fn hub_recreate_delivers_new_incarnation() {
     .unwrap();
     let (acc, _) = hub_sse_collect(&mut sck1, 10, |t| t.contains("upToDate")).await;
     assert!(acc.contains("upToDate"), "sub1 status:\n{acc}");
-    assert!(state.live_hubs.hub_count() >= 1);
+    // Post-#274/F8 the first subscriber rides the DIRECT path — it
+    // pins the old incarnation via its direct registration, not a hub.
+    assert_eq!(state.live_hubs.hub_count(), 0);
     let (st, _, _) = preq(
         addr,
         "DELETE",
@@ -30135,15 +30149,13 @@ async fn hub_recreate_delivers_new_incarnation() {
     }
     assert!(created, "recreate");
     hub_append(addr, "hubre", r#"{"v":"new"}"#).await;
-    let mut sck2 = tokio::net::TcpStream::connect(addr).await.unwrap();
-    sck2.write_all(
-        format!(
-            "GET /v1/streams/hubre/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
-        )
-        .as_bytes(),
-    )
-    .await
-    .unwrap();
+    let mut promoter2 = hub_sse_connect(addr, "hubre").await;
+    let (pacc, _) = hub_sse_collect(&mut promoter2, 8, |t| t.contains("upToDate")).await;
+    assert!(
+        pacc.contains("upToDate"),
+        "new-incarnation promoter:\n{pacc}"
+    );
+    let mut sck2 = hub_sse_connect(addr, "hubre").await;
     let (acc, _) = hub_sse_collect(&mut sck2, 12, |t| t.contains("\"v\":\"new\"")).await;
     assert!(
         acc.contains("\"v\":\"new\""),
@@ -30225,15 +30237,10 @@ async fn hub_foreign_key_appends_advance_default_cursor() {
     )
     .await;
     assert_eq!(st, 201);
-    let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
-    sck.write_all(
-        format!(
-            "GET /v1/streams/hubmix/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
-        )
-        .as_bytes(),
-    )
-    .await
-    .unwrap();
+    let mut promoter = hub_sse_connect(addr, "hubmix").await;
+    let (pacc, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;
+    assert!(pacc.contains("upToDate"));
+    let mut sck = hub_sse_connect(addr, "hubmix").await;
     let (acc0, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("upToDate")).await;
     assert!(acc0.contains("upToDate"), "tail status:\n{acc0}");
     assert!(state.live_hubs.hub_count() >= 1, "hub engaged");
@@ -30332,4 +30339,118 @@ async fn keyed_tail_reads_serve_from_ring() {
         hits1 > hits0,
         "the default-lane read must be served from the tail ring (hits {hits0} -> {hits1})"
     );
+}
+
+// ---- #274 hub promotion + teardown (Søren review F8+F9) ------------
+
+/// F9 red: after a mass disconnect, subscriber tasks and hubs must be
+/// gone within a TIGHT deadline. Pre-fix the parked producer task
+/// noticed a dropped body only at the next record or the 15 s shared
+/// heartbeat, and the pump swept the zero count on a 5 s poll — the
+/// application state lingered 15-20 s.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_mass_disconnect_tears_down_within_deadline() {
+    use tokio::io::AsyncWriteExt;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_live_hub
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/hubmass",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let mut socks = Vec::new();
+    for _ in 0..20 {
+        let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
+        sck.write_all(
+            format!(
+                "GET /v1/streams/hubmass/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+        let (acc, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+        assert!(acc.contains("upToDate"));
+        socks.push(sck);
+    }
+    assert!(state.live_hubs.hub_count() >= 1);
+    drop(socks);
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
+    loop {
+        let conns = state
+            .sse_connections
+            .load(std::sync::atomic::Ordering::Relaxed);
+        let hubs = state.live_hubs.hub_count();
+        if conns == 0 && hubs == 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "teardown deadline: conns={conns} hubs={hubs} after 3s"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+}
+
+/// F8 red: one subscriber per stream must ride the DIRECT path — a
+/// hub + pump per single-subscriber stream is strictly more machinery
+/// than Phase 1 (the 100k x 1 shape). The hub is created by the
+/// SECOND concurrent subscriber; the first direct one stays direct
+/// until reconnect (one duplicate reader on a fanned-out stream is
+/// negligible).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_promotes_on_second_subscriber_only() {
+    use tokio::io::AsyncWriteExt;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_live_hub
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/hubpromo",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let connect = |addr| async move {
+        let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
+        sck.write_all(
+            format!(
+                "GET /v1/streams/hubpromo/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
+            )
+            .as_bytes(),
+        )
+        .await
+        .unwrap();
+        let (acc, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+        assert!(acc.contains("upToDate"));
+        sck
+    };
+    let mut s1 = connect(addr).await;
+    assert_eq!(
+        state.live_hubs.hub_count(),
+        0,
+        "a single subscriber must NOT create a hub (direct path)"
+    );
+    let mut s2 = connect(addr).await;
+    assert!(
+        state.live_hubs.hub_count() >= 1,
+        "the second subscriber promotes the stream to a hub"
+    );
+    // Both delivery paths serve the same append.
+    hub_append(addr, "hubpromo", r#"{"p":1}"#).await;
+    let (a1, _) = hub_sse_collect(&mut s1, 8, |t| t.contains("\"p\":1")).await;
+    let (a2, _) = hub_sse_collect(&mut s2, 8, |t| t.contains("\"p\":1")).await;
+    assert!(a1.contains("\"p\":1"), "direct subscriber:\n{a1}");
+    assert!(a2.contains("\"p\":1"), "hub subscriber:\n{a2}");
 }

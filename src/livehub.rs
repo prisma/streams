@@ -346,12 +346,61 @@ impl LiveHub {
 /// (last subscriber gone, closure, or fence).
 pub(crate) struct HubRegistry {
     map: Mutex<HashMap<[u8; 16], Arc<LiveHub>>>,
+    /// #274 F8: DIRECT (Phase-1 path) subscriber counts per stream
+    /// incarnation. The FIRST subscriber rides direct — a hub + pump
+    /// per single-subscriber stream is strictly more machinery than
+    /// Phase 1 (the 100k x 1 shape). The second concurrent subscriber
+    /// promotes the stream to a hub; the existing direct one stays
+    /// direct until reconnect (one duplicate reader on a fanned-out
+    /// stream is negligible).
+    direct: Mutex<HashMap<[u8; 16], u32>>,
+}
+
+/// RAII registration for a DIRECT (non-hub) subscriber. Held on the
+/// response body; dropping it un-registers the stream's direct count.
+pub(crate) struct DirectGuard {
+    state: Arc<AppState>,
+    id: [u8; 16],
+}
+
+impl Drop for DirectGuard {
+    fn drop(&mut self) {
+        let mut d = self.state.live_hubs.direct.lock().unwrap();
+        if let Some(n) = d.get_mut(&self.id) {
+            *n -= 1;
+            if *n == 0 {
+                d.remove(&self.id);
+            }
+        }
+    }
+}
+
+/// F8 promotion decision for one arriving subscriber: Some(guard)
+/// means ride the DIRECT path (this is the stream's first live
+/// subscriber and no hub exists); None means join/create the hub.
+pub(crate) fn join_direct_or_promote(state: &Arc<AppState>, id: [u8; 16]) -> Option<DirectGuard> {
+    let reg = &state.live_hubs;
+    if reg.map.lock().unwrap().contains_key(&id) {
+        return None;
+    }
+    let mut d = reg.direct.lock().unwrap();
+    match d.get(&id) {
+        None => {
+            d.insert(id, 1);
+            Some(DirectGuard {
+                state: state.clone(),
+                id,
+            })
+        }
+        Some(_) => None,
+    }
 }
 
 impl HubRegistry {
     pub(crate) fn new() -> Self {
         HubRegistry {
             map: Mutex::new(HashMap::new()),
+            direct: Mutex::new(HashMap::new()),
         }
     }
 
@@ -588,10 +637,17 @@ async fn hub_pump(state: Arc<AppState>, hub: Arc<LiveHub>) {
         if cur > pos {
             continue;
         }
-        // Idle poll doubles as the last-subscriber sweep.
+        // #274 F9: the last SubGuard drop notifies handle.notify, and
+        // `notified` was created BEFORE this re-check, so a drop
+        // landing after it still wakes the select — no lost-wakeup
+        // window, no per-pump poll timer. The long sleep is a pure
+        // belt-and-braces fallback.
+        if hub.subscribers.load(Ordering::SeqCst) == 0 {
+            continue;
+        }
         tokio::select! {
             _ = notified => {}
-            _ = tokio::time::sleep(std::time::Duration::from_secs(5)) => {}
+            _ = tokio::time::sleep(std::time::Duration::from_secs(60)) => {}
         }
     };
     // #270: closed and dead are DIFFERENT protocol states. A closed
