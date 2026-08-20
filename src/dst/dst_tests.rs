@@ -5817,6 +5817,7 @@ async fn http_rig_inner(
         // bytes trip THIS rig's cap.
         hub_total: Box::leak(Box::new(std::sync::atomic::AtomicU64::new(0))),
         hub_total_cap: std::sync::atomic::AtomicU64::new(crate::livehub::hub_total_cap()),
+        hub_promote_at: std::sync::atomic::AtomicU64::new(2),
         admit_max_inflight_per_stream: per_segment_slots,
         stream_inflight: std::sync::Mutex::new(std::collections::HashMap::new()),
         stream_shed: std::sync::atomic::AtomicU64::new(0),
@@ -31200,4 +31201,38 @@ async fn hub_delayed_reader_lands_on_the_current_scan_head() {
         all.contains(&live_cursor),
         "delayed reader must land on the current scan head {live_cursor}:\n{all}"
     );
+}
+
+/// Review V6: SSE_HUB_PROMOTE_AT=1 promotes on the FIRST subscriber
+/// (canary posture for the promote-on-first experiment); the reviewed
+/// default (2) keeps the F8 behavior pinned by the existing legs.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_promote_at_one_gives_the_first_subscriber_a_hub() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_live_hub
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    state
+        .hub_promote_at
+        .store(1, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/pfirst",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let mut sck = hub_sse_connect(addr, "pfirst").await;
+    let (acc, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    assert!(acc.contains("upToDate"), "first subscriber parks:\n{acc}");
+    assert!(
+        state.live_hubs.hub_count() >= 1,
+        "threshold 1: the FIRST subscriber must ride a hub"
+    );
+    hub_append(addr, "pfirst", r#"{"p":1}"#).await;
+    let (acc1, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"p\":1")).await;
+    assert!(acc1.contains("\"p\":1"), "hub delivers:\n{acc1}");
 }

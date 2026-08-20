@@ -155,6 +155,9 @@ pub struct AppState {
     /// control; OnceLock env knobs are process-global).
     pub hub_total: &'static std::sync::atomic::AtomicU64,
     pub hub_total_cap: std::sync::atomic::AtomicU64,
+    /// Nth concurrent subscriber that promotes a stream to a hub
+    /// (review V6; 2 = reviewed default, 1 = canary).
+    pub hub_promote_at: std::sync::atomic::AtomicU64,
     /// RSS shed threshold (MB): writes are 429'd while resident memory
     /// exceeds this. Converts cgroup/instance OOM death (docker phase 1:
     /// RSS 218→1030 MB at full throughput, OOMKilled=true) into graceful

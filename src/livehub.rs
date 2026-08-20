@@ -410,16 +410,24 @@ pub(crate) fn join_direct_or_promote(state: &Arc<AppState>, id: [u8; 16]) -> Opt
     if reg.map.lock().unwrap().contains_key(&id) {
         return None;
     }
+    // Review V6: the threshold is a knob. At the default (2) the
+    // first subscriber rides direct and the second promotes; at 1
+    // every subscriber promotes immediately (canary posture for the
+    // matched-shape promote-on-first experiment).
+    let threshold = state
+        .hub_promote_at
+        .load(std::sync::atomic::Ordering::Relaxed)
+        .max(1);
     let mut d = reg.direct.lock().unwrap();
-    match d.get(&id) {
-        None => {
-            d.insert(id, 1);
-            Some(DirectGuard {
-                state: state.clone(),
-                id,
-            })
-        }
-        Some(_) => None,
+    let current = d.get(&id).copied().unwrap_or(0) as u64;
+    if current + 1 < threshold {
+        d.insert(id, current as u32 + 1);
+        Some(DirectGuard {
+            state: state.clone(),
+            id,
+        })
+    } else {
+        None
     }
 }
 
