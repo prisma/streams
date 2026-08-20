@@ -1304,6 +1304,14 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
         .pool_idle_timeout(Duration::from_secs(30))
         .tcp_nodelay(true)
         .timeout(Duration::from_secs(30))
+        // The edge offers h2 via ALPN; reqwest then MULTIPLEXES the
+        // writers and every parked SSE stream onto a handful of TCP
+        // conns, and parked streams starve for connection window under
+        // write load (L2e/L2f: subsLive plateaued at the pace x
+        // watchdog-lifetime equilibrium while independent probe conns
+        // flowed fine). One h1 conn per subscription is the honest
+        // client shape for a subscriber fleet.
+        .http1_only()
         .build()?;
     let base = args.target.clone();
     let key = args.stream_key.clone();
