@@ -1304,6 +1304,42 @@ async fn internal_telemetry_append(
     append(state, sref, hdrs, Body::from(body), None, None, None).await
 }
 
+/// #269: the one h1 serve loop — production and every test rig serve
+/// through THIS function, so the suite exercises the real connection
+/// path (axum::serve's default hyper posture measured ~53 KB resident
+/// per parked conn; a bounded max_buf_size holds the same fleet at
+/// ~44 KB, floor now dominated by task/future/slab overhead).
+/// max_buf bounds per-READ chunk size, not request body size.
+pub async fn serve_h1(
+    listener: tokio::net::TcpListener,
+    app: axum::Router,
+    max_buf: usize,
+) -> std::io::Result<()> {
+    let svc = hyper_util::service::TowerToHyperService::new(app);
+    loop {
+        let (sock, _peer) = match listener.accept().await {
+            Ok(x) => x,
+            Err(e) => {
+                // Transient accept errors (EMFILE bursts, aborted
+                // handshakes) must not kill the acceptor.
+                tracing::warn!("accept: {e}");
+                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                continue;
+            }
+        };
+        let svc = svc.clone();
+        tokio::spawn(async move {
+            let _ = sock.set_nodelay(true);
+            let io = hyper_util::rt::TokioIo::new(sock);
+            let mut b = hyper::server::conn::http1::Builder::new();
+            b.max_buf_size(max_buf);
+            // Errors here are routine client behavior (resets,
+            // half-closed keep-alives), not server faults.
+            let _ = b.serve_connection(io, svc).await;
+        });
+    }
+}
+
 pub fn router(state: Arc<AppState>) -> Router {
     Router::new()
         .route("/health", get(health_axum))

@@ -452,3 +452,15 @@ arms, no hub-specific idle ratchet. Hub value = poll-CPU elimination
 + the field RSS-ratchet removal, not parked bytes. SSE_LIVE_HUB
 remains default-OFF per review instruction; the flag-default decision
 and the edge escalation are the two open calls. Suite 485.
+
+**#269 CLOSED (2026-08-20): manual h1 serve loop, bounded buffers.**
+axum::serve replaced by http::serve_h1 (hyper http1::Builder,
+max_buf_size = SSE_H1_MAX_BUF, default 64 KiB; caps per-READ chunk
+size, not body size). Measured (sse-1per, 1000 conns): direct
+78.2 -> 44.3 KB/sub (-43%), hub 75.9 -> 39.5 KB/sub (-48%);
+16 KiB cap buys only ~1.3 KB more, so 64 KiB stands - the floor is
+now task/future/slab, not hyper buffers. Every test rig serves
+through the SAME function (the suite exercises the real connection
+path; previously only out-of-tree probes did). Projected: 10k parked
+subs ~ 430 MB -> the 1-GiB class holds ~12-13k direct or ~15k+
+hub-covered subscribers before the shed line, pre-#269 it was ~7k.

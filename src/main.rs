@@ -1998,6 +1998,11 @@ async fn async_main() -> anyhow::Result<()> {
         .await
         .with_context(|| format!("bind {}", args.listen))?;
     tracing::info!("streams-slate listening on {}", args.listen);
-    axum::serve(listener, app).await?;
+    // #269: bounded h1 buffers — see http::serve_h1.
+    let max_buf: usize = std::env::var("SSE_H1_MAX_BUF")
+        .ok()
+        .and_then(|v| v.parse().ok())
+        .unwrap_or(64 * 1024);
+    http::serve_h1(listener, app, max_buf).await?;
     Ok(())
 }

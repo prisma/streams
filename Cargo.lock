@@ -2912,6 +2912,8 @@ dependencies = [
  "hdrhistogram",
  "hkdf",
  "hmac",
+ "hyper",
+ "hyper-util",
  "jsonwebtoken",
  "libc",
  "libmimalloc-sys",

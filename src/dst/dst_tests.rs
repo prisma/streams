@@ -5868,7 +5868,10 @@ async fn http_rig_inner(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     tokio::spawn(async move {
-        axum::serve(listener, app).await.ok();
+        // #269: rigs serve through the PRODUCTION h1 loop so the whole
+        // suite exercises it (axum::serve here would leave the real
+        // connection path tested only by out-of-tree probes).
+        crate::http::serve_h1(listener, app, 64 * 1024).await.ok();
     });
     (state, addr)
 }
