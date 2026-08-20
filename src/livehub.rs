@@ -42,6 +42,42 @@ pub(crate) fn hub_ring_bytes() -> usize {
     })
 }
 
+/// #273 F7: process-wide prepared-event bytes across ALL hubs. A
+/// per-stream cap alone lets 1,000 subscribed streams pin 1,000 ring
+/// allowances — the whole 1-GiB host. Publish charges, eviction and
+/// hub drop credit; past SSE_HUB_TOTAL_BYTES the publish path goes
+/// uncached (advance the head, retain nothing — parked subscribers
+/// re-read durably).
+static HUB_TOTAL_BYTES: AtomicU64 = AtomicU64::new(0);
+
+pub(crate) fn hub_total_bytes() -> u64 {
+    HUB_TOTAL_BYTES.load(Ordering::Relaxed)
+}
+
+/// Per-batch read budget for the hub pump. Must sit WELL under the
+/// per-hub ring allowance or every live batch would trip the
+/// uncached posture (#273). Env SSE_HUB_BATCH_BYTES.
+pub(crate) fn hub_batch_bytes() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("SSE_HUB_BATCH_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(256 * 1024)
+    })
+}
+
+/// Process cap on prepared-event bytes. Env SSE_HUB_TOTAL_BYTES.
+pub(crate) fn hub_total_cap() -> u64 {
+    static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *V.get_or_init(|| {
+        std::env::var("SSE_HUB_TOTAL_BYTES")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(64 * 1024 * 1024)
+    })
+}
+
 pub(crate) struct PreparedBatch {
     /// SCANNED range (#272): the keyed reader advances over ranges
     /// containing no matching records, and that consumed position is
@@ -93,6 +129,20 @@ pub(crate) const HUB_RETIRING: u8 = 1;
 pub(crate) const HUB_CLOSED: u8 = 2;
 pub(crate) const HUB_DEAD: u8 = 3;
 
+/// #273 F5: the ONE per-stream read context. Subscribers hold the
+/// hub Arc, a cursor and small connection state — never their own
+/// descriptor/key/engine/handle clones (a StreamDesc carries many
+/// String/Vec allocations; N subscribers used to carry N copies).
+pub(crate) struct HubContext {
+    pub(crate) desc: crate::registry::StreamDesc,
+    pub(crate) key: crate::crypto::StreamKey,
+    pub(crate) epoch: [u8; 16],
+    pub(crate) engine: Arc<ShardEngine>,
+    pub(crate) handle: Arc<crate::shard::StreamHandle>,
+    pub(crate) rk_hash: [u8; 16],
+    pub(crate) seg_id: u32,
+}
+
 pub(crate) struct LiveHub {
     /// Registry key: the stream INCARNATION (handle.hash — the segment
     /// identity), never the name-stable route. A recreated stream
@@ -103,11 +153,29 @@ pub(crate) struct LiveHub {
     pub(crate) notify: tokio::sync::Notify,
     pub(crate) subscribers: AtomicU64,
     lifecycle: std::sync::atomic::AtomicU8,
+    /// Process-total accounting target — the global gauge in
+    /// production, a private counter in unit tests (the global is
+    /// shared across the parallel test binary).
+    total: &'static AtomicU64,
+    /// None only in unit-test hubs that never touch a pump or
+    /// subscriber path.
+    pub(crate) ctx: Option<Arc<HubContext>>,
 }
 
 impl LiveHub {
     fn lifecycle(&self) -> u8 {
         self.lifecycle.load(Ordering::SeqCst)
+    }
+}
+
+impl Drop for LiveHub {
+    fn drop(&mut self) {
+        // #273 F7: the last reference releases whatever the ring still
+        // retains against the process cap.
+        let bytes = self.ring.lock().unwrap().bytes;
+        if bytes > 0 {
+            self.total.fetch_sub(bytes as u64, Ordering::Relaxed);
+        }
     }
 }
 
@@ -151,8 +219,14 @@ impl LiveHub {
         if from < r.floor {
             return HubRead::BelowFloor;
         }
+        // #273 F6: AT MOST ONE batch per call. The whole-suffix Vec
+        // gave every waking subscriber a private clone of the entire
+        // ring's metadata held across bounded-deadline sends; one
+        // batch bounds the private allocation by the per-batch cap,
+        // and the caller simply asks again from its new cursor.
         let mut out = Vec::new();
         let mut flagged: Option<(bool, bool)> = None;
+        let mut next = r.head;
         for (bi, b) in r.batches.iter().enumerate() {
             if b.scan_next <= from {
                 continue;
@@ -173,6 +247,13 @@ impl LiveHub {
                     out.push((ev.clone(), *plen));
                 }
             }
+            // The cursor lands after THIS batch's scanned range; only
+            // the ring-last batch jumps to the (possibly further)
+            // scan head.
+            next = if last_batch { r.head } else { b.scan_next };
+            if !out.is_empty() {
+                break;
+            }
         }
         if out.is_empty() {
             // `from` lies in scanned-no-match territory (foreign-key
@@ -180,7 +261,7 @@ impl LiveHub {
             // progress (#272).
             return HubRead::Progress(r.head);
         }
-        HubRead::Events(out, r.head, flagged)
+        HubRead::Events(out, next, flagged)
     }
 
     fn publish(&self, batch: PreparedBatch) {
@@ -194,8 +275,31 @@ impl LiveHub {
             batch.scan_first,
             r.head
         );
+        // #273 F7: a batch above the per-hub allowance, or one that
+        // would break the PROCESS cap, is never retained — the range
+        // goes UNCACHED: the head jumps past it, the floor follows,
+        // and parked subscribers re-read it durably (BelowFloor).
+        // Anything previously retained is credited and dropped with
+        // it (it sits behind the new floor anyway).
+        let over_hub = batch.bytes > hub_ring_bytes();
+        let over_global = self
+            .total
+            .load(Ordering::Relaxed)
+            .saturating_add(batch.bytes as u64)
+            > hub_total_cap();
+        if over_hub || over_global {
+            self.total.fetch_sub(r.bytes as u64, Ordering::Relaxed);
+            r.bytes = 0;
+            r.batches.clear();
+            r.head = r.head.max(batch.scan_next);
+            r.floor = r.head;
+            drop(r);
+            self.notify.notify_waiters();
+            return;
+        }
         r.head = r.head.max(batch.scan_next);
         r.bytes += batch.bytes;
+        self.total.fetch_add(batch.bytes as u64, Ordering::Relaxed);
         if r.batches.is_empty() {
             r.floor = batch.scan_first;
         }
@@ -204,6 +308,7 @@ impl LiveHub {
         while r.bytes > cap && r.batches.len() > 1 {
             if let Some(front) = r.batches.pop_front() {
                 r.bytes -= front.bytes;
+                self.total.fetch_sub(front.bytes as u64, Ordering::Relaxed);
                 r.floor = front.scan_next;
             }
         }
@@ -288,6 +393,15 @@ impl HubRegistry {
                 state.live_hubs.remove_if_same(id, &h);
                 continue;
             }
+            let ctx = Arc::new(HubContext {
+                desc: desc.clone(),
+                key: key.clone(),
+                epoch,
+                engine: engine.clone(),
+                handle: handle.clone(),
+                rk_hash: crate::postings::rk_hash("").0,
+                seg_id: desc.resolve_segment("").seg_id,
+            });
             let hub = Arc::new(LiveHub {
                 id,
                 ring: Mutex::new(HubRing {
@@ -297,6 +411,8 @@ impl HubRegistry {
                 notify: tokio::sync::Notify::new(),
                 subscribers: AtomicU64::new(1),
                 lifecycle: std::sync::atomic::AtomicU8::new(HUB_ACTIVE),
+                total: &HUB_TOTAL_BYTES,
+                ctx: Some(ctx),
             });
             {
                 let mut r = hub.ring.lock().unwrap();
@@ -306,12 +422,8 @@ impl HubRegistry {
             drop(map);
             let pump_hub = hub.clone();
             let pump_state = state.clone();
-            let desc = desc.clone();
-            let key = key.clone();
-            let engine = engine.clone();
-            let handle = handle.clone();
             tokio::spawn(async move {
-                hub_pump(pump_state, pump_hub, desc, key, epoch, engine, handle).await;
+                hub_pump(pump_state, pump_hub).await;
             });
             return hub;
         }
@@ -351,19 +463,12 @@ enum PumpExit {
 /// through the ordinary pipeline (ring-preferring), decrypt once,
 /// format once, publish shared bytes. Exits when the last subscriber
 /// leaves, on genuine closure, or on a read error (fence).
-async fn hub_pump(
-    state: Arc<AppState>,
-    hub: Arc<LiveHub>,
-    desc: crate::registry::StreamDesc,
-    key: crate::crypto::StreamKey,
-    epoch: [u8; 16],
-    engine: Arc<ShardEngine>,
-    handle: Arc<crate::shard::StreamHandle>,
-) {
+async fn hub_pump(state: Arc<AppState>, hub: Arc<LiveHub>) {
+    let ctx = hub.ctx.clone().expect("production hubs carry a context");
+    let (desc, key, epoch, engine, handle) =
+        (&ctx.desc, &ctx.key, ctx.epoch, &ctx.engine, &ctx.handle);
+    let (rk_hash, seg_id) = (ctx.rk_hash, ctx.seg_id);
     let mut pos = hub.snapshot_head();
-    let rk_hash = crate::postings::rk_hash("").0;
-    let seg_id = desc.resolve_segment("").seg_id;
-    let bill_id = crate::billing::identity_of(&state, &desc);
     let exit = loop {
         // Last-subscriber handshake (#271): claim RETIRING first, then
         // re-check — a join that incremented before the CAS keeps the
@@ -390,15 +495,18 @@ async fn hub_pump(
             (st.durable.next, st.durable.closed)
         };
         if pos < end {
+            // #273: per-batch budget well under the ring allowance —
+            // an 8 MiB read would trip the uncached posture on every
+            // live batch.
             let read = Box::pin(crate::http::read_records_for_hub(
                 &state,
-                &desc,
-                &key,
+                desc,
+                key,
                 &epoch,
-                &handle,
-                &engine,
+                handle,
+                engine,
                 pos,
-                crate::http::MAX_READ_BYTES_PUB,
+                hub_batch_bytes(),
             ))
             .await;
             match read {
@@ -412,6 +520,7 @@ async fn hub_pump(
                         let report_closed = closed
                             && will_end
                             && crate::http::genuine_closure(&state, &desc.sref(), true).await;
+                        let _ = ();
                         let n = out.recs.len();
                         let mut events = Vec::with_capacity(n);
                         let mut bytes = 0usize;
@@ -423,12 +532,12 @@ async fn hub_pump(
                             // trailing non-matching records (#272).
                             let ctl_at = if last_rec { scan_next } else { r.off + 1 };
                             let ev = crate::http::hub_event_at(
-                                &desc, &key, epoch, rk_hash, seg_id, r, ctl_at, false, false,
+                                desc, key, epoch, rk_hash, seg_id, r, ctl_at, false, false,
                             );
                             if last_rec {
                                 last_flagged = Bytes::from(crate::http::hub_event_at(
-                                    &desc,
-                                    &key,
+                                    desc,
+                                    key,
                                     epoch,
                                     rk_hash,
                                     seg_id,
@@ -441,10 +550,6 @@ async fn hub_pump(
                             let b = Bytes::from(ev);
                             bytes += b.len();
                             events.push((r.off, b, r.payload.len() as u32));
-                            // Delivered-bytes metering happens per
-                            // SUBSCRIBER at send time; the pump meters
-                            // nothing (decrypt/format is not delivery).
-                            let _ = &bill_id;
                         }
                         hub.publish(PreparedBatch {
                             scan_first: pos,
@@ -517,6 +622,8 @@ mod tests {
             notify: tokio::sync::Notify::new(),
             subscribers: AtomicU64::new(1),
             lifecycle: std::sync::atomic::AtomicU8::new(HUB_ACTIVE),
+            total: Box::leak(Box::new(AtomicU64::new(0))),
+            ctx: None,
         }
     }
 
@@ -594,5 +701,106 @@ mod tests {
         let h = hub(5);
         h.mark_closed();
         assert!(matches!(h.read_from(5), HubRead::AtHead(true)));
+    }
+}
+
+#[cfg(test)]
+mod tests_memory {
+    use super::*;
+
+    fn hub(head: u64) -> LiveHub {
+        LiveHub {
+            id: [8u8; 16],
+            ring: Mutex::new(HubRing {
+                head,
+                floor: head,
+                ..Default::default()
+            }),
+            notify: tokio::sync::Notify::new(),
+            subscribers: AtomicU64::new(1),
+            lifecycle: std::sync::atomic::AtomicU8::new(HUB_ACTIVE),
+            total: Box::leak(Box::new(AtomicU64::new(0))),
+            ctx: None,
+        }
+    }
+
+    fn batch(first: u64, n: u64, ev_len: usize) -> PreparedBatch {
+        let mut events = Vec::new();
+        for off in first..first + n {
+            events.push((off, Bytes::from(vec![b'e'; ev_len]), ev_len as u32));
+        }
+        PreparedBatch {
+            scan_first: first,
+            scan_next: first + n,
+            events,
+            last_flagged: Bytes::from_static(b"FLAGGED"),
+            flagged_flags: (true, false),
+            bytes: n as usize * ev_len,
+        }
+    }
+
+    /// F6 red: read_from must return AT MOST ONE batch per call — the
+    /// whole-suffix Vec gave every waking subscriber a private clone
+    /// of the entire ring's metadata, held across up-to-10s sends.
+    #[test]
+    fn read_from_returns_one_batch_per_call() {
+        let h = hub(0);
+        h.publish(batch(0, 4, 8));
+        h.publish(batch(4, 4, 8));
+        let HubRead::Events(evs, next, flagged) = h.read_from(0) else {
+            panic!("expected events");
+        };
+        assert_eq!(evs.len(), 4, "ONE batch per call, not the whole suffix");
+        assert_eq!(next, 4, "cursor advances to the batch's scan_next");
+        assert!(flagged.is_none(), "mid-ring batch carries no flags");
+        let HubRead::Events(evs, next, flagged) = h.read_from(next) else {
+            panic!("expected second batch");
+        };
+        assert_eq!(evs.len(), 4);
+        assert_eq!(next, 8, "ring-last batch advances to head");
+        assert_eq!(flagged, Some((true, false)), "ring-last carries flags");
+    }
+
+    /// F7 red: a batch larger than the per-hub allowance must NOT be
+    /// retained — the range goes uncached (floor == head jumps past
+    /// it) and parked subscribers re-read durably; today the ring
+    /// keeps any-size batches (the 8 MiB read can pin 8x the cap).
+    #[test]
+    fn oversized_batch_is_not_retained() {
+        let h = hub(0);
+        let cap = hub_ring_bytes();
+        h.publish(batch(0, 2, cap)); // 2x cap in one batch
+        let r = h.ring.lock().unwrap();
+        assert_eq!(r.bytes, 0, "oversized batch must not be retained");
+        assert!(r.batches.is_empty());
+        assert_eq!(
+            (r.floor, r.head),
+            (2, 2),
+            "range uncached: floor==head past it"
+        );
+        drop(r);
+        assert!(matches!(h.read_from(0), HubRead::BelowFloor));
+    }
+
+    /// F7: prepared-bytes accounting moves up on publish, down on
+    /// eviction, and to zero when the hub drops (asserted against the
+    /// hub's own counter — the process global is shared across the
+    /// parallel test binary).
+    #[test]
+    fn global_prepared_bytes_accounting() {
+        let h = hub(0);
+        let total = h.total;
+        h.publish(batch(0, 4, 64));
+        assert_eq!(total.load(Ordering::Relaxed), 4 * 64);
+        let cap = hub_ring_bytes();
+        let per = cap / 2;
+        h.publish(batch(4, 2, per)); // evicts the first batch
+        assert!(total.load(Ordering::Relaxed) <= (2 * per) as u64);
+        drop(h);
+        assert_eq!(
+            total.load(Ordering::Relaxed),
+            0,
+            "dropping the hub credits its retained bytes"
+        );
     }
 }

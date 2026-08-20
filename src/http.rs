@@ -957,6 +957,8 @@ async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
         "sse_max_connections": state.sse_max_connections,
         "sse_future_bytes": SSE_FUTURE_BYTES.load(std::sync::atomic::Ordering::Relaxed),
         "sse_live_hubs": state.live_hubs.hub_count(),
+        "sse_hub_future_bytes": SSE_HUB_FUTURE_BYTES.load(std::sync::atomic::Ordering::Relaxed),
+        "sse_hub_total_bytes": crate::livehub::hub_total_bytes(),
         "absorb_reserved_bytes_now": crate::history::absorb_reserved_bytes(),
         "shed_line_mb": state.admit_rss_shed_mb,
         "maintenance_backpressure": state.maint_latch.stats_json(),
@@ -6726,6 +6728,11 @@ pub(crate) async fn sse_send(
 /// should be a few hundred bytes, not tens of KB.
 pub(crate) static SSE_FUTURE_BYTES: std::sync::atomic::AtomicU64 =
     std::sync::atomic::AtomicU64::new(0);
+/// #273: size of the LAST spawned HUB subscriber task future — the
+/// direct measure of the cursor-only claim (the Phase-1 gauge measures
+/// only the direct path).
+pub(crate) static SSE_HUB_FUTURE_BYTES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
 
 /// #267: RAII connection slot against the instance SSE budget. Held by
 /// the response stream's map closure — dropping the body releases it.
@@ -6772,9 +6779,6 @@ pub(crate) enum SseSurface {
     Raw,
     Product,
 }
-
-/// #268: read budget re-exported for the hub pump.
-pub(crate) const MAX_READ_BYTES_PUB: usize = MAX_READ_BYTES;
 
 /// #268: the hub pump's read — the ordinary ring-preferring pipeline,
 /// product/durable, DEFAULT-key lane (Some("")): the product surface
@@ -7146,25 +7150,29 @@ async fn sse_hub_response(
                 .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
         }
     }
-    let rk_hash = crate::postings::rk_hash("").0;
-    let seg_id = desc.resolve_segment("").seg_id;
-    tokio::spawn(async move {
+    // #273 F5: the subscriber owns the hub Arc, a cursor and small
+    // connection state; descriptor/key/engine/handle live ONCE on the
+    // hub context. Drop this connection's own copies before the task
+    // captures anything.
+    drop((desc, key, engine));
+    let ctx = hub.ctx.clone().expect("production hubs carry a context");
+    let sse_task = async move {
         let _sub = SubGuard(hub.clone());
         let mut pos = match start {
             StartPos::At(p) => p,
             // #272: durable tail, not the hub's processed head.
             StartPos::Now => handle.state.lock().unwrap().durable.next,
         };
-        let bill_id = crate::billing::identity_of(&state, &desc);
+        drop(handle);
         let status_ctl = |at: u64, utd: bool, cls: bool| {
             sse_control_product(
                 &crate::product_cursor::KeyCursor {
-                    epoch,
-                    key_hash: rk_hash,
-                    seg_id,
+                    epoch: ctx.epoch,
+                    key_hash: ctx.rk_hash,
+                    seg_id: ctx.seg_id,
                     offset: at,
                 }
-                .encode(&desc.project_id, &key),
+                .encode(&ctx.desc.project_id, &ctx.key),
                 utd,
                 cls,
             )
@@ -7192,24 +7200,28 @@ async fn sse_hub_response(
                     while pos < h0 {
                         let out = Box::pin(read_records_for_hub(
                             &state,
-                            &desc,
-                            &key,
-                            &epoch,
-                            &handle,
-                            &engine,
+                            &ctx.desc,
+                            &ctx.key,
+                            &ctx.epoch,
+                            &ctx.handle,
+                            &ctx.engine,
                             pos,
                             MAX_READ_BYTES,
                         ))
                         .await;
                         match out {
                             Ok(out) => {
+                                // Billing identity resolves PER BATCH:
+                                // ownership transfers mid-subscription
+                                // must bill the new workspace (review).
+                                let bill_id = crate::billing::identity_of(&state, &ctx.desc);
                                 for r in out.recs.iter() {
                                     let ev = hub_event_at(
-                                        &desc,
-                                        &key,
-                                        epoch,
-                                        rk_hash,
-                                        seg_id,
+                                        &ctx.desc,
+                                        &ctx.key,
+                                        ctx.epoch,
+                                        ctx.rk_hash,
+                                        ctx.seg_id,
                                         r,
                                         r.off + 1,
                                         false,
@@ -7238,7 +7250,9 @@ async fn sse_hub_response(
                     // handoff happens at the AtHead recheck (#270/F4).
                     need_utd = true;
                 }
-                crate::livehub::HubRead::Events(evs, head, flagged) => {
+                crate::livehub::HubRead::Events(evs, next, flagged) => {
+                    // Per-batch billing identity (ownership can move).
+                    let bill_id = crate::billing::identity_of(&state, &ctx.desc);
                     for (b, plen) in evs {
                         if !sse_send(&tx, b).await {
                             return;
@@ -7250,7 +7264,7 @@ async fn sse_hub_response(
                             1,
                         );
                     }
-                    pos = head;
+                    pos = next;
                     match flagged {
                         Some((utd, cls)) => {
                             if utd {
@@ -7296,7 +7310,12 @@ async fn sse_hub_response(
                 }
             }
         }
-    });
+    };
+    SSE_HUB_FUTURE_BYTES.store(
+        std::mem::size_of_val(&sse_task) as u64,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    tokio::spawn(sse_task);
     let sse_usage = crate::usage::counters(&sse_hash);
     let stream = futures_util::StreamExt::map(
         tokio_stream::wrappers::ReceiverStream::new(rx),

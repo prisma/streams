@@ -1,3 +1,5 @@
+#![recursion_limit = "512"]
+
 mod audit;
 mod auth;
 mod auth_feed;
