@@ -360,3 +360,21 @@ errStatus/errOther + subErrConnect/subErrStatus, first-3 samples to
 stderr), RLIMIT_NOFILE raised to hard max on Linux. Edge ALPN offers
 h2 (future option: multiplexed subs if per-conn stream caps allow).
 Rerun pending as L2b-r2 on tag wcfix2.
+
+**L2b-r2 (2026-08-20, wcfix2 paced gen, hub on, 20 min): GEN FIX
+VALIDATED + first real server capacity finding.** apErr=0 (was 1.6M),
+apOk 1,173,963 / offered 1,223,800, subsOpen 2,193 (edge meters parks
+at ~2/s sustained; subErrConnect 195 total, plateaued after the first
+ramp burst; reconnects 0 - parked conns never die), delivered 56,830,
+teardown clean (hubs 0 post-stop). NEW FINDING: append shed 4.06% cum,
+fully server-attributed (admit_shed_inflight 40,605 + admit_shed_rss
+9,151). Dose-response: ~0 shed below ~500 parked subs; 1,700-3,700
+thr/window at 1,650+ subs; append p99 degrades 390 ms -> 1.0-1.5 s.
+At ~2.2 subs/stream, ~1,000 subs are DIRECT-path pollers (adaptive
+promotion keeps sub #1 direct): ~440 poll-reads/s of full pipeline
+cost; delivery lag p50 2.3 s / p99 4.4 s = the direct 2000-2500 ms
+poll cadence, not the hub notify path. RSS component = the 53 KB/conn
+hyper floor (#269). Next: L2c1/L2c2 discriminator - same 1,000 parked,
+1 sub/stream (pure direct) vs 2 subs/stream via WC_SUB_TENANTS=500
+(pure hub) - no server change; decides the promotion-policy question
+(promote-on-first vs task-per-stream cost) on data.
