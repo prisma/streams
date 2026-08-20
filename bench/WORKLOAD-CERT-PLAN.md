@@ -247,3 +247,25 @@ cursor on a shared pipeline.
   connection node measured as CGROUP slope, not Rust heap.
 - **Phase 3 (edge/mux, deferred):** connection tier owns client
   sockets; cell sees O(origin tails). Required for 1M logical.
+
+### Phase 1 measurement (2026-08-20, local idle-slope probe, N=2000)
+
+| shape | slope | note |
+|---|---|---|
+| parked `:sse`, pre-Phase-1 (P1 baseline) | 55–70 KB/sub | inlined read future + 64-slot queue + per-sub timer |
+| parked `:sse`, post-Phase-1 | 61.5 KB/conn | but see decomposition below |
+| **plain idle keep-alive conn (no SSE)** | **52.9 KB/conn** | hyper/axum per-connection floor — control probe |
+| **SSE-specific increment (Phase 1)** | **≈8.6 KB/sub** | IN the 8–15 KB target band |
+| spawned SSE task future (`sse_future_bytes`) | 3,560 B | was the read machinery's largest suspension state |
+
+The subscriber future was never the bulk: ~53 KB/conn sits in the
+HTTP stack below the handler (axum::serve default path — hyper h1
+conn state + tower service future + buffers; no h1 tuning surface in
+use at main.rs:1988). Consequences: (1) Phase 1 delivered its target;
+(2) Phase 2 LiveHub's value is DELIVERY amplification (decrypt/format
+once vs N times per record) and stays justified; (3) the 100k-per-
+node idle ambition is gated on the hyper floor (100k × 53 KB ≈ 5.3 GB)
+— either a manual hyper_util serve loop with tuned h1 buffers or the
+investigation's honest fallback of 4–8 connection nodes. RSS after
+mass disconnect returns partially (mimalloc idle retention, known).
+
