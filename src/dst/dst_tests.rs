@@ -3218,12 +3218,14 @@ async fn wait_all_absorbed(engine: &Arc<crate::shard::ShardEngine>, hashes: &[[u
 /// #266 pacing pin: with gather micro-pacing configured, a wide sparse
 /// gather (a) still settles exactly the same streams to exactly the
 /// same boundaries as an unpaced one, and (b) actually parks between
-/// frame reads — the duty cycle is real, not a dead knob. The parks are
-/// hard sleeps, so the elapsed lower bound is deterministic even on a
-/// loaded runner; no upper bound is asserted (that would flake). The
-/// FIELD effect (append shed under real SlateDB contention) is
-/// validated by the L1 certification ladder, not reproducible against
-/// an in-memory store.
+/// frame reads — the duty cycle is real, not a dead knob. A ZERO
+/// window parks after EVERY read (the documented maximum-pacing
+/// semantics), so the park count equals the read count exactly and
+/// the elapsed lower bound is deterministic even on a loaded runner;
+/// no upper bound is asserted (that would flake). The FIELD effect
+/// (append shed under real SlateDB contention) is validated by the L1
+/// certification ladder, not reproducible against an in-memory
+/// store.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
 async fn gather_pacing_preserves_outcomes_and_opens_windows() {
     const N: usize = 96;
@@ -3289,12 +3291,12 @@ async fn gather_pacing_preserves_outcomes_and_opens_windows() {
     };
 
     let paced_cfg = crate::history::AbsorberConfig {
-        gather_pace_every: 8,
-        gather_pace: std::time::Duration::from_millis(4),
+        gather_pace_window: std::time::Duration::ZERO,
+        gather_pace: std::time::Duration::from_millis(1),
         ..Default::default()
     };
     let unpaced_cfg = crate::history::AbsorberConfig {
-        gather_pace_every: 0,
+        gather_pace: std::time::Duration::ZERO,
         ..Default::default()
     };
     let (adv_paced, t_paced, _e1) = rig("dst-pace-on", paced_cfg).await;
@@ -3305,10 +3307,10 @@ async fn gather_pacing_preserves_outcomes_and_opens_windows() {
         adv_paced, adv_unpaced,
         "pacing must not change WHAT is absorbed, only when reads issue"
     );
-    // 96 reads / pace_every 8 => parks before reads 9,17,..,89 = 11 parks
-    // x 4 ms = 44 ms of guaranteed sleep. Assert with margin below it.
+    // Zero window parks after every one of the 96 reads: 96 x 1 ms of
+    // guaranteed sleep. Assert with margin below it.
     assert!(
-        t_paced >= std::time::Duration::from_millis(40),
+        t_paced >= std::time::Duration::from_millis(90),
         "paced gather finished in {t_paced:?} — the pace knob is dead"
     );
 }

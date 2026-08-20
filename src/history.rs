@@ -657,20 +657,24 @@ pub struct AbsorberConfig {
     /// Default matches the history DB's max_unflushed_bytes: one
     /// gather ≈ one memtable.
     pub gather_max_bytes: usize,
-    /// Duty-cycle the gather READ phase (#266): after this many frame
-    /// reads, park `gather_pace` before the next one. The reads land on
-    /// the SHARD db — the same SlateDB instance serving append WAL
-    /// writes — and a wide sparse lane issues up to V2_LANE_PER_TICK of
-    /// them back to back, seconds of continuous read pressure per call.
-    /// The L1 certification ladder showed append shed tracking absorb
-    /// gathers monotonically while the streams-side commit lane was
-    /// exonerated (DST wave gate) and neither more slatedb runtime
-    /// threads nor deferral removed it: the serialization is inside
-    /// SlateDB. Parking opens bounded windows for queued WAL writes to
-    /// drain; worst-case added read-phase time is
-    /// (lane/pace_every)·pace — ~160 ms per 1024-stream gather at the
-    /// defaults, noise for absorption throughput. 0 disables.
-    pub gather_pace_every: usize,
+    /// Duty-cycle the gather READ phase (#266): after any frame read,
+    /// if at least `gather_pace_window` has elapsed since the last
+    /// park, park `gather_pace`. The reads land on the SHARD db — the
+    /// same SlateDB instance serving append WAL writes — and a gather
+    /// issues them back to back, seconds of continuous read pressure
+    /// per call. The L1 certification ladder showed append shed
+    /// tracking absorb gathers monotonically while the streams-side
+    /// commit lane was exonerated (DST wave gate) and neither more
+    /// slatedb runtime threads nor deferral removed it: the
+    /// serialization is inside SlateDB. TIME-based, not count-based
+    /// (L1d7): a drain gather fills its 32 MiB batch from ~8 big
+    /// chunks — few reads, 20+ s of read time, a count trigger never
+    /// fires — and at run-time chunk sizes a count of 32 paced ~0.8%
+    /// of the read phase, homeopathic. Defaults 50 ms window / 10 ms
+    /// park = ~17% worst-case read-phase overhead and an append window
+    /// at least every ~60 ms plus one read. `gather_pace == 0`
+    /// disables; `gather_pace_window == 0` parks after every read.
+    pub gather_pace_window: Duration,
     pub gather_pace: Duration,
 }
 
@@ -686,8 +690,8 @@ impl Default for AbsorberConfig {
             concurrency: 6,
             sweep_every: 12,
             gather_max_bytes: 32 * 1024 * 1024,
-            gather_pace_every: 32,
-            gather_pace: Duration::from_millis(5),
+            gather_pace_window: Duration::from_millis(50),
+            gather_pace: Duration::from_millis(10),
         }
     }
 }
@@ -1301,8 +1305,8 @@ impl Absorber {
         let mut wb = WriteBatch::new();
         let mut out = GatherOutcome::default();
         let mut batch_bytes: usize = 0;
-        let mut reads_done: usize = 0;
         let mut paced = Duration::ZERO;
+        let mut last_park = Instant::now();
         // (segment, chunk_from, chunk_to, per-key runs) for write-through
         // cache warming — installed only after the batch flush succeeds.
         type WarmChunk = (
@@ -1346,25 +1350,21 @@ impl Absorber {
                 out.no_work.push(*hash);
                 continue;
             }
+            let per_stream = PER_STREAM_CAP.min(self.cfg.gather_max_bytes);
+            let chunk = read_frames_range(&self.shard, &handle, from, upto, per_stream).await?;
             // #266: duty-cycle the read phase — see the
-            // gather_pace_every field doc. The check sits directly
-            // before the read, so between two hits reads_done advanced
-            // exactly once and each boundary parks exactly once. Streams
-            // that never reach a read (budget-deferred, nothing pending)
-            // don't count: only real reads contend with WAL writes. The
-            // commit below is untouched — never stretch the
+            // gather_pace_window field doc. The check sits AFTER each
+            // read so one slow multi-roundtrip read still earns its
+            // park, and only real reads contend with append WAL writes
+            // (budget-deferred / nothing-pending streams never get
+            // here). The commit below is untouched — never stretch the
             // durability-critical section.
-            if self.cfg.gather_pace_every > 0
-                && !self.cfg.gather_pace.is_zero()
-                && reads_done > 0
-                && reads_done.is_multiple_of(self.cfg.gather_pace_every)
+            if !self.cfg.gather_pace.is_zero() && last_park.elapsed() >= self.cfg.gather_pace_window
             {
                 tokio::time::sleep(self.cfg.gather_pace).await;
                 paced += self.cfg.gather_pace;
+                last_park = Instant::now();
             }
-            let per_stream = PER_STREAM_CAP.min(self.cfg.gather_max_bytes);
-            let chunk = read_frames_range(&self.shard, &handle, from, upto, per_stream).await?;
-            reads_done += 1;
             if chunk.frames.is_empty() {
                 out.no_work.push(*hash);
                 continue;

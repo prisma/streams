@@ -925,6 +925,13 @@ async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
         "rss_mb": crate::fleet::rss_bytes() as f64 / 1048576.0,
         "admit_shed": state.admit_shed.load(std::sync::atomic::Ordering::Relaxed),
         "maintenance_backpressure": state.maint_latch.stats_json(),
+        // #266 field attribution: the wc sampler reads THIS endpoint —
+        // the /v1/debug/absorb block alone left L1d7 blind on whether
+        // pacing fired at all.
+        "gather_last_read_ms": crate::history::GATHER_LAST_READ_MS
+            .load(std::sync::atomic::Ordering::Relaxed),
+        "gather_last_pace_ms": crate::history::GATHER_LAST_PACE_MS
+            .load(std::sync::atomic::Ordering::Relaxed),
         "maintenance_shards": maintenance_shards_json(&state),
         // R26-7: the ORDINARY per-stream limiter's refusals, by code —
         // so a throughput plateau is attributed to the right mechanism.
