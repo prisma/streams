@@ -30270,3 +30270,66 @@ async fn hub_foreign_key_appends_advance_default_cursor() {
     let (acc3, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"d\":2")).await;
     assert!(acc3.contains("\"d\":2"), "default@2 after foreign:\n{acc3}");
 }
+
+/// #272 part 2 red: the DEFAULT-lane read (key_filter Some("")) must
+/// serve from the durable-tail ring like unfiltered reads do — the
+/// pre-fix gate (`key_filter.is_none()`) sent every hub-pump read to
+/// the DB scan path, so the "ring-preferring" claim was false. The
+/// filtered ring read must also return the CONSUMED offset over
+/// trailing non-matching frames (scanned progress, F3).
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn keyed_tail_reads_serve_from_ring() {
+    let store = mem();
+    let db = slatedb::Db::builder("ringkeyed", store.clone() as Arc<dyn ObjectStore>)
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("maint");
+    let engine = crate::shard::ShardEngine::start(
+        "ringkeyed".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig {
+            tail_ring_bytes: 1024 * 1024,
+            ..Default::default()
+        },
+        absorb_tx,
+        None,
+        __maint,
+    );
+    let key = skey();
+    let h = [0xB1u8; 16];
+    append_sized(&engine, h, &key, "", 512).await; // default @0
+    append_sized(&engine, h, &key, "cust", 512).await; // foreign @1
+    append_sized(&engine, h, &key, "", 512).await; // default @2
+    append_sized(&engine, h, &key, "cust", 512).await; // foreign @3 (trailing)
+    let handle = engine.stream_handle(h).await.unwrap();
+    let hits0 = engine.ring_hits.load(std::sync::atomic::Ordering::Relaxed);
+    let out = crate::http::read_merged(
+        &key,
+        &h,
+        &handle,
+        &engine,
+        0,
+        Some(""),
+        8 * 1024 * 1024,
+        crate::shard::Deliver::Durable,
+    )
+    .await
+    .expect("read");
+    let offs: Vec<u64> = out.recs.iter().map(|r| r.off).collect();
+    assert_eq!(offs, vec![0, 2], "default lane records only");
+    assert_eq!(
+        out.last,
+        Some(3),
+        "consumed offset must cover the trailing foreign frame"
+    );
+    let hits1 = engine.ring_hits.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        hits1 > hits0,
+        "the default-lane read must be served from the tail ring (hits {hits0} -> {hits1})"
+    );
+}

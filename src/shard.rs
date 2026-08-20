@@ -4585,6 +4585,82 @@ impl ShardEngine {
         Some(out)
     }
 
+    /// #272: the ring read for FILTERED durable reads — the hub pump
+    /// (and any keyed tail chaser) reads one routing-key lane, and the
+    /// unfiltered-only gate sent every such read to the DB scan,
+    /// making the "ring-preferring" pump a fiction. Scans the covered
+    /// range once, decodes only frame HEADERS (the payloads stay
+    /// encrypted), keeps frames whose routing key matches, and — the
+    /// part a naive filter misses — returns the CONSUMED offset over
+    /// non-matching frames too, so keyed readers never rescan
+    /// match-free ranges (the same first-class scanned progress the DB
+    /// path reports). The byte budget counts only INCLUDED frames;
+    /// truncation reports the last scanned offset at the cut.
+    pub fn ring_read_keyed(
+        &self,
+        handle: &StreamHandle,
+        scan_from: u64,
+        scan_to: u64,
+        rk: &str,
+        max_bytes: usize,
+    ) -> Option<FrameReadResult> {
+        if !self.ring_enabled || scan_from >= scan_to {
+            return None;
+        }
+        let ring = handle.ring.lock().unwrap();
+        let (Some(floor), Some(ceil)) = (ring.floor(), ring.ceil()) else {
+            self.ring_misses.fetch_add(1, Ordering::Relaxed);
+            self.ring_miss_empty.fetch_add(1, Ordering::Relaxed);
+            return None;
+        };
+        if scan_from < floor || scan_to > ceil {
+            self.ring_misses.fetch_add(1, Ordering::Relaxed);
+            if scan_from < floor {
+                self.ring_miss_below_floor.fetch_add(1, Ordering::Relaxed);
+            }
+            if scan_to > ceil {
+                self.ring_miss_above_ceil.fetch_add(1, Ordering::Relaxed);
+            }
+            return None;
+        }
+        let mut out = FrameReadResult {
+            frames: Vec::new(),
+            last_offset: None,
+            end: scan_to,
+        };
+        let mut total = 0usize;
+        for b in ring.batches.iter() {
+            if b.next <= scan_from {
+                continue;
+            }
+            if b.first >= scan_to {
+                break;
+            }
+            for (off, f) in &b.frames {
+                if *off < scan_from {
+                    continue;
+                }
+                if *off >= scan_to {
+                    break;
+                }
+                let matched =
+                    crate::crypto::decode_frame(f).is_some_and(|fr| fr.header.routing_key == rk);
+                if matched {
+                    total += f.len();
+                    out.frames.push(f.clone());
+                }
+                // Consumed progress covers NON-matching frames too.
+                out.last_offset = Some(*off);
+                if matched && total >= max_bytes {
+                    self.ring_hits.fetch_add(1, Ordering::Relaxed);
+                    return Some(out);
+                }
+            }
+        }
+        self.ring_hits.fetch_add(1, Ordering::Relaxed);
+        Some(out)
+    }
+
     /// Test hook: fail the next commit group that contains an op for
     /// the given segment identity — the deterministic stand-in for a
     /// WriteBatch that reaches the store and dies. One-shot; the
@@ -5050,16 +5126,21 @@ pub async fn read_frames(
     if scan_from >= end {
         return Ok(out);
     }
-    // Durable-tail fast path (see read_frames_range). Only for unfiltered
-    // DURABLE reads: a key_filter changes which frames belong in the
-    // result, and the ring holds only durable frames — an Applied read
+    // Durable-tail fast path (see read_frames_range). DURABLE reads
+    // only: the ring holds only durable frames — an Applied read
     // chasing the just-applied suffix must scan (the suffix is
     // memtable-resident, so the scan costs no store round-trip).
-    if key_filter.is_none()
-        && deliver == Deliver::Durable
-        && let Some(hit) = engine.ring_read(handle, scan_from, end, max_bytes)
-    {
-        return Ok(hit);
+    // Filtered reads use the keyed variant (#272): frame headers are
+    // plaintext, so the lane filter runs on the ring copy and the
+    // consumed offset still covers non-matching frames.
+    if deliver == Deliver::Durable {
+        let hit = match key_filter {
+            None => engine.ring_read(handle, scan_from, end, max_bytes),
+            Some(rk) => engine.ring_read_keyed(handle, scan_from, end, rk, max_bytes),
+        };
+        if let Some(hit) = hit {
+            return Ok(hit);
+        }
     }
     let range = record_key(&hash, scan_from)..record_key(&hash, end);
     let mut iter = engine
