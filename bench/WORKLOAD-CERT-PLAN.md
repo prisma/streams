@@ -493,3 +493,17 @@ switch = 0). Suite 494. Open from the round: the matched-shape
 promotion experiment (needs the knob rungs; probe currently uses a
 workstation path — rework with it), and the canary rollout with the
 named gauge checklist once a build ships.
+
+**HAIRPIN FINDING (2026-08-21 01:45): X-Accel-Buffering is ignored
+in-region.** L2f/L2g plateau (~105-120 subsLive) fully explained: the
+gen is IN-REGION and the hairpin path to cv-* buffers streams even
+with the opt-out header (server sends it on every SSE since 2fe76450).
+Proof matrix (same server, same minute): out-of-region h1 AND h2 curls
+receive keep-alives at 15 s cadence; an in-region Bun probe conn gets
+the initial burst then 56 s+ of silence (edge-repro /probe-report,
+live15s=0). Falsified en route: gen h2 multiplexing (h1-only gen,
+wcfix6 — same plateau), cursor-shape difference (explicit-tail probe
+flows from outside). Program implication: L2/L3 gens must run
+OUT-of-region (or off-Compute) until the platform honors the opt-out
+on the internal tier; in-region product consumers are broken TODAY —
+added as ask #4 in bench/edge-repro/README.md.

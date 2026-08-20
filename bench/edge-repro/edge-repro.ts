@@ -30,6 +30,16 @@ if (mode === "server") {
       if (url.pathname === "/ping") return new Response("ok\n");
       if (url.pathname === "/echo")
         return req.arrayBuffer().then((b) => new Response(`${b.byteLength}\n`));
+      if (url.pathname === "/probe-report") {
+        const conns = ((globalThis as any).__probe ?? []) as any[];
+        const now = Date.now();
+        return Response.json({
+          n: conns.length,
+          live15s: conns.filter((c) => c.lastByteAt && now - c.lastByteAt < 15000).length,
+          silent: conns.filter((c) => c.status === "200" && (!c.lastByteAt || now - c.lastByteAt >= 15000)).length,
+          statuses: conns.map((c) => `${c.status}:${c.bytes}b:${c.lastByteAt ? Math.round((now - c.lastByteAt) / 1000) : "-"}s`),
+        });
+      }
       if (url.pathname === "/stats")
         return Response.json({
           openSse: open.size,
@@ -120,6 +130,51 @@ if (mode === "server") {
     },
   });
   console.log(`edge-repro origin listening on :${port}`);
+
+  // In-region streams probe (finding the hairpin path): when
+  // PROBE_TARGET/PROBE_TOKEN/PROBE_KEY are set, park PROBE_N SSE
+  // subscriptions against a Prisma Streams server and track per-conn
+  // byte flow; /probe-report exposes live-vs-silent so an outside
+  // observer can compare in-region vs out-of-region client behavior.
+  const target = process.env.PROBE_TARGET;
+  if (target) {
+    const token = process.env.PROBE_TOKEN!;
+    const pkey = process.env.PROBE_KEY!;
+    const n = Number(process.env.PROBE_N ?? 16);
+    const stream = process.env.PROBE_STREAM ?? "wcL2g-s";
+    const conns: { id: number; status: string; bytes: number; lastByteAt: number }[] = [];
+    (globalThis as any).__probe = conns;
+    for (let i = 0; i < n; i++) {
+      const c = { id: i, status: "connecting", bytes: 0, lastByteAt: 0 };
+      conns.push(c);
+      (async () => {
+        try {
+          const resp = await fetch(
+            `${target}/v1/streams/${stream}${40 + i}/records:sse?cursor=now`,
+            {
+              headers: {
+                authorization: `Bearer ${token}`,
+                "prisma-encryption-key": pkey,
+                accept: "text/event-stream",
+              },
+            },
+          );
+          c.status = String(resp.status);
+          const reader = resp.body?.getReader();
+          if (!reader) return;
+          for (;;) {
+            const { done, value } = await reader.read();
+            if (done) { c.status = "eof"; break; }
+            c.bytes += value?.byteLength ?? 0;
+            c.lastByteAt = Date.now();
+          }
+        } catch (e) {
+          c.status = `err:${e}`;
+        }
+      })();
+      await Bun.sleep(300);
+    }
+  }
 }
 
 // ---------------------------------------------------------------- probe

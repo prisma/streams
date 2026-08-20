@@ -100,3 +100,28 @@ to handshake rate limiting before isolating it with this repro.)
 2. Document `X-Accel-Buffering: no` support either way.
 3. Clarify whether the ~35–60 s reap of buffered-idle origin legs is
    intended; with buffering off it is moot for heartbeating streams.
+
+## Addendum (2026-08-21): the in-region (hairpin) path ignores the opt-out
+
+`X-Accel-Buffering: no` fixes streaming for EXTERNAL clients only.
+A client INSIDE Compute calling the same `cv-*.fra.prisma.build` URL
+still gets buffered/starved streams:
+
+```
+same server, same minute, header present on every SSE response:
+  out-of-region curl (h1):   keep-alives every 15 s  (741 B / 50 s)
+  out-of-region curl (h2):   keep-alives every 15 s  (892 B / 50 s)
+  in-region Bun client:      200 + 590 B initial burst, then SILENT 56 s+
+```
+
+Reproduce with this app's probe mode deployed in-region:
+
+```bash
+compute-cli deploy --path . --http-port 8080   --env PROBE_TARGET=<streams-url> --env PROBE_TOKEN=...   --env PROBE_KEY=... --env PROBE_N=16
+curl https://<probe-url>/probe-report   # live15s=0, silent conns
+```
+
+Impact: any Compute-hosted consumer (service-to-service SSE — the
+platform's own core use case) cannot hold a live subscription, even
+with the documented-nowhere opt-out header. Ask #4: honor the opt-out
+(or unbuffer `text/event-stream`) on the internal/hairpin tier too.
