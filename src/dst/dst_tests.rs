@@ -29976,7 +29976,6 @@ async fn hub_late_subscriber_after_close_drains_and_seals() {
 /// must end with an upToDate signal while the connection stays OPEN.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn hub_catchup_conveys_up_to_date() {
-    use tokio::io::AsyncWriteExt;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     state
@@ -30222,7 +30221,6 @@ async fn hub_subscribe_churn_never_hangs() {
 /// both sides of the foreign one must all arrive.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn hub_foreign_key_appends_advance_default_cursor() {
-    use tokio::io::AsyncWriteExt;
     let store = mem();
     let (state, addr) = http_rig(store).await;
     state
