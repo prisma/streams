@@ -314,3 +314,11 @@ stream as designed; pumps exiting via the F1/F2 lifecycle bugs mass-
 disconnected their subscribers; delivered_total 10, max window lag
 34 s). Memory fine (304 MB, 0.0000% shed). L2 reruns AFTER the
 #270-#275 battery closes.
+
+**#273 measurement (post F5-F7, local smoke N=2000):** hub subscriber
+task future = **760 bytes** (sse_hub_future_bytes — cursor + small
+connection state; was carrying full desc/key/engine/handle clones);
+hub SSE increment ≈5 KB/sub over the 53 KB hyper floor; RSS after
+mass disconnect **54 MB** vs ~130 MB retained pre-F5 (the per-
+connection descriptor clones were the unreclaimable residue).
+Delivery 10/10 through one-batch reads + uncached-posture ring.
