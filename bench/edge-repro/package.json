@@ -1,0 +1,8 @@
+{
+  "name": "edge-repro",
+  "version": "1.0.0",
+  "scripts": {
+    "start": "bun edge-repro.ts server"
+  },
+  "main": "server.ts"
+}

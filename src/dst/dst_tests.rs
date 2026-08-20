@@ -29886,6 +29886,10 @@ async fn hub_seal_with_data_delivers_final_flags_then_eof() {
     let (acc, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"n\":1")).await;
     assert!(acc.contains("\"n\":1"), "first record must arrive:\n{acc}");
     assert!(
+        acc.to_lowercase().contains("x-accel-buffering: no"),
+        "SSE responses must opt out of edge response buffering:\n{acc}"
+    );
+    assert!(
         state.live_hubs.hub_count() >= 1,
         "the hub path must be engaged (not Phase 1)"
     );

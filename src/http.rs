@@ -7147,6 +7147,11 @@ pub(crate) fn sse_lineage_response(
     Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
+        // The Compute edge buffers streaming responses in ~8-16 KB
+        // increments unless told not to (bench/edge-repro): without
+        // this header, parked subscribers never receive heartbeats
+        // through the edge and present as silent zombies.
+        .header("x-accel-buffering", "no")
         .header(header::CACHE_CONTROL, "no-store")
         .header("Cross-Origin-Resource-Policy", "cross-origin")
         .body(Body::from_stream(stream))
@@ -7401,6 +7406,11 @@ async fn sse_hub_response(
     let mut r = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
+        // The Compute edge buffers streaming responses in ~8-16 KB
+        // increments unless told not to (bench/edge-repro): without
+        // this header, parked subscribers never receive heartbeats
+        // through the edge and present as silent zombies.
+        .header("x-accel-buffering", "no")
         .header(header::CACHE_CONTROL, "no-cache")
         .header("Cross-Origin-Resource-Policy", "cross-origin");
     if binary {
@@ -7654,6 +7664,11 @@ async fn sse_response(
     let mut r = Response::builder()
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "text/event-stream")
+        // The Compute edge buffers streaming responses in ~8-16 KB
+        // increments unless told not to (bench/edge-repro): without
+        // this header, parked subscribers never receive heartbeats
+        // through the edge and present as silent zombies.
+        .header("x-accel-buffering", "no")
         .header(header::CACHE_CONTROL, "no-cache")
         .header("Cross-Origin-Resource-Policy", "cross-origin");
     if binary {
