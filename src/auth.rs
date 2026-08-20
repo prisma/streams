@@ -191,7 +191,34 @@ pub struct RequestPrincipal {
     pub expires_at: i64,
 }
 
+/// Review V4: compact authorization lease for LONG-LIVED
+/// subscriptions. A live SSE connection re-checks this whenever the
+/// auth snapshot generation changes (bounded by the heartbeat
+/// cadence) and terminates no later than token expiry — an old owner
+/// must not keep receiving records through a connection opened
+/// before a transfer, suspension, revocation, or expiry.
+#[derive(Clone, Debug)]
+pub struct AuthLease {
+    pub project_id: ProjectId,
+    pub credential_id: Arc<str>,
+    pub ownership_version: u64,
+    pub grant_version: u64,
+    pub expires_at: i64,
+}
+
 impl RequestPrincipal {
+    /// Review V4: the compact facts a live subscription must keep
+    /// re-proving for as long as it stays open.
+    pub fn lease(&self) -> AuthLease {
+        AuthLease {
+            project_id: self.project_id.clone(),
+            credential_id: self.credential_id.clone(),
+            ownership_version: self.ownership_version,
+            grant_version: self.grant_version,
+            expires_at: self.expires_at,
+        }
+    }
+
     /// §6.1 route/method matrix entry point.
     pub fn require(&self, scope: Scope) -> Result<(), AuthError> {
         if self.scopes.has(scope) {
@@ -327,6 +354,10 @@ pub struct AuthService {
     /// refresher fetches a freshly rotated key out of cadence instead
     /// of failing requests until the next tick.
     pub kid_wakeup: tokio::sync::Notify,
+    /// Review V4: bumped by every accepted feed publication (JWKS,
+    /// policies, grants). Live subscriptions re-validate their lease
+    /// when this changes — one atomic load per parked wakeup.
+    pub generation: AtomicU64,
     last_kid_wake_ms: std::sync::atomic::AtomicI64,
     /// SR-4: bounded per-ID high-water marks retained ACROSS snapshot
     /// omissions — the publisher contract says removed entries never
@@ -448,6 +479,7 @@ impl AuthService {
             last_kid_wake_ms: std::sync::atomic::AtomicI64::new(0),
             high_water: std::sync::Mutex::new(HighWater::default()),
             shadow: ShadowCounters::default(),
+            generation: AtomicU64::new(0),
         })
     }
 
@@ -463,6 +495,39 @@ impl AuthService {
     /// comparable while an entry is present on both sides, so the
     /// FEED must not resurrect removed entries at lower versions —
     /// recorded as the feed contract.
+    /// Review V4: current auth publication generation (any feed).
+    pub fn auth_generation(&self) -> u64 {
+        self.generation.load(Ordering::Acquire)
+    }
+
+    /// Review V4: is this lease still authorized under the CURRENT
+    /// snapshots? Checked by live subscriptions on generation change
+    /// and at expiry. Fail-closed: a missing project or credential is
+    /// a termination, exactly like the tombstone semantics on the
+    /// request path.
+    pub fn lease_valid(&self, l: &AuthLease, now_unix: i64) -> bool {
+        if now_unix >= l.expires_at {
+            return false;
+        }
+        let pols = self.projects.load();
+        let Some(p) = pols.projects.get(&l.project_id) else {
+            return false;
+        };
+        if p.status != crate::project_policy::ProjectStatus::Active
+            || p.ownership_version != l.ownership_version
+        {
+            return false;
+        }
+        let creds = self.credentials.load();
+        let Some(c) = creds.credentials.get(&l.credential_id) else {
+            return false;
+        };
+        c.status == crate::project_policy::CredentialStatus::Active
+            && c.grant_version == l.grant_version
+            && c.project_id == l.project_id
+            && c.expires_at.map(|e| now_unix < e).unwrap_or(true)
+    }
+
     pub fn publish_jwks(&self, snapshot: JwksSnapshot) -> Result<(), &'static str> {
         let cur = self.jwks.load();
         if snapshot.feed_version < cur.feed_version {
@@ -541,6 +606,7 @@ impl AuthService {
         drop(hw);
         self.jwks.store(Arc::new(snapshot));
         self.unknown_kid_seen.store(0, Ordering::Relaxed);
+        self.generation.fetch_add(1, Ordering::Release);
         Ok(())
     }
 
@@ -659,6 +725,7 @@ impl AuthService {
         hw.policy_gen = Some((snapshot.feed_version, digest));
         drop(hw);
         self.projects.store(Arc::new(snapshot));
+        self.generation.fetch_add(1, Ordering::Release);
         Ok(())
     }
 
@@ -776,6 +843,7 @@ impl AuthService {
         hw.grant_gen = Some((snapshot.feed_version, digest));
         drop(hw);
         self.credentials.store(Arc::new(snapshot));
+        self.generation.fetch_add(1, Ordering::Release);
         Ok(())
     }
 

@@ -1783,6 +1783,13 @@ pub struct ReadParams {
     /// is exactly one and ownership churn can never build relay cycles.
     #[serde(skip)]
     pub(crate) no_fanout: bool,
+    /// Review V4: the verified principal's authorization lease. Set
+    /// only by the product dispatch (serde-skipped: the query string
+    /// can never forge it); None on internal/operator surfaces. Live
+    /// subscriptions re-validate it on auth-generation change and
+    /// terminate at token expiry.
+    #[serde(skip)]
+    pub(crate) lease: Option<crate::auth::AuthLease>,
     /// Fleet-internal request: NEVER metered (§4.2 — internal relays
     /// return counts; the public coordinator that requested the page
     /// meters exactly once). Serde-skipped so no query string sets it.
@@ -6877,6 +6884,53 @@ pub(crate) async fn read_records_for_hub(
 /// off+1; the batch-LAST event names the batch's scan_next so a
 /// resuming client skips trailing non-matching records (#272).
 #[allow(clippy::too_many_arguments)]
+/// Review V4: bounded re-authorization for parked subscriptions. One
+/// atomic load per wakeup; the full lease re-check runs only when the
+/// auth publication generation moved, plus at token expiry.
+struct LeaseWatch {
+    lease: Option<crate::auth::AuthLease>,
+    last_gen: u64,
+}
+
+impl LeaseWatch {
+    fn new(state: &AppState, lease: Option<crate::auth::AuthLease>) -> Self {
+        Self {
+            last_gen: state.auth.auth_generation(),
+            lease,
+        }
+    }
+
+    /// True = terminate the subscription NOW (transfer, suspension,
+    /// revocation, or expiry — review V4's long-lived-stream contract).
+    fn revoked(&mut self, state: &AppState) -> bool {
+        let Some(l) = &self.lease else { return false };
+        let now = crate::shard::now_ms() / 1000;
+        if now >= l.expires_at {
+            return true;
+        }
+        let g = state.auth.auth_generation();
+        if g != self.last_gen {
+            self.last_gen = g;
+            if !state.auth.lease_valid(l, now) {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Nap until the next mandatory re-check (token expiry), capped so
+    /// a far-future expiry does not hold a giant timer.
+    fn nap(&self) -> std::time::Duration {
+        match &self.lease {
+            None => std::time::Duration::from_secs(3600),
+            Some(l) => {
+                let now = crate::shard::now_ms() / 1000;
+                std::time::Duration::from_secs((l.expires_at - now).clamp(1, 3600) as u64)
+            }
+        }
+    }
+}
+
 pub(crate) fn hub_event_at(
     desc: &StreamDesc,
     key: &StreamKey,
@@ -6952,7 +7006,12 @@ pub(crate) fn sse_lineage_response(
     };
     tokio::spawn(async move {
         let mut first = true;
+        // Review V4: re-prove authorization for the connection's life.
+        let mut lease_watch = LeaseWatch::new(&state, params.lease.clone());
         'lineage: loop {
+            if lease_watch.revoked(&state) {
+                return;
+            }
             let sg = &lineage[pos];
             let identity = desc.dynamic_segment_identity(sg.seg_id);
             let Ok(engine) = state
@@ -7121,6 +7180,12 @@ pub(crate) fn sse_lineage_response(
                     _ = notified => {}
                     // #274 F9: dropped body ends the task immediately.
                     _ = tx.closed() => return,
+                    // Review V4: terminate no later than token expiry.
+                    _ = tokio::time::sleep(lease_watch.nap()) => {
+                        if lease_watch.revoked(&state) {
+                            return;
+                        }
+                    }
                     // #267: shared process clock, not a per-subscriber
                     // Sleep.
                     _ = hb.changed() => {
@@ -7181,6 +7246,7 @@ fn sse_control(next: u64, cursor: Option<&str>, up_to_date: bool, closed: bool) 
 /// a wrapped ring just means another catch-up round).
 #[allow(clippy::too_many_arguments)]
 async fn sse_hub_response(
+    lease: Option<crate::auth::AuthLease>,
     state: Arc<AppState>,
     desc: StreamDesc,
     key: StreamKey,
@@ -7253,7 +7319,13 @@ async fn sse_hub_response(
         // Review V1: status is decided HERE, per subscriber, against
         // the durable frontier — batches carry no terminal facts.
         let mut need_utd = true;
+        // Review V4: the lease travels with the subscription and is
+        // re-proved for as long as the connection lives.
+        let mut lease_watch = LeaseWatch::new(&state, lease);
         loop {
+            if lease_watch.revoked(&state) {
+                return;
+            }
             match hub.read_from(pos) {
                 crate::livehub::HubRead::Dead => return,
                 crate::livehub::HubRead::Progress(next) => {
@@ -7373,6 +7445,13 @@ async fn sse_hub_response(
                         // #274 F9: a dropped body ends the task NOW,
                         // not at the next record or heartbeat.
                         _ = tx.closed() => return,
+                        // Review V4: terminate no later than token
+                        // expiry, even with no traffic and no feeds.
+                        _ = tokio::time::sleep(lease_watch.nap()) => {
+                            if lease_watch.revoked(&state) {
+                                return;
+                            }
+                        }
                         _ = hb.changed() => {
                             if !sse_send(&tx, Bytes::from(": keep-alive\n\n")).await {
                                 return;
@@ -7451,8 +7530,18 @@ async fn sse_response(
         match crate::livehub::join_direct_or_promote(&state, handle.hash) {
             Some(g) => direct_guard = Some(g),
             None => {
-                return sse_hub_response(state, desc, key, epoch, engine, handle, start, slot)
-                    .await;
+                return sse_hub_response(
+                    params.lease.clone(),
+                    state,
+                    desc,
+                    key,
+                    epoch,
+                    engine,
+                    handle,
+                    start,
+                    slot,
+                )
+                .await;
             }
         }
     }
@@ -7481,7 +7570,12 @@ async fn sse_response(
         };
         let from_now = matches!(start, StartPos::Now);
         let mut first = true;
+        // Review V4: re-prove authorization for the connection's life.
+        let mut lease_watch = LeaseWatch::new(&state, params.lease.clone());
         loop {
+            if lease_watch.revoked(&state) {
+                return;
+            }
             let (end, closed) = {
                 let st = handle.state.lock().unwrap();
                 (st.durable.next, st.durable.closed)
@@ -7628,6 +7722,12 @@ async fn sse_response(
                 _ = notified => {}
                 // #274 F9: dropped body ends the task immediately.
                 _ = tx.closed() => return,
+                // Review V4: terminate no later than token expiry.
+                _ = tokio::time::sleep(lease_watch.nap()) => {
+                    if lease_watch.revoked(&state) {
+                        return;
+                    }
+                }
                 // #267: shared process clock, not a per-subscriber Sleep.
                 _ = hb.changed() => {
                     // heartbeat comment keeps proxies happy
@@ -8112,8 +8212,18 @@ async fn read_v3_lineage_inner(
                 } else {
                     StartPos::At(scan_from)
                 };
-                return sse_hub_response(state, desc, key, epoch, engine, handle, start, slot)
-                    .await;
+                return sse_hub_response(
+                    params.lease.clone(),
+                    state,
+                    desc,
+                    key,
+                    epoch,
+                    engine,
+                    handle,
+                    start,
+                    slot,
+                )
+                .await;
             }
         }
         // Keyed SSE across lineage (review deferral, now wired): drain

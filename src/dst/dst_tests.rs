@@ -30585,9 +30585,13 @@ async fn hub_oversized_event_delivered_via_uncached_catchup() {
     );
 }
 
-/// Battery leg 14 (#275): WORKSPACE TRANSFER DURING DELIVERY. The
-/// billing owner of a project changes mid-subscription (workspace
-/// swap: policy_version bump, ownership/grant versions unchanged).
+/// Battery leg 14 (#275, renamed per review V4): WORKSPACE-AT-EVENT
+/// BILLING. The billing owner changes mid-subscription (workspace
+/// swap: policy_version bump, ownership/grant versions unchanged —
+/// deliberately NOT a transfer: the subscription's auth lease stays
+/// valid, so delivery continues and the billing identity moves).
+/// The REAL transfer protocol (ownership bump + revocation) is
+/// certified by transfer_terminates_established_subscriptions.
 /// Contract under test:
 ///   1. the parked hub subscription SURVIVES the transfer and keeps
 ///      delivering (transfers are billing-plane, not data-plane);
@@ -30600,7 +30604,7 @@ async fn hub_oversized_event_delivered_via_uncached_catchup() {
 ///      requests (exact workspace match), and a re-minted token
 ///      works — re-issue on transfer is the platform contract.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_workspace_transfer_mid_subscription_bills_per_batch() {
+async fn hub_workspace_at_event_billing_changes_mid_subscription() {
     let _xr = crate::billing::billing_clock_lock().read().await;
     const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
     const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
@@ -31235,4 +31239,329 @@ async fn hub_promote_at_one_gives_the_first_subscriber_a_hub() {
     hub_append(addr, "pfirst", r#"{"p":1}"#).await;
     let (acc1, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"p\":1")).await;
     assert!(acc1.contains("\"p\":1"), "hub delivers:\n{acc1}");
+}
+
+/// Review V4 red (t1): a REAL ownership transfer (ownership_version
+/// bump + old credential revoked) must TERMINATE established live
+/// subscriptions — an old owner must not keep receiving records
+/// through a connection opened before the transfer.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn transfer_terminates_established_subscriptions() {
+    let _xr = crate::billing::billing_clock_lock().read().await;
+    const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
+    const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
+    let now = crate::shard::now_ms() / 1000;
+    let svc = std::sync::Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        "wtx-1".to_string(),
+        crate::auth::JwksKey {
+            alg: jsonwebtoken::Algorithm::RS256,
+            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
+        },
+    );
+    svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let scopes = "streams.create streams.records.append streams.records.read \
+                  streams.metadata.read";
+    let pid = crate::tenant::ProjectId::new("proj-ttx").unwrap();
+    let policy_in = |ws: &str, ppv: u64, ov: u64| crate::project_policy::ProjectPolicy {
+        project_id: pid.clone(),
+        workspace_id: crate::tenant::WorkspaceId::new(ws).unwrap(),
+        cell_id: std::sync::Arc::from("test-cell"),
+        project_policy_version: ppv,
+        ownership_version: ov,
+        status: crate::project_policy::ProjectStatus::Active,
+        quotas: crate::project_policy::ProjectQuotas::default(),
+    };
+    let publish_policy = |p: crate::project_policy::ProjectPolicy, fv: u64| {
+        let mut projects = std::collections::HashMap::new();
+        projects.insert(pid.clone(), p);
+        svc.publish_policies(crate::project_policy::PolicySnapshot {
+            projects,
+            fetched_at_unix: now + fv as i64,
+            feed_version: fv,
+        })
+        .unwrap();
+    };
+    publish_policy(policy_in("ws_ta", 1, 1), 1);
+    let grant = |gv: u64, status: crate::project_policy::CredentialStatus, fv: u64| {
+        let mut credentials = std::collections::HashMap::new();
+        credentials.insert(
+            std::sync::Arc::from("c_tx"),
+            crate::project_policy::CredentialGrant {
+                credential_id: std::sync::Arc::from("c_tx"),
+                project_id: pid.clone(),
+                grant_version: gv,
+                status,
+                scopes: crate::tenant::ScopeSet::parse(scopes).0,
+                grant: crate::tenant::StreamGrant::All,
+                expires_at: None,
+            },
+        );
+        svc.publish_grants(crate::project_policy::GrantSnapshot {
+            credentials,
+            fetched_at_unix: now + fv as i64,
+            feed_version: fv,
+        })
+        .unwrap();
+    };
+    grant(1, crate::project_policy::CredentialStatus::Active, 1);
+    let (state, addr) = http_rig_with_auth_service(mem(), svc.clone()).await;
+    state
+        .sse_live_hub
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+
+    #[derive(serde::Serialize)]
+    struct C<'a> {
+        iss: &'a str,
+        aud: &'a str,
+        sub: &'a str,
+        credential_id: &'a str,
+        project_id: &'a str,
+        workspace_id: &'a str,
+        cell_id: &'a str,
+        ownership_version: u64,
+        grant_version: u64,
+        scope: &'a str,
+        jti: &'a str,
+        iat: i64,
+        exp: i64,
+    }
+    let mint = |ws: &'static str, ov: u64, jti: &'static str, exp: i64| {
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        header.kid = Some("wtx-1".into());
+        jsonwebtoken::encode(
+            &header,
+            &C {
+                iss: "https://auth.prisma.io",
+                aud: "prisma-streams-data",
+                sub: "u",
+                credential_id: "c_tx",
+                project_id: "proj-ttx",
+                workspace_id: ws,
+                cell_id: "test-cell",
+                ownership_version: ov,
+                grant_version: 1,
+                scope: "streams.create streams.records.append streams.records.read \
+                        streams.metadata.read",
+                jti,
+                iat: now - 60,
+                exp,
+            },
+            &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
+        )
+        .unwrap()
+    };
+    let ta = format!("Bearer {}", mint("ws_ta", 1, "ta", now + 600));
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let auth_a = ("authorization", ta.as_str());
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/ttx",
+        &[ekey, auth_a],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+
+    use tokio::io::AsyncWriteExt;
+    let sse = |bearer: String| async move {
+        let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "GET /v1/streams/ttx/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nauthorization: {bearer}\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
+        );
+        sck.write_all(req.as_bytes()).await.unwrap();
+        sck
+    };
+    let mut promoter = sse(ta.clone()).await;
+    let (acc, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;
+    assert!(acc.contains("upToDate"), "promoter parks:\n{acc}");
+    let mut sub = sse(ta.clone()).await;
+    let (acc0, _) = hub_sse_collect(&mut sub, 8, |t| t.contains("upToDate")).await;
+    assert!(acc0.contains("upToDate"), "sub parks:\n{acc0}");
+
+    // THE TRANSFER: ownership_version 2, new workspace, old credential
+    // revoked — the full §Phase-D shape, not just a billing remap.
+    publish_policy(policy_in("ws_tb", 2, 2), 2);
+    grant(2, crate::project_policy::CredentialStatus::Revoked, 2);
+
+    // Old token: NEW requests must fail closed.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/ttx/records",
+        &[ekey, auth_a],
+        br#"{"r":9}"#,
+    )
+    .await;
+    assert_eq!(st, 401, "stale-ownership token must be refused (got {st})");
+
+    // ESTABLISHED subscriptions must terminate within the recheck
+    // bound (heartbeat cadence + slack), not deliver indefinitely.
+    let (_, eof_promoter) = hub_sse_collect(&mut promoter, 25, |_| false).await;
+    let (_, eof_sub) = hub_sse_collect(&mut sub, 5, |_| false).await;
+    assert!(
+        eof_promoter && eof_sub,
+        "established subscriptions must terminate after the transfer \
+         (promoter eof={eof_promoter}, hub sub eof={eof_sub})"
+    );
+}
+
+/// Review V4 (t3): a live subscription terminates NO LATER than its
+/// access token's expiry — even with no appends, no feed changes, and
+/// no client activity (the nap deadline, not the generation check).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn subscription_terminates_at_token_expiry() {
+    let _xr = crate::billing::billing_clock_lock().read().await;
+    const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
+    const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
+    let now = crate::shard::now_ms() / 1000;
+    let svc = std::sync::Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        "wtx-1".to_string(),
+        crate::auth::JwksKey {
+            alg: jsonwebtoken::Algorithm::RS256,
+            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
+        },
+    );
+    svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let scopes = "streams.create streams.records.append streams.records.read \
+                  streams.metadata.read";
+    let pid = crate::tenant::ProjectId::new("proj-texp").unwrap();
+    let mut projects = std::collections::HashMap::new();
+    projects.insert(
+        pid.clone(),
+        crate::project_policy::ProjectPolicy {
+            project_id: pid.clone(),
+            workspace_id: crate::tenant::WorkspaceId::new("ws_te").unwrap(),
+            cell_id: std::sync::Arc::from("test-cell"),
+            project_policy_version: 1,
+            ownership_version: 1,
+            status: crate::project_policy::ProjectStatus::Active,
+            quotas: crate::project_policy::ProjectQuotas::default(),
+        },
+    );
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let mut credentials = std::collections::HashMap::new();
+    credentials.insert(
+        std::sync::Arc::from("c_te"),
+        crate::project_policy::CredentialGrant {
+            credential_id: std::sync::Arc::from("c_te"),
+            project_id: pid.clone(),
+            grant_version: 1,
+            status: crate::project_policy::CredentialStatus::Active,
+            scopes: crate::tenant::ScopeSet::parse(scopes).0,
+            grant: crate::tenant::StreamGrant::All,
+            expires_at: None,
+        },
+    );
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let (state, addr) = http_rig_with_auth_service(mem(), svc).await;
+    state
+        .sse_live_hub
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+
+    #[derive(serde::Serialize)]
+    struct C<'a> {
+        iss: &'a str,
+        aud: &'a str,
+        sub: &'a str,
+        credential_id: &'a str,
+        project_id: &'a str,
+        workspace_id: &'a str,
+        cell_id: &'a str,
+        ownership_version: u64,
+        grant_version: u64,
+        scope: &'a str,
+        jti: &'a str,
+        iat: i64,
+        exp: i64,
+    }
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some("wtx-1".into());
+    // Expires FOUR seconds from now: long enough to subscribe, short
+    // enough to watch the deadline fire.
+    let tok = jsonwebtoken::encode(
+        &header,
+        &C {
+            iss: "https://auth.prisma.io",
+            aud: "prisma-streams-data",
+            sub: "u",
+            credential_id: "c_te",
+            project_id: "proj-texp",
+            workspace_id: "ws_te",
+            cell_id: "test-cell",
+            ownership_version: 1,
+            grant_version: 1,
+            scope: scopes,
+            jti: "te",
+            iat: now - 60,
+            exp: now + 4,
+        },
+        &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
+    )
+    .unwrap();
+    let ta = format!("Bearer {tok}");
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/texp",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("authorization", ta.as_str()),
+        ],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    use tokio::io::AsyncWriteExt;
+    let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let req = format!(
+        "GET /v1/streams/texp/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nauthorization: {ta}\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
+    );
+    sck.write_all(req.as_bytes()).await.unwrap();
+    let (acc, _) = hub_sse_collect(&mut sck, 6, |t| t.contains("upToDate")).await;
+    assert!(acc.contains("upToDate"), "parks before expiry:\n{acc}");
+    // No appends, no feed publications: the expiry deadline alone must
+    // end the connection (within expiry + small slack).
+    let (_, eof) = hub_sse_collect(&mut sck, 8, |_| false).await;
+    assert!(eof, "subscription must terminate at token expiry");
 }

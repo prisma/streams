@@ -1073,8 +1073,16 @@ pub async fn product_entry(
                     if let Some(r) = check_read_quota(&state, principal.as_ref()) {
                         return r;
                     }
-                    let resp =
-                        product_read(state.clone(), &tenant, name, headers, &query, None).await;
+                    let resp = product_read(
+                        state.clone(),
+                        &tenant,
+                        name,
+                        headers,
+                        &query,
+                        None,
+                        principal.as_ref().map(|pr| pr.lease()),
+                    )
+                    .await;
                     debit_read_response(&state, principal.as_ref(), &resp);
                     resp
                 }
@@ -1089,6 +1097,7 @@ pub async fn product_entry(
                         headers,
                         &query,
                         Some("long-poll"),
+                        principal.as_ref().map(|pr| pr.lease()),
                     )
                     .await;
                     debit_read_response(&state, principal.as_ref(), &resp);
@@ -1111,8 +1120,16 @@ pub async fn product_entry(
                         }
                         None => None,
                     };
-                    let resp =
-                        product_read(state, &tenant, name, headers, &query, Some("sse")).await;
+                    let resp = product_read(
+                        state,
+                        &tenant,
+                        name,
+                        headers,
+                        &query,
+                        Some("sse"),
+                        principal.as_ref().map(|pr| pr.lease()),
+                    )
+                    .await;
                     match sub {
                         Some(g) => attach_subscription_guard(resp, g),
                         None => resp,
@@ -3736,6 +3753,7 @@ async fn product_read(
     headers: HeaderMap,
     query: &str,
     live: Option<&'static str>,
+    lease: Option<crate::auth::AuthLease>,
 ) -> Response {
     let Some(key_b64) = product_key(&headers) else {
         return perr(
@@ -3952,6 +3970,7 @@ async fn product_read(
         deliver,
         no_fanout: false,
         internal: false,
+        lease,
     };
     let mut ih = HeaderMap::new();
     if let Ok(v) = axum::http::HeaderValue::from_str(&key_b64) {
