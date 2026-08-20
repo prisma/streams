@@ -30994,3 +30994,210 @@ async fn hub_offset_now_delivers_only_post_subscribe_appends() {
         "second offset=now subscriber must promote the hub"
     );
 }
+
+/// REVIEW V1 red (form 1): while the pump is mid-backlog, the hub head
+/// is NOT the durable frontier — a subscriber that drains the ring
+/// must not be told upToDate until the pump actually reaches the end.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_no_up_to_date_while_pump_holds_backlog() {
+    let (state, addr, _promoter, mut sck) = hub_rig_stream("rvfront").await;
+    let (acc0, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    assert!(acc0.contains("upToDate"), "parked:\n{acc0}");
+    // Freeze the pump completely, land a 3-batch backlog, then allow
+    // exactly ONE publish: the ring ends far short of durable.next.
+    let p0 = state
+        .live_hubs
+        .pump_published
+        .load(std::sync::atomic::Ordering::Relaxed);
+    state
+        .live_hubs
+        .pump_max
+        .store(p0, std::sync::atomic::Ordering::Relaxed);
+    let pad = "x".repeat(300 * 1024);
+    for i in 1..=3 {
+        hub_append(addr, "rvfront", &format!(r#"{{"n":{i},"pad":"{pad}"}}"#)).await;
+    }
+    state
+        .live_hubs
+        .pump_max
+        .store(p0 + 1, std::sync::atomic::Ordering::Relaxed);
+    let (acc1, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"n\":1")).await;
+    assert!(acc1.contains("\"n\":1"), "first batch record:\n{acc1}");
+    // Anything after the record, plus a further quiet window, must not
+    // claim upToDate — two more records are durable and unprocessed.
+    let (acc2, _) = hub_sse_collect(&mut sck, 3, |_| false).await;
+    let after = format!("{}{}", acc1.split("\"n\":1").last().unwrap_or(""), acc2);
+    assert!(
+        !after.contains("\"upToDate\":true"),
+        "upToDate claimed while the pump holds a durable backlog:\n{after}"
+    );
+    // Liveness half: release the pump; the rest of the backlog and an
+    // honest upToDate must arrive.
+    state
+        .live_hubs
+        .pump_max
+        .store(u64::MAX, std::sync::atomic::Ordering::Relaxed);
+    let (acc3, _) = hub_sse_collect(&mut sck, 20, |t| t.contains("\"n\":3")).await;
+    assert!(
+        acc3.contains("\"n\":3"),
+        "backlog drains after release:\n{acc3}"
+    );
+    let (acc4, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"upToDate\":true")).await;
+    assert!(
+        format!("{acc3}{acc4}").contains("\"upToDate\":true"),
+        "honest upToDate after the frontier is reached:\n{acc3}{acc4}"
+    );
+}
+
+/// REVIEW V1 red (form 3): a prepared batch must not carry a stale
+/// upToDate. Durable data lands AFTER the batch was prepared; a late
+/// ring reader draining that batch must not be told upToDate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_prepared_batch_must_not_carry_stale_up_to_date() {
+    use tokio::io::AsyncWriteExt;
+    let (state, addr, _promoter, mut sck) = hub_rig_stream("rvstale").await;
+    let (acc0, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    assert!(acc0.contains("upToDate"), "parked:\n{acc0}");
+    // Cursor at the hub floor, captured BEFORE any data lands.
+    let (st, hdrs, _) = preq(
+        addr,
+        "GET",
+        "/v1/streams/rvstale/records",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let c0 = hdrs
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("prisma-next-cursor"))
+        .map(|(_, v)| v.clone())
+        .expect("floor cursor");
+    // Publish exactly ONE batch containing r1 (upToDate true at
+    // prepare time), then freeze and land r2 durably.
+    let p0 = state
+        .live_hubs
+        .pump_published
+        .load(std::sync::atomic::Ordering::Relaxed);
+    state
+        .live_hubs
+        .pump_max
+        .store(p0 + 1, std::sync::atomic::Ordering::Relaxed);
+    hub_append(addr, "rvstale", r#"{"r":1}"#).await;
+    for _ in 0..200 {
+        if state
+            .live_hubs
+            .pump_published
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > p0
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    hub_append(addr, "rvstale", r#"{"r":2}"#).await;
+    // A late ring reader from the floor drains the retained batch.
+    let mut sub2 = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let req = format!(
+        "GET /v1/streams/rvstale/records:sse?cursor={} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n",
+        c0.replace('=', "%3D")
+    );
+    sub2.write_all(req.as_bytes()).await.unwrap();
+    let (b1, _) = hub_sse_collect(&mut sub2, 10, |t| t.contains("\"r\":1")).await;
+    assert!(b1.contains("\"r\":1"), "retained batch drains:\n{b1}");
+    let (b2, _) = hub_sse_collect(&mut sub2, 3, |_| false).await;
+    let after = format!("{}{}", b1.split("\"r\":1").last().unwrap_or(""), b2);
+    assert!(
+        !after.contains("\"upToDate\":true"),
+        "stale prepared upToDate delivered while r2 is durable:\n{after}"
+    );
+    state
+        .live_hubs
+        .pump_max
+        .store(u64::MAX, std::sync::atomic::Ordering::Relaxed);
+    let (b3, _) = hub_sse_collect(&mut sub2, 15, |t| t.contains("\"r\":2")).await;
+    assert!(b3.contains("\"r\":2"), "r2 arrives after release:\n{b3}");
+}
+
+/// REVIEW V1 red (form 2): a delayed reader draining a RETAINED batch
+/// after foreign-key-only head advance must end at the CURRENT scan
+/// head — the same cursor a live subscriber was given — not the
+/// batch's stale prepare-time cursor.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_delayed_reader_lands_on_the_current_scan_head() {
+    use tokio::io::AsyncWriteExt;
+    let (state, addr, _promoter, mut sck) = hub_rig_stream("rvlag").await;
+    let (acc0, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    assert!(acc0.contains("upToDate"), "parked:\n{acc0}");
+    assert!(state.live_hubs.hub_count() >= 1);
+    let (st, hdrs, _) = preq(
+        addr,
+        "GET",
+        "/v1/streams/rvlag/records",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let c0 = hdrs
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("prisma-next-cursor"))
+        .map(|(_, v)| v.clone())
+        .expect("floor cursor");
+    // Default-key record -> retained batch; live sub drains it.
+    hub_append(addr, "rvlag", r#"{"d":0}"#).await;
+    let (a1, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"d\":0")).await;
+    assert!(a1.contains("\"d\":0"));
+    // Foreign-key records advance the scan head without a batch.
+    for i in 0..3 {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/rvlag/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", "customer-a"),
+            ],
+            format!(r#"{{"f":{i}}}"#).as_bytes(),
+        )
+        .await;
+        assert!(st == 200 || st == 204);
+    }
+    // The live subscriber's cursor moves toward the new head (its
+    // controls may arrive one Progress at a time under suite load, so
+    // it only proves liveness here). The AUTHORITATIVE expectation is
+    // the durable tail cursor after all three foreign appends.
+    let (a2, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("nextCursor")).await;
+    assert!(a2.contains("nextCursor"), "live subscriber advances:\n{a2}");
+    let (st, hdrs2, _) = preq(
+        addr,
+        "GET",
+        "/v1/streams/rvlag/records",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let live_cursor = hdrs2
+        .iter()
+        .find(|(k, _)| k.eq_ignore_ascii_case("prisma-next-cursor"))
+        .map(|(_, v)| v.clone())
+        .expect("tail cursor after foreign appends");
+    // Delayed reader from the floor drains the retained batch; its
+    // FINAL visible cursor must equal the live subscriber's.
+    let mut sub2 = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let req = format!(
+        "GET /v1/streams/rvlag/records:sse?cursor={} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n",
+        c0.replace('=', "%3D")
+    );
+    sub2.write_all(req.as_bytes()).await.unwrap();
+    let (b1, _) = hub_sse_collect(&mut sub2, 10, |t| t.contains("\"d\":0")).await;
+    assert!(b1.contains("\"d\":0"), "retained record drains:\n{b1}");
+    let expect = live_cursor.clone();
+    let (b2, _) = hub_sse_collect(&mut sub2, 8, move |t| t.contains(&expect)).await;
+    let all = format!("{b1}{b2}");
+    assert!(
+        all.contains(&live_cursor),
+        "delayed reader must land on the current scan head {live_cursor}:\n{all}"
+    );
+}

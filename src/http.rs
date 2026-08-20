@@ -965,6 +965,7 @@ async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
         "sse_hub_future_bytes": SSE_HUB_FUTURE_BYTES.load(std::sync::atomic::Ordering::Relaxed),
         "sse_hub_total_bytes": state.hub_total.load(std::sync::atomic::Ordering::Relaxed),
         "sse_hub_ring_bytes_walked": state.live_hubs.ring_bytes_total(),
+        "sse_hub_logical_bytes": state.live_hubs.logical_bytes_total(),
         "absorb_reserved_bytes_now": crate::history::absorb_reserved_bytes(),
         "shed_line_mb": state.admit_rss_shed_mb,
         "maintenance_backpressure": state.maint_latch.stats_json(),
@@ -6881,8 +6882,6 @@ pub(crate) fn hub_event_at(
     seg_id: u32,
     rec: &PlainRec,
     ctl_at: u64,
-    up_to_date: bool,
-    closed: bool,
 ) -> String {
     let mut ev = sse_data_event(desc, &rec.payload);
     let ctl = sse_control_product(
@@ -6893,8 +6892,8 @@ pub(crate) fn hub_event_at(
             offset: ctl_at,
         }
         .encode(&desc.project_id, key),
-        up_to_date,
-        closed,
+        false,
+        false,
     );
     ev.push_str(&ctl);
     ev
@@ -7248,12 +7247,9 @@ async fn sse_hub_response(
                 cls,
             )
         };
-        // #270: track which terminal facts reached the client. The
-        // shared bytes cannot be inspected, so read_from reports what
-        // the flagged variant carried; catch-up and plain mid-ring
-        // events convey nothing.
+        // Review V1: status is decided HERE, per subscriber, against
+        // the durable frontier — batches carry no terminal facts.
         let mut need_utd = true;
-        let mut sealed_conveyed = false;
         loop {
             match hub.read_from(pos) {
                 crate::livehub::HubRead::Dead => return,
@@ -7295,8 +7291,6 @@ async fn sse_hub_response(
                                         ctx.seg_id,
                                         r,
                                         r.off + 1,
-                                        false,
-                                        false,
                                     );
                                     if !sse_send(&tx, Bytes::from(ev)).await {
                                         return;
@@ -7321,7 +7315,7 @@ async fn sse_hub_response(
                     // handoff happens at the AtHead recheck (#270/F4).
                     need_utd = true;
                 }
-                crate::livehub::HubRead::Events(evs, next, flagged) => {
+                crate::livehub::HubRead::Events(evs, next) => {
                     // Per-batch billing identity (ownership can move).
                     let bill_id = crate::billing::identity_of(&state, &ctx.desc);
                     for (b, plen) in evs {
@@ -7336,39 +7330,40 @@ async fn sse_hub_response(
                         );
                     }
                     pos = next;
-                    match flagged {
-                        Some((utd, cls)) => {
-                            if utd {
-                                need_utd = false;
-                            }
-                            if cls {
-                                sealed_conveyed = true;
-                            }
-                        }
-                        None => need_utd = true,
-                    }
+                    need_utd = true;
                 }
-                crate::livehub::HubRead::AtHead(closed) => {
-                    if closed {
-                        // Exactly one sealed control — and only when
-                        // the flags did not already ride a flagged
-                        // data event (#270: no silence, no duplicate).
-                        if !sealed_conveyed {
-                            let _ = sse_send(&tx, Bytes::from(status_ctl(pos, true, true))).await;
-                        }
+                crate::livehub::HubRead::AtHead {
+                    closed,
+                    pump_caught_up,
+                } => {
+                    // Arm the wakeup FIRST: an append that commits
+                    // after the frontier check below must wake this
+                    // subscriber, never strand it (review V1: the
+                    // durable comparison happens after arming).
+                    let notified = hub.notify.notified();
+                    if hub.snapshot_head() > pos {
+                        continue;
+                    }
+                    // upToDate is a statement about the DURABLE
+                    // stream, not the pump: claim it only when the
+                    // ring is drained, the pump reports itself caught
+                    // up, and the LIVE durable frontier agrees.
+                    let frontier = pump_caught_up && {
+                        let d = ctx.handle.state.lock().unwrap().durable.next;
+                        hub.snapshot_head() >= d
+                    };
+
+                    if closed && frontier {
+                        // Exactly one sealed control (#270): sent here
+                        // and only here, and the task returns with it.
+                        let _ = sse_send(&tx, Bytes::from(status_ctl(pos, true, true))).await;
                         return;
                     }
-                    if need_utd {
-                        // Connect-at-tail or post-catch-up: one
-                        // status-only control conveys upToDate.
+                    if frontier && need_utd {
                         if !sse_send(&tx, Bytes::from(status_ctl(pos, true, false))).await {
                             return;
                         }
                         need_utd = false;
-                    }
-                    let notified = hub.notify.notified();
-                    if hub.snapshot_head() > pos {
-                        continue;
                     }
                     tokio::select! {
                         _ = notified => {}

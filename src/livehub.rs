@@ -81,36 +81,41 @@ pub(crate) fn hub_total_cap() -> u64 {
 }
 
 pub(crate) struct PreparedBatch {
-    /// SCANNED range (#272): the keyed reader advances over ranges
-    /// containing no matching records, and that consumed position is
-    /// first-class — batches cover contiguous scanned ranges
-    /// (prev.scan_next == next.scan_first), not just the offsets of
-    /// matching events. Losing it lagged the hub head behind the pump
-    /// and stalled default-lane cursors under foreign-key appends.
+    /// First scanned offset this batch covers (== the scan head when
+    /// it was prepared).
     pub scan_first: u64,
-    /// Offset after the last SCANNED record (out.last + 1).
+    /// Offset after the last SCANNED record (matching or not).
     pub scan_next: u64,
-    /// (offset, combined data+control SSE bytes, payload len for the
-    /// per-subscriber delivered-bytes meter) — control carries NO
-    /// up-to-date/closed flags.
+    /// (offset, prepared data event + ordinary cursor control, payload
+    /// len). IMMUTABLE facts only (review V1): no flagged variant, no
+    /// cached upToDate — status is a per-subscriber statement about
+    /// the durable frontier, decided at send time.
     pub events: Vec<(u64, Bytes, u32)>,
-    /// The last event of this batch with the flags the pump observed
-    /// at prepare time (upToDate, and closed when genuine). Sent
-    /// instead of the plain last event by a subscriber that parks at
-    /// the hub head right after this batch.
-    pub last_flagged: Bytes,
-    /// (up_to_date, closed) carried by `last_flagged` — the subscriber
-    /// cannot see inside the shared bytes, and it must know which
-    /// terminal facts were already conveyed to avoid both silence and
-    /// duplicate final controls (#270).
-    pub flagged_flags: (bool, bool),
-    pub bytes: usize,
+    /// Reserved memory charge GOVERNING the caps (review V3): event
+    /// bytes + element metadata + a fixed batch/Arc allowance. Always
+    /// >= the logical payload it retains.
+    pub charge: usize,
+}
+
+/// Conservative reservation charge for a prepared batch (review V3):
+/// the hard bounds must cover what is actually allocated, not just
+/// payload bytes.
+pub(crate) fn charge_for(events: &[(u64, Bytes, u32)]) -> usize {
+    let ev_bytes: usize = events.iter().map(|(_, b, _)| b.len()).sum();
+    ev_bytes + std::mem::size_of_val(events) + 256
 }
 
 #[derive(Default)]
 struct HubRing {
     batches: VecDeque<Arc<PreparedBatch>>,
+    /// Reserved charge retained (charge units — governs the caps).
     bytes: usize,
+    /// Logical prepared event bytes retained (observability only).
+    logical: usize,
+    /// Whether the PUMP's newest scan reached the durable end it
+    /// captured (review V1). The subscriber still re-checks the live
+    /// durable frontier before claiming upToDate.
+    caught_up: bool,
     /// First offset still covered by `batches`
     /// (== batches.front().scan_first; == head when empty).
     floor: u64,
@@ -169,6 +174,17 @@ pub(crate) struct LiveHub {
     pub(crate) ctx: Option<Arc<HubContext>>,
 }
 
+/// Atomically reserve `add` charge against the process cap (review
+/// V2): load-then-add let concurrent pumps collectively blow the hard
+/// ceiling; the reservation must be one CAS.
+fn try_reserve(total: &AtomicU64, add: u64, cap: u64) -> bool {
+    total
+        .fetch_update(Ordering::AcqRel, Ordering::Acquire, |current| {
+            current.checked_add(add).filter(|next| *next <= cap)
+        })
+        .is_ok()
+}
+
 impl LiveHub {
     fn lifecycle(&self) -> u8 {
         self.lifecycle.load(Ordering::SeqCst)
@@ -189,20 +205,22 @@ impl Drop for LiveHub {
 /// What a subscriber gets when it asks for everything from `from`.
 pub(crate) enum HubRead {
     /// Prepared (event bytes, payload len) at and after `from`, plus
-    /// the head after them, plus Some((up_to_date, closed)) when the
-    /// LAST returned event is the flagged variant (None = plain
-    /// mid-ring event; the subscriber has NOT been told it is at
-    /// head).
-    Events(Vec<(Bytes, u32)>, u64, Option<(bool, bool)>),
+    /// the cursor after them. Events carry NO status facts (review
+    /// V1): upToDate/sealed are per-subscriber statements about the
+    /// durable frontier, made at send time by the caller.
+    Events(Vec<(Bytes, u32)>, u64),
     /// Scanned progress with no deliverable events between `from` and
     /// the returned scan head: advance the cursor (the subscriber's
     /// next status control conveys it) without sending data (#272).
     Progress(u64),
     /// `from` is below the ring floor — re-run durable catch-up.
     BelowFloor,
-    /// Nothing new; park on notify. Bool = stream closed (end after
-    /// draining).
-    AtHead(bool),
+    /// Nothing new; park on notify. `pump_caught_up` reports whether
+    /// the pump's newest scan reached the durable end it captured —
+    /// necessary but NOT sufficient for upToDate: the caller must
+    /// still compare the scan head against the LIVE durable frontier
+    /// (review V1).
+    AtHead { closed: bool, pump_caught_up: bool },
     /// Pump died; disconnect and let the client resume by cursor.
     Dead,
 }
@@ -221,7 +239,10 @@ impl LiveHub {
         }
         let r = self.ring.lock().unwrap();
         if from >= r.head {
-            return HubRead::AtHead(lc == HUB_CLOSED);
+            return HubRead::AtHead {
+                closed: lc == HUB_CLOSED,
+                pump_caught_up: r.caught_up,
+            };
         }
         if from < r.floor {
             return HubRead::BelowFloor;
@@ -232,32 +253,24 @@ impl LiveHub {
         // batch bounds the private allocation by the per-batch cap,
         // and the caller simply asks again from its new cursor.
         let mut out = Vec::new();
-        let mut flagged: Option<(bool, bool)> = None;
         let mut next = r.head;
         for (bi, b) in r.batches.iter().enumerate() {
             if b.scan_next <= from {
                 continue;
             }
-            let last_batch = bi + 1 == r.batches.len();
-            let n = b.events.len();
-            for (ei, (off, ev, plen)) in b.events.iter().enumerate() {
+            for (off, ev, plen) in b.events.iter() {
                 if *off < from {
                     continue;
                 }
-                let last_event = last_batch && ei + 1 == n;
-                if last_event {
-                    // Ring-last: the flagged variant, and the caller
-                    // learns exactly which terminal facts it conveyed.
-                    out.push((b.last_flagged.clone(), *plen));
-                    flagged = Some(b.flagged_flags);
-                } else {
-                    out.push((ev.clone(), *plen));
-                }
+                out.push((ev.clone(), *plen));
             }
-            // The cursor lands after THIS batch's scanned range; only
-            // the ring-last batch jumps to the (possibly further)
-            // scan head.
-            next = if last_batch { r.head } else { b.scan_next };
+            // The cursor lands after THIS batch's scanned range —
+            // NEVER a jump to the (possibly further) scan head: if the
+            // head moved past this batch through scanned-no-match
+            // progress, the NEXT call returns Progress(head) and the
+            // caller conveys the current cursor honestly (review V1).
+            next = b.scan_next;
+            let _ = bi;
             if !out.is_empty() {
                 break;
             }
@@ -268,10 +281,10 @@ impl LiveHub {
             // progress (#272).
             return HubRead::Progress(r.head);
         }
-        HubRead::Events(out, next, flagged)
+        HubRead::Events(out, next)
     }
 
-    fn publish(&self, batch: PreparedBatch) {
+    fn publish(&self, batch: PreparedBatch, caught_up: bool) {
         let mut r = self.ring.lock().unwrap();
         // Contiguous scanned coverage: the pump publishes every scan
         // range in order (batches or bare head advances), so a batch
@@ -282,21 +295,19 @@ impl LiveHub {
             batch.scan_first,
             r.head
         );
-        // #273 F7: a batch above the per-hub allowance, or one that
-        // would break the PROCESS cap, is never retained — the range
-        // goes UNCACHED: the head jumps past it, the floor follows,
-        // and parked subscribers re-read it durably (BelowFloor).
-        // Anything previously retained is credited and dropped with
-        // it (it sits behind the new floor anyway).
-        let over_hub = batch.bytes > hub_ring_bytes();
-        let over_global = self
-            .total
-            .load(Ordering::Relaxed)
-            .saturating_add(batch.bytes as u64)
-            > self.cap;
-        if over_hub || over_global {
+        r.caught_up = caught_up;
+        // #273 F7 + review V2/V3: a batch above the per-hub allowance,
+        // or one the PROCESS cap cannot atomically absorb, is never
+        // retained — the range goes UNCACHED: the head jumps past it,
+        // the floor follows, and parked subscribers re-read it durably
+        // (BelowFloor). Anything previously retained is credited and
+        // dropped with it (it sits behind the new floor anyway).
+        let over_hub = batch.charge > hub_ring_bytes();
+        let reserved = !over_hub && try_reserve(self.total, batch.charge as u64, self.cap);
+        if over_hub || !reserved {
             self.total.fetch_sub(r.bytes as u64, Ordering::Relaxed);
             r.bytes = 0;
+            r.logical = 0;
             r.batches.clear();
             r.head = r.head.max(batch.scan_next);
             r.floor = r.head;
@@ -305,8 +316,8 @@ impl LiveHub {
             return;
         }
         r.head = r.head.max(batch.scan_next);
-        r.bytes += batch.bytes;
-        self.total.fetch_add(batch.bytes as u64, Ordering::Relaxed);
+        r.bytes += batch.charge;
+        r.logical += batch.events.iter().map(|(_, b, _)| b.len()).sum::<usize>();
         if r.batches.is_empty() {
             r.floor = batch.scan_first;
         }
@@ -314,8 +325,9 @@ impl LiveHub {
         let cap = hub_ring_bytes();
         while r.bytes > cap && r.batches.len() > 1 {
             if let Some(front) = r.batches.pop_front() {
-                r.bytes -= front.bytes;
-                self.total.fetch_sub(front.bytes as u64, Ordering::Relaxed);
+                r.bytes -= front.charge;
+                r.logical -= front.events.iter().map(|(_, b, _)| b.len()).sum::<usize>();
+                self.total.fetch_sub(front.charge as u64, Ordering::Relaxed);
                 r.floor = front.scan_next;
             }
         }
@@ -325,8 +337,9 @@ impl LiveHub {
 
     /// Scanned-no-match progress: advance the scan head with no batch
     /// (#272) — parked subscribers wake and convey the new cursor.
-    fn advance_head(&self, new_head: u64) {
+    fn advance_head(&self, new_head: u64, caught_up: bool) {
         let mut r = self.ring.lock().unwrap();
+        r.caught_up = caught_up;
         if new_head > r.head {
             r.head = new_head;
             if r.batches.is_empty() {
@@ -361,6 +374,13 @@ pub(crate) struct HubRegistry {
     /// direct until reconnect (one duplicate reader on a fanned-out
     /// stream is negligible).
     direct: Mutex<HashMap<[u8; 16], u32>>,
+    /// TEST HOOK (per-registry so parallel rigs stay isolated;
+    /// production never touches it): pumps stop BEFORE their next
+    /// durable read once `pump_published` reaches `pump_max`. The
+    /// review's frontier legs need "publish exactly N batches, then
+    /// hold" to be deterministic.
+    pub(crate) pump_published: AtomicU64,
+    pub(crate) pump_max: AtomicU64,
 }
 
 /// RAII registration for a DIRECT (non-hub) subscriber. Held on the
@@ -408,6 +428,8 @@ impl HubRegistry {
         HubRegistry {
             map: Mutex::new(HashMap::new()),
             direct: Mutex::new(HashMap::new()),
+            pump_published: AtomicU64::new(0),
+            pump_max: AtomicU64::new(u64::MAX),
         }
     }
 
@@ -421,6 +443,18 @@ impl HubRegistry {
     /// exports both so drift is visible as an accounting bug. Tests
     /// assert against it per-rig (the process gauge is shared across
     /// the parallel test binary).
+    /// Logical prepared payload bytes retained across this registry's
+    /// hubs (review V3: exposed NEXT TO the reserved charge so drift
+    /// between what we account and what we hold is visible).
+    pub(crate) fn logical_bytes_total(&self) -> u64 {
+        self.map
+            .lock()
+            .unwrap()
+            .values()
+            .map(|h| h.ring.lock().unwrap().logical as u64)
+            .sum()
+    }
+
     pub(crate) fn ring_bytes_total(&self) -> u64 {
         self.map
             .lock()
@@ -477,6 +511,11 @@ impl HubRegistry {
                 id,
                 ring: Mutex::new(HubRing {
                     head: handle.state.lock().unwrap().durable.next,
+                    // Born AT the captured durable frontier: the pump
+                    // is trivially caught up until a read says
+                    // otherwise (the subscriber still re-checks the
+                    // LIVE durable end before claiming upToDate).
+                    caught_up: true,
                     ..Default::default()
                 }),
                 notify: tokio::sync::Notify::new(),
@@ -562,6 +601,16 @@ async fn hub_pump(state: Arc<AppState>, hub: Arc<LiveHub>) {
                 Ordering::SeqCst,
             );
         }
+        // Test gate: hold before the next read once the publish budget
+        // is exhausted (no-op in production: max = u64::MAX).
+        while state.live_hubs.pump_published.load(Ordering::Relaxed)
+            >= state.live_hubs.pump_max.load(Ordering::Relaxed)
+        {
+            if hub.lifecycle() != HUB_ACTIVE {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
         let (end, closed) = {
             let st = handle.state.lock().unwrap();
             (st.durable.next, st.durable.closed)
@@ -588,15 +637,19 @@ async fn hub_pump(state: Arc<AppState>, hub: Arc<LiveHub>) {
                     // consumed position IS the batch boundary.
                     let scan_next = out.last.map(|l| l + 1).unwrap_or(pos).max(pos);
                     if !out.recs.is_empty() {
-                        let will_end = out.completed && scan_next >= end;
+                        // Caught-up = the scan reached the durable end
+                        // captured THIS iteration. out.completed is
+                        // false whenever the read stops on its byte
+                        // budget — including exactly AT the frontier —
+                        // so it must not gate this fact (review V1
+                        // liveness: the subscriber could otherwise
+                        // never be told upToDate again).
+                        let will_end = scan_next >= end;
                         let report_closed = closed
                             && will_end
                             && crate::http::genuine_closure(&state, &desc.sref(), true).await;
-                        let _ = ();
                         let n = out.recs.len();
                         let mut events = Vec::with_capacity(n);
-                        let mut bytes = 0usize;
-                        let mut last_flagged = Bytes::new();
                         for (i, r) in out.recs.iter().enumerate() {
                             let last_rec = i + 1 == n;
                             // The LAST event's control names scan_next
@@ -604,33 +657,29 @@ async fn hub_pump(state: Arc<AppState>, hub: Arc<LiveHub>) {
                             // trailing non-matching records (#272).
                             let ctl_at = if last_rec { scan_next } else { r.off + 1 };
                             let ev = crate::http::hub_event_at(
-                                desc, key, epoch, rk_hash, seg_id, r, ctl_at, false, false,
+                                desc, key, epoch, rk_hash, seg_id, r, ctl_at,
                             );
-                            if last_rec {
-                                last_flagged = Bytes::from(crate::http::hub_event_at(
-                                    desc,
-                                    key,
-                                    epoch,
-                                    rk_hash,
-                                    seg_id,
-                                    r,
-                                    ctl_at,
-                                    will_end,
-                                    report_closed,
-                                ));
-                            }
-                            let b = Bytes::from(ev);
-                            bytes += b.len();
-                            events.push((r.off, b, r.payload.len() as u32));
+                            events.push((r.off, Bytes::from(ev), r.payload.len() as u32));
                         }
-                        hub.publish(PreparedBatch {
-                            scan_first: pos,
-                            scan_next,
-                            events,
-                            last_flagged,
-                            flagged_flags: (will_end, report_closed),
-                            bytes,
-                        });
+                        // Review V1: batches carry NO status facts —
+                        // subscribers decide upToDate/sealed against
+                        // the durable frontier at send time. Review
+                        // V3: the charge is conservative and governs
+                        // the caps.
+                        let charge = charge_for(&events);
+                        hub.publish(
+                            PreparedBatch {
+                                scan_first: pos,
+                                scan_next,
+                                events,
+                                charge,
+                            },
+                            will_end,
+                        );
+                        state
+                            .live_hubs
+                            .pump_published
+                            .fetch_add(1, Ordering::Relaxed);
                         pos = scan_next;
                         if report_closed {
                             break PumpExit::Closed;
@@ -639,7 +688,7 @@ async fn hub_pump(state: Arc<AppState>, hub: Arc<LiveHub>) {
                     }
                     if scan_next > pos {
                         // Foreign-key-only range: pure cursor progress.
-                        hub.advance_head(scan_next);
+                        hub.advance_head(scan_next, scan_next >= end);
                         pos = scan_next;
                         continue;
                     }
@@ -716,9 +765,7 @@ mod tests {
             scan_first: first,
             scan_next: first + n,
             events,
-            last_flagged: Bytes::from_static(b"FLAGGED"),
-            flagged_flags: (true, false),
-            bytes: n as usize * ev_len,
+            charge: n as usize * ev_len,
         }
     }
 
@@ -728,17 +775,22 @@ mod tests {
     #[test]
     fn read_from_cursor_mechanics() {
         let h = hub(10);
-        assert!(matches!(h.read_from(10), HubRead::AtHead(false)));
-        h.publish(batch(10, 4, 8));
+        assert!(matches!(
+            h.read_from(10),
+            HubRead::AtHead { closed: false, .. }
+        ));
+        h.publish(batch(10, 4, 8), true);
         // Full drain: 4 events, last one flagged.
-        let HubRead::Events(evs, head, flagged) = h.read_from(10) else {
+        let HubRead::Events(evs, head) = h.read_from(10) else {
             panic!("expected events");
         };
-        assert_eq!((evs.len(), head, flagged), (4, 14, Some((true, false))));
-        assert_eq!(&evs[3].0[..], b"FLAGGED");
+        assert_eq!((evs.len(), head), (4, 14));
+        // Review V1: NO flagged variant — every retained event is the
+        // ordinary prepared bytes; status is decided at send time.
+        assert_eq!(&evs[3].0[..], &[b'e'; 8][..]);
         assert_eq!(&evs[0].0[..], &[b'e'; 8][..]);
         // Mid-ring suffix.
-        let HubRead::Events(evs, head, _) = h.read_from(12) else {
+        let HubRead::Events(evs, head) = h.read_from(12) else {
             panic!("expected events");
         };
         assert_eq!((evs.len(), head), (2, 14));
@@ -758,7 +810,7 @@ mod tests {
         let cap = hub_ring_bytes();
         let per = cap / 4;
         for i in 0..8u64 {
-            h.publish(batch(i * 10, 10, per / 10));
+            h.publish(batch(i * 10, 10, per / 10), true);
         }
         let r = h.ring.lock().unwrap();
         assert!(
@@ -780,12 +832,113 @@ mod tests {
     fn closed_reaches_parked_readers() {
         let h = hub(5);
         h.mark_closed();
-        assert!(matches!(h.read_from(5), HubRead::AtHead(true)));
+        assert!(matches!(
+            h.read_from(5),
+            HubRead::AtHead { closed: true, .. }
+        ));
     }
 }
 
 #[cfg(test)]
 mod tests_memory {
+
+    /// REVIEW V2 (red): the process cap must hold under CONCURRENT
+    /// publication. Load-then-add lets N pumps each observe headroom
+    /// and collectively blow the ceiling.
+    #[test]
+    fn concurrent_publishes_never_exceed_the_global_cap() {
+        use std::sync::Barrier;
+        use std::sync::atomic::AtomicU64;
+        // The load-then-add window is nanoseconds wide: repeat the
+        // 32-way barrier race until statistics do the work.
+        for round in 0..300 {
+            let total: &'static AtomicU64 = Box::leak(Box::new(AtomicU64::new(0)));
+            let cap: u64 = 64 * 1024;
+            let hubs: Vec<LiveHub> = (0..32)
+                .map(|i| hub_with(i as u64 * 1000, total, cap))
+                .collect();
+            let barrier = Barrier::new(32);
+            std::thread::scope(|sc| {
+                for h in &hubs {
+                    sc.spawn(|| {
+                        barrier.wait();
+                        // cap/4-sized batch: at most 4 fit; 32 race.
+                        let first = h.snapshot_head();
+                        h.publish(batch(first, 1, (cap / 4) as usize), true);
+                    });
+                }
+            });
+            let reserved = total.load(Ordering::Relaxed);
+            let walked: u64 = hubs
+                .iter()
+                .map(|h| h.ring.lock().unwrap().bytes as u64)
+                .sum();
+            assert!(
+                reserved <= cap,
+                "round {round}: reserved {reserved} exceeds the hard cap {cap}"
+            );
+            assert!(
+                walked <= cap,
+                "round {round}: walked {walked} exceeds the hard cap {cap}"
+            );
+        }
+    }
+
+    /// REVIEW V3: the hard bounds govern a CONSERVATIVE charge — it
+    /// must always cover the bytes actually retained (event payloads
+    /// plus per-element metadata), so nominal-fits-actual-overflows
+    /// (the old flagged-duplicate defect) is structurally impossible.
+    #[test]
+    fn retained_bytes_never_exceed_the_per_hub_bound() {
+        use std::sync::atomic::AtomicU64;
+        let total: &'static AtomicU64 = Box::leak(Box::new(AtomicU64::new(0)));
+        let h = hub_with(0, total, u64::MAX);
+        let cap = hub_ring_bytes();
+        // One event at ~60% of the bound: fits, and stays within it.
+        let ev_len = cap * 6 / 10;
+        let ev = Bytes::from(vec![b'e'; ev_len]);
+        let events = vec![(0u64, ev, ev_len as u32)];
+        let charge = charge_for(&events);
+        h.publish(
+            PreparedBatch {
+                scan_first: 0,
+                scan_next: 1,
+                events,
+                charge,
+            },
+            true,
+        );
+        let r = h.ring.lock().unwrap();
+        let actual: usize = r
+            .batches
+            .iter()
+            .map(|b| b.events.iter().map(|(_, e, _)| e.len()).sum::<usize>())
+            .sum();
+        assert!(actual <= cap, "retained {actual} exceeds the bound {cap}");
+        assert!(
+            r.bytes >= actual,
+            "the governing charge {} must cover retained bytes {actual}",
+            r.bytes
+        );
+        assert_eq!(r.logical, actual, "logical gauge tracks retained payload");
+    }
+
+    fn hub_with(head: u64, total: &'static AtomicU64, cap: u64) -> LiveHub {
+        LiveHub {
+            id: [9u8; 16],
+            ring: Mutex::new(HubRing {
+                head,
+                floor: head,
+                ..Default::default()
+            }),
+            notify: tokio::sync::Notify::new(),
+            subscribers: AtomicU64::new(1),
+            lifecycle: std::sync::atomic::AtomicU8::new(HUB_ACTIVE),
+            total,
+            cap,
+            ctx: None,
+        }
+    }
     use super::*;
 
     fn hub(head: u64) -> LiveHub {
@@ -814,9 +967,7 @@ mod tests_memory {
             scan_first: first,
             scan_next: first + n,
             events,
-            last_flagged: Bytes::from_static(b"FLAGGED"),
-            flagged_flags: (true, false),
-            bytes: n as usize * ev_len,
+            charge: n as usize * ev_len,
         }
     }
 
@@ -826,20 +977,22 @@ mod tests_memory {
     #[test]
     fn read_from_returns_one_batch_per_call() {
         let h = hub(0);
-        h.publish(batch(0, 4, 8));
-        h.publish(batch(4, 4, 8));
-        let HubRead::Events(evs, next, flagged) = h.read_from(0) else {
+        h.publish(batch(0, 4, 8), true);
+        h.publish(batch(4, 4, 8), true);
+        let HubRead::Events(evs, next) = h.read_from(0) else {
             panic!("expected events");
         };
         assert_eq!(evs.len(), 4, "ONE batch per call, not the whole suffix");
         assert_eq!(next, 4, "cursor advances to the batch's scan_next");
-        assert!(flagged.is_none(), "mid-ring batch carries no flags");
-        let HubRead::Events(evs, next, flagged) = h.read_from(next) else {
+
+        let HubRead::Events(evs, next) = h.read_from(next) else {
             panic!("expected second batch");
         };
         assert_eq!(evs.len(), 4);
-        assert_eq!(next, 8, "ring-last batch advances to head");
-        assert_eq!(flagged, Some((true, false)), "ring-last carries flags");
+        // Review V1: the cursor stays at the batch's OWN scan_next —
+        // never a jump to the (possibly further) scan head; Progress
+        // conveys any further head on the next call.
+        assert_eq!(next, 8, "cursor lands after the batch's scanned range");
     }
 
     /// F7 red: a batch larger than the per-hub allowance must NOT be
@@ -850,7 +1003,7 @@ mod tests_memory {
     fn oversized_batch_is_not_retained() {
         let h = hub(0);
         let cap = hub_ring_bytes();
-        h.publish(batch(0, 2, cap)); // 2x cap in one batch
+        h.publish(batch(0, 2, cap), true); // 2x cap in one batch
         let r = h.ring.lock().unwrap();
         assert_eq!(r.bytes, 0, "oversized batch must not be retained");
         assert!(r.batches.is_empty());
@@ -871,11 +1024,11 @@ mod tests_memory {
     fn global_prepared_bytes_accounting() {
         let h = hub(0);
         let total = h.total;
-        h.publish(batch(0, 4, 64));
+        h.publish(batch(0, 4, 64), true);
         assert_eq!(total.load(Ordering::Relaxed), 4 * 64);
         let cap = hub_ring_bytes();
         let per = cap / 2;
-        h.publish(batch(4, 2, per)); // evicts the first batch
+        h.publish(batch(4, 2, per), true); // evicts the first batch
         assert!(total.load(Ordering::Relaxed) <= (2 * per) as u64);
         drop(h);
         assert_eq!(

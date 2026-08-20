@@ -1,19 +1,32 @@
 #!/bin/bash
-# The one commit gate: full release suite (failure NAMES preserved —
-# a prior chain kept only the summary line and a one-off flake cost a
-# re-run to even identify), clippy fingerprint diff (fail-closed), and
-# the bare multitenancy audit. Output lands in $OUT (default
-# /tmp/gate.txt); exits nonzero on any failed stage.
-set -o pipefail
+# The one commit gate — fail-closed at every stage (review finding 5):
+# formatting must already be clean, a clippy BUILD failure fails the
+# gate (compiler errors are not warning fingerprints), and the suite
+# summary line must literally read ok. Output lands in $OUT.
+set -euo pipefail
 HERE=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${OUT:-/tmp/gate.txt}
 cd "$HERE"
 : > "$OUT"
-cargo fmt
+if ! cargo fmt --check > /tmp/fmt.out 2>&1; then
+  cat /tmp/fmt.out
+  echo GATEFAIL-fmt >> "$OUT"
+  exit 1
+fi
+set +e
 cargo test --release --bin streams-slate 2>&1 | tee /tmp/gate-full.log \
   | grep -E "^test result|^test .* FAILED|^failures:$" >> "$OUT"
-grep -q "^test result: ok" "$OUT" || { echo GATEFAIL-suite >> "$OUT"; exit 1; }
-cargo clippy --release --bin streams-slate --all-targets 2>&1 > /dev/null | cat > /tmp/clippy.out
+TEST_STATUS=${PIPESTATUS[0]}
+set -e
+if [ "$TEST_STATUS" -ne 0 ] || ! grep -q "^test result: ok" "$OUT"; then
+  echo GATEFAIL-suite >> "$OUT"
+  exit 1
+fi
+if ! cargo clippy --release --bin streams-slate --all-targets > /dev/null 2> /tmp/clippy.out; then
+  cat /tmp/clippy.out
+  echo GATEFAIL-clippy-build >> "$OUT"
+  exit 1
+fi
 NEW=$(python3 scripts/clippy-fingerprints.py /tmp/clippy.out | comm -13 scripts/clippy-baseline-fingerprints.txt -)
 if [ -n "$NEW" ]; then echo "NEW FINGERPRINTS: $NEW" >> "$OUT"; echo GATEFAIL-clippy >> "$OUT"; exit 1; fi
 echo "NEW FINGERPRINTS: none" >> "$OUT"
