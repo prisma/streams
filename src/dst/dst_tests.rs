@@ -30452,3 +30452,117 @@ async fn hub_promotes_on_second_subscriber_only() {
     assert!(a1.contains("\"p\":1"), "direct subscriber:\n{a1}");
     assert!(a2.contains("\"p\":1"), "hub subscriber:\n{a2}");
 }
+
+/// #275 leg 3: a SPLIT while subscribed is a transition, not a user
+/// close — the hub subscriber must disconnect WITHOUT streamClosed/
+/// sealed (the reconnect's fresh dispatch serves the successors).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_split_transition_disconnects_without_sealed() {
+    let _l = gap_lock().lock().await;
+    let (state, addr, _promoter, mut sck) = hub_rig_stream("hubsplit").await;
+    let (acc, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    assert!(acc.contains("upToDate"));
+    hub_append(addr, "hubsplit", r#"{"n":0}"#).await;
+    let (acc, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("\"n\":0")).await;
+    assert!(acc.contains("\"n\":0"));
+    assert!(state.live_hubs.hub_count() >= 1, "hub engaged");
+    assert!(
+        crate::scaler3::execute_split(
+            &state,
+            &state.raw_adapter_sref("hubsplit"),
+            0,
+            0x8000_0000_0000_0000
+        )
+        .await,
+        "split"
+    );
+    let (acc, ended) = hub_sse_collect(&mut sck, 20, |_| false).await;
+    assert!(ended, "transition must END the connection:\n{acc}");
+    assert!(
+        !acc.contains("\"sealed\":true") && !acc.contains("streamClosed"),
+        "a split is NOT a genuine close — no sealed flags:\n{acc}"
+    );
+}
+
+/// #275 leg 10: a slow client (stops reading) must be DISCONNECTED by
+/// the bounded send deadline while a healthy subscriber keeps
+/// receiving — never buffered privately. One-batch reads bound the
+/// in-flight allocation; this pins the end-to-end policy.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_slow_client_disconnected_while_healthy_delivers() {
+    // healthy = the promoter (direct path, its status control was
+    // consumed by the rig); the slow HUB subscriber below connects
+    // with a TINY receive buffer so loopback buffering cannot mask
+    // the backpressure.
+    let (state, addr, mut healthy, prewarm) = hub_rig_stream("hubslow").await;
+    drop(prewarm);
+    let slow_sock = tokio::net::TcpSocket::new_v4().unwrap();
+    slow_sock.set_recv_buffer_size(8192).unwrap();
+    let mut slow = slow_sock.connect(addr).await.unwrap();
+    {
+        use tokio::io::AsyncWriteExt;
+        let req = format!(
+            "GET /v1/streams/hubslow/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
+        );
+        slow.write_all(req.as_bytes()).await.unwrap();
+    }
+    // Let the subscription register before flooding.
+    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+    let conns0 = state
+        .sse_connections
+        .load(std::sync::atomic::Ordering::Relaxed);
+    assert!(conns0 >= 1, "hub subscriber counted");
+    let big = "x".repeat(16 * 1024);
+    for n in 0..200 {
+        hub_append(addr, "hubslow", &format!("{{\"n\":{n},\"pad\":\"{big}\"}}")).await;
+    }
+    // The healthy subscriber drains everything (~3.2 MB — decisively
+    // past any auto-tuned loopback buffering on the slow socket).
+    let (hacc, _) = hub_sse_collect(&mut healthy, 60, |t| t.contains("\"n\":199")).await;
+    assert!(hacc.contains("\"n\":199"), "healthy subscriber must keep up");
+    // The slow one is cut by the 10 s send deadline: its subscriber
+    // TASK returns, the SubGuard drops, and — as the hub's only
+    // subscriber — the pump retires and the hub is removed. (The
+    // connection SLOT can outlive the task while hyper's blocked
+    // socket write pins the response body; the app-level teardown is
+    // what the policy promises.)
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25);
+    loop {
+        let hubs = state.live_hubs.hub_count();
+        if hubs == 0 {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "slow hub subscriber must be cut by the send deadline (hubs={hubs})"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    let _ = conns0;
+    drop(slow);
+}
+
+/// #275 leg 11: one record larger than the per-hub ring allowance
+/// flows through the UNCACHED posture — nothing retained, parked
+/// subscribers re-read it durably and still receive it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_oversized_event_delivered_via_uncached_catchup() {
+    let (state, addr, _promoter, mut sck) = hub_rig_stream("hubbig").await;
+    let (acc, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    assert!(acc.contains("upToDate"));
+    assert!(state.live_hubs.hub_count() >= 1);
+    // ~1.5 MiB record vs the 1 MiB default per-hub allowance.
+    let big = "y".repeat(1536 * 1024);
+    hub_append(addr, "hubbig", &format!("{{\"big\":\"{big}\"}}")).await;
+    let (acc, _) = hub_sse_collect(&mut sck, 20, |t| t.contains("\"big\":\"yyyy")).await;
+    assert!(
+        acc.contains("\"big\":\"yyyy"),
+        "oversized record must arrive via durable catch-up:\n{}",
+        &acc[..acc.len().min(400)]
+    );
+    let total = crate::livehub::hub_total_bytes();
+    assert!(
+        total < 1024 * 1024,
+        "the oversized range must not be retained (total={total})"
+    );
+}
