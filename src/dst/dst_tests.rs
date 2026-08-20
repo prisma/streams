@@ -30000,3 +30000,201 @@ async fn hub_catchup_conveys_up_to_date() {
     );
     assert!(!eof, "stream stays open");
 }
+
+// ---- #271 hub registry identity + lifecycle (Søren review F2) ------
+
+/// F2 unit red: hubs must be keyed by the stream INCARNATION
+/// (handle.hash — the segment identity), not the name-stable route.
+/// Two handles simulating delete/recreate incarnations of one name
+/// must get two different hubs; the pre-fix route key hands the
+/// second subscriber the first incarnation's hub.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn hub_registry_keys_by_incarnation() {
+    let store = mem();
+    let (state, _addr) = http_rig(store.clone()).await;
+    let db = slatedb::Db::builder("hubreg", store.clone() as Arc<dyn ObjectStore>)
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("maint");
+    let engine = crate::shard::ShardEngine::start(
+        "hubreg".to_string(),
+        Arc::new(db),
+        store.clone(),
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        None,
+        __maint,
+    );
+    let old_handle = engine.stream_handle([1u8; 16]).await.unwrap();
+    let new_handle = engine.stream_handle([2u8; 16]).await.unwrap();
+    let desc = crate::registry::StreamDesc {
+        seal_gen_counter: 0,
+        account_id: None,
+        project_id: state.tenant.clone(),
+        name: "abaunit".to_string(),
+        stream_epoch: "e1".to_string(),
+        key_fingerprint: "fp".into(),
+        created_ms: 1,
+        expires_at_ms: None,
+        deleted: false,
+        soft_deleted: false,
+        logical_close_ms: None,
+        forked_from: None,
+        fork_children: Vec::new(),
+        init: None,
+        sealing: None,
+        seal_op: None,
+        content_type: "application/json".into(),
+        ttl_secs: None,
+        segments: None,
+        sealed: false,
+        watch_definitions: Vec::new(),
+        watch_sig_key: None,
+        parent_ref_pending: false,
+        layout_version: crate::registry::LAYOUT_VERSION,
+    };
+    let h1 = crate::livehub::HubRegistry::subscribe(
+        &state,
+        &desc,
+        skey(),
+        [3u8; 16],
+        engine.clone(),
+        old_handle,
+    );
+    let h2 = crate::livehub::HubRegistry::subscribe(
+        &state,
+        &desc,
+        skey(),
+        [3u8; 16],
+        engine.clone(),
+        new_handle,
+    );
+    assert!(
+        !Arc::ptr_eq(&h1, &h2),
+        "two incarnations of one name must never share a hub"
+    );
+}
+
+/// F2 behavioral: delete + recreate a subscribed stream — a new
+/// subscriber must receive the NEW incarnation's records (the old
+/// hub, pinned alive by the first subscriber, must not capture it).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_recreate_delivers_new_incarnation() {
+    use tokio::io::AsyncWriteExt;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_live_hub
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let mk = |addr| async move {
+        let (st, _, _) = preq(
+            addr,
+            "PUT",
+            "/v1/streams/hubre",
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            br#"{"format":{"kind":"json"}}"#,
+        )
+        .await;
+        st
+    };
+    assert_eq!(mk(addr).await, 201);
+    // First subscriber pins a hub on the FIRST incarnation.
+    let mut sck1 = tokio::net::TcpStream::connect(addr).await.unwrap();
+    sck1.write_all(
+        format!(
+            "GET /v1/streams/hubre/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    let (acc, _) = hub_sse_collect(&mut sck1, 10, |t| t.contains("upToDate")).await;
+    assert!(acc.contains("upToDate"), "sub1 status:\n{acc}");
+    assert!(state.live_hubs.hub_count() >= 1);
+    let (st, _, _) = preq(
+        addr,
+        "DELETE",
+        "/v1/streams/hubre",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 202 || st == 204, "delete {st}");
+    // Recreate may briefly race deletion cleanup.
+    let mut created = false;
+    for _ in 0..50 {
+        if mk(addr).await == 201 {
+            created = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(created, "recreate");
+    hub_append(addr, "hubre", r#"{"v":"new"}"#).await;
+    let mut sck2 = tokio::net::TcpStream::connect(addr).await.unwrap();
+    sck2.write_all(
+        format!(
+            "GET /v1/streams/hubre/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    let (acc, _) = hub_sse_collect(&mut sck2, 12, |t| t.contains("\"v\":\"new\"")).await;
+    assert!(
+        acc.contains("\"v\":\"new\""),
+        "new incarnation's record must reach the new subscriber:\n{acc}"
+    );
+}
+
+/// F2 lifecycle stress: rapid subscribe/disconnect churn against one
+/// stream must never hang a subscriber or leak hubs — the
+/// last-subscriber pump exit must either serve a racing join or let
+/// it create a replacement, never hand it a retiring hub.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_subscribe_churn_never_hangs() {
+    use tokio::io::AsyncWriteExt;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_live_hub
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/hubchurn",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let mut tasks = Vec::new();
+    for _ in 0..4 {
+        tasks.push(tokio::spawn(async move {
+            for _ in 0..30 {
+                let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
+                sck.write_all(
+                    format!(
+                        "GET /v1/streams/hubchurn/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
+                    )
+                    .as_bytes(),
+                )
+                .await
+                .unwrap();
+                let (acc, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+                assert!(acc.contains("upToDate"), "churn join must serve:\n{acc}");
+                drop(sck);
+            }
+        }));
+    }
+    for t in tasks {
+        tokio::time::timeout(std::time::Duration::from_secs(120), t)
+            .await
+            .expect("churn task hung")
+            .unwrap();
+    }
+}

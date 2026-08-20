@@ -71,19 +71,35 @@ struct HubRing {
     floor: u64,
     /// Offset after the newest prepared record.
     head: u64,
-    /// True once the pump observed genuine closure and prepared its
-    /// final batch — subscribers end after draining.
-    closed: bool,
-    /// Pump exited (fence/error). Subscribers must fall back to
-    /// reconnect semantics (disconnect; client resumes by cursor).
-    dead: bool,
 }
 
+/// Hub lifecycle (#271). ACTIVE hubs accept joins; RETIRING is the
+/// pump's last-subscriber exit window (a racing join backs out and
+/// creates a replacement); CLOSED hubs stay drainable; DEAD hubs
+/// disconnect. Stored as one atomic so subscribe's
+/// increment-then-recheck and the pump's CAS handshake close the
+/// join-vs-exit race without a lock.
+pub(crate) const HUB_ACTIVE: u8 = 0;
+pub(crate) const HUB_RETIRING: u8 = 1;
+pub(crate) const HUB_CLOSED: u8 = 2;
+pub(crate) const HUB_DEAD: u8 = 3;
+
 pub(crate) struct LiveHub {
-    pub(crate) stream_hash: [u8; 16],
+    /// Registry key: the stream INCARNATION (handle.hash — the segment
+    /// identity), never the name-stable route. A recreated stream
+    /// mints a new identity, so its subscribers can never attach to a
+    /// previous incarnation's hub (#271).
+    pub(crate) id: [u8; 16],
     ring: Mutex<HubRing>,
     pub(crate) notify: tokio::sync::Notify,
     pub(crate) subscribers: AtomicU64,
+    lifecycle: std::sync::atomic::AtomicU8,
+}
+
+impl LiveHub {
+    fn lifecycle(&self) -> u8 {
+        self.lifecycle.load(Ordering::SeqCst)
+    }
 }
 
 /// What a subscriber gets when it asks for everything from `from`.
@@ -109,12 +125,15 @@ impl LiveHub {
     }
 
     pub(crate) fn read_from(&self, from: u64) -> HubRead {
-        let r = self.ring.lock().unwrap();
-        if r.dead {
+        let lc = self.lifecycle();
+        // RETIRING is visible only to a join backing out mid-handshake;
+        // treat it like DEAD defensively — the caller re-subscribes.
+        if lc == HUB_DEAD || lc == HUB_RETIRING {
             return HubRead::Dead;
         }
+        let r = self.ring.lock().unwrap();
         if from >= r.head {
-            return HubRead::AtHead(r.closed);
+            return HubRead::AtHead(lc == HUB_CLOSED);
         }
         if from < r.floor {
             return HubRead::BelowFloor;
@@ -166,12 +185,12 @@ impl LiveHub {
     }
 
     fn mark_closed(&self) {
-        self.ring.lock().unwrap().closed = true;
+        self.lifecycle.store(HUB_CLOSED, Ordering::SeqCst);
         self.notify.notify_waiters();
     }
 
     fn mark_dead(&self) {
-        self.ring.lock().unwrap().dead = true;
+        self.lifecycle.store(HUB_DEAD, Ordering::SeqCst);
         self.notify.notify_waiters();
     }
 }
@@ -194,10 +213,13 @@ impl HubRegistry {
         self.map.lock().unwrap().len()
     }
 
-    /// Get or create the hub for a stream, spawning its pump on
-    /// creation. The pump owns the per-stream read context — the ONE
-    /// descriptor/key copy that Phase 1 could not share across
-    /// subscribers.
+    /// Get or create the hub for a stream INCARNATION, spawning its
+    /// pump on creation. Keyed by handle.hash (#271): a recreated
+    /// stream's new identity can never resolve to a previous
+    /// incarnation's hub. Joins increment-then-recheck against the
+    /// lifecycle so a pump retiring on last-subscriber either serves
+    /// the racing join (CAS back to ACTIVE) or the join backs out and
+    /// installs a replacement — it never receives a retiring hub.
     #[allow(clippy::too_many_arguments)]
     pub(crate) fn subscribe(
         state: &Arc<AppState>,
@@ -207,41 +229,64 @@ impl HubRegistry {
         engine: Arc<ShardEngine>,
         handle: Arc<crate::shard::StreamHandle>,
     ) -> Arc<LiveHub> {
-        let hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
-        let mut map = state.live_hubs.map.lock().unwrap();
-        if let Some(h) = map.get(&hash) {
-            if !h.ring.lock().unwrap().dead {
-                h.subscribers.fetch_add(1, Ordering::Relaxed);
-                return h.clone();
+        let id = handle.hash;
+        loop {
+            let mut map = state.live_hubs.map.lock().unwrap();
+            if let Some(h) = map.get(&id) {
+                let h = h.clone();
+                drop(map);
+                if h.lifecycle() == HUB_ACTIVE {
+                    h.subscribers.fetch_add(1, Ordering::SeqCst);
+                    if h.lifecycle() == HUB_ACTIVE {
+                        return h;
+                    }
+                    // Lost the race with the pump's retirement CAS:
+                    // back out and install a replacement.
+                    h.subscribers.fetch_sub(1, Ordering::SeqCst);
+                }
+                state.live_hubs.remove_if_same(id, &h);
+                continue;
             }
-            map.remove(&hash);
+            let hub = Arc::new(LiveHub {
+                id,
+                ring: Mutex::new(HubRing {
+                    head: handle.state.lock().unwrap().durable.next,
+                    ..Default::default()
+                }),
+                notify: tokio::sync::Notify::new(),
+                subscribers: AtomicU64::new(1),
+                lifecycle: std::sync::atomic::AtomicU8::new(HUB_ACTIVE),
+            });
+            {
+                let mut r = hub.ring.lock().unwrap();
+                r.floor = r.head;
+            }
+            map.insert(id, hub.clone());
+            drop(map);
+            let pump_hub = hub.clone();
+            let pump_state = state.clone();
+            let desc = desc.clone();
+            let key = key.clone();
+            let engine = engine.clone();
+            let handle = handle.clone();
+            tokio::spawn(async move {
+                hub_pump(pump_state, pump_hub, desc, key, epoch, engine, handle).await;
+            });
+            return hub;
         }
-        let hub = Arc::new(LiveHub {
-            stream_hash: hash,
-            ring: Mutex::new(HubRing {
-                head: handle.state.lock().unwrap().durable.next,
-                ..Default::default()
-            }),
-            notify: tokio::sync::Notify::new(),
-            subscribers: AtomicU64::new(1),
-        });
-        {
-            let mut r = hub.ring.lock().unwrap();
-            r.floor = r.head;
-        }
-        map.insert(hash, hub.clone());
-        drop(map);
-        let pump_hub = hub.clone();
-        let pump_state = state.clone();
-        let desc = desc.clone();
-        tokio::spawn(async move {
-            hub_pump(pump_state, pump_hub, desc, key, epoch, engine, handle).await;
-        });
-        hub
     }
 
-    fn remove(&self, hash: &[u8; 16]) {
-        self.map.lock().unwrap().remove(hash);
+    /// Remove ONLY if the entry is still this exact hub — an
+    /// unconditional remove could delete a replacement installed after
+    /// this hub retired (#271 ABA).
+    fn remove_if_same(&self, id: [u8; 16], expected: &Arc<LiveHub>) {
+        let mut map = self.map.lock().unwrap();
+        if map
+            .get(&id)
+            .is_some_and(|actual| Arc::ptr_eq(actual, expected))
+        {
+            map.remove(&id);
+        }
     }
 }
 
@@ -279,8 +324,26 @@ async fn hub_pump(
     let seg_id = desc.resolve_segment("").seg_id;
     let bill_id = crate::billing::identity_of(&state, &desc);
     let exit = loop {
-        if hub.subscribers.load(Ordering::Relaxed) == 0 {
-            break PumpExit::NoSubscribers;
+        // Last-subscriber handshake (#271): claim RETIRING first, then
+        // re-check — a join that incremented before the CAS keeps the
+        // hub (we CAS back); a join after the CAS sees RETIRING on its
+        // recheck and installs a replacement.
+        if hub.subscribers.load(Ordering::SeqCst) == 0 {
+            if hub
+                .lifecycle
+                .compare_exchange(HUB_ACTIVE, HUB_RETIRING, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                if hub.subscribers.load(Ordering::SeqCst) == 0 {
+                    break PumpExit::NoSubscribers;
+                }
+                let _ = hub.lifecycle.compare_exchange(
+                    HUB_RETIRING,
+                    HUB_ACTIVE,
+                    Ordering::SeqCst,
+                    Ordering::SeqCst,
+                );
+            }
         }
         let (end, closed) = {
             let st = handle.state.lock().unwrap();
@@ -381,10 +444,9 @@ async fn hub_pump(
     // #270: closed and dead are DIFFERENT protocol states. A closed
     // hub stays drainable — subscribers finish with the sealed
     // control; only transitions and read failures disconnect for
-    // cursor resume. Every exit removes the registry entry so new
-    // subscribers get a fresh hub (or fresh dispatch semantics on a
-    // closed stream).
-    state.live_hubs.remove(&hub.stream_hash);
+    // cursor resume. Removal is CONDITIONAL (#271): a replacement hub
+    // installed after this one retired must survive this cleanup.
+    state.live_hubs.remove_if_same(hub.id, &hub);
     match exit {
         PumpExit::Closed => hub.mark_closed(),
         PumpExit::Transition | PumpExit::ReadError => hub.mark_dead(),
@@ -398,7 +460,7 @@ mod tests {
 
     fn hub(head: u64) -> LiveHub {
         LiveHub {
-            stream_hash: [7u8; 16],
+            id: [7u8; 16],
             ring: Mutex::new(HubRing {
                 head,
                 floor: head,
@@ -406,6 +468,7 @@ mod tests {
             }),
             notify: tokio::sync::Notify::new(),
             subscribers: AtomicU64::new(1),
+            lifecycle: std::sync::atomic::AtomicU8::new(HUB_ACTIVE),
         }
     }
 
