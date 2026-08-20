@@ -31565,3 +31565,174 @@ async fn subscription_terminates_at_token_expiry() {
     let (_, eof) = hub_sse_collect(&mut sck, 8, |_| false).await;
     assert!(eof, "subscription must terminate at token expiry");
 }
+
+/// Review V4 (t2): project SUSPENSION must terminate established
+/// live subscriptions — same lease machinery, distinct cause (the
+/// review's contract names all four: transfer, suspension,
+/// revocation, expiry).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn suspension_terminates_established_subscriptions() {
+    let _xr = crate::billing::billing_clock_lock().read().await;
+    const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
+    const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
+    let now = crate::shard::now_ms() / 1000;
+    let svc = std::sync::Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        "wtx-1".to_string(),
+        crate::auth::JwksKey {
+            alg: jsonwebtoken::Algorithm::RS256,
+            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
+        },
+    );
+    svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let scopes = "streams.create streams.records.append streams.records.read \
+                  streams.metadata.read";
+    let pid = crate::tenant::ProjectId::new("proj-tsx").unwrap();
+    let policy_in = |ws: &str, ppv: u64, ov: u64| crate::project_policy::ProjectPolicy {
+        project_id: pid.clone(),
+        workspace_id: crate::tenant::WorkspaceId::new(ws).unwrap(),
+        cell_id: std::sync::Arc::from("test-cell"),
+        project_policy_version: ppv,
+        ownership_version: ov,
+        status: crate::project_policy::ProjectStatus::Active,
+        quotas: crate::project_policy::ProjectQuotas::default(),
+    };
+    let publish_policy = |p: crate::project_policy::ProjectPolicy, fv: u64| {
+        let mut projects = std::collections::HashMap::new();
+        projects.insert(pid.clone(), p);
+        svc.publish_policies(crate::project_policy::PolicySnapshot {
+            projects,
+            fetched_at_unix: now + fv as i64,
+            feed_version: fv,
+        })
+        .unwrap();
+    };
+    publish_policy(policy_in("ws_sa", 1, 1), 1);
+    let grant = |gv: u64, status: crate::project_policy::CredentialStatus, fv: u64| {
+        let mut credentials = std::collections::HashMap::new();
+        credentials.insert(
+            std::sync::Arc::from("c_sx"),
+            crate::project_policy::CredentialGrant {
+                credential_id: std::sync::Arc::from("c_sx"),
+                project_id: pid.clone(),
+                grant_version: gv,
+                status,
+                scopes: crate::tenant::ScopeSet::parse(scopes).0,
+                grant: crate::tenant::StreamGrant::All,
+                expires_at: None,
+            },
+        );
+        svc.publish_grants(crate::project_policy::GrantSnapshot {
+            credentials,
+            fetched_at_unix: now + fv as i64,
+            feed_version: fv,
+        })
+        .unwrap();
+    };
+    grant(1, crate::project_policy::CredentialStatus::Active, 1);
+    let (state, addr) = http_rig_with_auth_service(mem(), svc.clone()).await;
+    state
+        .sse_live_hub
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+
+    #[derive(serde::Serialize)]
+    struct C<'a> {
+        iss: &'a str,
+        aud: &'a str,
+        sub: &'a str,
+        credential_id: &'a str,
+        project_id: &'a str,
+        workspace_id: &'a str,
+        cell_id: &'a str,
+        ownership_version: u64,
+        grant_version: u64,
+        scope: &'a str,
+        jti: &'a str,
+        iat: i64,
+        exp: i64,
+    }
+    let mint = |ws: &'static str, ov: u64, jti: &'static str, exp: i64| {
+        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+        header.kid = Some("wtx-1".into());
+        jsonwebtoken::encode(
+            &header,
+            &C {
+                iss: "https://auth.prisma.io",
+                aud: "prisma-streams-data",
+                sub: "u",
+                credential_id: "c_sx",
+                project_id: "proj-tsx",
+                workspace_id: ws,
+                cell_id: "test-cell",
+                ownership_version: ov,
+                grant_version: 1,
+                scope: "streams.create streams.records.append streams.records.read \
+                        streams.metadata.read",
+                jti,
+                iat: now - 60,
+                exp,
+            },
+            &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
+        )
+        .unwrap()
+    };
+    let ta = format!("Bearer {}", mint("ws_sa", 1, "ta", now + 600));
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let auth_a = ("authorization", ta.as_str());
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/tsx",
+        &[ekey, auth_a],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+
+    use tokio::io::AsyncWriteExt;
+    let sse = |bearer: String| async move {
+        let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "GET /v1/streams/tsx/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nauthorization: {bearer}\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
+        );
+        sck.write_all(req.as_bytes()).await.unwrap();
+        sck
+    };
+    let mut promoter = sse(ta.clone()).await;
+    let (acc, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;
+    assert!(acc.contains("upToDate"), "promoter parks:\n{acc}");
+    let mut sub = sse(ta.clone()).await;
+    let (acc0, _) = hub_sse_collect(&mut sub, 8, |t| t.contains("upToDate")).await;
+    assert!(acc0.contains("upToDate"), "sub parks:\n{acc0}");
+
+    // THE SUSPENSION: same workspace, same versions, same credential —
+    // only the project status flips. The lease must fail on status
+    // alone.
+    let mut suspended = policy_in("ws_sa", 2, 1);
+    suspended.status = crate::project_policy::ProjectStatus::Suspended;
+    publish_policy(suspended, 2);
+
+    // ESTABLISHED subscriptions must terminate within the recheck
+    // bound (heartbeat cadence + slack), not deliver indefinitely.
+    let (_, eof_promoter) = hub_sse_collect(&mut promoter, 25, |_| false).await;
+    let (_, eof_sub) = hub_sse_collect(&mut sub, 5, |_| false).await;
+    assert!(
+        eof_promoter && eof_sub,
+        "established subscriptions must terminate on suspension \
+         (promoter eof={eof_promoter}, hub sub eof={eof_sub})"
+    );
+}
