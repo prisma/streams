@@ -328,22 +328,21 @@ async fn hub_pump(
         // re-check — a join that incremented before the CAS keeps the
         // hub (we CAS back); a join after the CAS sees RETIRING on its
         // recheck and installs a replacement.
-        if hub.subscribers.load(Ordering::SeqCst) == 0 {
-            if hub
+        if hub.subscribers.load(Ordering::SeqCst) == 0
+            && hub
                 .lifecycle
                 .compare_exchange(HUB_ACTIVE, HUB_RETIRING, Ordering::SeqCst, Ordering::SeqCst)
                 .is_ok()
-            {
-                if hub.subscribers.load(Ordering::SeqCst) == 0 {
-                    break PumpExit::NoSubscribers;
-                }
-                let _ = hub.lifecycle.compare_exchange(
-                    HUB_RETIRING,
-                    HUB_ACTIVE,
-                    Ordering::SeqCst,
-                    Ordering::SeqCst,
-                );
+        {
+            if hub.subscribers.load(Ordering::SeqCst) == 0 {
+                break PumpExit::NoSubscribers;
             }
+            let _ = hub.lifecycle.compare_exchange(
+                HUB_RETIRING,
+                HUB_ACTIVE,
+                Ordering::SeqCst,
+                Ordering::SeqCst,
+            );
         }
         let (end, closed) = {
             let st = handle.state.lock().unwrap();
