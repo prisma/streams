@@ -566,3 +566,38 @@ churn-contaminated). Recommendation: promote-on-first is SAFE by
 these numbers; keep default 2 per the review until a loaded matched
 run (or a hairpin-fixed field canary at SSE_HUB_PROMOTE_AT=1)
 confirms the benefit.
+
+## Review round 3 status (2026-08-21)
+
+Verdict: LiveHub default-on + promote-at-2 stand; canary after the
+authorization fixes; NOT GA-complete. Landed the same day:
+
+- **Phase 0 — long-lived authorization contract CLOSED** (7dd03a6f):
+  F1 feed staleness terminates established subscriptions (lease_check
+  with LeaseInvalidReason, lease_deadline = min(token exp, credential
+  exp, policy/grants fetched_at + window), refresh moves the deadline);
+  F2 revocation/expiry interrupts ACTIVE delivery — AuthService
+  generation on a watch channel + GatedSseBody, the authoritative lease
+  gate at the response-body boundary on all three SSE paths (no queued
+  frame yields after a cutoff), plus producer checks between sends;
+  F3 publish_policies refuses a workspace change without an
+  ownership_version increment (emulator hostile fault + e2e leg); the
+  workspace-remap subscription test replaced by a resolver test and a
+  valid-transfer billing integration. Red observed: 198 frames after
+  revocation on both paths; no termination on stale feeds or on expiry
+  while progressing. 9 new legs; suite 503.
+- **Phase 1** (c83fa0f5, f53ea2f0): platform-e2e REQUIRED for RC
+  promotion; the tag records the field-certified server sha256 from
+  rc-certify's manifest (local rebuild = reproducibility note only);
+  workload contract corrected (§3b: 100 subscribed writes/s, 10k
+  deliveries/s, S_instance ladder out-of-region, cell K formula, no
+  single-instance 100k); obsolete W2 interim verdict removed; canary
+  counters exported (direct/hub subs, promotions, uncached by reason,
+  below-floor catch-ups, disconnects by reason, lease terminations by
+  reason, pump exits, prepared vs delivered); ring walk behind ?walk=1.
+- **Phase 2/3 prep** (7efa47e1): WC_GEN_REGION out-of-region
+  generator, sse-path-preflight.sh (five-step check, abort on zombies
+  or silent 200s), sse-matched-loaded.sh (loaded A/B promotion run).
+
+Next: loaded promotion verdict (local), then Phase 2 canary and the
+Phase 3 per-instance ladder with an out-of-region generator + preflight.
