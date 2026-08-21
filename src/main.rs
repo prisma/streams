@@ -1000,6 +1000,91 @@ fn validate_fleet_auth(args: &Args, fleet_mode: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Largest hub retention posture any field campaign certified (the
+/// 1-GiB ladder's 64-MiB rung). The DEFAULT is now the field-proven
+/// 16 MiB; an explicit override beyond the tested envelope is a bridge
+/// configuration the release posture refuses.
+pub(crate) const MAX_CERTIFIED_HUB_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Descriptors held OUTSIDE the SSE connection budget — storage
+/// clients, peer HTTP pools, maintenance, stdio, listener. The clamp
+/// keeps this much headroom below `nofile_hard`.
+const FD_RESERVE: u64 = 1024;
+
+/// Round-4 review: lock the safe 1-GiB defaults at boot. Pure over its
+/// inputs so the suite can exercise every shape without touching
+/// process environment or rlimits.
+/// * `hub_total_env` — the raw SSE_HUB_TOTAL_BYTES value, when set.
+/// * `sse_max_connections` — configured cap; CLAMPED in place to the
+///   effective ceiling when it exceeds what the descriptor budget can
+///   actually carry (clamp + emit, per the review's acceptable arm).
+/// * `nofile_hard` — RLIMIT_NOFILE hard ceiling already raised to
+///   (0 = unknown / non-unix: skip the fd clamp).
+pub(crate) fn validate_release_capacity(
+    release_posture: bool,
+    hub_total_env: Option<&str>,
+    sse_max_connections: &mut u64,
+    nofile_hard: u64,
+) -> anyhow::Result<()> {
+    // The hub budget: refuse an explicit override above the largest
+    // certified posture, and refuse a value that would silently parse
+    // as the default (a typo'd byte count must not masquerade as a
+    // tuned budget).
+    if let Some(raw) = hub_total_env {
+        let parsed: Option<u64> = raw.trim().parse().ok();
+        match parsed {
+            None => {
+                anyhow::bail!(
+                    "SSE_HUB_TOTAL_BYTES={raw:?} does not parse as a byte count \
+                     (an unparseable value would silently fall back to the default)"
+                );
+            }
+            Some(v) if v > MAX_CERTIFIED_HUB_TOTAL_BYTES => {
+                if release_posture {
+                    anyhow::bail!(
+                        "SSE_HUB_TOTAL_BYTES={v} exceeds the largest field-certified \
+                         posture ({MAX_CERTIFIED_HUB_TOTAL_BYTES}); the 1-GiB profile \
+                         certifies at 16 MiB (64 MiB tripped RSS shed at ~505 hubs)"
+                    );
+                }
+                tracing::warn!(
+                    "SSE_HUB_TOTAL_BYTES={v} exceeds the largest field-certified \
+                     posture ({MAX_CERTIFIED_HUB_TOTAL_BYTES})"
+                );
+            }
+            Some(_) => {}
+        }
+    }
+    // The descriptor ceiling: the configured SSE cap must fit under
+    // nofile_hard with headroom for everything else the process holds.
+    // Under the release posture: clamp and emit (the review's
+    // acceptable arm) rather than refusing — a platform that lowers
+    // the ceiling mid-fleet must not take the whole deployment down at
+    // restart. Outside the release posture, warn only.
+    if nofile_hard > 0 && *sse_max_connections > 0 {
+        let ceiling = nofile_hard.saturating_sub(FD_RESERVE);
+        if *sse_max_connections > ceiling {
+            if release_posture {
+                tracing::warn!(
+                    "SSE_MAX_CONNECTIONS={} exceeds what nofile_hard={nofile_hard} can carry \
+                     with a {FD_RESERVE}-descriptor reserve; clamping the effective cap to {ceiling} \
+                     (raise RLIMIT_NOFILE or lower SSE_MAX_CONNECTIONS)",
+                    *sse_max_connections
+                );
+                *sse_max_connections = ceiling;
+            } else {
+                tracing::warn!(
+                    "SSE_MAX_CONNECTIONS={} exceeds what nofile_hard={nofile_hard} can carry \
+                     with a {FD_RESERVE}-descriptor reserve; descriptor exhaustion wedges \
+                     parked subscriptions (~1.5k seen in the field)",
+                    *sse_max_connections
+                );
+            }
+        }
+    }
+    Ok(())
+}
+
 #[cfg(test)]
 mod config_validation_tests {
     use super::*;
@@ -1106,6 +1191,38 @@ mod config_validation_tests {
             .expect("default shard settings must open");
         validate_engine_settings("history", &crate::history::history_settings())
             .expect("default history settings must open");
+    }
+
+    /// Round-4 review: release-posture capacity validation — the hub
+    /// budget stays inside the field-certified envelope, a typo'd byte
+    /// count never silently becomes the default, and the SSE
+    /// connection cap clamps to what nofile_hard can carry.
+    #[test]
+    fn release_capacity_validates_hub_budget_and_fd_ceiling() {
+        // An explicit hub budget above the certified envelope: refused
+        // under the release posture, warned outside it.
+        let mut cap = 10_000u64;
+        assert!(validate_release_capacity(true, Some("134217728"), &mut cap, 0).is_err());
+        assert!(validate_release_capacity(false, Some("134217728"), &mut cap, 0).is_ok());
+        // The certified postures pass (16 MiB default is implicit).
+        let mut cap = 10_000;
+        assert!(validate_release_capacity(true, Some("16777216"), &mut cap, 65_536).is_ok());
+        assert!(validate_release_capacity(true, None, &mut cap, 65_536).is_ok());
+        // A typo'd value must not silently become the default.
+        assert!(validate_release_capacity(false, Some("16 MiB"), &mut cap, 0).is_err());
+        // The Compute-class ceiling: hard 4,096 with a 1,024 reserve
+        // clamps the configured 10k to 3,072 under the release posture.
+        let mut cap = 10_000;
+        validate_release_capacity(true, None, &mut cap, 4_096).unwrap();
+        assert_eq!(cap, 3_072, "effective cap must fit nofile_hard minus reserve");
+        // Outside the release posture the configured value stands.
+        let mut cap = 10_000;
+        validate_release_capacity(false, None, &mut cap, 4_096).unwrap();
+        assert_eq!(cap, 10_000);
+        // A generous ceiling leaves the cap alone.
+        let mut cap = 10_000;
+        validate_release_capacity(true, None, &mut cap, u32::MAX as u64).unwrap();
+        assert_eq!(cap, 10_000);
     }
 
     /// CHAOS-3: the body ceiling is a capacity knob. Lowering it must
@@ -1261,7 +1378,7 @@ fn main() -> anyhow::Result<()> {
 }
 
 async fn async_main() -> anyhow::Result<()> {
-    let args = Args::parse();
+    let mut args = Args::parse();
 
     // FIRST: the body ceiling sizes the absorber's worst-frame
     // reservation, which floors the process-wide budget. It must be
@@ -1436,6 +1553,21 @@ async fn async_main() -> anyhow::Result<()> {
     // one — a fleet that silently accepted the public bearer on those
     // routes would let any customer token corrupt any consumer.
     validate_fleet_auth(&args, fleet_mode)?;
+    // Round-4 review: validate the capacity posture against the real
+    // descriptor ceiling BEFORE any state is built — the SSE cap may
+    // be clamped to what nofile_hard can actually carry.
+    let (nofile_soft, nofile_hard) = crate::http::raise_nofile();
+    tracing::info!(
+        "nofile soft={nofile_soft} hard={nofile_hard} (raised to hard at boot); \
+         hub retention budget={}B",
+        crate::livehub::hub_total_cap()
+    );
+    validate_release_capacity(
+        args.release_posture,
+        std::env::var("SSE_HUB_TOTAL_BYTES").ok().as_deref(),
+        &mut args.sse_max_connections,
+        nofile_hard,
+    )?;
     let initial_shards = match args.initial_shards {
         Some(n) => {
             if fleet_mode && n < 4 * args.fleet_max as usize {

@@ -93,7 +93,14 @@ pub(crate) fn hub_total_cap() -> u64 {
         std::env::var("SSE_HUB_TOTAL_BYTES")
             .ok()
             .and_then(|v| v.parse().ok())
-            .unwrap_or(64 * 1024 * 1024)
+            // Round-4 review, field evidence: the 1-GiB product profile
+            // ran ~505 publishing hubs — at the old 64-MiB default RSS
+            // grew 330 -> 507 MB and crossed the write-shed line; a
+            // 16-MiB budget held RSS around 354 MB with zero shed.
+            // This cap is a bounded cache-RETENTION accounting unit,
+            // NOT an RSS bound: decrypt/format allocations, allocator
+            // retention and HTTP state sit outside it.
+            .unwrap_or(16 * 1024 * 1024)
     })
 }
 
