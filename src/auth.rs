@@ -724,7 +724,13 @@ impl AuthService {
         self.jwks.store(Arc::new(snapshot));
         self.unknown_kid_seen.store(0, Ordering::Relaxed);
         let g = self.generation.fetch_add(1, Ordering::Release) + 1;
-        let _ = self.gen_tx.send(g);
+        // Round-4 finding 5: send_replace, never send — send() REFUSES
+        // at zero receivers and drops the value, so every publication
+        // landing between two subscribers (or before the first) was
+        // lost to the watch and new bodies started from a stale
+        // generation. The atomic above stays the cheap fast path; the
+        // watch value must simply always equal it.
+        self.gen_tx.send_replace(g);
         Ok(())
     }
 
@@ -853,7 +859,13 @@ impl AuthService {
         drop(hw);
         self.projects.store(Arc::new(snapshot));
         let g = self.generation.fetch_add(1, Ordering::Release) + 1;
-        let _ = self.gen_tx.send(g);
+        // Round-4 finding 5: send_replace, never send — send() REFUSES
+        // at zero receivers and drops the value, so every publication
+        // landing between two subscribers (or before the first) was
+        // lost to the watch and new bodies started from a stale
+        // generation. The atomic above stays the cheap fast path; the
+        // watch value must simply always equal it.
+        self.gen_tx.send_replace(g);
         Ok(())
     }
 
@@ -972,7 +984,13 @@ impl AuthService {
         drop(hw);
         self.credentials.store(Arc::new(snapshot));
         let g = self.generation.fetch_add(1, Ordering::Release) + 1;
-        let _ = self.gen_tx.send(g);
+        // Round-4 finding 5: send_replace, never send — send() REFUSES
+        // at zero receivers and drops the value, so every publication
+        // landing between two subscribers (or before the first) was
+        // lost to the watch and new bodies started from a stale
+        // generation. The atomic above stays the cheap fast path; the
+        // watch value must simply always equal it.
+        self.gen_tx.send_replace(g);
         Ok(())
     }
 
@@ -2080,5 +2098,28 @@ mod tests {
         assert_eq!(j["ok"], 1);
         assert_eq!(j["failed"], 1);
         assert_eq!(j["wrong_cell"], 1);
+    }
+
+    /// Round-4 finding 5: generation publication must retain the
+    /// latest value even when NO response body currently holds a
+    /// receiver. `watch::Sender::send` REFUSES at zero receivers and
+    /// drops the value — every publication between two subscribers
+    /// (or before the first one) was lost to the watch, so a new
+    /// body's `changed()` baseline started from a stale generation
+    /// and missed wakeups until a later publication happened to land.
+    /// `send_replace` stores unconditionally.
+    #[test]
+    fn generation_watch_retains_the_latest_generation_without_receivers() {
+        // service() publishes jwks + policies + grants and NEVER holds
+        // a receiver: exactly the zero-receiver posture.
+        let svc = service();
+        assert_eq!(svc.auth_generation(), 3);
+        let rx = svc.generation_watch();
+        assert_eq!(
+            *rx.borrow(),
+            3,
+            "a NEW receiver must observe the CURRENT generation; \
+             a dropped publication left it stale"
+        );
     }
 }
