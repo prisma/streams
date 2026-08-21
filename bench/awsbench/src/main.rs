@@ -1299,11 +1299,16 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
     );
     anyhow::ensure!(tokens.len() >= tenants, "need >= {tenants} tokens");
 
+    // NO client-level timeout: reqwest's Client::timeout bounds the WHOLE
+    // request INCLUDING a streaming body, so every parked SSE response
+    // was killed at 30 s — the subsLive plateau in every rung since
+    // pacing landed was pace x 30 s, not the edge. Writes and the
+    // tail-learn GET carry per-request timeouts below; the SSE park is
+    // bounded by the silence watchdog instead.
     let http = reqwest::Client::builder()
         .pool_max_idle_per_host(4096)
         .pool_idle_timeout(Duration::from_secs(30))
         .tcp_nodelay(true)
-        .timeout(Duration::from_secs(30))
         // The edge offers h2 via ALPN; reqwest then MULTIPLEXES the
         // writers and every parked SSE stream onto a handful of TCP
         // conns, and parked streams starve for connection window under
@@ -1397,6 +1402,7 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                 for attempt in 0..4u32 {
                     let r = http
                         .put(&url)
+                        .timeout(Duration::from_secs(30))
                         .header("authorization", auth.clone())
                         .header("prisma-encryption-key", key.clone())
                         .header("content-type", "application/json")
@@ -1460,6 +1466,7 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                 // (Re)learn the tail, then park.
                 let tail = match http
                     .get(format!("{base}/v1/streams/{name}/records"))
+                    .timeout(Duration::from_secs(30))
                     .header("authorization", auth.clone())
                     .header("prisma-encryption-key", key.clone())
                     .send()
@@ -1639,6 +1646,7 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                             let t0 = Instant::now();
                             match http
                                 .post(&url)
+                                .timeout(Duration::from_secs(30))
                                 .header("authorization", auth)
                                 .header("prisma-encryption-key", key)
                                 .header("content-type", "application/json")
