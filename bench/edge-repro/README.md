@@ -126,7 +126,7 @@ platform's own core use case) cannot hold a live subscription, even
 with the documented-nowhere opt-out header. Ask #4: honor the opt-out
 (or unbuffer `text/event-stream`) on the internal/hairpin tier too.
 
-## Addendum 2 (2026-08-21): per-source-IP concurrent-connection cap
+## Addendum 2 (2026-08-21, corrected): per-proxy per-origin concurrent-connection budget (~512)
 
 From a single client IP, concurrent streaming connections hit a hard
 ceiling (~1.2k from a workstation; ~2k incl. writer sockets from a
@@ -145,3 +145,15 @@ subscriptions, a load generator, a gateway) is capped per IP regardless
 of server capacity. Ask #5: document the per-source limit and whether
 it is raisable per project; otherwise high-fanout consumers must shard
 across source IPs.
+
+Correction after more data: the ceiling is not per client IP. Against a
+Prisma Streams origin: one client host reached 1,536 concurrent SSE
+(four runs, exact); THREE client hosts in three regions reached
+619 + 658 + 259 = 1,536 at the same instant; a single workstation
+reached exactly 512 and then could not open ANY new connection to the
+origin. Consistent model: ~512 concurrent connections per edge proxy
+per origin service, and a client reaches one proxy locally or up to
+three from Compute regions. Net: a service's total concurrency through
+the edge is ~1.5k no matter the client topology. Ask #5 (revised):
+document the per-proxy per-origin budget and whether it scales with
+the origin's instance class or can be raised per project.

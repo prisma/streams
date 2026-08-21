@@ -711,3 +711,25 @@ Hub budget note: with SSE_HUB_TOTAL_BYTES=16 MiB, 542 hubs, 1,470
 prepared records (rotation geometry: each subscribed stream is written
 once per ~500 s), RSS stayed 354 MB and shed 0 — keep 16 MiB for the
 1-GiB class.
+
+**EDGE ORIGIN CONCURRENCY MODEL — FINAL (2026-08-21, four vantages):**
+| vantage | concurrent SSE reached | then |
+|---|---|---|
+| 1 gen (us-east), L3a/L3a-ctl/L3b/L3c | 1,536 (exact, 4 runs) | writers starve, server idle & healthy |
+| 3 gens (us-east/us-west/ap-ne), L3d | 619 + 658 + 259 = **1,536**, same instant | writer froze at that instant |
+| workstation vs streams server | **512**, then origin unreachable from this IP | held conns keep heartbeating |
+| workstation vs tiny Bun app | ~1,248 | new conns refused |
+Model: each edge proxy admits ~512 concurrent connections to a given
+origin service; a client reaches ONE proxy locally and up to three from
+Compute regions, so one service's total concurrency through the edge is
+~512 x 3 = 1,536 — independent of client count, client IP, fd limits,
+hub on/off, or server capacity. Consequences: (1) S_instance THROUGH
+THE EDGE ~= 1.2-1.4k parked subscribers per service with write
+headroom; the 100k cell target would need ~70+ services on this edge —
+an edge number, not a server one; (2) the per-instance ladder rungs
+5k/7.5k/10k are unmeasurable through the edge (server-side capacity
+certification needs an in-VPC path or a raised per-proxy budget);
+(3) platform ticket finding #3 corrected to "per-proxy per-origin
+budget" (bench/edge-repro/README.md). Multi-gen harness stays: it is
+the right shape once the ceiling moves. Server health through all of
+it: 0 shed at 16 MiB hub budget, runtime never blocked, fds < 1.7k.
