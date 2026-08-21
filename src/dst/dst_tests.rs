@@ -30018,14 +30018,29 @@ async fn hub_empty_seal_single_final_control() {
         b"{}",
     )
     .await;
-    // Intermittent (~1/25 solo): the seal answered 500 once — keep the
-    // body so the next occurrence names its cause.
-    assert_eq!(
-        st,
-        200,
-        "seal status {st}: {}",
-        String::from_utf8_lossy(&body)
-    );
+    // Intermittent (~1/56 solo): the seal answered 500 once. Round-4
+    // review: keep EVERY correlated fact at the occurrence — response
+    // body (names the exact resumable/refusal message), server-side
+    // seal/close error logs (RUST_LOG), descriptor + segment state,
+    // and hub lifecycle gauges — so the next one carries its root
+    // cause instead of a bare status.
+    if st != 200 {
+        let (_, _, segs) = preq(addr, "GET", "/v1/segments/hubseal2", &[], b"").await;
+        let (_, _, load) = preq(
+            addr,
+            "GET",
+            "/v1/debug/load?walk=1",
+            &[("authorization", "Bearer dst-bearer")],
+            b"",
+        )
+        .await;
+        panic!(
+            "seal status {st}: {}\n--- segments ---\n{}\n--- debug/load ---\n{}",
+            String::from_utf8_lossy(&body),
+            String::from_utf8_lossy(&segs),
+            String::from_utf8_lossy(&load)
+        );
+    }
     let (acc, eof) = hub_sse_collect(&mut sck, 15, |_| false).await;
     assert_eq!(
         acc.matches("\"sealed\":true").count(),
