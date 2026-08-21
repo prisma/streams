@@ -6944,7 +6944,7 @@ pub(crate) fn raise_nofile() -> (u64, u64) {
                     lim = want;
                 }
             }
-            return (lim.rlim_cur as u64, lim.rlim_max as u64);
+            return (lim.rlim_cur, lim.rlim_max);
         }
     }
     (0, 0)
