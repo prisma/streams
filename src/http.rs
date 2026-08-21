@@ -382,19 +382,94 @@ impl InternalOperation {
     }
 }
 
+/// Round-4 finding 2: the least facts a RAW-surface LIVE subscription
+/// must keep re-proving for as long as it stays open. A workload JWT
+/// verified at request time used to be reduced to a boolean — its
+/// `expires_at` was discarded, and a connection opened under a
+/// short-lived credential kept reading forever after the token died.
+#[derive(Clone, Debug)]
+pub(crate) struct InternalLease {
+    pub subject: Arc<str>,
+    pub cell_id: Arc<str>,
+    pub operation: InternalOperation,
+    pub expires_at: i64,
+}
+
+/// What authorized this raw-surface request. The boolean gate is
+/// retained for one-shot operations; LIVE requests must observe the
+/// `Workload` arm so the subscription cannot outlive its token.
+#[derive(Clone, Debug)]
+pub(crate) enum RawSurfaceAuth {
+    /// Off mode / deployment bearer: local development and conformance
+    /// posture, no lease semantics.
+    DeploymentBearer,
+    /// Enforce-mode static bridge token: the NAMED legacy posture
+    /// (refused at boot under the release posture). A permanent shared
+    /// secret has no expiry to enforce.
+    StaticBridge,
+    /// Verified workload JWT scoped to exactly one operation:
+    /// SHORT-LIVED — a live subscription on this surface carries its
+    /// expiry as a lease.
+    Workload(InternalLease),
+}
+
+/// Typed raw-surface authorization for ONE operation (§14.3 + §14.1).
+/// Same trust boundaries as the boolean form; the workload arm keeps
+/// the verified principal's expiry instead of discarding it.
+pub(crate) fn raw_surface_authorization(
+    state: &AppState,
+    headers: &HeaderMap,
+    op: InternalOperation,
+) -> Option<RawSurfaceAuth> {
+    match state.auth.mode {
+        crate::auth::AuthMode::Enforce => fleet_operation_authorization(state, headers, op),
+        _ => authorized(state, headers).then_some(RawSurfaceAuth::DeploymentBearer),
+    }
+}
+
+fn fleet_operation_authorization(
+    state: &AppState,
+    headers: &HeaderMap,
+    op: InternalOperation,
+) -> Option<RawSurfaceAuth> {
+    // SR3-1: exclusive modes at runtime (see fleet_operation_authorized).
+    let static_ok = match (&state.fleet_token_source, &state.fleet_internal_token) {
+        (Some(_), _) => false,
+        (None, Some(t)) => bearer(headers).map(|v| secret_eq(v, t)).unwrap_or(false),
+        (None, None) => false,
+    };
+    if static_ok {
+        return Some(RawSurfaceAuth::StaticBridge);
+    }
+    bearer(headers).and_then(|t| {
+        state
+            .auth
+            .verify_internal(t, crate::shard::now_ms() / 1000)
+            .ok()
+            .filter(|p| p.operations.iter().any(|o| o == op.claim()))
+            .map(|p| {
+                RawSurfaceAuth::Workload(InternalLease {
+                    subject: p.subject.clone(),
+                    cell_id: p.cell_id.clone(),
+                    operation: op,
+                    expires_at: p.expires_at,
+                })
+            })
+    })
+}
+
 /// Raw-surface authorization for ONE operation (§14.3 + §14.1): under
 /// enforce the raw surface takes fleet identity scoped to the exact
 /// raw operation the request performs; other modes keep the
-/// deployment-bearer posture.
+/// deployment-bearer posture. Boolean view of
+/// `raw_surface_authorization` — one-shot operations need only this;
+/// LIVE requests must observe the typed `Workload` arm.
 pub(crate) fn raw_surface_authorized(
     state: &AppState,
     headers: &HeaderMap,
     op: InternalOperation,
 ) -> bool {
-    match state.auth.mode {
-        crate::auth::AuthMode::Enforce => fleet_operation_authorized(state, headers, op),
-        _ => authorized(state, headers),
-    }
+    raw_surface_authorization(state, headers, op).is_some()
 }
 
 /// Short-lived workload JWT (§14.1): aud "prisma-streams-internal",
@@ -1826,6 +1901,12 @@ pub struct ReadParams {
     /// terminate at token expiry.
     #[serde(skip)]
     pub(crate) lease: Option<crate::auth::AuthLease>,
+    /// Round-4 finding 2: the verified workload principal's expiry
+    /// lease on the RAW surface. Serde-skipped like `lease`; set by
+    /// the raw GET dispatch from the typed workload authorization so
+    /// a live subscription cannot outlive its short-lived JWT.
+    #[serde(skip)]
+    pub(crate) internal_lease: Option<InternalLease>,
     /// Fleet-internal request: NEVER metered (§4.2 — internal relays
     /// return counts; the public coordinator that requested the page
     /// meters exactly once). Serde-skipped so no query string sets it.
@@ -2206,7 +2287,7 @@ async fn stream_entry(
 async fn stream_entry_inner(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
-    Query(params): Query<ReadParams>,
+    Query(mut params): Query<ReadParams>,
     method: Method,
     headers: HeaderMap,
     body: Body,
@@ -2218,13 +2299,16 @@ async fn stream_entry_inner(
         Method::POST => InternalOperation::RawAppend,
         _ => InternalOperation::RawRead,
     };
-    if !raw_surface_authorized(&state, &headers, raw_op) {
+    // Round-4 finding 2: TYPED authorization — a verified workload JWT
+    // keeps its expiry (an InternalLease) instead of being reduced to
+    // a boolean the request path discards.
+    let Some(raw_authz) = raw_surface_authorization(&state, &headers, raw_op) else {
         return err_resp(
             StatusCode::UNAUTHORIZED,
             "unauthorized",
             "bearer token required",
         );
-    }
+    };
     // The `_` namespace is the system's (docs/OBSERVABILITY-BILLING.md
     // §8/§15): `_usage`, `_ops_metrics` and `_ops_events` live there,
     // customer credentials never reach them (their own key + the fleet
@@ -2288,8 +2372,18 @@ async fn stream_entry_inner(
             }
             r
         }
-        Method::GET => read(state, name, params, headers, false).await,
-        Method::HEAD => read(state, name, params, headers, true).await,
+        Method::GET | Method::HEAD => {
+            // Round-4 finding 2: a workload-JWT read carries its
+            // expiry into the request — a live (SSE) subscription on
+            // this surface must terminate no later than token expiry,
+            // not outlive it. The static bridge and deployment-bearer
+            // postures carry no lease (permanent credentials).
+            let head_only = method == Method::HEAD;
+            if let RawSurfaceAuth::Workload(l) = raw_authz {
+                params.internal_lease = Some(l);
+            }
+            read(state, name, params, headers, head_only).await
+        }
         Method::DELETE => {
             let sref = state.raw_adapter_sref(&name);
             delete_stream(state, sref).await
@@ -7041,12 +7135,41 @@ fn lease_refusal_response(r: crate::auth::LeaseInvalidReason) -> Response {
     )
 }
 
+/// Round-4 finding 2: what a long-lived subscription re-proves. A
+/// customer lease re-validates against the policy/grant feeds; an
+/// internal (workload-JWT) lease enforces token expiry — the raw
+/// surface has no feed-coupled identity to re-check yet, but a parked
+/// connection must still die with its credential.
+#[derive(Clone, Debug)]
+enum SseLease {
+    None,
+    Customer(crate::auth::AuthLease),
+    Internal(InternalLease),
+}
+
+impl SseLease {
+    fn of(params: &ReadParams) -> Self {
+        match (&params.internal_lease, &params.lease) {
+            (Some(i), _) => Self::Internal(i.clone()),
+            (None, Some(c)) => Self::Customer(c.clone()),
+            (None, None) => Self::None,
+        }
+    }
+    fn expires_at(&self) -> i64 {
+        match self {
+            Self::None => i64::MAX,
+            Self::Customer(l) => l.expires_at,
+            Self::Internal(l) => l.expires_at,
+        }
+    }
+}
+
 /// Review V4 + round 3 F1: bounded re-authorization for a live
 /// subscription. One atomic load per wakeup; the full lease re-check
 /// runs when the publication generation moved OR the lease's own
 /// deadline (token/credential expiry, feed staleness boundary) passed.
 struct LeaseWatch {
-    lease: Option<crate::auth::AuthLease>,
+    lease: SseLease,
     last_gen: u64,
     next_deadline: i64,
 }
@@ -7061,21 +7184,32 @@ impl LeaseWatch {
     /// subscription started on authorization that was already dead.
     ///
     /// This constructor validates UNCONDITIONALLY before the watch is
-    /// trusted, and re-reads until the generation is stable across the
-    /// check: `lease_check` and `lease_deadline` read several
-    /// snapshots, so a publication landing mid-check would otherwise
-    /// mix pre- and post-publication facts. Returns the reason when
-    /// the lease was already invalid at construction time.
+    /// trusted; customer leases re-read in a loop until the generation
+    /// is stable ACROSS the check (`lease_check` and `lease_deadline`
+    /// read several snapshots, so a publication landing mid-check
+    /// would otherwise mix pre- and post-publication facts). Returns
+    /// the reason when the lease was already invalid at construction.
     fn new_checked(
         state: &AppState,
-        lease: Option<crate::auth::AuthLease>,
+        lease: SseLease,
     ) -> Result<Self, crate::auth::LeaseInvalidReason> {
-        let Some(lease) = lease else {
+        let now = crate::shard::now_ms() / 1000;
+        // Round-4 finding 2: an internal (workload-JWT) lease has no
+        // feed-coupled identity to re-check yet — its single fact is
+        // token expiry, one clock read with no snapshot window to
+        // stabilize across.
+        if let SseLease::Internal(l) = &lease {
+            if now >= l.expires_at {
+                return Err(crate::auth::LeaseInvalidReason::TokenExpired);
+            }
             return Ok(Self {
-                lease: None,
-                last_gen: 0,
-                next_deadline: i64::MAX,
+                next_deadline: l.expires_at,
+                last_gen: state.auth.auth_generation(),
+                lease,
             });
+        }
+        let SseLease::Customer(lease) = lease else {
+            return Ok(Self::unrestricted());
         };
         loop {
             let before = state.auth.auth_generation();
@@ -7085,7 +7219,7 @@ impl LeaseWatch {
             let after = state.auth.auth_generation();
             if before == after {
                 return Ok(Self {
-                    lease: Some(lease),
+                    lease: SseLease::Customer(lease),
                     last_gen: after,
                     next_deadline: deadline,
                 });
@@ -7095,7 +7229,7 @@ impl LeaseWatch {
 
     fn unrestricted() -> Self {
         Self {
-            lease: None,
+            lease: SseLease::None,
             last_gen: 0,
             next_deadline: i64::MAX,
         }
@@ -7103,29 +7237,43 @@ impl LeaseWatch {
 
     /// True = terminate the subscription NOW.
     fn revoked(&mut self, state: &AppState) -> bool {
-        let Some(l) = &self.lease else { return false };
         let now = crate::shard::now_ms() / 1000;
         let g = state.auth.auth_generation();
         if g == self.last_gen && now < self.next_deadline {
             return false;
         }
         self.last_gen = g;
-        match state.auth.lease_check(l, now) {
-            Ok(()) => {
-                self.next_deadline = state.auth.lease_deadline(l);
-                false
+        match &self.lease {
+            SseLease::None => false,
+            // Round-4 finding 2: a workload-JWT subscription dies with
+            // its token — nothing else can invalidate it yet.
+            SseLease::Internal(l) => {
+                if now >= l.expires_at {
+                    LEASE_TERMINATIONS[crate::auth::LeaseInvalidReason::TokenExpired.index()]
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    true
+                } else {
+                    self.next_deadline = l.expires_at;
+                    false
+                }
             }
-            Err(r) => {
-                LEASE_TERMINATIONS[r.index()].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                true
-            }
+            SseLease::Customer(l) => match state.auth.lease_check(l, now) {
+                Ok(()) => {
+                    self.next_deadline = state.auth.lease_deadline(l);
+                    false
+                }
+                Err(r) => {
+                    LEASE_TERMINATIONS[r.index()].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    true
+                }
+            },
         }
     }
 
     /// Nap until the next mandatory re-check, capped so a far-future
     /// deadline does not hold a giant timer.
     fn nap(&self) -> std::time::Duration {
-        if self.lease.is_none() {
+        if matches!(self.lease, SseLease::None) {
             return std::time::Duration::from_secs(3600);
         }
         let now = crate::shard::now_ms() / 1000;
@@ -7189,7 +7337,7 @@ impl futures_util::Stream for GatedSseBody {
         if this.ended {
             return Poll::Ready(None);
         }
-        if this.watch.lease.is_some() {
+        if !matches!(this.watch.lease, SseLease::None) {
             // Generation change: (re)arm a changed() future on a clone
             // of the receiver so it can be held across polls.
             let mut fired = false;
@@ -7315,7 +7463,7 @@ pub(crate) fn sse_lineage_response(
     // a subscription never starts on authorization that was already
     // invalidated while the response was assembled.
     let gen_rx = state.auth.generation_watch();
-    let body_watch = match LeaseWatch::new_checked(&state, params.lease.clone()) {
+    let body_watch = match LeaseWatch::new_checked(&state, SseLease::of(&params)) {
         Ok(w) => w,
         Err(reason) => return lease_refusal_response(reason),
     };
@@ -7336,7 +7484,7 @@ pub(crate) fn sse_lineage_response(
         // Review V4 + round-4 F1: re-prove authorization for the
         // connection's life — starting from a generation-stable INITIAL
         // proof (a lease already dead at construction never schedules).
-        let mut lease_watch = match LeaseWatch::new_checked(&state, params.lease.clone()) {
+        let mut lease_watch = match LeaseWatch::new_checked(&state, SseLease::of(&params)) {
             Ok(w) => w,
             Err(_) => return,
         };
@@ -7584,7 +7732,7 @@ fn sse_control(next: u64, cursor: Option<&str>, up_to_date: bool, closed: bool) 
 /// a wrapped ring just means another catch-up round).
 #[allow(clippy::too_many_arguments)]
 async fn sse_hub_response(
-    lease: Option<crate::auth::AuthLease>,
+    lease: SseLease,
     state: Arc<AppState>,
     desc: StreamDesc,
     key: StreamKey,
@@ -7901,7 +8049,7 @@ async fn sse_response(
             Some(g) => direct_guard = Some(g),
             None => {
                 return sse_hub_response(
-                    params.lease.clone(),
+                    SseLease::of(&params),
                     state,
                     desc,
                     key,
@@ -7937,7 +8085,7 @@ async fn sse_response(
     // authorization was already invalidated while the response was
     // assembled is refused here, never established.
     let gen_rx = state.auth.generation_watch();
-    let body_watch = match LeaseWatch::new_checked(&state, params.lease.clone()) {
+    let body_watch = match LeaseWatch::new_checked(&state, SseLease::of(&params)) {
         Ok(w) => w,
         Err(reason) => return lease_refusal_response(reason),
     };
@@ -7956,7 +8104,7 @@ async fn sse_response(
         // Review V4 + round-4 F1: re-prove authorization for the
         // connection's life — starting from a generation-stable INITIAL
         // proof (a lease already dead at construction never schedules).
-        let mut lease_watch = match LeaseWatch::new_checked(&state, params.lease.clone()) {
+        let mut lease_watch = match LeaseWatch::new_checked(&state, SseLease::of(&params)) {
             Ok(w) => w,
             Err(_) => return,
         };
@@ -8350,6 +8498,17 @@ async fn internal_segment_read(
     }
     params.no_fanout = true;
     params.internal = true;
+    // Round-4 finding 2: this is a BOUNDED relay page, not a live
+    // surface — no parked subscription may hang off an internal page
+    // route. Peer relays never send `live`; a caller that does is
+    // answered 400 rather than silently downgraded to one page.
+    if params.live.is_some() {
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "live_unsupported",
+            "/v1/internal/segment-read serves bounded pages only; live semantics are not offered",
+        );
+    }
     // Clamped to the SAME server-side ceiling the public read obeys: an
     // internal budget header must not buy a bigger page than the
     // operation it is relaying on behalf of (round-19 finding).
@@ -8611,7 +8770,7 @@ async fn read_v3_lineage_inner(
                     StartPos::At(scan_from)
                 };
                 return sse_hub_response(
-                    params.lease.clone(),
+                    SseLease::of(&params),
                     state,
                     desc,
                     key,

@@ -28374,7 +28374,13 @@ async fn dab_seal_intent_crash_leaves_foreign_stream_intact() {
 
 /// Mint a workload JWT with an explicit operations claim (§14.1).
 fn sr2_workload_jwt(kid: &str, operations: &[&str], now: i64) -> String {
+    sr2_workload_jwt_exp(kid, operations, now + 300)
+}
+
+/// Round-4 finding 2: same, with an explicit expiry.
+fn sr2_workload_jwt_exp(kid: &str, operations: &[&str], exp: i64) -> String {
     const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
+    let now = crate::shard::now_ms() / 1000;
     #[derive(serde::Serialize)]
     struct W<'a> {
         iss: &'a str,
@@ -28382,6 +28388,7 @@ fn sr2_workload_jwt(kid: &str, operations: &[&str], now: i64) -> String {
         sub: &'a str,
         cell_id: &'a str,
         operations: Vec<&'a str>,
+        iat: i64,
         exp: i64,
     }
     let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
@@ -28394,12 +28401,92 @@ fn sr2_workload_jwt(kid: &str, operations: &[&str], now: i64) -> String {
             sub: "slot-op",
             cell_id: "test-cell",
             operations: operations.to_vec(),
-            exp: now + 300,
+            iat: now - 1,
+            exp,
         },
         &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
     )
     .unwrap()
 }
+
+/// RED (round-4 finding 2): a RAW live subscription opened under a
+/// short-lived workload JWT must reach EOF at token expiry. The gate
+/// used to return only a boolean and DISCARD the verified principal's
+/// `expires_at`, so `GET ...?live=sse` parked forever after the JWT
+/// died — permanent read authority from a temporary credential.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn raw_sse_terminates_at_workload_token_expiry() {
+    let scopes = "streams.create streams.records.append streams.records.read";
+    let (_state, addr, _tok) = sr_rig("proj-rwl", "ws_rwl", "c_rwl", "rwl-1", scopes).await;
+    let ct = ("content-type", "application/json");
+    // Stage the stream as the static fleet operator (bridge posture),
+    // then subscribe under the SHORT-LIVED workload identity.
+    let fleet = ("authorization", "Bearer dst-internal-token");
+    let ekey = ("stream-encryption-key", RIG_KEY_B64);
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/rwl", &[ct, fleet, ekey], br#"[{"i":0}]"#).await;
+    assert!(st == 200 || st == 201, "stage: {st}");
+
+    // Expires in 4 s: long enough to open and park, short enough to
+    // watch the deadline fire.
+    let now = crate::shard::now_ms() / 1000;
+    let wl = format!(
+        "Bearer {}",
+        sr2_workload_jwt_exp("rwl-1", &["raw-read"], now + 4)
+    );
+    let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
+    use tokio::io::AsyncWriteExt;
+    let req = format!(
+        "GET /v1/stream/rwl?live=sse&offset=now HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nauthorization: {wl}\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
+    );
+    sck.write_all(req.as_bytes()).await.unwrap();
+    let (head, head_text) = sse_head(&mut sck).await;
+    assert_eq!(
+        head, 200,
+        "workload-JWT raw SSE must be authorized:\n{head_text}"
+    );
+    let (body, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    assert!(body.contains("upToDate"), "parks before expiry:\n{body}");
+    // No appends, no feed activity: the JWT's expiry ALONE must end
+    // the connection.
+    let (_, eof) = hub_sse_collect(&mut sck, 10, |_| false).await;
+    assert!(
+        eof,
+        "raw SSE must terminate at its workload token's expiry, not outlive it"
+    );
+}
+
+/// Round-4 finding 2 (companion): /v1/internal/segment-read is a
+/// bounded relay PAGE route; live semantics are refused outright so
+/// no parked subscription can hang off an internal page route.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn internal_segment_read_refuses_live_semantics() {
+    let scopes = "streams.create streams.records.append streams.records.read";
+    let (_state, addr, _tok) = sr_rig("proj-rlv", "ws_rlv", "c_rlv", "rlv-1", scopes).await;
+    let ct = ("content-type", "application/json");
+    let fleet = ("authorization", "Bearer dst-internal-token");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/rlv", &[ct, fleet], br#"[{"i":0}]"#).await;
+    assert!(st == 200 || st == 201, "stage: {st}");
+    let now = crate::shard::now_ms() / 1000;
+    let sa = format!(
+        "Bearer {}",
+        sr2_workload_jwt("rlv-1", &["segment-read"], now)
+    );
+    let (st, _, body) = hreq(
+        addr,
+        "GET",
+        "/v1/internal/segment-read/rlv?live=sse&offset=now",
+        &[("authorization", sa.as_str())],
+        b"",
+    )
+    .await;
+    let text = String::from_utf8_lossy(&body);
+    assert!(
+        st == 400 && text.contains("live_unsupported"),
+        "live on an internal page route must be refused as live_unsupported \
+         (got {st}): {text}"
+    );
+}
+
 
 /// RED (review finding 1): a workload JWT's `operations` claim must
 /// SCOPE what the token can do. Today every gate reduces verification

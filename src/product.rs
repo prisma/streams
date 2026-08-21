@@ -3971,6 +3971,7 @@ async fn product_read(
         no_fanout: false,
         internal: false,
         lease,
+        internal_lease: None,
     };
     let mut ih = HeaderMap::new();
     if let Ok(v) = axum::http::HeaderValue::from_str(&key_b64) {
