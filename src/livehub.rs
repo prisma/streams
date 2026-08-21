@@ -23,6 +23,20 @@
 //! (review V1) — no status ever rides shared bytes.
 
 use crate::http::AppState;
+
+/// Review round 3: canary counters for the default-on rollout. Plain
+/// atomics (scraped at any frequency); the O(hubs) ring walk stays a
+/// diagnostic behind debug/load?walk=1.
+pub(crate) mod stats {
+    use std::sync::atomic::AtomicU64;
+    pub static PROMOTIONS: AtomicU64 = AtomicU64::new(0);
+    pub static UNCACHED_PER_HUB: AtomicU64 = AtomicU64::new(0);
+    pub static UNCACHED_PROCESS_CAP: AtomicU64 = AtomicU64::new(0);
+    pub static PREPARED_RECORDS: AtomicU64 = AtomicU64::new(0);
+    pub static PUMP_READ_ERRORS: AtomicU64 = AtomicU64::new(0);
+    pub static PUMP_TRANSITIONS: AtomicU64 = AtomicU64::new(0);
+    pub static PUMP_CLOSED: AtomicU64 = AtomicU64::new(0);
+}
 use crate::shard::ShardEngine;
 use bytes::Bytes;
 use std::collections::{HashMap, VecDeque};
@@ -304,7 +318,13 @@ impl LiveHub {
         // dropped with it (it sits behind the new floor anyway).
         let over_hub = batch.charge > hub_ring_bytes();
         let reserved = !over_hub && try_reserve(self.total, batch.charge as u64, self.cap);
+        stats::PREPARED_RECORDS.fetch_add(batch.events.len() as u64, Ordering::Relaxed);
         if over_hub || !reserved {
+            if over_hub {
+                stats::UNCACHED_PER_HUB.fetch_add(1, Ordering::Relaxed);
+            } else {
+                stats::UNCACHED_PROCESS_CAP.fetch_add(1, Ordering::Relaxed);
+            }
             self.total.fetch_sub(r.bytes as u64, Ordering::Relaxed);
             r.bytes = 0;
             r.logical = 0;
@@ -451,6 +471,25 @@ impl HubRegistry {
     /// exports both so drift is visible as an accounting bug. Tests
     /// assert against it per-rig (the process gauge is shared across
     /// the parallel test binary).
+    /// Canary: subscribers currently on the DIRECT path (per-incarnation
+    /// counts summed) and on hubs.
+    pub(crate) fn direct_subscribers(&self) -> u64 {
+        self.direct
+            .lock()
+            .unwrap()
+            .values()
+            .map(|n| *n as u64)
+            .sum()
+    }
+    pub(crate) fn hub_subscribers(&self) -> u64 {
+        self.map
+            .lock()
+            .unwrap()
+            .values()
+            .map(|h| h.subscribers.load(Ordering::SeqCst))
+            .sum()
+    }
+
     /// Logical prepared payload bytes retained across this registry's
     /// hubs (review V3: exposed NEXT TO the reserved charge so drift
     /// between what we account and what we hold is visible).
@@ -515,6 +554,7 @@ impl HubRegistry {
                 rk_hash: crate::postings::rk_hash("").0,
                 seg_id: desc.resolve_segment("").seg_id,
             });
+            stats::PROMOTIONS.fetch_add(1, Ordering::Relaxed);
             let hub = Arc::new(LiveHub {
                 id,
                 ring: Mutex::new(HubRing {
@@ -737,8 +777,18 @@ async fn hub_pump(state: Arc<AppState>, hub: Arc<LiveHub>) {
     // installed after this one retired must survive this cleanup.
     state.live_hubs.remove_if_same(hub.id, &hub);
     match exit {
-        PumpExit::Closed => hub.mark_closed(),
-        PumpExit::Transition | PumpExit::ReadError => hub.mark_dead(),
+        PumpExit::Closed => {
+            stats::PUMP_CLOSED.fetch_add(1, Ordering::Relaxed);
+            hub.mark_closed()
+        }
+        PumpExit::Transition => {
+            stats::PUMP_TRANSITIONS.fetch_add(1, Ordering::Relaxed);
+            hub.mark_dead()
+        }
+        PumpExit::ReadError => {
+            stats::PUMP_READ_ERRORS.fetch_add(1, Ordering::Relaxed);
+            hub.mark_dead()
+        }
         PumpExit::NoSubscribers => {}
     }
 }

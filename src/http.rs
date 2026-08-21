@@ -898,7 +898,14 @@ async fn get_segments(
     axum::Json(body).into_response()
 }
 
-async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> Response {
+async fn debug_load(
+    State(state): State<Arc<AppState>>,
+    headers: HeaderMap,
+    axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
+) -> Response {
+    // Review round 3: the O(hubs) ring walk is a drift DIAGNOSTIC, not
+    // a gauge to scrape every few seconds — opt in with ?walk=1.
+    let walk = q.get("walk").map(|v| v == "1").unwrap_or(false);
     if !authorized(&state, &headers) {
         return err_resp(
             StatusCode::UNAUTHORIZED,
@@ -967,9 +974,25 @@ async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
         "sse_live_hubs": state.live_hubs.hub_count(),
         "sse_hub_future_bytes": SSE_HUB_FUTURE_BYTES.load(std::sync::atomic::Ordering::Relaxed),
         "sse_hub_total_bytes": state.hub_total.load(std::sync::atomic::Ordering::Relaxed),
-        "sse_hub_ring_bytes_walked": state.live_hubs.ring_bytes_total(),
-        "sse_hub_logical_bytes": state.live_hubs.logical_bytes_total(),
+        "sse_hub_ring_bytes_walked": if walk { serde_json::Value::from(state.live_hubs.ring_bytes_total()) } else { serde_json::Value::Null },
+        "sse_hub_logical_bytes": if walk { serde_json::Value::from(state.live_hubs.logical_bytes_total()) } else { serde_json::Value::Null },
         "lease_terminations": lease_terminations_json(),
+        "sse_canary": {
+            "direct_subscribers": state.live_hubs.direct_subscribers(),
+            "hub_subscribers": state.live_hubs.hub_subscribers(),
+            "promotions": crate::livehub::stats::PROMOTIONS.load(std::sync::atomic::Ordering::Relaxed),
+            "uncached_per_hub": crate::livehub::stats::UNCACHED_PER_HUB.load(std::sync::atomic::Ordering::Relaxed),
+            "uncached_process_cap": crate::livehub::stats::UNCACHED_PROCESS_CAP.load(std::sync::atomic::Ordering::Relaxed),
+            "below_floor_catchups": sse_stats::BELOW_FLOOR_CATCHUPS.load(std::sync::atomic::Ordering::Relaxed),
+            "disconnect_send_timeout": sse_stats::DISCONNECT_SEND_TIMEOUT.load(std::sync::atomic::Ordering::Relaxed),
+            "disconnect_client_closed": sse_stats::DISCONNECT_CLIENT_CLOSED.load(std::sync::atomic::Ordering::Relaxed),
+            "disconnect_hub_dead": sse_stats::DISCONNECT_HUB_DEAD.load(std::sync::atomic::Ordering::Relaxed),
+            "pump_read_errors": crate::livehub::stats::PUMP_READ_ERRORS.load(std::sync::atomic::Ordering::Relaxed),
+            "pump_transitions": crate::livehub::stats::PUMP_TRANSITIONS.load(std::sync::atomic::Ordering::Relaxed),
+            "pump_closed": crate::livehub::stats::PUMP_CLOSED.load(std::sync::atomic::Ordering::Relaxed),
+            "prepared_records": crate::livehub::stats::PREPARED_RECORDS.load(std::sync::atomic::Ordering::Relaxed),
+            "delivered_records": sse_stats::DELIVERED_RECORDS.load(std::sync::atomic::Ordering::Relaxed),
+        },
         "absorb_reserved_bytes_now": crate::history::absorb_reserved_bytes(),
         "shed_line_mb": state.admit_rss_shed_mb,
         "maintenance_backpressure": state.maint_latch.stats_json(),
@@ -6770,10 +6793,14 @@ pub(crate) async fn sse_send(
     tx: &tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
     b: Bytes,
 ) -> bool {
-    matches!(
+    let ok = matches!(
         tokio::time::timeout(Duration::from_secs(10), tx.send(Ok(b))).await,
         Ok(Ok(()))
-    )
+    );
+    if !ok {
+        sse_stats::DISCONNECT_SEND_TIMEOUT.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    ok
 }
 
 /// #267 diagnostic: byte size of the LAST spawned SSE task future —
@@ -6885,6 +6912,16 @@ pub(crate) async fn read_records_for_hub(
 /// off+1; the batch-LAST event names the batch's scan_next so a
 /// resuming client skips trailing non-matching records (#272).
 #[allow(clippy::too_many_arguments)]
+/// Review round 3: subscriber-side canary counters.
+pub(crate) mod sse_stats {
+    use std::sync::atomic::AtomicU64;
+    pub static DELIVERED_RECORDS: AtomicU64 = AtomicU64::new(0);
+    pub static BELOW_FLOOR_CATCHUPS: AtomicU64 = AtomicU64::new(0);
+    pub static DISCONNECT_SEND_TIMEOUT: AtomicU64 = AtomicU64::new(0);
+    pub static DISCONNECT_CLIENT_CLOSED: AtomicU64 = AtomicU64::new(0);
+    pub static DISCONNECT_HUB_DEAD: AtomicU64 = AtomicU64::new(0);
+}
+
 /// Review round 3 F1: lease terminations by reason (canary counter).
 pub(crate) static LEASE_TERMINATIONS: [std::sync::atomic::AtomicU64; 10] = [
     std::sync::atomic::AtomicU64::new(0),
@@ -7251,6 +7288,8 @@ pub(crate) fn sse_lineage_response(
                                     return;
                                 }
                                 // §4.2: each emitted payload, pre-framing.
+                                sse_stats::DELIVERED_RECORDS
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                 crate::billing::meter_read_chunk(
                                     &state.billing_reads,
                                     &bill_id,
@@ -7328,7 +7367,10 @@ pub(crate) fn sse_lineage_response(
                 tokio::select! {
                     _ = notified => {}
                     // #274 F9: dropped body ends the task immediately.
-                    _ = tx.closed() => return,
+                    _ = tx.closed() => {
+                            sse_stats::DISCONNECT_CLIENT_CLOSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            return;
+                        }
                     // Review V4: terminate no later than token expiry.
                     _ = tokio::time::sleep(lease_watch.nap()) => {
                         if lease_watch.revoked(&state) {
@@ -7478,7 +7520,11 @@ async fn sse_hub_response(
                 return;
             }
             match hub.read_from(pos) {
-                crate::livehub::HubRead::Dead => return,
+                crate::livehub::HubRead::Dead => {
+                    sse_stats::DISCONNECT_HUB_DEAD
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return;
+                }
                 crate::livehub::HubRead::Progress(next) => {
                     // Scanned-no-match progress (#272): jump the cursor;
                     // the AtHead status control conveys it to the
@@ -7487,6 +7533,8 @@ async fn sse_hub_response(
                     need_utd = true;
                 }
                 crate::livehub::HubRead::BelowFloor => {
+                    sse_stats::BELOW_FLOOR_CATCHUPS
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     // Durable catch-up to the hub's captured head; the
                     // read machinery is boxed and transient (#267).
                     let h0 = hub.snapshot_head();
@@ -7523,6 +7571,8 @@ async fn sse_hub_response(
                                     {
                                         return;
                                     }
+                                    sse_stats::DELIVERED_RECORDS
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                     crate::billing::meter_read_chunk(
                                         &state.billing_reads,
                                         &bill_id,
@@ -7550,6 +7600,8 @@ async fn sse_hub_response(
                         if !sse_send(&tx, b).await || lease_watch.revoked(&state) {
                             return;
                         }
+                        sse_stats::DELIVERED_RECORDS
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         crate::billing::meter_read_chunk(
                             &state.billing_reads,
                             &bill_id,
@@ -7597,7 +7649,10 @@ async fn sse_hub_response(
                         _ = notified => {}
                         // #274 F9: a dropped body ends the task NOW,
                         // not at the next record or heartbeat.
-                        _ = tx.closed() => return,
+                        _ = tx.closed() => {
+                            sse_stats::DISCONNECT_CLIENT_CLOSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            return;
+                        }
                         // Review V4: terminate no later than token
                         // expiry, even with no traffic and no feeds.
                         _ = tokio::time::sleep(lease_watch.nap()) => {
@@ -7813,6 +7868,8 @@ async fn sse_response(
                                 return;
                             }
                             // §4.2: each emitted payload, pre-framing.
+                            sse_stats::DELIVERED_RECORDS
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             crate::billing::meter_read_chunk(
                                 &state.billing_reads,
                                 &bill_id,
@@ -7877,7 +7934,10 @@ async fn sse_response(
             tokio::select! {
                 _ = notified => {}
                 // #274 F9: dropped body ends the task immediately.
-                _ = tx.closed() => return,
+                _ = tx.closed() => {
+                            sse_stats::DISCONNECT_CLIENT_CLOSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            return;
+                        }
                 // Review V4: terminate no later than token expiry.
                 _ = tokio::time::sleep(lease_watch.nap()) => {
                     if lease_watch.revoked(&state) {
