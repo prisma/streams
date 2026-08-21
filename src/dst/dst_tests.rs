@@ -32160,3 +32160,247 @@ async fn token_expiry_interrupts_slowly_progressing_delivery() {
         "delivery continued well past token expiry: {frames_after_exp} frames"
     );
 }
+
+// ===================================================================
+// Review round 4, finding 1 (red): the SUBSCRIPTION-CONSTRUCTION
+// race. LeaseWatch::new recorded the CURRENT generation without
+// validating against it, so invalidation published AFTER token
+// verification but BEFORE body construction left last_gen already
+// equal to the new generation — the first revoked() fast path
+// ("generation unchanged since construction") passed forever and the
+// subscription started on authorization that was already dead.
+//
+// The SseBeforeLeaseGate failpoint opens exactly that window: verify
+// under ownership 1 -> PARK -> publish ownership 2 + revoke -> resume.
+// The subscription must be REFUSED (non-200) or terminate with NO
+// initial control and NO data — on every SSE surface.
+//
+// The failpoint registry is global; gap_lock serializes armers.
+// ===================================================================
+
+/// Releases the SSE lease-gate failpoint even if the test panics — a
+/// parked subscription must never leak into sibling tests.
+struct SseGateGuard(String);
+impl Drop for SseGateGuard {
+    fn drop(&mut self) {
+        crate::failpoints::release_sse_before_lease_gate(&self.0);
+    }
+}
+
+/// Read one HTTP response head. Returns (status, head text).
+async fn sse_head(sck: &mut tokio::net::TcpStream) -> (u16, String) {
+    use tokio::io::AsyncReadExt;
+    let mut buf = vec![0u8; 1024];
+    let mut acc: Vec<u8> = Vec::new();
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+    loop {
+        if let Some(pos) = find_head_end(&acc) {
+            return (
+                String::from_utf8_lossy(&acc[..pos])
+                    .lines()
+                    .next()
+                    .and_then(|l| l.split_whitespace().nth(1))
+                    .and_then(|s| s.parse().ok())
+                    .unwrap_or(0),
+                String::from_utf8_lossy(&acc).to_string(),
+            );
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "no response head: {}",
+            String::from_utf8_lossy(&acc)
+        );
+        let n = tokio::time::timeout(std::time::Duration::from_secs(5), sck.read(&mut buf))
+            .await
+            .expect("head read timed out")
+            .expect("head read");
+        assert!(n > 0, "connection closed before a response head");
+        acc.extend_from_slice(&buf[..n]);
+    }
+}
+
+fn find_head_end(b: &[u8]) -> Option<usize> {
+    b.windows(4).position(|w| w == b"\r\n\r\n").map(|p| p + 4)
+}
+
+/// THE assertion shared by the three surface legs: after the window
+/// closed over an installed revocation, the connection must carry NO
+/// control frame and NO data — refused outright, or 200 followed by
+/// immediate termination.
+async fn assert_no_frames_after_pre_establishment_invalidation(
+    sck: &mut tokio::net::TcpStream,
+    surface: &str,
+) {
+    let (status, head) = sse_head(sck).await;
+    if status != 200 {
+        // Refused before establishment: acceptable.
+        assert!(
+            status == 401 || status == 403 || status == 503,
+            "{surface}: unexpected refusal status {status}:\n{head}"
+        );
+        return;
+    }
+    let (body, eof) = hub_sse_collect(sck, 8, |_| false).await;
+    assert!(
+        !body.contains("event:"),
+        "{surface}: frames were delivered on pre-invalidated authorization:\n{}",
+        &body[body.len().saturating_sub(400)..]
+    );
+    assert!(
+        eof,
+        "{surface}: subscription stayed open on pre-invalidated authorization"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn direct_sse_refuses_authorization_invalidated_before_body_construction() {
+    let _serial = gap_lock().lock().await;
+    let (svc, state, addr) = auth_rig("proj-f1d", "ws_f1", &["c1"], None).await;
+    state
+        .sse_live_hub
+        .store(false, std::sync::atomic::Ordering::Relaxed); // DIRECT path only
+    let tok = mint_token("c1", "proj-f1d", "ws_f1", 1, 1, "f1d", 600);
+    rig_create(addr, "f1d", &tok).await;
+
+    crate::failpoints::park_sse_before_lease_gate("f1d");
+    let _guard = SseGateGuard("f1d".into());
+    let mut sub = rig_sse(addr, "f1d", &tok, "", None).await;
+    // Token verified; the request is parked INSIDE the window.
+    for _ in 0..200 {
+        if crate::failpoints::parked(crate::failpoints::Fp::SseBeforeLeaseGate, "f1d") > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(
+        crate::failpoints::parked(crate::failpoints::Fp::SseBeforeLeaseGate, "f1d") > 0,
+        "request never reached the construction window"
+    );
+    // THE RACE: invalidate while the subscription is half-built.
+    rig_publish_policy(&svc, rig_policy("proj-f1d", "ws_other", 2, 2), 2).unwrap();
+    rig_publish_grants(
+        &svc,
+        "proj-f1d",
+        &[("c1", crate::project_policy::CredentialStatus::Revoked, 2)],
+        2,
+    )
+    .unwrap();
+    crate::failpoints::release_sse_before_lease_gate("f1d");
+
+    assert_no_frames_after_pre_establishment_invalidation(&mut sub, "direct").await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_sse_refuses_authorization_invalidated_before_body_construction() {
+    let _serial = gap_lock().lock().await;
+    let (svc, _state, addr) = auth_rig("proj-f1h", "ws_f1", &["c1"], None).await;
+    let tok = mint_token("c1", "proj-f1h", "ws_f1", 1, 1, "f1h", 600);
+    rig_create(addr, "f1h", &tok).await;
+    // Promoter parks direct so the subscriber below rides the HUB.
+    let mut promoter = rig_sse(addr, "f1h", &tok, "?cursor=now", None).await;
+    let (a, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;
+    assert!(a.contains("upToDate"), "promoter parks:\n{a}");
+
+    crate::failpoints::park_sse_before_lease_gate("f1h");
+    let _guard = SseGateGuard("f1h".into());
+    let mut sub = rig_sse(addr, "f1h", &tok, "", None).await;
+    for _ in 0..200 {
+        if crate::failpoints::parked(crate::failpoints::Fp::SseBeforeLeaseGate, "f1h") > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(
+        crate::failpoints::parked(crate::failpoints::Fp::SseBeforeLeaseGate, "f1h") > 0,
+        "request never reached the construction window"
+    );
+    rig_publish_policy(&svc, rig_policy("proj-f1h", "ws_other", 2, 2), 2).unwrap();
+    rig_publish_grants(
+        &svc,
+        "proj-f1h",
+        &[("c1", crate::project_policy::CredentialStatus::Revoked, 2)],
+        2,
+    )
+    .unwrap();
+    crate::failpoints::release_sse_before_lease_gate("f1h");
+
+    assert_no_frames_after_pre_establishment_invalidation(&mut sub, "hub").await;
+    // And the ESTABLISHED promoter still terminates on the same feed.
+    let (_, eof_p) = hub_sse_collect(&mut promoter, 10, |_| false).await;
+    assert!(eof_p, "established promoter must also see the transfer");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn lineage_sse_refuses_authorization_invalidated_before_body_construction() {
+    let _serial = gap_lock().lock().await;
+    let (svc, state, addr) = auth_rig("proj-f1l", "ws_f1", &["c1"], None).await;
+    let tok = mint_token("c1", "proj-f1l", "ws_f1", 1, 1, "f1l", 600);
+    rig_create(addr, "f1l", &tok).await;
+    for i in 0..4 {
+        for k in ["ga", "gb"] {
+            let (st, _, _) = preq(
+                addr,
+                "POST",
+                "/v1/streams/f1l/records",
+                &[
+                    ("prisma-encryption-key", PRISMA_KEY),
+                    ("authorization", tok.as_str()),
+                    ("prisma-routing-key", k),
+                ],
+                format!(r#"{{"k":"{k}","n":{i}}}"#).as_bytes(),
+            )
+            .await;
+            assert_eq!(st, 200, "append {k}/{i}");
+        }
+    }
+    // Split: keyed lineage SSE traverses segments via
+    // sse_lineage_response (its own LeaseWatch construction). The
+    // stream lives on the PRODUCT surface, so the sref is
+    // project-qualified.
+    let f1l_ref = crate::tenant::ProjectId::new("proj-f1l")
+        .unwrap()
+        .stream_ref("f1l");
+    assert!(
+        crate::scaler3::execute_split(&state, &f1l_ref, 0, 0x8000_0000_0000_0000).await
+    );
+    for i in 4..6 {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/f1l/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("authorization", tok.as_str()),
+                ("prisma-routing-key", "ga"),
+            ],
+            format!(r#"{{"k":"ga","n":{i}}}"#).as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200, "post-split append {i}");
+    }
+
+    crate::failpoints::park_sse_before_lease_gate("f1l");
+    let _guard = SseGateGuard("f1l".into());
+    let mut sub = rig_sse(addr, "f1l", &tok, "?routingKey=ga&cursor=beginning", None).await;
+    for _ in 0..200 {
+        if crate::failpoints::parked(crate::failpoints::Fp::SseBeforeLeaseGate, "f1l") > 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(
+        crate::failpoints::parked(crate::failpoints::Fp::SseBeforeLeaseGate, "f1l") > 0,
+        "request never reached the construction window"
+    );
+    rig_publish_policy(&svc, rig_policy("proj-f1l", "ws_other", 2, 2), 2).unwrap();
+    rig_publish_grants(
+        &svc,
+        "proj-f1l",
+        &[("c1", crate::project_policy::CredentialStatus::Revoked, 2)],
+        2,
+    )
+    .unwrap();
+    crate::failpoints::release_sse_before_lease_gate("f1l");
+
+    assert_no_frames_after_pre_establishment_invalidation(&mut sub, "lineage").await;
+}

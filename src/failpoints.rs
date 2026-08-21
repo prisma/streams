@@ -59,10 +59,11 @@ pub enum Fp {
     ConsumerSagaBeforeRefresh,
     DeleteBeforeDecision,
     ScalerBeforePublish,
+    SseBeforeLeaseGate,
 }
 
 impl Fp {
-    pub const ALL: [Fp; 17] = [
+    pub const ALL: [Fp; 18] = [
         Fp::StopAfterTombstone,
         Fp::StopBeforeMarkCommitted,
         Fp::StopAfterSealIntent,
@@ -80,6 +81,7 @@ impl Fp {
         Fp::ConsumerSagaBeforeRefresh,
         Fp::DeleteBeforeDecision,
         Fp::ScalerBeforePublish,
+        Fp::SseBeforeLeaseGate,
     ];
 
     /// The site contract: WHERE the point fires, stated as the
@@ -135,6 +137,12 @@ impl Fp {
                  and the successor-publication CAS — every resume of \
                  the NAMED stream parks (readers only ever spawn \
                  resume, so no request blocks here)"
+             }
+            Fp::SseBeforeLeaseGate => {
+                "live subscription: after the request token verifies, \
+                 BEFORE the response body's lease gate is built — the \
+                 window in which a published revocation used to be \
+                 missed by construction (round-4 finding 1)"
             }
         }
     }
@@ -461,4 +469,14 @@ pub fn release_scaler_before_publish(name: &str) {
 }
 pub(crate) async fn pause_scaler_before_publish(name: &str) {
     pause(Fp::ScalerBeforePublish, name).await;
+}
+
+pub fn park_sse_before_lease_gate(name: &str) {
+    arm(Fp::SseBeforeLeaseGate, name);
+}
+pub fn release_sse_before_lease_gate(name: &str) {
+    release(Fp::SseBeforeLeaseGate, name);
+}
+pub(crate) async fn pause_sse_before_lease_gate(name: &str) {
+    pause(Fp::SseBeforeLeaseGate, name).await;
 }

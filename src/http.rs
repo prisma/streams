@@ -7022,6 +7022,25 @@ pub(crate) fn lease_terminations_json() -> serde_json::Value {
     serde_json::Value::Object(m)
 }
 
+/// Round-4 finding 1: a subscription whose lease was ALREADY invalid
+/// when its body was constructed is refused, never established. The
+/// status classes mirror `auth_failure_response` (product.rs): 503 for
+/// this cell's own feed staleness, 403 for verified-but-denied project
+/// state, 401 for everything a fresh token fixes.
+fn lease_refusal_response(r: crate::auth::LeaseInvalidReason) -> Response {
+    use crate::auth::LeaseInvalidReason as R;
+    let status = match r {
+        R::PolicyStale | R::GrantsStale => StatusCode::SERVICE_UNAVAILABLE,
+        R::ProjectMissing | R::ProjectNotActive => StatusCode::FORBIDDEN,
+        _ => StatusCode::UNAUTHORIZED,
+    };
+    err_resp(
+        status,
+        r.as_str(),
+        "authorization was invalidated before the subscription could be established",
+    )
+}
+
 /// Review V4 + round 3 F1: bounded re-authorization for a live
 /// subscription. One atomic load per wakeup; the full lease re-check
 /// runs when the publication generation moved OR the lease's own
@@ -7033,15 +7052,52 @@ struct LeaseWatch {
 }
 
 impl LeaseWatch {
-    fn new(state: &AppState, lease: Option<crate::auth::AuthLease>) -> Self {
-        let next_deadline = lease
-            .as_ref()
-            .map(|l| state.auth.lease_deadline(l))
-            .unwrap_or(i64::MAX);
+    /// Round-4 finding 1: GENERATION-STABLE INITIAL VALIDATION. The
+    /// old constructor only READ the current generation into
+    /// `last_gen`; invalidation published after token verification but
+    /// before this construction left `last_gen` already equal to the
+    /// NEW generation, so the first `revoked()` fast path ("generation
+    /// unchanged since construction") passed forever and the
+    /// subscription started on authorization that was already dead.
+    ///
+    /// This constructor validates UNCONDITIONALLY before the watch is
+    /// trusted, and re-reads until the generation is stable across the
+    /// check: `lease_check` and `lease_deadline` read several
+    /// snapshots, so a publication landing mid-check would otherwise
+    /// mix pre- and post-publication facts. Returns the reason when
+    /// the lease was already invalid at construction time.
+    fn new_checked(
+        state: &AppState,
+        lease: Option<crate::auth::AuthLease>,
+    ) -> Result<Self, crate::auth::LeaseInvalidReason> {
+        let Some(lease) = lease else {
+            return Ok(Self {
+                lease: None,
+                last_gen: 0,
+                next_deadline: i64::MAX,
+            });
+        };
+        loop {
+            let before = state.auth.auth_generation();
+            let now = crate::shard::now_ms() / 1000;
+            state.auth.lease_check(&lease, now)?;
+            let deadline = state.auth.lease_deadline(&lease);
+            let after = state.auth.auth_generation();
+            if before == after {
+                return Ok(Self {
+                    lease: Some(lease),
+                    last_gen: after,
+                    next_deadline: deadline,
+                });
+            }
+        }
+    }
+
+    fn unrestricted() -> Self {
         Self {
-            last_gen: state.auth.auth_generation(),
-            next_deadline,
-            lease,
+            lease: None,
+            last_gen: 0,
+            next_deadline: i64::MAX,
         }
     }
 
@@ -7096,16 +7152,21 @@ struct GatedSseBody {
 }
 
 impl GatedSseBody {
+    /// Round-4 finding 1: the watch arrives PRE-VALIDATED
+    /// (`LeaseWatch::new_checked`) and the generation receiver is
+    /// subscribed BEFORE that check runs, so a publication landing in
+    /// between is still observed by THIS body on its first poll — no
+    /// missed wakeup between "proved" and "parked".
     fn new(
         state: Arc<AppState>,
         rx: tokio::sync::mpsc::Receiver<Result<Bytes, std::io::Error>>,
         slot: SseSlot,
-        lease: Option<crate::auth::AuthLease>,
+        watch: LeaseWatch,
+        gen_rx: tokio::sync::watch::Receiver<u64>,
     ) -> Self {
-        let watch = LeaseWatch::new(&state, lease);
         let nap = watch.nap();
         Self {
-            gen_rx: state.auth.generation_watch(),
+            gen_rx,
             state,
             rx,
             _slot: slot,
@@ -7248,6 +7309,16 @@ pub(crate) fn sse_lineage_response(
     crate::billing::meter_read(&state, &desc, 0, 0);
     let cursor = params.cursor.clone();
     let rk_hash = crate::crypto::stream_hash(&rk);
+    // Round-4 finding 1: subscribe to the generation watch BEFORE the
+    // initial proof so a publication landing between the two is still
+    // observed by this body; then prove the lease generation-stably —
+    // a subscription never starts on authorization that was already
+    // invalidated while the response was assembled.
+    let gen_rx = state.auth.generation_watch();
+    let body_watch = match LeaseWatch::new_checked(&state, params.lease.clone()) {
+        Ok(w) => w,
+        Err(reason) => return lease_refusal_response(reason),
+    };
     let seg_tok = |seg_id: u32, next: u64| {
         crate::offsets::encode_ep(
             seg_id,
@@ -7260,11 +7331,15 @@ pub(crate) fn sse_lineage_response(
     };
     // Review round 3 F2: the response body carries its own lease gate.
     let body_state = state.clone();
-    let body_lease = params.lease.clone();
     tokio::spawn(async move {
         let mut first = true;
-        // Review V4: re-prove authorization for the connection's life.
-        let mut lease_watch = LeaseWatch::new(&state, params.lease.clone());
+        // Review V4 + round-4 F1: re-prove authorization for the
+        // connection's life — starting from a generation-stable INITIAL
+        // proof (a lease already dead at construction never schedules).
+        let mut lease_watch = match LeaseWatch::new_checked(&state, params.lease.clone()) {
+            Ok(w) => w,
+            Err(_) => return,
+        };
         'lineage: loop {
             if lease_watch.revoked(&state) {
                 return;
@@ -7464,7 +7539,7 @@ pub(crate) fn sse_lineage_response(
     let sse_usage = crate::usage::counters(&sse_hash);
     let stream = futures_util::StreamExt::map(
         // Slot rides the body (#267); lease gate too (round 3 F2).
-        GatedSseBody::new(body_state, rx, slot, body_lease),
+        GatedSseBody::new(body_state, rx, slot, body_watch, gen_rx),
         move |item| {
             if let Ok(b) = &item {
                 sse_usage
@@ -7519,6 +7594,16 @@ async fn sse_hub_response(
     start: StartPos,
     slot: SseSlot,
 ) -> Response {
+    // Round-4 finding 1: prove the lease BEFORE joining a hub — a
+    // refusal here must not leave a subscribed slot on the hub for a
+    // connection that never exists. The generation receiver is
+    // subscribed FIRST so nothing published between proof and parking
+    // is lost.
+    let gen_rx = state.auth.generation_watch();
+    let body_watch = match LeaseWatch::new_checked(&state, lease.clone()) {
+        Ok(w) => w,
+        Err(reason) => return lease_refusal_response(reason),
+    };
     let sse_hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
     let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
     let mut hb = sse_heartbeat();
@@ -7560,7 +7645,6 @@ async fn sse_hub_response(
     let ctx = hub.ctx.clone().expect("production hubs carry a context");
     // Review round 3 F2: the response body carries its own lease gate.
     let body_state = state.clone();
-    let body_lease = lease.clone();
     let sse_task = async move {
         let _sub = SubGuard(hub.clone());
         let mut pos = match start {
@@ -7585,9 +7669,13 @@ async fn sse_hub_response(
         // Review V1: status is decided HERE, per subscriber, against
         // the durable frontier — batches carry no terminal facts.
         let mut need_utd = true;
-        // Review V4: the lease travels with the subscription and is
-        // re-proved for as long as the connection lives.
-        let mut lease_watch = LeaseWatch::new(&state, lease);
+        // Review V4 + round-4 F1: the lease travels with the
+        // subscription, re-proved for as long as the connection lives,
+        // starting from a generation-stable INITIAL proof.
+        let mut lease_watch = match LeaseWatch::new_checked(&state, lease) {
+            Ok(w) => w,
+            Err(_) => return,
+        };
         loop {
             if lease_watch.revoked(&state) {
                 return;
@@ -7750,7 +7838,7 @@ async fn sse_hub_response(
     tokio::spawn(sse_task);
     let sse_usage = crate::usage::counters(&sse_hash);
     let stream = futures_util::StreamExt::map(
-        GatedSseBody::new(body_state, rx, slot, body_lease),
+        GatedSseBody::new(body_state, rx, slot, body_watch, gen_rx),
         move |item| {
             if let Ok(b) = &item {
                 sse_usage
@@ -7788,6 +7876,8 @@ async fn sse_response(
     params: ReadParams,
     surface: SseSurface,
 ) -> Response {
+    #[cfg(test)]
+    crate::failpoints::pause_sse_before_lease_gate(&desc.name).await;
     let slot = match sse_acquire(&state) {
         Ok(s) => s,
         Err(r) => return *r,
@@ -7840,7 +7930,17 @@ async fn sse_response(
     let key_filter = params.key.clone();
     // Review round 3 F2: the response body carries its own lease gate.
     let body_state = state.clone();
-    let body_lease = params.lease.clone();
+    // Round-4 finding 1: subscribe to the generation watch BEFORE the
+    // initial proof so a publication landing between the two is still
+    // observed by this body; then prove the lease generation-stably —
+    // BEFORE any producer work is scheduled. A subscription whose
+    // authorization was already invalidated while the response was
+    // assembled is refused here, never established.
+    let gen_rx = state.auth.generation_watch();
+    let body_watch = match LeaseWatch::new_checked(&state, params.lease.clone()) {
+        Ok(w) => w,
+        Err(reason) => return lease_refusal_response(reason),
+    };
     let rk_hash = crate::crypto::stream_hash(key_filter.as_deref().unwrap_or(""));
     let ctl_seg_id = desc
         .resolve_segment(key_filter.as_deref().unwrap_or(""))
@@ -7853,8 +7953,13 @@ async fn sse_response(
         };
         let from_now = matches!(start, StartPos::Now);
         let mut first = true;
-        // Review V4: re-prove authorization for the connection's life.
-        let mut lease_watch = LeaseWatch::new(&state, params.lease.clone());
+        // Review V4 + round-4 F1: re-prove authorization for the
+        // connection's life — starting from a generation-stable INITIAL
+        // proof (a lease already dead at construction never schedules).
+        let mut lease_watch = match LeaseWatch::new_checked(&state, params.lease.clone()) {
+            Ok(w) => w,
+            Err(_) => return,
+        };
         loop {
             if lease_watch.revoked(&state) {
                 return;
@@ -8038,7 +8143,7 @@ async fn sse_response(
         // Slot rides the body: dropping the response stream frees the
         // instance SSE budget entry (#267); the lease gate (round 3
         // F2) rides it too.
-        GatedSseBody::new(body_state, rx, slot, body_lease),
+        GatedSseBody::new(body_state, rx, slot, body_watch, gen_rx),
         move |item| {
             if let Ok(b) = &item {
                 sse_usage
@@ -8378,6 +8483,10 @@ async fn read_v3_lineage_inner(
             "keyless_live",
             "live reads on a segmented stream require key=",
         );
+    }
+    #[cfg(test)]
+    if live == Some("sse") {
+        crate::failpoints::pause_sse_before_lease_gate(&desc.name).await;
     }
 
     // Lineage: for a keyed read, every segment whose range contains the
