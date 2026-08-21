@@ -126,7 +126,7 @@ deploy() {
   [ -n "$SVC" ] && SVCARG=(--service "$SVC")
   ( cd "$DIR"
     local DEPLOYED=0 OUT_CLI=""
-    for ATT in 1 2 3 4 5 6; do
+    for ATT in $(seq 1 12); do
       if OUT_CLI=$(bunx --bun @prisma/compute-cli@0.39.0 deploy --project "$DP" ${SVCARG[@]+"${SVCARG[@]}"} \
         --region "$DR" --path . --http-port 8080 --service-name "soak-$ROLE-$DR" "$@" \
         2>&1 | grep -viE 'resolving|resolved|saved'); then DEPLOYED=1; break; fi
