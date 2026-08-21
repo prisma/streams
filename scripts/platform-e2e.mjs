@@ -309,6 +309,14 @@ await fault({ kind: "same-gen-drift", feed: "grants" });
 await sleep(2500);
 check("same-generation content drift refused: revoked grant still dead",
   (await readRecords(bBase, "e2e/orders", tokF.body.accessToken)).status !== 200);
+// Round 3 F3: an owner change WITHOUT an ownership bump is refused by
+// the cell — the token minted for the OLD workspace keeps serving
+// (had the cell accepted ws-hostile, the exact workspace check would
+// 401 it), and the project's advertised workspace is unchanged.
+await fault({ kind: "workspace-swap-no-bump", project: "proj-b", toWorkspace: "ws-hostile" });
+await sleep(2500);
+check("workspace change without ownership bump refused: old-workspace token still serves",
+  (await readRecords(bBase, "e2e/orders", tokB2.body.accessToken)).status === 200);
 await fault({ kind: "resurrect-kid" });
 await sleep(2500);
 check("retired-kid resurrection refused: old-kid token stays dead", (await readRecords(bBase, "e2e/orders", tokBOld)).status === 401);

@@ -969,6 +969,7 @@ async fn debug_load(State(state): State<Arc<AppState>>, headers: HeaderMap) -> R
         "sse_hub_total_bytes": state.hub_total.load(std::sync::atomic::Ordering::Relaxed),
         "sse_hub_ring_bytes_walked": state.live_hubs.ring_bytes_total(),
         "sse_hub_logical_bytes": state.live_hubs.logical_bytes_total(),
+        "lease_terminations": lease_terminations_json(),
         "absorb_reserved_bytes_now": crate::history::absorb_reserved_bytes(),
         "shed_line_mb": state.admit_rss_shed_mb,
         "maintenance_backpressure": state.maint_latch.stats_json(),
@@ -6884,49 +6885,192 @@ pub(crate) async fn read_records_for_hub(
 /// off+1; the batch-LAST event names the batch's scan_next so a
 /// resuming client skips trailing non-matching records (#272).
 #[allow(clippy::too_many_arguments)]
-/// Review V4: bounded re-authorization for parked subscriptions. One
-/// atomic load per wakeup; the full lease re-check runs only when the
-/// auth publication generation moved, plus at token expiry.
+/// Review round 3 F1: lease terminations by reason (canary counter).
+pub(crate) static LEASE_TERMINATIONS: [std::sync::atomic::AtomicU64; 10] = [
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+];
+
+pub(crate) fn lease_terminations_json() -> serde_json::Value {
+    let mut m = serde_json::Map::new();
+    for r in crate::auth::LeaseInvalidReason::ALL {
+        m.insert(
+            r.as_str().to_string(),
+            serde_json::Value::from(
+                LEASE_TERMINATIONS[r.index()].load(std::sync::atomic::Ordering::Relaxed),
+            ),
+        );
+    }
+    serde_json::Value::Object(m)
+}
+
+/// Review V4 + round 3 F1: bounded re-authorization for a live
+/// subscription. One atomic load per wakeup; the full lease re-check
+/// runs when the publication generation moved OR the lease's own
+/// deadline (token/credential expiry, feed staleness boundary) passed.
 struct LeaseWatch {
     lease: Option<crate::auth::AuthLease>,
     last_gen: u64,
+    next_deadline: i64,
 }
 
 impl LeaseWatch {
     fn new(state: &AppState, lease: Option<crate::auth::AuthLease>) -> Self {
+        let next_deadline = lease
+            .as_ref()
+            .map(|l| state.auth.lease_deadline(l))
+            .unwrap_or(i64::MAX);
         Self {
             last_gen: state.auth.auth_generation(),
+            next_deadline,
             lease,
         }
     }
 
-    /// True = terminate the subscription NOW (transfer, suspension,
-    /// revocation, or expiry — review V4's long-lived-stream contract).
+    /// True = terminate the subscription NOW.
     fn revoked(&mut self, state: &AppState) -> bool {
         let Some(l) = &self.lease else { return false };
         let now = crate::shard::now_ms() / 1000;
-        if now >= l.expires_at {
-            return true;
-        }
         let g = state.auth.auth_generation();
-        if g != self.last_gen {
-            self.last_gen = g;
-            if !state.auth.lease_valid(l, now) {
-                return true;
+        if g == self.last_gen && now < self.next_deadline {
+            return false;
+        }
+        self.last_gen = g;
+        match state.auth.lease_check(l, now) {
+            Ok(()) => {
+                self.next_deadline = state.auth.lease_deadline(l);
+                false
+            }
+            Err(r) => {
+                LEASE_TERMINATIONS[r.index()].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                true
             }
         }
-        false
     }
 
-    /// Nap until the next mandatory re-check (token expiry), capped so
-    /// a far-future expiry does not hold a giant timer.
+    /// Nap until the next mandatory re-check, capped so a far-future
+    /// deadline does not hold a giant timer.
     fn nap(&self) -> std::time::Duration {
-        match &self.lease {
-            None => std::time::Duration::from_secs(3600),
-            Some(l) => {
-                let now = crate::shard::now_ms() / 1000;
-                std::time::Duration::from_secs((l.expires_at - now).clamp(1, 3600) as u64)
+        if self.lease.is_none() {
+            return std::time::Duration::from_secs(3600);
+        }
+        let now = crate::shard::now_ms() / 1000;
+        std::time::Duration::from_secs((self.next_deadline - now).clamp(1, 3600) as u64)
+    }
+}
+
+/// Review round 3 F2: the AUTHORITATIVE lease gate sits at the
+/// response-body boundary — immediately before bytes leave the HTTP
+/// body. The producer checks are an optimization that stops work; this
+/// gate guarantees that no queued frame is yielded after a revocation,
+/// expiry, or staleness boundary has been observed (the channel's
+/// buffered items included). Wakes on: the next queued frame, an auth
+/// generation change (watch), or the lease deadline.
+struct GatedSseBody {
+    state: Arc<AppState>,
+    rx: tokio::sync::mpsc::Receiver<Result<Bytes, std::io::Error>>,
+    _slot: SseSlot,
+    watch: LeaseWatch,
+    gen_rx: tokio::sync::watch::Receiver<u64>,
+    gen_changed: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
+    deadline: std::pin::Pin<Box<tokio::time::Sleep>>,
+    ended: bool,
+}
+
+impl GatedSseBody {
+    fn new(
+        state: Arc<AppState>,
+        rx: tokio::sync::mpsc::Receiver<Result<Bytes, std::io::Error>>,
+        slot: SseSlot,
+        lease: Option<crate::auth::AuthLease>,
+    ) -> Self {
+        let watch = LeaseWatch::new(&state, lease);
+        let nap = watch.nap();
+        Self {
+            gen_rx: state.auth.generation_watch(),
+            state,
+            rx,
+            _slot: slot,
+            watch,
+            gen_changed: None,
+            deadline: Box::pin(tokio::time::sleep(nap)),
+            ended: false,
+        }
+    }
+}
+
+impl futures_util::Stream for GatedSseBody {
+    type Item = Result<Bytes, std::io::Error>;
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        use std::task::Poll;
+        let this = self.get_mut();
+        if this.ended {
+            return Poll::Ready(None);
+        }
+        if this.watch.lease.is_some() {
+            // Generation change: (re)arm a changed() future on a clone
+            // of the receiver so it can be held across polls.
+            let mut fired = false;
+            loop {
+                if this.gen_changed.is_none() {
+                    let mut rx = this.gen_rx.clone();
+                    this.gen_changed = Some(Box::pin(async move {
+                        let _ = rx.changed().await;
+                    }));
+                }
+                match this.gen_changed.as_mut().unwrap().as_mut().poll(cx) {
+                    Poll::Ready(()) => {
+                        this.gen_changed = None;
+                        // Mark the value seen on OUR receiver too.
+                        let _ = this.gen_rx.has_changed();
+                        this.gen_rx.mark_unchanged();
+                        fired = true;
+                    }
+                    Poll::Pending => break,
+                }
             }
+            if this.deadline.as_mut().poll(cx).is_ready() {
+                fired = true;
+                let nap = this.watch.nap();
+                this.deadline
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + nap);
+                // re-register the fresh timer
+                let _ = this.deadline.as_mut().poll(cx);
+            }
+            if fired && this.watch.revoked(&this.state) {
+                this.ended = true;
+                this.rx.close();
+                return Poll::Ready(None);
+            }
+        }
+        match this.rx.poll_recv(cx) {
+            Poll::Ready(Some(item)) => {
+                // The authoritative per-frame gate: cheap (atomic +
+                // deadline compare) unless something moved.
+                if this.watch.revoked(&this.state) {
+                    this.ended = true;
+                    this.rx.close();
+                    return Poll::Ready(None);
+                }
+                Poll::Ready(Some(item))
+            }
+            Poll::Ready(None) => {
+                this.ended = true;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
         }
     }
 }
@@ -7004,6 +7148,9 @@ pub(crate) fn sse_lineage_response(
             },
         )
     };
+    // Review round 3 F2: the response body carries its own lease gate.
+    let body_state = state.clone();
+    let body_lease = params.lease.clone();
     tokio::spawn(async move {
         let mut first = true;
         // Review V4: re-prove authorization for the connection's life.
@@ -7098,7 +7245,9 @@ pub(crate) fn sse_lineage_response(
                                     ),
                                 };
                                 ev.push_str(&ctl);
-                                if !sse_send(&tx, Bytes::from(ev)).await {
+                                if !sse_send(&tx, Bytes::from(ev)).await
+                                    || lease_watch.revoked(&state)
+                                {
                                     return;
                                 }
                                 // §4.2: each emitted payload, pre-framing.
@@ -7199,10 +7348,9 @@ pub(crate) fn sse_lineage_response(
     });
     let sse_usage = crate::usage::counters(&sse_hash);
     let stream = futures_util::StreamExt::map(
-        tokio_stream::wrappers::ReceiverStream::new(rx),
+        // Slot rides the body (#267); lease gate too (round 3 F2).
+        GatedSseBody::new(body_state, rx, slot, body_lease),
         move |item| {
-            // Slot rides the body (#267).
-            let _hold = &slot;
             if let Ok(b) = &item {
                 sse_usage
                     .bytes_out
@@ -7295,6 +7443,9 @@ async fn sse_hub_response(
     // captures anything.
     drop((desc, key, engine));
     let ctx = hub.ctx.clone().expect("production hubs carry a context");
+    // Review round 3 F2: the response body carries its own lease gate.
+    let body_state = state.clone();
+    let body_lease = lease.clone();
     let sse_task = async move {
         let _sub = SubGuard(hub.clone());
         let mut pos = match start {
@@ -7367,7 +7518,9 @@ async fn sse_hub_response(
                                         r,
                                         r.off + 1,
                                     );
-                                    if !sse_send(&tx, Bytes::from(ev)).await {
+                                    if !sse_send(&tx, Bytes::from(ev)).await
+                                        || lease_watch.revoked(&state)
+                                    {
                                         return;
                                     }
                                     crate::billing::meter_read_chunk(
@@ -7394,7 +7547,7 @@ async fn sse_hub_response(
                     // Per-batch billing identity (ownership can move).
                     let bill_id = crate::billing::identity_of(&state, &ctx.desc);
                     for (b, plen) in evs {
-                        if !sse_send(&tx, b).await {
+                        if !sse_send(&tx, b).await || lease_watch.revoked(&state) {
                             return;
                         }
                         crate::billing::meter_read_chunk(
@@ -7469,9 +7622,8 @@ async fn sse_hub_response(
     tokio::spawn(sse_task);
     let sse_usage = crate::usage::counters(&sse_hash);
     let stream = futures_util::StreamExt::map(
-        tokio_stream::wrappers::ReceiverStream::new(rx),
+        GatedSseBody::new(body_state, rx, slot, body_lease),
         move |item| {
-            let _hold = &slot;
             if let Ok(b) = &item {
                 sse_usage
                     .bytes_out
@@ -7558,6 +7710,9 @@ async fn sse_response(
     };
     let cursor = params.cursor.clone();
     let key_filter = params.key.clone();
+    // Review round 3 F2: the response body carries its own lease gate.
+    let body_state = state.clone();
+    let body_lease = params.lease.clone();
     let rk_hash = crate::crypto::stream_hash(key_filter.as_deref().unwrap_or(""));
     let ctl_seg_id = desc
         .resolve_segment(key_filter.as_deref().unwrap_or(""))
@@ -7653,7 +7808,8 @@ async fn sse_response(
                                 ),
                             };
                             ev.push_str(&ctl);
-                            if !sse_send(&tx, Bytes::from(ev)).await {
+                            if !sse_send(&tx, Bytes::from(ev)).await || lease_watch.revoked(&state)
+                            {
                                 return;
                             }
                             // §4.2: each emitted payload, pre-framing.
@@ -7746,11 +7902,11 @@ async fn sse_response(
 
     let sse_usage = crate::usage::counters(&sse_hash);
     let stream = futures_util::StreamExt::map(
-        tokio_stream::wrappers::ReceiverStream::new(rx),
+        // Slot rides the body: dropping the response stream frees the
+        // instance SSE budget entry (#267); the lease gate (round 3
+        // F2) rides it too.
+        GatedSseBody::new(body_state, rx, slot, body_lease),
         move |item| {
-            // Slot rides the body: dropping the response stream frees
-            // the instance SSE budget entry (#267).
-            let _hold = &slot;
             if let Ok(b) = &item {
                 sse_usage
                     .bytes_out

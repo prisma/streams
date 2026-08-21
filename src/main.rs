@@ -518,8 +518,10 @@ struct Args {
     /// Instance cap on live SSE subscriptions (#267): new subscriptions
     /// past the cap get a typed 503 subscription_capacity instead of
     /// subscriber RSS pushing UNRELATED appends over the write shed
-    /// line. 0 = unlimited. Default = the pre-Phase-1 measured-safe
-    /// ceiling; raise after the idle-slope probe on the slimmed path.
+    /// line. 0 = unlimited. Default 10k is the certification rung of
+    /// the per-instance ladder (measured ~44 KB/parked conn after
+    /// #269 => ~440 MB at the cap); raising it is a deliberate
+    /// experimental posture, not part of default certification.
     #[arg(long, env = "SSE_MAX_CONNECTIONS", default_value_t = 10_000)]
     sse_max_connections: u64,
 

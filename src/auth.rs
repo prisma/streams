@@ -206,6 +206,54 @@ pub struct AuthLease {
     pub expires_at: i64,
 }
 
+/// Review round 3 F1: the reasons a live subscription's lease stops
+/// being valid. Exported as termination counters.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum LeaseInvalidReason {
+    TokenExpired,
+    PolicyStale,
+    GrantsStale,
+    ProjectMissing,
+    ProjectNotActive,
+    OwnershipChanged,
+    CredentialMissing,
+    CredentialInactive,
+    GrantChanged,
+    CredentialExpired,
+}
+
+impl LeaseInvalidReason {
+    pub const ALL: [LeaseInvalidReason; 10] = [
+        Self::TokenExpired,
+        Self::PolicyStale,
+        Self::GrantsStale,
+        Self::ProjectMissing,
+        Self::ProjectNotActive,
+        Self::OwnershipChanged,
+        Self::CredentialMissing,
+        Self::CredentialInactive,
+        Self::GrantChanged,
+        Self::CredentialExpired,
+    ];
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::TokenExpired => "token_expired",
+            Self::PolicyStale => "policy_stale",
+            Self::GrantsStale => "grants_stale",
+            Self::ProjectMissing => "project_missing",
+            Self::ProjectNotActive => "project_not_active",
+            Self::OwnershipChanged => "ownership_changed",
+            Self::CredentialMissing => "credential_missing",
+            Self::CredentialInactive => "credential_inactive",
+            Self::GrantChanged => "grant_changed",
+            Self::CredentialExpired => "credential_expired",
+        }
+    }
+    pub fn index(self) -> usize {
+        Self::ALL.iter().position(|r| *r == self).unwrap_or(0)
+    }
+}
+
 impl RequestPrincipal {
     /// Review V4: the compact facts a live subscription must keep
     /// re-proving for as long as it stays open.
@@ -358,6 +406,13 @@ pub struct AuthService {
     /// policies, grants). Live subscriptions re-validate their lease
     /// when this changes — one atomic load per parked wakeup.
     pub generation: AtomicU64,
+    /// Review round 3 F2: generation as a watch channel (see
+    /// `generation_watch`). The atomic stays as the cheap fast path.
+    gen_tx: tokio::sync::watch::Sender<u64>,
+    /// Policy/grant staleness window in seconds (POLICY_STALENESS_MAX_SECS
+    /// by default). Instance-scoped so rigs can shorten it; production
+    /// never changes it.
+    pub staleness_max_secs: std::sync::atomic::AtomicI64,
     last_kid_wake_ms: std::sync::atomic::AtomicI64,
     /// SR-4: bounded per-ID high-water marks retained ACROSS snapshot
     /// omissions — the publisher contract says removed entries never
@@ -480,6 +535,8 @@ impl AuthService {
             high_water: std::sync::Mutex::new(HighWater::default()),
             shadow: ShadowCounters::default(),
             generation: AtomicU64::new(0),
+            gen_tx: tokio::sync::watch::channel(0u64).0,
+            staleness_max_secs: std::sync::atomic::AtomicI64::new(POLICY_STALENESS_MAX_SECS),
         })
     }
 
@@ -495,37 +552,97 @@ impl AuthService {
     /// comparable while an entry is present on both sides, so the
     /// FEED must not resurrect removed entries at lower versions —
     /// recorded as the feed contract.
+    /// Effective policy/grant staleness window (seconds).
+    pub fn staleness_max_secs(&self) -> i64 {
+        self.staleness_max_secs.load(Ordering::Relaxed)
+    }
+
+    /// TEST HOOK: shorten the staleness window so feed-staleness legs
+    /// run in seconds. Production never calls this.
+    pub fn set_staleness_max_secs(&self, secs: i64) {
+        self.staleness_max_secs.store(secs, Ordering::Relaxed);
+    }
+
     /// Review V4: current auth publication generation (any feed).
     pub fn auth_generation(&self) -> u64 {
         self.generation.load(Ordering::Acquire)
     }
 
-    /// Review V4: is this lease still authorized under the CURRENT
-    /// snapshots? Checked by live subscriptions on generation change
-    /// and at expiry. Fail-closed: a missing project or credential is
-    /// a termination, exactly like the tombstone semantics on the
-    /// request path.
-    pub fn lease_valid(&self, l: &AuthLease, now_unix: i64) -> bool {
+    /// Review round 3 F1: why a lease stopped being valid — exported
+    /// as a termination counter and used to pick the next deadline.
+    pub fn lease_check(&self, l: &AuthLease, now_unix: i64) -> Result<(), LeaseInvalidReason> {
+        use LeaseInvalidReason as R;
         if now_unix >= l.expires_at {
-            return false;
+            return Err(R::TokenExpired);
         }
+        let w = self.staleness_max_secs();
         let pols = self.projects.load();
+        // Fail closed at the SAME window new requests use: an
+        // established subscription must never outlive the feed truth.
+        if now_unix - pols.fetched_at_unix > w {
+            return Err(R::PolicyStale);
+        }
         let Some(p) = pols.projects.get(&l.project_id) else {
-            return false;
+            return Err(R::ProjectMissing);
         };
-        if p.status != crate::project_policy::ProjectStatus::Active
-            || p.ownership_version != l.ownership_version
-        {
-            return false;
+        if p.status != crate::project_policy::ProjectStatus::Active {
+            return Err(R::ProjectNotActive);
+        }
+        if p.ownership_version != l.ownership_version {
+            return Err(R::OwnershipChanged);
         }
         let creds = self.credentials.load();
+        if now_unix - creds.fetched_at_unix > w {
+            return Err(R::GrantsStale);
+        }
         let Some(c) = creds.credentials.get(&l.credential_id) else {
-            return false;
+            return Err(R::CredentialMissing);
         };
-        c.status == crate::project_policy::CredentialStatus::Active
-            && c.grant_version == l.grant_version
-            && c.project_id == l.project_id
-            && c.expires_at.map(|e| now_unix < e).unwrap_or(true)
+        if c.status != crate::project_policy::CredentialStatus::Active {
+            return Err(R::CredentialInactive);
+        }
+        if c.grant_version != l.grant_version || c.project_id != l.project_id {
+            return Err(R::GrantChanged);
+        }
+        if let Some(e) = c.expires_at
+            && now_unix >= e
+        {
+            return Err(R::CredentialExpired);
+        }
+        Ok(())
+    }
+
+    /// Review V4: is this lease still authorized under the CURRENT
+    /// snapshots? (Boolean view of `lease_check`.)
+    pub fn lease_valid(&self, l: &AuthLease, now_unix: i64) -> bool {
+        self.lease_check(l, now_unix).is_ok()
+    }
+
+    /// Review round 3 F1: the next instant at which this lease MUST be
+    /// re-proved even if no feed publishes — the earliest of token
+    /// expiry, credential expiry, and each feed's staleness boundary.
+    /// A clean refresh (even an identical replay) moves it forward.
+    pub fn lease_deadline(&self, l: &AuthLease) -> i64 {
+        let w = self.staleness_max_secs();
+        let mut d = l.expires_at;
+        d = d.min(self.projects.load().fetched_at_unix + w);
+        let creds = self.credentials.load();
+        d = d.min(creds.fetched_at_unix + w);
+        if let Some(e) = creds
+            .credentials
+            .get(&l.credential_id)
+            .and_then(|c| c.expires_at)
+        {
+            d = d.min(e);
+        }
+        d
+    }
+
+    /// Review round 3 F2: a watch on the publication generation — no
+    /// lost wakeups, immediate notification to parked response bodies,
+    /// current value visible to new receivers.
+    pub fn generation_watch(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.gen_tx.subscribe()
     }
 
     pub fn publish_jwks(&self, snapshot: JwksSnapshot) -> Result<(), &'static str> {
@@ -606,7 +723,8 @@ impl AuthService {
         drop(hw);
         self.jwks.store(Arc::new(snapshot));
         self.unknown_kid_seen.store(0, Ordering::Relaxed);
-        self.generation.fetch_add(1, Ordering::Release);
+        let g = self.generation.fetch_add(1, Ordering::Release) + 1;
+        let _ = self.gen_tx.send(g);
         Ok(())
     }
 
@@ -669,6 +787,15 @@ impl AuthService {
                 if np.project_policy_version < op.project_policy_version {
                     return Err("project_policy_version regressed");
                 }
+                // Review round 3 F3: the contract ties a workspace
+                // (owner) change to an ownership_version increment. A
+                // higher policy version must not smuggle an owner
+                // change past the lease/transfer machinery.
+                if np.workspace_id != op.workspace_id
+                    && np.ownership_version <= op.ownership_version
+                {
+                    return Err("workspace changed without ownership_version increment");
+                }
             }
         }
         for (pid, np) in &snapshot.projects {
@@ -725,7 +852,8 @@ impl AuthService {
         hw.policy_gen = Some((snapshot.feed_version, digest));
         drop(hw);
         self.projects.store(Arc::new(snapshot));
-        self.generation.fetch_add(1, Ordering::Release);
+        let g = self.generation.fetch_add(1, Ordering::Release) + 1;
+        let _ = self.gen_tx.send(g);
         Ok(())
     }
 
@@ -843,7 +971,8 @@ impl AuthService {
         hw.grant_gen = Some((snapshot.feed_version, digest));
         drop(hw);
         self.credentials.store(Arc::new(snapshot));
-        self.generation.fetch_add(1, Ordering::Release);
+        let g = self.generation.fetch_add(1, Ordering::Release) + 1;
+        let _ = self.gen_tx.send(g);
         Ok(())
     }
 
@@ -987,7 +1116,7 @@ impl AuthService {
 
         // §7.1 fail-closed policy checks, all from local snapshots.
         let policies = self.projects.load();
-        if now - policies.fetched_at_unix > POLICY_STALENESS_MAX_SECS {
+        if now - policies.fetched_at_unix > self.staleness_max_secs() {
             return Err(AuthError::PolicyStale);
         }
         // §8.1: placement is not an authorization problem. This cell's
@@ -1019,7 +1148,7 @@ impl AuthService {
         }
 
         let grants = self.credentials.load();
-        if now - grants.fetched_at_unix > POLICY_STALENESS_MAX_SECS {
+        if now - grants.fetched_at_unix > self.staleness_max_secs() {
             return Err(AuthError::GrantsStale);
         }
         let cred = grants
@@ -1164,7 +1293,7 @@ impl AuthService {
         AuthError,
     > {
         let policies = self.projects.load();
-        if now - policies.fetched_at_unix > POLICY_STALENESS_MAX_SECS {
+        if now - policies.fetched_at_unix > self.staleness_max_secs() {
             return Err(AuthError::PolicyStale);
         }
         Ok(policies
@@ -1188,7 +1317,7 @@ impl AuthService {
             }
         };
         serde_json::json!({
-            "stalenessMaxSecs": POLICY_STALENESS_MAX_SECS,
+            "stalenessMaxSecs": self.staleness_max_secs(),
             "jwks": { "keys": jwks.keys.len(), "ageSecs": age(jwks.fetched_at_unix) },
             "policies": {
                 "projects": policies.projects.len(),

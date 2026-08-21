@@ -30585,233 +30585,112 @@ async fn hub_oversized_event_delivered_via_uncached_catchup() {
     );
 }
 
-/// Battery leg 14 (#275, renamed per review V4): WORKSPACE-AT-EVENT
-/// BILLING. The billing owner changes mid-subscription (workspace
-/// swap: policy_version bump, ownership/grant versions unchanged —
-/// deliberately NOT a transfer: the subscription's auth lease stays
-/// valid, so delivery continues and the billing identity moves).
-/// The REAL transfer protocol (ownership bump + revocation) is
-/// certified by transfer_terminates_established_subscriptions.
-/// Contract under test:
-///   1. the parked hub subscription SURVIVES the transfer and keeps
-///      delivering (transfers are billing-plane, not data-plane);
-///   2. read billing is captured PER BATCH at event time (#274) —
-///      pre-swap batches land under the old workspace, post-swap
-///      batches under the new one. A subscription-lifetime identity
-///      would put the whole stream under whichever workspace was
-///      current at subscribe time and silently misbill transfers;
-///   3. tokens minted for the old workspace stop authorizing new
-///      requests (exact workspace match), and a re-minted token
-///      works — re-issue on transfer is the platform contract.
+/// Review round 3 F3 replacement (1): the billing resolver uses the
+/// CURRENT workspace-at-event state — a valid transfer (ownership
+/// bump) moves the billed workspace; nothing else can.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_workspace_at_event_billing_changes_mid_subscription() {
+async fn identity_of_resolves_the_workspace_at_event() {
+    let (svc, state, addr) = auth_rig("proj-idw", "ws_ida", &["c1"], None).await;
+    let tok = mint_token("c1", "proj-idw", "ws_ida", 1, 1, "idw", 600);
+    rig_create(addr, "idw", &tok).await;
+    // Enforce mode namespaces the stream under its PROJECT.
+    let sref = crate::tenant::TenantStreamRef::new(
+        crate::tenant::ProjectId::new("proj-idw").unwrap(),
+        crate::tenant::CanonicalStreamName::new("idw").unwrap(),
+    );
+    let desc = state.registry.get(&sref).await.unwrap().expect("desc");
+    assert_eq!(
+        crate::billing::identity_of(&state, &desc).account_id,
+        "ws_ida"
+    );
+    // Hostile shape is refused and leaves attribution untouched.
+    assert!(rig_publish_policy(&svc, rig_policy("proj-idw", "ws_idb", 1, 2), 2).is_err());
+    assert_eq!(
+        crate::billing::identity_of(&state, &desc).account_id,
+        "ws_ida"
+    );
+    // The valid transfer moves it.
+    rig_publish_policy(&svc, rig_policy("proj-idw", "ws_idb", 2, 3), 3).unwrap();
+    assert_eq!(
+        crate::billing::identity_of(&state, &desc).account_id,
+        "ws_idb"
+    );
+}
+
+/// Review round 3 F3 replacement (2): a VALID transfer end to end —
+/// pre-transfer delivery bills workspace A, the ownership version
+/// increments and the old subscription terminates, a new credential
+/// opens a new subscription, post-transfer delivery bills workspace B.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn valid_transfer_bills_each_workspace_on_its_own_side() {
     let _xr = crate::billing::billing_clock_lock().read().await;
-    const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
-    const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
-    let now = crate::shard::now_ms() / 1000;
-    let svc = std::sync::Arc::new(
-        crate::auth::AuthService::new(
-            crate::auth::AuthMode::Enforce,
-            "https://auth.prisma.io".into(),
-            "test-cell",
-        )
-        .unwrap(),
-    );
-    let mut keys = std::collections::HashMap::new();
-    keys.insert(
-        "wtx-1".to_string(),
-        crate::auth::JwksKey {
-            alg: jsonwebtoken::Algorithm::RS256,
-            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
-            fp: crate::auth::key_fp(PUB.as_bytes()),
-        },
-    );
-    svc.publish_jwks(crate::auth::JwksSnapshot {
-        keys,
-        fetched_at_unix: now,
-        feed_version: 1,
-    })
-    .unwrap();
-    let scopes = "streams.create streams.records.append streams.records.read \
-                  streams.metadata.read";
-    let pid = crate::tenant::ProjectId::new("proj-wtx").unwrap();
-    let policy_in = |ws: &str, ppv: u64| crate::project_policy::ProjectPolicy {
-        project_id: pid.clone(),
-        workspace_id: crate::tenant::WorkspaceId::new(ws).unwrap(),
-        cell_id: std::sync::Arc::from("test-cell"),
-        project_policy_version: ppv,
-        ownership_version: 1,
-        status: crate::project_policy::ProjectStatus::Active,
-        quotas: crate::project_policy::ProjectQuotas::default(),
-    };
-    let mut projects = std::collections::HashMap::new();
-    projects.insert(pid.clone(), policy_in("ws_wxa", 1));
-    svc.publish_policies(crate::project_policy::PolicySnapshot {
-        projects,
-        fetched_at_unix: now,
-        feed_version: 1,
-    })
-    .unwrap();
-    let mut credentials = std::collections::HashMap::new();
-    credentials.insert(
-        std::sync::Arc::from("c_wx"),
-        crate::project_policy::CredentialGrant {
-            credential_id: std::sync::Arc::from("c_wx"),
-            project_id: pid.clone(),
-            grant_version: 1,
-            status: crate::project_policy::CredentialStatus::Active,
-            scopes: crate::tenant::ScopeSet::parse(scopes).0,
-            grant: crate::tenant::StreamGrant::All,
-            expires_at: None,
-        },
-    );
-    svc.publish_grants(crate::project_policy::GrantSnapshot {
-        credentials,
-        fetched_at_unix: now,
-        feed_version: 1,
-    })
-    .unwrap();
-    let (state, addr) = http_rig_with_auth_service(mem(), svc.clone()).await;
+    let (svc, state, addr) = auth_rig("proj-vtx", "ws_vta", &["c1"], None).await;
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "")
         .await
         .unwrap();
     let _ = state.rollup.set(std::sync::Arc::new(rollup));
-    state
-        .sse_live_hub
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-
-    #[derive(serde::Serialize)]
-    struct C<'a> {
-        iss: &'a str,
-        aud: &'a str,
-        sub: &'a str,
-        credential_id: &'a str,
-        project_id: &'a str,
-        workspace_id: &'a str,
-        cell_id: &'a str,
-        ownership_version: u64,
-        grant_version: u64,
-        scope: &'a str,
-        jti: &'a str,
-        iat: i64,
-        exp: i64,
-    }
-    let mint = |ws: &str, jti: &str| {
-        let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
-        header.kid = Some("wtx-1".into());
-        jsonwebtoken::encode(
-            &header,
-            &C {
-                iss: "https://auth.prisma.io",
-                aud: "prisma-streams-data",
-                sub: "u",
-                credential_id: "c_wx",
-                project_id: "proj-wtx",
-                workspace_id: ws,
-                cell_id: "test-cell",
-                ownership_version: 1,
-                grant_version: 1,
-                scope: scopes,
-                jti,
-                iat: now - 60,
-                exp: now + 600,
-            },
-            &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
-        )
-        .unwrap()
-    };
-    let ta = format!("Bearer {}", mint("ws_wxa", "ta"));
-    let tb = format!("Bearer {}", mint("ws_wxb", "tb"));
-    let ekey = ("prisma-encryption-key", PRISMA_KEY);
-    let auth_a = ("authorization", ta.as_str());
-    let auth_b = ("authorization", tb.as_str());
-
-    let (st, _, _) = preq(
-        addr,
-        "PUT",
-        "/v1/streams/wtx",
-        &[ekey, auth_a],
-        br#"{"format":{"kind":"json"}}"#,
-    )
-    .await;
-    assert_eq!(st, 201);
-
-    // Authenticated SSE connects: promoter (direct, F8) then the hub
-    // subscriber.
-    use tokio::io::AsyncWriteExt;
-    let sse = |bearer: String| async move {
-        let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let req = format!(
-            "GET /v1/streams/wtx/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nauthorization: {bearer}\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
-        );
-        sck.write_all(req.as_bytes()).await.unwrap();
-        sck
-    };
-    let mut promoter = sse(ta.clone()).await;
-    let (acc, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;
-    assert!(acc.contains("upToDate"), "promoter parks direct:\n{acc}");
-    let mut sub = sse(ta.clone()).await;
-
-    // Batch 1 while the project bills to ws_wxa.
-    let (st, _, _) = preq(
-        addr,
-        "POST",
-        "/v1/streams/wtx/records",
-        &[ekey, auth_a],
-        br#"{"r":1}"#,
-    )
-    .await;
-    assert_eq!(st, 200);
-    let (acc, _) = hub_sse_collect(&mut sub, 10, |t| t.contains("\"r\":1")).await;
-    assert!(
-        acc.contains("\"r\":1"),
-        "pre-transfer batch arrives:\n{acc}"
+    let tok_a = mint_token("c1", "proj-vtx", "ws_vta", 1, 1, "va", 600);
+    rig_create(addr, "vtx", &tok_a).await;
+    let mut promoter = rig_sse(addr, "vtx", &tok_a, "", None).await;
+    let (a, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;
+    assert!(a.contains("upToDate"));
+    let mut sub_a = rig_sse(addr, "vtx", &tok_a, "", None).await;
+    let (b, _) = hub_sse_collect(&mut sub_a, 8, |t| t.contains("upToDate")).await;
+    assert!(b.contains("upToDate"));
+    assert_eq!(
+        rig_append(addr, "vtx", &tok_a, r#"{"side":"a"}"#).await,
+        200
     );
-    assert!(state.live_hubs.hub_count() >= 1, "hub path must be engaged");
+    let (d1, _) = hub_sse_collect(&mut sub_a, 10, |t| t.contains("\"side\":\"a\"")).await;
+    assert!(
+        d1.contains("\"side\":\"a\""),
+        "pre-transfer delivery:\n{d1}"
+    );
 
-    // WORKSPACE TRANSFER: same project, new billing owner, policy
-    // version bump; ownership and grants untouched.
-    let mut projects = std::collections::HashMap::new();
-    projects.insert(pid.clone(), policy_in("ws_wxb", 2));
-    svc.publish_policies(crate::project_policy::PolicySnapshot {
-        projects,
-        fetched_at_unix: now + 1,
-        feed_version: 2,
-    })
+    // THE TRANSFER: ownership 2, workspace B, c1 revoked, c2 granted.
+    rig_publish_policy(&svc, rig_policy("proj-vtx", "ws_vtb", 2, 2), 2).unwrap();
+    rig_publish_grants(
+        &svc,
+        "proj-vtx",
+        &[
+            ("c1", crate::project_policy::CredentialStatus::Revoked, 2),
+            ("c2", crate::project_policy::CredentialStatus::Active, 1),
+        ],
+        2,
+    )
     .unwrap();
-
-    // The old-workspace token stops authorizing NEW requests (exact
-    // workspace match) ...
-    let (st, _, _) = preq(
-        addr,
-        "POST",
-        "/v1/streams/wtx/records",
-        &[ekey, auth_a],
-        br#"{"r":88}"#,
-    )
-    .await;
-    // verify_customer errors are authentication-class: 401, like the
-    // other stale-credential shapes on this surface.
-    assert_eq!(st, 401, "stale-workspace token must be refused (got {st})");
-    // ... the re-minted token works, and the ESTABLISHED subscription
-    // keeps delivering across the transfer.
-    let (st, _, _) = preq(
-        addr,
-        "POST",
-        "/v1/streams/wtx/records",
-        &[ekey, auth_b],
-        br#"{"r":2}"#,
-    )
-    .await;
-    assert_eq!(st, 200);
-    let (acc, _) = hub_sse_collect(&mut sub, 10, |t| t.contains("\"r\":2")).await;
+    let (_, eof_p) = hub_sse_collect(&mut promoter, 25, |_| false).await;
+    let (_, eof_s) = hub_sse_collect(&mut sub_a, 5, |_| false).await;
     assert!(
-        acc.contains("\"r\":2"),
-        "subscription must survive the transfer and deliver:\n{acc}"
+        eof_p && eof_s,
+        "old subscriptions terminate on the transfer"
+    );
+    assert_eq!(
+        rig_append(addr, "vtx", &tok_a, r#"{"side":"stale"}"#).await,
+        401
     );
 
-    // Attribution: seal + drain + roll up, then both workspaces must
-    // hold read usage for THIS project — the batch-time capture.
+    // New owner: fresh credential, new subscription, post-transfer
+    // delivery.
+    let tok_b = mint_token("c2", "proj-vtx", "ws_vtb", 2, 1, "vb", 600);
+    let mut p2 = rig_sse(addr, "vtx", &tok_b, "?cursor=now", None).await;
+    let (c, _) = hub_sse_collect(&mut p2, 8, |t| t.contains("event: control")).await;
+    assert!(c.contains(" 200 "), "new owner subscribes:\n{c}");
+    let mut sub_b = rig_sse(addr, "vtx", &tok_b, "?cursor=now", None).await;
+    let (c2, _) = hub_sse_collect(&mut sub_b, 8, |t| t.contains("event: control")).await;
+    assert!(c2.contains(" 200 "));
+    assert_eq!(
+        rig_append(addr, "vtx", &tok_b, r#"{"side":"b"}"#).await,
+        200
+    );
+    let (d2, _) = hub_sse_collect(&mut sub_b, 10, |t| t.contains("\"side\":\"b\"")).await;
+    assert!(
+        d2.contains("\"side\":\"b\""),
+        "post-transfer delivery:\n{d2}"
+    );
+
+    // Books: reads under BOTH workspaces for this project, each side
+    // attributed to the owner at event time.
     state.billing_reads.seal_if_aged(0);
     for _ in 0..100 {
         if crate::billing::drain_once(&state).await.expect("drain") == 0 {
@@ -30834,20 +30713,22 @@ async fn hub_workspace_at_event_billing_changes_mid_subscription() {
         .unwrap();
     while let Some(kv) = iter.next().await.unwrap() {
         let k = String::from_utf8_lossy(&kv.key).to_string();
-        if !k.ends_with("/proj-wtx") {
+        if !k.ends_with("/proj-vtx") {
             continue;
         }
         let row: crate::rollup::AggRow = serde_json::from_slice(&kv.value).unwrap();
-        let ws = k.split('/').nth(2).unwrap_or("?").to_string();
-        per_ws.insert(ws, row.read_records);
+        per_ws.insert(
+            k.split('/').nth(2).unwrap_or("?").to_string(),
+            row.read_records,
+        );
     }
     assert!(
-        per_ws.get("ws_wxa").copied().unwrap_or(0) > 0,
-        "pre-transfer reads must bill to the OLD workspace: {per_ws:?}"
+        per_ws.get("ws_vta").copied().unwrap_or(0) > 0,
+        "pre-transfer reads bill A: {per_ws:?}"
     );
     assert!(
-        per_ws.get("ws_wxb").copied().unwrap_or(0) > 0,
-        "post-transfer reads must bill to the NEW workspace (per-batch identity): {per_ws:?}"
+        per_ws.get("ws_vtb").copied().unwrap_or(0) > 0,
+        "post-transfer reads bill B: {per_ws:?}"
     );
 }
 
@@ -31734,5 +31615,541 @@ async fn suspension_terminates_established_subscriptions() {
         eof_promoter && eof_sub,
         "established subscriptions must terminate on suspension \
          (promoter eof={eof_promoter}, hub sub eof={eof_sub})"
+    );
+}
+
+// ===================================================================
+// Review round 3, Phase 0: the long-lived authorization boundary.
+// Shared rig helpers (enforce mode, RSA kid "rig-1").
+// ===================================================================
+const RIG_PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
+const RIG_PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
+const RIG_SCOPES: &str = "streams.create streams.records.append streams.records.read \
+                          streams.metadata.read";
+
+fn rig_policy(project: &str, ws: &str, ov: u64, ppv: u64) -> crate::project_policy::ProjectPolicy {
+    crate::project_policy::ProjectPolicy {
+        project_id: crate::tenant::ProjectId::new(project).unwrap(),
+        workspace_id: crate::tenant::WorkspaceId::new(ws).unwrap(),
+        cell_id: std::sync::Arc::from("test-cell"),
+        project_policy_version: ppv,
+        ownership_version: ov,
+        status: crate::project_policy::ProjectStatus::Active,
+        quotas: crate::project_policy::ProjectQuotas::default(),
+    }
+}
+
+fn rig_publish_policy(
+    svc: &crate::auth::AuthService,
+    p: crate::project_policy::ProjectPolicy,
+    fv: u64,
+) -> Result<(), &'static str> {
+    let mut projects = std::collections::HashMap::new();
+    projects.insert(p.project_id.clone(), p);
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects,
+        fetched_at_unix: crate::shard::now_ms() / 1000,
+        feed_version: fv,
+    })
+}
+
+fn rig_publish_grants(
+    svc: &crate::auth::AuthService,
+    project: &str,
+    creds: &[(&str, crate::project_policy::CredentialStatus, u64)],
+    fv: u64,
+) -> Result<(), &'static str> {
+    let mut credentials = std::collections::HashMap::new();
+    for (cred, status, gv) in creds {
+        credentials.insert(
+            std::sync::Arc::from(*cred),
+            crate::project_policy::CredentialGrant {
+                credential_id: std::sync::Arc::from(*cred),
+                project_id: crate::tenant::ProjectId::new(project).unwrap(),
+                grant_version: *gv,
+                status: *status,
+                scopes: crate::tenant::ScopeSet::parse(RIG_SCOPES).0,
+                grant: crate::tenant::StreamGrant::All,
+                expires_at: None,
+            },
+        );
+    }
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials,
+        fetched_at_unix: crate::shard::now_ms() / 1000,
+        feed_version: fv,
+    })
+}
+
+/// Enforce-mode rig: keys + policy v1 (Active, ov 1) + the given
+/// credentials (Active, gv 1). `staleness` shortens the feed window.
+async fn auth_rig(
+    project: &str,
+    ws: &str,
+    creds: &[&str],
+    staleness: Option<i64>,
+) -> (
+    std::sync::Arc<crate::auth::AuthService>,
+    Arc<crate::http::AppState>,
+    std::net::SocketAddr,
+) {
+    let now = crate::shard::now_ms() / 1000;
+    let svc = std::sync::Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    if let Some(s) = staleness {
+        svc.set_staleness_max_secs(s);
+    }
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        "rig-1".to_string(),
+        crate::auth::JwksKey {
+            alg: jsonwebtoken::Algorithm::RS256,
+            key: jsonwebtoken::DecodingKey::from_rsa_pem(RIG_PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(RIG_PUB.as_bytes()),
+        },
+    );
+    svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    rig_publish_policy(&svc, rig_policy(project, ws, 1, 1), 1).unwrap();
+    let cs: Vec<_> = creds
+        .iter()
+        .map(|c| (*c, crate::project_policy::CredentialStatus::Active, 1u64))
+        .collect();
+    rig_publish_grants(&svc, project, &cs, 1).unwrap();
+    let (state, addr) = http_rig_with_auth_service(mem(), svc.clone()).await;
+    state
+        .sse_live_hub
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    (svc, state, addr)
+}
+
+fn mint_token(
+    cred: &str,
+    project: &str,
+    ws: &str,
+    ov: u64,
+    gv: u64,
+    jti: &str,
+    exp_in: i64,
+) -> String {
+    #[derive(serde::Serialize)]
+    struct C<'a> {
+        iss: &'a str,
+        aud: &'a str,
+        sub: &'a str,
+        credential_id: &'a str,
+        project_id: &'a str,
+        workspace_id: &'a str,
+        cell_id: &'a str,
+        ownership_version: u64,
+        grant_version: u64,
+        scope: &'a str,
+        jti: &'a str,
+        iat: i64,
+        exp: i64,
+    }
+    let now = crate::shard::now_ms() / 1000;
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some("rig-1".into());
+    let tok = jsonwebtoken::encode(
+        &header,
+        &C {
+            iss: "https://auth.prisma.io",
+            aud: "prisma-streams-data",
+            sub: "u",
+            credential_id: cred,
+            project_id: project,
+            workspace_id: ws,
+            cell_id: "test-cell",
+            ownership_version: ov,
+            grant_version: gv,
+            scope: RIG_SCOPES,
+            jti,
+            iat: now - 60,
+            exp: now + exp_in,
+        },
+        &jsonwebtoken::EncodingKey::from_rsa_pem(RIG_PRIV.as_bytes()).unwrap(),
+    )
+    .unwrap();
+    format!("Bearer {tok}")
+}
+
+async fn rig_create(addr: std::net::SocketAddr, name: &str, bearer: &str) {
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        &format!("/v1/streams/{name}"),
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("authorization", bearer),
+        ],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "create {name}");
+}
+
+async fn rig_append(addr: std::net::SocketAddr, name: &str, bearer: &str, body: &str) -> u16 {
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        &format!("/v1/streams/{name}/records"),
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("authorization", bearer),
+        ],
+        body.as_bytes(),
+    )
+    .await;
+    st
+}
+
+/// Backlog appends under a burst can hit typed admission shed (429);
+/// retry briefly — the legs are about delivery, not admission.
+async fn rig_append_retry(addr: std::net::SocketAddr, name: &str, bearer: &str, body: &str) {
+    for _ in 0..50 {
+        match rig_append(addr, name, bearer, body).await {
+            200 => return,
+            429 | 503 => tokio::time::sleep(std::time::Duration::from_millis(40)).await,
+            st => panic!("append {name}: {st}"),
+        }
+    }
+    panic!("append {name}: admission never cleared");
+}
+
+/// Raw SSE connect with bearer + optional query; `rcvbuf` shrinks the
+/// socket receive buffer so "slow reader" legs can really stall the
+/// producer (loopback buffers otherwise swallow megabytes).
+async fn rig_sse(
+    addr: std::net::SocketAddr,
+    name: &str,
+    bearer: &str,
+    query: &str,
+    rcvbuf: Option<u32>,
+) -> tokio::net::TcpStream {
+    use tokio::io::AsyncWriteExt;
+    let sock = tokio::net::TcpSocket::new_v4().unwrap();
+    if let Some(b) = rcvbuf {
+        sock.set_recv_buffer_size(b).unwrap();
+    }
+    let mut sck = sock.connect(addr).await.unwrap();
+    let req = format!(
+        "GET /v1/streams/{name}/records:sse{query} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nauthorization: {bearer}\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
+    );
+    sck.write_all(req.as_bytes()).await.unwrap();
+    sck
+}
+
+fn data_frames(s: &str) -> usize {
+    s.matches("event: data").count()
+}
+
+// ------------------------------------------------------------------
+// F3 (red): a workspace change WITHOUT an ownership_version increment
+// must be refused by the snapshot publisher — the contract ties
+// ownership changes to ownership_version structurally.
+// ------------------------------------------------------------------
+#[test]
+fn publish_rejects_workspace_change_without_ownership_bump() {
+    let svc = crate::auth::AuthService::new(
+        crate::auth::AuthMode::Enforce,
+        "https://auth.prisma.io".into(),
+        "test-cell",
+    )
+    .unwrap();
+    rig_publish_policy(&svc, rig_policy("proj-wob", "ws-a", 1, 1), 1).unwrap();
+    assert!(
+        rig_publish_policy(&svc, rig_policy("proj-wob", "ws-b", 1, 2), 2).is_err(),
+        "workspace changed without ownership_version increment must be refused"
+    );
+    // The refusal leaves no trace; the legitimate transfer shape lands.
+    rig_publish_policy(&svc, rig_policy("proj-wob", "ws-b", 2, 3), 3)
+        .expect("ownership bump + workspace change is the valid transfer");
+    assert_eq!(
+        svc.workspace_for(&crate::tenant::ProjectId::new("proj-wob").unwrap())
+            .map(|w| w.as_str().to_string())
+            .as_deref(),
+        Some("ws-b")
+    );
+}
+
+// ------------------------------------------------------------------
+// F1 (red): feed staleness must terminate ESTABLISHED subscriptions,
+// exactly as it refuses new requests (fail closed at the window).
+// ------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn hub_subscription_terminates_when_policy_feed_goes_stale() {
+    let (_svc, _state, addr) = auth_rig("proj-st1", "ws_st", &["c1"], Some(3)).await;
+    let tok = mint_token("c1", "proj-st1", "ws_st", 1, 1, "s1", 600);
+    rig_create(addr, "st1", &tok).await;
+    let mut promoter = rig_sse(addr, "st1", &tok, "", None).await;
+    let (a, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;
+    assert!(a.contains("upToDate"), "promoter parks:\n{a}");
+    let mut sub = rig_sse(addr, "st1", &tok, "", None).await;
+    let (b, _) = hub_sse_collect(&mut sub, 8, |t| t.contains("upToDate")).await;
+    assert!(b.contains("upToDate"), "hub sub parks:\n{b}");
+    // No feed refresh: the snapshots cross the 3 s window while idle.
+    let (_, eof_p) = hub_sse_collect(&mut promoter, 14, |_| false).await;
+    let (_, eof_s) = hub_sse_collect(&mut sub, 4, |_| false).await;
+    assert!(
+        eof_p && eof_s,
+        "stale policy feed must terminate established subscriptions \
+         (direct eof={eof_p}, hub eof={eof_s})"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn subscription_terminates_when_only_the_grant_feed_goes_stale() {
+    let (svc, _state, addr) = auth_rig("proj-st2", "ws_st", &["c1"], Some(3)).await;
+    let tok = mint_token("c1", "proj-st2", "ws_st", 1, 1, "s2", 600);
+    rig_create(addr, "st2", &tok).await;
+    let mut sub = rig_sse(addr, "st2", &tok, "", None).await;
+    let (b, _) = hub_sse_collect(&mut sub, 8, |t| t.contains("upToDate")).await;
+    assert!(b.contains("upToDate"), "parks:\n{b}");
+    // Keep the POLICY feed fresh; let GRANTS age past the window.
+    tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+    rig_publish_policy(&svc, rig_policy("proj-st2", "ws_st", 1, 1), 2).unwrap();
+    let (_, eof) = hub_sse_collect(&mut sub, 14, |_| false).await;
+    assert!(
+        eof,
+        "stale GRANT feed alone must terminate the subscription"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn subscription_survives_when_both_feeds_refresh_before_the_deadline() {
+    let (svc, _state, addr) = auth_rig("proj-st3", "ws_st", &["c1"], Some(3)).await;
+    let tok = mint_token("c1", "proj-st3", "ws_st", 1, 1, "s3", 600);
+    rig_create(addr, "st3", &tok).await;
+    let mut sub = rig_sse(addr, "st3", &tok, "", None).await;
+    let (b, _) = hub_sse_collect(&mut sub, 8, |t| t.contains("upToDate")).await;
+    assert!(b.contains("upToDate"), "parks:\n{b}");
+    // Identical-content republication every 1.5 s moves the freshness
+    // deadline forward: the subscription must stay open well past the
+    // original 3 s window.
+    let mut fv = 2;
+    for _ in 0..4 {
+        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        rig_publish_policy(&svc, rig_policy("proj-st3", "ws_st", 1, 1), fv).unwrap();
+        rig_publish_grants(
+            &svc,
+            "proj-st3",
+            &[("c1", crate::project_policy::CredentialStatus::Active, 1)],
+            fv,
+        )
+        .unwrap();
+        fv += 1;
+    }
+    let (_, eof) = hub_sse_collect(&mut sub, 2, |_| false).await;
+    assert!(!eof, "refreshed feeds must keep the subscription open");
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn off_mode_subscriptions_are_untouched_by_staleness() {
+    // No auth service: Off posture, no lease. Parked hub subscriber
+    // stays open indefinitely regardless of any feed notion.
+    let (state, _addr, _promoter, mut sck) = hub_rig_stream("offst").await;
+    let (a, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    assert!(a.contains("upToDate"));
+    assert!(state.live_hubs.hub_count() >= 1);
+    let (_, eof) = hub_sse_collect(&mut sck, 5, |_| false).await;
+    assert!(!eof, "Off mode: no lease, no staleness termination");
+}
+
+// ------------------------------------------------------------------
+// F2 (red): revocation/expiry must interrupt ACTIVE delivery, and no
+// queued frame may be yielded after the cutoff is observed.
+// ------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn revocation_interrupts_active_hub_delivery_and_drops_queued_frames() {
+    use tokio::io::AsyncReadExt;
+    let (svc, _state, addr) = auth_rig("proj-rv1", "ws_rv", &["c1", "c2"], None).await;
+    let tok1 = mint_token("c1", "proj-rv1", "ws_rv", 1, 1, "r1", 600);
+    let tok2 = mint_token("c2", "proj-rv1", "ws_rv", 1, 1, "r2", 600);
+    rig_create(addr, "rv1", &tok1).await;
+    // 200 x 16 KiB backlog BEFORE subscribing: the catch-up is a long
+    // inner send loop.
+    // 96 KiB frames: macOS loopback autotunes the server send buffer
+    // to ~0.5 MB, so already-written bytes on resume are <= ~5 frames
+    // (with 16 KiB frames they were ~30 and swamped the yield bound);
+    // larger frames trip admission on the burst (429).
+    let pad = "x".repeat(96 * 1024);
+    for i in 0..40 {
+        rig_append_retry(addr, "rv1", &tok1, &format!(r#"{{"i":{i},"pad":"{pad}"}}"#)).await;
+    }
+    // Promoter parks at the tail (direct); the test subscriber joins
+    // from the start and rides the hub's durable catch-up.
+    let mut promoter = rig_sse(addr, "rv1", &tok1, "?cursor=now", None).await;
+    let (a, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;
+    assert!(a.contains("upToDate"));
+    let mut sub = rig_sse(addr, "rv1", &tok1, "", Some(8192)).await;
+    // Read until TWO records arrived, then stall (tiny rcvbuf => the
+    // producer blocks in sse_send within a few frames).
+    let mut buf = vec![0u8; 4096];
+    let mut acc = String::new();
+    let t0 = std::time::Instant::now();
+    while data_frames(&acc) < 2 && t0.elapsed().as_secs() < 10 {
+        let n = sub.read(&mut buf).await.unwrap();
+        if n == 0 {
+            break;
+        }
+        acc.push_str(&String::from_utf8_lossy(&buf[..n]));
+    }
+    assert!(
+        data_frames(&acc) >= 2,
+        "catch-up started:\n{}",
+        &acc[..acc.len().min(300)]
+    );
+    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+    // CUTOFF: revoke c1 (c2 stays valid), then land post-cutoff markers
+    // with c2 — none may ever reach the revoked subscriber.
+    rig_publish_grants(
+        &svc,
+        "proj-rv1",
+        &[
+            ("c1", crate::project_policy::CredentialStatus::Revoked, 2),
+            ("c2", crate::project_policy::CredentialStatus::Active, 1),
+        ],
+        2,
+    )
+    .unwrap();
+    for m in 0..3 {
+        assert_eq!(
+            rig_append(addr, "rv1", &tok2, &format!(r#"{{"MARKER":{m}}}"#)).await,
+            200
+        );
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // Resume reading: the body must end promptly; frames that were
+    // already in kernel buffers are unavoidable (bounded small), but
+    // the producer/body must not keep feeding the revoked client.
+    let (after, eof) = hub_sse_collect(&mut sub, 15, |_| false).await;
+    let frames_after = data_frames(&after);
+    assert!(
+        !after.contains("MARKER"),
+        "post-cutoff records reached a revoked subscriber:\n{}",
+        &after[after.len().saturating_sub(400)..]
+    );
+    assert!(eof, "revoked subscription must terminate within the bound");
+    // Residue = bytes hyper had ALREADY written before the cutoff
+    // (kernel send+recv buffers, ~0.5-1 MB on loopback => <= ~10
+    // frames at 96 KiB). The body gate guarantees no further YIELDS;
+    // the bound pins that the producer stopped too.
+    assert!(
+        frames_after <= 12,
+        "delivery continued after revocation: {frames_after} frames after the cutoff"
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn revocation_interrupts_active_direct_delivery() {
+    use tokio::io::AsyncReadExt;
+    let (svc, _state, addr) = auth_rig("proj-rv2", "ws_rv", &["c1", "c2"], None).await;
+    let tok1 = mint_token("c1", "proj-rv2", "ws_rv", 1, 1, "d1", 600);
+    let tok2 = mint_token("c2", "proj-rv2", "ws_rv", 1, 1, "d2", 600);
+    rig_create(addr, "rv2", &tok1).await;
+    // 96 KiB frames: macOS loopback autotunes the server send buffer
+    // to ~0.5 MB, so already-written bytes on resume are <= ~5 frames
+    // (with 16 KiB frames they were ~30 and swamped the yield bound);
+    // larger frames trip admission on the burst (429).
+    let pad = "x".repeat(96 * 1024);
+    for i in 0..40 {
+        rig_append_retry(addr, "rv2", &tok1, &format!(r#"{{"i":{i},"pad":"{pad}"}}"#)).await;
+    }
+    // Single subscriber from the start = the DIRECT path's large
+    // catch-up read budget.
+    let mut sub = rig_sse(addr, "rv2", &tok1, "", Some(8192)).await;
+    let mut buf = vec![0u8; 4096];
+    let mut acc = String::new();
+    let t0 = std::time::Instant::now();
+    while data_frames(&acc) < 2 && t0.elapsed().as_secs() < 10 {
+        let n = sub.read(&mut buf).await.unwrap();
+        if n == 0 {
+            break;
+        }
+        acc.push_str(&String::from_utf8_lossy(&buf[..n]));
+    }
+    assert!(data_frames(&acc) >= 2, "catch-up started");
+    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+    rig_publish_grants(
+        &svc,
+        "proj-rv2",
+        &[
+            ("c1", crate::project_policy::CredentialStatus::Revoked, 2),
+            ("c2", crate::project_policy::CredentialStatus::Active, 1),
+        ],
+        2,
+    )
+    .unwrap();
+    for m in 0..3 {
+        assert_eq!(
+            rig_append(addr, "rv2", &tok2, &format!(r#"{{"MARKER":{m}}}"#)).await,
+            200
+        );
+    }
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    let (after, eof) = hub_sse_collect(&mut sub, 15, |_| false).await;
+    assert!(
+        !after.contains("MARKER"),
+        "post-cutoff records reached a revoked direct subscriber"
+    );
+    assert!(
+        eof,
+        "revoked direct subscription must terminate within the bound"
+    );
+    // Same TCP-residue bound as the hub leg.
+    assert!(
+        data_frames(&after) <= 12,
+        "direct delivery continued after revocation: {} frames",
+        data_frames(&after)
+    );
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn token_expiry_interrupts_slowly_progressing_delivery() {
+    use tokio::io::AsyncReadExt;
+    let (_svc, _state, addr) = auth_rig("proj-ex1", "ws_ex", &["c1"], None).await;
+    // Expires in 6 s; the backlog takes far longer to drain at the
+    // client's deliberately slow pace.
+    let tok = mint_token("c1", "proj-ex1", "ws_ex", 1, 1, "e1", 6);
+    rig_create(addr, "ex1", &tok).await;
+    // 96 KiB frames: macOS loopback autotunes the server send buffer
+    // to ~0.5 MB, so already-written bytes on resume are <= ~5 frames
+    // (with 16 KiB frames they were ~30 and swamped the yield bound);
+    // larger frames trip admission on the burst (429).
+    let pad = "x".repeat(96 * 1024);
+    for i in 0..40 {
+        rig_append_retry(addr, "ex1", &tok, &format!(r#"{{"i":{i},"pad":"{pad}"}}"#)).await;
+    }
+    let exp_at = std::time::Instant::now() + std::time::Duration::from_secs(6);
+    let mut sub = rig_sse(addr, "ex1", &tok, "", Some(8192)).await;
+    // Continuous SLOW progress until expiry: one small read every
+    // 400 ms keeps each queue send completing inside its 10 s timeout.
+    let mut buf = vec![0u8; 2048];
+    while std::time::Instant::now() < exp_at {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), sub.read(&mut buf)).await;
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
+    }
+    // Past expiry: drain at full speed. The server keeps the TCP
+    // connection alive after the body ends, so "ended" is the chunked
+    // terminator (hub_sse_collect understands it), not TCP close.
+    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let (after, eof) = hub_sse_collect(&mut sub, 12, |_| false).await;
+    let frames_after_exp = data_frames(&after);
+    assert!(eof, "expired token must end a slowly progressing delivery");
+    // TCP-residue bound (see the revocation legs).
+    assert!(
+        frames_after_exp <= 12,
+        "delivery continued well past token expiry: {frames_after_exp} frames"
     );
 }

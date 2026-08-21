@@ -13,14 +13,14 @@
 //! and resumes from its durable cursor — never a private replay
 //! buffer.
 //!
-//! Scope (v1, env-gated by SSE_LIVE_HUB): PRODUCT surface, unforked
-//! single-segment streams, no routing-key filter, durable delivery.
-//! Raw-surface controls echo the subscriber's own request cursor and
-//! fall back to the Phase-1 path, as do lineage/fork shapes. The
-//! up-to-date/closed flags cannot ride shared bytes (a mid-ring reader
-//! must not see a stale upToDate), so each batch also carries a
-//! FLAGGED variant of its last event, sent only by subscribers that
-//! park at the hub head after it.
+//! Scope (default-on since review round 2; SSE_LIVE_HUB=0 is the kill
+//! switch): PRODUCT surface, unforked single-segment streams, no
+//! routing-key filter, durable delivery. Raw-surface controls echo the
+//! subscriber's own request cursor and fall back to the Phase-1 path,
+//! as do lineage/fork shapes. Prepared batches carry ONLY immutable
+//! facts (scan ranges + ordinary events); upToDate/sealed are decided
+//! per subscriber at send time against the LIVE durable frontier
+//! (review V1) — no status ever rides shared bytes.
 
 use crate::http::AppState;
 use crate::shard::ShardEngine;
