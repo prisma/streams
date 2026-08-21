@@ -977,6 +977,10 @@ async fn debug_load(
         "sse_hub_ring_bytes_walked": if walk { serde_json::Value::from(state.live_hubs.ring_bytes_total()) } else { serde_json::Value::Null },
         "sse_hub_logical_bytes": if walk { serde_json::Value::from(state.live_hubs.logical_bytes_total()) } else { serde_json::Value::Null },
         "lease_terminations": lease_terminations_json(),
+        "runtime_tick_age_ms": crate::shard::now_ms() - RUNTIME_LAST_TICK_MS.load(std::sync::atomic::Ordering::Relaxed),
+        "runtime_max_tick_gap_ms": RUNTIME_MAX_GAP_MS.load(std::sync::atomic::Ordering::Relaxed),
+        "sse_pumps_live": crate::livehub::stats::PUMPS_LIVE.load(std::sync::atomic::Ordering::Relaxed),
+        "sse_hub_walk": if walk { state.live_hubs.walk_json(40) } else { serde_json::Value::Null },
         "sse_canary": {
             "direct_subscribers": state.live_hubs.direct_subscribers(),
             "hub_subscribers": state.live_hubs.hub_subscribers(),
@@ -1344,6 +1348,7 @@ pub async fn serve_h1(
     max_buf: usize,
 ) -> std::io::Result<()> {
     let svc = hyper_util::service::TowerToHyperService::new(app);
+    spawn_runtime_watchdog();
     loop {
         let (sock, _peer) = match listener.accept().await {
             Ok(x) => x,
@@ -6912,6 +6917,31 @@ pub(crate) async fn read_records_for_hub(
 /// off+1; the batch-LAST event names the batch's scan_next so a
 /// resuming client skips trailing non-matching records (#272).
 #[allow(clippy::too_many_arguments)]
+/// Wedge diagnostic: a 1 s ticker records the gap between consecutive
+/// ticks; the WATERMARK survives the stall so a post-mortem scrape
+/// says whether the runtime's workers were blocked (std lock across an
+/// await, CPU starvation) as opposed to a logical deadlock on a
+/// healthy runtime. Spawned once from serve_h1.
+pub(crate) static RUNTIME_LAST_TICK_MS: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(0);
+pub(crate) static RUNTIME_MAX_GAP_MS: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(0);
+
+pub(crate) fn spawn_runtime_watchdog() {
+    tokio::spawn(async move {
+        let mut last = crate::shard::now_ms();
+        RUNTIME_LAST_TICK_MS.store(last, std::sync::atomic::Ordering::Relaxed);
+        loop {
+            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+            let now = crate::shard::now_ms();
+            let gap = now - last;
+            last = now;
+            RUNTIME_LAST_TICK_MS.store(now, std::sync::atomic::Ordering::Relaxed);
+            RUNTIME_MAX_GAP_MS.fetch_max(gap, std::sync::atomic::Ordering::Relaxed);
+        }
+    });
+}
+
 /// Review round 3: subscriber-side canary counters.
 pub(crate) mod sse_stats {
     use std::sync::atomic::AtomicU64;

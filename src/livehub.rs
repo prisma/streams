@@ -36,6 +36,9 @@ pub(crate) mod stats {
     pub static PUMP_READ_ERRORS: AtomicU64 = AtomicU64::new(0);
     pub static PUMP_TRANSITIONS: AtomicU64 = AtomicU64::new(0);
     pub static PUMP_CLOSED: AtomicU64 = AtomicU64::new(0);
+    /// Pumps currently inside their loop (inc on entry, dec on exit):
+    /// a wedge diagnostic — hubs without a live pump never publish.
+    pub static PUMPS_LIVE: AtomicU64 = AtomicU64::new(0);
 }
 use crate::shard::ShardEngine;
 use bytes::Bytes;
@@ -471,6 +474,28 @@ impl HubRegistry {
     /// exports both so drift is visible as an accounting bug. Tests
     /// assert against it per-rig (the process gauge is shared across
     /// the parallel test binary).
+    /// Wedge diagnostic (debug/load?walk=1): a bounded per-hub summary —
+    /// subscribers, scan head, caught-up flag, retained batches/charge,
+    /// lifecycle — so a field stall shows WHICH hubs stopped moving.
+    pub(crate) fn walk_json(&self, limit: usize) -> serde_json::Value {
+        let map = self.map.lock().unwrap();
+        let mut v = Vec::new();
+        for h in map.values().take(limit) {
+            let r = h.ring.lock().unwrap();
+            v.push(serde_json::json!({
+                "id": h.id[..6].iter().map(|b| format!("{b:02x}")).collect::<String>(),
+                "subscribers": h.subscribers.load(Ordering::SeqCst),
+                "head": r.head,
+                "floor": r.floor,
+                "caught_up": r.caught_up,
+                "batches": r.batches.len(),
+                "charge": r.bytes,
+                "lifecycle": h.lifecycle(),
+            }));
+        }
+        serde_json::Value::Array(v)
+    }
+
     /// Canary: subscribers currently on the DIRECT path (per-incarnation
     /// counts summed) and on hubs.
     pub(crate) fn direct_subscribers(&self) -> u64 {
@@ -623,6 +648,14 @@ enum PumpExit {
 /// format once, publish shared bytes. Exits when the last subscriber
 /// leaves, on genuine closure, or on a read error (fence).
 async fn hub_pump(state: Arc<AppState>, hub: Arc<LiveHub>) {
+    struct Live;
+    impl Drop for Live {
+        fn drop(&mut self) {
+            stats::PUMPS_LIVE.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
+    stats::PUMPS_LIVE.fetch_add(1, Ordering::Relaxed);
+    let _live = Live;
     let ctx = hub.ctx.clone().expect("production hubs carry a context");
     let (desc, key, epoch, engine, handle) =
         (&ctx.desc, &ctx.key, ctx.epoch, &ctx.engine, &ctx.handle);
