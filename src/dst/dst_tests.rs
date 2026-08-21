@@ -29923,7 +29923,7 @@ async fn hub_empty_seal_single_final_control() {
     let (acc, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("upToDate")).await;
     assert!(acc.contains("\"upToDate\":true"), "tail status:\n{acc}");
     assert!(state.live_hubs.hub_count() >= 1, "hub must be engaged");
-    let (st, _, _) = preq(
+    let (st, _, body) = preq(
         addr,
         "POST",
         "/v1/streams/hubseal2:seal",
@@ -29931,7 +29931,14 @@ async fn hub_empty_seal_single_final_control() {
         b"{}",
     )
     .await;
-    assert_eq!(st, 200);
+    // Intermittent (~1/25 solo): the seal answered 500 once — keep the
+    // body so the next occurrence names its cause.
+    assert_eq!(
+        st,
+        200,
+        "seal status {st}: {}",
+        String::from_utf8_lossy(&body)
+    );
     let (acc, eof) = hub_sse_collect(&mut sck, 15, |_| false).await;
     assert_eq!(
         acc.matches("\"sealed\":true").count(),
