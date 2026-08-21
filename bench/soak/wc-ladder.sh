@@ -22,6 +22,12 @@ R=${WC_REGION:-eu-central-1}
 # run their gen OUT-of-region (WC_GEN_REGION) until the platform fixes
 # it. Server stays in R.
 GR=${WC_GEN_REGION:-$R}
+# K generators on distinct source IPs (the edge caps concurrent
+# connections PER SOURCE IP at ~1.2-2k): gen k parks subscribers
+# [k*slice, (k+1)*slice) and only gen 0 writes. Regions round-robin
+# from WC_GEN_REGIONS so the gens really are distinct hosts/IPs.
+GENS=${WC_GENS:-1}
+GEN_REGIONS=(${WC_GEN_REGIONS:-$GR})
 export SOAK_RUN_ID=${SOAK_RUN_ID:-"wc-$(date -u +%Y%m%dT%H%M%SZ)"}
 export BIN_TAG=$SOAK_RUN_ID
 OUT="$S/results/$SOAK_RUN_ID"; mkdir -p "$OUT"
@@ -87,7 +93,13 @@ for path, key in [(sys.argv[1], sys.argv[2]), (sys.argv[3], sys.argv[4])]:
     print(f"uploaded {key} ({len(data)} bytes)")
 PY
 
-role_region() { [ "$1" = gen ] && echo "$GR" || echo "$R"; }
+role_region() {
+  case "$1" in
+    gen)   echo "${GEN_REGIONS[0]}";;
+    gen-*) local k=${1#gen-}; echo "${GEN_REGIONS[$((k % ${#GEN_REGIONS[@]}))]}";;
+    *)     echo "$R";;
+  esac
+}
 role_project() { cat "$S/proj-$(role_region "$1").txt"; }
 svc_id() {
   local ROLE=$1 DR=$(role_region "$1") DP=$(role_project "$1")
@@ -108,7 +120,7 @@ svc_id() {
 }
 deploy() {
   local ROLE=$1; shift
-  local DIR="$S/app-$ROLE-$R"
+  local DIR="$S/app-${ROLE%%-*}-$R"   # gen-k roles share the gen app dir
   local DR=$(role_region "$ROLE") DP=$(role_project "$ROLE")
   local SVC=$(svc_id "$ROLE"); local SVCARG=()
   [ -n "$SVC" ] && SVCARG=(--service "$SVC")
@@ -180,25 +192,35 @@ verify_server_live
 curl -sf --max-time 20 -H "authorization: Bearer $AUTH" \
   "$(cat "$S/url-server-$R.txt")/v1/debug/load" > "$OUT/server-before-$STAGE.json" || true
 
-echo "== gen: cert stage $STAGE"
-deploy gen \
-  --env AWSBENCH_S3_KEY="bin/awsbench-$BIN_TAG-x64" \
-  --env S3_ENDPOINT=$BINEP --env S3_BUCKET=$BINBKT --env S3_REGION=auto \
-  --env S3_ACCESS_KEY_ID="$BINID" --env S3_SECRET_ACCESS_KEY="$BINSEC" \
-  --env BENCH_SYSTEM=prisma --env BENCH_SHAPE=cert \
-  --env BENCH_TARGET="$(cat "$S/url-server-$R.txt")" \
-  --env TOKENS_S3_KEY="wc/$SOAK_RUN_ID/tokens.json" \
-  --env BENCH_CERT_TENANTS="$TENANTS" --env BENCH_CERT_SUB_TENANTS="$SUB_TENANTS" \
-  --env BENCH_CERT_SUBS_N="$SUBS_N" --env BENCH_CERT_ACTIVE="$ACTIVE" \
-  --env BENCH_CERT_FANOUT_ACTIVE="$FANOUT" --env BENCH_CERT_WINDOW_MS=5000 \
-  --env BENCH_CERT_CONNECT_CONC=${WC_CONNECT_CONC:-48} \
-  --env BENCH_CERT_WPS="$WPS" --env BENCH_CERT_SECS="$SECS" \
-  --env BENCH_WIDE_SETUP_CONC=64 --env BENCH_RECORD_BYTES=1024 --env BENCH_BATCH=1 \
-  --env BENCH_HOLD=1 --env BENCH_START_GATED=false \
-  --env AUTH_TOKEN="$AUTH" --env STREAM_KEY="$KEY" \
-  --env BENCH_STREAM="wc$STAGE-" --env KEEP_AWAKE=1
+echo "== gen: cert stage $STAGE (gens=$GENS regions=${GEN_REGIONS[*]})"
+SLICE=$(( (SUBS_N + GENS - 1) / GENS ))
+for k in $(seq 0 $((GENS - 1))); do
+  ROLE=gen; [ "$k" -gt 0 ] && ROLE="gen-$k"
+  OFFSET=$(( k * SLICE )); N=$SLICE
+  [ $(( OFFSET + N )) -gt "$SUBS_N" ] && N=$(( SUBS_N - OFFSET ))
+  [ "$N" -lt 0 ] && N=0
+  W=1; [ "$k" -gt 0 ] && W=0
+  echo "   gen $k ($ROLE @ $(role_region "$ROLE")): subs $N from $OFFSET, writers=$W"
+  deploy "$ROLE" \
+    --env AWSBENCH_S3_KEY="bin/awsbench-$BIN_TAG-x64" \
+    --env S3_ENDPOINT=$BINEP --env S3_BUCKET=$BINBKT --env S3_REGION=auto \
+    --env S3_ACCESS_KEY_ID="$BINID" --env S3_SECRET_ACCESS_KEY="$BINSEC" \
+    --env BENCH_SYSTEM=prisma --env BENCH_SHAPE=cert \
+    --env BENCH_TARGET="$(cat "$S/url-server-$R.txt")" \
+    --env TOKENS_S3_KEY="wc/$SOAK_RUN_ID/tokens.json" \
+    --env BENCH_CERT_TENANTS="$TENANTS" --env BENCH_CERT_SUB_TENANTS="$SUB_TENANTS" \
+    --env BENCH_CERT_SUBS_N="$N" --env BENCH_CERT_SUB_OFFSET="$OFFSET" --env BENCH_CERT_WRITERS="$W" \
+    --env BENCH_CERT_ACTIVE="$ACTIVE" \
+    --env BENCH_CERT_FANOUT_ACTIVE="$FANOUT" --env BENCH_CERT_WINDOW_MS=5000 \
+    --env BENCH_CERT_CONNECT_CONC=${WC_CONNECT_CONC:-48} \
+    --env BENCH_CERT_WPS="$WPS" --env BENCH_CERT_SECS="$SECS" \
+    --env BENCH_WIDE_SETUP_CONC=64 --env BENCH_RECORD_BYTES=1024 --env BENCH_BATCH=1 \
+    --env BENCH_HOLD=1 --env BENCH_START_GATED=false \
+    --env AUTH_TOKEN="$AUTH" --env STREAM_KEY="$KEY" \
+    --env BENCH_STREAM="wc$STAGE-" --env KEEP_AWAKE=1
+done
 
-GURL=$(cat "$S/url-gen-$GR.txt")
+GURL=$(cat "$S/url-gen-$(role_region gen).txt")   # the writer gen decides cert_done
 SURL=$(cat "$S/url-server-$R.txt")
 DEADLINE=$(( $(date +%s) + SECS + 1500 ))
 # RSS timeline: correlate memory peaks with shed windows.
@@ -215,6 +237,11 @@ while [ "$(date +%s)" -lt "$DEADLINE" ]; do
   BODY=$(curl -sf --max-time 15 "$GURL/" || true)
   if [ -n "$BODY" ] && echo "$BODY" | grep -q '"cert_done"'; then
     echo "$BODY" > "$OUT/stage-$STAGE.json"
+    # Every subscriber-only gen's stats too (subsLive adds up across them).
+    for k in $(seq 1 $((GENS - 1))); do
+      U=$(cat "$S/url-gen-$k-$(role_region "gen-$k").txt" 2>/dev/null) || continue
+      curl -sf --max-time 15 "$U/" > "$OUT/stage-$STAGE-gen$k.json" || true
+    done
     curl -sf --max-time 20 -H "authorization: Bearer $AUTH" \
       "$(cat "$S/url-server-$R.txt")/v1/debug/load" > "$OUT/server-after-$STAGE.json" || true
     echo "WC_STAGE_DONE $STAGE"

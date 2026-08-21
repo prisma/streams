@@ -1279,6 +1279,13 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
     let tenants: usize = wide_env("BENCH_CERT_TENANTS", 10_000);
     let sub_tenants: usize = wide_env("BENCH_CERT_SUB_TENANTS", 1_000);
     let subs_n: usize = wide_env("BENCH_CERT_SUBS_N", 0);
+    // Multi-generator rungs (the edge caps concurrent connections per
+    // SOURCE IP at ~1.2-2k): K gens on distinct hosts each park a
+    // disjoint slice of subscribers; exactly one of them writes.
+    let sub_offset: usize = wide_env("BENCH_CERT_SUB_OFFSET", 0);
+    let writers: bool = std::env::var("BENCH_CERT_WRITERS")
+        .map(|v| v != "0")
+        .unwrap_or(true);
     let active: usize = wide_env("BENCH_CERT_ACTIVE", 100);
     let fanout_active: usize = wide_env("BENCH_CERT_FANOUT_ACTIVE", 10);
     let window_ms: u64 = wide_env("BENCH_CERT_WINDOW_MS", 5_000);
@@ -1406,9 +1413,28 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
         }
     };
 
-    // Phase 1: create every stream the run can touch.
-    eprintln!("CERT: creating {tenants} streams (conc {setup_conc})");
+    // Phase 1: create every stream the run can touch — the WRITER gen
+    // only; subscriber-only gens wait until the writer's creates land.
     let t_create = Instant::now();
+    if !writers {
+        let t0 = sub_offset % sub_tenants.max(1);
+        let probe = format!("{base}/v1/streams/{}", stream_of(t0));
+        eprintln!("CERT: subscriber-only gen (offset {sub_offset}): waiting for {probe}");
+        for _ in 0..300 {
+            let r = http
+                .get(&probe)
+                .timeout(Duration::from_secs(15))
+                .header("authorization", format!("Bearer {}", tokens[t0]))
+                .header("prisma-encryption-key", key.clone())
+                .send()
+                .await;
+            if matches!(&r, Ok(resp) if resp.status().is_success()) {
+                break;
+            }
+            tokio::time::sleep(Duration::from_secs(2)).await;
+        }
+    } else {
+    eprintln!("CERT: creating {tenants} streams (conc {setup_conc})");
     for chunk in (0..tenants).collect::<Vec<_>>().chunks(10_000) {
         let fails: usize = futures_util::stream::iter(chunk.iter().map(|&t| {
             let http = http.clone();
@@ -1439,6 +1465,7 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
         .await;
         anyhow::ensure!(fails == 0, "{fails} creates failed");
     }
+    }
     let create_ms = t_create.elapsed().as_millis();
     eprintln!("CERT: creates done in {create_ms}ms");
 
@@ -1452,7 +1479,7 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
     let lag_hist = WideHist::new();
     let stop = Arc::new(AtomicU64::new(0));
     for j in 0..subs_n {
-        let t = j % sub_tenants;
+        let t = (j + sub_offset) % sub_tenants;
         let http = http.clone();
         let base = base.clone();
         let name = stream_of(t);
@@ -1616,6 +1643,9 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
             }
         };
         tokio::spawn(async move {
+            if !writers {
+                return; // subscriber-only gen: no rotation writer
+            }
             let mut window: u64 = 0;
             while Instant::now() < deadline && stop.load(Ordering::Relaxed) == 0 {
                 // Deterministic active set for this window.
