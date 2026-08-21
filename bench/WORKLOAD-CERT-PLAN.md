@@ -638,3 +638,18 @@ only when WC_LIVE_HUB is set, so the binary default (on) applies.
 Stale regional project files (eu-west-3, us-east-1) pointed at
 deleted projects; us-east-1 now points at streams-camp75-use (stale
 copy kept as .stale-deleted).
+
+**L2i (2026-08-21, wcfix8 fixed gen, 1,000 subs x 1/stream, gen
+us-east, 20 min): FIRST HONEST FIELD CANARY — CLEAN.** subsLive
+997/997 for the whole run, reconnects 0, 0.000% shed at ~1,010 wps
+with 1,000 parked subscribers (admit_shed inflight 0 / rss 0),
+gen-delivered 120,864 = server delivered_records 121,192 (in-flight
+at stop), lag p50 ~240 ms (us-east reader), append p99 ~0.9-1.0 s,
+RSS ~412 MB, clean teardown (997 client-closed at stage end, 0
+conns after). apErr 1,976 (0.16%, non-shed) under classification.
+Caveat: the hub was STILL OFF — direct_subscribers 0 mid-run: the
+platform persists env vars across deploys, so dropping the forced
+SSE_LIVE_HUB=0 from the deploy left the service's old value in place.
+Ladder now passes SSE_LIVE_HUB=${WC_LIVE_HUB:-1} explicitly. So L2i
+certifies the DIRECT path at 1k parked; the hub's first honest field
+rung is L3a (2,500 subs over 1,000 streams).

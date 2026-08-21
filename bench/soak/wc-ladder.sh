@@ -3,8 +3,10 @@
 # cell, 10k-project feeds, awsbench cert shape. Stages via env:
 #   WC_SUBS_N=0      L1 writes-only (default)
 #   WC_SUBS_N=5000.. L2/L3 subscriber rungs (SUBS gen holds the swarm)
-#   WC_LIVE_HUB=0|1  ONLY to override the binary default (default-on
-#                    since review round 2); unset = binary default
+#   WC_LIVE_HUB=0|1  default 1 (binary default since review round 2).
+#                    Passed EXPLICITLY: platform env vars persist across
+#                    deploys, so omitting it kept an old =0 on the service
+#                    (L2i ran hub-off because of exactly that).
 #   WC_GEN_REGION    deploy the generator out-of-region (see below)
 #   WC_SECS=1800     steady window
 # The server RESTARTS fresh per run (P0 discipline) on a fresh
@@ -160,7 +162,7 @@ deploy server \
   --env ABSORB_PACE_WINDOW_MS=${WC_PACE_WINDOW:-50} --env ABSORB_PACE_MS=${WC_PACE_MS:-0} \
   --env ABSORB_READ_PAR=${WC_READ_PAR:-8} \
   --env ADMIT_RSS_SHED_MB=${WC_RSS_SHED:-600} \
-  ${WC_LIVE_HUB:+--env SSE_LIVE_HUB=$WC_LIVE_HUB} --env SSE_MAX_CONNECTIONS=${WC_SSE_MAX:-10000} \
+  --env SSE_LIVE_HUB=${WC_LIVE_HUB:-1} --env SSE_MAX_CONNECTIONS=${WC_SSE_MAX:-10000} \
   --env POOL_IDLE_SECS=4 --env KEEP_AWAKE=1 --env CELL_ID="$CELL" \
   --env PROJECT_ID=proj-mt-deploy \
   --env SLATEDB_RT_THREADS=${WC_SLATE_RT:-2} \
