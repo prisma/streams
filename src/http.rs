@@ -977,6 +977,9 @@ async fn debug_load(
         "sse_hub_ring_bytes_walked": if walk { serde_json::Value::from(state.live_hubs.ring_bytes_total()) } else { serde_json::Value::Null },
         "sse_hub_logical_bytes": if walk { serde_json::Value::from(state.live_hubs.logical_bytes_total()) } else { serde_json::Value::Null },
         "lease_terminations": lease_terminations_json(),
+        "nofile_soft": NOFILE_SOFT.load(std::sync::atomic::Ordering::Relaxed),
+        "nofile_hard": NOFILE_HARD.load(std::sync::atomic::Ordering::Relaxed),
+        "open_fds": open_fds(),
         "runtime_tick_age_ms": crate::shard::now_ms() - RUNTIME_LAST_TICK_MS.load(std::sync::atomic::Ordering::Relaxed),
         "runtime_max_tick_gap_ms": RUNTIME_MAX_GAP_MS.load(std::sync::atomic::Ordering::Relaxed),
         "sse_pumps_live": crate::livehub::stats::PUMPS_LIVE.load(std::sync::atomic::Ordering::Relaxed),
@@ -1348,6 +1351,10 @@ pub async fn serve_h1(
     max_buf: usize,
 ) -> std::io::Result<()> {
     let svc = hyper_util::service::TowerToHyperService::new(app);
+    let (soft, hard) = raise_nofile();
+    NOFILE_SOFT.store(soft, std::sync::atomic::Ordering::Relaxed);
+    NOFILE_HARD.store(hard, std::sync::atomic::Ordering::Relaxed);
+    tracing::info!("nofile soft={soft} hard={hard} (raised to hard at boot)");
     spawn_runtime_watchdog();
     loop {
         let (sock, _peer) = match listener.accept().await {
@@ -6917,6 +6924,42 @@ pub(crate) async fn read_records_for_hub(
 /// off+1; the batch-LAST event names the batch's scan_next so a
 /// resuming client skips trailing non-matching records (#272).
 #[allow(clippy::too_many_arguments)]
+/// L3a field wedge: the instance's file-descriptor limit (~2k) was
+/// the wall at ~1.5k parked SSE + writer + S3 sockets — EMFILE stalls
+/// accepts, WAL->S3 flushes and therefore appends, while parked
+/// clients see silence. Raise the soft limit to the hard limit at boot
+/// and expose headroom so the canary can see it coming.
+pub(crate) fn raise_nofile() -> (u64, u64) {
+    #[cfg(unix)]
+    unsafe {
+        let mut lim = libc::rlimit {
+            rlim_cur: 0,
+            rlim_max: 0,
+        };
+        if libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim) == 0 {
+            if lim.rlim_cur < lim.rlim_max {
+                let mut want = lim;
+                want.rlim_cur = lim.rlim_max;
+                if libc::setrlimit(libc::RLIMIT_NOFILE, &want) == 0 {
+                    lim = want;
+                }
+            }
+            return (lim.rlim_cur as u64, lim.rlim_max as u64);
+        }
+    }
+    (0, 0)
+}
+
+pub(crate) static NOFILE_SOFT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+pub(crate) static NOFILE_HARD: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Open descriptors right now (Linux: /proc/self/fd; elsewhere 0).
+pub(crate) fn open_fds() -> u64 {
+    std::fs::read_dir("/proc/self/fd")
+        .map(|d| d.count() as u64)
+        .unwrap_or(0)
+}
+
 /// Wedge diagnostic: a 1 s ticker records the gap between consecutive
 /// ticks; the WATERMARK survives the stall so a post-mortem scrape
 /// says whether the runtime's workers were blocked (std lock across an
