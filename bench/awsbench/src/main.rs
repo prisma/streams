@@ -1366,6 +1366,23 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
         }
         eprintln!("CERT: nofile={}", lim.rlim_cur);
     }
+    // The generator's OWN descriptor ceiling (the L3 fleet stopped at
+    // ~1,536 parked + writer sockets while the server was healthy):
+    // export it so a capped ramp is attributable from the stats alone.
+    let nofile_now = || -> (u64, u64, u64) {
+        #[cfg(target_os = "linux")]
+        unsafe {
+            let mut lim = libc::rlimit {
+                rlim_cur: 0,
+                rlim_max: 0,
+            };
+            libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim);
+            let open = std::fs::read_dir("/proc/self/fd").map(|d| d.count() as u64).unwrap_or(0);
+            return (lim.rlim_cur as u64, lim.rlim_max as u64, open);
+        }
+        #[allow(unreachable_code)]
+        (0, 0, 0)
+    };
     // Typed error classes: one opaque "err" bucket hid the edge storm
     // for two full runs. Count by class, sample-print the first three.
     let err_connect = Arc::new(AtomicU64::new(0));
@@ -1713,6 +1730,7 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
             "subErrConnect": sub_err_connect.load(Ordering::Relaxed),
             "subErrStatus": sub_err_status.load(Ordering::Relaxed),
             "connectConc": connect_conc,
+            "nofile": { "soft": nofile_now().0, "hard": nofile_now().1, "open": nofile_now().2 },
             "lagWinP50Ms": pctl_ms(&lags, 0.5),
             "lagWinP99Ms": pctl_ms(&lags, 0.99),
             "tenants": tenants, "subTenants": sub_tenants, "subsN": subs_n,
@@ -1748,6 +1766,7 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
         "subErrConnect": sub_err_connect.load(Ordering::Relaxed),
         "subErrStatus": sub_err_status.load(Ordering::Relaxed),
         "connectConc": connect_conc,
+        "nofile": { "soft": nofile_now().0, "hard": nofile_now().1, "open": nofile_now().2 },
         "createMs": create_ms,
         "steadySecs": secs,
         "tenants": tenants, "subTenants": sub_tenants, "subsN": subs_n,

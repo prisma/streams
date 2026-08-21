@@ -163,6 +163,7 @@ deploy server \
   --env ABSORB_READ_PAR=${WC_READ_PAR:-8} \
   --env ADMIT_RSS_SHED_MB=${WC_RSS_SHED:-600} \
   --env SSE_LIVE_HUB=${WC_LIVE_HUB:-1} --env SSE_MAX_CONNECTIONS=${WC_SSE_MAX:-10000} \
+  --env SSE_HUB_TOTAL_BYTES=${WC_HUB_TOTAL:-16777216} \
   --env POOL_IDLE_SECS=4 --env KEEP_AWAKE=1 --env CELL_ID="$CELL" \
   --env PROJECT_ID=proj-mt-deploy \
   --env SLATEDB_RT_THREADS=${WC_SLATE_RT:-2} \

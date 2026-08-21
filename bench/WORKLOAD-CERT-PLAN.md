@@ -671,3 +671,22 @@ RLIMIT_NOFILE to the hard limit at boot and exports nofile_soft/hard +
 open_fds (45cfd050 diagnostics + this commit); the ladder to 10k needs
 >= ~12k descriptors regardless. Next: relaunch L3a on wcfix9 and watch
 open_fds vs nofile_soft.
+
+**L3b (2026-08-21, wcfix9 with the server nofile raise): the wall is
+the GENERATOR's descriptor ceiling; the server was never blocked.**
+Server fds peaked ~1,680 of 4,096 (soft = hard at boot), the runtime
+tick-gap watermark never exceeded 71 ms, shed 0 and RSS 330 MB at the
+moment the fleet stopped growing (~1,495-1,536 parked, identical in
+L3a / L3a-ctl / L3b across hub on/off and two binaries) — the cap is
+the gen container's own nofile (SSE + up to ~500 writer sockets); the
+gen now exports nofile soft/hard/open in its stats. The earlier
+"server wedge" readings were the sampler's own NEW connections being
+refused sporadically by the edge (blank timeline rows even while the
+server was healthy). Real server-side finding at this rung: with ~505
+hubs publishing under 1,000 wps, RSS climbed 330 -> 507 MB in nine
+minutes and crossed the RSS shed line (85k sheds in the last four
+minutes): the 64 MiB hub retention budget is too generous for the
+1-GiB class next to ~1,500 parked conns — the ladder now runs with
+SSE_HUB_TOTAL_BYTES = 16 MiB (WC_HUB_TOTAL). Per-instance ladder
+above ~1.5k parked needs either a higher gen nofile (platform ask) or
+K generators per rung.
