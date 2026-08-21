@@ -653,3 +653,21 @@ SSE_LIVE_HUB=0 from the deploy left the service's old value in place.
 Ladder now passes SSE_LIVE_HUB=${WC_LIVE_HUB:-1} explicitly. So L2i
 certifies the DIRECT path at 1k parked; the hub's first honest field
 rung is L3a (2,500 subs over 1,000 streams).
+
+**L3a / L3a-ctl WEDGE ROOT CAUSE (2026-08-21): the instance file-
+descriptor limit, not the hub.** Both the hub-on rung (L3a) and its
+hub-off control (L3a-ctl, identical shape) stalled at ~1,536 parked
+SSE subscriptions (+ ~150 writer conns + S3/WAL sockets ≈ a 2k
+nofile wall): append p99 0.8 s -> 14 s then pure timeouts, new
+connections (livez, debug/load, fresh pooled writer conns) unanswered,
+parked clients silent, full recovery the moment the fleet
+disconnected. L2i (1,000 parked, 20 min) never hit it. Hub-specific
+hypotheses (ring keyed read, FRAME_COMPRESS, enforce namespacing, late
+promotion geometry) were each reproduced CLEAN locally first; the
+"prepared_records 0" in L3a was rotation geometry (second subscribers
+promoted streams 0..450 while the rotation wrote 550..1000; the wrap
+at window ~102 coincided with the fd wall). Fix: server raises
+RLIMIT_NOFILE to the hard limit at boot and exports nofile_soft/hard +
+open_fds (45cfd050 diagnostics + this commit); the ladder to 10k needs
+>= ~12k descriptors regardless. Next: relaunch L3a on wcfix9 and watch
+open_fds vs nofile_soft.
