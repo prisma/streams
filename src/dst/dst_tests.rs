@@ -31978,6 +31978,115 @@ fn publish_rejects_workspace_change_without_ownership_bump() {
 }
 
 // ------------------------------------------------------------------
+// Round-4 finding 3 (red): the direct-transition check compares a new
+// policy only against a project still PRESENT in the current snapshot,
+// so omit-and-reintroduce moved the workspace at an UNCHANGED
+// ownership_version: no transfer event, no transfer-time credential
+// revocation, no byte-time billing split — and an old durable project
+// credential survived what was effectively an ownership change. The
+// workspace bound to the ownership HIGH-WATER must survive omissions.
+// ------------------------------------------------------------------
+#[test]
+fn publish_rejects_workspace_change_hidden_behind_omission() {
+    let svc = crate::auth::AuthService::new(
+        crate::auth::AuthMode::Enforce,
+        "https://auth.prisma.io".into(),
+        "test-cell",
+    )
+    .unwrap();
+    // Snapshot 1: P under ws-a, ownership 1, policy 1.
+    rig_publish_policy(&svc, rig_policy("proj-omi", "ws-a", 1, 1), 1).unwrap();
+    // Snapshot 2: P OMITTED from the full snapshot (a removal).
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects: std::collections::HashMap::new(),
+        fetched_at_unix: crate::shard::now_ms() / 1000,
+        feed_version: 2,
+    })
+    .expect("omission is a legal publication");
+    // Snapshot 3: P reintroduced under ws-b at the SAME ownership
+    // version with a higher policy version — satisfies the tombstone
+    // rule (one component increased) and finds no P in the current
+    // snapshot for the workspace check. It must STILL be refused.
+    let err = rig_publish_policy(&svc, rig_policy("proj-omi", "ws-b", 1, 2), 3)
+        .err()
+        .expect("omit-and-reintroduce must not smuggle an owner change");
+    assert_eq!(err, "workspace changed without ownership_version increment");
+    // The refusal leaves no trace: the honest shape (ownership bump)
+    // lands, and the workspace travels with it.
+    rig_publish_policy(&svc, rig_policy("proj-omi", "ws-b", 2, 3), 3)
+        .expect("ownership bump across an omission is the valid transfer");
+    assert_eq!(
+        svc.workspace_for(&crate::tenant::ProjectId::new("proj-omi").unwrap())
+            .map(|w| w.as_str().to_string())
+            .as_deref(),
+        Some("ws-b")
+    );
+}
+
+/// Round-4 finding 3, hostile-publisher leg on a LIVE cell: after the
+/// omit-and-reintroduce owner swap is refused, a token minted for the
+/// NEW workspace at the unchanged ownership version must NOT verify —
+/// ownership never moved, so both the old credential keeps working and
+/// the new workspace gains nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn omit_reintroduce_owner_swap_gains_no_authority() {
+    let (svc, _state, addr) = auth_rig("proj-orx", "ws-old", &["c1"], None).await;
+    let tok_old = mint_token("c1", "proj-orx", "ws-old", 1, 1, "orx1", 600);
+    rig_create(addr, "orx", &tok_old).await;
+
+    // Omit the project from the feed entirely...
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects: std::collections::HashMap::new(),
+        fetched_at_unix: crate::shard::now_ms() / 1000,
+        feed_version: 2,
+    })
+    .expect("omission is a legal publication");
+    // ...and reintroduce it under a DIFFERENT workspace at the same
+    // ownership version (the hostile publisher's move).
+    let hostile = rig_policy("proj-orx", "ws-new", 1, 2);
+    assert!(
+        rig_publish_policy(&svc, hostile, 3).is_err(),
+        "the omit/reintroduce owner swap must be refused"
+    );
+    // The refusal leaves no trace; the honest restore (same workspace,
+    // newer policy version) lands and re-serves the project.
+    rig_publish_policy(&svc, rig_policy("proj-orx", "ws-old", 1, 2), 3)
+        .expect("honest reintroduction under the SAME workspace lands");
+
+    // A token minted for the NEW workspace verifies NOTHING: ownership
+    // never moved, so proj-orx still belongs to ws-old at ownership 1.
+    let tok_new = mint_token("c1", "proj-orx", "ws-new", 1, 1, "orx2", 600);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/orxn",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("authorization", tok_new.as_str()),
+        ],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(
+        st, 401,
+        "an owner swap hidden behind omission must not mint authority"
+    );
+    // And the REAL owner is untouched.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/orx/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("authorization", tok_old.as_str()),
+        ],
+        br#"{"n":1}"#,
+    )
+    .await;
+    assert_eq!(st, 200, "the legitimate owner keeps working");
+}
+
+// ------------------------------------------------------------------
 // F1 (red): feed staleness must terminate ESTABLISHED subscriptions,
 // exactly as it refuses new requests (fail closed at the window).
 // ------------------------------------------------------------------

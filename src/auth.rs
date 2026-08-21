@@ -431,6 +431,14 @@ struct ProjHw {
     /// Max (ownership_version, policy_version) ever seen.
     o_hw: u64,
     p_hw: u64,
+    /// Round-4 finding 3: the workspace bound to `o_hw`. The
+    /// direct-transition check compares a new policy against a project
+    /// still PRESENT in the current snapshot — an omit-and-reintroduce
+    /// sequence hid behind that, moving the workspace at an UNCHANGED
+    /// ownership_version (no transfer event, no credential revocation,
+    /// no billing split). The workspace at the high-water ownership
+    /// version survives omissions, so the coupling holds across them.
+    workspace_at_o_hw: crate::tenant::WorkspaceId,
     /// Version pair at the moment the project was last OMITTED from a
     /// full snapshot. Reintroduction requires strictly exceeding one
     /// of them — a replayed pre-omission snapshot cannot resurrect it.
@@ -772,6 +780,15 @@ impl AuthService {
                 if np.project_policy_version < e.p_hw {
                     return Err("project_policy_version below high-water");
                 }
+                // Round-4 finding 3: the workspace bound to the
+                // HIGH-WATER ownership version survives omissions. A
+                // workspace change at an unchanged ownership_version is
+                // refused even when the current snapshot no longer
+                // contains the project — omit-and-reintroduce must not
+                // bypass the transfer coupling.
+                if np.ownership_version == e.o_hw && np.workspace_id != e.workspace_at_o_hw {
+                    return Err("workspace changed without ownership_version increment");
+                }
                 if let Some((oo, op)) = e.omitted_at
                     && np.ownership_version <= oo
                     && np.project_policy_version <= op
@@ -808,7 +825,12 @@ impl AuthService {
             let vpair = (np.ownership_version, np.project_policy_version);
             match hw.projects.get_mut(pid) {
                 Some(e) => {
-                    e.o_hw = e.o_hw.max(np.ownership_version);
+                    if np.ownership_version > e.o_hw {
+                        e.o_hw = np.ownership_version;
+                        // Round-4 finding 3: the workspace travels with
+                        // the ownership high-water.
+                        e.workspace_at_o_hw = np.workspace_id.clone();
+                    }
                     e.p_hw = e.p_hw.max(np.project_policy_version);
                     if vpair >= e.fp_at {
                         e.fp_at = vpair;
@@ -832,6 +854,7 @@ impl AuthService {
                         ProjHw {
                             o_hw: np.ownership_version,
                             p_hw: np.project_policy_version,
+                            workspace_at_o_hw: np.workspace_id.clone(),
                             omitted_at: None,
                             fp_at: vpair,
                             fp: feed_fp(np),
