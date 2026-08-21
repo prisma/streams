@@ -20,15 +20,15 @@ enforce): capacity ≈ **893–1,185 req/s** at 100 active tenants and
   100-tenant capacity — before subscriber wakeup cost. Batch or a
   faster write path is headroom if needed; the campaign measures the
   real margin with subscribers attached.
-- **W3 fan-out has a hard byte bound**: a write to a stream with
-  1,000 subscribers is 1 write + 1,000 deliveries. At 1 KiB, the
-  16 MB/s envelope caps deliveries at ~16k/s ⇒ **at most ~16 wps may
-  land on fully-subscribed streams**. If all 1,000 wps hit subscribed
-  streams, that is 1 GB/s of fan-out — no single instance serves
-  that. The workload contract must therefore fix the OVERLAP: my
-  proposed default is 10 of the 100 active writers per window are
-  subscriber-tenants (10 wps × 1,000 = 10k deliveries/s ≈ 10 MB/s,
-  inside the envelope). **Knob for Søren to confirm.**
+- **W3 fan-out has a hard byte bound** (arithmetic corrected in
+  review round 3 — the earlier text assumed 1,000 subscribers per
+  stream; the contract is 1,000 subscriber tenants × 100 subscribers):
+  1,000 writes/s total over 100 active writers = 10 writes/s per
+  active writer; 10 of the 100 active writers are subscriber streams
+  ⇒ **100 writes/s onto subscribed streams**; × 100 subscribers =
+  **10,000 deliveries/s ≈ 10 MB/s at 1 KiB**, inside the ≥16 MB/s
+  envelope. (Had all 1,000 wps hit subscribed streams: 100k
+  deliveries/s ≈ 100 MB/s — beyond one instance.)
 - **W3 residency is the open question that decides feasibility**: at
   even an optimistic 2 KB resident per parked subscription, 1M subs
   ≈ 2 GB — over the 1-GiB profile before counting sockets and fds
@@ -159,6 +159,50 @@ tail returns `[]` immediately. Corrected below, all on true `:sse`):
   tail-parking is a shared per-stream Notify (no busy-poll), and
   appends into 1,000-parked-sub streams ack in 5–24 ms.
 
+### 3b. Corrected workload definition (review round 3, 2026-08-21)
+
+One unambiguous shape, replacing every earlier "1,000 subscribers per
+stream" or "100k on one instance" phrasing:
+
+```
+10,000 resident projects
+1,000 writes/s total, 100 active writers per 5-second window
+  => 10 writes/s per active writer
+1,000 subscribed projects × 100 subscribers = 100,000 subscriptions (CELL target)
+10 of the 100 active writers are subscribed projects
+  => 100 writes/s onto subscribed projects
+  => 10,000 deliveries/s ≈ 10 MB/s at 1 KiB
+```
+
+**Per-instance certification** determines `S_instance` on the 1-GiB
+profile with explicit write headroom, rung by rung with an
+OUT-OF-REGION generator (the in-region hairpin path buffers SSE):
+
+```
+1,000 → 2,500 → 5,000 → 7,500 → 10,000
+```
+
+10,000 is the default SSE_MAX_CONNECTIONS rung; raising the cap is a
+deliberate experimental posture, not part of default certification.
+At each rung: park long enough for several heartbeat intervals,
+sparse writes, the 1,000 wps rotating workload, and separately the
+explicit 10k deliveries/s fanout load; measure residency, delivery
+p99, CPU, RSS trend, reconnects, catch-ups, write shed.
+
+**Cell certification** sizes the fleet from the MEASURED instance
+number, never from the configured cap:
+
+```
+K = ceil(100,000 / (0.70 × S_instance))     # 30% memory + failure headroom
+```
+
+(If S_instance measures 10,000, the cell needs ~15 instances, not 10.)
+**No 1-GiB instance hosts 100,000 direct SSE connections; the
+100k figure is a cell-level target.** Legs: parked residency, fanout
+throughput, combined writes + fanout, splits while subscribed, owner
+movement, instance loss + reconnect, transfer + revocation, billing
+reconciliation — all on the exact release binary.
+
 ## 4. L1 verdict (writes-only gate, 2026-08-19 — five 30-min runs)
 
 | run | posture | shed | evidence |
@@ -214,11 +258,6 @@ invariant exact), split admit_shed counters. Acceptance: L1d12
 1,019/s — zero increments on BOTH shed classes in both regimes,
 reserved-now peaks 17-64 MB vs the old fixed 384 MB. Thirteen-run
 evidence chain in this section's history.
-
-W2 interim verdict: **1,000 wps over 10k tenants runs at 1.56% shed
-on the best documented posture — fails the 0.1% gate pending the
-absorber item.** L2/L3 (subscribers) wait behind it: they inherit the
-same commit path.
 
 ## 5. Superseded: original asks
 

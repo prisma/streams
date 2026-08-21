@@ -31,7 +31,7 @@ SHA=$(git rev-parse --verify "$COMMIT^{commit}")
 echo "== promote-rc: $SHA -> $TAG =="
 
 echo "== 1/4 required named CI jobs at $SHA =="
-REQUIRED_JOBS=(rust mt-cert-1000 durable-streams-server-conformance product-field-gate sdk-package)
+REQUIRED_JOBS=(rust mt-cert-1000 durable-streams-server-conformance product-field-gate sdk-package platform-e2e)
 RUN_ID=$(gh run list --commit "$SHA" --workflow ci --limit 1 --json databaseId --jq '.[0].databaseId')
 [ -n "$RUN_ID" ] || { echo "FAIL: no CI run for $SHA"; exit 1; }
 JOBS_JSON=$(gh run view "$RUN_ID" --json jobs --jq '[.jobs[] | {name, conclusion}]')
@@ -68,7 +68,28 @@ DIRTY=$(git -C "$WORKTREE" status --porcelain=v1 --untracked-files=all | grep -v
 [ -z "$DIRTY" ] || { echo "FAIL: gates modified the tree:"; echo "$DIRTY"; exit 1; }
 
 echo "== 4/4 artifact digests =="
-SRV_SHA=$(shasum -a 256 "$WORKTREE/target/release/streams-slate" | cut -d' ' -f1)
+# The RC's server identity is the FIELD-CERTIFIED campaign artifact
+# (review round 3): rc-certify.sh writes a machine-readable manifest
+# and its server_sha256 is what the tag records. The locally rebuilt
+# binary is hashed as a reproducibility measurement only — a differing
+# local SHA (arch, libc, build metadata) never replaces the certified
+# one, and the tag says which is which.
+LOCAL_SHA=$(shasum -a 256 "$WORKTREE/target/release/streams-slate" | cut -d' ' -f1)
+CERT_MANIFEST="$WORKTREE/target/rc-certify-manifest.json"
+if [ ${#CAP_ARGS[@]} -gt 0 ]; then
+  [ -s "$CERT_MANIFEST" ] || { echo "FAIL: rc-certify.sh left no manifest at $CERT_MANIFEST"; exit 1; }
+  SRV_SHA=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['server_sha256'])" "$CERT_MANIFEST")
+  SRV_SHA_NOTE="field-certified campaign artifact (rc-certify manifest)"
+  if [ "$LOCAL_SHA" = "$SRV_SHA" ]; then
+    REPRO_LINE="local rebuild reproduces the certified artifact byte-for-byte"
+  else
+    REPRO_LINE="local rebuild sha256 $LOCAL_SHA differs from the certified artifact (expected across arch/libc; the certified SHA governs)"
+  fi
+else
+  SRV_SHA=$LOCAL_SHA
+  SRV_SHA_NOTE="LOCAL build only — no field-certified artifact for this tag"
+  REPRO_LINE="no field certification: local SHA recorded, NOT a certified artifact"
+fi
 (cd "$WORKTREE/sdk" && npm ci >/dev/null 2>&1 && npm run build >/dev/null 2>&1 && npm pack --pack-destination /tmp >/dev/null 2>&1)
 SDK_TGZ=$(ls -t /tmp/prisma-streams-*.tgz | head -1)
 SDK_SHA=$(shasum -a 256 "$SDK_TGZ" | cut -d' ' -f1)
@@ -85,7 +106,8 @@ Certified at $SHA (all gates ran in a clean detached worktree):
 - $FIELD_LINE
 
 Artifacts:
-- server binary sha256: $SRV_SHA
+- server binary sha256: $SRV_SHA  [$SRV_SHA_NOTE]
+- reproducibility:      $REPRO_LINE
 - sdk tarball sha256:   $SDK_SHA ($(basename "$SDK_TGZ"))
 
 NOT certified by this tag (schedule before GA):

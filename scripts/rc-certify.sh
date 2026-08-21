@@ -82,4 +82,21 @@ assert rec and all(row.get("verdict") == "OK" for row in rec), f"handoff reconci
 print(f"  handoff: restore {r}, reconcile OK, on {sha[:16]}")
 PY
 
+# Review round 3: the certification result as data — promote-rc.sh
+# records THIS server_sha256 as the tag's artifact identity.
+mkdir -p target
+python3 - "$RC_SHA" "$CAP_RUN" "$HANDOFF_RUN" <<'PY'
+import json, subprocess, sys
+sha, cap, hand = sys.argv[1:4]
+head = subprocess.run(["git", "rev-parse", "HEAD"], capture_output=True, text=True).stdout.strip()
+json.dump({
+    "commit": head,
+    "server_sha256": sha,
+    "capacity_run": cap,
+    "handoff_run": hand,
+    "capacity": "pass",
+    "handoff": "pass",
+}, open("target/rc-certify-manifest.json", "w"), indent=2)
+PY
+echo "manifest -> target/rc-certify-manifest.json"
 echo "RC_CERTIFY_OK  binary=$RC_SHA"
