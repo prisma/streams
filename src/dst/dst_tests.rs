@@ -28423,7 +28423,14 @@ async fn raw_sse_terminates_at_workload_token_expiry() {
     // then subscribe under the SHORT-LIVED workload identity.
     let fleet = ("authorization", "Bearer dst-internal-token");
     let ekey = ("stream-encryption-key", RIG_KEY_B64);
-    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/rwl", &[ct, fleet, ekey], br#"[{"i":0}]"#).await;
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/rwl",
+        &[ct, fleet, ekey],
+        br#"[{"i":0}]"#,
+    )
+    .await;
     assert!(st == 200 || st == 201, "stage: {st}");
 
     // Expires in 4 s: long enough to open and park, short enough to
@@ -28486,7 +28493,6 @@ async fn internal_segment_read_refuses_live_semantics() {
          (got {st}): {text}"
     );
 }
-
 
 /// RED (review finding 1): a workload JWT's `operations` claim must
 /// SCOPE what the token can do. Today every gate reduces verification
@@ -32571,9 +32577,7 @@ async fn lineage_sse_refuses_authorization_invalidated_before_body_construction(
     let f1l_ref = crate::tenant::ProjectId::new("proj-f1l")
         .unwrap()
         .stream_ref("f1l");
-    assert!(
-        crate::scaler3::execute_split(&state, &f1l_ref, 0, 0x8000_0000_0000_0000).await
-    );
+    assert!(crate::scaler3::execute_split(&state, &f1l_ref, 0, 0x8000_0000_0000_0000).await);
     for i in 4..6 {
         let (st, _, _) = preq(
             addr,
@@ -32642,14 +32646,15 @@ async fn termination_reasons_count_exactly_once_per_subscription() {
     assert!(b.contains("upToDate"), "hub sub parks:\n{b}");
 
     let idx = crate::auth::LeaseInvalidReason::TokenExpired.index();
-    let before =
-        crate::http::LEASE_TERMINATIONS[idx].load(std::sync::atomic::Ordering::Relaxed);
+    let before = crate::http::LEASE_TERMINATIONS[idx].load(std::sync::atomic::Ordering::Relaxed);
     // No activity: both subscriptions must die at token expiry.
     let (_, eof_p) = hub_sse_collect(&mut promoter, 20, |_| false).await;
     let (_, eof_s) = hub_sse_collect(&mut sub, 10, |_| false).await;
-    assert!(eof_p && eof_s, "both subscriptions must terminate at expiry");
-    let after =
-        crate::http::LEASE_TERMINATIONS[idx].load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        eof_p && eof_s,
+        "both subscriptions must terminate at expiry"
+    );
+    let after = crate::http::LEASE_TERMINATIONS[idx].load(std::sync::atomic::Ordering::Relaxed);
     assert_eq!(
         after - before,
         2,

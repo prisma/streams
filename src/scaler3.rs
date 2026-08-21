@@ -363,7 +363,11 @@ async fn seal_identity(
         // Round-4 review: an intermittent seal 500 (~1/56 solo runs)
         // is still open; a close that never reached its committer must
         // not vanish silently. (Err carries the request back.)
-        tracing::error!(seg_id, ?route, "seal close never enqueued (committer queue full or closed)");
+        tracing::error!(
+            seg_id,
+            ?route,
+            "seal close never enqueued (committer queue full or closed)"
+        );
         return None;
     }
     match rx.await {

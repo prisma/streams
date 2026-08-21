@@ -7155,13 +7155,6 @@ impl SseLease {
             (None, None) => Self::None,
         }
     }
-    fn expires_at(&self) -> i64 {
-        match self {
-            Self::None => i64::MAX,
-            Self::Customer(l) => l.expires_at,
-            Self::Internal(l) => l.expires_at,
-        }
-    }
 }
 
 /// Review V4 + round 3 F1: bounded re-authorization for a live
@@ -7279,6 +7272,16 @@ impl LeaseWatch {
             // its token — nothing else can invalidate it yet.
             SseLease::Internal(l) => {
                 if now >= l.expires_at {
+                    // The identity fields ride the log: a fleet
+                    // operator debugging terminations needs to know
+                    // WHICH workload credential died, not just that
+                    // one did.
+                    tracing::info!(
+                        subject = %l.subject,
+                        cell = %l.cell_id,
+                        operation = l.operation.claim(),
+                        "workload-JWT subscription terminated at token expiry"
+                    );
                     self.term
                         .record_once(crate::auth::LeaseInvalidReason::TokenExpired);
                     true
@@ -7498,12 +7501,12 @@ pub(crate) fn sse_lineage_response(
     // whoever detects the invalidation first records the reason once.
     let term = std::sync::Arc::new(TerminateOnce::default());
     let body_watch = match LeaseWatch::new_checked(
-            &state,
-            SseLease::of(&params),
-            // Round-4 finding 4: the body gate shares the connection's
-            // exactly-once termination record with its producer.
-            term.clone(),
-        ) {
+        &state,
+        SseLease::of(&params),
+        // Round-4 finding 4: the body gate shares the connection's
+        // exactly-once termination record with its producer.
+        term.clone(),
+    ) {
         Ok(w) => w,
         Err(reason) => return lease_refusal_response(reason),
     };
@@ -7877,8 +7880,7 @@ async fn sse_hub_response(
         // subscription, re-proved for as long as the connection lives,
         // starting from a generation-stable INITIAL proof.
         let mut lease_watch = match LeaseWatch::new_checked(
-            &state,
-            lease,
+            &state, lease,
             // Round-4 finding 4: producer-side detection shares the
             // same exactly-once record as the body gate.
             term,
@@ -8152,12 +8154,12 @@ async fn sse_response(
     // whoever detects the invalidation first records the reason once.
     let term = std::sync::Arc::new(TerminateOnce::default());
     let body_watch = match LeaseWatch::new_checked(
-            &state,
-            SseLease::of(&params),
-            // Round-4 finding 4: the body gate shares the connection's
-            // exactly-once termination record with its producer.
-            term.clone(),
-        ) {
+        &state,
+        SseLease::of(&params),
+        // Round-4 finding 4: the body gate shares the connection's
+        // exactly-once termination record with its producer.
+        term.clone(),
+    ) {
         Ok(w) => w,
         Err(reason) => return lease_refusal_response(reason),
     };

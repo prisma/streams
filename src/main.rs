@@ -1214,7 +1214,10 @@ mod config_validation_tests {
         // clamps the configured 10k to 3,072 under the release posture.
         let mut cap = 10_000;
         validate_release_capacity(true, None, &mut cap, 4_096).unwrap();
-        assert_eq!(cap, 3_072, "effective cap must fit nofile_hard minus reserve");
+        assert_eq!(
+            cap, 3_072,
+            "effective cap must fit nofile_hard minus reserve"
+        );
         // Outside the release posture the configured value stands.
         let mut cap = 10_000;
         validate_release_capacity(false, None, &mut cap, 4_096).unwrap();

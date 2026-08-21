@@ -137,7 +137,7 @@ impl Fp {
                  and the successor-publication CAS — every resume of \
                  the NAMED stream parks (readers only ever spawn \
                  resume, so no request blocks here)"
-             }
+            }
             Fp::SseBeforeLeaseGate => {
                 "live subscription: after the request token verifies, \
                  BEFORE the response body's lease gate is built — the \
