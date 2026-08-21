@@ -36,7 +36,7 @@ import asyncio, json, os, subprocess, sys, time, urllib.request
 S, PER, AUTH, KEY, ARM = int(sys.argv[1]), int(sys.argv[2]), sys.argv[3], sys.argv[4], sys.argv[5]
 SRV = os.environ["SRV_PID_ENV"]
 def snap(tag):
-    r = urllib.request.Request("http://127.0.0.1:8090/v1/debug/load", headers={"authorization": f"Bearer {AUTH}"})
+    r = urllib.request.Request("http://127.0.0.1:8090/v1/debug/load?walk=1", headers={"authorization": f"Bearer {AUTH}"})
     d = json.load(urllib.request.urlopen(r, timeout=10))
     out = {k: d.get(k) for k in ("rss_mb","sse_connections","sse_live_hubs","sse_hub_total_bytes","sse_hub_logical_bytes","admit_shed_inflight","admit_shed_rss")}
     print(f"{ARM} {tag}: {out}", flush=True)
