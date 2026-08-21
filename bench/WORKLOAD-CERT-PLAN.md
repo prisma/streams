@@ -601,3 +601,20 @@ authorization fixes; NOT GA-complete. Landed the same day:
 
 Next: loaded promotion verdict (local), then Phase 2 canary and the
 Phase 3 per-instance ladder with an out-of-region generator + preflight.
+
+**LOADED MATCHED PROMOTION EXPERIMENT (2026-08-21,
+bench/sse-probes/sse-matched-loaded.sh: 4000x1, 400 wps over 400
+subscribed streams, 180 s, identical everything but the threshold):**
+| arm | shed | append p50/p99 | lag p50/p99 | CPU | RSS parked/under/after |
+|-----|------|----------------|-------------|-----|------------------------|
+| A thr=2 (direct) | 0.000% | 26/47 ms | 29/52 ms | 29.4% | 139/277/272 MB |
+| B thr=1 (4000 hubs) | 0.000% | 26/47 ms | 29/52 ms | 29.1% | 139/441/318 MB |
+Decision (review rule): promote-on-first shows NO shed/CPU/latency
+win and costs +164 MB RSS under load (+46 MB residual) — **SSE_HUB_
+PROMOTE_AT stays 2.** Caveats: the hub-path delivered_records read 13
+because the probe binary predated the fourth counter site (clients
+measured 50,232 deliveries); open observation — under load the hub
+arm's RSS grew well beyond the 64 MiB retention cap, so actual
+allocator residency per retained batch exceeds the charge (decrypt /
+format copies); measure sse_hub_total_bytes vs RSS delta in the canary
+before trusting the cap as an RSS bound.
