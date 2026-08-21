@@ -32600,3 +32600,45 @@ async fn lineage_sse_refuses_authorization_invalidated_before_body_construction(
 
     assert_no_frames_after_pre_establishment_invalidation(&mut sub, "lineage").await;
 }
+
+// ------------------------------------------------------------------
+// Round-4 finding 4 (red): EXACT-ONCE termination accounting. The
+// producer task and the response-body gate each hold their own
+// LeaseWatch for the same connection; unsynchronized, one invalidated
+// subscription produced one OR TWO termination counts depending on
+// scheduling — and a watcher alone can miss being first entirely (the
+// producer quitting hands the body a plain EOF). The canary checklist
+// reads termination-by-reason telemetry, so the count must be exactly
+// one per invalidated subscription.
+// ------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn termination_reasons_count_exactly_once_per_subscription() {
+    let _serial = gap_lock().lock().await; // process-global counters
+    let (_svc, _state, addr) = auth_rig("proj-tc1", "ws_tc", &["c1"], None).await;
+    // Expires in 5 s: long enough to park two connections, short
+    // enough to watch both deadlines fire.
+    let tok = mint_token("c1", "proj-tc1", "ws_tc", 1, 1, "tc1", 5);
+    rig_create(addr, "tc1", &tok).await;
+    let mut promoter = rig_sse(addr, "tc1", &tok, "?cursor=now", None).await;
+    let (a, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;
+    assert!(a.contains("upToDate"), "promoter parks:\n{a}");
+    let mut sub = rig_sse(addr, "tc1", &tok, "", None).await;
+    let (b, _) = hub_sse_collect(&mut sub, 8, |t| t.contains("upToDate")).await;
+    assert!(b.contains("upToDate"), "hub sub parks:\n{b}");
+
+    let idx = crate::auth::LeaseInvalidReason::TokenExpired.index();
+    let before =
+        crate::http::LEASE_TERMINATIONS[idx].load(std::sync::atomic::Ordering::Relaxed);
+    // No activity: both subscriptions must die at token expiry.
+    let (_, eof_p) = hub_sse_collect(&mut promoter, 20, |_| false).await;
+    let (_, eof_s) = hub_sse_collect(&mut sub, 10, |_| false).await;
+    assert!(eof_p && eof_s, "both subscriptions must terminate at expiry");
+    let after =
+        crate::http::LEASE_TERMINATIONS[idx].load(std::sync::atomic::Ordering::Relaxed);
+    assert_eq!(
+        after - before,
+        2,
+        "two invalidated subscriptions = exactly two termination counts \
+         (one per connection), not one per LeaseWatch"
+    );
+}

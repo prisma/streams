@@ -7172,6 +7172,32 @@ struct LeaseWatch {
     lease: SseLease,
     last_gen: u64,
     next_deadline: i64,
+    /// Round-4 finding 4: EXACT-ONCE termination accounting. The
+    /// producer task and the response-body gate each hold their own
+    /// watch for the SAME connection; unsynchronized, one invalidated
+    /// subscription produced one OR TWO termination counts depending
+    /// on scheduling — and either watcher alone can miss being first
+    /// (the producer quitting hands the body a plain EOF). The record
+    /// is SHARED per connection: the first detector wins the swap and
+    /// records its observed reason exactly once.
+    term: std::sync::Arc<TerminateOnce>,
+}
+
+/// Per-connection exactly-once termination record (round-4 finding 4).
+#[derive(Default)]
+struct TerminateOnce(std::sync::atomic::AtomicBool);
+
+impl TerminateOnce {
+    /// Record `r` unless another detector already recorded THIS
+    /// connection's termination. True = this call is the one that
+    /// counted.
+    fn record_once(&self, r: crate::auth::LeaseInvalidReason) -> bool {
+        if self.0.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            return false;
+        }
+        LEASE_TERMINATIONS[r.index()].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        true
+    }
 }
 
 impl LeaseWatch {
@@ -7192,6 +7218,7 @@ impl LeaseWatch {
     fn new_checked(
         state: &AppState,
         lease: SseLease,
+        term: std::sync::Arc<TerminateOnce>,
     ) -> Result<Self, crate::auth::LeaseInvalidReason> {
         let now = crate::shard::now_ms() / 1000;
         // Round-4 finding 2: an internal (workload-JWT) lease has no
@@ -7206,6 +7233,7 @@ impl LeaseWatch {
                 next_deadline: l.expires_at,
                 last_gen: state.auth.auth_generation(),
                 lease,
+                term,
             });
         }
         let SseLease::Customer(lease) = lease else {
@@ -7222,6 +7250,7 @@ impl LeaseWatch {
                     lease: SseLease::Customer(lease),
                     last_gen: after,
                     next_deadline: deadline,
+                    term,
                 });
             }
         }
@@ -7232,6 +7261,7 @@ impl LeaseWatch {
             lease: SseLease::None,
             last_gen: 0,
             next_deadline: i64::MAX,
+            term: std::sync::Arc::new(TerminateOnce::default()),
         }
     }
 
@@ -7249,8 +7279,8 @@ impl LeaseWatch {
             // its token — nothing else can invalidate it yet.
             SseLease::Internal(l) => {
                 if now >= l.expires_at {
-                    LEASE_TERMINATIONS[crate::auth::LeaseInvalidReason::TokenExpired.index()]
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    self.term
+                        .record_once(crate::auth::LeaseInvalidReason::TokenExpired);
                     true
                 } else {
                     self.next_deadline = l.expires_at;
@@ -7263,7 +7293,7 @@ impl LeaseWatch {
                     false
                 }
                 Err(r) => {
-                    LEASE_TERMINATIONS[r.index()].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    self.term.record_once(r);
                     true
                 }
             },
@@ -7463,7 +7493,17 @@ pub(crate) fn sse_lineage_response(
     // a subscription never starts on authorization that was already
     // invalidated while the response was assembled.
     let gen_rx = state.auth.generation_watch();
-    let body_watch = match LeaseWatch::new_checked(&state, SseLease::of(&params)) {
+    // Round-4 finding 4: ONE exactly-once termination record per
+    // connection, shared by the producer watch and the body gate —
+    // whoever detects the invalidation first records the reason once.
+    let term = std::sync::Arc::new(TerminateOnce::default());
+    let body_watch = match LeaseWatch::new_checked(
+            &state,
+            SseLease::of(&params),
+            // Round-4 finding 4: the body gate shares the connection's
+            // exactly-once termination record with its producer.
+            term.clone(),
+        ) {
         Ok(w) => w,
         Err(reason) => return lease_refusal_response(reason),
     };
@@ -7484,7 +7524,13 @@ pub(crate) fn sse_lineage_response(
         // Review V4 + round-4 F1: re-prove authorization for the
         // connection's life — starting from a generation-stable INITIAL
         // proof (a lease already dead at construction never schedules).
-        let mut lease_watch = match LeaseWatch::new_checked(&state, SseLease::of(&params)) {
+        let mut lease_watch = match LeaseWatch::new_checked(
+            &state,
+            SseLease::of(&params),
+            // Round-4 finding 4: producer-side detection shares the
+            // same exactly-once record as the body gate.
+            term,
+        ) {
             Ok(w) => w,
             Err(_) => return,
         };
@@ -7748,7 +7794,17 @@ async fn sse_hub_response(
     // subscribed FIRST so nothing published between proof and parking
     // is lost.
     let gen_rx = state.auth.generation_watch();
-    let body_watch = match LeaseWatch::new_checked(&state, lease.clone()) {
+    // Round-4 finding 4: ONE exactly-once termination record per
+    // connection, shared by the producer watch and the body gate —
+    // whoever detects the invalidation first records the reason once.
+    let term = std::sync::Arc::new(TerminateOnce::default());
+    let body_watch = match LeaseWatch::new_checked(
+        &state,
+        lease.clone(),
+        // Round-4 finding 4: the body gate shares the connection's
+        // exactly-once termination record with its producer.
+        term.clone(),
+    ) {
         Ok(w) => w,
         Err(reason) => return lease_refusal_response(reason),
     };
@@ -7820,7 +7876,13 @@ async fn sse_hub_response(
         // Review V4 + round-4 F1: the lease travels with the
         // subscription, re-proved for as long as the connection lives,
         // starting from a generation-stable INITIAL proof.
-        let mut lease_watch = match LeaseWatch::new_checked(&state, lease) {
+        let mut lease_watch = match LeaseWatch::new_checked(
+            &state,
+            lease,
+            // Round-4 finding 4: producer-side detection shares the
+            // same exactly-once record as the body gate.
+            term,
+        ) {
             Ok(w) => w,
             Err(_) => return,
         };
@@ -8085,7 +8147,17 @@ async fn sse_response(
     // authorization was already invalidated while the response was
     // assembled is refused here, never established.
     let gen_rx = state.auth.generation_watch();
-    let body_watch = match LeaseWatch::new_checked(&state, SseLease::of(&params)) {
+    // Round-4 finding 4: ONE exactly-once termination record per
+    // connection, shared by the producer watch and the body gate —
+    // whoever detects the invalidation first records the reason once.
+    let term = std::sync::Arc::new(TerminateOnce::default());
+    let body_watch = match LeaseWatch::new_checked(
+            &state,
+            SseLease::of(&params),
+            // Round-4 finding 4: the body gate shares the connection's
+            // exactly-once termination record with its producer.
+            term.clone(),
+        ) {
         Ok(w) => w,
         Err(reason) => return lease_refusal_response(reason),
     };
@@ -8104,7 +8176,13 @@ async fn sse_response(
         // Review V4 + round-4 F1: re-prove authorization for the
         // connection's life — starting from a generation-stable INITIAL
         // proof (a lease already dead at construction never schedules).
-        let mut lease_watch = match LeaseWatch::new_checked(&state, SseLease::of(&params)) {
+        let mut lease_watch = match LeaseWatch::new_checked(
+            &state,
+            SseLease::of(&params),
+            // Round-4 finding 4: producer-side detection shares the
+            // same exactly-once record as the body gate.
+            term,
+        ) {
             Ok(w) => w,
             Err(_) => return,
         };
