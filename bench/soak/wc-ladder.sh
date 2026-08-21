@@ -11,6 +11,12 @@ HERE=$(cd "$(dirname "$0")" && pwd)
 ROOT=$(cd "$HERE/../.." && pwd)
 S=${SOAK_HOME:?set SOAK_HOME}
 R=${WC_REGION:-eu-central-1}
+# Review round 3: the GENERATOR may live in another region. The
+# in-region hairpin path to cv-* buffers streaming responses even with
+# X-Accel-Buffering: no (edge-repro addendum), so subscriber ladders
+# run their gen OUT-of-region (WC_GEN_REGION) until the platform fixes
+# it. Server stays in R.
+GR=${WC_GEN_REGION:-$R}
 export SOAK_RUN_ID=${SOAK_RUN_ID:-"wc-$(date -u +%Y%m%dT%H%M%SZ)"}
 export BIN_TAG=$SOAK_RUN_ID
 OUT="$S/results/$SOAK_RUN_ID"; mkdir -p "$OUT"
@@ -76,18 +82,21 @@ for path, key in [(sys.argv[1], sys.argv[2]), (sys.argv[3], sys.argv[4])]:
     print(f"uploaded {key} ({len(data)} bytes)")
 PY
 
+role_region() { [ "$1" = gen ] && echo "$GR" || echo "$R"; }
+role_project() { cat "$S/proj-$(role_region "$1").txt"; }
 svc_id() {
-  local ROLE=$1 SVCFILE="$S/projects/$P/svc-$ROLE-$R.txt"
-  mkdir -p "$S/projects/$P"
+  local ROLE=$1 DR=$(role_region "$1") DP=$(role_project "$1")
+  local SVCFILE="$S/projects/$DP/svc-$ROLE-$DR.txt"
+  mkdir -p "$S/projects/$DP"
   if [ -f "$SVCFILE" ]; then
     local CACHED=$(cat "$SVCFILE")
-    local LISTED=$(bunx --bun @prisma/compute-cli@0.39.0 services list --project "$P" 2>/dev/null \
-                   | awk -v id="$CACHED" -v n="soak-$ROLE-$R" '$1==id && $2==n {print $1}')
+    local LISTED=$(bunx --bun @prisma/compute-cli@0.39.0 services list --project "$DP" 2>/dev/null \
+                   | awk -v id="$CACHED" -v n="soak-$ROLE-$DR" '$1==id && $2==n {print $1}')
     [ -z "$LISTED" ] && rm -f "$SVCFILE"
   fi
   if [ ! -f "$SVCFILE" ]; then
-    local EX=$(bunx --bun @prisma/compute-cli@0.39.0 services list --project "$P" 2>/dev/null \
-               | awk -v n="soak-$ROLE-$R" '$2==n {print $1; exit}') || true
+    local EX=$(bunx --bun @prisma/compute-cli@0.39.0 services list --project "$DP" 2>/dev/null \
+               | awk -v n="soak-$ROLE-$DR" '$2==n {print $1; exit}') || true
     [ -n "$EX" ] && echo "$EX" > "$SVCFILE"
   fi
   [ -f "$SVCFILE" ] && cat "$SVCFILE" || true
@@ -95,25 +104,26 @@ svc_id() {
 deploy() {
   local ROLE=$1; shift
   local DIR="$S/app-$ROLE-$R"
+  local DR=$(role_region "$ROLE") DP=$(role_project "$ROLE")
   local SVC=$(svc_id "$ROLE"); local SVCARG=()
   [ -n "$SVC" ] && SVCARG=(--service "$SVC")
   ( cd "$DIR"
     local DEPLOYED=0 OUT_CLI=""
     for ATT in 1 2 3 4 5 6; do
-      if OUT_CLI=$(bunx --bun @prisma/compute-cli@0.39.0 deploy --project "$P" ${SVCARG[@]+"${SVCARG[@]}"} \
-        --region "$R" --path . --http-port 8080 --service-name "soak-$ROLE-$R" "$@" \
+      if OUT_CLI=$(bunx --bun @prisma/compute-cli@0.39.0 deploy --project "$DP" ${SVCARG[@]+"${SVCARG[@]}"} \
+        --region "$DR" --path . --http-port 8080 --service-name "soak-$ROLE-$DR" "$@" \
         2>&1 | grep -viE 'resolving|resolved|saved'); then DEPLOYED=1; break; fi
       echo "deploy attempt $ATT failed for $ROLE:" >&2; echo "$OUT_CLI" | tail -4 >&2; sleep 30
     done
     [ "$DEPLOYED" = 1 ] || { echo "deploy failed for $ROLE" >&2; exit 1; }
   )
-  local SVCFILE="$S/projects/$P/svc-$ROLE-$R.txt"
+  local SVCFILE="$S/projects/$DP/svc-$ROLE-$DR.txt"
   if [ ! -f "$SVCFILE" ]; then
-    local NEWID=$(bunx --bun @prisma/compute-cli@0.39.0 services list --project "$P" 2>/dev/null \
-                  | awk -v n="soak-$ROLE-$R" '$2==n {print $1; exit}')
+    local NEWID=$(bunx --bun @prisma/compute-cli@0.39.0 services list --project "$DP" 2>/dev/null \
+                  | awk -v n="soak-$ROLE-$DR" '$2==n {print $1; exit}')
     [ -n "$NEWID" ] && echo "$NEWID" > "$SVCFILE"
   fi
-  "$HERE/resolve-urls.sh" "$R" "$ROLE" > /dev/null
+  "$HERE/resolve-urls.sh" "$DR" "$ROLE" > /dev/null
 }
 verify_server_live() {
   local URL=$(cat "$S/url-server-$R.txt")
@@ -182,7 +192,7 @@ deploy gen \
   --env AUTH_TOKEN="$AUTH" --env STREAM_KEY="$KEY" \
   --env BENCH_STREAM="wc$STAGE-" --env KEEP_AWAKE=1
 
-GURL=$(cat "$S/url-gen-$R.txt")
+GURL=$(cat "$S/url-gen-$GR.txt")
 SURL=$(cat "$S/url-server-$R.txt")
 DEADLINE=$(( $(date +%s) + SECS + 1500 ))
 # RSS timeline: correlate memory peaks with shed windows.
