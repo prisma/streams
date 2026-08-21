@@ -125,3 +125,23 @@ Impact: any Compute-hosted consumer (service-to-service SSE — the
 platform's own core use case) cannot hold a live subscription, even
 with the documented-nowhere opt-out header. Ask #4: honor the opt-out
 (or unbuffer `text/event-stream`) on the internal/hairpin tier too.
+
+## Addendum 2 (2026-08-21): per-source-IP concurrent-connection cap
+
+From a single client IP, concurrent streaming connections hit a hard
+ceiling (~1.2k from a workstation; ~2k incl. writer sockets from a
+Compute host in us-east), after which NEW connections from that IP
+time out — including plain requests:
+
+```
+bun edge-repro.ts probe <url>   with BURST=2400 BUN_CONFIG_MAX_HTTP_REQUESTS=8192
+Phase B  burst 2400 connects: ok=1233 timeout=1167 error=0
+held-by-client 1248 vs receiving-heartbeats 1248 (zombies: 0)
+/stats from the same IP: TimeoutError   <- new connection refused
+```
+
+Impact: any single-host consumer (a service holding many
+subscriptions, a load generator, a gateway) is capped per IP regardless
+of server capacity. Ask #5: document the per-source limit and whether
+it is raisable per project; otherwise high-fanout consumers must shard
+across source IPs.

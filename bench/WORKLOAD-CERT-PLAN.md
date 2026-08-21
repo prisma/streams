@@ -690,3 +690,24 @@ minutes): the 64 MiB hub retention budget is too generous for the
 SSE_HUB_TOTAL_BYTES = 16 MiB (WC_HUB_TOTAL). Per-instance ladder
 above ~1.5k parked needs either a higher gen nofile (platform ask) or
 K generators per rung.
+
+**THE 1,536 WALL = PER-SOURCE-IP CONNECTION CAP AT THE EDGE (2026-08-21,
+L3c + workstation probe).** L3c: gen nofile 4,096 soft/hard with 2,364
+open at the stall; server healthy (0 shed, runtime tick-gap <= 43 ms,
+RSS 354 MB under the 16 MiB hub budget — the budget tuning removed the
+L3b RSS shed); subsLive froze at 1,536 for the FOURTH time across hub
+on/off, three binaries, server and gen fd raises. Workstation probe
+against the Bun repro app from ONE IP: 2,400 concurrent SSE -> exactly
+1,248 live, the rest connect-timeout, and a fresh connection from the
+same IP is then refused. => the edge caps concurrent connections per
+client IP (~1.2-2k, SSE + writer sockets count together); once the
+fleet fills it the generator's writers starve and appends time out
+against an idle server. Consequences: (1) platform finding #3 (added
+to bench/edge-repro/README.md); (2) every rung above ~1k parked needs
+K generators on distinct source IPs — the multi-generator ladder is
+now mandatory (subscriber slices per gen, one writer gen); (3) all
+earlier single-gen "plateau" readings above 1k are edge artifacts.
+Hub budget note: with SSE_HUB_TOTAL_BYTES=16 MiB, 542 hubs, 1,470
+prepared records (rotation geometry: each subscribed stream is written
+once per ~500 s), RSS stayed 354 MB and shed 0 — keep 16 MiB for the
+1-GiB class.
