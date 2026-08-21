@@ -34,17 +34,28 @@ for i in range(n):
                f"authorization: Bearer {tok}\r\nprisma-encryption-key: {key}\r\n\r\n").encode())
     conns.append({"s": s, "bytes": 0, "status": None, "hb": 0, "last": time.time()})
     time.sleep(0.25)   # paced establishment
-# step 2: initial control bytes within 5 s
+# step 2: initial control bytes within 5 s. Accumulate: TLS record
+# boundaries routinely deliver the status line and the first control
+# frame in separate reads, so judging one recv() produces false
+# "silent" verdicts.
 deadline = time.time() + 5
 for c in conns:
-    c["s"].settimeout(max(0.1, deadline - time.time()))
-    try:
-        head = c["s"].recv(4096)
-        c["bytes"] += len(head); c["last"] = time.time()
-        c["status"] = head.split(b" ")[1][:3].decode() if b" " in head[:16] else "none"
-        c["ctl"] = b"event: control" in head
-    except Exception:
-        c["status"] = "timeout"; c["ctl"] = False
+    acc = b""
+    c["status"] = "timeout"; c["ctl"] = False
+    while time.time() < deadline and not c["ctl"]:
+        c["s"].settimeout(max(0.1, deadline - time.time()))
+        try:
+            chunk = c["s"].recv(4096)
+        except socket.timeout:
+            break
+        except Exception:
+            c["status"] = "error"; break
+        if not chunk:
+            c["status"] = "eof"; break
+        acc += chunk; c["bytes"] += len(chunk); c["last"] = time.time()
+        if c["status"] in ("timeout",) and b" " in acc[:16]:
+            c["status"] = acc.split(b" ")[1][:3].decode(errors="replace")
+        c["ctl"] = b"event: control" in acc
 silent = [i for i, c in enumerate(conns) if c["status"] != "200" or not c.get("ctl")]
 print(f"step 2: {n - len(silent)}/{n} delivered 200 + initial control")
 # step 3: two consecutive heartbeats (15 s cadence) within 40 s
