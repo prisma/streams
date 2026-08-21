@@ -618,3 +618,23 @@ arm's RSS grew well beyond the 64 MiB retention cap, so actual
 allocator residency per retained batch exceeds the charge (decrypt /
 format copies); measure sse_hub_total_bytes vs RSS delta in the canary
 before trusting the cap as an RSS bound.
+
+**GEN PLATEAU ROOT CAUSE (2026-08-21 canary L2h):** the subsLive
+plateau in EVERY rung since pacing landed (~105-120 in-region, ~70-106
+from us-east) was the generator's own reqwest `Client::timeout(30s)`,
+which bounds streaming bodies too — every parked SSE was killed at
+30 s; equilibrium = establishment pace (4/s) x 30 s. Server-side
+signature on the review build: disconnect_client_closed 3,765,
+send_timeout 11, lease terminations 0, hub deaths 0. Out-of-region
+placement did not change it (same plateau from us-east) while every
+path preflight from a workstation was clean (8/8 control + heartbeats,
+zero zombies). Fixed in wcfix8 (per-request timeouts on writes and
+tail-learn only; SSE bounded by the silence watchdog). The edge
+findings (response buffering; hairpin ignoring the opt-out) stand on
+their own evidence (Bun repro without any client timeout). Second
+finding from the new canary counters: the ladder forced
+SSE_LIVE_HUB=0 (promotions 0, prepared 0) — it now passes the flag
+only when WC_LIVE_HUB is set, so the binary default (on) applies.
+Stale regional project files (eu-west-3, us-east-1) pointed at
+deleted projects; us-east-1 now points at streams-camp75-use (stale
+copy kept as .stale-deleted).
