@@ -639,7 +639,7 @@ Stale regional project files (eu-west-3, us-east-1) pointed at
 deleted projects; us-east-1 now points at streams-camp75-use (stale
 copy kept as .stale-deleted).
 
-**L2i (2026-08-21, wcfix8 fixed gen, 1,000 subs x 1/stream, gen
+ **L2i (2026-08-21, wcfix8 fixed gen, 1,000 subs x 1/stream, gen
 us-east, 20 min): FIRST HONEST FIELD CANARY — CLEAN.** subsLive
 997/997 for the whole run, reconnects 0, 0.000% shed at ~1,010 wps
 with 1,000 parked subscribers (admit_shed inflight 0 / rss 0),
@@ -653,6 +653,19 @@ SSE_LIVE_HUB=0 from the deploy left the service's old value in place.
 Ladder now passes SSE_LIVE_HUB=${WC_LIVE_HUB:-1} explicitly. So L2i
 certifies the DIRECT path at 1k parked; the hub's first honest field
 rung is L3a (2,500 subs over 1,000 streams).
+
+**Round-4 review caveat on L2i as a receipt:** "non-shed" is not
+"clean". The workload contract's error/shed budget is BELOW 0.1%, and
+apErr 0.16% exceeds it; until those 1,976 errors are classified
+exactly — intentional stop-window cancellation / request timeout /
+edge connect refusal / HTTP status / generator error / origin error —
+L2i stays a strong DIRECT-path signal, not an acceptance receipt.
+Before the next canary: write the exclusion rule down BEFORE the run
+(errors leave the denominator only under that written rule), and
+require error rate < gate for the two below-edge hub-on canaries
+(many-hub: 500 streams x 2 subscribers = 1,000 conns at promote_at=2;
+fanout: 10 streams x 100 subscribers with ~100 wps onto subscribed
+streams ≈ 10,000 deliveries/s).
 
 **L3a / L3a-ctl WEDGE ROOT CAUSE (2026-08-21): the instance file-
 descriptor limit, not the hub.** Both the hub-on rung (L3a) and its
@@ -712,24 +725,48 @@ prepared records (rotation geometry: each subscribed stream is written
 once per ~500 s), RSS stayed 354 MB and shed 0 — keep 16 MiB for the
 1-GiB class.
 
-**EDGE ORIGIN CONCURRENCY MODEL — FINAL (2026-08-21, four vantages):**
+**PUBLIC-EDGE CONCURRENCY WALL — EVIDENCE AND INTERPRETATION (2026-08-21,
+four vantages; corrected per round-4 review):**
 | vantage | concurrent SSE reached | then |
 |---|---|---|
 | 1 gen (us-east), L3a/L3a-ctl/L3b/L3c | 1,536 (exact, 4 runs) | writers starve, server idle & healthy |
 | 3 gens (us-east/us-west/ap-ne), L3d | 619 + 658 + 259 = **1,536**, same instant | writer froze at that instant |
 | workstation vs streams server | **512**, then origin unreachable from this IP | held conns keep heartbeating |
 | workstation vs tiny Bun app | ~1,248 | new conns refused |
-Model: each edge proxy admits ~512 concurrent connections to a given
-origin service; a client reaches ONE proxy locally and up to three from
-Compute regions, so one service's total concurrency through the edge is
-~512 x 3 = 1,536 — independent of client count, client IP, fd limits,
-hub on/off, or server capacity. Consequences: (1) S_instance THROUGH
-THE EDGE ~= 1.2-1.4k parked subscribers per service with write
-headroom; the 100k cell target would need ~70+ services on this edge —
-an edge number, not a server one; (2) the per-instance ladder rungs
-5k/7.5k/10k are unmeasurable through the edge (server-side capacity
-certification needs an in-VPC path or a raised per-proxy budget);
-(3) platform ticket finding #3 corrected to "per-proxy per-origin
-budget" (bench/edge-repro/README.md). Multi-gen harness stays: it is
-the right shape once the ceiling moves. Server health through all of
-it: 0 shed at 16 MiB hub budget, runtime never blocked, fds < 1.7k.
+
+WHAT IS PROVEN: a hard, repeatable PUBLIC-EDGE/service-level concurrency
+wall at exactly 1,536 through this origin — independent of client count,
+client IP, fd limits, hub on/off, and server health (0 shed, runtime
+never blocked, fds < 1.7k throughout).
+
+WHAT REMAINS INFERENCE: the internal model ("~512 per proxy x exactly 3
+proxies") fits the four vantages but is NOT yet certified by Compute
+Platform — and the Bun repro reached ~1,248 rather than 1,536, so the
+per-service budget may be origin-dependent. Treat the topology as
+plausible until Platform confirms; do not build fleet arithmetic on it.
+
+TWO SEPARATE NUMBERS (do not conflate):
+
+```
+S_public_edge_service:
+  ~1.2-1.4k parked subscriptions WITH write headroom, per service,
+  through the currently tested public edge (the measured wall).
+S_server_instance:
+  UNKNOWN above that point. The rungs 2.5k/5k/7.5k/10k are
+  UNMEASURABLE through this edge; server-side certification needs an
+  in-VPC/direct path or a raised/removed per-origin budget.
+```
+
+Consequences: (1) adding backend instances behind the same edge service
+may NOT raise the wall if the budget is attached to the origin service —
+describing the 100k target as "~70 services" is arithmetic on an
+uncertified model, not an architecture decision; (2) resume the
+server-capacity ladder only after the edge changes or a direct path
+exists (rerun preflight, repeat 1k as control, then 2.5k → 10k with
+per-generator fd limits verified); (3) platform ticket finding #3 stays
+as a QUESTION for Compute Platform, not a certified finding.
+Multi-gen harness stays: it is the right shape once the ceiling moves.
+Hub budget note: with SSE_HUB_TOTAL_BYTES=16 MiB, 542 hubs, 1,470
+prepared records (rotation geometry: each subscribed stream is written
+once per ~500 s), RSS stayed 354 MB and shed 0 — keep 16 MiB for the
+1-GiB class (now also the binary default).

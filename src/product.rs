@@ -2027,13 +2027,18 @@ async fn product_seal(
                     .header(header::CACHE_CONTROL, "no-store")
                     .body(Body::from(json!({ "sealed": true }).to_string()))
                     .unwrap(),
-                Err(m) => perr(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    &m,
-                    None,
-                    true,
-                ),
+                Err(m) => {
+                    // Round-4 review: same evidence rule as the plain
+                    // :seal arm — a 500 must name its cause in the log.
+                    tracing::error!(stream = %name, "final-bearing seal answered 500: {m}");
+                    perr(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "internal",
+                        &m,
+                        None,
+                        true,
+                    )
+                }
             };
         }
     }
@@ -2742,6 +2747,16 @@ async fn product_seal_only(
             // A live final-bearing claim is the one CONFLICT here; the
             // rest are resumable states of our own transition.
             let conflict = m.contains("final record is in flight");
+            // Round-4 review: an INTERMITTENT 500 here (~1/56 solo
+            // runs) blocks RC promotion until root-caused. Every
+            // occurrence must name its cause in the server log — the
+            // response body alone dies with the test process.
+            tracing::error!(
+                stream = %name,
+                conflict,
+                "plain :seal answered {} : {m}",
+                if conflict { 409 } else { 500 }
+            );
             perr(
                 if conflict {
                     StatusCode::CONFLICT

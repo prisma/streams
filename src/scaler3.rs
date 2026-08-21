@@ -359,13 +359,27 @@ async fn seal_identity(
         billing: None,
         resp: tx,
     };
-    if engine.try_enqueue(req).is_err() {
+    if let Err(_req) = engine.try_enqueue(req) {
+        // Round-4 review: an intermittent seal 500 (~1/56 solo runs)
+        // is still open; a close that never reached its committer must
+        // not vanish silently. (Err carries the request back.)
+        tracing::error!(seg_id, ?route, "seal close never enqueued (committer queue full or closed)");
         return None;
     }
     match rx.await {
         Ok(Ok(ack)) => Some(ack.next_offset),
         Ok(Err(crate::shard::AppendErr::Closed { next_offset })) => Some(next_offset),
-        _ => None,
+        Ok(Err(other)) => {
+            tracing::error!(seg_id, "seal close refused: {other:?}");
+            None
+        }
+        Err(_) => {
+            tracing::error!(
+                seg_id,
+                "seal close's committer answer was dropped (responder gone)"
+            );
+            None
+        }
     }
 }
 
