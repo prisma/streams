@@ -146,6 +146,11 @@ pub struct AppState {
     /// configured value after release-posture clamping to the real
     /// descriptor ceiling; 0 = unlimited, non-release only).
     pub sse_max_connections: u64,
+    /// LIVE-FEED Stage 3: when true, eligible product SSE connections
+    /// attach to a LiveFeed (one engine, adaptive retention) instead
+    /// of the legacy direct/hub pair. Per-instance, test-settable.
+    pub sse_engine_livefeed: std::sync::atomic::AtomicBool,
+    pub live_feeds: crate::sse::registry::FeedRegistry,
     /// The CONFIGURED cap before any platform-driven clamp — exported
     /// next to the effective one so the fleet can detect a platform
     /// lowering RLIMIT_NOFILE under it.
@@ -6124,7 +6129,7 @@ fn read_etag(desc: &StreamDesc, scan_from: u64, end: u64, closed: bool) -> Strin
     )
 }
 
-enum StartPos {
+pub(crate) enum StartPos {
     At(u64),
     Now,
 }
@@ -7702,6 +7707,17 @@ async fn sse_response(
         Ok(s) => s,
         Err(r) => return *r,
     };
+    // LIVE-FEED Stage 3: the transition engine for the eligible shape.
+    if state
+        .sse_engine_livefeed
+        .load(std::sync::atomic::Ordering::Relaxed)
+        && surface == SseSurface::Product
+        && desc.forked_from.is_none()
+        && params.key.as_deref().is_none_or(str::is_empty)
+    {
+        return crate::sse::session::serve(state, desc, key, epoch, handle, engine, start, params)
+            .await;
+    }
     // #268: shared live fanout (SSE_LIVE_HUB=1) — see src/livehub.rs.
     // Product-surface, unforked, unfiltered connections ride a
     // per-stream hub that decrypts and formats each record ONCE.

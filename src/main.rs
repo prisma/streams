@@ -542,6 +542,13 @@ struct Args {
     #[arg(long, env = "SSE_HUB_PROMOTE_AT", default_value_t = 2)]
     sse_hub_promote_at: u64,
 
+    /// LIVE-FEED Stage 3 engine selector for eligible product SSE:
+    /// "legacy" = the reviewed direct/hub pair; "livefeed" = the one
+    /// LiveFeed implementation. The release posture pins legacy until
+    /// the transition completes and is field-certified.
+    #[arg(long, env = "STREAMS_SSE_ENGINE", default_value = "legacy")]
+    streams_sse_engine: String,
+
     /// Per-stream inflight append cap (0 = off): one hot stream cannot
     /// occupy every admission slot of its shard owner (scoped 429).
     #[arg(long, env = "ADMIT_MAX_INFLIGHT_PER_STREAM", default_value_t = 64)]
@@ -942,6 +949,23 @@ fn parse_bool_flag(s: &str) -> Result<bool, String> {
         "0" | "false" | "no" => Ok(false),
         other => Err(format!("expected 1/0/true/false, got {other:?}")),
     }
+}
+
+fn validate_sse_engine(args: &Args) -> anyhow::Result<()> {
+    match args.streams_sse_engine.as_str() {
+        "legacy" => {}
+        "livefeed" => {
+            if args.release_posture {
+                anyhow::bail!(
+                    "STREAMS_SSE_ENGINE=livefeed is not yet certified under \
+                     STREAMS_RELEASE_POSTURE=1 (transition in progress)"
+                );
+            }
+            tracing::warn!("STREAMS_SSE_ENGINE=livefeed: transition engine enabled");
+        }
+        other => anyhow::bail!("STREAMS_SSE_ENGINE must be legacy|livefeed, got {other:?}"),
+    }
+    Ok(())
 }
 
 fn validate_fleet_auth(args: &Args, fleet_mode: bool) -> anyhow::Result<()> {
@@ -1682,6 +1706,7 @@ async fn async_main() -> anyhow::Result<()> {
     // the customer account token, and fleet mode must not start without
     // one — a fleet that silently accepted the public bearer on those
     // routes would let any customer token corrupt any consumer.
+    validate_sse_engine(&args)?;
     validate_fleet_auth(&args, fleet_mode)?;
     // Round-4 review: validate the capacity posture against the real
     // descriptor ceiling BEFORE any state is built — the SSE cap may
@@ -1962,7 +1987,11 @@ async fn async_main() -> anyhow::Result<()> {
         admit_shed_inflight: std::sync::atomic::AtomicU64::new(0),
         admit_shed_rss: std::sync::atomic::AtomicU64::new(0),
         sse_max_connections: args.sse_max_connections,
-        sse_configured_max_connections,
+        sse_configured_max_connections: args.sse_max_connections,
+        sse_engine_livefeed: std::sync::atomic::AtomicBool::new(
+            args.streams_sse_engine == "livefeed",
+        ),
+        live_feeds: crate::sse::registry::FeedRegistry::new(),
         sse_connections: std::sync::atomic::AtomicU64::new(0),
         live_hubs: crate::livehub::HubRegistry::new(),
         sse_live_hub: std::sync::atomic::AtomicBool::new(args.sse_live_hub == 1),

@@ -52,7 +52,31 @@ Legend: PENDING / IN PROGRESS / DONE / PARTIAL (with notes).
       driver handoff on driving-session drop; incarnation safety;
       retention caps exact; no missed wakeup between check and park.      memory penalty observed; reconnect path drives fresh).
 
-## Stage 3 — Single-segment default-key cutover — STATUS: PENDING
+## Stage 3 — Single-segment default-key cutover — STATUS: DONE
+
+Engine selector `--streams-sse-engine legacy|livefeed` (per-instance,
+test-settable); release posture refuses non-legacy until field-certified.
+Four equivalence legs green on livefeed mode (park/upToDate, catch-up
+from beginning cursor, two-subscriber shared feed with exactly one
+source read per append window, revocation termination). Full suite 533
+green.
+
+FINDINGS (each found red by these legs):
+1. WAKEUP WIRING — with no pump task, appends must wake the first
+   driver: sessions park on BOTH the source's advance notify AND the
+   feed version watch; wakeup futures are registered BEFORE the
+   frontier check (lost-wakeup discipline).
+2. SOLO HANDOFF — a solo drive hands its batch to the driving session;
+   discarding it made the only subscriber look LAGGED against the very
+   floor it just advanced (floor tracks head when nothing is retained).
+   The session consumes its handoff directly.
+3. CLOSURE RE-REPORT — a closure flip must re-open the status emission
+   even with no new records; it is what turns upToDate into the single
+   sealed terminal.
+4. E2 VERDICT (measured) — split data/control chunks cost 1.5-3x wall
+   time in the same shapes; lane-global flags fold into the prepared
+   frame (one frame per record, matching legacy-direct framing). The
+   genuinely per-session status remains only for empty-drain cases.
 
 - [x] `STREAMS_SSE_ENGINE=livefeed` routes product default-key
       single-segment SSE through LiveFeed; `legacy` preserves today's
@@ -86,7 +110,7 @@ to come from `bench/sse-probes/sse-matched-loaded.sh` campaigns.
 
 ## Experiments
 
-### E1 cooperative driver vs pump — PENDING
-### E2 split control chunks — PENDING
-### E3 solo retention zero — PENDING
+### E1 cooperative driver vs pump — ADOPTED (functional); fanout micro-burst gap open
+### E2 split control chunks — REJECTED by measurement (folded into prepared frames)
+### E3 solo retention zero — ADOPTED (retained==0 asserted; singleton RSS -28% vs legacy)
 ### E4 stall-budget ring sizing — PENDING (needs shared-mode soak)

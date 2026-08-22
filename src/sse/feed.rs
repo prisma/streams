@@ -37,12 +37,18 @@ impl FeedKey {
     }
 }
 
-/// One formatted record: the expensive data event is produced ONCE;
-/// sessions append their own control frames (see `wire`).
+/// One formatted record: the expensive frame is produced ONCE. The
+/// per-record cursor control folds into the frame (lane-global);
+/// `upToDate`/`sealed` are folded too when the scan reached the
+/// durable end — they are lane-global facts, never per-session.
+/// The standalone session status remains only for the empty
+/// connect-at-tail case.
 pub(crate) struct PreparedRecord {
     pub(crate) offset: u64,
     pub(crate) data_event: Bytes,
     pub(crate) payload_len: u32,
+    /// True when THIS frame carried the terminal sealed control.
+    pub(crate) sealed: bool,
 }
 
 pub(crate) struct PreparedBatch {
@@ -72,6 +78,15 @@ pub(crate) trait FeedSourceRead: Send + Sync {
     fn closed(&self) -> bool;
     /// The descriptor (media type drives data-event encoding).
     fn desc(&self) -> &crate::registry::StreamDesc;
+    /// Encode one record's DATA event (control composed by the feed,
+    /// which owns the lane-global flag decision).
+    fn prepare_data(&self, rec: &crate::http::PlainRec) -> Bytes;
+    /// The lane's cursor token naming `offset_after`.
+    fn ctl_token(&self, offset_after: u64) -> String;
+    /// Wake source: fired on every durable advance and close. Sessions
+    /// park on this BESIDES the feed version watch — with no pump task,
+    /// appends must be what wakes the first driver.
+    fn advance_notify(&self) -> &tokio::sync::Notify;
 }
 
 /// Conservative reservation charge for a prepared batch.
@@ -151,17 +166,22 @@ impl LiveFeed {
         self.subscribers.fetch_sub(1, Ordering::SeqCst);
     }
 
-    #[cfg(test)]
+    pub(crate) fn lifecycle(&self) -> LifecycleState {
+        if self.st.lock().unwrap().lifecycle == Lifecycle::Closed {
+            LifecycleState::Closed
+        } else {
+            LifecycleState::Active
+        }
+    }
+
     pub(crate) fn subscriber_count(&self) -> u64 {
         self.subscribers.load(Ordering::SeqCst)
     }
 
-    #[cfg(test)]
     pub(crate) fn source_read_count(&self) -> u64 {
         self.source_reads.load(Ordering::Relaxed)
     }
 
-    #[cfg(test)]
     pub(crate) fn retained(&self) -> usize {
         self.retained_charge.load(Ordering::Relaxed)
     }
@@ -181,7 +201,7 @@ impl LiveFeed {
                 continue;
             }
             for r in b.records.iter().filter(|r| r.offset >= cursor) {
-                out.push((r.offset, r.data_event.clone(), r.payload_len));
+                out.push((r.offset, r.data_event.clone(), r.payload_len, r.sealed));
                 next = next.max(r.offset + 1);
             }
         }
@@ -267,15 +287,30 @@ impl LiveFeed {
             Err(_) => return DriveOutcome::SourceFailed,
         };
         let scan_from = head;
+        let frontier_after = self.src.frontier();
+        let closed_now = self.src.closed();
         let mut prepared: Vec<PreparedRecord> = Vec::with_capacity(recs.len());
         let mut last = scan_from;
-        for r in &recs {
-            let data = crate::sse::wire::sse_data_event(self.src.desc(), &r.payload);
+        let n = recs.len();
+        for (i, r) in recs.iter().enumerate() {
+            let data = self.src.prepare_data(r);
             last = last.max(r.off + 1);
+            // Lane-global flags ride the batch-LAST record when the
+            // scan reached the durable end (legacy-direct semantics):
+            // identical for every subscriber of the lane, so they fold
+            // into the shared frame instead of costing a second chunk.
+            let reached_end = i + 1 == n && last >= frontier_after;
+            let sealed_i = reached_end && closed_now;
+            let tok = self.src.ctl_token(r.off + 1);
+            let mut frame = bytes::BytesMut::from(self.src.prepare_data(r).as_ref());
+            frame.extend_from_slice(
+                crate::sse::wire::sse_control_product(&tok, reached_end, sealed_i).as_bytes(),
+            );
             prepared.push(PreparedRecord {
                 offset: r.off,
                 payload_len: r.payload.len() as u32,
-                data_event: Bytes::from(data),
+                data_event: frame.freeze(),
+                sealed: sealed_i,
             });
         }
         let drained = last >= self.src.frontier() && self.src.closed();
@@ -326,10 +361,16 @@ impl Drop for PermitGuard<'_> {
     }
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum LifecycleState {
+    Active,
+    Closed,
+}
+
 #[derive(Debug)]
 pub(crate) enum Take {
     Records {
-        records: Vec<(u64, Bytes, u32)>,
+        records: Vec<(u64, Bytes, u32, bool)>,
         next: u64,
     },
     AtHead {
@@ -373,13 +414,16 @@ mod tests {
         recs: Mutex<Vec<crate::http::PlainRec>>,
         frontier: AtomicU64,
         closed: AtomicBool,
+        notify: tokio::sync::Notify,
     }
 
     impl FakeSrc {
-        /// Simulate one committed append: record lands, frontier moves.
+        /// Simulate one committed append: record lands, frontier moves,
+        /// parked sessions are woken.
         fn append(&self, off: u64, tag: &str) {
             self.recs.lock().unwrap().push(rec(off, tag));
             self.frontier.store(off + 1, Ordering::SeqCst);
+            self.notify.notify_waiters();
         }
     }
 
@@ -402,6 +446,18 @@ mod tests {
         }
         fn desc(&self) -> &StreamDesc {
             &self.desc
+        }
+
+        fn prepare_data(&self, rec: &crate::http::PlainRec) -> Bytes {
+            Bytes::from(crate::sse::wire::sse_data_event(&self.desc, &rec.payload))
+        }
+
+        fn ctl_token(&self, offset_after: u64) -> String {
+            offset_after.to_string()
+        }
+
+        fn advance_notify(&self) -> &tokio::sync::Notify {
+            &self.notify
         }
     }
 
@@ -448,6 +504,7 @@ mod tests {
             recs: Mutex::new(Vec::new()),
             frontier: AtomicU64::new(0),
             closed: AtomicBool::new(closed),
+            notify: tokio::sync::Notify::new(),
         });
         (
             LiveFeed::new(FeedKey::of([7u8; 16]), src.clone(), budget),
@@ -496,9 +553,11 @@ mod tests {
             Take::Records { records, next } => {
                 assert_eq!(records.len(), 3);
                 assert_eq!(next, 3);
-                assert_eq!(
-                    records[0].1.as_ref(),
-                    b"event: data\ndata:[{\"t\":\"a\"}]\n\n"
+                let f = std::str::from_utf8(records[0].1.as_ref()).unwrap();
+                assert!(
+                    f.starts_with("event: data\ndata:[{\"t\":\"a\"}]\n\n")
+                        && f.contains("nextCursor"),
+                    "frame must pair data with its cursor control:\n{f}"
                 );
             }
             other => panic!("expected records, got {other:?}"),
