@@ -2932,7 +2932,7 @@ fn want_close(headers: &HeaderMap) -> bool {
         .unwrap_or(false)
 }
 
-fn tail_token(next: u64) -> String {
+pub(crate) fn tail_token(next: u64) -> String {
     if next == 0 {
         Offset::START
     } else {
@@ -6104,7 +6104,7 @@ pub(crate) async fn read_merged(
     Ok(out)
 }
 
-fn interval_cursor(req_cursor: Option<&str>) -> String {
+pub(crate) fn interval_cursor(req_cursor: Option<&str>) -> String {
     let interval = (now_ms() as u64) / 20_000;
     let req: Option<u64> = req_cursor.and_then(|c| c.parse().ok());
     match req {
@@ -6839,45 +6839,8 @@ pub(crate) async fn read_inner(
 
 // ---- SSE ----
 
-fn sse_data_event(desc: &StreamDesc, payload: &[u8]) -> String {
-    let mut ev = String::from("event: data\n");
-    let mt = crate::registry::media_type(&desc.content_type);
-    if mt == "application/json" {
-        ev.push_str("data:[");
-        ev.push_str(&String::from_utf8_lossy(payload));
-        ev.push_str("]\n\n");
-    } else if mt.starts_with("text/") {
-        let text = String::from_utf8_lossy(payload);
-        for line in text.split(['\r', '\n']) {
-            ev.push_str("data:");
-            ev.push_str(line);
-            ev.push('\n');
-        }
-        ev.push('\n');
-    } else {
-        use base64::Engine;
-        ev.push_str("data:");
-        ev.push_str(&base64::engine::general_purpose::STANDARD.encode(payload));
-        ev.push_str("\n\n");
-    }
-    ev
-}
-
 /// sse_control with a pre-encoded (epoch) cursor token — the lineage
 /// streamer's controls name segments, not scalar offsets.
-fn sse_control_tok(next_tok: &str, cursor: Option<&str>, up_to_date: bool, closed: bool) -> String {
-    let mut fields = vec![format!("\"streamNextOffset\":\"{next_tok}\"")];
-    if !closed {
-        fields.push(format!("\"streamCursor\":\"{}\"", interval_cursor(cursor)));
-    }
-    if up_to_date {
-        fields.push("\"upToDate\":true".to_string());
-    }
-    if closed {
-        fields.push("\"streamClosed\":true".to_string());
-    }
-    format!("event: control\ndata:{{{}}}\n\n", fields.join(","))
-}
 
 /// #267 SSE Phase 1: ONE process heartbeat clock. Every parked SSE
 /// task used to own a fresh 15-second Sleep per loop iteration — a
@@ -7104,8 +7067,8 @@ pub(crate) fn hub_event_at(
     rec: &PlainRec,
     ctl_at: u64,
 ) -> String {
-    let mut ev = sse_data_event(desc, &rec.payload);
-    let ctl = sse_control_product(
+    let mut ev = crate::sse::wire::sse_data_event(desc, &rec.payload);
+    let ctl = crate::sse::wire::sse_control_product(
         &crate::product_cursor::KeyCursor {
             epoch,
             key_hash: rk_hash,
@@ -7121,16 +7084,6 @@ pub(crate) fn hub_event_at(
 }
 
 /// Product SSE control frame: signed key cursor + product field names.
-fn sse_control_product(cursor_tok: &str, up_to_date: bool, sealed: bool) -> String {
-    let mut fields = vec![format!("\"nextCursor\":\"{cursor_tok}\"")];
-    if up_to_date {
-        fields.push("\"upToDate\":true".to_string());
-    }
-    if sealed {
-        fields.push("\"sealed\":true".to_string());
-    }
-    format!("event: control\ndata:{{{}}}\n\n", fields.join(","))
-}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) fn sse_lineage_response(
@@ -7268,7 +7221,7 @@ pub(crate) fn sse_lineage_response(
                             let bill_id = crate::billing::identity_of(&state, &desc);
                             for (i, r) in out.recs.iter().enumerate() {
                                 // #267: one combined data+control Bytes.
-                                let mut ev = sse_data_event(&desc, &r.payload);
+                                let mut ev = crate::sse::wire::sse_data_event(&desc, &r.payload);
                                 let last_rec = i + 1 == n && out.completed;
                                 let (utd, cls) = if last_rec {
                                     (will_end, report_closed)
@@ -7276,13 +7229,13 @@ pub(crate) fn sse_lineage_response(
                                     (false, false)
                                 };
                                 let ctl = match surface {
-                                    SseSurface::Raw => sse_control_tok(
+                                    SseSurface::Raw => crate::sse::wire::sse_control_tok(
                                         &seg_tok(sg.seg_id, r.off + 1),
                                         cursor.as_deref(),
                                         utd,
                                         cls,
                                     ),
-                                    SseSurface::Product => sse_control_product(
+                                    SseSurface::Product => crate::sse::wire::sse_control_product(
                                         &crate::product_cursor::KeyCursor {
                                             epoch,
                                             key_hash: rk_hash,
@@ -7340,13 +7293,13 @@ pub(crate) fn sse_lineage_response(
                     let report_closed =
                         closed && at_end && genuine_closure(&state, &desc.sref(), true).await;
                     let ctl = match surface {
-                        SseSurface::Raw => sse_control_tok(
+                        SseSurface::Raw => crate::sse::wire::sse_control_tok(
                             &seg_tok(sg.seg_id, scan_from),
                             cursor.as_deref(),
                             at_end,
                             report_closed,
                         ),
-                        SseSurface::Product => sse_control_product(
+                        SseSurface::Product => crate::sse::wire::sse_control_product(
                             &crate::product_cursor::KeyCursor {
                                 epoch,
                                 key_hash: rk_hash,
@@ -7426,20 +7379,6 @@ pub(crate) fn sse_lineage_response(
         .header("Cross-Origin-Resource-Policy", "cross-origin")
         .body(Body::from_stream(stream))
         .unwrap()
-}
-
-fn sse_control(next: u64, cursor: Option<&str>, up_to_date: bool, closed: bool) -> String {
-    let mut fields = vec![format!("\"streamNextOffset\":\"{}\"", tail_token(next))];
-    if !closed {
-        fields.push(format!("\"streamCursor\":\"{}\"", interval_cursor(cursor)));
-    }
-    if up_to_date {
-        fields.push("\"upToDate\":true".to_string());
-    }
-    if closed {
-        fields.push("\"streamClosed\":true".to_string());
-    }
-    format!("event: control\ndata:{{{}}}\n\n", fields.join(","))
 }
 
 /// #268: hub-backed SSE subscriber. Owns a cursor and a 4-slot queue;
@@ -7529,7 +7468,7 @@ async fn sse_hub_response(
         };
         drop(handle);
         let status_ctl = |at: u64, utd: bool, cls: bool| {
-            sse_control_product(
+            crate::sse::wire::sse_control_product(
                 &crate::product_cursor::KeyCursor {
                     epoch: ctx.epoch,
                     key_hash: ctx.rk_hash,
@@ -7913,7 +7852,7 @@ async fn sse_response(
                             // Bytes — identical on the wire (SSE frames
                             // are self-delimiting), half the queue
                             // traffic.
-                            let mut ev = sse_data_event(&desc, &r.payload);
+                            let mut ev = crate::sse::wire::sse_data_event(&desc, &r.payload);
                             let last_rec = i + 1 == n && out.completed;
                             let (utd, cls) = if last_rec {
                                 (will_end, report_closed)
@@ -7921,10 +7860,13 @@ async fn sse_response(
                                 (false, false)
                             };
                             let ctl = match surface {
-                                SseSurface::Raw => {
-                                    sse_control(r.off + 1, cursor.as_deref(), utd, cls)
-                                }
-                                SseSurface::Product => sse_control_product(
+                                SseSurface::Raw => crate::sse::wire::sse_control(
+                                    r.off + 1,
+                                    cursor.as_deref(),
+                                    utd,
+                                    cls,
+                                ),
+                                SseSurface::Product => crate::sse::wire::sse_control_product(
                                     &crate::product_cursor::KeyCursor {
                                         epoch,
                                         key_hash: rk_hash,
@@ -7976,8 +7918,10 @@ async fn sse_response(
                 let report_closed =
                     closed && at_end && genuine_closure(&state, &desc.sref(), true).await;
                 let ctl = match surface {
-                    SseSurface::Raw => sse_control(pos, cursor.as_deref(), at_end, report_closed),
-                    SseSurface::Product => sse_control_product(
+                    SseSurface::Raw => {
+                        crate::sse::wire::sse_control(pos, cursor.as_deref(), at_end, report_closed)
+                    }
+                    SseSurface::Product => crate::sse::wire::sse_control_product(
                         &crate::product_cursor::KeyCursor {
                             epoch,
                             key_hash: rk_hash,
