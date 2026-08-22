@@ -142,7 +142,14 @@ pub struct AppState {
     /// RSS shed line, so unbounded subscribers make UNRELATED appends
     /// 429 — the budget refuses NEW subscriptions with a typed 503
     /// instead. 0 = unlimited (tests/dev).
+    /// EFFECTIVE live-subscription cap (round-4 follow-up: the
+    /// configured value after release-posture clamping to the real
+    /// descriptor ceiling; 0 = unlimited, non-release only).
     pub sse_max_connections: u64,
+    /// The CONFIGURED cap before any platform-driven clamp — exported
+    /// next to the effective one so the fleet can detect a platform
+    /// lowering RLIMIT_NOFILE under it.
+    pub sse_configured_max_connections: u64,
     pub sse_connections: std::sync::atomic::AtomicU64,
     /// #268 SSE Phase 2: per-stream live fanout hubs (SSE_LIVE_HUB=1).
     pub live_hubs: crate::livehub::HubRegistry,
@@ -1045,6 +1052,8 @@ async fn debug_load(
             .sse_connections
             .load(std::sync::atomic::Ordering::Relaxed),
         "sse_max_connections": state.sse_max_connections,
+        "sse_configured_max_connections": state.sse_configured_max_connections,
+        "sse_effective_max_connections": state.sse_max_connections,
         "sse_future_bytes": SSE_FUTURE_BYTES.load(std::sync::atomic::Ordering::Relaxed),
         "sse_live_hubs": state.live_hubs.hub_count(),
         "sse_hub_future_bytes": SSE_HUB_FUTURE_BYTES.load(std::sync::atomic::Ordering::Relaxed),

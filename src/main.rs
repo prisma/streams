@@ -1061,24 +1061,50 @@ pub(crate) fn validate_release_capacity(
     // acceptable arm) rather than refusing — a platform that lowers
     // the ceiling mid-fleet must not take the whole deployment down at
     // restart. Outside the release posture, warn only.
-    if nofile_hard > 0 && *sse_max_connections > 0 {
-        let ceiling = nofile_hard.saturating_sub(FD_RESERVE);
-        if *sse_max_connections > ceiling {
+    //
+    // Round-4 follow-up review, finding 1: the runtime reads cap 0 as
+    // UNLIMITED, so a degraded descriptor ceiling (nofile_hard <=
+    // reserve) must never clamp DOWN to it — and an explicit 0 must
+    // never pass release validation. A degraded platform fails CLOSED
+    // (refusal), not open.
+    if release_posture && *sse_max_connections == 0 {
+        anyhow::bail!(
+            "SSE_MAX_CONNECTIONS=0 means unlimited; the release posture \
+             requires a bounded subscription cap"
+        );
+    }
+    if nofile_hard > 0 {
+        if nofile_hard <= FD_RESERVE {
             if release_posture {
-                tracing::warn!(
-                    "SSE_MAX_CONNECTIONS={} exceeds what nofile_hard={nofile_hard} can carry \
-                     with a {FD_RESERVE}-descriptor reserve; clamping the effective cap to {ceiling} \
-                     (raise RLIMIT_NOFILE or lower SSE_MAX_CONNECTIONS)",
-                    *sse_max_connections
+                anyhow::bail!(
+                    "nofile_hard={nofile_hard} leaves no safe SSE connection capacity \
+                     (a {FD_RESERVE}-descriptor reserve is required before any \
+                     subscription budget)"
                 );
-                *sse_max_connections = ceiling;
-            } else {
-                tracing::warn!(
-                    "SSE_MAX_CONNECTIONS={} exceeds what nofile_hard={nofile_hard} can carry \
-                     with a {FD_RESERVE}-descriptor reserve; descriptor exhaustion wedges \
-                     parked subscriptions (~1.5k seen in the field)",
-                    *sse_max_connections
-                );
+            }
+            tracing::warn!(
+                "nofile_hard={nofile_hard} leaves no safe SSE connection capacity \
+                 after the {FD_RESERVE}-descriptor reserve"
+            );
+        } else {
+            let ceiling = nofile_hard - FD_RESERVE;
+            if *sse_max_connections > ceiling {
+                if release_posture {
+                    tracing::warn!(
+                        "SSE_MAX_CONNECTIONS={} exceeds what nofile_hard={nofile_hard} can carry \
+                         with a {FD_RESERVE}-descriptor reserve; clamping the effective cap to {ceiling} \
+                         (raise RLIMIT_NOFILE or lower SSE_MAX_CONNECTIONS)",
+                        *sse_max_connections
+                    );
+                    *sse_max_connections = ceiling;
+                } else {
+                    tracing::warn!(
+                        "SSE_MAX_CONNECTIONS={} exceeds what nofile_hard={nofile_hard} can carry \
+                         with a {FD_RESERVE}-descriptor reserve; descriptor exhaustion wedges \
+                         parked subscriptions (~1.5k seen in the field)",
+                        *sse_max_connections
+                    );
+                }
             }
         }
     }
@@ -1191,6 +1217,42 @@ mod config_validation_tests {
             .expect("default shard settings must open");
         validate_engine_settings("history", &crate::history::history_settings())
             .expect("default history settings must open");
+    }
+
+    /// Round-4 follow-up review, finding 1 (red): the runtime reads
+    /// SSE_MAX_CONNECTIONS=0 as UNLIMITED, so neither the validator's
+    /// own clamp nor an explicit zero may ever produce it under the
+    /// release posture. A degraded platform fails closed.
+    #[test]
+    fn release_capacity_never_turns_the_sse_gate_off() {
+        // Explicit cap 0 + release posture: boot refusal.
+        let mut cap = 0u64;
+        assert!(
+            validate_release_capacity(true, None, &mut cap, u32::MAX as u64).is_err(),
+            "release posture must refuse an unlimited subscription budget"
+        );
+        // Non-release cap 0 remains allowed and untouched.
+        let mut cap = 0u64;
+        validate_release_capacity(false, None, &mut cap, 4_096).unwrap();
+        assert_eq!(cap, 0);
+        // A degraded ceiling must not clamp DOWN to zero (=unlimited):
+        // nofile_hard == FD_RESERVE refuses; below it refuses too.
+        let mut cap = 10_000;
+        assert!(validate_release_capacity(true, None, &mut cap, FD_RESERVE).is_err());
+        let mut cap = 10_000;
+        assert!(validate_release_capacity(true, None, &mut cap, FD_RESERVE - 1).is_err());
+        // Non-release only warns.
+        let mut cap = 10_000;
+        validate_release_capacity(false, None, &mut cap, FD_RESERVE).unwrap();
+        assert_eq!(cap, 10_000);
+        // The first usable ceiling above the reserve clamps to it.
+        let mut cap = 10_000;
+        validate_release_capacity(true, None, &mut cap, FD_RESERVE + 1).unwrap();
+        assert_eq!(cap, 1);
+        // The observed Compute-class shape is unchanged.
+        let mut cap = 10_000;
+        validate_release_capacity(true, None, &mut cap, 4_096).unwrap();
+        assert_eq!(cap, 3_072);
     }
 
     /// Round-4 review: release-posture capacity validation — the hub
@@ -1565,6 +1627,7 @@ async fn async_main() -> anyhow::Result<()> {
          hub retention budget={}B",
         crate::livehub::hub_total_cap()
     );
+    let sse_configured_max_connections = args.sse_max_connections;
     validate_release_capacity(
         args.release_posture,
         std::env::var("SSE_HUB_TOTAL_BYTES").ok().as_deref(),
@@ -1833,6 +1896,7 @@ async fn async_main() -> anyhow::Result<()> {
         admit_shed_inflight: std::sync::atomic::AtomicU64::new(0),
         admit_shed_rss: std::sync::atomic::AtomicU64::new(0),
         sse_max_connections: args.sse_max_connections,
+        sse_configured_max_connections,
         sse_connections: std::sync::atomic::AtomicU64::new(0),
         live_hubs: crate::livehub::HubRegistry::new(),
         sse_live_hub: std::sync::atomic::AtomicBool::new(args.sse_live_hub == 1),

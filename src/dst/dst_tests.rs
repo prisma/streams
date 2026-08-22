@@ -5809,6 +5809,7 @@ async fn http_rig_inner(
         admit_shed_inflight: std::sync::atomic::AtomicU64::new(0),
         admit_shed_rss: std::sync::atomic::AtomicU64::new(0),
         sse_max_connections: 0,
+        sse_configured_max_connections: 0,
         sse_connections: std::sync::atomic::AtomicU64::new(0),
         live_hubs: crate::livehub::HubRegistry::new(),
         sse_live_hub: std::sync::atomic::AtomicBool::new(false),
