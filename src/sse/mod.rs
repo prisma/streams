@@ -3,4 +3,5 @@
 //! SSE framing vocabulary. The LiveFeed engine lands in `feed`.
 
 pub(crate) mod auth;
+pub(crate) mod feed;
 pub(crate) mod wire;

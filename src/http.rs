@@ -5817,6 +5817,7 @@ async fn append_core(
 }
 
 /// A decrypted record ready for response assembly.
+#[derive(Clone)]
 pub(crate) struct PlainRec {
     pub(crate) off: u64,
     pub(crate) payload: Bytes,
@@ -5833,7 +5834,7 @@ pub(crate) struct ReadOut {
 }
 
 /// Merged two-tier read returning plaintext records.
-async fn read_records(
+pub(crate) async fn read_records(
     _state: &AppState,
     _desc: &StreamDesc,
     key: &StreamKey,

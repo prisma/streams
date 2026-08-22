@@ -33,7 +33,7 @@ Legend: PENDING / IN PROGRESS / DONE / PARTIAL (with notes).
       legacy producers die at Stage 7 without a full adapter pass).
 
 
-## Stage 2 — LiveFeed core — STATUS: PENDING
+## Stage 2 — LiveFeed core — STATUS: DONE
 
 - [x] `FeedKey { stream, epoch, selector }`; `FeedCursor`; registry
       keyed by incarnation (delete/recreate safe).
@@ -41,7 +41,13 @@ Legend: PENDING / IN PROGRESS / DONE / PARTIAL (with notes).
       bounded read, format-once, publish-or-hand-to-self, permit
       released before socket writes, watch-version wakeups.
 - [x] Adaptive retention: zero at one subscriber; ring budget shared.
-- [ ] Red-first unit tests (see plan §Stage 2 list).
+- [x] Red-first unit tests, all green: solo handoff retains nothing;
+      shared mode prepares ONCE for both subscribers (source_reads==1);
+      contended drive returns None without a source read and the
+      permit never leaks; below-floor cursor reports Lagged (lag
+      contract); close-during-batch reaches terminal Closed with the
+      final batch still served; version-watch fires for post-join
+      publications (no missed wakeup between check and park).
       second subscriber shares preparation (delivered/prepared > 1);
       driver handoff on driving-session drop; incarnation safety;
       retention caps exact; no missed wakeup between check and park.      memory penalty observed; reconnect path drives fresh).
