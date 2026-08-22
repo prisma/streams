@@ -1000,11 +1000,25 @@ fn validate_fleet_auth(args: &Args, fleet_mode: bool) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// Largest hub retention posture any field campaign certified (the
-/// 1-GiB ladder's 64-MiB rung). The DEFAULT is now the field-proven
-/// 16 MiB; an explicit override beyond the tested envelope is a bridge
-/// configuration the release posture refuses.
-pub(crate) const MAX_CERTIFIED_HUB_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+/// Largest hub retention posture any field campaign exercised (the
+/// 1-GiB ladder's 64-MiB rung). NOT the release-safe maximum for any
+/// specific profile — that is per-profile below; a rung that produced
+/// memory-pressure write shedding at ~505 hubs must not be the
+/// release-safe ceiling for the tier it shed on.
+pub(crate) const MAX_EXERCISED_HUB_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
+
+/// Release-safe hub-retention MAXIMUM per memory profile. Follow-up
+/// review finding 4: one process-global "largest ever exercised"
+/// number must not govern every instance class. A larger tier defines
+/// its own entry once certified there.
+fn profile_hub_budget_max(profile: Option<&str>) -> u64 {
+    match profile {
+        // The 1-GiB profile certifies at 16 MiB (64 MiB tripped RSS
+        // shed at ~505 publishing hubs; 16 MiB held ~354 MB, zero shed).
+        Some("compute-1g") => 16 * 1024 * 1024,
+        _ => MAX_EXERCISED_HUB_TOTAL_BYTES,
+    }
+}
 
 /// Descriptors held OUTSIDE the SSE connection budget — storage
 /// clients, peer HTTP pools, maintenance, stdio, listener. The clamp
@@ -1022,6 +1036,7 @@ const FD_RESERVE: u64 = 1024;
 ///   (0 = unknown / non-unix: skip the fd clamp).
 pub(crate) fn validate_release_capacity(
     release_posture: bool,
+    profile: Option<&str>,
     hub_total_env: Option<&str>,
     sse_max_connections: &mut u64,
     nofile_hard: u64,
@@ -1039,17 +1054,19 @@ pub(crate) fn validate_release_capacity(
                      (an unparseable value would silently fall back to the default)"
                 );
             }
-            Some(v) if v > MAX_CERTIFIED_HUB_TOTAL_BYTES => {
+            Some(v) if v > profile_hub_budget_max(profile) => {
+                let max = profile_hub_budget_max(profile);
                 if release_posture {
                     anyhow::bail!(
-                        "SSE_HUB_TOTAL_BYTES={v} exceeds the largest field-certified \
-                         posture ({MAX_CERTIFIED_HUB_TOTAL_BYTES}); the 1-GiB profile \
-                         certifies at 16 MiB (64 MiB tripped RSS shed at ~505 hubs)"
+                        "SSE_HUB_TOTAL_BYTES={v} exceeds the {max}-byte release-safe                          maximum for memory profile {:?} (the 1-GiB class certifies at \
+                         16 MiB; 64 MiB tripped RSS shed at ~505 hubs)",
+                        profile.unwrap_or("default")
                     );
                 }
                 tracing::warn!(
-                    "SSE_HUB_TOTAL_BYTES={v} exceeds the largest field-certified \
-                     posture ({MAX_CERTIFIED_HUB_TOTAL_BYTES})"
+                    "SSE_HUB_TOTAL_BYTES={v} exceeds the {max}-byte release-safe \
+                     maximum for memory profile {:?}",
+                    profile.unwrap_or("default")
                 );
             }
             Some(_) => {}
@@ -1219,6 +1236,35 @@ mod config_validation_tests {
             .expect("default history settings must open");
     }
 
+    /// Follow-up review finding 4 (red): the release-safe hub-budget
+    /// maximum is PROFILE-specific. The 64-MiB rung was exercised but
+    /// produced RSS shed on the 1-GiB class, so it must not be that
+    /// class's release-safe ceiling.
+    #[test]
+    fn hub_budget_maximum_is_profile_specific() {
+        const THIRTY_TWO_MIB: &str = "33554432";
+        // compute-1g + release + 32 MiB: REFUSED (profile max 16 MiB).
+        let mut cap = 10_000;
+        assert!(
+            validate_release_capacity(true, Some("compute-1g"), Some(THIRTY_TWO_MIB), &mut cap, u32::MAX as u64)
+                .is_err(),
+            "the 1-GiB profile must refuse a hub budget above its certified 16 MiB"
+        );
+        // Unknown/default profile + release + 32 MiB: allowed (largest
+        // EXERCISED envelope until that tier certifies its own).
+        let mut cap = 10_000;
+        validate_release_capacity(true, None, Some(THIRTY_TWO_MIB), &mut cap, u32::MAX as u64)
+            .unwrap();
+        // Non-release warns only.
+        let mut cap = 10_000;
+        validate_release_capacity(false, Some("compute-1g"), Some(THIRTY_TWO_MIB), &mut cap, u32::MAX as u64)
+            .unwrap();
+        // The certified posture lands everywhere.
+        let mut cap = 10_000;
+        validate_release_capacity(true, Some("compute-1g"), Some("16777216"), &mut cap, u32::MAX as u64)
+            .unwrap();
+    }
+
     /// Round-4 follow-up review, finding 1 (red): the runtime reads
     /// SSE_MAX_CONNECTIONS=0 as UNLIMITED, so neither the validator's
     /// own clamp nor an explicit zero may ever produce it under the
@@ -1228,30 +1274,30 @@ mod config_validation_tests {
         // Explicit cap 0 + release posture: boot refusal.
         let mut cap = 0u64;
         assert!(
-            validate_release_capacity(true, None, &mut cap, u32::MAX as u64).is_err(),
+            validate_release_capacity(true, None, None, &mut cap, u32::MAX as u64).is_err(),
             "release posture must refuse an unlimited subscription budget"
         );
         // Non-release cap 0 remains allowed and untouched.
         let mut cap = 0u64;
-        validate_release_capacity(false, None, &mut cap, 4_096).unwrap();
+        validate_release_capacity(false, None, None, &mut cap, 4_096).unwrap();
         assert_eq!(cap, 0);
         // A degraded ceiling must not clamp DOWN to zero (=unlimited):
         // nofile_hard == FD_RESERVE refuses; below it refuses too.
         let mut cap = 10_000;
-        assert!(validate_release_capacity(true, None, &mut cap, FD_RESERVE).is_err());
+        assert!(validate_release_capacity(true, None, None, &mut cap, FD_RESERVE).is_err());
         let mut cap = 10_000;
-        assert!(validate_release_capacity(true, None, &mut cap, FD_RESERVE - 1).is_err());
+        assert!(validate_release_capacity(true, None, None, &mut cap, FD_RESERVE - 1).is_err());
         // Non-release only warns.
         let mut cap = 10_000;
-        validate_release_capacity(false, None, &mut cap, FD_RESERVE).unwrap();
+        validate_release_capacity(false, None, None, &mut cap, FD_RESERVE).unwrap();
         assert_eq!(cap, 10_000);
         // The first usable ceiling above the reserve clamps to it.
         let mut cap = 10_000;
-        validate_release_capacity(true, None, &mut cap, FD_RESERVE + 1).unwrap();
+        validate_release_capacity(true, None, None, &mut cap, FD_RESERVE + 1).unwrap();
         assert_eq!(cap, 1);
         // The observed Compute-class shape is unchanged.
         let mut cap = 10_000;
-        validate_release_capacity(true, None, &mut cap, 4_096).unwrap();
+        validate_release_capacity(true, None, None, &mut cap, 4_096).unwrap();
         assert_eq!(cap, 3_072);
     }
 
@@ -1264,29 +1310,29 @@ mod config_validation_tests {
         // An explicit hub budget above the certified envelope: refused
         // under the release posture, warned outside it.
         let mut cap = 10_000u64;
-        assert!(validate_release_capacity(true, Some("134217728"), &mut cap, 0).is_err());
-        assert!(validate_release_capacity(false, Some("134217728"), &mut cap, 0).is_ok());
+        assert!(validate_release_capacity(true, None, Some("134217728"), &mut cap, 0).is_err());
+        assert!(validate_release_capacity(false, None, Some("134217728"), &mut cap, 0).is_ok());
         // The certified postures pass (16 MiB default is implicit).
         let mut cap = 10_000;
-        assert!(validate_release_capacity(true, Some("16777216"), &mut cap, 65_536).is_ok());
-        assert!(validate_release_capacity(true, None, &mut cap, 65_536).is_ok());
+        assert!(validate_release_capacity(true, None, Some("16777216"), &mut cap, 65_536).is_ok());
+        assert!(validate_release_capacity(true, None, None, &mut cap, 65_536).is_ok());
         // A typo'd value must not silently become the default.
-        assert!(validate_release_capacity(false, Some("16 MiB"), &mut cap, 0).is_err());
+        assert!(validate_release_capacity(false, None, Some("16 MiB"), &mut cap, 0).is_err());
         // The Compute-class ceiling: hard 4,096 with a 1,024 reserve
         // clamps the configured 10k to 3,072 under the release posture.
         let mut cap = 10_000;
-        validate_release_capacity(true, None, &mut cap, 4_096).unwrap();
+        validate_release_capacity(true, None, None, &mut cap, 4_096).unwrap();
         assert_eq!(
             cap, 3_072,
             "effective cap must fit nofile_hard minus reserve"
         );
         // Outside the release posture the configured value stands.
         let mut cap = 10_000;
-        validate_release_capacity(false, None, &mut cap, 4_096).unwrap();
+        validate_release_capacity(false, None, None, &mut cap, 4_096).unwrap();
         assert_eq!(cap, 10_000);
         // A generous ceiling leaves the cap alone.
         let mut cap = 10_000;
-        validate_release_capacity(true, None, &mut cap, u32::MAX as u64).unwrap();
+        validate_release_capacity(true, None, None, &mut cap, u32::MAX as u64).unwrap();
         assert_eq!(cap, 10_000);
     }
 
@@ -1630,6 +1676,7 @@ async fn async_main() -> anyhow::Result<()> {
     let sse_configured_max_connections = args.sse_max_connections;
     validate_release_capacity(
         args.release_posture,
+        std::env::var("MEMPROFILE_CERT").ok().as_deref(),
         std::env::var("SSE_HUB_TOTAL_BYTES").ok().as_deref(),
         &mut args.sse_max_connections,
         nofile_hard,
