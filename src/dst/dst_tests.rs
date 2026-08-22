@@ -24228,7 +24228,7 @@ async fn a_bounded_cleanup_drains_residue_without_touching_the_live_generation()
 #[test]
 fn failpoint_registry_is_enumerable_and_described() {
     use crate::failpoints::Fp;
-    assert_eq!(Fp::ALL.len(), 17);
+    assert_eq!(Fp::ALL.len(), 18);
     for fp in Fp::ALL {
         assert!(!fp.site().is_empty(), "{fp:?} has no site contract");
     }
@@ -28416,6 +28416,9 @@ fn sr2_workload_jwt_exp(kid: &str, operations: &[&str], exp: i64) -> String {
 /// died — permanent read authority from a temporary credential.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn raw_sse_terminates_at_workload_token_expiry() {
+    // LEASE_TERMINATIONS is process-global; serialize with the other
+    // expiry tests that move it (gap_lock convention).
+    let _serial = gap_lock().lock().await;
     let scopes = "streams.create streams.records.append streams.records.read";
     let (_state, addr, _tok) = sr_rig("proj-rwl", "ws_rwl", "c_rwl", "rwl-1", scopes).await;
     let ct = ("content-type", "application/json");
@@ -31423,6 +31426,9 @@ async fn transfer_terminates_established_subscriptions() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn subscription_terminates_at_token_expiry() {
     let _xr = crate::billing::billing_clock_lock().read().await;
+    // LEASE_TERMINATIONS is process-global; serialize with the other
+    // expiry tests that move it (gap_lock convention).
+    let _serial = gap_lock().lock().await;
     const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
     const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
     let now = crate::shard::now_ms() / 1000;
@@ -32029,8 +32035,7 @@ fn publish_rejects_workspace_change_hidden_behind_omission() {
     // rule (one component increased) and finds no P in the current
     // snapshot for the workspace check. It must STILL be refused.
     let err = rig_publish_policy(&svc, rig_policy("proj-omi", "ws-b", 1, 2), 3)
-        .err()
-        .expect("omit-and-reintroduce must not smuggle an owner change");
+        .expect_err("omit-and-reintroduce must not smuggle an owner change");
     assert_eq!(err, "workspace changed without ownership_version increment");
     // The refusal leaves no trace: the honest shape (ownership bump)
     // lands, and the workspace travels with it.
@@ -32342,6 +32347,9 @@ async fn revocation_interrupts_active_direct_delivery() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn token_expiry_interrupts_slowly_progressing_delivery() {
     use tokio::io::AsyncReadExt;
+    // LEASE_TERMINATIONS is process-global; serialize with the other
+    // expiry tests that move it (gap_lock convention).
+    let _serial = gap_lock().lock().await;
     let (_svc, _state, addr) = auth_rig("proj-ex1", "ws_ex", &["c1"], None).await;
     // Expires in 6 s; the backlog takes far longer to drain at the
     // client's deliberately slow pace.
