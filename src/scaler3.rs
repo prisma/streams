@@ -333,7 +333,29 @@ async fn seal_identity(
     // hard-coding the parent route here sealed the wrong shard for any
     // child with a real route (review blocker 1).
     let route = desc.segment_route_by_id(seg_id);
-    let engine = state.engine_for_scaler(&route).await?;
+    // Round-4 follow-up review, finding 3: the scaler resolution used
+    // to be `.ok()`ed into None, so a wrong-owner response, an owner
+    // convergence holdoff, an open failure and a capacity refusal were
+    // indistinguishable in the logs — exactly when the segment lived
+    // on ANOTHER instance. Resolve typed and name the category.
+    let engine = match state.engine_for_quiet(&route).await {
+        Ok(e) => e,
+        Err(resp) => {
+            let replay_to = resp
+                .headers()
+                .get("streams-replay-to")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_string);
+            tracing::error!(
+                seg_id,
+                ?route,
+                status = %resp.status(),
+                ?replay_to,
+                "seal segment engine resolution failed"
+            );
+            return None;
+        }
+    };
     let (tx, rx) = tokio::sync::oneshot::channel();
     let req = crate::shard::AppendReq {
         enqueued_at: std::time::Instant::now(),

@@ -2027,18 +2027,7 @@ async fn product_seal(
                     .header(header::CACHE_CONTROL, "no-store")
                     .body(Body::from(json!({ "sealed": true }).to_string()))
                     .unwrap(),
-                Err(m) => {
-                    // Round-4 review: same evidence rule as the plain
-                    // :seal arm — a 500 must name its cause in the log.
-                    tracing::error!(stream = %name, "final-bearing seal answered 500: {m}");
-                    perr(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal",
-                        &m,
-                        None,
-                        true,
-                    )
-                }
+                Err(m) => seal_error_response(&name, &m),
             };
         }
     }
@@ -2756,33 +2745,33 @@ async fn product_seal_only(
             .header(header::CACHE_CONTROL, "no-store")
             .body(Body::from(json!({ "sealed": true }).to_string()))
             .unwrap(),
-        Err(m) => {
-            // A live final-bearing claim is the one CONFLICT here; the
-            // rest are resumable states of our own transition.
-            let conflict = m.contains("final record is in flight");
-            // Round-4 review: an INTERMITTENT 500 here (~1/56 solo
-            // runs) blocks RC promotion until root-caused. Every
-            // occurrence must name its cause in the server log — the
-            // response body alone dies with the test process.
-            tracing::error!(
-                stream = %name,
-                conflict,
-                "plain :seal answered {} : {m}",
-                if conflict { 409 } else { 500 }
-            );
-            perr(
-                if conflict {
-                    StatusCode::CONFLICT
-                } else {
-                    StatusCode::INTERNAL_SERVER_ERROR
-                },
-                if conflict { "sealing" } else { "internal" },
-                &m,
-                None,
-                true,
-            )
-        }
+        Err(m) => seal_error_response(&name, &m),
     }
+}
+
+/// Follow-up review finding 3: a RESUMABLE seal failure is not an
+/// invariant failure — answering it 500 told clients the service broke
+/// when the honest answer is "retry later" (and produced worse client
+/// behavior than the machine's own contract warrants). Classification:
+///   * another live final-bearing claim -> 409 sealing (unchanged);
+///   * resumable states of this transition (close refused/pending,
+///     topology busy, publication declined, resolution failed)
+///     -> 503 seal_incomplete, retryable;
+///   * everything else (invariant/corruption/store) -> 500 internal.
+pub(crate) fn seal_error_response(stream: &str, m: &str) -> Response {
+    let conflict = m.contains("final record is in flight");
+    let resumable = !conflict && m.contains("resumable");
+    let (status, code) = if conflict {
+        (StatusCode::CONFLICT, "sealing")
+    } else if resumable {
+        (StatusCode::SERVICE_UNAVAILABLE, "seal_incomplete")
+    } else {
+        (StatusCode::INTERNAL_SERVER_ERROR, "internal")
+    };
+    // Every occurrence names its cause in the server log — the
+    // response body alone dies with the test process.
+    tracing::error!(stream = %stream, status = %status, code, "seal failed: {m}");
+    perr(status, code, m, None, true)
 }
 
 /// The collection seal transition (audit P0). Open -> Sealing -> every
