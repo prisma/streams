@@ -2101,9 +2101,20 @@ pub(crate) async fn enter_sealing_cas(
     expect_epoch: &str,
 ) -> Result<EnterSeal, String> {
     let mut outcome = EnterSeal::Missing;
+    // Round-4 review (seal-500 root cause): this was the ONE bare
+    // single-shot cas_update on the seal path. A concurrent descriptor
+    // writer — the touch_ttl slide, a fork release, any late CAS, all
+    // of which RETRY their own conflicts — landing inside this
+    // read-modify-write window failed the etag precondition ONCE and
+    // surfaced as an immediate 500 on a lifecycle endpoint
+    // (~1/56 solo runs, load-sensitive). Retry the benign conflict
+    // from a fresh read like every other descriptor mutator; every
+    // mutate branch reassigns `outcome`, so a re-decision against the
+    // freshest state is correct by construction, and a conflicted
+    // attempt's generation increment dies with its unwritten batch.
     let installed = state
         .registry
-        .cas_update(sref, |d| {
+        .cas_update_retry(sref, |d| {
             // A seal belongs to the incarnation it was issued
             // against. The name can be deleted and recreated
             // while this operation is in flight, and sealing the
@@ -2698,9 +2709,11 @@ pub(crate) async fn seal_descriptor(
     if desc.sealed {
         return Ok(());
     }
+    // Round-4 review: retried like the claim path — same benign-conflict
+    // class, same lifecycle endpoint.
     state
         .registry
-        .cas_update(sref, |d| {
+        .cas_update_retry(sref, |d| {
             if d.sealed {
                 return false;
             }

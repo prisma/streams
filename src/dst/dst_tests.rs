@@ -32629,6 +32629,64 @@ async fn lineage_sse_refuses_authorization_invalidated_before_body_construction(
 }
 
 // ------------------------------------------------------------------
+// Round-4 review, seal-500 ROOT CAUSE (red): the seal claim was the
+// one bare single-shot descriptor CAS on the lifecycle path. Every
+// other descriptor mutator (touch_ttl's slide, fork releases) retries
+// its etag-precondition conflicts — their own comments document that
+// they race "the close path's seal". When such a writer lands inside
+// the claim's read-modify-write window, the seal's put fails its
+// precondition ONCE and surfaced as an immediate 500 (~1/56 solo
+// runs, load-sensitive). The conflict is benign: re-decide from a
+// fresh read.
+// ------------------------------------------------------------------
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn a_benign_descriptor_conflict_never_fails_a_seal() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/scx",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+
+    // The next descriptor put for this stream answers the exact error
+    // shape a lost etag race produces. The claim CAS must absorb it.
+    state.registry.fail_next_put("scx");
+    let (st, _, body) = preq(
+        addr,
+        "POST",
+        "/v1/streams/scx:seal",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{}",
+    )
+    .await;
+    assert_eq!(
+        st,
+        200,
+        "a one-shot descriptor-write conflict must be retried, not answered 500: {}",
+        String::from_utf8_lossy(&body)
+    );
+    // And the collection really is sealed (the retry COMPLETED the
+    // transition, it did not swallow it).
+    let (_, _, segs) = preq(addr, "GET", "/v1/segments/scx", &[], b"").await;
+    let segs = String::from_utf8_lossy(&segs);
+    // Appends are refused on a sealed stream — proof of terminal state.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/scx/records",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"n":1}"#,
+    )
+    .await;
+    assert_ne!(st, 200, "sealed stream accepted an append:\n{segs}");
+}
+
+// ------------------------------------------------------------------
 // Round-4 finding 4 (red): EXACT-ONCE termination accounting. The
 // producer task and the response-body gate each hold their own
 // LeaseWatch for the same connection; unsynchronized, one invalidated

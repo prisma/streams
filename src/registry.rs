@@ -598,6 +598,10 @@ pub struct Registry {
     /// SR3-2 test failpoint: the next list_page for this project fails.
     // mt-lint: allow(name-keyed-map): test failpoint set, project ids armed by the rig
     fail_next_list: Mutex<std::collections::HashSet<String>>,
+    /// Round-4 review: one-shot descriptor-put failure (the deterministic
+    /// stand-in for an etag-precondition conflict), keyed by stream name.
+    #[cfg(test)]
+    fail_next_put: Mutex<std::collections::HashSet<String>>,
 }
 
 struct CachedDesc {
@@ -688,6 +692,8 @@ impl Registry {
             #[cfg(test)]
             fail_next_get: Mutex::new(std::collections::HashSet::new()),
             fail_next_list: Mutex::new(std::collections::HashSet::new()),
+            #[cfg(test)]
+            fail_next_put: Mutex::new(std::collections::HashSet::new()),
         }
     }
 
@@ -1144,6 +1150,15 @@ impl Registry {
             }),
             None => PutMode::Overwrite,
         };
+        #[cfg(test)]
+        if self.take_fail_next_put(sref) {
+            // One-shot injected put failure standing in for the etag
+            // precondition conflict a concurrent descriptor writer
+            // produces — the same Err class `cas_update_retry` exists
+            // to absorb (this function's anyhow boundary is where the
+            // store error lands anyway).
+            return Err(anyhow::anyhow!("injected registry put conflict"));
+        }
         self.store
             .put_opts(
                 &path,
@@ -1180,6 +1195,28 @@ impl Registry {
             .lock()
             .unwrap()
             .insert(project.to_string());
+    }
+
+    /// Round-4 review failpoint: fail the next DESCRIPTOR PUT for this
+    /// stream name exactly once — the deterministic stand-in for the
+    /// etag-precondition conflict a concurrent descriptor writer (a
+    /// touch_ttl slide, a fork release, any late CAS) produces when it
+    /// lands inside another mutator's read-modify-write window.
+    #[cfg(test)]
+    // mt-lint: allow(name-param-shared-core): test failpoint arming, no identity derived
+    pub fn fail_next_put(&self, name: &str) {
+        self.fail_next_put
+            .lock()
+            .unwrap()
+            .insert(name.to_string());
+    }
+
+    #[cfg(test)]
+    fn take_fail_next_put(&self, sref: &crate::tenant::TenantStreamRef) -> bool {
+        self.fail_next_put
+            .lock()
+            .unwrap()
+            .remove(sref.name().as_str())
     }
 
     /// Force a cached entry past its TTL so tests can exercise the
