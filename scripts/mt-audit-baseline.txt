@@ -1,3 +1,4 @@
+internal-target	src/http.rs .get("streams-internal-identity")	
 internal-target	src/product.rs "streams-internal-epoch",	
 internal-target	src/product.rs "streams-internal-identity",	
 internal-target	src/product.rs "streams-internal-project",	
