@@ -33049,3 +33049,166 @@ async fn seal_converges_through_transient_commit_group_failures() {
     );
     assert!(eof, "EOF after the final control:\n{acc}");
 }
+
+// ==================================================================
+// Follow-up review finding 2: CROSS-OWNER SEGMENT CLOSE. Collection
+// sealing used to resolve each segment's engine LOCALLY only — a
+// segment owned by another instance made seal_identity return None
+// and the whole seal answered 500. Now: SegmentClose fleet operation,
+// a target-bound internal receiver, and a coordinator that follows
+// ONE ownership redirect.
+// ==================================================================
+
+/// The receiver: operation-scoped authz, target binding, idempotent
+/// close. A segment-read token must NOT open it; a valid request
+/// closes the local segment and a retry answers the same frozen
+/// offset.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn segment_close_receiver_scopes_authorizes_and_is_idempotent() {
+    let scopes = "streams.create streams.records.append streams.records.read";
+    let (state, addr, _tok) = sr_rig("proj-scl", "ws_scl", "c_scl", "scl-1", scopes).await;
+    let ct = ("content-type", "application/json");
+    // Stage a raw stream (deployment tenant = the receiver's own
+    // registry view) with one record.
+    let fleet = ("authorization", "Bearer dst-internal-token");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/scl", &[ct, fleet], br#"[{"i":0}]"#).await;
+    assert!(st == 200 || st == 201, "stage: {st}");
+    state.registry.invalidate(&state.raw_adapter_sref("scl"));
+    let desc = state
+        .registry
+        .get(&state.raw_adapter_sref("scl"))
+        .await
+        .unwrap()
+        .unwrap();
+    let target = crate::product::InternalTarget::of(&desc, 0).unwrap();
+    let th: Vec<(String, String)> = target
+        .headers()
+        .iter()
+        .map(|(k, v)| ((*k).to_string(), v.clone()))
+        .collect();
+
+    // Operation scoping: an empty-operations and a segment-read token
+    // must both be refused BEFORE any target work.
+    for ops in [&[][..], &["segment-read"][..]] {
+        let now = crate::shard::now_ms() / 1000;
+        let token = format!("Bearer {}", sr2_workload_jwt("scl-1", ops, now));
+        let mut hdrs: Vec<(&str, &str)> =
+            th.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+        hdrs.push(("authorization", &token));
+        let (st, _, body) = hreq(
+            addr,
+            "POST",
+            "/v1/internal/segment-close/scl?seg_id=0&seal_gen=0",
+            &hdrs,
+            b"",
+        )
+        .await;
+        assert_eq!(
+            st,
+            401,
+            "segment-close must demand its exact operation ({ops:?}): {st} {}",
+            String::from_utf8_lossy(&body)
+        );
+    }
+
+    // A VALID close-token request closes the local segment...
+    let now = crate::shard::now_ms() / 1000;
+    let close_token = format!(
+        "Bearer {}",
+        sr2_workload_jwt("scl-1", &["segment-close"], now)
+    );
+    let mut hdrs: Vec<(&str, &str)> = th.iter().map(|(k, v)| (k.as_str(), v.as_str())).collect();
+    hdrs.push(("authorization", &close_token));
+    let (st, _, body) = hreq(
+        addr,
+        "POST",
+        "/v1/internal/segment-close/scl?seg_id=0&seal_gen=0",
+        &hdrs,
+        b"",
+    )
+    .await;
+    assert_eq!(
+        st,
+        200,
+        "segment-close receiver: {}",
+        String::from_utf8_lossy(&body)
+    );
+    // ...and IDEMPOTENTLY answers the same frozen offset on retry.
+    let (st2, _, body2) = hreq(
+        addr,
+        "POST",
+        "/v1/internal/segment-close/scl?seg_id=0&seal_gen=0",
+        &hdrs,
+        b"",
+    )
+    .await;
+    assert_eq!(st2, 200);
+    assert_eq!(body, body2, "retried close must answer the same offset");
+    engine_shutdown(&state).await;
+}
+
+/// The COORDINATOR: when the owner ring says a segment belongs to
+/// another instance, the seal relays there instead of failing. Rig B
+/// is a full second instance over the SAME object store; rig A
+/// overrides the shard's owner to B and carries B's peer URL. The
+/// stream is created through A; the collection seal must complete
+/// even though its segment close resolves foreign.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn collection_seal_relays_segment_closes_to_the_foreign_owner() {
+    let store = mem();
+    let (state_a, _addr_a) = http_rig_named(store.clone(), "inst-a").await;
+    let (state_b, addr_b) = http_rig_named(store, "inst-b").await;
+    let (st, _, _) = preq(
+        _addr_a,
+        "PUT",
+        "/v1/streams/relay",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, _) = preq(
+        _addr_a,
+        "POST",
+        "/v1/streams/relay/records",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"n":1}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+
+    // A: the shard belongs to inst-b, reachable at addr_b.
+    *state_a
+        .ring_overrides
+        .write()
+        .unwrap()
+        .entry("00".to_string())
+        .or_insert("inst-b".into()) = "inst-b".into();
+    state_a
+        .peer_urls
+        .write()
+        .unwrap()
+        .insert("inst-b".to_string(), format!("http://{addr_b}"));
+
+    // THE SEAL from A: seg 0's local resolution says WRONG OWNER and
+    // must relay rather than answer "did not close".
+    let (st, _, body) = preq(
+        _addr_a,
+        "POST",
+        "/v1/streams/relay:seal",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{}",
+    )
+    .await;
+    assert_eq!(
+        st,
+        200,
+        "cross-owner seal must complete: {}",
+        String::from_utf8_lossy(&body)
+    );
+    // Terminal on the shared store, observable from B too.
+    let d = wait_seal_terminal(&state_b, "relay").await;
+    assert!(d.sealed && d.sealing.is_none());
+    engine_shutdown(&state_a).await;
+    engine_shutdown(&state_b).await;
+}

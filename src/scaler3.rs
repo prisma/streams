@@ -21,6 +21,7 @@ use std::sync::{Mutex, OnceLock};
 
 use crate::crypto::RoutingKeyHash;
 use crate::registry::StreamDesc;
+use crate::shard::ShardEngine;
 use crate::sketch::KeyDistribution;
 
 use std::sync::OnceLock as PolicyOnceLock;
@@ -338,31 +339,55 @@ async fn seal_identity(
     // convergence holdoff, an open failure and a capacity refusal were
     // indistinguishable in the logs — exactly when the segment lived
     // on ANOTHER instance. Resolve typed and name the category.
-    let engine = match state.engine_for_quiet(&route).await {
-        Ok(e) => e,
+    // Round-4 follow-up review, finding 2: WRONG OWNER is not an
+    // error — it is a routing fact. Relay the close to the segment's
+    // owner over the fleet-internal channel instead of failing the
+    // whole collection seal.
+    match state.engine_for_quiet(&route).await {
+        Ok(engine) => close_segment_on_engine(&engine, identity, &route, seg_id, seal_gen).await,
         Err(resp) => {
-            let replay_to = resp
-                .headers()
-                .get("streams-replay-to")
-                .and_then(|v| v.to_str().ok())
-                .map(str::to_string);
-            tracing::error!(
-                seg_id,
-                ?route,
-                status = %resp.status(),
-                ?replay_to,
-                "seal segment engine resolution failed"
-            );
-            return None;
+            let is_redirect = resp.status() == axum::http::StatusCode::CONFLICT
+                && resp.headers().contains_key("streams-replay-to");
+            if !is_redirect {
+                let replay_to = resp
+                    .headers()
+                    .get("streams-replay-to")
+                    .and_then(|v| v.to_str().ok())
+                    .map(str::to_string);
+                tracing::error!(
+                    seg_id,
+                    ?route,
+                    status = %resp.status(),
+                    ?replay_to,
+                    "seal segment engine resolution failed"
+                );
+                return None;
+            }
+            relay_segment_close(state, desc, seg_id, seal_gen, resp).await
         }
-    };
+    }
+}
+
+/// The ONE segment-close primitive: submit an empty close append for
+/// this exact segment identity to the LOCAL committer. Idempotent per
+/// identity (a re-close of a closed segment answers its frozen next
+/// offset via AppendErr::Closed). Shared by collection sealing,
+/// split/merge transitions, and the fleet-internal segment-close
+/// receiver.
+pub(crate) async fn close_segment_on_engine(
+    engine: &std::sync::Arc<ShardEngine>,
+    identity: [u8; 16],
+    route: &[u8; 16],
+    seg_id: u32,
+    seal_gen: Option<u64>,
+) -> Option<u64> {
     let (tx, rx) = tokio::sync::oneshot::channel();
     let req = crate::shard::AppendReq {
         enqueued_at: std::time::Instant::now(),
         hash: identity,
-        route,
+        route: *route,
         entries: Vec::new(),
-        usage: crate::usage::counters(&route),
+        usage: crate::usage::counters(route),
         routing_key: String::new(),
         key_hash: crate::crypto::stream_hash(""),
         producer_lineage: Vec::new(),
@@ -382,9 +407,6 @@ async fn seal_identity(
         resp: tx,
     };
     if let Err(_req) = engine.try_enqueue(req) {
-        // Round-4 review: an intermittent seal 500 (~1/56 solo runs)
-        // is still open; a close that never reached its committer must
-        // not vanish silently. (Err carries the request back.)
         tracing::error!(
             seg_id,
             ?route,
@@ -403,6 +425,96 @@ async fn seal_identity(
             tracing::error!(
                 seg_id,
                 "seal close's committer answer was dropped (responder gone)"
+            );
+            None
+        }
+    }
+}
+
+/// Relay one segment close to the segment's OWNER instance over the
+/// fleet-internal channel. The peer re-derives every target fact from
+/// ITS OWN descriptor before submitting (the coordinator's descriptor
+/// may be stale), so this carries only the coordinates plus the bound
+/// target headers. One ownership redirect is followed; a SECOND means
+/// ownership moved mid-relay — fail retryable rather than chase.
+async fn relay_segment_close(
+    state: &std::sync::Arc<crate::http::AppState>,
+    desc: &StreamDesc,
+    seg_id: u32,
+    seal_gen: Option<u64>,
+    redirect: axum::response::Response,
+) -> Option<u64> {
+    let Some((owner, base)) = crate::http::replay_peer_url(state, &redirect) else {
+        tracing::error!(
+            seg_id,
+            stream = %desc.name,
+            "segment owner answered a redirect but no peer URL is configured"
+        );
+        return None;
+    };
+    let Some(target) = crate::product::InternalTarget::of(desc, seg_id) else {
+        return None;
+    };
+    let gen_q = seal_gen.map(|g| g.to_string()).unwrap_or_default();
+    let name = crate::http::encode_stream_name_path(&desc.name);
+    let mk = |bearer: Option<&str>| {
+        let mut req = crate::http::peer_client()
+            .post(format!(
+                "{base}/v1/internal/segment-close/{name}?seg_id={seg_id}&seal_gen={gen_q}"
+            ))
+            .timeout(std::time::Duration::from_secs(40));
+        for (k, v) in target.headers() {
+            req = req.header(k, v);
+        }
+        if let Some(t) = bearer {
+            req = req.header("authorization", format!("Bearer {t}"));
+        }
+        req
+    };
+    match crate::http::send_fleet(state, mk).await {
+        Ok(r) if r.status() == axum::http::StatusCode::OK => {
+            #[derive(serde::Deserialize)]
+            struct Ack {
+                next_offset: u64,
+            }
+            match r.json::<Ack>().await {
+                Ok(a) => Some(a.next_offset),
+                Err(e) => {
+                    tracing::error!(
+                        seg_id,
+                        owner = %owner,
+                        "segment-close relay answer unparsable: {e}"
+                    );
+                    None
+                }
+            }
+        }
+        Ok(r) if r.status() == axum::http::StatusCode::CONFLICT => {
+            tracing::error!(
+                seg_id,
+                owner = %owner,
+                "segment-close relay was redirected again; ownership moved twice — \
+                 refusing to chase (retry the seal)"
+            );
+            None
+        }
+        Ok(r) => {
+            let status = r.status();
+            let body = r.text().await.unwrap_or_default();
+            tracing::error!(
+                seg_id,
+                owner = %owner,
+                status = %status,
+                "segment-close relay refused: {}",
+                &body[..body.len().min(300)]
+            );
+            None
+        }
+        Err(e) => {
+            tracing::error!(
+                seg_id,
+                owner = %owner,
+                "segment-close relay to {base} failed: {e}"
             );
             None
         }

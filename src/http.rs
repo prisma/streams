@@ -368,6 +368,7 @@ pub(crate) enum InternalOperation {
     RawAppend,
     RawLifecycle,
     SegmentRead,
+    SegmentClose,
     SegmentScan,
     QueueCursor,
     ConsumerSweep,
@@ -381,6 +382,7 @@ impl InternalOperation {
             Self::RawAppend => "raw-append",
             Self::RawLifecycle => "raw-lifecycle",
             Self::SegmentRead => "segment-read",
+            Self::SegmentClose => "segment-close",
             Self::SegmentScan => "segment-scan",
             Self::QueueCursor => "queue-cursor",
             Self::ConsumerSweep => "consumer-sweep",
@@ -1495,6 +1497,10 @@ pub fn router(state: Arc<AppState>) -> Router {
         .route(
             "/v1/internal/segment-read/{*name}",
             get(internal_segment_read),
+        )
+        .route(
+            "/v1/internal/segment-close/{*name}",
+            post(internal_segment_close),
         )
         .route(
             "/v1/internal/sweep-segment/{*name}",
@@ -8575,6 +8581,90 @@ async fn relay_segment_read(
 /// served strictly from local ownership (no_fanout). Bearer-gated with
 /// the fleet's shared token; the internal max-bytes/deliver headers are
 /// honored only here so the public raw grammar stays pinned.
+/// Follow-up review finding 2: the RECEIVER side of cross-owner
+/// collection sealing. A coordinator whose descriptor says a live
+/// segment belongs elsewhere relays the close HERE; this instance
+/// re-derives every target fact from its own registry (project from
+/// the sender header, epoch/identity re-checked against it), requires
+/// LOCAL ownership (a wrong owner answers 409 + Streams-Replay-To so
+/// the relay can follow one redirect), and submits the same idempotent
+/// close primitive collection sealing uses. Idempotent per identity:
+/// a retried close answers the segment's frozen next offset.
+#[derive(Deserialize)]
+struct SegmentCloseParams {
+    seg_id: u32,
+    seal_gen: Option<u64>,
+}
+async fn internal_segment_close(
+    State(state): State<Arc<AppState>>,
+    Path(name): Path<String>,
+    Query(params): Query<SegmentCloseParams>,
+    headers: HeaderMap,
+) -> Response {
+    if !fleet_operation_authorized(&state, &headers, InternalOperation::SegmentClose) {
+        return internal_unauthorized();
+    }
+    let sref = match crate::product::internal_sref(&headers, &name) {
+        Ok(s) => s,
+        Err(r) => return r,
+    };
+    let desc = match state.registry.get(&sref).await {
+        Ok(Some(desc)) if desc_alive(&desc) => desc,
+        Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
+        Err(e) => {
+            return err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "temporarily_unavailable",
+                &e.to_string(),
+            );
+        }
+    };
+    if let Err(r) = crate::product::verify_internal_target(&desc, &headers) {
+        return r;
+    }
+    // The claimed identity must equal what THIS registry derives.
+    let identity = desc.dynamic_segment_identity(params.seg_id);
+    let claimed = headers
+        .get("streams-internal-identity")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    if claimed != crate::crypto::hex(&identity) {
+        return err_resp(
+            StatusCode::CONFLICT,
+            "target_mismatch",
+            "segment identity does not match this stream's lineage",
+        );
+    }
+    let route = desc.segment_route_by_id(params.seg_id);
+    let engine = match state.engine_for_quiet(&route).await {
+        Ok(e) => e,
+        Err(resp) => {
+            // Not the owner (or unresolvable): answer the typed
+            // ownership response verbatim so the coordinator follows
+            // exactly one redirect.
+            return resp;
+        }
+    };
+    match crate::scaler3::close_segment_on_engine(
+        &engine,
+        identity,
+        &route,
+        params.seg_id,
+        params.seal_gen,
+    )
+    .await
+    {
+        Some(next_offset) => {
+            axum::Json(serde_json::json!({ "next_offset": next_offset })).into_response()
+        }
+        None => err_resp(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "seal_incomplete",
+            "the segment close did not commit; retry",
+        ),
+    }
+}
+
 async fn internal_segment_read(
     State(state): State<Arc<AppState>>,
     Path(name): Path<String>,
