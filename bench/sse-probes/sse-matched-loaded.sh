@@ -27,7 +27,7 @@ run_arm() {
   env SLATE_S3_ENDPOINT=http://127.0.0.1:9500 SLATE_S3_BUCKET=ml$ARM \
     SLATE_S3_REGION=local SLATE_S3_ACCESS_KEY_ID=test SLATE_S3_SECRET_ACCESS_KEY=test \
     AUTH_TOKEN=$AUTH PATH_PREFIX=ml$ARM INSTANCE_NAME=streams-1 INITIAL_SHARDS=1 \
-    TAIL_RING_BYTES=0 SHARED_CACHE_BYTES=67108864 ADMIT_RSS_SHED_MB=1400 \
+    TAIL_RING_BYTES=${RING:-0} FRAME_COMPRESS=${COMPRESS:-0} SHARED_CACHE_BYTES=67108864 ADMIT_RSS_SHED_MB=1400 \
     SSE_MAX_CONNECTIONS=0 SSE_HUB_PROMOTE_AT=$THRESH RUST_LOG=warn \
     "$HERE/target/release/streams-slate" --listen 127.0.0.1:8090 > "$OUT/server-$ARM.log" 2>&1 &
   SRV_PID=$!
@@ -137,5 +137,6 @@ PY
   kill $S3_PID $SRV_PID 2>/dev/null; wait 2>/dev/null || true
   sleep 1
 }
-echo "== ARM A: ${STREAMS} x 1, threshold 2 (all direct), ${WPS} wps over ${ACTIVE} subscribed streams, ${SECS}s"; run_arm A 2
-echo "== ARM B: ${STREAMS} x 1, threshold 1 (all hub), same load";                                            run_arm B 1
+ARMS=${ARMS:-"A B"}
+case " $ARMS " in *" A "*) echo "== ARM A: ${STREAMS} x 1, threshold 2 (all direct), ${WPS} wps over ${ACTIVE} subscribed streams, ${SECS}s, ring=${RING:-0}"; run_arm A 2;; esac
+case " $ARMS " in *" B "*) echo "== ARM B: ${STREAMS} x 1, threshold 1 (all hub), same load, ring=${RING:-0}"; run_arm B 1;; esac
