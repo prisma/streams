@@ -32713,7 +32713,8 @@ async fn termination_reasons_count_exactly_once_per_subscription() {
     assert!(b.contains("upToDate"), "hub sub parks:\n{b}");
 
     let idx = crate::auth::LeaseInvalidReason::TokenExpired.index();
-    let before = crate::http::LEASE_TERMINATIONS[idx].load(std::sync::atomic::Ordering::Relaxed);
+    let before =
+        crate::sse::auth::LEASE_TERMINATIONS[idx].load(std::sync::atomic::Ordering::Relaxed);
     // No activity: both subscriptions must die at token expiry.
     let (_, eof_p) = hub_sse_collect(&mut promoter, 20, |_| false).await;
     let (_, eof_s) = hub_sse_collect(&mut sub, 10, |_| false).await;
@@ -32721,7 +32722,8 @@ async fn termination_reasons_count_exactly_once_per_subscription() {
         eof_p && eof_s,
         "both subscriptions must terminate at expiry"
     );
-    let after = crate::http::LEASE_TERMINATIONS[idx].load(std::sync::atomic::Ordering::Relaxed);
+    let after =
+        crate::sse::auth::LEASE_TERMINATIONS[idx].load(std::sync::atomic::Ordering::Relaxed);
     assert_eq!(
         after - before,
         2,

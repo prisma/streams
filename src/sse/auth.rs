@@ -1,0 +1,360 @@
+//! The SSE authorization boundary — moved verbatim from http.rs
+//! (LIVE-FEED Stage 1). `GatedSseBody` remains the AUTHORITATIVE
+//! per-frame lease gate; `LeaseWatch`/`SseLease` carry the
+//! generation-stable proof, workload-token expiry and exactly-once
+//! termination accounting established in rounds V4/3/4. Contract
+//! tests transfer unchanged.
+
+use crate::http::{AppState, InternalLease, SseSlot, err_resp};
+use axum::http::StatusCode;
+use axum::response::Response;
+use bytes::Bytes;
+use std::sync::Arc;
+
+/// Review round 3: subscriber-side canary counters.
+pub(crate) mod sse_stats {
+    use std::sync::atomic::AtomicU64;
+    pub static DELIVERED_RECORDS: AtomicU64 = AtomicU64::new(0);
+    pub static BELOW_FLOOR_CATCHUPS: AtomicU64 = AtomicU64::new(0);
+    pub static DISCONNECT_SEND_TIMEOUT: AtomicU64 = AtomicU64::new(0);
+    pub static DISCONNECT_CLIENT_CLOSED: AtomicU64 = AtomicU64::new(0);
+    pub static DISCONNECT_HUB_DEAD: AtomicU64 = AtomicU64::new(0);
+}
+
+/// Review round 3 F1: lease terminations by reason (canary counter).
+pub(crate) static LEASE_TERMINATIONS: [std::sync::atomic::AtomicU64; 10] = [
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+    std::sync::atomic::AtomicU64::new(0),
+];
+
+pub(crate) fn lease_terminations_json() -> serde_json::Value {
+    let mut m = serde_json::Map::new();
+    for r in crate::auth::LeaseInvalidReason::ALL {
+        m.insert(
+            r.as_str().to_string(),
+            serde_json::Value::from(
+                LEASE_TERMINATIONS[r.index()].load(std::sync::atomic::Ordering::Relaxed),
+            ),
+        );
+    }
+    serde_json::Value::Object(m)
+}
+
+/// Round-4 finding 1: a subscription whose lease was ALREADY invalid
+/// when its body was constructed is refused, never established. The
+/// status classes mirror `auth_failure_response` (product.rs): 503 for
+/// this cell's own feed staleness, 403 for verified-but-denied project
+/// state, 401 for everything a fresh token fixes.
+pub(crate) fn lease_refusal_response(r: crate::auth::LeaseInvalidReason) -> Response {
+    use crate::auth::LeaseInvalidReason as R;
+    let status = match r {
+        R::PolicyStale | R::GrantsStale => StatusCode::SERVICE_UNAVAILABLE,
+        R::ProjectMissing | R::ProjectNotActive => StatusCode::FORBIDDEN,
+        _ => StatusCode::UNAUTHORIZED,
+    };
+    err_resp(
+        status,
+        r.as_str(),
+        "authorization was invalidated before the subscription could be established",
+    )
+}
+
+/// Round-4 finding 2: what a long-lived subscription re-proves. A
+/// customer lease re-validates against the policy/grant feeds; an
+/// internal (workload-JWT) lease enforces token expiry — the raw
+/// surface has no feed-coupled identity to re-check yet, but a parked
+/// connection must still die with its credential.
+#[derive(Clone, Debug)]
+pub(crate) enum SseLease {
+    None,
+    Customer(crate::auth::AuthLease),
+    Internal(InternalLease),
+}
+
+impl SseLease {
+    pub(crate) fn of(params: &crate::http::ReadParams) -> Self {
+        match (&params.internal_lease, &params.lease) {
+            (Some(i), _) => Self::Internal(i.clone()),
+            (None, Some(c)) => Self::Customer(c.clone()),
+            (None, None) => Self::None,
+        }
+    }
+}
+
+/// Review V4 + round 3 F1: bounded re-authorization for a live
+/// subscription. One atomic load per wakeup; the full lease re-check
+/// runs when the publication generation moved OR the lease's own
+/// deadline (token/credential expiry, feed staleness boundary) passed.
+pub(crate) struct LeaseWatch {
+    pub(crate) lease: SseLease,
+    pub(crate) last_gen: u64,
+    pub(crate) next_deadline: i64,
+    /// Round-4 finding 4: EXACT-ONCE termination accounting. The
+    /// producer task and the response-body gate each hold their own
+    /// watch for the SAME connection; unsynchronized, one invalidated
+    /// subscription produced one OR TWO termination counts depending
+    /// on scheduling — and either watcher alone can miss being first
+    /// (the producer quitting hands the body a plain EOF). The record
+    /// is SHARED per connection: the first detector wins the swap and
+    /// records its observed reason exactly once.
+    pub(crate) term: std::sync::Arc<TerminateOnce>,
+}
+
+/// Per-connection exactly-once termination record (round-4 finding 4).
+#[derive(Default)]
+pub(crate) struct TerminateOnce(std::sync::atomic::AtomicBool);
+
+impl TerminateOnce {
+    /// Record `r` unless another detector already recorded THIS
+    /// connection's termination. True = this call is the one that
+    /// counted.
+    pub(crate) fn record_once(&self, r: crate::auth::LeaseInvalidReason) -> bool {
+        if self.0.swap(true, std::sync::atomic::Ordering::Relaxed) {
+            return false;
+        }
+        LEASE_TERMINATIONS[r.index()].fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        true
+    }
+}
+
+impl LeaseWatch {
+    /// Round-4 finding 1: GENERATION-STABLE INITIAL VALIDATION. The
+    /// old constructor only READ the current generation into
+    /// `last_gen`; invalidation published after token verification but
+    /// before this construction left `last_gen` already equal to the
+    /// NEW generation, so the first `revoked()` fast path ("generation
+    /// unchanged since construction") passed forever and the
+    /// subscription started on authorization that was already dead.
+    ///
+    /// This constructor validates UNCONDITIONALLY before the watch is
+    /// trusted; customer leases re-read in a loop until the generation
+    /// is stable ACROSS the check (`lease_check` and `lease_deadline`
+    /// read several snapshots, so a publication landing mid-check
+    /// would otherwise mix pre- and post-publication facts). Returns
+    /// the reason when the lease was already invalid at construction.
+    pub(crate) fn new_checked(
+        state: &AppState,
+        lease: SseLease,
+        term: std::sync::Arc<TerminateOnce>,
+    ) -> Result<Self, crate::auth::LeaseInvalidReason> {
+        let now = crate::shard::now_ms() / 1000;
+        // Round-4 finding 2: an internal (workload-JWT) lease has no
+        // feed-coupled identity to re-check yet — its single fact is
+        // token expiry, one clock read with no snapshot window to
+        // stabilize across.
+        if let SseLease::Internal(l) = &lease {
+            if now >= l.expires_at {
+                return Err(crate::auth::LeaseInvalidReason::TokenExpired);
+            }
+            return Ok(Self {
+                next_deadline: l.expires_at,
+                last_gen: state.auth.auth_generation(),
+                lease,
+                term,
+            });
+        }
+        let SseLease::Customer(lease) = lease else {
+            return Ok(Self::unrestricted());
+        };
+        loop {
+            let before = state.auth.auth_generation();
+            let now = crate::shard::now_ms() / 1000;
+            state.auth.lease_check(&lease, now)?;
+            let deadline = state.auth.lease_deadline(&lease);
+            let after = state.auth.auth_generation();
+            if before == after {
+                return Ok(Self {
+                    lease: SseLease::Customer(lease),
+                    last_gen: after,
+                    next_deadline: deadline,
+                    term,
+                });
+            }
+        }
+    }
+
+    pub(crate) fn unrestricted() -> Self {
+        Self {
+            lease: SseLease::None,
+            last_gen: 0,
+            next_deadline: i64::MAX,
+            term: std::sync::Arc::new(TerminateOnce::default()),
+        }
+    }
+
+    /// True = terminate the subscription NOW.
+    pub(crate) fn revoked(&mut self, state: &AppState) -> bool {
+        let now = crate::shard::now_ms() / 1000;
+        let g = state.auth.auth_generation();
+        if g == self.last_gen && now < self.next_deadline {
+            return false;
+        }
+        self.last_gen = g;
+        match &self.lease {
+            SseLease::None => false,
+            // Round-4 finding 2: a workload-JWT subscription dies with
+            // its token — nothing else can invalidate it yet.
+            SseLease::Internal(l) => {
+                if now >= l.expires_at {
+                    // The identity fields ride the log: a fleet
+                    // operator debugging terminations needs to know
+                    // WHICH workload credential died, not just that
+                    // one did.
+                    tracing::info!(
+                        subject = %l.subject,
+                        cell = %l.cell_id,
+                        operation = l.operation.claim(),
+                        "workload-JWT subscription terminated at token expiry"
+                    );
+                    self.term
+                        .record_once(crate::auth::LeaseInvalidReason::TokenExpired);
+                    true
+                } else {
+                    self.next_deadline = l.expires_at;
+                    false
+                }
+            }
+            SseLease::Customer(l) => match state.auth.lease_check(l, now) {
+                Ok(()) => {
+                    self.next_deadline = state.auth.lease_deadline(l);
+                    false
+                }
+                Err(r) => {
+                    self.term.record_once(r);
+                    true
+                }
+            },
+        }
+    }
+
+    /// Nap until the next mandatory re-check, capped so a far-future
+    /// deadline does not hold a giant timer.
+    pub(crate) fn nap(&self) -> std::time::Duration {
+        if matches!(self.lease, SseLease::None) {
+            return std::time::Duration::from_secs(3600);
+        }
+        let now = crate::shard::now_ms() / 1000;
+        std::time::Duration::from_secs((self.next_deadline - now).clamp(1, 3600) as u64)
+    }
+}
+
+/// Review round 3 F2: the AUTHORITATIVE lease gate sits at the
+/// response-body boundary — immediately before bytes leave the HTTP
+/// body. The producer checks are an optimization that stops work; this
+/// gate guarantees that no queued frame is yielded after a revocation,
+/// expiry, or staleness boundary has been observed (the channel's
+/// buffered items included). Wakes on: the next queued frame, an auth
+/// generation change (watch), or the lease deadline.
+pub(crate) struct GatedSseBody {
+    state: Arc<AppState>,
+    rx: tokio::sync::mpsc::Receiver<Result<Bytes, std::io::Error>>,
+    _slot: SseSlot,
+    watch: LeaseWatch,
+    gen_rx: tokio::sync::watch::Receiver<u64>,
+    gen_changed: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
+    deadline: std::pin::Pin<Box<tokio::time::Sleep>>,
+    ended: bool,
+}
+
+impl GatedSseBody {
+    /// Round-4 finding 1: the watch arrives PRE-VALIDATED
+    /// (`LeaseWatch::new_checked`) and the generation receiver is
+    /// subscribed BEFORE that check runs, so a publication landing in
+    /// between is still observed by THIS body on its first poll — no
+    /// missed wakeup between "proved" and "parked".
+    pub(crate) fn new(
+        state: Arc<AppState>,
+        rx: tokio::sync::mpsc::Receiver<Result<Bytes, std::io::Error>>,
+        slot: SseSlot,
+        watch: LeaseWatch,
+        gen_rx: tokio::sync::watch::Receiver<u64>,
+    ) -> Self {
+        let nap = watch.nap();
+        Self {
+            gen_rx,
+            state,
+            rx,
+            _slot: slot,
+            watch,
+            gen_changed: None,
+            deadline: Box::pin(tokio::time::sleep(nap)),
+            ended: false,
+        }
+    }
+}
+
+impl futures_util::Stream for GatedSseBody {
+    type Item = Result<Bytes, std::io::Error>;
+    fn poll_next(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<Option<Self::Item>> {
+        use std::task::Poll;
+        let this = self.get_mut();
+        if this.ended {
+            return Poll::Ready(None);
+        }
+        if !matches!(this.watch.lease, SseLease::None) {
+            // Generation change: (re)arm a changed() future on a clone
+            // of the receiver so it can be held across polls.
+            let mut fired = false;
+            loop {
+                if this.gen_changed.is_none() {
+                    let mut rx = this.gen_rx.clone();
+                    this.gen_changed = Some(Box::pin(async move {
+                        let _ = rx.changed().await;
+                    }));
+                }
+                match this.gen_changed.as_mut().unwrap().as_mut().poll(cx) {
+                    Poll::Ready(()) => {
+                        this.gen_changed = None;
+                        // Mark the value seen on OUR receiver too.
+                        let _ = this.gen_rx.has_changed();
+                        this.gen_rx.mark_unchanged();
+                        fired = true;
+                    }
+                    Poll::Pending => break,
+                }
+            }
+            if this.deadline.as_mut().poll(cx).is_ready() {
+                fired = true;
+                let nap = this.watch.nap();
+                this.deadline
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + nap);
+                // re-register the fresh timer
+                let _ = this.deadline.as_mut().poll(cx);
+            }
+            if fired && this.watch.revoked(&this.state) {
+                this.ended = true;
+                this.rx.close();
+                return Poll::Ready(None);
+            }
+        }
+        match this.rx.poll_recv(cx) {
+            Poll::Ready(Some(item)) => {
+                // The authoritative per-frame gate: cheap (atomic +
+                // deadline compare) unless something moved.
+                if this.watch.revoked(&this.state) {
+                    this.ended = true;
+                    this.rx.close();
+                    return Poll::Ready(None);
+                }
+                Poll::Ready(Some(item))
+            }
+            Poll::Ready(None) => {
+                this.ended = true;
+                Poll::Ready(None)
+            }
+            Poll::Pending => Poll::Pending,
+        }
+    }
+}

@@ -33,6 +33,7 @@ mod segmap;
 mod shard;
 mod sharddir;
 mod sketch;
+mod sse;
 mod store_timing;
 mod tenant;
 mod touch;
