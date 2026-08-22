@@ -2929,6 +2929,15 @@ pub(crate) async fn run_seal(
             return Err(format!("segment {seg_id} did not close; seal is resumable"));
         }
     }
+    #[cfg(test)]
+    if crate::failpoints::should_stop_before_sealed_publish(sref.name().as_str()) {
+        // DST crash boundary: every live segment's close is durable,
+        // the collection is NOT yet Sealed — the exact state a crash
+        // between step 2 and step 3 leaves. The retry contract under
+        // test: a plain :seal observes Sealing with closed segments,
+        // renews the claim, re-closes idempotently, and publishes.
+        return Err("stopped before the sealed publication; seal is resumable".into());
+    }
     // 3. Publish SEALED only now — and only if no topology transition
     //    reappeared while the segments were closing.
     let published = state

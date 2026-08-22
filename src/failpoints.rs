@@ -60,10 +60,11 @@ pub enum Fp {
     DeleteBeforeDecision,
     ScalerBeforePublish,
     SseBeforeLeaseGate,
+    StopBeforeSealedPublish,
 }
 
 impl Fp {
-    pub const ALL: [Fp; 18] = [
+    pub const ALL: [Fp; 19] = [
         Fp::StopAfterTombstone,
         Fp::StopBeforeMarkCommitted,
         Fp::StopAfterSealIntent,
@@ -82,6 +83,7 @@ impl Fp {
         Fp::DeleteBeforeDecision,
         Fp::ScalerBeforePublish,
         Fp::SseBeforeLeaseGate,
+        Fp::StopBeforeSealedPublish,
     ];
 
     /// The site contract: WHERE the point fires, stated as the
@@ -143,6 +145,12 @@ impl Fp {
                  BEFORE the response body's lease gate is built — the \
                  window in which a published revocation used to be \
                  missed by construction (round-4 finding 1)"
+            }
+            Fp::StopBeforeSealedPublish => {
+                "collection seal: after EVERY live segment's close is \
+                 durable, BEFORE the SEALED publication CAS — exactly \
+                 the state a crash between the close loop and step 3 \
+                 leaves; a plain retry must resume and complete"
             }
         }
     }
@@ -479,4 +487,14 @@ pub fn release_sse_before_lease_gate(name: &str) {
 }
 pub(crate) async fn pause_sse_before_lease_gate(name: &str) {
     pause(Fp::SseBeforeLeaseGate, name).await;
+}
+
+pub fn stop_before_sealed_publish(name: &str) {
+    arm(Fp::StopBeforeSealedPublish, name);
+}
+pub fn stop_before_sealed_publish_off(name: &str) {
+    release(Fp::StopBeforeSealedPublish, name);
+}
+pub(crate) fn should_stop_before_sealed_publish(name: &str) -> bool {
+    hit(Fp::StopBeforeSealedPublish, name)
 }

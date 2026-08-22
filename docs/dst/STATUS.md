@@ -40,6 +40,19 @@ mechanism-forced tests from invariant-style ones honestly.
   ref, product seal claim/final, close-enqueue (one-shot), append-
   enqueue, delete-decision, create-ready, scaler publish.
 
+## Round-4 addition: the seal lifecycle crash/resume matrix
+
+The spec's core rule — crash every multi-step operation at each
+boundary, then require convergence — applied to the collection-seal
+transition (the one that produced an unexplained intermittent 500):
+
+| boundary | mechanism | test |
+|---|---|---|
+| claim vs benign descriptor-write conflict | `fail_next_put` (registry one-shot put failure = etag-conflict stand-in) | `a_benign_descriptor_conflict_never_fails_a_seal` — the claim RETRIES from a fresh read; root cause of the intermittent, fixed by cas_update_retry on both seal CAS sites |
+| after every segment close is durable, before SEALED publication | **forced** flag `StopBeforeSealedPublish` | `a_seal_interrupted_before_publication_resumes_on_retry` — Sealing + closed segments observable, plain retry completes, subscriber sees exactly ONE sealed control then EOF |
+| concurrent plain seals | natural race, no injection | `concurrent_plain_seals_serialize_into_one_terminal_transition` — both succeed into ONE terminal transition; single sealed control; appends refused afterwards |
+| transient COMMIT-GROUP failure x3 | **forced** `fail_next_group_for(identity)` on the close group | `seal_converges_through_transient_commit_group_failures` — entered-proof per round, retryable resumable failures, bounded-retry convergence to terminal Sealed with subscriber protocol intact |
+
 ## Next (tracked, #108)
 
 Semantic failpoint registry (one arm → await_entered → release

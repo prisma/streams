@@ -601,6 +601,7 @@ pub struct Registry {
     /// Round-4 review: one-shot descriptor-put failure (the deterministic
     /// stand-in for an etag-precondition conflict), keyed by stream name.
     #[cfg(test)]
+    // mt-lint: allow(name-keyed-map): test failpoint set, canonical names of the rig's own streams
     fail_next_put: Mutex<std::collections::HashSet<String>>,
 }
 
@@ -1205,10 +1206,7 @@ impl Registry {
     #[cfg(test)]
     // mt-lint: allow(name-param-shared-core): test failpoint arming, no identity derived
     pub fn fail_next_put(&self, name: &str) {
-        self.fail_next_put
-            .lock()
-            .unwrap()
-            .insert(name.to_string());
+        self.fail_next_put.lock().unwrap().insert(name.to_string());
     }
 
     #[cfg(test)]
