@@ -1246,8 +1246,14 @@ mod config_validation_tests {
         // compute-1g + release + 32 MiB: REFUSED (profile max 16 MiB).
         let mut cap = 10_000;
         assert!(
-            validate_release_capacity(true, Some("compute-1g"), Some(THIRTY_TWO_MIB), &mut cap, u32::MAX as u64)
-                .is_err(),
+            validate_release_capacity(
+                true,
+                Some("compute-1g"),
+                Some(THIRTY_TWO_MIB),
+                &mut cap,
+                u32::MAX as u64
+            )
+            .is_err(),
             "the 1-GiB profile must refuse a hub budget above its certified 16 MiB"
         );
         // Unknown/default profile + release + 32 MiB: allowed (largest
@@ -1257,12 +1263,24 @@ mod config_validation_tests {
             .unwrap();
         // Non-release warns only.
         let mut cap = 10_000;
-        validate_release_capacity(false, Some("compute-1g"), Some(THIRTY_TWO_MIB), &mut cap, u32::MAX as u64)
-            .unwrap();
+        validate_release_capacity(
+            false,
+            Some("compute-1g"),
+            Some(THIRTY_TWO_MIB),
+            &mut cap,
+            u32::MAX as u64,
+        )
+        .unwrap();
         // The certified posture lands everywhere.
         let mut cap = 10_000;
-        validate_release_capacity(true, Some("compute-1g"), Some("16777216"), &mut cap, u32::MAX as u64)
-            .unwrap();
+        validate_release_capacity(
+            true,
+            Some("compute-1g"),
+            Some("16777216"),
+            &mut cap,
+            u32::MAX as u64,
+        )
+        .unwrap();
     }
 
     /// Round-4 follow-up review, finding 1 (red): the runtime reads

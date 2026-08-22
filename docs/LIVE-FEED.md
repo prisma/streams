@@ -89,6 +89,7 @@ only their control vocabulary differs.
 | Slow client | bounded queue + bounded send deadline → disconnect-on-lag |
 | Edge buffering | responses always carry `x-accel-buffering: no` |
 | Billing | one subscribe meter at connect + one payload chunk meter per delivered record — unchanged |
+| Status framing | CANONICAL = bare per-record cursor controls + standalone status controls decided at send time (hub style). The legacy direct path's flag-on-batch-last pairing is retired with it. |
 
 ## Non-goals
 

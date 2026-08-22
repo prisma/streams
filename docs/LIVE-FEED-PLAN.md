@@ -8,13 +8,13 @@ Legend: PENDING / IN PROGRESS / DONE / PARTIAL (with notes).
 
 ---
 
-## Stage 0 — Contract freeze — STATUS: IN PROGRESS
+## Stage 0 — Contract freeze — STATUS: DONE
 
 - [x] `docs/LIVE-FEED.md` contract written.
-- [x] Golden wire-contract tests pinning frame bytes for the product
-      default-key shape on BOTH legacy paths (direct + hub): initial
-      status control, data+cursor pairing, exactly-one sealed control
-      then EOF, x-accel-buffering header. (`livefeed_golden_*` tests.)
+- [x] Golden wire-contract test `golden_direct_and_hub_transcripts_
+      are_identical`: same append sequence through BOTH legacy paths;
+      asserts identical data payload sequence, single sealed control
+      terminating the stream, upToDate at head, EOF.
 - [x] Perf baselines recorded: see §Benchmarks below.
 - [x] Engine selector `STREAMS_SSE_ENGINE=legacy|livefeed|compare`
       (test/local-canary only; release posture refuses it).

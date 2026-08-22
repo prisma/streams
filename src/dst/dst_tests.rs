@@ -33212,3 +33212,165 @@ async fn collection_seal_relays_segment_closes_to_the_foreign_owner() {
     engine_shutdown(&state_a).await;
     engine_shutdown(&state_b).await;
 }
+
+// ==================================================================
+// LIVE-FEED Stage 0: golden wire-contract equivalence. The direct
+// producer and the hub producer must produce IDENTICAL SSE transcripts
+// for the same append sequence (modulo opaque cursor tokens): status
+// control first, data+cursor pairing, exactly ONE sealed control, EOF
+// after it. This corpus arbitrates the LiveFeed cutover.
+// ==================================================================
+
+fn normalize_cursors(s: &str) -> String {
+    // Replace every "nextCursor":"<opaque token>" with a placeholder;
+    // tokens embed per-incarnation epochs, so byte-equality across rigs
+    // holds only modulo them.
+    let mut out = String::with_capacity(s.len());
+    let mut rest = s;
+    while let Some(pos) = rest.find("\"nextCursor\":\"") {
+        out.push_str(&rest[..pos]);
+        let after = &rest[pos + "\"nextCursor\":\"".len()..];
+        match after.find('"') {
+            Some(end) => {
+                out.push_str("\"nextCursor\":\"CURSOR\"");
+                rest = &after[end + 1..];
+            }
+            None => {
+                out.push_str(&rest[pos..]);
+                rest = "";
+            }
+        }
+    }
+    out.push_str(rest);
+    out
+}
+
+async fn golden_run(hub: bool, promote_at_one: bool) -> (String, bool) {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_live_hub
+        .store(hub, std::sync::atomic::Ordering::Relaxed);
+    if promote_at_one {
+        state
+            .hub_promote_at
+            .store(1, std::sync::atomic::Ordering::Relaxed);
+    }
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/gold",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append(addr, "gold", r#"{"a":1}"#).await;
+    let mut sck = hub_sse_connect(addr, "gold").await;
+    // First frames: tail status control, then the backlog record.
+    let (acc1, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("\"a\":1")).await;
+    assert!(acc1.contains("upToDate\":true"), "tail status:\n{acc1}");
+    hub_append(addr, "gold", r#"{"a":2}"#).await;
+    let (acc2, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("\"a\":2")).await;
+    hub_append(addr, "gold", r#"{"a":3}"#).await;
+    let (acc3, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("\"a\":3")).await;
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/gold:seal",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{}",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let (acc4, eof) = hub_sse_collect(&mut sck, 15, |_| false).await;
+    let transcript = format!("{acc1}{acc2}{acc3}{acc4}");
+    assert_eq!(
+        transcript.matches("\"sealed\":true").count(),
+        1,
+        "exactly one sealed control ({hub}):{transcript}"
+    );
+    assert!(eof, "EOF after final control ({hub})");
+    assert!(
+        transcript.contains("x-accel-buffering: no"),
+        "edge buffering opt-out ({hub})"
+    );
+    (normalize_cursors(&transcript), eof)
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn golden_direct_and_hub_transcripts_are_identical() {
+    let _serial = gap_lock().lock().await;
+    let (direct, _) = golden_run(false, false).await;
+    let (hub, _) = golden_run(true, true).await;
+    // STAGE 0 FINDING: the two legacy producers are NOT frame-identical.
+    // Direct pairs each data frame with a control that carries the
+    // batch's flags (upToDate on the last); the hub emits bare
+    // per-record controls plus ONE standalone status control decided
+    // against the durable frontier at send time (the reviewed-correct
+    // rule, #270/#272). Canonical semantics for LiveFeed = the hub
+    // style; the assertion below therefore checks SEMANTIC equivalence:
+    // identical data payload sequence, identical cursor sequence,
+    // upToDate only at true head, exactly one sealed, EOF.
+    let d = canon_events(&direct);
+    let h = canon_events(&hub);
+    // Semantic equivalence between the two legacy framings:
+    //   * identical data payload sequence;
+    //   * identical cursor progression (consecutive duplicates folded —
+    //     the hub repeats the head cursor in its standalone status);
+    //   * upToDate asserted only alongside true head on BOTH paths;
+    //   * exactly ONE sealed control, terminating the stream.
+    let datas = |e: &[(String, String)]| -> Vec<String> {
+        e.iter()
+            .filter(|(k, _)| k == "data")
+            .map(|(_, v)| v.clone())
+            .collect()
+    };
+    assert_eq!(
+        datas(&d),
+        datas(&h),
+        "data payload sequences diverge:\nDIRECT:\n{direct}\nHUB:\n{hub}"
+    );
+    for (side, e) in [("direct", &d), ("hub", &h)] {
+        let sealed = e
+            .iter()
+            .filter(|(k, v)| k == "control" && v.contains("\"sealed\":true"))
+            .count();
+        assert_eq!(sealed, 1, "{side}: exactly one sealed control required");
+        assert!(
+            e.iter()
+                .any(|(k, v)| k == "control" && v.contains("\"upToDate\":true")),
+            "{side}: must assert upToDate at head"
+        );
+        assert!(
+            e.last().is_some_and(
+                |(k, v): &(String, String)| k == "control" && v.contains("\"sealed\":true")
+            ),
+            "{side}: the sealed control must terminate the stream"
+        );
+    }
+}
+
+/// Reduce an SSE transcript to its canonical event stream:
+/// (kind, payload-or-fields) with chunk framing, heartbeat comments and
+/// HTTP head removed; cursor tokens normalized.
+fn canon_events(transcript: &str) -> Vec<(String, String)> {
+    let body = match transcript.find("\r\n\r\n") {
+        Some(p) => &transcript[p + 4..],
+        None => transcript,
+    };
+    let mut evs = Vec::new();
+    let mut lines = body.lines();
+    while let Some(l) = lines.next() {
+        if let Some(kind) = l.strip_prefix("event: ") {
+            let raw = lines.next().unwrap_or("");
+            let data = raw
+                .strip_prefix("data: ")
+                .or_else(|| raw.strip_prefix("data:"))
+                .unwrap_or("");
+            let norm = normalize_cursors(data).replace('\r', "");
+            evs.push((kind.to_string(), norm));
+        }
+    }
+    evs
+}
