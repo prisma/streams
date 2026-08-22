@@ -32742,10 +32742,11 @@ async fn wait_seal_terminal(
     let sref = state.raw_adapter_sref(name);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
-        if let Ok(Some(d)) = state.registry.get(&sref).await {
-            if d.sealed && d.sealing.is_none() {
-                return d;
-            }
+        if let Ok(Some(d)) = state.registry.get(&sref).await
+            && d.sealed
+            && d.sealing.is_none()
+        {
+            return d;
         }
         assert!(
             std::time::Instant::now() < deadline,
