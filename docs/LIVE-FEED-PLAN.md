@@ -98,16 +98,19 @@ Harness: STREAMS_SSE_BENCH=1 cargo test -- bench_sse_ --nocapture
 |---|---|---:|---:|---:|
 | 50x1 x20 rec | legacy direct | 6827 | +13.2 | 1000 |
 | same | **livefeed** | **6335** | **+7.8** | 1000 |
-| 4x25 x10 rec | legacy hub | 234 | +1.9 | 1000 |
-| same | **livefeed** | 333 | **+1.2** | 1000 |
+| 4x25 x10 rec | legacy hub | 254-268 | +1.6-2.5 | 1000 |
+| same | **livefeed** | **330-358** | **+1.1-1.7** | 1000 |
 
 Read-out:
 - SINGLETON: livefeed −7% wall / −28% RSS vs legacy direct — the
   protect-the-singleton property holds with NO promotion threshold.
-- FANOUT micro-burst: +42% wall on a 100-delivery burst dominated by
-  wake/scheduling overheads (double-park cycle); RSS already lower.
-  OPEN OPTIMIZATION before deleting legacy: contended drivers park
-  instead of yield-spinning; batch status suppression.
+- FANOUT micro-burst: after the contended-park fix (losers fall
+  straight to the version park; no yield-spin round) livefeed sits
+  ~25% above legacy hub on this tiny burst (330 vs 254ms; RSS LOWER).
+  The residual is per-session scheduling overhead of the cooperative
+  driver vs a dedicated pump task. OPEN OPTIMIZATION: hybrid driver —
+  spawn a dedicated reader task ONLY while subscribers >= 2 (shared
+  streams are few by definition; singletons stay task-free).
 - Efficiency invariant asserted: exactly ONE source read per append
   window regardless of subscriber count.
 - Field-scale numbers come from bench/sse-probes/sse-matched-loaded.sh

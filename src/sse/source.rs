@@ -5,12 +5,15 @@
 use super::feed::FeedSourceRead;
 use crate::registry::StreamDesc;
 use crate::shard::{ShardEngine, StreamHandle};
-use bytes::Bytes;
+use bytes::{Bytes, BytesMut};
 use std::sync::Arc;
 
 pub(crate) struct SingleSource {
     pub(crate) state: Arc<crate::http::AppState>,
     pub(crate) rk_filter: Option<String>,
+    /// True when this feed serves the RAW singular surface (scalar
+    /// control vocabulary).
+    pub(crate) raw_surface: bool,
     pub(crate) desc: StreamDesc,
     pub(crate) key: crate::crypto::StreamKey,
     pub(crate) epoch: [u8; 16],
@@ -65,8 +68,31 @@ impl FeedSourceRead for SingleSource {
         &self.desc
     }
 
-    fn prepare_data(&self, rec: &crate::http::PlainRec) -> Bytes {
-        Bytes::from(crate::sse::wire::sse_data_event(&self.desc, &rec.payload))
+    fn frame(&self, rec: &crate::http::PlainRec, up_to_date: bool, sealed: bool) -> Bytes {
+        let data = crate::sse::wire::sse_data_event(&self.desc, &rec.payload);
+        let next = rec.off + 1;
+        // Default-key lane on the RAW singular surface folds the raw
+        // scalar vocabulary; product lanes fold signed key cursors.
+        let ctl = if self.raw_surface {
+            crate::sse::wire::sse_control(next, None, up_to_date, sealed)
+        } else {
+            let tok = crate::product_cursor::KeyCursor {
+                epoch: self.epoch,
+                key_hash: crate::crypto::stream_hash(self.rk_filter.as_deref().unwrap_or("")),
+                seg_id: self.desc.resolve_segment("").seg_id,
+                offset: next,
+            }
+            .encode(&self.desc.project_id, &self.key);
+            crate::sse::wire::sse_control_product(&tok, up_to_date, sealed)
+        };
+        let mut out = BytesMut::with_capacity(data.len() + ctl.len());
+        out.extend_from_slice(data.as_bytes());
+        out.extend_from_slice(ctl.as_bytes());
+        out.freeze()
+    }
+
+    fn ctl_next(&self, rec: &crate::http::PlainRec) -> u64 {
+        rec.off + 1
     }
 
     fn advance_notify(&self) -> &tokio::sync::Notify {

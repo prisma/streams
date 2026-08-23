@@ -1,31 +1,26 @@
 //! LiveFeed — the one per-stream subscription engine (LIVE-FEED).
 //! Replaces the direct reader and the LiveHub pump with a single
-//! implementation whose only variable is retention:
+//! implementation whose only variable is retention and WHO reads:
 //!
-//! * NO pump task. One session at a time holds the driver permit
-//!   (`drive_once`), reads one bounded source batch, formats each
-//!   payload event once, publishes to the shared ring (or hands the
-//!   batch straight back in solo mode), and releases the permit
-//!   BEFORE any socket write.
-//! * Retention: zero while a single subscriber is attached; a bounded
-//!   shared ring once two or more are.
-//! * Wakeups ride a `watch` generation plus the source's durable
-//!   advance notify — an append committing between a session's check
-//!   and its park can never be missed.
+//! * SOLO (one subscriber): no background task. The session parks on
+//!   the source's durable advance notify and drives its own reads —
+//!   zero retained state, zero extra tasks for thousands of singleton
+//!   feeds.
+//! * SHARED (two or more): a single driver task owns reading; it
+//!   formats each payload frame once into a bounded shared ring and
+//!   every session consumes from it, waking ONCE per window on the
+//!   version bump (scheduling parity with the legacy hub pump).
 //!
-//! The feed tracks the LIVE TAIL of its lane; a subscriber connecting
-//! behind it performs private durable catch-up (lag contract,
-//! docs/LIVE-FEED.md).
+//! Wakeups ride a `watch` generation plus the source's durable advance
+//! notify — nothing can be lost between a session's state check and
+//! its park.
 
 use bytes::Bytes;
 use std::collections::VecDeque;
 use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 use std::sync::{Arc, Mutex};
 
-/// Identity of a feed: the stream INCARNATION plus the selector lane.
-/// Delete/recreate mints a new epoch and therefore a new feed. Raw and
-/// product subscribers share the default-key data lane (`""`); a keyed
-/// product subscriber forms its own lane.
+/// Identity of a feed: stream incarnation + selector lane.
 #[derive(Clone, PartialEq, Eq, Hash)]
 pub(crate) struct FeedKey {
     pub(crate) identity: [u8; 16],
@@ -33,15 +28,12 @@ pub(crate) struct FeedKey {
 }
 
 impl FeedKey {
-    /// The default-key lane — shared by raw SSE and unfiltered product
-    /// SSE (the raw singular route IS the default-key stream).
     pub(crate) fn default_lane(identity: [u8; 16]) -> Self {
         Self {
             identity,
             selector: crate::crypto::stream_hash(""),
         }
     }
-    /// A keyed product lane for one routing key.
     pub(crate) fn keyed(identity: [u8; 16], rk: &str) -> Self {
         Self {
             identity,
@@ -50,13 +42,14 @@ impl FeedKey {
     }
 }
 
-/// One prepared record: the DATA event formatted ONCE per lane.
-/// Sessions compose their own surface control around it (one chunk on
-/// the wire after a small local concat).
+/// One prepared record. `data_event` is the SHAREABLE wire frame
+/// (data + lane cursor control folded); sessions send it as-is.
 pub(crate) struct PreparedRecord {
     pub(crate) offset: u64,
     pub(crate) data_event: Bytes,
     pub(crate) payload_len: u32,
+    /// This frame carried THE terminal sealed control.
+    pub(crate) sealed: bool,
 }
 
 pub(crate) struct PreparedBatch {
@@ -66,25 +59,22 @@ pub(crate) struct PreparedBatch {
     pub(crate) charge: usize,
 }
 
-/// Where reads come from. Implementations cover single-segment
-/// (default + keyed lanes), forks (stitched), and lineages (segment
-/// traversal with refresh).
 #[async_trait::async_trait]
 pub(crate) trait FeedSourceRead: Send + Sync {
-    /// Read up to `max_bytes` from the CURRENT segment position.
-    /// Returns records in order plus whether THIS call reached the end
-    /// of everything this source currently serves.
     async fn read(
         &self,
         from: u64,
         max_bytes: usize,
     ) -> anyhow::Result<(Vec<crate::http::PlainRec>, bool)>;
-    /// Durable frontier (next offset) of the current position.
     fn frontier(&self) -> u64;
-    /// Whether the served sequence is CLOSED for appends right now.
     fn closed(&self) -> bool;
     fn desc(&self) -> &crate::registry::StreamDesc;
-    fn prepare_data(&self, rec: &crate::http::PlainRec) -> Bytes;
+    /// Compose the SHAREABLE frame for one record: data event plus this
+    /// lane's cursor control folded (identical for every subscriber of
+    /// the feed). upToDate/sealed are lane-global facts supplied by the
+    /// feed at publish time; per-session statuses stay separate.
+    fn frame(&self, rec: &crate::http::PlainRec, up_to_date: bool, sealed: bool) -> Bytes;
+    fn ctl_next(&self, rec: &crate::http::PlainRec) -> u64;
     fn advance_notify(&self) -> &tokio::sync::Notify;
 }
 
@@ -110,7 +100,7 @@ struct FeedState {
 
 pub(crate) struct LiveFeed {
     key: FeedKey,
-    src: Arc<dyn FeedSourceRead>,
+    src: std::sync::RwLock<Arc<dyn FeedSourceRead>>,
     st: Mutex<FeedState>,
     changed: tokio::sync::watch::Sender<u64>,
     driving: AtomicBool,
@@ -118,6 +108,7 @@ pub(crate) struct LiveFeed {
     retained_charge: AtomicUsize,
     source_reads: AtomicU64,
     ring_budget: usize,
+    driver_abort: Mutex<Option<tokio::task::AbortHandle>>,
 }
 
 const MAX_DRIVER_BATCH_BYTES: usize = 256 * 1024;
@@ -128,7 +119,7 @@ impl LiveFeed {
         let (changed, _) = tokio::sync::watch::channel(0u64);
         Arc::new(Self {
             key,
-            src,
+            src: std::sync::RwLock::new(src),
             st: Mutex::new(FeedState {
                 head,
                 floor: head,
@@ -143,34 +134,96 @@ impl LiveFeed {
             retained_charge: AtomicUsize::new(0),
             source_reads: AtomicU64::new(0),
             ring_budget,
+            driver_abort: Mutex::new(None),
         })
     }
 
-    pub(crate) fn join(&self) -> (u64, tokio::sync::watch::Receiver<u64>) {
-        self.subscribers.fetch_add(1, Ordering::SeqCst);
-        let rx = self.changed.subscribe();
-        let head = self.st.lock().unwrap().head;
-        (head, rx)
-    }
-
-    pub(crate) fn leave(&self) {
-        self.subscribers.fetch_sub(1, Ordering::SeqCst);
+    fn current_source(&self) -> Arc<dyn FeedSourceRead> {
+        let guard = self.src.read().unwrap();
+        guard.clone()
     }
 
     pub(crate) fn subscriber_count(&self) -> u64 {
         self.subscribers.load(Ordering::SeqCst)
     }
 
+    #[cfg(test)]
     pub(crate) fn source_read_count(&self) -> u64 {
         self.source_reads.load(Ordering::Relaxed)
     }
 
+    #[cfg(test)]
     pub(crate) fn retained(&self) -> usize {
         self.retained_charge.load(Ordering::Relaxed)
     }
 
-    /// Consume retained records at/after `cursor`. `Lagged` = below
-    /// floor → disconnect-and-resume per the lag contract.
+    /// Attach. Spawns the SHARED driver when the crowd reaches two;
+    /// solo attachments never spawn anything.
+    pub(crate) fn join(self: &Arc<Self>) -> (u64, tokio::sync::watch::Receiver<u64>) {
+        let n = self.subscribers.fetch_add(1, Ordering::SeqCst) + 1;
+        if n == 2 {
+            self.spawn_shared_driver();
+        }
+        let rx = self.changed.subscribe();
+        let head = self.st.lock().unwrap().head;
+        (head, rx)
+    }
+
+    pub(crate) fn leave(&self) {
+        let prev = self.subscribers.fetch_sub(1, Ordering::SeqCst);
+        // Crowd dropped below two: the shared driver is no longer
+        // needed (a remaining solo session self-drives off the source
+        // notify directly).
+        if prev <= 2 {
+            if let Some(h) = self.driver_abort.lock().unwrap().take() {
+                h.abort();
+            }
+        }
+    }
+
+    /// SHARED-mode driver: the only reader while fanned out. Woken by
+    /// the current source's durable advance; aborted when the crowd
+    /// drops back below two.
+    fn spawn_shared_driver(self: &Arc<Self>) {
+        let this = Arc::clone(self);
+        let handle = tokio::spawn(async move {
+            loop {
+                if this.subscriber_count() < 2 {
+                    break;
+                }
+                // Drive whatever is durable right now (no-op when the
+                // previous pass already drained to the frontier).
+                let _ = this.drive_once().await;
+                let src = this.current_source();
+                let n = src.advance_notify().notified();
+                let repoll = async {
+                    loop {
+                        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                    }
+                };
+                tokio::select! {
+                    _ = n => {}
+                    _ = repoll => {}
+                }
+            }
+        });
+        *self.driver_abort.lock().unwrap() = Some(handle.abort_handle());
+    }
+
+    /// Owned future parking on the CURRENT source's durable advance —
+    /// the solo session's wake (no driver task exists in solo mode).
+    pub(crate) fn park_advance(
+        &self,
+    ) -> std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>> {
+        let src = self.current_source();
+        Box::pin(async move {
+            let n = src.advance_notify().notified();
+            n.await;
+        })
+    }
+
+    /// Consume retained records at/after `cursor`. Lagged = below floor
+    /// → disconnect-and-resume per the lag contract.
     pub(crate) fn take_visible(&self, cursor: u64) -> Take {
         let st = self.st.lock().unwrap();
         if cursor < st.floor {
@@ -183,7 +236,7 @@ impl LiveFeed {
                 continue;
             }
             for r in b.records.iter().filter(|r| r.offset >= cursor) {
-                out.push((r.offset, r.data_event.clone(), r.payload_len));
+                out.push((r.offset, r.data_event.clone(), r.payload_len, r.sealed));
                 next = next.max(r.offset + 1);
             }
         }
@@ -214,15 +267,11 @@ impl LiveFeed {
         PermitGuard(self)
     }
 
-    #[cfg(test)]
-    pub(crate) fn permit_held(&self) -> bool {
-        self.driving.load(Ordering::SeqCst)
-    }
-
     async fn drive_under_permit(&self) -> DriveOutcome {
+        let src = self.current_source();
         let head = self.st.lock().unwrap().head;
-        if head >= self.src.frontier() {
-            if self.src.closed() {
+        if head >= src.frontier() {
+            if src.closed() && st_lifecycle_active(&self.st) {
                 let mut st = self.st.lock().unwrap();
                 if st.lifecycle == Lifecycle::Active {
                     st.lifecycle = Lifecycle::Closed;
@@ -234,7 +283,7 @@ impl LiveFeed {
             return DriveOutcome::Idle;
         }
         self.source_reads.fetch_add(1, Ordering::Relaxed);
-        let outcome = self.read_and_publish(head).await;
+        let outcome = self.read_and_publish(&src, head).await;
         let ver = {
             let mut st = self.st.lock().unwrap();
             st.version += 1;
@@ -244,20 +293,29 @@ impl LiveFeed {
         outcome
     }
 
-    async fn read_and_publish(&self, head: u64) -> DriveOutcome {
-        let (recs, _) = match self.src.read(head, MAX_DRIVER_BATCH_BYTES).await {
+    async fn read_and_publish(&self, src: &Arc<dyn FeedSourceRead>, head: u64) -> DriveOutcome {
+        let (recs, _) = match src.read(head, MAX_DRIVER_BATCH_BYTES).await {
             Ok(x) => x,
             Err(_) => return DriveOutcome::SourceFailed,
         };
         let scan_from = head;
-        let mut prepared: Vec<PreparedRecord> = Vec::with_capacity(recs.len());
+        // Lane-global flag facts captured ONCE per batch: a scan whose
+        // LAST record reaches the durable end of an OPEN stream marks
+        // its final frame upToDate; a CLOSED stream marks it sealed.
+        let end_after = src.frontier();
+        let closed_now = src.closed();
+        let n = recs.len();
+        let mut prepared: Vec<PreparedRecord> = Vec::with_capacity(n);
         let mut last = scan_from;
-        for r in &recs {
+        for (i, r) in recs.iter().enumerate() {
             last = last.max(r.off + 1);
+            let flagged = i + 1 == n && r.off + 1 >= end_after;
+            let sealed_i = flagged && closed_now;
             prepared.push(PreparedRecord {
                 offset: r.off,
-                data_event: self.src.prepare_data(r),
+                data_event: src.frame(r, flagged, sealed_i),
                 payload_len: r.payload.len() as u32,
+                sealed: sealed_i,
             });
         }
         let solo = self.subscribers.load(Ordering::Relaxed) <= 1;
@@ -289,6 +347,10 @@ impl LiveFeed {
     }
 }
 
+fn st_lifecycle_active(st: &Mutex<FeedState>) -> bool {
+    st.lock().unwrap().lifecycle == Lifecycle::Active
+}
+
 #[cfg(test)]
 pub(crate) struct PermitGuard<'a>(&'a LiveFeed);
 #[cfg(test)]
@@ -301,7 +363,7 @@ impl Drop for PermitGuard<'_> {
 #[derive(Debug)]
 pub(crate) enum Take {
     Records {
-        records: Vec<(u64, Bytes, u32)>,
+        records: Vec<(u64, Bytes, u32, bool)>,
         next: u64,
     },
     AtHead,
@@ -311,22 +373,10 @@ pub(crate) enum Take {
 }
 
 pub(crate) enum DriveOutcome {
-    /// Zero retention: the batch belongs to the driving session.
+    /// Zero retention: these records belong to the driving session.
     Solo(Vec<PreparedRecord>),
     Published,
     Idle,
     Closed,
     SourceFailed,
-}
-
-impl std::fmt::Debug for DriveOutcome {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.write_str(match self {
-            Self::Solo(_) => "Solo(..)",
-            Self::Published => "Published",
-            Self::Idle => "Idle",
-            Self::Closed => "Closed",
-            Self::SourceFailed => "SourceFailed",
-        })
-    }
 }

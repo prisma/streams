@@ -112,6 +112,7 @@ pub(crate) async fn serve(
     let lane_rk = rk_filter.unwrap_or_default();
     let seg_id = desc.resolve_segment(&lane_rk).seg_id;
     let identity = desc.dynamic_segment_identity(seg_id);
+    let raw_scalar = surface == crate::http::SseSurface::Raw;
     let src = Arc::new(SingleSource {
         state: state.clone(),
         desc: desc.clone(),
@@ -120,6 +121,7 @@ pub(crate) async fn serve(
         engine: engine.clone(),
         handle: handle.clone(),
         rk_filter: Some(lane_rk.clone()),
+        raw_surface: raw_scalar,
     });
     let feed = state
         .live_feeds
@@ -184,8 +186,7 @@ pub(crate) async fn serve(
                     let n = recs.len();
                     for (i, r) in recs.iter().enumerate() {
                         let last_of_window = i + 1 == n && cursor.max(r.off + 1) >= src.frontier();
-                        let frame =
-                            ctx.compose(&src.prepare_data(r), r.off + 1, last_of_window, false);
+                        let frame = src.frame(r, last_of_window, false);
                         if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
                             return;
                         }
@@ -210,6 +211,14 @@ pub(crate) async fn serve(
             if lease_watch.revoked(&task_state) {
                 return;
             }
+            // Register wakeups at LOOP TOP: every state read below is
+            // covered — an append committing anywhere inside this
+            // iteration fires src_wait, and any driver publication
+            // fires ver_wait. No notify can be lost between the state
+            // snapshot and the park.
+            let mut ver_rx2 = ver_rx.clone();
+            let mut ver_wait = Box::pin(wait_version(&mut ver_rx2));
+            let mut src_wait = Box::pin(src.advance_notify().notified());
             match feed.take_visible(cursor) {
                 Take::Lagged { floor } => {
                     tracing::warn!(
@@ -220,13 +229,14 @@ pub(crate) async fn serve(
                     return;
                 }
                 Take::Records { records, next } => {
-                    let drained = next >= src.frontier() && src.closed();
-                    let n = records.len();
-                    for (i, (off, data, plen)) in records.iter().enumerate() {
-                        let last = i + 1 == n && drained;
-                        let frame = ctx.compose(data, off + 1, last, last);
-                        if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
+                    // Frames arrive PRE-COMPOSED (lane-global flags
+                    // folded at publish time).
+                    for (_off, data, plen, sealed) in &records {
+                        if !sse_send(&tx, data.clone()).await || lease_watch.revoked(&task_state) {
                             return;
+                        }
+                        if *sealed {
+                            return; // THE terminal control rode this frame
                         }
                         crate::sse::auth::sse_stats::DELIVERED_RECORDS
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
@@ -267,24 +277,23 @@ pub(crate) async fn serve(
                 need_status = true;
             }
 
-            // Register wakeups BEFORE the frontier check: an append
-            // committing between check and park must not be missed.
-            let mut ver_rx2 = ver_rx.clone();
-            let ver_wait = wait_version(&mut ver_rx2);
-            let src_wait = src.advance_notify().notified();
+            // Need progress? Drive. A CONTENDED caller falls straight
+            // through to the park below (waits registered at loop top):
+            // the permit holder publishes and bumps the version we are
+            // already waiting on — yield-spinning a full extra
+            // iteration per loser was the fanout micro-burst regression
+            // (follow-up review optimization item).
             if cursor < frontier {
-                drop(ver_wait);
-                drop(src_wait);
                 match feed.drive_once().await {
                     // SOLO retention: these records belong to THIS
                     // driver — consume them directly.
                     Some(DriveOutcome::Solo(records)) => {
                         let frontier_now = src.frontier();
                         let closed_now = src.closed();
-                        for r in records.iter().filter(|r| r.offset >= cursor) {
-                            let last = closed_now && r.offset + 1 >= frontier_now;
-                            let frame = ctx.compose(&r.data_event, r.offset + 1, last, last);
-                            if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
+                        for r in records.iter() {
+                            if !sse_send(&tx, r.data_event.clone()).await
+                                || lease_watch.revoked(&task_state)
+                            {
                                 return;
                             }
                             crate::sse::auth::sse_stats::DELIVERED_RECORDS
@@ -306,19 +315,16 @@ pub(crate) async fn serve(
                     Some(_) => {
                         continue;
                     }
-                    None => {
-                        // Another session holds the permit; its
-                        // publication wakes us on the version watch.
-                        tokio::task::yield_now().await;
-                        continue;
-                    }
+                    // Contended: park; the winner's publication bumps
+                    // ver_wait (registered at loop top).
+                    None => {}
                 }
             }
             // Park: durable advance, feed publication, heartbeat,
             // lease deadline, client disconnect.
             tokio::select! {
-                _ = ver_wait => {}
-                _ = src_wait => {}
+                _ = &mut ver_wait => {}
+                _ = &mut src_wait => {}
                 _ = tx.closed() => {
                     crate::sse::auth::sse_stats::DISCONNECT_CLIENT_CLOSED
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
