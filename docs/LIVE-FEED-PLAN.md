@@ -88,12 +88,18 @@ FINDINGS (each found red by these legs):
 - [x] Legacy hub/direct selection retained untouched for `legacy`.
 
 
-## Stage 4..7 — Selectors, forks, lineage, full cutover — STATUS: PENDING
+## Stage 4 — Selectors — STATUS: DONE
 
-Selector-in-FeedKey groundwork is already in place (Stage 2 types);
-fork/lineage sources wrap `read_stitched`/lineage traversal. These
-stages follow the same pattern: source adapter + red tests + cutover +
-legacy deletion, one commit family each.
+FeedKey = (segment identity, selector hash). Product keyed lanes ride
+their own feed; foreign-key-only windows advance the cursor without
+delivering. Red leg green: interleaved ka/kb traffic — keyed
+subscribers see exactly their three records, share one lane, and never
+see foreign keys.
+
+FINDING: raw SSE is pinned to the default-key lane at the singular
+route (`params.key` forced to Some("")), so raw and unfiltered product
+SSE share ONE feed — the plan's shared-lane property falls out of the
+existing route contracts rather than needing a new abstraction.
 
 ## Stage 8 — Field validation — STATUS: PENDING
 

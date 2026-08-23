@@ -10,6 +10,7 @@ use std::sync::Arc;
 
 pub(crate) struct SingleSource {
     pub(crate) state: Arc<crate::http::AppState>,
+    pub(crate) rk_filter: Option<String>,
     pub(crate) desc: StreamDesc,
     pub(crate) key: crate::crypto::StreamKey,
     pub(crate) epoch: [u8; 16],
@@ -34,7 +35,7 @@ impl FeedSourceRead for SingleSource {
             &self.handle,
             &self.engine,
             from,
-            None, // default-key lane only in v0
+            self.rk_filter.as_deref(),
             max_bytes,
             crate::shard::Deliver::Durable,
         )
@@ -57,16 +58,6 @@ impl FeedSourceRead for SingleSource {
 
     fn prepare_data(&self, rec: &crate::http::PlainRec) -> Bytes {
         Bytes::from(crate::sse::wire::sse_data_event(&self.desc, &rec.payload))
-    }
-
-    fn ctl_token(&self, offset_after: u64) -> String {
-        crate::product_cursor::KeyCursor {
-            epoch: self.epoch,
-            key_hash: crate::crypto::stream_hash(""),
-            seg_id: self.desc.resolve_segment("").seg_id,
-            offset: offset_after,
-        }
-        .encode(&self.desc.project_id, &self.key)
     }
 
     fn advance_notify(&self) -> &tokio::sync::Notify {

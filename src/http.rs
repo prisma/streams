@@ -7707,16 +7707,24 @@ async fn sse_response(
         Ok(s) => s,
         Err(r) => return *r,
     };
-    // LIVE-FEED Stage 3: the transition engine for the eligible shape.
+    // LIVE-FEED Stage 3+: the transition engine. v0 scope is the
+    // product surface on single-segment streams — default-key and
+    // keyed lanes both ride it; forks and lineages join in Stage 5/6.
     if state
         .sse_engine_livefeed
         .load(std::sync::atomic::Ordering::Relaxed)
         && surface == SseSurface::Product
         && desc.forked_from.is_none()
-        && params.key.as_deref().is_none_or(str::is_empty)
+        && desc
+            .segments
+            .as_ref()
+            .is_none_or(|m| m.segments.len() <= 1 && m.pending.is_none())
     {
-        return crate::sse::session::serve(state, desc, key, epoch, handle, engine, start, params)
-            .await;
+        let rk_filter = params.key.clone();
+        return crate::sse::session::serve(
+            state, desc, key, epoch, handle, engine, start, params, rk_filter,
+        )
+        .await;
     }
     // #268: shared live fanout (SSE_LIVE_HUB=1) — see src/livehub.rs.
     // Product-surface, unforked, unfiltered connections ride a

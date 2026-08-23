@@ -33511,7 +33511,7 @@ async fn livefeed_two_subscribers_share_one_feed_and_one_source_read() {
         .await
         .unwrap()
         .unwrap();
-    let key = crate::sse::feed::FeedKey::of(
+    let key = crate::sse::feed::FeedKey::default_lane(
         desc.dynamic_segment_identity(desc.resolve_segment("").seg_id),
     );
     let feed = state
@@ -33739,4 +33739,81 @@ async fn bench_sse_singleton_and_fanout_both_engines() {
              feeds_or_hubs={feeds} conns={conns}"
         );
     }
+}
+
+/// Stage 4: KEYED lanes. A routing-key-filtered subscriber on a
+/// single-segment stream rides its own LiveFeed lane: it receives only
+/// its key's records, foreign-key-only windows advance the cursor, and
+/// two subscribers of the same key share one preparation.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_keyed_lane_scopes_records_and_shares_preparation() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lfk",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+
+    // Two subscribers on key ka; the stream also receives kb traffic.
+    let mut s1 = lf_connect(addr, "lfk", "?routingKey=ka").await;
+    let (_, _) = hub_sse_collect(&mut s1, 8, |t| t.contains("upToDate")).await;
+    let mut s2 = lf_connect(addr, "lfk", "?routingKey=ka").await;
+    let (_, _) = hub_sse_collect(&mut s2, 8, |t| t.contains("upToDate")).await;
+
+    // Interleaved appends across BOTH keys.
+    for i in 0..6u64 {
+        let k = if i % 2 == 0 { "ka" } else { "kb" };
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/lfk/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", k),
+            ],
+            format!(r#"{{"k":"{k}","i":{i}}}"#).as_bytes(),
+        )
+        .await;
+        assert!(st == 200 || st == 204, "append {k}/{i}: {st}");
+    }
+
+    let (r1, _) = hub_sse_collect(&mut s1, 10, |t| t.matches("\"k\":\"ka\"").count() >= 3).await;
+    let (r2, _) = hub_sse_collect(&mut s2, 10, |t| t.matches("\"k\":\"ka\"").count() >= 3).await;
+    for r in [&r1, &r2] {
+        assert_eq!(
+            r.matches("\"k\":\"ka\"").count(),
+            3,
+            "exactly the three ka records:\n{r}"
+        );
+        assert!(
+            !r.contains("\"k\":\"kb\""),
+            "a keyed subscriber must not receive foreign-key records:\n{r}"
+        );
+    }
+
+    // One keyed lane feed, shared by both subscribers.
+    state.registry.invalidate(&state.raw_adapter_sref("lfk"));
+    let desc = state
+        .registry
+        .get(&state.raw_adapter_sref("lfk"))
+        .await
+        .unwrap()
+        .unwrap();
+    let key = crate::sse::feed::FeedKey::keyed(
+        desc.dynamic_segment_identity(desc.resolve_segment("").seg_id),
+        "ka",
+    );
+    let feed = state
+        .live_feeds
+        .feed_for_test(&key)
+        .expect("keyed lane feed exists");
+    assert_eq!(feed.subscriber_count(), 2);
 }

@@ -1,12 +1,17 @@
-//! The single SSE session over a LiveFeed (LIVE-FEED Stage 3).
+//! The single SSE session over a LiveFeed (LIVE-FEED Stage 3+).
 //!
 //! One state machine serves every concurrency level. Phases:
 //!
 //!   A  INITIAL CATCH-UP — the session reads durable history for its
 //!      own cursor directly (allowed from any cursor on CONNECT).
 //!   B  LIVE — shared consumption: `take_visible` serves prepared
-//!      bytes; when progress is needed the session attempts
+//!      data events; when progress is needed the session attempts
 //!      `drive_once`; contended sessions park on the version watch.
+//!
+//! Framing: the feed prepares DATA events once per lane; each session
+//! composes its own surface control onto them (one chunk on the wire)
+//! and folds lane-global `upToDate`/`sealed` facts into the batch-last
+//! frame exactly like the legacy direct producer did.
 //!
 //! Lag contract: a session that has reached live and later falls
 //! below the retention floor disconnects (typed), it never becomes a
@@ -14,36 +19,48 @@
 
 use super::auth::{GatedSseBody, LeaseWatch, SseLease};
 use super::feed::{DriveOutcome, FeedKey, FeedSourceRead, LiveFeed, Take};
-use super::registry::FeedRegistry;
 use super::source::SingleSource;
-use crate::http::{AppState, PlainRec, ReadParams, SseSlot, sse_acquire, sse_heartbeat, sse_send};
-use bytes::Bytes;
+use crate::http::{AppState, ReadParams, SseSlot, sse_acquire, sse_heartbeat, sse_send};
+use bytes::{Bytes, BytesMut};
 use std::sync::Arc;
 
+/// Per-session wire context. v0 serves the product surface; raw
+/// vocabulary joins through the same composition point.
+#[derive(Clone)]
 pub(crate) struct SessionCtx {
-    pub(crate) desc: crate::registry::StreamDesc,
-    pub(crate) key: crate::crypto::StreamKey,
-    pub(crate) epoch: [u8; 16],
-    pub(crate) rk_hash: [u8; 16],
-    pub(crate) seg_id: u32,
+    desc: crate::registry::StreamDesc,
+    key: crate::crypto::StreamKey,
+    epoch: [u8; 16],
+    rk_hash: [u8; 16],
+    seg_id: u32,
 }
 
-fn product_ctl(ctx: &SessionCtx, offset: u64, up_to_date: bool, sealed: bool) -> Bytes {
-    let tok = crate::product_cursor::KeyCursor {
-        epoch: ctx.epoch,
-        key_hash: ctx.rk_hash,
-        seg_id: ctx.seg_id,
-        offset,
+impl SessionCtx {
+    fn ctl(&self, offset_after: u64, up_to_date: bool, sealed: bool) -> Bytes {
+        let tok = crate::product_cursor::KeyCursor {
+            epoch: self.epoch,
+            key_hash: self.rk_hash,
+            seg_id: self.seg_id,
+            offset: offset_after,
+        }
+        .encode(&self.desc.project_id, &self.key);
+        Bytes::from(crate::sse::wire::sse_control_product(
+            &tok, up_to_date, sealed,
+        ))
     }
-    .encode(&ctx.desc.project_id, &ctx.key);
-    Bytes::from(crate::sse::wire::sse_control_product(
-        &tok, up_to_date, sealed,
-    ))
+
+    /// Shared data event + this session's control = ONE frame.
+    fn compose(&self, data: &Bytes, offset_after: u64, up_to_date: bool, sealed: bool) -> Bytes {
+        let ctl = self.ctl(offset_after, up_to_date, sealed);
+        let mut out = BytesMut::with_capacity(data.len() + ctl.len());
+        out.extend_from_slice(data);
+        out.extend_from_slice(&ctl);
+        out.freeze()
+    }
 }
 
 /// Entry point replacing sse_response/sse_hub_response for the
-/// eligible shape (product, unforked, default-key lane, one segment)
-/// when the instance runs the livefeed engine.
+/// eligible shape when the instance runs the livefeed engine.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve(
     state: Arc<AppState>,
@@ -54,6 +71,7 @@ pub(crate) async fn serve(
     engine: Arc<crate::shard::ShardEngine>,
     start: crate::http::StartPos,
     params: ReadParams,
+    rk_filter: Option<String>,
 ) -> axum::response::Response {
     let slot: SseSlot = match sse_acquire(&state) {
         Ok(s) => s,
@@ -69,23 +87,27 @@ pub(crate) async fn serve(
         Err(reason) => return super::auth::lease_refusal_response(reason),
     };
 
-    let seg_id = desc.resolve_segment("").seg_id;
+    let lane_rk = rk_filter.unwrap_or_default();
+    let seg_id = desc.resolve_segment(&lane_rk).seg_id;
     let identity = desc.dynamic_segment_identity(seg_id);
     let src = Arc::new(SingleSource {
         state: state.clone(),
         desc: desc.clone(),
         key: key.clone(),
         epoch,
-        engine,
-        handle,
+        engine: engine.clone(),
+        handle: handle.clone(),
+        rk_filter: Some(lane_rk.clone()),
     });
-    let feed = state.live_feeds.get_or_create(FeedKey::of(identity), || {
-        LiveFeed::new(
-            FeedKey::of(identity),
-            src.clone(),
-            crate::livehub::hub_ring_bytes(),
-        )
-    });
+    let feed = state
+        .live_feeds
+        .get_or_create(FeedKey::keyed(identity, &lane_rk), || {
+            LiveFeed::new(
+                FeedKey::keyed(identity, &lane_rk),
+                src.clone(),
+                crate::livehub::hub_ring_bytes(),
+            )
+        });
     let (join_head, ver_rx) = feed.join();
 
     let mut cursor = match start {
@@ -94,9 +116,9 @@ pub(crate) async fn serve(
     };
 
     let ctx = SessionCtx {
-        rk_hash: crate::crypto::stream_hash(""),
+        rk_hash: crate::crypto::stream_hash(&lane_rk),
         epoch,
-        key,
+        key: key.clone(),
         seg_id,
         desc: desc.clone(),
     };
@@ -108,35 +130,37 @@ pub(crate) async fn serve(
 
     let task_state = state.clone();
     let task_desc = desc.clone();
-    let task_params_lease = SseLease::of(&params);
+    let task_lease = SseLease::of(&params);
     tokio::spawn(async move {
         // Producer-side watch: same exactly-once termination record as
         // the body gate; a lease already dead here never schedules.
-        let mut lease_watch = match LeaseWatch::new_checked(&task_state, task_params_lease, term) {
+        let mut lease_watch = match LeaseWatch::new_checked(&task_state, task_lease, term) {
             Ok(w) => w,
             Err(_) => {
                 feed.leave();
                 task_state
                     .live_feeds
-                    .evict_if_unsubscribed(&FeedKey::of(identity));
+                    .evict_if_unsubscribed(&FeedKey::keyed(identity, &lane_rk));
                 return;
             }
         };
         let sref = task_desc.sref();
+        let mut need_status = true;
+        let mut emitted_closed = false;
+
         // PHASE A: initial catch-up from the connecting cursor.
-        while cursor < join_head.max(src.frontier()) && !src.closed() || cursor < join_head {
+        while cursor < join_head.max(src.frontier()) {
             if lease_watch.revoked(&task_state) {
                 return;
             }
             match src.read(cursor, 1024 * 1024).await {
                 Ok((recs, _)) if !recs.is_empty() => {
-                    for r in &recs {
-                        let data =
-                            Bytes::from(crate::sse::wire::sse_data_event(&task_desc, &r.payload));
-                        if !sse_send(&tx, data).await || lease_watch.revoked(&task_state) {
-                            return;
-                        }
-                        if !sse_send(&tx, product_ctl(&ctx, r.off + 1, false, false)).await {
+                    let n = recs.len();
+                    for (i, r) in recs.iter().enumerate() {
+                        let last_of_window = i + 1 == n && cursor.max(r.off + 1) >= src.frontier();
+                        let frame =
+                            ctx.compose(&src.prepare_data(r), r.off + 1, last_of_window, false);
+                        if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
                             return;
                         }
                         crate::sse::auth::sse_stats::DELIVERED_RECORDS
@@ -153,11 +177,9 @@ pub(crate) async fn serve(
                 _ => break,
             }
         }
+
         // PHASE B: shared live consumption.
         let mut ver_rx = ver_rx;
-        let mut need_status = true;
-        let mut emitted_closed = false;
-        let mut emitted_closed = false;
         loop {
             if lease_watch.revoked(&task_state) {
                 return;
@@ -172,8 +194,12 @@ pub(crate) async fn serve(
                     return;
                 }
                 Take::Records { records, next } => {
-                    for (off, frame, plen, sealed) in &records {
-                        if !sse_send(&tx, frame.clone()).await || lease_watch.revoked(&task_state) {
+                    let drained = next >= src.frontier() && src.closed();
+                    let n = records.len();
+                    for (i, (off, data, plen)) in records.iter().enumerate() {
+                        let last = i + 1 == n && drained;
+                        let frame = ctx.compose(data, off + 1, last, last);
+                        if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
                             return;
                         }
                         crate::sse::auth::sse_stats::DELIVERED_RECORDS
@@ -184,60 +210,55 @@ pub(crate) async fn serve(
                             u64::from(*plen),
                             1,
                         );
-                        if *sealed {
-                            return; // the terminal control rode this frame
-                        }
                     }
                     cursor = next;
                     need_status = false;
                 }
-                Take::AtHead { .. } => {}
+                Take::AtHead => {}
             }
-            // Empty-drain statuses: connect-at-tail answers ONE
-            // upToDate control; a closure flip MUST re-report even
-            // without new records — it is what turns "upToDate" into
-            // the one sealed terminal. Record-bearing batches carry
-            // their lane-global flags INSIDE the prepared frame.
+            // Status decision against the DURABLE frontier at send
+            // time. A closure flip re-opens the emission even with no
+            // new records — that is what turns "upToDate" into the one
+            // sealed terminal.
             let frontier = src.frontier();
             let closed = src.closed();
             if cursor >= frontier {
-                if need_status || closed != emitted_closed {
+                if need_status || (closed && !emitted_closed) {
                     let report_closed = closed && genuine_closure_checked(&task_state, &sref).await;
-                    let ctl = product_ctl(&ctx, cursor, true, report_closed);
-                    if !sse_send(&tx, ctl).await || lease_watch.revoked(&task_state) {
+                    if !sse_send(&tx, ctx.ctl(cursor, true, report_closed)).await
+                        || lease_watch.revoked(&task_state)
+                    {
                         return;
                     }
                     need_status = false;
-                    emitted_closed = closed;
                     if report_closed {
                         return; // exactly ONE final control, then EOF
                     }
+                    // Open stream: only report when something changed.
+                    emitted_closed = false;
                 }
             } else {
                 need_status = true;
             }
+
             // Register wakeups BEFORE the frontier check: an append
             // committing between check and park must not be missed.
             let mut ver_rx2 = ver_rx.clone();
             let ver_wait = wait_version(&mut ver_rx2);
             let src_wait = src.advance_notify().notified();
-            // Need progress? Drive; contended drivers wait for the
-            // winner's publication.
             if cursor < frontier {
                 drop(ver_wait);
                 drop(src_wait);
                 match feed.drive_once().await {
-                    // SOLO retention: this batch was handed back to its
-                    // driver — consume it directly instead of re-reading
-                    // the (empty) ring, which would misreport lag.
-                    Some(DriveOutcome::Solo(b)) => {
-                        for r in b.records.iter().filter(|r| r.offset >= cursor) {
-                            if !sse_send(&tx, r.data_event.clone()).await
-                                || lease_watch.revoked(&task_state)
-                            {
-                                return;
-                            }
-                            if !sse_send(&tx, product_ctl(&ctx, r.offset + 1, false, false)).await {
+                    // SOLO retention: these records belong to THIS
+                    // driver — consume them directly.
+                    Some(DriveOutcome::Solo(records)) => {
+                        let frontier_now = src.frontier();
+                        let closed_now = src.closed();
+                        for r in records.iter().filter(|r| r.offset >= cursor) {
+                            let last = closed_now && r.offset + 1 >= frontier_now;
+                            let frame = ctx.compose(&r.data_event, r.offset + 1, last, last);
+                            if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
                                 return;
                             }
                             crate::sse::auth::sse_stats::DELIVERED_RECORDS
@@ -249,17 +270,19 @@ pub(crate) async fn serve(
                                 1,
                             );
                         }
-                        cursor = cursor.max(b.scan_to);
+                        cursor = cursor.max(frontier_now);
                         need_status = true;
+                        if closed_now {
+                            emitted_closed = true;
+                        }
                         continue;
                     }
                     Some(_) => {
-                        need_status = true;
                         continue;
                     }
                     None => {
                         // Another session holds the permit; its
-                        // publication will wake us via the version watch.
+                        // publication wakes us on the version watch.
                         tokio::task::yield_now().await;
                         continue;
                     }
@@ -288,8 +311,6 @@ pub(crate) async fn serve(
             }
         }
     });
-
-    drop(desc);
 
     let stream = futures_util::StreamExt::map(
         GatedSseBody::new(body_state, rx, slot, body_watch, gen_rx),
@@ -322,10 +343,3 @@ fn response_from_stream(
         .body(axum::body::Body::from_stream(stream))
         .unwrap()
 }
-
-// Registry re-export for AppState wiring.
-pub(crate) type LiveFeeds = FeedRegistry;
-
-// Keep imports referenced regardless of cfg folds.
-#[allow(unused)]
-fn _imports(_: &ReadParams, _: &PlainRec, _: &LiveFeed) {}
