@@ -542,11 +542,11 @@ struct Args {
     #[arg(long, env = "SSE_HUB_PROMOTE_AT", default_value_t = 2)]
     sse_hub_promote_at: u64,
 
-    /// LIVE-FEED Stage 3 engine selector for eligible product SSE:
-    /// "legacy" = the reviewed direct/hub pair; "livefeed" = the one
-    /// LiveFeed implementation. The release posture pins legacy until
-    /// the transition completes and is field-certified.
-    #[arg(long, env = "STREAMS_SSE_ENGINE", default_value = "legacy")]
+    /// SSE subscription engine. "livefeed" = the ONE implementation
+    /// (adaptive retention; no pump task); "legacy" = the retired
+    /// direct/hub pair, kept only for A/B verification during the
+    /// transition and refused under the release posture.
+    #[arg(long, env = "STREAMS_SSE_ENGINE", default_value = "livefeed")]
     streams_sse_engine: String,
 
     /// Per-stream inflight append cap (0 = off): one hot stream cannot

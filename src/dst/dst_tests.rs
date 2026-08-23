@@ -33895,3 +33895,44 @@ async fn livefeed_fork_subscriptions_stitch_the_ancestor_chain() {
         "child tail must follow the ancestors:\n{acc}"
     );
 }
+
+/// RAW-surface SSE through LiveFeed: the singular route composes the
+/// RAW scalar vocabulary (streamNextOffset / streamCursor /
+/// streamClosed), byte-shaped like the legacy producer, and carries
+/// the workload-JWT expiry lease when opened under enforce mode.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_raw_surface_uses_the_raw_vocabulary() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let ct = ("content-type", "application/json");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/lfr", &[ct], br#"[{"r":0}]"#).await;
+    assert!(st == 200 || st == 201, "create {st}");
+
+    use tokio::io::AsyncWriteExt;
+    let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let start_tok = crate::offsets::encode_ep(0, crate::offsets::Offset::START);
+    let req = format!(
+        "GET /v1/stream/lfr?live=sse&offset={start_tok} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
+    );
+    sck.write_all(req.as_bytes()).await.unwrap();
+    let (acc, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    // RAW vocabulary markers — never product fields.
+    assert!(
+        acc.contains("\"streamNextOffset\""),
+        "raw scalar control expected:\n{acc}"
+    );
+    assert!(
+        !acc.contains("\"nextCursor\"") && !acc.contains("\"sealed\":true"),
+        "raw surface must not speak product vocabulary:\n{acc}"
+    );
+    assert!(acc.contains("event: data"), "backlog record:\n{acc}");
+
+    // Live append through the raw surface.
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/lfr", &[ct], br#"[{"r":1}]"#).await;
+    assert!(st == 200 || st == 204);
+    let (acc2, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("\"r\":1")).await;
+    assert!(acc2.contains("\"r\":1"), "live raw record:\n{acc2}");
+}
