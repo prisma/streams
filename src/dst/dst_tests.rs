@@ -5811,7 +5811,7 @@ async fn http_rig_inner(
         sse_max_connections: 0,
         sse_configured_max_connections: 0,
         sse_engine_livefeed: std::sync::atomic::AtomicBool::new(false),
-        live_feeds: crate::sse::registry::FeedRegistry::new(),
+        live_feeds: Arc::new(crate::sse::registry::FeedRegistry::new()),
         sse_connections: std::sync::atomic::AtomicU64::new(0),
         live_hubs: crate::livehub::HubRegistry::new(),
         sse_live_hub: std::sync::atomic::AtomicBool::new(false),
@@ -33511,9 +33511,7 @@ async fn livefeed_two_subscribers_share_one_feed_and_one_source_read() {
         .await
         .unwrap()
         .unwrap();
-    let key = crate::sse::feed::FeedKey::default_lane(
-        desc.dynamic_segment_identity(desc.resolve_segment("").seg_id),
-    );
+    let key = crate::sse::session::feed_key_of(&desc, &Some(String::new()));
     let feed = state
         .live_feeds
         .feed_for_test(&key)
@@ -33807,10 +33805,7 @@ async fn livefeed_keyed_lane_scopes_records_and_shares_preparation() {
         .await
         .unwrap()
         .unwrap();
-    let key = crate::sse::feed::FeedKey::keyed(
-        desc.dynamic_segment_identity(desc.resolve_segment("").seg_id),
-        "ka",
-    );
+    let key = crate::sse::session::feed_key_of(&desc, &Some("ka".to_string()));
     let feed = state
         .live_feeds
         .feed_for_test(&key)

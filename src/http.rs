@@ -150,7 +150,7 @@ pub struct AppState {
     /// attach to a LiveFeed (one engine, adaptive retention) instead
     /// of the legacy direct/hub pair. Per-instance, test-settable.
     pub sse_engine_livefeed: std::sync::atomic::AtomicBool,
-    pub live_feeds: crate::sse::registry::FeedRegistry,
+    pub live_feeds: Arc<crate::sse::registry::FeedRegistry>,
     /// The CONFIGURED cap before any platform-driven clamp — exported
     /// next to the effective one so the fleet can detect a platform
     /// lowering RLIMIT_NOFILE under it.
@@ -7721,7 +7721,7 @@ async fn sse_response(
     {
         let rk_filter = params.key.clone();
         return crate::sse::session::serve(
-            state, desc, key, epoch, handle, engine, start, params, rk_filter, surface,
+            state, desc, key, epoch, handle, engine, start, params, rk_filter, surface, slot,
         )
         .await;
     }

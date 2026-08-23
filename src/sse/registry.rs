@@ -1,8 +1,10 @@
-//! The feed registry: incarnation-safe lookup/create/retire for
-//! LiveFeeds (LIVE-FEED Stage 2). Keyed by `FeedKey` (segment
-//! identity — epoch-bound), so a delete/recreate under the same name
-//! lands on a fresh feed by construction. A feed whose last session
-//! left is evicted lazily by the leaving session.
+//! The feed registry: incarnation-safe subscribe/retire for LiveFeeds.
+//! `subscribe()` is ATOMIC — lookup/create, subscriber increment and
+//! handle return all happen under the registry lock, closing the
+//! last-out-eviction versus new-join race (follow-up review finding
+//! 3). The returned `FeedSubscription` is an RAII guard: dropping it
+//! decrements the count, clears shared retention when the crowd falls
+//! to one, and removes the feed (by pointer identity) at zero.
 
 use super::feed::{FeedKey, LiveFeed};
 use std::collections::HashMap;
@@ -13,33 +15,71 @@ pub(crate) struct FeedRegistry {
     map: Mutex<HashMap<FeedKey, Arc<LiveFeed>>>,
 }
 
+/// RAII subscription handle. Dropping it detaches the session from the
+/// feed: decrement → clear-retention-at-one → remove-at-zero.
+pub(crate) struct FeedSubscription {
+    registry: Arc<FeedRegistry>,
+    pub(crate) key: FeedKey,
+    pub(crate) feed: Arc<LiveFeed>,
+}
+
+impl FeedSubscription {
+    pub(crate) fn feed(&self) -> Arc<LiveFeed> {
+        self.feed.clone()
+    }
+}
+
+impl Drop for FeedSubscription {
+    fn drop(&mut self) {
+        let remaining = self.feed.leave();
+        if remaining == 1 {
+            // Shared → solo: retained batches would never be consumed
+            // by anyone but the lone survivor driving fresh reads.
+            self.feed.clear_retention();
+        }
+        if remaining == 0 {
+            self.registry.remove_if_same(&self.key, &self.feed);
+        }
+    }
+}
+
 impl FeedRegistry {
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
-    pub(crate) fn get_or_create(
-        &self,
+    /// Atomic subscribe: create-or-lookup AND subscriber increment
+    /// happen under one lock hold, so a last-out eviction can never
+    /// land between another session's lookup and its join.
+    pub(crate) fn subscribe(
+        self: &Arc<Self>,
         key: FeedKey,
         make: impl FnOnce() -> Arc<LiveFeed>,
-    ) -> Arc<LiveFeed> {
+    ) -> FeedSubscription {
         let mut map = self.map.lock().unwrap();
-        match map.get(&key) {
+        let feed = match map.get(&key) {
             Some(f) => f.clone(),
             None => {
                 let f = make();
                 map.insert(key.clone(), f.clone());
                 f
             }
+        };
+        feed.join();
+        FeedSubscription {
+            registry: Arc::clone(self),
+            key,
+            feed,
         }
     }
 
-    /// Called by a session on exit: retire the feed if it has no
-    /// subscribers left (last-out cleanup; a racing join re-creates).
-    pub(crate) fn evict_if_unsubscribed(&self, key: &FeedKey) {
+    /// Remove ONLY if the entry is still this exact feed — cleanup from
+    /// a replaced incarnation must never delete its successor.
+    fn remove_if_same(&self, key: &FeedKey, expected: &Arc<LiveFeed>) {
         let mut map = self.map.lock().unwrap();
-        if let Some(f) = map.get(key)
-            && f.subscriber_count() == 0
+        if map
+            .get(key)
+            .is_some_and(|actual| Arc::ptr_eq(actual, expected))
         {
             map.remove(key);
         }
@@ -50,7 +90,6 @@ impl FeedRegistry {
         self.map.lock().unwrap().len()
     }
 
-    /// Test hook: the live feed for a key, if one exists.
     #[cfg(test)]
     pub(crate) fn feed_for_test(&self, key: &FeedKey) -> Option<Arc<LiveFeed>> {
         self.map.lock().unwrap().get(key).cloned()

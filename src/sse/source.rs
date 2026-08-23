@@ -2,7 +2,7 @@
 //! read through the ordinary durable pipeline (LIVE-FEED Stage 3).
 //! Fork and lineage adapters join later with the same trait shape.
 
-use super::feed::FeedSourceRead;
+use super::feed::{FeedSourceRead, SourceBatch};
 use crate::registry::StreamDesc;
 use crate::shard::{ShardEngine, StreamHandle};
 use bytes::{Bytes, BytesMut};
@@ -23,37 +23,39 @@ pub(crate) struct SingleSource {
 
 #[async_trait::async_trait]
 impl FeedSourceRead for SingleSource {
-    async fn read(
-        &self,
-        from: u64,
-        max_bytes: usize,
-    ) -> anyhow::Result<(Vec<crate::http::PlainRec>, bool)> {
+    async fn read_batch(&self, from: u64, max_bytes: usize) -> anyhow::Result<SourceBatch> {
         // FORKS: stitched reads traverse the ancestor chain and return
-        // records in the CHILD's logical offset space — the same
-        // FeedCursor space every other lane uses, so the session loop
-        // is unchanged.
-        if self.desc.forked_from.is_some() {
-            let out =
-                crate::http::read_stitched(&self.state, &self.desc, &self.key, from, max_bytes)
-                    .await
-                    .map_err(|e| anyhow::anyhow!(e))?;
-            return Ok((out.recs, out.completed));
-        }
-        let out = crate::http::read_records(
-            &self.state,
-            &self.desc,
-            &self.key,
-            &self.epoch,
-            &self.handle,
-            &self.engine,
-            from,
-            self.rk_filter.as_deref(),
-            max_bytes,
-            crate::shard::Deliver::Durable,
-        )
-        .await
-        .map_err(|e| anyhow::anyhow!(e))?;
-        Ok((out.recs, out.completed))
+        // records in the CHILD's logical offset space — the same cursor
+        // space every other lane uses.
+        let out = if self.desc.forked_from.is_some() {
+            crate::http::read_stitched(&self.state, &self.desc, &self.key, from, max_bytes)
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?
+        } else {
+            crate::http::read_records(
+                &self.state,
+                &self.desc,
+                &self.key,
+                &self.epoch,
+                &self.handle,
+                &self.engine,
+                from,
+                self.rk_filter.as_deref(),
+                max_bytes,
+                crate::shard::Deliver::Durable,
+            )
+            .await
+            .map_err(|e| anyhow::anyhow!(e))?
+        };
+        // HONEST scanned progress (finding 2): `last` advances over
+        // NON-MATCHING ranges for filtered lanes — it is the consumed
+        // boundary even when zero records matched.
+        let scan_to = out.last.map(|x| x + 1).unwrap_or(from);
+        Ok(SourceBatch {
+            scan_from: from,
+            scan_to,
+            records: out.recs,
+        })
     }
 
     fn frontier(&self) -> u64 {
@@ -89,10 +91,6 @@ impl FeedSourceRead for SingleSource {
         out.extend_from_slice(data.as_bytes());
         out.extend_from_slice(ctl.as_bytes());
         out.freeze()
-    }
-
-    fn ctl_next(&self, rec: &crate::http::PlainRec) -> u64 {
-        rec.off + 1
     }
 
     fn advance_notify(&self) -> &tokio::sync::Notify {

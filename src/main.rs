@@ -542,11 +542,12 @@ struct Args {
     #[arg(long, env = "SSE_HUB_PROMOTE_AT", default_value_t = 2)]
     sse_hub_promote_at: u64,
 
-    /// SSE subscription engine. "livefeed" = the ONE implementation
-    /// (adaptive retention; no pump task); "legacy" = the retired
-    /// direct/hub pair, kept only for A/B verification during the
-    /// transition and refused under the release posture.
-    #[arg(long, env = "STREAMS_SSE_ENGINE", default_value = "livefeed")]
+    /// SSE subscription engine. "legacy" = the reviewed direct/hub
+    /// pair (the DEFAULT until the LiveFeed transition completes its
+    /// red battery and field canaries); "livefeed" = the new unified
+    /// implementation, opt-in for tests and local development, refused
+    /// under the release posture until certified.
+    #[arg(long, env = "STREAMS_SSE_ENGINE", default_value = "legacy")]
     streams_sse_engine: String,
 
     /// Per-stream inflight append cap (0 = off): one hot stream cannot
@@ -1991,7 +1992,7 @@ async fn async_main() -> anyhow::Result<()> {
         sse_engine_livefeed: std::sync::atomic::AtomicBool::new(
             args.streams_sse_engine == "livefeed",
         ),
-        live_feeds: crate::sse::registry::FeedRegistry::new(),
+        live_feeds: Arc::new(crate::sse::registry::FeedRegistry::new()),
         sse_connections: std::sync::atomic::AtomicU64::new(0),
         live_hubs: crate::livehub::HubRegistry::new(),
         sse_live_hub: std::sync::atomic::AtomicBool::new(args.sse_live_hub == 1),
