@@ -33817,3 +33817,81 @@ async fn livefeed_keyed_lane_scopes_records_and_shares_preparation() {
         .expect("keyed lane feed exists");
     assert_eq!(feed.subscriber_count(), 2);
 }
+
+/// Stage 5: FORKS. A fork's SSE subscription rides the LiveFeed with
+/// stitched ancestor reads — same wire vocabulary the legacy fork
+/// producer used (raw scalar), same record sequence.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_fork_subscriptions_stitch_the_ancestor_chain() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    // Parent created once, then three appended records.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/fp",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for i in 0..3 {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/fp/records",
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            format!(r#"{{"p":{i}}}"#).as_bytes(),
+        )
+        .await;
+        assert_eq!(st, 200, "parent append {i}");
+    }
+    let (_, h, _) = hreq(addr, "GET", "/v1/stream/fp", &[], b"").await;
+    let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
+
+    // Fork at the parent's tail, then append CHILD records.
+    let (st, _, b) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/fc",
+        &[
+            ("content-type", "application/json"),
+            ("stream-forked-from", "fp"),
+            ("stream-fork-offset", &boundary),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 201, "fork create: {}", String::from_utf8_lossy(&b));
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/fc/records",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"c":1}"#,
+    )
+    .await;
+    assert!(st == 200 || st == 204, "child append {st}");
+
+    // Subscribe to the CHILD from offset 0: ancestor p0..p2 stitched,
+    // then the child tail c1.
+    let mut sck = lf_connect(addr, "fc", "").await;
+    let (acc, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"c\":1")).await;
+    assert!(
+        acc.contains("event: data"),
+        "fork subscription delivered frames:\n{acc}"
+    );
+    for i in 0..3 {
+        assert!(
+            acc.contains(&format!("\"p\":{i}\"")) || acc.contains(&format!("\"p\":{i}")),
+            "ancestor record p{i} must appear in the stitched stream:\n{acc}"
+        );
+    }
+    assert!(
+        acc.contains("\"c\":1") || acc.contains("[{\"c\":1}]"),
+        "child tail must follow the ancestors:\n{acc}"
+    );
+}

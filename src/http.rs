@@ -7707,14 +7707,13 @@ async fn sse_response(
         Ok(s) => s,
         Err(r) => return *r,
     };
-    // LIVE-FEED Stage 3+: the transition engine. v0 scope is the
-    // product surface on single-segment streams — default-key and
-    // keyed lanes both ride it; forks and lineages join in Stage 5/6.
+    // LIVE-FEED Stage 3+/5: the transition engine. Product default-key
+    // AND keyed lanes ride it on single-segment streams; FORKS join
+    // here too (read_fork_inner reaches this same producer with the
+    // raw vocabulary, which the session composes byte-identically).
     if state
         .sse_engine_livefeed
         .load(std::sync::atomic::Ordering::Relaxed)
-        && surface == SseSurface::Product
-        && desc.forked_from.is_none()
         && desc
             .segments
             .as_ref()
@@ -7722,7 +7721,7 @@ async fn sse_response(
     {
         let rk_filter = params.key.clone();
         return crate::sse::session::serve(
-            state, desc, key, epoch, handle, engine, start, params, rk_filter,
+            state, desc, key, epoch, handle, engine, start, params, rk_filter, surface,
         )
         .await;
     }

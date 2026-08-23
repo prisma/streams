@@ -26,8 +26,19 @@ use std::sync::Arc;
 
 /// Per-session wire context. v0 serves the product surface; raw
 /// vocabulary joins through the same composition point.
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub(crate) enum Surface {
+    /// Product signed-key cursors.
+    Product,
+    /// Raw scalar offsets — the pinned singular route and FORKS
+    /// (read_fork_inner has always framed forks with the raw
+    /// vocabulary; preserved byte-for-byte through LiveFeed).
+    RawScalar,
+}
+
 #[derive(Clone)]
 pub(crate) struct SessionCtx {
+    surface: Surface,
     desc: crate::registry::StreamDesc,
     key: crate::crypto::StreamKey,
     epoch: [u8; 16],
@@ -37,16 +48,26 @@ pub(crate) struct SessionCtx {
 
 impl SessionCtx {
     fn ctl(&self, offset_after: u64, up_to_date: bool, sealed: bool) -> Bytes {
-        let tok = crate::product_cursor::KeyCursor {
-            epoch: self.epoch,
-            key_hash: self.rk_hash,
-            seg_id: self.seg_id,
-            offset: offset_after,
+        match self.surface {
+            Surface::Product => {
+                let tok = crate::product_cursor::KeyCursor {
+                    epoch: self.epoch,
+                    key_hash: self.rk_hash,
+                    seg_id: self.seg_id,
+                    offset: offset_after,
+                }
+                .encode(&self.desc.project_id, &self.key);
+                Bytes::from(crate::sse::wire::sse_control_product(
+                    &tok, up_to_date, sealed,
+                ))
+            }
+            Surface::RawScalar => Bytes::from(crate::sse::wire::sse_control(
+                offset_after,
+                None,
+                up_to_date,
+                sealed,
+            )),
         }
-        .encode(&self.desc.project_id, &self.key);
-        Bytes::from(crate::sse::wire::sse_control_product(
-            &tok, up_to_date, sealed,
-        ))
     }
 
     /// Shared data event + this session's control = ONE frame.
@@ -72,6 +93,7 @@ pub(crate) async fn serve(
     start: crate::http::StartPos,
     params: ReadParams,
     rk_filter: Option<String>,
+    surface: crate::http::SseSurface,
 ) -> axum::response::Response {
     let slot: SseSlot = match sse_acquire(&state) {
         Ok(s) => s,
@@ -116,6 +138,10 @@ pub(crate) async fn serve(
     };
 
     let ctx = SessionCtx {
+        surface: match surface {
+            crate::http::SseSurface::Raw => Surface::RawScalar,
+            crate::http::SseSurface::Product => Surface::Product,
+        },
         rk_hash: crate::crypto::stream_hash(&lane_rk),
         epoch,
         key: key.clone(),

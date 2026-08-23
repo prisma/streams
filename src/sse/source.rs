@@ -25,8 +25,17 @@ impl FeedSourceRead for SingleSource {
         from: u64,
         max_bytes: usize,
     ) -> anyhow::Result<(Vec<crate::http::PlainRec>, bool)> {
-        // The durable read pipeline needs no AppState (state was only
-        // ever threaded through for metering the SESSION does).
+        // FORKS: stitched reads traverse the ancestor chain and return
+        // records in the CHILD's logical offset space — the same
+        // FeedCursor space every other lane uses, so the session loop
+        // is unchanged.
+        if self.desc.forked_from.is_some() {
+            let out =
+                crate::http::read_stitched(&self.state, &self.desc, &self.key, from, max_bytes)
+                    .await
+                    .map_err(|e| anyhow::anyhow!(e))?;
+            return Ok((out.recs, out.completed));
+        }
         let out = crate::http::read_records(
             &self.state,
             &self.desc,
