@@ -33931,3 +33931,216 @@ async fn livefeed_raw_surface_uses_the_raw_vocabulary() {
     let (acc2, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("\"r\":1")).await;
     assert!(acc2.contains("\"r\":1"), "live raw record:\n{acc2}");
 }
+
+// ==================================================================
+// LIVE-FEED follow-up-review red battery: cursor/data integrity,
+// exact wire contract, lifecycle/concurrency, memory, topology.
+// ==================================================================
+
+/// Finding 1 red: a SOLO subscription whose append window exceeds the
+/// driver's 256-KiB bounded batch must deliver EVERY record exactly
+/// once — the cursor advances to the scanned batch end, never the
+/// live frontier.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_singleton_large_window_delivers_everything_exactly_once() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lfbig",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+
+    // Park at tail FIRST (empty stream), then burst 40 x 16 KiB
+    // = 640 KiB > 256 KiB driver batch.
+    let mut sck = lf_connect(addr, "lfbig", "").await;
+    let (_, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+
+    let pad = "x".repeat(16 * 1024);
+    for i in 0..40u64 {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/lfbig/records",
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            format!(r#"{{"i":{i},"pad":"{pad}"}}"#).as_bytes(),
+        )
+        .await;
+        assert!(st == 200 || st == 204, "append {i}: {st}");
+    }
+
+    // Collect ALL 40 data frames; each record id appears EXACTLY once.
+    let (acc, eof) =
+        hub_sse_collect(&mut sck, 30, |t| t.matches("event: data").count() >= 40).await;
+    assert!(eof || acc.matches("event: data").count() >= 40);
+    for i in 0..40u64 {
+        // Comma-anchored: `"i":1` would substring-match `"i":10`..19.
+        let needle = format!("\"i\":{i},");
+        assert_eq!(
+            acc.matches(&needle).count(),
+            1,
+            "record {i} must appear exactly once (found {}):\n…{}",
+            acc.matches(&needle).count(),
+            &acc[acc.len().saturating_sub(600)..]
+        );
+    }
+}
+
+/// Finding 2 red (singleton): an ALL-FOREIGN historical range on a
+/// keyed lane is pure scanned progress — the subscriber receives
+/// upToDate WITHOUT being lag-disconnected, and later matches flow.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_keyed_all_foreign_history_is_progress_not_lag() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lfprog",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+
+    // FOREIGN-only history BEFORE the subscriber exists.
+    for _ in 0..3 {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/lfprog/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", "kb"),
+            ],
+            br#"{"k":"kb"}"#,
+        )
+        .await;
+        assert!(st == 200 || st == 204);
+    }
+
+    // Keyed subscriber connects from BEGINNING: its first window is
+    // all-foreign. Old behavior: Phase A broke with cursor behind the
+    // feed floor → false LAG DISCONNECT.
+    let mut sck = lf_connect(addr, "lfprog", "?routingKey=ka&cursor=beginning").await;
+    let (acc, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("upToDate")).await;
+    assert!(
+        acc.contains("upToDate"),
+        "match-free history must progress to upToDate, not disconnect:\n{acc}"
+    );
+
+    // A matching record appended AFTER the foreign history flows.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/lfprog/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", "ka"),
+        ],
+        br#"{"k":"ka","hit":true}"#,
+    )
+    .await;
+    assert!(st == 200 || st == 204);
+    let (acc2, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"hit\":true")).await;
+    assert!(
+        acc2.contains("\"hit\":true"),
+        "post-history match must be delivered:\n{acc2}"
+    );
+}
+
+/// Exact wire contract (finding 4): ONE cursor control per record, NO
+/// status flags on record controls, exactly ONE standalone upToDate at
+/// the open frontier — raw and product vocabulary, both directions of
+/// feed creation order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_exact_framing_mixed_surfaces_share_one_lane() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let ct = ("content-type", "application/json");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/lfx", &[ct], br#"[{"r":0}]"#).await;
+    assert!(st == 200 || st == 201);
+
+    // RAW creates the feed first.
+    use tokio::io::AsyncWriteExt;
+    let mut raw = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let start_tok = crate::offsets::encode_ep(0, crate::offsets::Offset::START);
+    let req = format!(
+        "GET /v1/stream/lfx?live=sse&offset={start_tok} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
+    );
+    raw.write_all(req.as_bytes()).await.unwrap();
+    // PRODUCT joins second.
+    let mut prod = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let preq2 = format!(
+        "GET /v1/streams/lfx/records:sse?cursor=beginning HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
+    );
+    prod.write_all(preq2.as_bytes()).await.unwrap();
+
+    hub_append_lf(addr, "lfx", r#"{"w":1}"#).await;
+
+    // The done predicate fires on the DATA frame; its trailing cursor
+    // control arrives in a separate chunk — drain one more beat.
+    let (raw_txt, _) = hub_sse_collect(&mut raw, 10, |t| t.contains("\"w\":1")).await;
+    let (extra_r, _) = hub_sse_collect(&mut raw, 2, |_| false).await;
+    let raw_txt = format!("{raw_txt}{extra_r}");
+    let (prod_txt, _) = hub_sse_collect(&mut prod, 10, |t| t.contains("\"w\":1")).await;
+    let (extra_p, _) = hub_sse_collect(&mut prod, 2, |_| false).await;
+    let prod_txt = format!("{prod_txt}{extra_p}");
+
+    for (side, txt) in [("raw", &raw_txt), ("product", &prod_txt)] {
+        // CANONICAL SHAPE per drained window: 1 data + 1 bare ctl, then
+        // ONE standalone upToDate at the head. Two windows here
+        // (backlog record + live record) => 2 data, 4 controls, 2
+        // upToDate flags — a duplicated/cross-surface cursor control
+        // would push controls to 6.
+        let data = txt.matches("event: data").count();
+        let ctls = txt.matches("event: control").count();
+        assert_eq!(data, 2, "{side}: two data events expected:\n{txt}");
+        assert_eq!(
+            ctls, 4,
+            "{side}: per-record ctl x2 + standalone status x2 = 4:\n{txt}"
+        );
+        assert_eq!(
+            txt.matches("\"upToDate\":true").count(),
+            2,
+            "{side}: upToDate rides ONLY the standalone statuses:\n{txt}"
+        );
+        // Vocabulary isolation.
+        if side == "raw" {
+            assert!(
+                txt.contains("streamNextOffset") && !txt.contains("nextCursor"),
+                "raw must not speak product vocabulary:\n{txt}"
+            );
+        } else {
+            assert!(
+                txt.contains("nextCursor") && !txt.contains("streamNextOffset"),
+                "product must not speak raw vocabulary:\n{txt}"
+            );
+        }
+    }
+}
+
+async fn hub_append_lf(addr: std::net::SocketAddr, name: &str, body: &str) {
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        &format!("/v1/streams/{name}/records"),
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        body.as_bytes(),
+    )
+    .await;
+    assert!(st == 200 || st == 204, "append {st}");
+}

@@ -76,11 +76,10 @@ pub(crate) trait FeedSourceRead: Send + Sync {
     fn frontier(&self) -> u64;
     fn closed(&self) -> bool;
     fn desc(&self) -> &crate::registry::StreamDesc;
-    /// Compose the SHAREABLE frame for one record: data event plus this
-    /// lane's cursor control folded (identical for every subscriber of
-    /// the feed). upToDate/sealed are lane-global facts supplied by the
-    /// feed at publish time; per-session statuses stay separate.
-    fn frame(&self, rec: &crate::http::PlainRec, up_to_date: bool, sealed: bool) -> Bytes;
+    /// The DATA event for one record, formatted ONCE per lane. Cursor
+    /// and status controls are composed per session (canonical framing:
+    /// flags never ride data frames).
+    fn prepare_data(&self, rec: &crate::http::PlainRec) -> Bytes;
     /// Wake source: fired on every durable advance and close. Sessions
     /// (solo) and the shared driver park on this.
     fn advance_notify(&self) -> &tokio::sync::Notify;
@@ -170,6 +169,16 @@ pub(crate) struct LiveFeed {
 
 const MAX_DRIVER_BATCH_BYTES: usize = 256 * 1024;
 
+/// RAII single-flight driver permit (finding 6): dropping it —
+/// including via task abort while awaiting a source read — releases
+/// the permit, so an aborted shared driver can never strand `driving`.
+pub(crate) struct DriverPermit<'a>(&'a AtomicBool);
+impl Drop for DriverPermit<'_> {
+    fn drop(&mut self) {
+        self.0.store(false, Ordering::SeqCst);
+    }
+}
+
 impl LiveFeed {
     /// SHARED-mode driver: the only reader while fanned out; aborted
     /// when the crowd drops below two. Weak handle so it cannot keep
@@ -253,40 +262,74 @@ impl LiveFeed {
         self.retained_charge.load(Ordering::Relaxed)
     }
 
-    /// Attach. Spawns the SHARED driver when the crowd reaches two;
-    /// solo attachments never spawn anything.
-    pub(crate) fn join(self: &Arc<Self>) -> (u64, tokio::sync::watch::Receiver<u64>) {
-        let n = self.subscribers.fetch_add(1, Ordering::SeqCst) + 1;
-        if n == 2 {
-            self.spawn_shared_driver();
-        }
+    /// Increment-only attach; called under the REGISTRY lock by
+    /// `FeedRegistry::subscribe` so count and membership mutate in one
+    /// synchronization boundary.
+    pub(crate) fn subscribe_locked(&self) -> (u64, tokio::sync::watch::Receiver<u64>) {
+        self.subscribers.fetch_add(1, Ordering::SeqCst);
         let rx = self.changed.subscribe();
         let head = self.st.lock().unwrap().head;
         (head, rx)
     }
 
-    pub(crate) fn leave(&self) -> u64 {
-        let prev = self.subscribers.fetch_sub(1, Ordering::SeqCst);
-        // Crowd dropped below two: abort the shared driver — a
-        // remaining solo session self-drives off the source notify —
-        // and release retention back to the global budget.
-        if prev <= 2 {
-            if let Some(h) = self.driver_abort.lock().unwrap().take() {
-                h.abort();
-            }
-            let mut st = self.st.lock().unwrap();
-            if st.charge > 0 {
-                self.budget.release(st.charge);
-                st.charge = 0;
-                st.batches.clear();
-                st.floor = st.head;
-                self.retained_charge.store(0, Ordering::Relaxed);
-            }
-        }
-        prev.saturating_sub(1)
+    /// Decrement-only detach; called under the REGISTRY lock by
+    /// `unsubscribe`.
+    pub(crate) fn leave_locked(&self) -> u64 {
+        self.subscribers.fetch_sub(1, Ordering::SeqCst)
     }
 
-    /// Shared → solo transition cleanup (same release rule as leave).
+    /// Reserve this feed's ring allowance from the process-global
+    /// budget — REQUIRED before a second subscriber may enter shared
+    /// mode (finding 6-mem option A).
+    pub(crate) fn reserve_shared_allowance(&self) -> bool {
+        self.budget.try_reserve(self.ring_budget)
+    }
+
+    /// Idempotent: spawn the SHARED driver when subscribers >= 2 and no
+    /// driver exists (closes the subscribe/spawn race from session side).
+    pub(crate) fn ensure_shared_driver(self: &Arc<Self>) {
+        if self.subscriber_count() < 2 {
+            return;
+        }
+        let mut slot = self.driver_abort.lock().unwrap();
+        if slot.is_some() {
+            return;
+        }
+        let weak = Arc::downgrade(self);
+        let handle = tokio::spawn(async move {
+            loop {
+                let Some(this) = weak.upgrade() else { return };
+                if this.subscriber_count() < 2 {
+                    return;
+                }
+                let _ = this.drive_once().await;
+                drop(this);
+                // Park on the CURRENT source's advance; the bounded
+                // timer re-arms across source swaps (finding: the old
+                // repoll future never completed).
+                let src_wait = {
+                    let Some(this) = weak.upgrade() else { return };
+                    let src = this.current_source();
+                    Box::pin(async move {
+                        let n = src.advance_notify().notified();
+                        n.await;
+                    })
+                };
+                tokio::pin!(src_wait);
+                let repoll = async {
+                    tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+                };
+                tokio::select! {
+                    _ = &mut src_wait => {}
+                    _ = repoll => {}
+                }
+            }
+        });
+        *slot = Some(handle.abort_handle());
+    }
+
+    /// Shared → solo cleanup: retained bytes can never be consumed by a
+    /// second reader that no longer exists.
     pub(crate) fn clear_retention(&self) {
         let mut st = self.st.lock().unwrap();
         if !st.batches.is_empty() {
@@ -349,17 +392,23 @@ impl LiveFeed {
     }
 
     pub(crate) async fn drive_once(&self) -> Option<DriveOutcome> {
-        if self
-            .driving
-            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
-            .is_err()
-        {
-            return None;
-        }
+        // RAII permit (follow-up review finding 6): an aborted task
+        // (shared-driver abort mid-read) drops its guard, releasing the
+        // permit — it can never strand held.
+        let _permit = self.acquire_permit()?;
         let out = self.drive_under_permit().await;
         // Release BEFORE any socket write by any consumer of the result.
+        drop(_permit);
         self.driving.store(false, Ordering::SeqCst);
         Some(out)
+    }
+
+    /// Acquire the single-flight driver permit. None = already held.
+    fn acquire_permit(&self) -> Option<DriverPermit<'_>> {
+        self.driving
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .ok()?;
+        Some(DriverPermit(&self.driving))
     }
 
     async fn drive_under_permit(&self) -> DriveOutcome {
@@ -399,7 +448,7 @@ impl LiveFeed {
         for r in &batch.records {
             prepared.push(PreparedRecord {
                 offset: r.off,
-                data_event: src.frame(r, false, false),
+                data_event: src.prepare_data(r),
                 payload_len: r.payload.len() as u32,
                 sealed: false,
             });
@@ -411,7 +460,10 @@ impl LiveFeed {
         st.head = st.head.max(scan_to);
         if solo {
             st.floor = st.head;
-            return DriveOutcome::Solo(prepared);
+            return DriveOutcome::Solo {
+                records: prepared,
+                scan_to,
+            };
         }
         let batch_charge = charge_for(&prepared);
         // Global-budget reservation (finding 6): retain only after one
@@ -491,8 +543,13 @@ impl std::fmt::Debug for Take {
 }
 
 pub(crate) enum DriveOutcome {
-    /// Zero retention: these records belong to the driving session.
-    Solo(Vec<PreparedRecord>),
+    /// Zero retention: these records belong to the driving session,
+    /// plus the SCANNED boundary (finding 1/2 — the cursor must advance
+    /// to scan_to, covering match-free ranges).
+    Solo {
+        records: Vec<PreparedRecord>,
+        scan_to: u64,
+    },
     Published,
     Idle,
     Closed,

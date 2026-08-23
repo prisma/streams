@@ -20,7 +20,7 @@
 
 use super::auth::{GatedSseBody, LeaseWatch, SseLease};
 use super::feed::{DriveOutcome, FeedKey, FeedSourceRead, LiveFeed, Take};
-use crate::http::{AppState, ReadParams, SseSlot, sse_acquire, sse_heartbeat, sse_send};
+use crate::http::{AppState, ReadParams, SseSlot, err_resp, sse_heartbeat, sse_send};
 use bytes::{Bytes, BytesMut};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -136,7 +136,6 @@ pub(crate) async fn serve(
     let src = Arc::new(super::source::SingleSource {
         state: state.clone(),
         rk_filter: Some(lane_rk.clone()),
-        raw_surface: surface == crate::http::SseSurface::Raw,
         desc: desc.clone(),
         key: key.clone(),
         epoch,
@@ -145,14 +144,28 @@ pub(crate) async fn serve(
     });
     // RAII subscription (finding 3): atomic create-or-join under the
     // registry lock; Drop detaches, clears retention at one and evicts
-    // at zero.
-    let subscription = state.live_feeds.subscribe(fkey.clone(), || {
+    // at zero. Finding 6-mem: entering SHARED mode reserves this feed's
+    // ring allowance from the process-global budget — exhaustion
+    // rejects THE NEW subscriber with a typed capacity refusal while
+    // the existing singleton continues normally.
+    let subscription = match state.live_feeds.subscribe(fkey.clone(), || {
         LiveFeed::new(fkey.clone(), src.clone(), crate::livehub::hub_ring_bytes())
-    });
+    }) {
+        Ok(sub) => sub,
+        Err(_) => {
+            use axum::response::IntoResponse;
+            return err_resp(
+                axum::http::StatusCode::SERVICE_UNAVAILABLE,
+                "subscription_capacity",
+                "the process retention budget cannot host another shared subscription",
+            )
+            .into_response();
+        }
+    };
     let feed = subscription.feed();
     // subscribe() already incremented the count (registry RAII owns
     // attach/detach — no second join here, finding 3's double-count).
-    let ver_rx = feed.version_watch();
+    let mut ver_rx = feed.version_watch();
     let mut cursor = match start {
         crate::http::StartPos::At(p) => p,
         crate::http::StartPos::Now => src.frontier(),
@@ -212,7 +225,7 @@ pub(crate) async fn serve(
                         if r.off < cursor {
                             continue;
                         }
-                        let frame = ctx.compose_record(&src.frame(r, false, false), r.off + 1);
+                        let frame = ctx.compose_record(&src.prepare_data(r), r.off + 1);
                         if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
                             return;
                         }
@@ -234,15 +247,17 @@ pub(crate) async fn serve(
         }
 
         // PHASE B: shared live consumption.
-        let mut ver_rx = ver_rx;
         loop {
             if lease_watch.revoked(&task_state) {
                 return;
             }
             // Wakeups registered at LOOP TOP (finding 7): every state
-            // read below is covered by these futures.
-            let mut ver_rx2 = ver_rx.clone();
-            let mut ver_wait = Box::pin(wait_version(&mut ver_rx2));
+            // read below is covered by these futures. `ver_rx` is THE
+            // persistent receiver — changed() consumes each publication
+            // exactly once (no clone-echo loops).
+            let mut ver_wait = Box::pin(async {
+                let _ = ver_rx.changed().await;
+            });
             let mut src_wait = Box::pin(feed.park_advance());
             match feed.take_visible(cursor) {
                 Take::Lagged { floor } => {
@@ -277,14 +292,30 @@ pub(crate) async fn serve(
             let frontier = src.frontier();
             let closed = src.closed();
             if cursor >= frontier {
-                let genuine = if closed {
-                    genuine_closure_checked(&task_state, &sref).await
-                } else {
-                    false
-                };
-                let already = last_reported == Some(cursor) && !genuine;
-                if need_status && (!already || terminal_reported) && !terminal_reported {
-                    // Open-stream upToDate, once per frontier position.
+                // TERMINAL takes precedence over the open-frontier
+                // status: at genuine close exactly ONE sealed control is
+                // emitted — never a preceding duplicate upToDate at the
+                // same position (finding 7).
+                let genuine = closed && genuine_closure_checked(&task_state, &sref).await;
+                if genuine {
+                    if !terminal_reported {
+                        if !sse_send(&tx, ctx.status_ctl(cursor, true)).await {
+                            return;
+                        }
+                        terminal_reported = true;
+                    }
+                    return; // EOF after THE final control
+                }
+                // Transition (closed but NOT genuine): disconnect
+                // without a terminal control — the client resumes from
+                // its cursor into the new topology via the legacy
+                // lineage path (finding 5 minimum safe behavior).
+                if closed {
+                    tracing::info!("topology transition detected: disconnecting without terminal");
+                    return;
+                }
+                // Open frontier: one upToDate per position (deduped).
+                if need_status && last_reported != Some(cursor) {
                     if !sse_send(&tx, ctx.status_ctl(cursor, false)).await
                         || lease_watch.revoked(&task_state)
                     {
@@ -292,22 +323,6 @@ pub(crate) async fn serve(
                     }
                     need_status = false;
                     last_reported = Some(cursor);
-                }
-                if closed && genuine && !terminal_reported {
-                    // Genuine close: exactly ONE terminal control.
-                    if !sse_send(&tx, ctx.status_ctl(cursor, true)).await {
-                        return;
-                    }
-                    terminal_reported = true;
-                    return; // EOF after THE final control
-                }
-                // Transition (closed but NOT genuine): disconnect
-                // without a terminal control — the client resumes from
-                // its cursor into the new topology via the legacy
-                // lineage path (finding 5 minimum safe behavior).
-                if closed && !genuine {
-                    tracing::info!("topology transition detected: disconnecting without terminal");
-                    return;
                 }
             } else {
                 need_status = true;
@@ -317,8 +332,7 @@ pub(crate) async fn serve(
             // the park below (ver_wait registered at loop top).
             if cursor < frontier {
                 match feed.drive_once().await {
-                    Some(DriveOutcome::Solo(records)) => {
-                        let frontier_now = src.frontier();
+                    Some(DriveOutcome::Solo { records, scan_to }) => {
                         let at_cursor = cursor;
                         for r in records.iter().filter(|r| r.offset >= at_cursor) {
                             let frame = ctx.compose_record(&r.data_event, r.offset + 1);
@@ -335,15 +349,17 @@ pub(crate) async fn serve(
                             );
                             cursor = cursor.max(r.offset + 1);
                         }
-                        // ADVANCE TO BATCH END ONLY (finding 1): never
-                        // jump to the live frontier — undelivered
-                        // records between batch end and the frontier
-                        // would be skipped.
-                        let _ = frontier_now;
+                        // ADVANCE TO SCANNED BATCH END ONLY (findings
+                        // 1+2): never jump to the live frontier and never
+                        // stop at the last MATCHING record — match-free
+                        // ranges are consumed progress.
+                        cursor = cursor.max(scan_to);
                         need_status = true;
                         continue;
                     }
                     Some(_) => continue,
+                    // Contended: park; the winner's publication bumps
+                    // ver_wait (registered at loop top).
                     None => {}
                 }
             }
