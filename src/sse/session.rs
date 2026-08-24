@@ -140,6 +140,21 @@ pub(crate) async fn serve(
 
     let lane_rk = rk_filter.clone().unwrap_or_default();
     let fkey = feed_key_of(&desc, &rk_filter);
+    // RAW source-compatibility gate (review round 5): raw scalar
+    // cursors cannot name segments, so a raw session may only join a
+    // SINGLE-SEGMENT source at generation 0. If the lane's feed already
+    // swapped to a lineage source, the raw request takes the typed
+    // immediate-disconnect fallback (its client resumes through the
+    // legacy lineage path). Two-level check: peek BEFORE attach, then
+    // the atomically captured join generation AFTER (the swap may land
+    // between them).
+    let raw_surface = matches!(surface, crate::http::SseSurface::Raw);
+    if raw_surface
+        && let Some(existing) = state.live_feeds.feed_for(&fkey)
+        && existing.source_snapshot().generation != 0
+    {
+        return raw_lineage_fallback_response(&state, &desc);
+    }
     let src = Arc::new(super::source::SingleSource {
         state: state.clone(),
         rk_filter: Some(lane_rk.clone()),
@@ -176,6 +191,12 @@ pub(crate) async fn serve(
             .into_response();
         }
     };
+    if raw_surface && subscription.join_gen() != 0 {
+        // The feed swapped between the peek and the atomic attach:
+        // detach and take the same typed fallback.
+        drop(subscription);
+        return raw_lineage_fallback_response(&state, &desc);
+    }
     // Test failpoint: AFTER the atomic attach, BEFORE the session reads
     // any feed state — the exact window of the join-head handoff race.
     #[cfg(test)]
@@ -405,6 +426,15 @@ pub(crate) async fn serve(
                 let closed = cur_src.closed();
                 if cursor >= frontier {
                     if closed {
+                        // Test failpoint: pause the transition drive as
+                        // well (a test can hold a session across a
+                        // split+seal before any refresh happens).
+                        #[cfg(test)]
+                        crate::failpoints::pause(
+                            crate::failpoints::Fp::SseFeedBeforeDrive,
+                            &task_desc.name,
+                        )
+                        .await;
                         // Genuine close OR topology transition — ONLY
                         // the drive (driver permit → descriptor refresh)
                         // decides, and it installs the successor source
@@ -414,10 +444,42 @@ pub(crate) async fn serve(
                         if let Some(outcome) = feed.drive_once().await {
                             match outcome {
                                 DriveOutcome::Closed => {
-                                    // TERMINAL: exactly ONE sealed control,
-                                    // then EOF.
-                                    if !sse_send(&tx, ctx.status_ctl(cur_src.locate(cursor), true))
-                                        .await
+                                    // DRAIN BEFORE TERMINAL (round-5
+                                    // flake): another session may have
+                                    // published a batch AND closed the
+                                    // lifecycle between this session's
+                                    // take_visible and its drive — a
+                                    // terminal here would skip the
+                                    // retained records. Loop back and
+                                    // consume first.
+                                    if !matches!(feed.take_visible(cursor), Take::AtHead) {
+                                        continue;
+                                    }
+                                    // TERMINAL: exactly ONE sealed
+                                    // control, then EOF. The terminal
+                                    // position is located against the
+                                    // CURRENT source — the drive may
+                                    // have installed a newer one inside
+                                    // this very call (review round 5:
+                                    // never emit a terminal cursor
+                                    // computed on the predecessor).
+                                    let snap3 = feed.source_snapshot();
+                                    // Raw fallback: a terminal that
+                                    // belongs to a post-join generation
+                                    // is NOT emitted — raw disconnects
+                                    // instead.
+                                    if ctx.surface == Surface::RawScalar
+                                        && snap3.generation != join_gen
+                                    {
+                                        crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        return;
+                                    }
+                                    if !sse_send(
+                                        &tx,
+                                        ctx.status_ctl(snap3.source.locate(cursor), true),
+                                    )
+                                    .await
                                     {
                                         return;
                                     }
@@ -653,6 +715,25 @@ pub(crate) fn feed_key_of(
         None | Some("") => FeedKey::default_lane(identity),
         Some(rk) => FeedKey::keyed(identity, rk),
     }
+}
+
+/// Raw fallback for the lineage compatibility gate: a well-formed SSE
+/// response that ends immediately — the same disconnect-and-resume
+/// contract every topology fallback uses (never a terminal control).
+/// The raw client resumes through the legacy lineage path.
+fn raw_lineage_fallback_response(
+    _state: &Arc<AppState>,
+    desc: &crate::registry::StreamDesc,
+) -> axum::response::Response {
+    crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
+        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let usage = crate::usage::counters(&crate::crypto::RouteHash::for_stream(&desc.sref()).0);
+    let mt = crate::registry::media_type(&desc.content_type);
+    response_from_stream(
+        futures_util::stream::empty::<Result<Bytes, std::io::Error>>(),
+        mt != "application/json" && !mt.starts_with("text/"),
+        &usage,
+    )
 }
 
 fn response_from_stream(

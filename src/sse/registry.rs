@@ -148,6 +148,12 @@ impl FeedRegistry {
         self.map.lock().unwrap().len()
     }
 
+    /// Peek at an existing feed (no attach) — the raw compatibility
+    /// gate inspects the current source generation BEFORE subscribing.
+    pub(crate) fn feed_for(&self, key: &FeedKey) -> Option<Arc<LiveFeed>> {
+        self.map.lock().unwrap().get(key).cloned()
+    }
+
     #[cfg(test)]
     pub(crate) fn len_for_test(&self) -> usize {
         self.map.lock().unwrap().len()

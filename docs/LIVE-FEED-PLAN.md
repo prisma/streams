@@ -132,6 +132,40 @@ duplicate), two shared subscribers through one swap (exactly-once on
 both, both cursors decode), and the held-publication handoff (no
 false terminal while held, prompt delivery on release).
 
+### Round-5 hardening (2026-08-24)
+
+1. **Seal-before-refresh**: a sealed descriptor with a compatible
+   lineage extension is DRAINED first — genuine closure means "no
+   future data after the FULL lineage", never "the installed source
+   already has everything" (terminal-before-drain data loss closed).
+   The terminal control is located against the CURRENT source at emit
+   time.
+2. **External adoption**: `LineageSource::build` resolves spans with
+   the external `engine_for` (customer adoption stamp) — a maintenance
+   sweep can never install custody over an engine serving a LiveFeed
+   (custody leg reuses the R29 sweep machinery).
+3. **Raw compatibility gate**: a raw session may only join a
+   single-segment source at generation 0 — peeked before attach and
+   enforced against the atomically captured join generation after; a
+   late-attaching raw request gets the typed immediate-disconnect
+   fallback.
+4. **Resume result**: after any completed `scaler3::resume` await, the
+   descriptor is re-read unconditionally — the boolean is not evidence
+   the topology did not change (external-winner race closed).
+5. **Drain-before-terminal**: the `Closed` outcome drains the retained
+   ring BEFORE the terminal control — a session whose drive published
+   and closed the lifecycle between another session's `take_visible`
+   and its drive could otherwise terminal-close the loser with records
+   still in the ring (found by the two-subscriber seal flake; transient
+   engine errors during a build are typed `RetryLater`, never a
+   feed-wide incarnation cutoff).
+
+Legs: seal-before-refresh with two shared subscribers (successor
+records exactly once each, one terminal each, terminal cursor IS
+(child, local 2)); raw late attach after a swap (immediate EOF, no
+scalar lineage data, no terminal); sweep-custody decline on the
+swapped child engine.
+
 ## Stage 7 — Cutover & deletion — STATUS: PARTIAL
 
 POSTURE (corrected 2026-08-24, per the follow-up review): the DEFAULT

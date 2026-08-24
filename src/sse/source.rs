@@ -147,6 +147,26 @@ pub(crate) struct LineageSource {
     spans: Vec<LineageSpan>,
 }
 
+/// Why a lineage cannot be built here, split by retry semantics
+/// (review round 5: a TRANSIENT engine failure must never become a
+/// feed-wide incarnation cutoff).
+pub(crate) enum LineageBuildError {
+    /// Durable: this instance cannot serve the lineage (wrong owner,
+    /// no span, inconsistent map) — disconnect-and-reroute.
+    Permanent(String),
+    /// Transient: engine opening / anti-flap holdoff — retry.
+    Transient(String),
+}
+
+impl std::fmt::Display for LineageBuildError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Permanent(m) => write!(f, "permanent: {m}"),
+            Self::Transient(m) => write!(f, "transient: {m}"),
+        }
+    }
+}
+
 impl LineageSource {
     /// Build the lane's span chain from a descriptor's segment map
     /// (mirrors the legacy keyed-lineage construction: segments
@@ -158,31 +178,50 @@ impl LineageSource {
         key: crate::crypto::StreamKey,
         epoch: [u8; 16],
         rk_filter: Option<String>,
-    ) -> anyhow::Result<Arc<Self>> {
-        let map = desc
-            .segments
-            .as_ref()
-            .ok_or_else(|| anyhow::anyhow!("lineage source needs a materialized segment map"))?;
+    ) -> Result<Arc<Self>, LineageBuildError> {
+        let map = desc.segments.as_ref().ok_or_else(|| {
+            LineageBuildError::Permanent("lineage source needs a materialized segment map".into())
+        })?;
         let lane = rk_filter.clone().unwrap_or_default();
         let point = StreamDesc::key_point(&lane);
         let mut segs: Vec<&crate::segmap::SegmentDesc> =
             map.segments.iter().filter(|s| s.contains(point)).collect();
         segs.sort_by_key(|s| (s.created_ms, s.seg_id));
         if segs.is_empty() {
-            anyhow::bail!("lineage has no span for the lane's key point");
+            return Err(LineageBuildError::Permanent(
+                "lineage has no span for the lane's key point".into(),
+            ));
         }
         let mut spans = Vec::with_capacity(segs.len());
         let mut logical = 0u64;
         for sg in segs {
             let identity = desc.dynamic_segment_identity(sg.seg_id);
-            let engine = state
-                .engine_for_scaler(&desc.segment_route(sg))
-                .await
-                .ok_or_else(|| anyhow::anyhow!("segment owner is not local to this instance"))?;
+            // EXTERNAL resolver (review round 5): these engines serve a
+            // live customer subscription, so they carry the external
+            // adoption stamp — the maintenance sweep can never hold or
+            // close them as internal custody while the feed lives.
+            // 409 not_ring_owner is the DURABLE wrong-owner signal;
+            // 503-class errors (open wait, anti-flap) are transient.
+            let engine = match state.engine_for(&desc.segment_route(sg)).await {
+                Ok(e) => e,
+                Err(resp) => {
+                    if resp.status() == axum::http::StatusCode::CONFLICT {
+                        return Err(LineageBuildError::Permanent(format!(
+                            "segment {} is owned by another instance",
+                            sg.seg_id
+                        )));
+                    }
+                    return Err(LineageBuildError::Transient(format!(
+                        "segment {} engine unavailable ({})",
+                        sg.seg_id,
+                        resp.status()
+                    )));
+                }
+            };
             let handle = engine
                 .stream_handle(identity)
                 .await
-                .map_err(|e| anyhow::anyhow!(e))?;
+                .map_err(|e| LineageBuildError::Transient(format!("stream handle: {e}")))?;
             state.keys.put(identity, key.clone(), epoch);
             let cap = sg.sealed_next_offset;
             spans.push(LineageSpan {
@@ -204,7 +243,9 @@ impl LineageSource {
             .take(spans.len().saturating_sub(1))
             .any(|s| s.cap.is_none())
         {
-            anyhow::bail!("lineage has a live span before the tail");
+            return Err(LineageBuildError::Permanent(
+                "lineage has a live span before the tail".into(),
+            ));
         }
         Ok(Arc::new(Self {
             state,
@@ -370,6 +411,53 @@ pub(crate) async fn refresh_transition(
             return Ok(SourceTransition::IncarnationChanged);
         }
         if d.sealed {
+            // A SEALED descriptor may still extend a COMPATIBLE lineage
+            // this feed has not drained (split + successor appends +
+            // seal before this refresh). Genuine closure means "no
+            // future data after the FULL lineage", so a compatible
+            // extension is installed and drained FIRST; closure is
+            // reported only when the feed head reaches the complete
+            // frontier (review round 5: terminal-before-drain data
+            // loss).
+            if let Some(map) = &d.segments
+                && map.pending.is_none()
+                && map.segments.len() > 1
+            {
+                match LineageSource::build(
+                    state.clone(),
+                    d.clone(),
+                    key.clone(),
+                    *epoch,
+                    rk_filter.clone(),
+                )
+                .await
+                {
+                    Ok(next) => {
+                        let new_sig = next.span_sig();
+                        if !sig_compatible(current_sig, &new_sig) {
+                            return Ok(SourceTransition::IncarnationChanged);
+                        }
+                        if new_sig.len() > current_sig.len() {
+                            return Ok(SourceTransition::NewSource(next));
+                        }
+                        // Same spans, everything drained: genuine close.
+                    }
+                    Err(LineageBuildError::Transient(e)) => {
+                        // Transient engine failure mid-drain: RETRY —
+                        // never a feed-wide incarnation cutoff.
+                        tracing::warn!(stream = %sref, error = %e, "sealed lineage drain deferred");
+                        return Ok(SourceTransition::RetryLater);
+                    }
+                    Err(LineageBuildError::Permanent(e)) => {
+                        tracing::warn!(
+                            stream = %sref,
+                            error = %e,
+                            "sealed lineage cannot be drained here; disconnecting to reroute"
+                        );
+                        return Ok(SourceTransition::IncarnationChanged);
+                    }
+                }
+            }
             return Ok(SourceTransition::GenuineClose);
         }
         let Some(map) = &d.segments else {
@@ -377,18 +465,15 @@ pub(crate) async fn refresh_transition(
         };
         if map.pending.is_some() {
             // Transition in flight: AWAIT the resumable completion
-            // under this permit (bounded), then re-read immediately
-            // (review round 4: a detached spawn + unrelated wakeups
-            // made completion heartbeat-dependent).
-            let done = tokio::time::timeout(
+            // under this permit (bounded), then re-read IMMEDIATELY —
+            // regardless of resume's boolean (review round 5: an
+            // external actor may win the completion; the boolean is
+            // not evidence that the topology did not change).
+            let _ = tokio::time::timeout(
                 std::time::Duration::from_secs(10),
                 crate::scaler3::resume(state, &sref),
             )
-            .await
-            .unwrap_or(false);
-            if !done {
-                return Ok(SourceTransition::RetryLater);
-            }
+            .await;
             continue;
         }
         if map.segments.len() <= 1 {
@@ -399,18 +484,22 @@ pub(crate) async fn refresh_transition(
                 .await
             {
                 Ok(n) => n,
-                Err(e) => {
-                    // Wrong owner / engine unavailable / inconsistent
-                    // topology: this instance cannot serve the new
-                    // lineage — disconnect-and-reroute NOW, never a
-                    // heartbeat-long retry limbo (review round 4, fleet
-                    // posture).
+                // Durable wrong-owner / inconsistent topology:
+                // disconnect-and-reroute NOW (fleet posture).
+                Err(LineageBuildError::Permanent(e)) => {
                     tracing::warn!(
                         stream = %sref,
                         error = %e,
                         "lineage source cannot be built here; disconnecting to reroute"
                     );
                     return Ok(SourceTransition::IncarnationChanged);
+                }
+                // Transient (engine opening, anti-flap holdoff):
+                // RETRY — never a feed-wide incarnation cutoff
+                // (review round 5).
+                Err(LineageBuildError::Transient(e)) => {
+                    tracing::warn!(stream = %sref, error = %e, "lineage build deferred");
+                    return Ok(SourceTransition::RetryLater);
                 }
             };
         let new_sig = next.span_sig();

@@ -35262,3 +35262,226 @@ async fn livefeed_split_held_publication_handoff_is_prompt() {
     );
     let _ = split.await;
 }
+
+// ==================================================================
+// LIVE-FEED Stage 6 round-5 legs: seal-before-refresh drain,
+// raw late-attach compatibility, external adoption custody.
+// ==================================================================
+
+/// Round-5 blocker 1 (red): split + successor records + seal ALL
+/// before the session refreshes — the session must drain the full
+/// successor lineage FIRST, then emit exactly one terminal control.
+/// With TWO shared subscribers.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_split_seal_before_refresh_drains_then_terminates() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lfseal",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for i in 0..2u64 {
+        hub_append_lf(addr, "lfseal", &format!(r#"{{"i":{i}}}"#)).await;
+    }
+    let mut sub1 = lf_connect(addr, "lfseal", "").await;
+    let (_, _) = hub_sse_collect(&mut sub1, 8, |t| t.contains("upToDate")).await;
+    let mut sub2 = lf_connect(addr, "lfseal", "").await;
+    let (_, _) = hub_sse_collect(&mut sub2, 8, |t| t.contains("upToDate")).await;
+
+    // Hold BOTH subscribers' drives, then: split, append successor
+    // records, seal the collection — ALL before any refresh.
+    crate::failpoints::arm(crate::failpoints::Fp::SseFeedBeforeDrive, "lfseal");
+    split_and_await(&state, "lfseal", 0).await;
+    for i in 2..4u64 {
+        hub_append_lf(addr, "lfseal", &format!(r#"{{"i":{i}}}"#)).await;
+    }
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/lfseal:seal",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{}",
+    )
+    .await;
+    assert_eq!(st, 200);
+    crate::failpoints::release(crate::failpoints::Fp::SseFeedBeforeDrive, "lfseal");
+
+    // Both subscribers: all four records exactly once, then ONE
+    // terminal control, then EOF — and the TERMINAL cursor names the
+    // final segment-local position.
+    state.registry.invalidate(&state.raw_adapter_sref("lfseal"));
+    let desc = state
+        .registry
+        .get(&state.raw_adapter_sref("lfseal"))
+        .await
+        .unwrap()
+        .unwrap();
+    let epoch = desc.epoch_bytes().unwrap();
+    let child_seg = desc.resolve_segment("").seg_id;
+    let expected_terminal = crate::product_cursor::KeyCursor {
+        epoch,
+        key_hash: crate::crypto::stream_hash(""),
+        seg_id: child_seg,
+        offset: 2,
+    }
+    .encode(&desc.project_id, &skey());
+    for (n, s) in [(1, &mut sub1), (2, &mut sub2)] {
+        let (acc, eof) = hub_sse_collect(s, 15, |_| false).await;
+        assert!(eof, "sub{n}: EOF after the terminal control");
+        // The subscribers joined at Now: the SUCCESSOR records are
+        // what the drain must not lose.
+        for i in 2..4u64 {
+            let needle = format!("\"i\":{i}}}");
+            assert_eq!(
+                acc.matches(&needle).count(),
+                1,
+                "sub{n}: successor record {i} exactly once (no drain loss):\n{acc}"
+            );
+        }
+        assert_eq!(
+            acc.matches("\"sealed\":true").count(),
+            1,
+            "sub{n}: exactly one terminal control:\n{acc}"
+        );
+        assert_eq!(
+            last_next_cursor(&acc),
+            expected_terminal,
+            "sub{n}: the terminal cursor IS (successor segment, segment-local 2)"
+        );
+    }
+}
+
+/// Round-5 blocker 3 (red): a RAW request that attaches AFTER the
+/// lane's feed swapped takes the typed fallback — immediate EOF,
+/// never a scalar control over lineage data, never a terminal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_raw_late_attach_after_swap_gets_no_lineage_scalars() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let ct = ("content-type", "application/json");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/lfr3", &[ct], br#"[{"r":0}]"#).await;
+    assert!(st == 200 || st == 201);
+
+    // A PRODUCT subscriber holds the default lane's feed.
+    let mut prod = lf_connect(addr, "lfr3", "").await;
+    let (_, _) = hub_sse_collect(&mut prod, 8, |t| t.contains("upToDate")).await;
+
+    // The raw request parks BEFORE the lease gate (thus before attach).
+    crate::failpoints::arm(crate::failpoints::Fp::SseBeforeLeaseGate, "lfr3");
+    use tokio::io::AsyncWriteExt;
+    let mut raw = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let start_tok = crate::offsets::encode_ep(0, crate::offsets::Offset::START);
+    raw.write_all(
+        format!(
+            "GET /v1/stream/lfr3?live=sse&offset={start_tok} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    wait_parked(crate::failpoints::Fp::SseBeforeLeaseGate, "lfr3", 1).await;
+
+    // Split + successor append: the PRODUCT session swaps the feed to
+    // a lineage source (generation 1).
+    split_and_await(&state, "lfr3", 0).await;
+    hub_append_lf(addr, "lfr3", r#"{"r":1}"#).await;
+    let (p1, _) = hub_sse_collect(&mut prod, 10, |t| t.contains("\"r\":1")).await;
+    assert!(p1.contains("\"r\":1"), "product rode the swap:\n{p1}");
+
+    // Resume the raw request: it must NOT emit the successor record
+    // with scalar controls — typed immediate disconnect only.
+    crate::failpoints::release(crate::failpoints::Fp::SseBeforeLeaseGate, "lfr3");
+    let (acc, eof) = hub_sse_collect(&mut raw, 10, |_| false).await;
+    assert!(
+        eof,
+        "the late-attaching raw request is cut off, not served lineage"
+    );
+    assert!(
+        !acc.contains("\"streamClosed\":true"),
+        "the fallback is never a terminal control:\n{acc}"
+    );
+    assert!(
+        !acc.contains("\"r\":1"),
+        "no successor data with scalar cursors:\n{acc}"
+    );
+}
+
+/// Round-5 blocker 2 (red): engines opened for a customer LiveFeed
+/// lineage carry the EXTERNAL adoption stamp — a maintenance sweep
+/// can never install custody over them while the feed lives.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_swap_externally_adopts_child_engines() {
+    let _serial = sweep_lock().lock().await;
+    let store = mem();
+    let prefixes = vec![
+        "00".to_string(),
+        "01".to_string(),
+        "10".to_string(),
+        "11".to_string(),
+    ];
+    let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lfad",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append_lf(addr, "lfad", r#"{"i":0}"#).await;
+    let mut sck = lf_connect(addr, "lfad", "").await;
+    let (_, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+
+    split_and_await(&state, "lfad", 0).await;
+    hub_append_lf(addr, "lfad", r#"{"i":1}"#).await;
+    let (acc, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"i\":1")).await;
+    assert!(acc.contains("\"i\":1"), "the swap delivered:\n{acc}");
+
+    // The child engine LiveFeed opened must carry the external stamp:
+    // repeated sweeps neither close it nor install custody.
+    state.registry.invalidate(&state.raw_adapter_sref("lfad"));
+    let desc = state
+        .registry
+        .get(&state.raw_adapter_sref("lfad"))
+        .await
+        .unwrap()
+        .unwrap();
+    let child_route = desc.segment_route_by_id(desc.resolve_segment("").seg_id);
+    let prefix = crate::registry::shard_for_hash(&state.shard_prefixes, &child_route);
+    let engine = state
+        .shards
+        .read()
+        .unwrap()
+        .get(&prefix)
+        .cloned()
+        .expect("the child engine is resident after the swap");
+    for _ in 0..6 {
+        crate::billing::sweep_owned_outboxes(&state).await;
+    }
+    assert!(
+        state.shards.read().unwrap().contains_key(&prefix),
+        "an engine serving a customer LiveFeed must never be sweep-closed"
+    );
+    assert_eq!(
+        engine
+            .sweep_custody
+            .load(std::sync::atomic::Ordering::Relaxed),
+        0,
+        "custody must never be installed over a customer LiveFeed engine"
+    );
+}
