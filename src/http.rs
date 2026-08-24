@@ -1091,6 +1091,7 @@ async fn debug_load(
             "oversize_dropped": crate::sse::auth::sse_stats::FEED_OVERSIZE_DROPPED.load(std::sync::atomic::Ordering::Relaxed),
             "uncached_publish": crate::sse::auth::sse_stats::FEED_UNCACHED_PUBLISH.load(std::sync::atomic::Ordering::Relaxed),
             "lag_disconnects": crate::sse::auth::sse_stats::FEED_LAG_DISCONNECTS.load(std::sync::atomic::Ordering::Relaxed),
+            "topology_disconnects": crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS.load(std::sync::atomic::Ordering::Relaxed),
             "catchup_retries": crate::sse::auth::sse_stats::FEED_CATCHUP_RETRIES.load(std::sync::atomic::Ordering::Relaxed),
             "version_bumps": crate::sse::auth::sse_stats::FEED_VERSION_BUMPS.load(std::sync::atomic::Ordering::Relaxed),
         },

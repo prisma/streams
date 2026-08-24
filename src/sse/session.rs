@@ -9,17 +9,20 @@
 //!   * at a verified durable frontier the session emits ONE standalone
 //!     upToDate control (deduped by reported position);
 //!   * at genuine closure it emits exactly ONE sealed/streamClosed
-//!     terminal control, then EOF — transitions disconnect WITHOUT a
-//!     terminal control.
+//!     terminal control, then EOF; a topology transition swaps the
+//!     feed's source in place (product surface) or disconnects WITHOUT
+//!     a terminal control (raw fallback, incarnation change).
 //!
 //! Phases:
 //!   A  INITIAL CATCH-UP — private durable reads bounded by the
-//!      CAPTURED join head (never chases a moving frontier).
+//!      CAPTURED join head (never chases a moving frontier); re-entered
+//!      when the ring overtakes a not-yet-live session.
 //!   B  LIVE — shared consumption: one batch per hand-off; contended
-//!      drivers park on the version watch.
+//!      drivers park on the version watch; a source swap parks on the
+//!      source-generation watch and re-snapshots.
 
 use super::auth::{GatedSseBody, LeaseWatch, SseLease};
-use super::feed::{DriveOutcome, FeedKey, FeedSourceRead, LiveFeed, Take};
+use super::feed::{DriveOutcome, FeedKey, LiveFeed, Take};
 use crate::http::{AppState, ReadParams, SseSlot, err_resp, sse_heartbeat, sse_send};
 use bytes::{Bytes, BytesMut};
 use std::sync::Arc;
@@ -40,21 +43,19 @@ pub(crate) struct SessionCtx {
     key: crate::crypto::StreamKey,
     epoch: [u8; 16],
     rk_hash: [u8; 16],
-    /// The ACTUAL live segment this lane resolves to (finding 7): a
-    /// pruned-to-one segment map can leave a nonzero live segment ID,
-    /// and product cursors must name it, not hard-coded zero.
-    seg_id: u32,
 }
 
 impl SessionCtx {
     /// Bare cursor control (no status flags) for one record boundary.
-    fn record_ctl(&self, offset_after: u64) -> Bytes {
+    /// `seg_id` is the segment the SOURCE located the position in —
+    /// it varies across a lineage (Stage 6).
+    fn record_ctl(&self, offset_after: u64, seg_id: u32) -> Bytes {
         match self.surface {
             Surface::Product => {
                 let tok = crate::product_cursor::KeyCursor {
                     epoch: self.epoch,
                     key_hash: self.rk_hash,
-                    seg_id: self.seg_id,
+                    seg_id,
                     offset: offset_after,
                 }
                 .encode(&self.desc.project_id, &self.key);
@@ -70,13 +71,13 @@ impl SessionCtx {
     }
 
     /// Standalone STATUS control — the ONLY frame carrying flags.
-    fn status_ctl(&self, offset_after: u64, closed: bool) -> Bytes {
+    fn status_ctl(&self, offset_after: u64, closed: bool, seg_id: u32) -> Bytes {
         match self.surface {
             Surface::Product => {
                 let tok = crate::product_cursor::KeyCursor {
                     epoch: self.epoch,
                     key_hash: self.rk_hash,
-                    seg_id: self.seg_id,
+                    seg_id,
                     offset: offset_after,
                 }
                 .encode(&self.desc.project_id, &self.key);
@@ -97,8 +98,8 @@ impl SessionCtx {
 
     /// Shared data event + this session's bare cursor control = ONE
     /// wire chunk (small local concat over the shared payload).
-    fn compose_record(&self, data: &Bytes, offset_after: u64) -> Bytes {
-        let ctl = self.record_ctl(offset_after);
+    fn compose_record(&self, data: &Bytes, offset_after: u64, seg_id: u32) -> Bytes {
+        let ctl = self.record_ctl(offset_after, seg_id);
         let mut out = BytesMut::with_capacity(data.len() + ctl.len());
         out.extend_from_slice(data);
         out.extend_from_slice(&ctl);
@@ -186,9 +187,11 @@ pub(crate) async fn serve(
     // advances the feed between attach and session start, and Phase A
     // would then privately deliver records the shared ring also holds.
     let mut ver_rx = subscription.version_rx();
+    let mut src_gen_rx = feed.source_gen_watch();
+    let join_gen = feed.source_snapshot().generation;
     let mut cursor = match start {
         crate::http::StartPos::At(p) => p,
-        crate::http::StartPos::Now => src.frontier(),
+        crate::http::StartPos::Now => feed.current_source().frontier(),
     };
     // PHASE A handoff bound (finding 8): catch up only to the head
     // captured at subscribe time — never chase the moving frontier.
@@ -200,9 +203,6 @@ pub(crate) async fn serve(
             crate::http::SseSurface::Product => Surface::Product,
         },
         rk_hash: crate::crypto::stream_hash(&lane_rk),
-        // The ACTUAL segment this lane resolves to (finding 7): a map
-        // pruned to one live segment can carry a nonzero segment ID.
-        seg_id: desc.resolve_segment(&lane_rk).seg_id,
         epoch,
         key: key.clone(),
         desc: desc.clone(),
@@ -241,6 +241,10 @@ pub(crate) async fn serve(
         // again — connecting from an old cursor is NEVER a lag.
         let mut reached_live = false;
         let mut catchup_bound = join_head;
+        // Transition retry bound (Stage 6.4): a pending topology change
+        // retries briefly; past the bound the session takes the typed
+        // disconnect-and-resume fallback.
+        let mut transition_retries = 0u32;
 
         // The handoff loop: durable catch-up to `catchup_bound`, then
         // live consumption. Re-entered when the ring overtakes a
@@ -249,12 +253,16 @@ pub(crate) async fn serve(
         'handoff: loop {
             // DURABLE CATCH-UP: private reads bounded by the catch-up
             // bound — never emit at/after it (finding 8: those records
-            // arrive through the shared ring in the live phase).
+            // arrive through the shared ring in the live phase). One
+            // snapshot per pass: a mid-catch-up swap is picked up on
+            // the next pass (the old snapshot stays correct for its
+            // own spans).
+            let csrc = feed.current_source();
             while cursor < catchup_bound {
                 if lease_watch.revoked(&task_state) {
                     return;
                 }
-                match src.read_batch(cursor, 1024 * 1024).await {
+                match csrc.read_batch(cursor, 1024 * 1024).await {
                     Ok(batch) if batch.scan_to > cursor => {
                         for r in &batch.records {
                             if r.off >= catchup_bound {
@@ -263,7 +271,8 @@ pub(crate) async fn serve(
                             if r.off < cursor {
                                 continue;
                             }
-                            let frame = ctx.compose_record(&src.prepare_data(r), r.off + 1);
+                            let (sg, _) = csrc.locate(r.off + 1);
+                            let frame = ctx.compose_record(&csrc.prepare_data(r), r.off + 1, sg);
                             if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
                                 return;
                             }
@@ -280,7 +289,12 @@ pub(crate) async fn serve(
                         // Match-free scanned range still progresses.
                         cursor = cursor.max(batch.scan_to.min(catchup_bound));
                     }
-                    _ => {
+                    // This source's spans are exhausted below the bound
+                    // (a swap happened mid-catch-up): the live loop
+                    // re-snapshots and, if the ring moved, re-catches-up
+                    // through the 'handoff path.
+                    Ok(_) => break,
+                    Err(_) => {
                         // Source failure mid-catch-up: bounded backoff,
                         // then retry the SAME bound — never a hot loop
                         // (finding 6 discipline applies here too).
@@ -303,11 +317,26 @@ pub(crate) async fn serve(
                 let mut ver_wait = Box::pin(async {
                     let _ = ver_rx.changed().await;
                 });
-                // The source waiter must be REGISTERED now, not at the
-                // final select! (finding: registration window):
-                // `enable()` registers the waiter eagerly; every state
-                // read in this iteration is covered.
-                let cur_src = feed.current_source();
+                let mut gen_wait = Box::pin(async {
+                    let _ = src_gen_rx.changed().await;
+                });
+                // The source snapshot for THIS iteration (Stage 6.1):
+                // the waiter must be REGISTERED now, not at the final
+                // select! — `enable()` registers eagerly; a source swap
+                // mid-iteration is caught by gen_wait, and the next
+                // iteration re-snapshots.
+                let snap = feed.source_snapshot();
+                let cur_src = snap.source.clone();
+                // RAW scalar cursors cannot name a segment: a raw
+                // session never survives a source swap in place — it
+                // takes the typed disconnect-and-resume fallback into
+                // the legacy lineage path (Stage 6.4).
+                if ctx.surface == Surface::RawScalar && snap.generation != join_gen {
+                    crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    tracing::info!("livefeed raw session: source swap; disconnecting to resume");
+                    return;
+                }
                 let src_wait = cur_src.advance_notify().notified();
                 tokio::pin!(src_wait);
                 src_wait.as_mut().enable();
@@ -331,7 +360,8 @@ pub(crate) async fn serve(
                     }
                     Take::Batch { batch, start_index } => {
                         for r in batch.records[start_index..].iter() {
-                            let frame = ctx.compose_record(&r.data_event, r.offset + 1);
+                            let (sg, _) = cur_src.locate(r.offset + 1);
+                            let frame = ctx.compose_record(&r.data_event, r.offset + 1, sg);
                             if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
                                 return;
                             }
@@ -354,45 +384,117 @@ pub(crate) async fn serve(
                     }
                     Take::AtHead => {}
                 }
-                let frontier = src.frontier();
-                let closed = src.closed();
+                let frontier = cur_src.frontier();
+                let closed = cur_src.closed();
                 if cursor >= frontier {
-                    // TERMINAL: at genuine close exactly ONE sealed
-                    // control is emitted, then EOF — never a preceding
-                    // duplicate upToDate at the same position (finding 7).
-                    let genuine = closed && genuine_closure_checked(&task_state, &sref).await;
-                    if genuine {
-                        if !sse_send(&tx, ctx.status_ctl(cursor, true)).await {
-                            return;
-                        }
-                        return; // EOF after THE final control
-                    }
-                    // Transition (closed but NOT genuine): disconnect
-                    // without a terminal control — the client resumes
-                    // from its cursor into the new topology via the
-                    // legacy lineage path (finding 5 minimum safe
-                    // behavior).
                     if closed {
-                        tracing::info!(
-                            "topology transition detected: disconnecting without terminal"
-                        );
-                        return;
-                    }
-                    // Open frontier: one upToDate per position (deduped).
-                    if need_status && last_reported != Some(cursor) {
-                        if !sse_send(&tx, ctx.status_ctl(cursor, false)).await
-                            || lease_watch.revoked(&task_state)
-                        {
-                            return;
+                        // Genuine close OR topology transition — ONLY
+                        // the drive (driver permit → descriptor refresh)
+                        // decides, and it installs the successor source
+                        // on a transition (Stage 6.3). Contended (None):
+                        // the winner swaps or closes; ver/gen waits
+                        // observe it.
+                        if let Some(outcome) = feed.drive_once().await {
+                            match outcome {
+                                DriveOutcome::Closed => {
+                                    // TERMINAL: exactly ONE sealed control,
+                                    // then EOF.
+                                    let (sg, _) = cur_src.locate(cursor);
+                                    if !sse_send(&tx, ctx.status_ctl(cursor, true, sg)).await {
+                                        return;
+                                    }
+                                    return; // EOF after THE final control
+                                }
+                                DriveOutcome::IncarnationClosed => {
+                                    crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
+                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                    tracing::info!(
+                                        stream = %sref,
+                                        "livefeed incarnation/topology changed; disconnecting without terminal"
+                                    );
+                                    return;
+                                }
+                                // Swapped and published: loop with
+                                // the new source.
+                                DriveOutcome::Published => {
+                                    transition_retries = 0;
+                                    continue;
+                                }
+                                // Swapped and delivered records to
+                                // THIS driver (singleton): they are
+                                // ours to emit — dropping them
+                                // would silently lose them (the
+                                // feed head already advanced).
+                                DriveOutcome::Solo { records, scan_to } => {
+                                    transition_retries = 0;
+                                    // The swap installed a NEW
+                                    // source: locate against THAT,
+                                    // not the loop-top snapshot.
+                                    let snap2 = feed.source_snapshot();
+                                    let at_cursor = cursor;
+                                    for r in records.iter().filter(|r| r.offset >= at_cursor) {
+                                        let (sg, _) = snap2.source.locate(r.offset + 1);
+                                        let frame =
+                                            ctx.compose_record(&r.data_event, r.offset + 1, sg);
+                                        if !sse_send(&tx, frame).await
+                                            || lease_watch.revoked(&task_state)
+                                        {
+                                            return;
+                                        }
+                                        crate::sse::auth::sse_stats::DELIVERED_RECORDS
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        crate::billing::meter_read_chunk(
+                                            &task_state.billing_reads,
+                                            &crate::billing::identity_of(&task_state, &task_desc),
+                                            u64::from(r.payload_len),
+                                            1,
+                                        );
+                                        cursor = cursor.max(r.offset + 1);
+                                    }
+                                    cursor = cursor.max(scan_to);
+                                    need_status = true;
+                                    continue;
+                                }
+                                DriveOutcome::Idle
+                                | DriveOutcome::NoProgress
+                                | DriveOutcome::SourceFailed => {
+                                    transition_retries += 1;
+                                    if transition_retries > 64 {
+                                        crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        tracing::warn!(
+                                            stream = %sref,
+                                            "topology transition did not settle; disconnecting to resume"
+                                        );
+                                        return;
+                                    }
+                                    // Fall through to the park: the resume
+                                    // spawn or the next append/heartbeat
+                                    // wakes us.
+                                }
+                            }
                         }
-                        need_status = false;
-                        last_reported = Some(cursor);
-                        // An HONEST upToDate was emitted: from here on,
-                        // falling below the floor is genuine lag.
-                        reached_live = true;
+                    } else {
+                        transition_retries = 0;
+                        // Open frontier: one upToDate per position
+                        // (deduped).
+                        if need_status && last_reported != Some(cursor) {
+                            let (sg, _) = cur_src.locate(cursor);
+                            if !sse_send(&tx, ctx.status_ctl(cursor, false, sg)).await
+                                || lease_watch.revoked(&task_state)
+                            {
+                                return;
+                            }
+                            need_status = false;
+                            last_reported = Some(cursor);
+                            // An HONEST upToDate was emitted: from here
+                            // on, falling below the floor is genuine lag.
+                            reached_live = true;
+                        }
                     }
                 } else {
                     need_status = true;
+                    transition_retries = 0;
                 }
 
                 // Drive when progress is needed. Contended callers fall
@@ -410,7 +512,8 @@ pub(crate) async fn serve(
                         Some(DriveOutcome::Solo { records, scan_to }) => {
                             let at_cursor = cursor;
                             for r in records.iter().filter(|r| r.offset >= at_cursor) {
-                                let frame = ctx.compose_record(&r.data_event, r.offset + 1);
+                                let (sg, _) = cur_src.locate(r.offset + 1);
+                                let frame = ctx.compose_record(&r.data_event, r.offset + 1, sg);
                                 if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
                                     return;
                                 }
@@ -435,6 +538,15 @@ pub(crate) async fn serve(
                         // A publication or closure changed feed state
                         // (and bumped the version): loop and consume it.
                         Some(DriveOutcome::Published) | Some(DriveOutcome::Closed) => continue,
+                        Some(DriveOutcome::IncarnationClosed) => {
+                            crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            tracing::info!(
+                                stream = %sref,
+                                "livefeed incarnation changed mid-stream; disconnecting"
+                            );
+                            return;
+                        }
                         // No-progress page or source failure: feed state
                         // did NOT change and the version was NOT bumped —
                         // park rather than spin (finding 6). The next
@@ -453,6 +565,7 @@ pub(crate) async fn serve(
                 // Park.
                 tokio::select! {
                     _ = &mut ver_wait => {}
+                    _ = &mut gen_wait => {}
                     _ = &mut src_wait => {}
                     _ = tx.closed() => {
                         crate::sse::auth::sse_stats::DISCONNECT_CLIENT_CLOSED
@@ -495,13 +608,6 @@ pub(crate) fn feed_key_of(
         None | Some("") => FeedKey::default_lane(identity),
         Some(rk) => FeedKey::keyed(identity, rk),
     }
-}
-
-async fn genuine_closure_checked(
-    state: &Arc<AppState>,
-    sref: &crate::tenant::TenantStreamRef,
-) -> bool {
-    crate::http::genuine_closure(state, sref, true).await
 }
 
 fn response_from_stream(
@@ -567,16 +673,16 @@ mod tests {
         let ctx = SessionCtx {
             surface: Surface::Product,
             rk_hash: crate::crypto::stream_hash(&lane_rk),
-            seg_id: desc.resolve_segment(&lane_rk).seg_id,
             epoch,
             key: key.clone(),
             desc: desc.clone(),
         };
-        assert_eq!(ctx.seg_id, 5, "resolve must find the nonzero live segment");
+        let seg_id = desc.resolve_segment(&lane_rk).seg_id;
+        assert_eq!(seg_id, 5, "resolve must find the nonzero live segment");
 
         // The emitted bare cursor control carries a KeyCursor naming
         // segment 5, decodable and authenticated.
-        let ctl = ctx.record_ctl(42);
+        let ctl = ctx.record_ctl(42, seg_id);
         let text = String::from_utf8(ctl.to_vec()).unwrap();
         let tok = text
             .split("\"nextCursor\":\"")
@@ -595,7 +701,7 @@ mod tests {
         assert_eq!(kc.offset, 42);
 
         // And the standalone status control names it too.
-        let status = ctx.status_ctl(42, false);
+        let status = ctx.status_ctl(42, false, seg_id);
         let text = String::from_utf8(status.to_vec()).unwrap();
         let tok = text
             .split("\"nextCursor\":\"")

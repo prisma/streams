@@ -97,7 +97,7 @@ only their control vocabulary differs.
 | Data encoding | JSON arrays; text as `data:` lines; binary base64 (`Stream-SSE-Data-Encoding`) |
 | Status controls | decided against the durable frontier at SEND time; `upToDate` only when truly caught up |
 | Genuine close | exactly ONE final control carrying `sealed/streamClosed`, then EOF |
-| Topology transition | NOT terminal: v1 behavior for owner movement remains disconnect-and-resume (typed); split survival through source refresh is targeted within the rewrite |
+| Topology transition | NOT terminal: product subscriptions survive splits IN PLACE via the feed's atomic source swap (Stage 6); raw scalar subscriptions and owner movement remain disconnect-and-resume (typed) |
 | Slow client | bounded queue + bounded send deadline → disconnect-on-lag |
 | Edge buffering | responses always carry `x-accel-buffering: no` |
 | Billing | one subscribe meter at connect + one payload chunk meter per delivered record — unchanged |

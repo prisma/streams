@@ -90,6 +90,58 @@ pub(crate) trait FeedSourceRead: Send + Sync {
     /// Wake source: fired on every durable advance and close. Sessions
     /// park on this (registered eagerly at loop top — see session.rs).
     fn advance_notify(&self) -> &tokio::sync::Notify;
+    /// Translate a LINEARIZED logical offset (one-past-a-record) into
+    /// the wire cursor identity `(seg_id, segment-local offset)` —
+    /// Stage 6: the feed's cursor space is linearized across sealed
+    /// predecessor caps; the wire names segments.
+    fn locate(&self, logical_after: u64) -> (u32, u64);
+    /// Span signature `(seg_id, logical_start, sealed cap)` for swap
+    /// validation: an installed replacement must carry the CURRENT
+    /// source's signature as an exact prefix, or the cursor space
+    /// would shift underneath parked sessions.
+    fn span_sig(&self) -> Vec<(u32, u64, Option<u64>)>;
+    /// Stage 6: refresh the descriptor and decide the source's future
+    /// (called ONLY under the feed's driver permit).
+    async fn next_source(&self) -> anyhow::Result<SourceTransition>;
+}
+
+/// What a descriptor refresh decided about the current source.
+pub(crate) enum SourceTransition {
+    /// A validated newer source (longer lineage, same prefix).
+    NewSource(Arc<dyn FeedSourceRead>),
+    /// Genuine collection closure: exactly one terminal control, EOF.
+    GenuineClose,
+    /// The incarnation moved on (delete/recreate) or the topology is
+    /// not a compatible continuation: sessions disconnect WITHOUT a
+    /// terminal control (typed; clients resume from their cursors).
+    IncarnationChanged,
+    /// Transition still in flight: retry on the next wake.
+    RetryLater,
+}
+
+/// A feed-owned source plus its generation (Stage 6.1). Every session
+/// observation carries the generation; a swap bumps it and publishes
+/// one `source_changed` wake.
+#[derive(Clone)]
+pub(crate) struct SourceSnapshot {
+    pub(crate) generation: u64,
+    pub(crate) source: Arc<dyn FeedSourceRead>,
+}
+
+/// Span-signature compatibility for a source swap: the CURRENT
+/// signature must be an exact prefix of the replacement's, where a
+/// previously-live span (cap `None`) may gain its sealed cap — that is
+/// the transition itself. Anything else shifts the cursor space
+/// underneath parked sessions and is NOT a swap.
+pub(crate) fn sig_compatible(
+    old: &[(u32, u64, Option<u64>)],
+    new: &[(u32, u64, Option<u64>)],
+) -> bool {
+    old.len() <= new.len()
+        && old
+            .iter()
+            .zip(new.iter())
+            .all(|(a, b)| a.0 == b.0 && a.1 == b.1 && (a.2.is_none() || a.2 == b.2))
 }
 
 fn charge_for(events: &[PreparedRecord]) -> usize {
@@ -100,7 +152,11 @@ fn charge_for(events: &[PreparedRecord]) -> usize {
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 enum Lifecycle {
     Active,
+    /// Genuine collection close: one terminal control, then EOF.
     Closed,
+    /// Incarnation moved on / incompatible topology: sessions
+    /// disconnect WITHOUT a terminal control (Stage 6).
+    Gone,
 }
 
 struct FeedState {
@@ -151,14 +207,17 @@ impl FeedMemoryBudget {
     /// post-replacement total is what the cap checks, so a full ring
     /// rolls forward at a full global cap. On success the counter
     /// ALREADY reflects both sides: the caller must NOT release the
-    /// replaced batches again.
+    /// replaced batches again. Checked arithmetic: any accounting
+    /// drift fails CLOSED rather than wrapping.
     fn try_replace(&self, released: usize, add: usize) -> bool {
         let (rel, add) = (released as u64, add as u64);
         let mut cur = self.reserved.load(Ordering::Relaxed);
         loop {
             // cur >= rel by the accounting invariant: the replaced
             // bytes are this feed's own prior reservation.
-            let after = cur - rel + add;
+            let Some(after) = cur.checked_sub(rel).and_then(|b| b.checked_add(add)) else {
+                return false; // accounting drift: refuse, never wrap
+            };
             if after > self.max {
                 return false;
             }
@@ -173,7 +232,21 @@ impl FeedMemoryBudget {
     }
 
     fn release(&self, charge: usize) {
-        self.reserved.fetch_sub(charge as u64, Ordering::Relaxed);
+        let charge = charge as u64;
+        let mut cur = self.reserved.load(Ordering::Relaxed);
+        loop {
+            let Some(next) = cur.checked_sub(charge) else {
+                debug_assert!(false, "budget release underflow: {charge} > {cur}");
+                return; // accounting drift: refuse to wrap
+            };
+            match self
+                .reserved
+                .compare_exchange(cur, next, Ordering::SeqCst, Ordering::Relaxed)
+            {
+                Ok(_) => return,
+                Err(actual) => cur = actual,
+            }
+        }
     }
 
     pub(crate) fn reserved(&self) -> u64 {
@@ -182,11 +255,13 @@ impl FeedMemoryBudget {
 }
 
 pub(crate) struct LiveFeed {
-    /// Swap cell (Stage 6): the read source changes on topology
-    /// transitions while sessions stay attached.
-    src: std::sync::RwLock<Arc<dyn FeedSourceRead>>,
+    /// Swap cell (Stage 6): the read source + its generation change on
+    /// topology transitions while sessions stay attached.
+    src: std::sync::RwLock<SourceSnapshot>,
     st: Mutex<FeedState>,
     changed: tokio::sync::watch::Sender<u64>,
+    /// Source-generation watch: ONE publication per installed source.
+    source_changed: tokio::sync::watch::Sender<u64>,
     driving: AtomicBool,
     subscribers: AtomicU64,
     retained_charge: AtomicUsize,
@@ -222,8 +297,12 @@ impl LiveFeed {
     ) -> Arc<Self> {
         let head = src.frontier();
         let (changed, _) = tokio::sync::watch::channel(0u64);
+        let (source_changed, _) = tokio::sync::watch::channel(0u64);
         Arc::new(Self {
-            src: std::sync::RwLock::new(src),
+            src: std::sync::RwLock::new(SourceSnapshot {
+                generation: 0,
+                source: src,
+            }),
             st: Mutex::new(FeedState {
                 head,
                 floor: head,
@@ -233,6 +312,7 @@ impl LiveFeed {
                 lifecycle: Lifecycle::Active,
             }),
             changed,
+            source_changed,
             driving: AtomicBool::new(false),
             subscribers: AtomicU64::new(0),
             retained_charge: AtomicUsize::new(0),
@@ -257,8 +337,38 @@ impl LiveFeed {
 
     /// The CURRENT read source (Stage 6 swap cell).
     pub(crate) fn current_source(&self) -> Arc<dyn FeedSourceRead> {
-        let guard = self.src.read().unwrap();
-        guard.clone()
+        self.source_snapshot().source
+    }
+
+    /// The current source WITH its generation (Stage 6.1): every
+    /// session observation carries a generation, and a swap publishes
+    /// exactly one `source_changed` wake.
+    pub(crate) fn source_snapshot(&self) -> SourceSnapshot {
+        self.src.read().unwrap().clone()
+    }
+
+    /// Persistent source-generation receiver for one session.
+    pub(crate) fn source_gen_watch(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.source_changed.subscribe()
+    }
+
+    /// Install a VALIDATED newer source (Stage 6.3): only the driver
+    /// (permit holder) may install, and only a replacement whose span
+    /// signature carries the CURRENT source's signature as a
+    /// compatible prefix — otherwise the cursor space would shift
+    /// underneath parked sessions, which is an incarnation change,
+    /// not a swap.
+    fn install_source(&self, next: Arc<dyn FeedSourceRead>) -> bool {
+        let mut w = self.src.write().unwrap();
+        if !sig_compatible(&w.source.span_sig(), &next.span_sig()) {
+            return false;
+        }
+        w.generation += 1;
+        w.source = next;
+        let g = w.generation;
+        drop(w);
+        let _ = self.source_changed.send(g);
+        true
     }
 
     pub(crate) fn subscriber_count(&self) -> u64 {
@@ -384,40 +494,88 @@ impl LiveFeed {
     }
 
     async fn drive_under_permit(&self) -> DriveOutcome {
-        let src = self.current_source();
-        let head = self.st.lock().unwrap().head;
-        let outcome = if head >= src.frontier() {
-            if src.closed() && st_lifecycle_active(&self.st) {
-                // Lifecycle transition ONLY; the version bump happens
-                // once, in the outcome fold below (finding 5).
-                let mut st = self.st.lock().unwrap();
-                if st.lifecycle == Lifecycle::Active {
-                    st.lifecycle = Lifecycle::Closed;
-                }
-                DriveOutcome::Closed
-            } else {
-                DriveOutcome::Idle
+        let mut swap_attempts = 0u8;
+        // Lifecycle outcomes are REPEATABLE (every parked session must
+        // observe them on its own drive), but the version bump happens
+        // only on the drive that performs the transition itself.
+        let mut transitioned = false;
+        let outcome = loop {
+            let src = self.current_source();
+            let head = self.st.lock().unwrap().head;
+            if head < src.frontier() {
+                self.source_reads.fetch_add(1, Ordering::Relaxed);
+                break self.read_and_publish(&src, head).await;
             }
-        } else {
-            self.source_reads.fetch_add(1, Ordering::Relaxed);
-            self.read_and_publish(&src, head).await
+            // Nothing durable beyond the head. A closed tail is either
+            // a genuine collection close or a topology transition —
+            // only the descriptor refresh (under THIS permit) decides
+            // and installs the successor source (Stage 6.3).
+            let lifecycle = self.st.lock().unwrap().lifecycle;
+            match lifecycle {
+                Lifecycle::Closed => break DriveOutcome::Closed,
+                Lifecycle::Gone => break DriveOutcome::IncarnationClosed,
+                Lifecycle::Active => {}
+            }
+            if !src.closed() {
+                break DriveOutcome::Idle;
+            }
+            match src.next_source().await {
+                Ok(SourceTransition::NewSource(next)) => {
+                    if self.install_source(next) {
+                        // Validated continuation: re-evaluate with the
+                        // new source (its live tail may already have
+                        // records for this head).
+                        swap_attempts += 1;
+                        if swap_attempts >= 4 {
+                            break DriveOutcome::Idle;
+                        }
+                        continue;
+                    }
+                    // Incompatible topology: NOT a swap — sessions
+                    // disconnect without a terminal control.
+                    let mut st = self.st.lock().unwrap();
+                    st.lifecycle = Lifecycle::Gone;
+                    transitioned = true;
+                    break DriveOutcome::IncarnationClosed;
+                }
+                Ok(SourceTransition::GenuineClose) => {
+                    let mut st = self.st.lock().unwrap();
+                    st.lifecycle = Lifecycle::Closed;
+                    transitioned = true;
+                    break DriveOutcome::Closed;
+                }
+                Ok(SourceTransition::IncarnationChanged) => {
+                    let mut st = self.st.lock().unwrap();
+                    st.lifecycle = Lifecycle::Gone;
+                    transitioned = true;
+                    break DriveOutcome::IncarnationClosed;
+                }
+                Ok(SourceTransition::RetryLater) => break DriveOutcome::Idle,
+                Err(_) => {
+                    crate::sse::auth::sse_stats::FEED_SOURCE_FAILED.fetch_add(1, Ordering::Relaxed);
+                    break DriveOutcome::Idle;
+                }
+            }
         };
         // Bump the version EXACTLY when feed state actually changed
-        // (findings 5+6): a delivery, a publication, or the lifecycle
-        // transition. Idle, no-progress and source failures changed
+        // (findings 5+6): a delivery, a publication, a swap, or the
+        // lifecycle transition ITSELF (its repeated observation is not
+        // a change). Idle, no-progress and source failures changed
         // nothing — bumping would wake every parked session into
         // another immediate drive (the busy retry loop).
-        match outcome {
-            DriveOutcome::Solo { .. } | DriveOutcome::Published | DriveOutcome::Closed => {
-                let ver = {
-                    let mut st = self.st.lock().unwrap();
-                    st.version += 1;
-                    st.version
-                };
-                crate::sse::auth::sse_stats::FEED_VERSION_BUMPS.fetch_add(1, Ordering::Relaxed);
-                let _ = self.changed.send(ver);
-            }
-            DriveOutcome::Idle | DriveOutcome::NoProgress | DriveOutcome::SourceFailed => {}
+        let bump = match outcome {
+            DriveOutcome::Solo { .. } | DriveOutcome::Published => true,
+            DriveOutcome::Closed | DriveOutcome::IncarnationClosed => transitioned,
+            DriveOutcome::Idle | DriveOutcome::NoProgress | DriveOutcome::SourceFailed => false,
+        };
+        if bump {
+            let ver = {
+                let mut st = self.st.lock().unwrap();
+                st.version += 1;
+                st.version
+            };
+            crate::sse::auth::sse_stats::FEED_VERSION_BUMPS.fetch_add(1, Ordering::Relaxed);
+            let _ = self.changed.send(ver);
         }
         outcome
     }
@@ -549,10 +707,6 @@ fn clear_ring(budget: &Arc<FeedMemoryBudget>, st: &mut FeedState, gauge: &Atomic
     gauge.store(0, Ordering::Relaxed);
 }
 
-fn st_lifecycle_active(st: &Mutex<FeedState>) -> bool {
-    st.lock().unwrap().lifecycle == Lifecycle::Active
-}
-
 impl Drop for LiveFeed {
     fn drop(&mut self) {
         // Release the ACTUAL retained bytes back to the process budget
@@ -607,6 +761,11 @@ pub(crate) enum DriveOutcome {
     /// The session parks instead of spinning (finding 6).
     NoProgress,
     Closed,
+    /// The stream incarnation moved on (delete/recreate) or the
+    /// topology is not a compatible continuation: sessions disconnect
+    /// WITHOUT a terminal control (Stage 6; clients resume from their
+    /// cursors through the legacy lineage path).
+    IncarnationClosed,
     /// The source read failed; no state changed, no version bump. The
     /// session parks and retries on the next wake (finding 6).
     SourceFailed,
@@ -733,6 +892,17 @@ pub(crate) mod tests {
         }
         fn advance_notify(&self) -> &tokio::sync::Notify {
             &self.notify
+        }
+        fn locate(&self, logical_after: u64) -> (u32, u64) {
+            (0, logical_after)
+        }
+        fn span_sig(&self) -> Vec<(u32, u64, Option<u64>)> {
+            vec![(0, 0, None)]
+        }
+        async fn next_source(&self) -> anyhow::Result<SourceTransition> {
+            // The fake source has no topology: a closed tail is a
+            // genuine close.
+            Ok(SourceTransition::GenuineClose)
         }
     }
 
@@ -1019,8 +1189,9 @@ pub(crate) mod tests {
             }
         }
         assert_eq!(feed.version(), v, "Idle never bumps");
-        // Closed: exactly ONE bump across the transition; subsequent
-        // drives are Idle again.
+        // Closed: exactly ONE bump across the transition; the outcome
+        // stays OBSERVABLE for every later drive (parked sessions must
+        // each see it) but never bumps again.
         src.closed.store(true, Ordering::Relaxed);
         match feed.drive_once().await {
             Some(DriveOutcome::Closed) => {}
@@ -1028,8 +1199,11 @@ pub(crate) mod tests {
         }
         assert_eq!(feed.version(), v + 1, "the close bumps exactly once");
         match feed.drive_once().await {
-            Some(DriveOutcome::Idle) => {}
-            other => panic!("expected Idle after close, got {}", outcome_name(&other)),
+            Some(DriveOutcome::Closed) => {}
+            other => panic!(
+                "the close outcome must stay observable, got {}",
+                outcome_name(&other)
+            ),
         }
         assert_eq!(feed.version(), v + 1, "no second bump after the close");
     }
@@ -1283,6 +1457,7 @@ pub(crate) mod tests {
             Some(DriveOutcome::Idle) => "Idle",
             Some(DriveOutcome::NoProgress) => "NoProgress",
             Some(DriveOutcome::Closed) => "Closed",
+            Some(DriveOutcome::IncarnationClosed) => "IncarnationClosed",
             Some(DriveOutcome::SourceFailed) => "SourceFailed",
             None => "Contended",
         }

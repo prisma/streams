@@ -33,6 +33,11 @@ pub(crate) mod sse_stats {
     /// Live sessions disconnected for genuine lag (below the floor
     /// AFTER having reached live).
     pub static FEED_LAG_DISCONNECTS: AtomicU64 = AtomicU64::new(0);
+    /// Sessions disconnected WITHOUT a terminal control because the
+    /// incarnation moved on, the topology was incompatible, a
+    /// transition did not settle in bounds, or a raw session met a
+    /// source swap (Stage 6 typed disconnect-and-resume).
+    pub static FEED_TOPOLOGY_DISCONNECTS: AtomicU64 = AtomicU64::new(0);
     /// Initial-handoff durable re-catch-ups (the ring overtook a
     /// session that had not reached live yet — NOT a disconnect).
     pub static FEED_CATCHUP_RETRIES: AtomicU64 = AtomicU64::new(0);

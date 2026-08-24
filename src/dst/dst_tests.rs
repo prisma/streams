@@ -34033,6 +34033,29 @@ async fn wait_parked(fp: crate::failpoints::Fp, name: &str, n: usize) {
     panic!("timed out waiting for {n} parked at {name}");
 }
 
+/// Execute a split and await the COMPLETED topology (pending cleared,
+/// successors published). The return value is deliberately not
+/// asserted: a livefeed session observing the pending transition
+/// spawns the same resumable resume and may legitimately win the
+/// completion race (the split is idempotent either way).
+async fn split_and_await(state: &Arc<crate::http::AppState>, name: &str, seg_id: u32) {
+    let sref = state.raw_adapter_sref(name);
+    let _ = crate::scaler3::execute_split(state, &sref, seg_id, 0x8000_0000_0000_0000).await;
+    for _ in 0..200 {
+        state.registry.invalidate(&sref);
+        let d = state.registry.get(&sref).await.unwrap().unwrap();
+        let done = d
+            .segments
+            .as_ref()
+            .is_some_and(|m| m.pending.is_none() && m.segments.len() > 1);
+        if done {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("split of {name} (seg {seg_id}) did not complete");
+}
+
 /// Finding 2 red (singleton): an ALL-FOREIGN historical range on a
 /// keyed lane is pure scanned progress — the subscriber receives
 /// upToDate WITHOUT being lag-disconnected, and later matches flow.
@@ -34611,4 +34634,378 @@ async fn livefeed_seal_transcript_exact_tail() {
         last_ctl.contains("\"sealed\":true"),
         "the last control is the terminal one:\n{last_ctl}"
     );
+}
+
+// ==================================================================
+// LIVE-FEED Stage 6 legs: source swap across splits. A parked or
+// catching-up PRODUCT session survives a split IN PLACE (source
+// generation +1, no disconnect, no false terminal), keyed lanes keep
+// their isolation, raw takes the typed disconnect fallback, and a
+// genuine seal after a split is still exactly one terminal control.
+// ==================================================================
+
+/// 6.5 headline leg: a subscriber PARKED at upToDate rides a split in
+/// place — no EOF, no sealed control, and records on the successor
+/// segment flow exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_split_parked_subscriber_continues_in_place() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lfs",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append_lf(addr, "lfs", r#"{"s":0}"#).await;
+    let mut sck = lf_connect(addr, "lfs", "").await;
+    let (acc0, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    assert!(acc0.contains("\"s\":0"), "backlog:\n{acc0}");
+
+    // SPLIT while the subscriber is parked at the frontier.
+    split_and_await(&state, "lfs", 0).await;
+
+    // Successor records flow on the SAME connection.
+    hub_append_lf(addr, "lfs", r#"{"s":1}"#).await;
+    let (acc1, eof1) = hub_sse_collect(&mut sck, 10, |t| {
+        t.contains("\"s\":1") && t.matches("\"upToDate\":true").count() >= 2
+    })
+    .await;
+    assert!(
+        !eof1,
+        "a split must NOT disconnect a product livefeed session:\n{acc1}"
+    );
+    assert!(
+        !acc1.contains("\"sealed\":true"),
+        "a split must NOT emit a terminal control:\n{acc1}"
+    );
+    assert!(acc1.contains("\"s\":1"), "successor record flows:\n{acc1}");
+
+    // A genuine seal AFTER the split is still exactly one terminal
+    // control, then EOF.
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/lfs:seal",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{}",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let (tail, eof2) = hub_sse_collect(&mut sck, 15, |_| false).await;
+    assert!(eof2, "EOF after the genuine seal");
+    assert_eq!(
+        tail.matches("\"sealed\":true").count(),
+        1,
+        "exactly one terminal control after the split:\n{tail}"
+    );
+}
+
+/// 6.5: a split landing DURING initial catch-up — every record exactly
+/// once, no disconnect (failpoint-parked between attach and start).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_split_during_initial_catchup_delivers_everything() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lfc2",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for i in 0..3u64 {
+        hub_append_lf(addr, "lfc2", &format!(r#"{{"i":{i}}}"#)).await;
+    }
+
+    crate::failpoints::arm(crate::failpoints::Fp::SseFeedAfterSubscribe, "lfc2");
+    let mut sck = lf_connect(addr, "lfc2", "?cursor=beginning").await;
+    wait_parked(crate::failpoints::Fp::SseFeedAfterSubscribe, "lfc2", 1).await;
+
+    // The split lands while the subscriber is parked between attach
+    // and session start; successor records land after it.
+    split_and_await(&state, "lfc2", 0).await;
+    for i in 3..5u64 {
+        hub_append_lf(addr, "lfc2", &format!(r#"{{"i":{i}}}"#)).await;
+    }
+    crate::failpoints::release(crate::failpoints::Fp::SseFeedAfterSubscribe, "lfc2");
+
+    let (acc, eof) = hub_sse_collect(&mut sck, 12, |t| {
+        t.matches("event: data").count() >= 5 && t.contains("upToDate")
+    })
+    .await;
+    assert!(!eof, "no disconnect across the catch-up split:\n{acc}");
+    for i in 0..5u64 {
+        let needle = format!("\"i\":{i}}}");
+        assert_eq!(
+            acc.matches(&needle).count(),
+            1,
+            "record {i} exactly once across the split:\n{acc}"
+        );
+    }
+    assert!(
+        !acc.contains("\"sealed\":true"),
+        "no false terminal control:\n{acc}"
+    );
+}
+
+/// 6.5: a KEYED lane rides a split in place with its isolation intact.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_keyed_lane_survives_split() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lfk2",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let mut sck = lf_connect(addr, "lfk2", "?routingKey=ka").await;
+    let (acc0, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    assert!(acc0.contains("upToDate"), "parks:\n{acc0}");
+
+    split_and_await(&state, "lfk2", 0).await;
+
+    // One record on the lane's key, one on a foreign key.
+    for (k, v) in [("ka", 1), ("kb", 2)] {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/lfk2/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", k),
+            ],
+            format!(r#"{{"k":"{k}","v":{v}}}"#).as_bytes(),
+        )
+        .await;
+        assert!(st == 200 || st == 204, "append {k}: {st}");
+    }
+    let (acc, eof) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"v\":1")).await;
+    assert!(!eof, "the keyed lane survives the split:\n{acc}");
+    assert!(acc.contains("\"v\":1"), "lane record delivered:\n{acc}");
+    assert!(
+        !acc.contains("\"v\":2"),
+        "foreign-key record must not cross the lane:\n{acc}"
+    );
+    assert!(
+        !acc.contains("\"sealed\":true"),
+        "no false terminal:\n{acc}"
+    );
+}
+
+/// 6.4/6.5 fallback: the RAW surface takes the typed disconnect on a
+/// split (scalar cursors cannot name segments) — EOF, never a
+/// streamClosed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_raw_disconnects_without_terminal_on_split() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let ct = ("content-type", "application/json");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/lfr2", &[ct], br#"[{"r":0}]"#).await;
+    assert!(st == 200 || st == 201);
+
+    use tokio::io::AsyncWriteExt;
+    let mut raw = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let start_tok = crate::offsets::encode_ep(0, crate::offsets::Offset::START);
+    raw.write_all(
+        format!(
+            "GET /v1/stream/lfr2?live=sse&offset={start_tok} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    let (acc0, _) = hub_sse_collect(&mut raw, 8, |t| t.contains("upToDate")).await;
+    assert!(acc0.contains("upToDate"), "raw parks:\n{acc0}");
+
+    split_and_await(&state, "lfr2", 0).await;
+    let (tail, eof) = hub_sse_collect(&mut raw, 12, |_| false).await;
+    assert!(eof, "the raw session takes the typed disconnect");
+    assert!(
+        !tail.contains("\"streamClosed\":true"),
+        "a topology fallback is NEVER a terminal control:\n{tail}"
+    );
+}
+
+/// 6.5: two SEQUENTIAL splits continue in place — the source swaps
+/// twice and every record lands exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_two_sequential_splits_continue_in_place() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lfs3",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append_lf(addr, "lfs3", r#"{"i":0}"#).await;
+    let mut sck = lf_connect(addr, "lfs3", "").await;
+    let (acc0, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    assert!(acc0.contains("\"i\":0"), "backlog:\n{acc0}");
+
+    split_and_await(&state, "lfs3", 0).await;
+    hub_append_lf(addr, "lfs3", r#"{"i":1}"#).await;
+    let (acc1, eof1) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"i\":1")).await;
+    assert!(
+        !eof1 && acc1.contains("\"i\":1"),
+        "first swap delivers:\n{acc1}"
+    );
+
+    // The SECOND split, of the lane's current live segment.
+    state.registry.invalidate(&state.raw_adapter_sref("lfs3"));
+    let desc = state
+        .registry
+        .get(&state.raw_adapter_sref("lfs3"))
+        .await
+        .unwrap()
+        .unwrap();
+    let live_seg = desc.resolve_segment("").seg_id;
+    split_and_await(&state, "lfs3", live_seg).await;
+    hub_append_lf(addr, "lfs3", r#"{"i":2}"#).await;
+    let (acc2, eof2) = hub_sse_collect(&mut sck, 12, |t| {
+        t.contains("\"i\":2") && t.matches("\"upToDate\":true").count() >= 3
+    })
+    .await;
+    assert!(!eof2, "the second swap must not disconnect either");
+    let full = format!("{acc0}{acc1}{acc2}");
+    for i in 0..3u64 {
+        let needle = format!("\"i\":{i}}}");
+        assert_eq!(
+            full.matches(&needle).count(),
+            1,
+            "record {i} exactly once across two splits:\n{full}"
+        );
+    }
+    assert!(
+        !full.contains("\"sealed\":true"),
+        "no false terminal across two splits:\n{full}"
+    );
+}
+
+/// 6.5 lifecycle: delete + recreate is a DISTINCT incarnation — the
+/// old feed never leaks new-incarnation records to the old session,
+/// no terminal control is forged, and the recreated stream lands on a
+/// FRESH feed (storage-hash feed identity). The old session itself
+/// lingers until its lease/client closes, exactly like the legacy
+/// path: nothing about a delete closes the old segment's handle, and
+/// a key-leased session has no deadline pressure — what MUST hold is
+/// that the incarnations share nothing.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_delete_recreate_isolates_incarnations() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lfd",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let mut sck = lf_connect(addr, "lfd", "").await;
+    let (acc0, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    assert!(acc0.contains("upToDate"), "parks:\n{acc0}");
+    assert_eq!(
+        state.live_feeds.len(),
+        1,
+        "one feed on the first incarnation"
+    );
+
+    let (st, _, _) = preq(
+        addr,
+        "DELETE",
+        "/v1/streams/lfd",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 202 || st == 204, "delete {st}");
+
+    // Recreate may briefly race deletion cleanup; the new incarnation
+    // serves a fresh feed independently.
+    let mut created = false;
+    for _ in 0..50 {
+        let (st, _, _) = preq(
+            addr,
+            "PUT",
+            "/v1/streams/lfd",
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            br#"{"format":{"kind":"json"}}"#,
+        )
+        .await;
+        if st == 201 {
+            created = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(created, "recreate");
+    hub_append_lf(addr, "lfd", r#"{"n":1}"#).await;
+
+    // The OLD session must NOT see the new incarnation's records (nor
+    // any forged terminal): a short window with nothing new arriving.
+    let (acc1, _) = hub_sse_collect(&mut sck, 4, |t| t.contains("\"n\":1")).await;
+    assert!(
+        !acc1.contains("\"n\":1"),
+        "no cross-incarnation delivery to the old session:\n{acc1}"
+    );
+    assert!(
+        !acc1.contains("\"sealed\":true"),
+        "delete is never a terminal control:\n{acc1}"
+    );
+
+    // The recreated stream is a DISTINCT feed (storage-hash identity).
+    let mut sck2 = lf_connect(addr, "lfd", "").await;
+    let (acc2, _) = hub_sse_collect(&mut sck2, 8, |t| t.contains("\"n\":1")).await;
+    assert!(
+        acc2.contains("\"n\":1"),
+        "the new incarnation serves normally:\n{acc2}"
+    );
+    assert_eq!(
+        state.live_feeds.len(),
+        2,
+        "old and new incarnations are distinct feeds"
+    );
+
+    // Old session closes: its feed is evicted; the new one remains.
+    drop(sck);
+    for _ in 0..100 {
+        if state.live_feeds.len() == 1 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    }
+    assert_eq!(state.live_feeds.len(), 1, "the old feed is evicted");
 }

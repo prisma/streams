@@ -56,22 +56,50 @@ green (p0..p2 stitched + child tail).
 
 Raw vocabulary leg green through LiveFeed (scalar controls only).
 
-## Stage 6 — Lineage — STATUS: PENDING (attempted; two findings banked)
+## Stage 6 — Lineage — STATUS: DONE (2026-08-24)
 
-A first LineageSource (sequential traversal, absolute hop bookkeeping,
-chain-walking frontier, watchdog-driven source swap) reached functional
-delivery but hung a suite run. BANKED findings:
+In-place split survival for the product surface via an atomic source
+swap. Design decisions (deliberate simplifications, reviewed against
+the Stage-6 brief):
 
-1. frontier() must WALK the remaining chain (sealed caps + live tail) —
-   anchoring on a sealed parent strands sessions at upToDate forever.
-2. The swap wakeup handoff is the hard part: parked sessions must
-   re-arm on the NEW source's notify WITHOUT jumping cursors over
-   interleaved foreign-key virtual slots; the first version hot-spun a
-   session task post-teardown. Needs a design pass (per-generation exit
-   signal + verified permit drain) before shipping.
+1. **Linearized cursor space, not `{seg_id, offset}`**: a selector lane
+   (routing key; the default lane is the `""` lane) has exactly ONE
+   live segment at any time, so the lane's segments chain over their
+   sealed caps into ONE logical u64 — the feed's existing
+   head/floor/ring/budget machinery is untouched. `LineageSource::
+   locate()` maps logical offsets back to `(seg_id, segment-local)`
+   for the wire. (A `{seg_id, offset}` cursor cannot be total over a
+   fan-out without per-segment state; the linearization is total by
+   construction.)
+2. **Feed-owned source snapshot + generation** (`SourceSnapshot`,
+   `source_changed` watch): sessions re-snapshot at every loop turn
+   and park on (feed version, source generation, current-source
+   notify, auth, client, heartbeat). Raw scalar sessions disconnect on
+   any generation change (typed fallback; scalar cursors cannot name
+   segments).
+3. **Atomic swap under the driver permit**: a closed tail triggers the
+   ONE descriptor refresh (`refresh_transition`): epoch mismatch /
+   gone / incompatible → `Gone` (disconnect, no terminal); sealed →
+   `Closed` (genuine, one terminal); longer compatible lineage →
+   install + generation bump + continue driving. Compatibility =
+   span-signature prefix (a live span may gain its sealed cap, spans
+   may be appended — anything else is NOT a swap). No watchdog
+   polling; a pending transition spawns the same resumable resume the
+   legacy read path uses.
+4. **Bugs the red battery caught**: the closed-branch `Solo` arm
+   originally dropped the driving session's records (consume-without-
+   deliver — lost data on a singleton swap); the lifecycle outcome
+   must be REPEATABLE (every parked session observes it) while the
+   version bump happens exactly once.
 
-Split streams remain fully served meanwhile: dispatch falls through to
-the dedicated lineage streamer under both engines.
+Red legs (all deterministic): split while parked at upToDate (in-place
+continuation + genuine seal after), split during initial catch-up
+(failpoint-parked attach), keyed lane across a split (isolation
+intact), raw fallback disconnect (no terminal), two sequential splits,
+delete/recreate isolation (distinct feed, no cross-incarnation leak),
+plus unit legs for the span linearization and signature compatibility.
+The legacy lineage streamer remains the connect-time path for
+already-split streams; LiveFeed eligibility at connect is unchanged.
 
 ## Stage 7 — Cutover & deletion — STATUS: PARTIAL
 
