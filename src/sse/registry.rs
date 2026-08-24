@@ -33,6 +33,13 @@ pub(crate) struct FeedSubscription {
     pub(crate) join_head: u64,
     /// Persistent version receiver for this session.
     pub(crate) ver_rx: tokio::sync::watch::Receiver<u64>,
+    /// Source generation CAPTURED under the SAME subscribe lock
+    /// (review round 4: reading it after the fact reopens the
+    /// construction race). Raw sessions take the typed fallback as
+    /// soon as the feed's generation differs from this.
+    pub(crate) join_gen: u64,
+    /// Persistent source-generation receiver for this session.
+    pub(crate) gen_rx: tokio::sync::watch::Receiver<u64>,
 }
 
 impl FeedSubscription {
@@ -46,6 +53,14 @@ impl FeedSubscription {
 
     pub(crate) fn version_rx(&self) -> tokio::sync::watch::Receiver<u64> {
         self.ver_rx.clone()
+    }
+
+    pub(crate) fn join_gen(&self) -> u64 {
+        self.join_gen
+    }
+
+    pub(crate) fn gen_rx(&self) -> tokio::sync::watch::Receiver<u64> {
+        self.gen_rx.clone()
     }
 }
 
@@ -68,36 +83,44 @@ impl FeedRegistry {
         make: impl FnOnce() -> Arc<LiveFeed>,
     ) -> Result<FeedSubscription, CapacityRejected> {
         let mut map = self.map.lock().unwrap();
-        let (feed, join_head, ver_rx): (Arc<LiveFeed>, u64, tokio::sync::watch::Receiver<u64>) =
-            match map.get(&key) {
-                Some(f) => {
-                    // SHARED admission (follow-up review finding 1): the
-                    // 1→2 transition is validated BEFORE the attach, on
-                    // STATIC configuration (nonzero ring AND nonzero
-                    // global budget) — never after exposing a count the
-                    // memory posture cannot support. There is nothing to
-                    // roll back on refusal because nothing happened yet.
-                    if f.subscriber_count() == 1 && !f.can_share() {
-                        crate::sse::auth::sse_stats::FEED_CAPACITY_REJECTED
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        return Err(CapacityRejected);
-                    }
-                    let (head, rx) = f.subscribe_locked();
-                    (f.clone(), head, rx)
+        type Captured = (
+            Arc<LiveFeed>,
+            u64,
+            tokio::sync::watch::Receiver<u64>,
+            u64,
+            tokio::sync::watch::Receiver<u64>,
+        );
+        let (feed, join_head, ver_rx, join_gen, gen_rx): Captured = match map.get(&key) {
+            Some(f) => {
+                // SHARED admission (follow-up review finding 1): the
+                // 1→2 transition is validated BEFORE the attach, on
+                // STATIC configuration (nonzero ring AND nonzero
+                // global budget) — never after exposing a count the
+                // memory posture cannot support. There is nothing to
+                // roll back on refusal because nothing happened yet.
+                if f.subscriber_count() == 1 && !f.can_share() {
+                    crate::sse::auth::sse_stats::FEED_CAPACITY_REJECTED
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return Err(CapacityRejected);
                 }
-                None => {
-                    let f = make();
-                    let (head, rx) = f.subscribe_locked();
-                    map.insert(key.clone(), f.clone());
-                    (f, head, rx)
-                }
-            };
+                let (head, rx, generation, grx) = f.subscribe_locked();
+                (f.clone(), head, rx, generation, grx)
+            }
+            None => {
+                let f = make();
+                let (head, rx, generation, grx) = f.subscribe_locked();
+                map.insert(key.clone(), f.clone());
+                (f, head, rx, generation, grx)
+            }
+        };
         Ok(FeedSubscription {
             registry: Arc::clone(self),
             key,
             feed,
             join_head,
             ver_rx,
+            join_gen,
+            gen_rx,
         })
     }
 

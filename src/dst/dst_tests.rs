@@ -35009,3 +35009,256 @@ async fn livefeed_delete_recreate_isolates_incarnations() {
     }
     assert_eq!(state.live_feeds.len(), 1, "the old feed is evicted");
 }
+
+// ==================================================================
+// LIVE-FEED Stage 6 round-4 legs: wire-position correctness
+// (decode-and-resume), shared-subscriber swap, and the deterministic
+// seal-to-publication handoff.
+// ==================================================================
+
+/// Extract the LAST product nextCursor token from a transcript.
+fn last_next_cursor(t: &str) -> String {
+    let at = t.rfind("\"nextCursor\":\"").expect("a product cursor");
+    let rest = &t[at + "\"nextCursor\":\"".len()..];
+    rest.split('"').next().expect("cursor value").to_string()
+}
+
+/// Round-4 blocker 1 (red): the cursor emitted after a split must
+/// name the successor segment AND the SEGMENT-LOCAL offset — and it
+/// must be usable to resume with no gap and no duplicate.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_split_cursor_decodes_to_segment_local_and_resumes() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lfcur",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for i in 0..5u64 {
+        hub_append_lf(addr, "lfcur", &format!(r#"{{"i":{i}}}"#)).await;
+    }
+    let mut sck = lf_connect(addr, "lfcur", "").await;
+    let (acc0, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    assert!(acc0.contains("\"i\":4"), "backlog:\n{acc0}");
+
+    split_and_await(&state, "lfcur", 0).await;
+    // The FIRST child record (child-local offset 0).
+    hub_append_lf(addr, "lfcur", r#"{"i":5}"#).await;
+    let (acc1, _) = hub_sse_collect(&mut sck, 10, |t| {
+        t.contains("\"i\":5") && t.matches("\"upToDate\":true").count() >= 2
+    })
+    .await;
+    assert!(acc1.contains("\"i\":5"), "successor record:\n{acc1}");
+
+    // Decode the cursor at the head: it must be (child, 1) — the
+    // segment-local position after the first child record — never the
+    // linearized stream offset (which would be 6).
+    let tok = last_next_cursor(&acc1);
+    state.registry.invalidate(&state.raw_adapter_sref("lfcur"));
+    let desc = state
+        .registry
+        .get(&state.raw_adapter_sref("lfcur"))
+        .await
+        .unwrap()
+        .unwrap();
+    let epoch = desc.epoch_bytes().unwrap();
+    let child_seg = desc.resolve_segment("").seg_id;
+    let expected = crate::product_cursor::KeyCursor {
+        epoch,
+        key_hash: crate::crypto::stream_hash(""),
+        seg_id: child_seg,
+        offset: 1,
+    }
+    .encode(&desc.project_id, &skey());
+    assert_eq!(
+        tok, expected,
+        "the emitted cursor IS (successor segment, segment-local 1) —          never the linearized offset (6)"
+    );
+
+    // RESUME from the emitted cursor: append one more child record,
+    // reconnect with the cursor, and require exactly the tail — no
+    // gap, no duplicate. (The reconnect lands on the legacy lineage
+    // path; the cursor contract is engine-independent.)
+    hub_append_lf(addr, "lfcur", r#"{"i":6}"#).await;
+    let mut sub2 = lf_connect(addr, "lfcur", &format!("?cursor={tok}")).await;
+    let (acc2, _) = hub_sse_collect(&mut sub2, 10, |t| t.contains("\"i\":6")).await;
+    assert!(
+        acc2.contains("\"i\":6"),
+        "resume must deliver the record AFTER the cursor:\n{acc2}"
+    );
+    assert!(
+        !acc2.contains("\"i\":5"),
+        "resume must not redeliver the cursor's own record:\n{acc2}"
+    );
+}
+
+/// Round-4 blocker 2 (red): TWO shared subscribers, one swap — both
+/// receive the successor record exactly once, and both head cursors
+/// decode to the successor's segment-local position.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_split_shared_subscribers_swap_once_deliver_twice() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lfsh",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append_lf(addr, "lfsh", r#"{"i":0}"#).await;
+    let mut sub1 = lf_connect(addr, "lfsh", "").await;
+    let (_, _) = hub_sse_collect(&mut sub1, 8, |t| t.contains("upToDate")).await;
+    let mut sub2 = lf_connect(addr, "lfsh", "").await;
+    let (_, _) = hub_sse_collect(&mut sub2, 8, |t| t.contains("upToDate")).await;
+
+    split_and_await(&state, "lfsh", 0).await;
+    hub_append_lf(addr, "lfsh", r#"{"i":1}"#).await;
+
+    let mut curs = Vec::new();
+    for (n, s) in [(1, &mut sub1), (2, &mut sub2)] {
+        let (acc, eof) = hub_sse_collect(s, 10, |t| {
+            t.contains("\"i\":1") && t.matches("\"upToDate\":true").count() >= 2
+        })
+        .await;
+        assert!(!eof, "sub{n} must not disconnect across the split");
+        assert_eq!(
+            acc.matches("\"i\":1").count(),
+            1,
+            "sub{n}: successor record exactly once:\n{acc}"
+        );
+        assert!(
+            !acc.contains("\"sealed\":true"),
+            "sub{n}: no false terminal:\n{acc}"
+        );
+        curs.push(last_next_cursor(&acc));
+    }
+
+    state.registry.invalidate(&state.raw_adapter_sref("lfsh"));
+    let desc = state
+        .registry
+        .get(&state.raw_adapter_sref("lfsh"))
+        .await
+        .unwrap()
+        .unwrap();
+    let epoch = desc.epoch_bytes().unwrap();
+    let child_seg = desc.resolve_segment("").seg_id;
+    let expected = crate::product_cursor::KeyCursor {
+        epoch,
+        key_hash: crate::crypto::stream_hash(""),
+        seg_id: child_seg,
+        offset: 1,
+    }
+    .encode(&desc.project_id, &skey());
+    for (n, tok) in curs.iter().enumerate() {
+        assert_eq!(
+            tok,
+            &expected,
+            "sub{}: cursor IS (successor segment, segment-local 1)",
+            n + 1
+        );
+    }
+}
+
+/// Round-4 blocker 4 (red): the seal-to-publication handoff does NOT
+/// depend on the heartbeat — with the successor publication HELD at a
+/// failpoint, no false terminal appears; on release, the parked
+/// session continues promptly (deadline well below the 15-s
+/// heartbeat).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_split_held_publication_handoff_is_prompt() {
+    let _gap = gap_lock().lock().await;
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lfhp",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append_lf(addr, "lfhp", r#"{"i":0}"#).await;
+    let mut sck = lf_connect(addr, "lfhp", "").await;
+    let (acc0, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    assert!(acc0.contains("upToDate"), "parks:\n{acc0}");
+
+    // Hold the successor publication AFTER the parent seal.
+    crate::failpoints::arm_scaler_before_publish("lfhp");
+    let guard = FailpointGuard("lfhp".to_string());
+    let split = {
+        let state = state.clone();
+        tokio::spawn(async move {
+            crate::scaler3::execute_split(
+                &state,
+                &state.raw_adapter_sref("lfhp"),
+                0,
+                0x8000_0000_0000_0000,
+            )
+            .await
+        })
+    };
+    // Enter the gap: parent sealed, descriptor still pending.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        let d = state
+            .registry
+            .get(&state.raw_adapter_sref("lfhp"))
+            .await
+            .unwrap()
+            .unwrap();
+        if d.segments.as_ref().is_some_and(|m| m.pending.is_some()) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "seal gap never entered"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+    }
+
+    // While the publication is held: no terminal control may appear.
+    let (acc1, _) = hub_sse_collect(&mut sck, 3, |_| false).await;
+    assert!(
+        !acc1.contains("\"sealed\":true"),
+        "no terminal while the transition is held:\n{acc1}"
+    );
+
+    // Release: the parked session must continue PROMPTLY (well below
+    // the 15-s heartbeat that a detached-resume design would need).
+    drop(guard);
+    await_published(&state, "lfhp").await;
+    hub_append_lf(addr, "lfhp", r#"{"i":1}"#).await;
+    let t0 = std::time::Instant::now();
+    let (acc2, _) = hub_sse_collect(&mut sck, 5, |t| t.contains("\"i\":1")).await;
+    assert!(
+        acc2.contains("\"i\":1"),
+        "successor record arrives promptly after publication:\n{acc2}"
+    );
+    assert!(
+        t0.elapsed() < std::time::Duration::from_secs(10),
+        "delivery must not wait for the heartbeat"
+    );
+    assert!(
+        !acc2.contains("\"sealed\":true"),
+        "no false terminal after the handoff:\n{acc2}"
+    );
+    let _ = split.await;
+}

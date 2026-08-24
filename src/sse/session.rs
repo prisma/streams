@@ -47,22 +47,24 @@ pub(crate) struct SessionCtx {
 
 impl SessionCtx {
     /// Bare cursor control (no status flags) for one record boundary.
-    /// `seg_id` is the segment the SOURCE located the position in —
-    /// it varies across a lineage (Stage 6).
-    fn record_ctl(&self, offset_after: u64, seg_id: u32) -> Bytes {
+    /// `pos` is the wire position bound AT PREPARATION (or located
+    /// with the source that owns the position) — segment id AND
+    /// segment-local offset, never the linearized offset (review
+    /// round 4, blocker 1).
+    fn record_ctl(&self, pos: super::feed::WirePosition) -> Bytes {
         match self.surface {
             Surface::Product => {
                 let tok = crate::product_cursor::KeyCursor {
                     epoch: self.epoch,
                     key_hash: self.rk_hash,
-                    seg_id,
-                    offset: offset_after,
+                    seg_id: pos.seg_id,
+                    offset: pos.local_after,
                 }
                 .encode(&self.desc.project_id, &self.key);
                 Bytes::from(crate::sse::wire::sse_control_product(&tok, false, false))
             }
             Surface::RawScalar => Bytes::from(crate::sse::wire::sse_control(
-                offset_after,
+                pos.local_after,
                 None,
                 false,
                 false,
@@ -71,14 +73,14 @@ impl SessionCtx {
     }
 
     /// Standalone STATUS control — the ONLY frame carrying flags.
-    fn status_ctl(&self, offset_after: u64, closed: bool, seg_id: u32) -> Bytes {
+    fn status_ctl(&self, pos: super::feed::WirePosition, closed: bool) -> Bytes {
         match self.surface {
             Surface::Product => {
                 let tok = crate::product_cursor::KeyCursor {
                     epoch: self.epoch,
                     key_hash: self.rk_hash,
-                    seg_id,
-                    offset: offset_after,
+                    seg_id: pos.seg_id,
+                    offset: pos.local_after,
                 }
                 .encode(&self.desc.project_id, &self.key);
                 Bytes::from(crate::sse::wire::sse_control_product(
@@ -88,7 +90,7 @@ impl SessionCtx {
                 ))
             }
             Surface::RawScalar => Bytes::from(crate::sse::wire::sse_control(
-                offset_after,
+                pos.local_after,
                 None,
                 true,
                 sealed_of(closed),
@@ -98,8 +100,8 @@ impl SessionCtx {
 
     /// Shared data event + this session's bare cursor control = ONE
     /// wire chunk (small local concat over the shared payload).
-    fn compose_record(&self, data: &Bytes, offset_after: u64, seg_id: u32) -> Bytes {
-        let ctl = self.record_ctl(offset_after, seg_id);
+    fn compose_record(&self, data: &Bytes, pos: super::feed::WirePosition) -> Bytes {
+        let ctl = self.record_ctl(pos);
         let mut out = BytesMut::with_capacity(data.len() + ctl.len());
         out.extend_from_slice(data);
         out.extend_from_slice(&ctl);
@@ -187,8 +189,11 @@ pub(crate) async fn serve(
     // advances the feed between attach and session start, and Phase A
     // would then privately deliver records the shared ring also holds.
     let mut ver_rx = subscription.version_rx();
-    let mut src_gen_rx = feed.source_gen_watch();
-    let join_gen = feed.source_snapshot().generation;
+    // Source generation + receiver CAPTURED atomically with the attach
+    // (review round 4: reading them after the fact reopens the
+    // construction race).
+    let mut src_gen_rx = subscription.gen_rx();
+    let join_gen = subscription.join_gen();
     let mut cursor = match start {
         crate::http::StartPos::At(p) => p,
         crate::http::StartPos::Now => feed.current_source().frontier(),
@@ -271,8 +276,8 @@ pub(crate) async fn serve(
                             if r.off < cursor {
                                 continue;
                             }
-                            let (sg, _) = csrc.locate(r.off + 1);
-                            let frame = ctx.compose_record(&csrc.prepare_data(r), r.off + 1, sg);
+                            let frame =
+                                ctx.compose_record(&csrc.prepare_data(r), csrc.locate(r.off + 1));
                             if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
                                 return;
                             }
@@ -359,9 +364,21 @@ pub(crate) async fn serve(
                         continue 'handoff;
                     }
                     Take::Batch { batch, start_index } => {
+                        // Raw fallback binding (review round 4): a raw
+                        // session NEVER emits a batch prepared after a
+                        // source swap — scalar cursors cannot name the
+                        // successor segment.
+                        if ctx.surface == Surface::RawScalar && batch.source_generation != join_gen
+                        {
+                            crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            tracing::info!(
+                                "livefeed raw session: post-swap batch; disconnecting to resume"
+                            );
+                            return;
+                        }
                         for r in batch.records[start_index..].iter() {
-                            let (sg, _) = cur_src.locate(r.offset + 1);
-                            let frame = ctx.compose_record(&r.data_event, r.offset + 1, sg);
+                            let frame = ctx.compose_record(&r.data_event, r.pos);
                             if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
                                 return;
                             }
@@ -399,8 +416,9 @@ pub(crate) async fn serve(
                                 DriveOutcome::Closed => {
                                     // TERMINAL: exactly ONE sealed control,
                                     // then EOF.
-                                    let (sg, _) = cur_src.locate(cursor);
-                                    if !sse_send(&tx, ctx.status_ctl(cursor, true, sg)).await {
+                                    if !sse_send(&tx, ctx.status_ctl(cur_src.locate(cursor), true))
+                                        .await
+                                    {
                                         return;
                                     }
                                     return; // EOF after THE final control
@@ -425,17 +443,32 @@ pub(crate) async fn serve(
                                 // ours to emit — dropping them
                                 // would silently lose them (the
                                 // feed head already advanced).
-                                DriveOutcome::Solo { records, scan_to } => {
+                                DriveOutcome::Solo {
+                                    records,
+                                    scan_to,
+                                    source_generation,
+                                } => {
                                     transition_retries = 0;
-                                    // The swap installed a NEW
-                                    // source: locate against THAT,
-                                    // not the loop-top snapshot.
-                                    let snap2 = feed.source_snapshot();
+                                    // Raw fallback binding: a raw
+                                    // session never emits records
+                                    // prepared after a source swap.
+                                    if ctx.surface == Surface::RawScalar
+                                        && source_generation != join_gen
+                                    {
+                                        crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
+                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                        tracing::info!(
+                                            "livefeed raw session: post-swap solo batch; disconnecting"
+                                        );
+                                        return;
+                                    }
+                                    // The wire positions are bound in
+                                    // the prepared records (located
+                                    // with the READING source) — emit
+                                    // them as-is.
                                     let at_cursor = cursor;
                                     for r in records.iter().filter(|r| r.offset >= at_cursor) {
-                                        let (sg, _) = snap2.source.locate(r.offset + 1);
-                                        let frame =
-                                            ctx.compose_record(&r.data_event, r.offset + 1, sg);
+                                        let frame = ctx.compose_record(&r.data_event, r.pos);
                                         if !sse_send(&tx, frame).await
                                             || lease_watch.revoked(&task_state)
                                         {
@@ -479,8 +512,7 @@ pub(crate) async fn serve(
                         // Open frontier: one upToDate per position
                         // (deduped).
                         if need_status && last_reported != Some(cursor) {
-                            let (sg, _) = cur_src.locate(cursor);
-                            if !sse_send(&tx, ctx.status_ctl(cursor, false, sg)).await
+                            if !sse_send(&tx, ctx.status_ctl(cur_src.locate(cursor), false)).await
                                 || lease_watch.revoked(&task_state)
                             {
                                 return;
@@ -509,11 +541,24 @@ pub(crate) async fn serve(
                     )
                     .await;
                     match feed.drive_once().await {
-                        Some(DriveOutcome::Solo { records, scan_to }) => {
+                        Some(DriveOutcome::Solo {
+                            records,
+                            scan_to,
+                            source_generation,
+                        }) => {
+                            // Raw fallback binding (same rule as the
+                            // shared batch arm).
+                            if ctx.surface == Surface::RawScalar && source_generation != join_gen {
+                                crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                tracing::info!(
+                                    "livefeed raw session: post-swap solo batch; disconnecting"
+                                );
+                                return;
+                            }
                             let at_cursor = cursor;
                             for r in records.iter().filter(|r| r.offset >= at_cursor) {
-                                let (sg, _) = cur_src.locate(r.offset + 1);
-                                let frame = ctx.compose_record(&r.data_event, r.offset + 1, sg);
+                                let frame = ctx.compose_record(&r.data_event, r.pos);
                                 if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
                                     return;
                                 }
@@ -682,7 +727,10 @@ mod tests {
 
         // The emitted bare cursor control carries a KeyCursor naming
         // segment 5, decodable and authenticated.
-        let ctl = ctx.record_ctl(42, seg_id);
+        let ctl = ctx.record_ctl(crate::sse::feed::WirePosition {
+            seg_id,
+            local_after: 42,
+        });
         let text = String::from_utf8(ctl.to_vec()).unwrap();
         let tok = text
             .split("\"nextCursor\":\"")
@@ -701,7 +749,13 @@ mod tests {
         assert_eq!(kc.offset, 42);
 
         // And the standalone status control names it too.
-        let status = ctx.status_ctl(42, false, seg_id);
+        let status = ctx.status_ctl(
+            crate::sse::feed::WirePosition {
+                seg_id,
+                local_after: 42,
+            },
+            false,
+        );
         let text = String::from_utf8(status.to_vec()).unwrap();
         let tok = text
             .split("\"nextCursor\":\"")

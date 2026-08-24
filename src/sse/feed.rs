@@ -49,17 +49,25 @@ impl FeedKey {
     }
 }
 
-/// One prepared record: the DATA event only, formatted once per lane.
-/// Canonical framing: sessions compose their own bare cursor control
-/// around it; status flags ride standalone status controls only.
+/// One prepared record: the DATA event only, formatted once per lane,
+/// plus the WIRE position after it — bound at preparation time to the
+/// exact source the driver read from (review round 4: a session must
+/// never locate a record against a newer source than its batch).
 pub(crate) struct PreparedRecord {
+    /// LINEARIZED logical offset (feed cursor space).
     pub(crate) offset: u64,
+    /// The wire position AFTER this record (segment id + segment-local
+    /// offset), located with the reading source.
+    pub(crate) pos: WirePosition,
     pub(crate) data_event: Bytes,
     pub(crate) payload_len: u32,
 }
 
 pub(crate) struct PreparedBatch {
     pub(crate) scan_to: u64,
+    /// Source generation the batch was prepared with (raw fallback
+    /// binding: a raw session never emits a post-swap batch).
+    pub(crate) source_generation: u64,
     pub(crate) records: Arc<[PreparedRecord]>,
     pub(crate) charge: usize,
 }
@@ -91,10 +99,10 @@ pub(crate) trait FeedSourceRead: Send + Sync {
     /// park on this (registered eagerly at loop top — see session.rs).
     fn advance_notify(&self) -> &tokio::sync::Notify;
     /// Translate a LINEARIZED logical offset (one-past-a-record) into
-    /// the wire cursor identity `(seg_id, segment-local offset)` —
-    /// Stage 6: the feed's cursor space is linearized across sealed
-    /// predecessor caps; the wire names segments.
-    fn locate(&self, logical_after: u64) -> (u32, u64);
+    /// the wire position (segment + segment-local offset) — Stage 6:
+    /// the feed's cursor space is linearized across sealed predecessor
+    /// caps; the wire names segments with segment-local offsets.
+    fn locate(&self, logical_after: u64) -> WirePosition;
     /// Span signature `(seg_id, logical_start, sealed cap)` for swap
     /// validation: an installed replacement must carry the CURRENT
     /// source's signature as an exact prefix, or the cursor space
@@ -117,6 +125,17 @@ pub(crate) enum SourceTransition {
     IncarnationChanged,
     /// Transition still in flight: retry on the next wake.
     RetryLater,
+}
+
+/// The wire cursor identity for one linearized logical offset
+/// (one-past-a-record): the segment containing the position and the
+/// SEGMENT-LOCAL offset after it. Product cursors are consumed as
+/// segment-local positions on resume — emitting the linearized offset
+/// here would skip records on reconnect (review round 4, blocker 1).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) struct WirePosition {
+    pub(crate) seg_id: u32,
+    pub(crate) local_after: u64,
 }
 
 /// A feed-owned source plus its generation (Stage 6.1). Every session
@@ -347,11 +366,6 @@ impl LiveFeed {
         self.src.read().unwrap().clone()
     }
 
-    /// Persistent source-generation receiver for one session.
-    pub(crate) fn source_gen_watch(&self) -> tokio::sync::watch::Receiver<u64> {
-        self.source_changed.subscribe()
-    }
-
     /// Install a VALIDATED newer source (Stage 6.3): only the driver
     /// (permit holder) may install, and only a replacement whose span
     /// signature carries the CURRENT source's signature as a
@@ -386,13 +400,24 @@ impl LiveFeed {
     }
 
     /// Increment-only attach; called under the REGISTRY lock by
-    /// `FeedRegistry::subscribe` so count and membership mutate in one
-    /// synchronization boundary.
-    pub(crate) fn subscribe_locked(&self) -> (u64, tokio::sync::watch::Receiver<u64>) {
+    /// `FeedRegistry::subscribe` so count, membership, captured head,
+    /// version receiver, and SOURCE GENERATION all bind in one
+    /// synchronization boundary (review round 4: reading the generation
+    /// after the fact reopens the construction race).
+    pub(crate) fn subscribe_locked(
+        &self,
+    ) -> (
+        u64,
+        tokio::sync::watch::Receiver<u64>,
+        u64,
+        tokio::sync::watch::Receiver<u64>,
+    ) {
         self.subscribers.fetch_add(1, Ordering::SeqCst);
         let rx = self.changed.subscribe();
+        let grx = self.source_changed.subscribe();
         let head = self.st.lock().unwrap().head;
-        (head, rx)
+        let generation = self.src.read().unwrap().generation;
+        (head, rx, generation, grx)
     }
 
     /// Decrement-only detach; called under the REGISTRY lock by
@@ -500,11 +525,12 @@ impl LiveFeed {
         // only on the drive that performs the transition itself.
         let mut transitioned = false;
         let outcome = loop {
-            let src = self.current_source();
+            let snap = self.source_snapshot();
+            let src = snap.source.clone();
             let head = self.st.lock().unwrap().head;
             if head < src.frontier() {
                 self.source_reads.fetch_add(1, Ordering::Relaxed);
-                break self.read_and_publish(&src, head).await;
+                break self.read_and_publish(&src, snap.generation, head).await;
             }
             // Nothing durable beyond the head. A closed tail is either
             // a genuine collection close or a topology transition —
@@ -580,7 +606,12 @@ impl LiveFeed {
         outcome
     }
 
-    async fn read_and_publish(&self, src: &Arc<dyn FeedSourceRead>, head: u64) -> DriveOutcome {
+    async fn read_and_publish(
+        &self,
+        src: &Arc<dyn FeedSourceRead>,
+        generation: u64,
+        head: u64,
+    ) -> DriveOutcome {
         let batch = match src.read_batch(head, self.read_cap).await {
             Ok(x) => x,
             Err(_) => {
@@ -606,6 +637,10 @@ impl LiveFeed {
         for r in &batch.records {
             prepared.push(PreparedRecord {
                 offset: r.off,
+                // The wire position is located with THE READING SOURCE
+                // and bound into the record — sessions never re-locate
+                // against a newer source (review round 4, blocker 2).
+                pos: src.locate(r.off + 1),
                 data_event: src.prepare_data(r),
                 payload_len: r.payload.len() as u32,
             });
@@ -627,6 +662,7 @@ impl LiveFeed {
             return DriveOutcome::Solo {
                 records: prepared,
                 scan_to,
+                source_generation: generation,
             };
         }
         // SHARED: retention reserves the ACTUAL retained bytes from
@@ -689,6 +725,7 @@ impl LiveFeed {
         st.charge += batch_charge;
         st.batches.push_back(Arc::new(PreparedBatch {
             scan_to,
+            source_generation: generation,
             charge: batch_charge,
             records: prepared.into(),
         }));
@@ -748,10 +785,12 @@ impl std::fmt::Debug for Take {
 pub(crate) enum DriveOutcome {
     /// Zero retention: these records belong to the driving session,
     /// plus the SCANNED boundary (finding 1/2 — the cursor must advance
-    /// to scan_to, covering match-free ranges).
+    /// to scan_to, covering match-free ranges) and the source
+    /// generation they were prepared with (raw fallback binding).
     Solo {
         records: Vec<PreparedRecord>,
         scan_to: u64,
+        source_generation: u64,
     },
     Published,
     /// Nothing durable beyond head.
@@ -893,8 +932,11 @@ pub(crate) mod tests {
         fn advance_notify(&self) -> &tokio::sync::Notify {
             &self.notify
         }
-        fn locate(&self, logical_after: u64) -> (u32, u64) {
-            (0, logical_after)
+        fn locate(&self, logical_after: u64) -> WirePosition {
+            WirePosition {
+                seg_id: 0,
+                local_after: logical_after,
+            }
         }
         fn span_sig(&self) -> Vec<(u32, u64, Option<u64>)> {
             vec![(0, 0, None)]
@@ -1090,7 +1132,9 @@ pub(crate) mod tests {
         // and the floor must NOT jump past the still-unread ring.
         src.frontier.store(5, Ordering::Relaxed);
         match feed.drive_once().await {
-            Some(DriveOutcome::Solo { records, scan_to }) => {
+            Some(DriveOutcome::Solo {
+                records, scan_to, ..
+            }) => {
                 assert_eq!(records.len(), 2, "solo drive reads offsets 3,4");
                 assert_eq!(scan_to, 5);
             }
@@ -1159,7 +1203,9 @@ pub(crate) mod tests {
         assert_eq!(feed.version(), v0, "a failed read never bumps");
         src.fail_reads.store(false, Ordering::Relaxed);
         match feed.drive_once().await {
-            Some(DriveOutcome::Solo { records, scan_to }) => {
+            Some(DriveOutcome::Solo {
+                records, scan_to, ..
+            }) => {
                 assert_eq!(records.len(), 4);
                 assert_eq!(scan_to, 4);
             }
@@ -1273,7 +1319,9 @@ pub(crate) mod tests {
         src.read_release.notify_waiters();
         // The permit must be free: a new drive proceeds to completion.
         match feed.drive_once().await {
-            Some(DriveOutcome::Solo { records, scan_to }) => {
+            Some(DriveOutcome::Solo {
+                records, scan_to, ..
+            }) => {
                 assert_eq!(records.len(), 4);
                 assert_eq!(scan_to, 4);
             }

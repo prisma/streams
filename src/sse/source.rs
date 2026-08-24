@@ -8,7 +8,7 @@
 //! use, translated back to `(seg_id, segment-local)` by `locate()`
 //! for the wire.
 
-use super::feed::{FeedSourceRead, SourceBatch, SourceTransition, sig_compatible};
+use super::feed::{FeedSourceRead, SourceBatch, SourceTransition, WirePosition, sig_compatible};
 use crate::registry::StreamDesc;
 use crate::shard::{ShardEngine, StreamHandle};
 use bytes::Bytes;
@@ -89,8 +89,11 @@ impl FeedSourceRead for SingleSource {
         &self.handle.notify
     }
 
-    fn locate(&self, logical_after: u64) -> (u32, u64) {
-        (self.lane_seg_id(), logical_after)
+    fn locate(&self, logical_after: u64) -> WirePosition {
+        WirePosition {
+            seg_id: self.lane_seg_id(),
+            local_after: logical_after,
+        }
     }
 
     fn span_sig(&self) -> Vec<(u32, u64, Option<u64>)> {
@@ -317,7 +320,7 @@ impl FeedSourceRead for LineageSource {
         &self.tail().handle.notify
     }
 
-    fn locate(&self, logical_after: u64) -> (u32, u64) {
+    fn locate(&self, logical_after: u64) -> WirePosition {
         locate_in_spans(&self.span_sig(), logical_after)
     }
 
@@ -354,66 +357,100 @@ pub(crate) async fn refresh_transition(
     current_sig: &[(u32, u64, Option<u64>)],
 ) -> anyhow::Result<SourceTransition> {
     let sref = desc.sref();
-    // Fresh read, bypassing the descriptor cache: the swap decision
-    // must see the newest published topology.
-    state.registry.invalidate(&sref);
-    let Some(d) = state.registry.get(&sref).await? else {
-        // Deleted: no continuation exists for this feed.
-        return Ok(SourceTransition::IncarnationChanged);
-    };
-    if d.stream_epoch != desc.stream_epoch {
-        // Delete/recreate: a DIFFERENT incarnation, never a swap.
-        return Ok(SourceTransition::IncarnationChanged);
+    for _ in 0..2 {
+        // Fresh read, bypassing the descriptor cache: the swap decision
+        // must see the newest published topology.
+        state.registry.invalidate(&sref);
+        let Some(d) = state.registry.get(&sref).await? else {
+            // Deleted: no continuation exists for this feed.
+            return Ok(SourceTransition::IncarnationChanged);
+        };
+        if d.stream_epoch != desc.stream_epoch {
+            // Delete/recreate: a DIFFERENT incarnation, never a swap.
+            return Ok(SourceTransition::IncarnationChanged);
+        }
+        if d.sealed {
+            return Ok(SourceTransition::GenuineClose);
+        }
+        let Some(map) = &d.segments else {
+            return Ok(SourceTransition::GenuineClose);
+        };
+        if map.pending.is_some() {
+            // Transition in flight: AWAIT the resumable completion
+            // under this permit (bounded), then re-read immediately
+            // (review round 4: a detached spawn + unrelated wakeups
+            // made completion heartbeat-dependent).
+            let done = tokio::time::timeout(
+                std::time::Duration::from_secs(10),
+                crate::scaler3::resume(state, &sref),
+            )
+            .await
+            .unwrap_or(false);
+            if !done {
+                return Ok(SourceTransition::RetryLater);
+            }
+            continue;
+        }
+        if map.segments.len() <= 1 {
+            return Ok(SourceTransition::GenuineClose);
+        }
+        let next =
+            match LineageSource::build(state.clone(), d, key.clone(), *epoch, rk_filter.clone())
+                .await
+            {
+                Ok(n) => n,
+                Err(e) => {
+                    // Wrong owner / engine unavailable / inconsistent
+                    // topology: this instance cannot serve the new
+                    // lineage — disconnect-and-reroute NOW, never a
+                    // heartbeat-long retry limbo (review round 4, fleet
+                    // posture).
+                    tracing::warn!(
+                        stream = %sref,
+                        error = %e,
+                        "lineage source cannot be built here; disconnecting to reroute"
+                    );
+                    return Ok(SourceTransition::IncarnationChanged);
+                }
+            };
+        let new_sig = next.span_sig();
+        if !sig_compatible(current_sig, &new_sig) {
+            // The topology no longer contains this feed's cursor space —
+            // not a swap. Sessions disconnect without a terminal control.
+            return Ok(SourceTransition::IncarnationChanged);
+        }
+        if new_sig.len() == current_sig.len() {
+            // Spurious wake on an unchanged map.
+            return Ok(SourceTransition::RetryLater);
+        }
+        return Ok(SourceTransition::NewSource(next));
     }
-    if d.sealed {
-        return Ok(SourceTransition::GenuineClose);
-    }
-    let Some(map) = &d.segments else {
-        return Ok(SourceTransition::GenuineClose);
-    };
-    if map.pending.is_some() {
-        // Transition in flight: unstick it (the same resume the legacy
-        // read path spawns) and let the next wake re-refresh.
-        let st = state.clone();
-        let sr = sref.clone();
-        tokio::spawn(async move {
-            let _ = crate::scaler3::resume(&st, &sr).await;
-        });
-        return Ok(SourceTransition::RetryLater);
-    }
-    if map.segments.len() <= 1 {
-        return Ok(SourceTransition::GenuineClose);
-    }
-    let next =
-        LineageSource::build(state.clone(), d, key.clone(), *epoch, rk_filter.clone()).await?;
-    let new_sig = next.span_sig();
-    if !sig_compatible(current_sig, &new_sig) {
-        // The topology no longer contains this feed's cursor space —
-        // not a swap. Sessions disconnect without a terminal control.
-        return Ok(SourceTransition::IncarnationChanged);
-    }
-    if new_sig.len() == current_sig.len() {
-        // Spurious wake on an unchanged map.
-        return Ok(SourceTransition::RetryLater);
-    }
-    Ok(SourceTransition::NewSource(next))
+    Ok(SourceTransition::RetryLater)
 }
 
 /// The linearization rule (engine-free, so the mapping itself is
 /// unit-testable): a linearized one-past offset maps to the span
 /// covering it; the boundary one-past a sealed span's cap belongs to
 /// the NEXT span at local 0.
-fn locate_in_spans(spans: &[(u32, u64, Option<u64>)], logical_after: u64) -> (u32, u64) {
+fn locate_in_spans(spans: &[(u32, u64, Option<u64>)], logical_after: u64) -> WirePosition {
     for (i, (seg, start, cap)) in spans.iter().enumerate() {
         let last = i + 1 == spans.len();
         match cap.map(|c| start + c) {
             Some(e) if logical_after >= e && !last => continue,
             Some(e) if logical_after > e => continue,
-            _ => return (*seg, logical_after - start),
+            _ => {
+                return WirePosition {
+                    seg_id: *seg,
+                    local_after: logical_after - start,
+                };
+            }
         }
     }
-    let (seg, start, _) = spans.last().copied().expect("non-empty lineage");
-    (seg, logical_after.saturating_sub(start))
+    let (seg_id, start, _) = spans.last().copied().expect("non-empty lineage");
+    WirePosition {
+        seg_id,
+        local_after: logical_after.saturating_sub(start),
+    }
 }
 
 #[cfg(test)]
@@ -427,14 +464,18 @@ mod tests {
     fn linearized_cursor_space_roundtrips() {
         let spans = [(0u32, 0u64, Some(5)), (1, 5, Some(3)), (2, 8, None)];
         // Inside the first span.
-        assert_eq!(locate_in_spans(&spans, 0), (0, 0));
-        assert_eq!(locate_in_spans(&spans, 4), (0, 4));
+        let wp = |seg, local| WirePosition {
+            seg_id: seg,
+            local_after: local,
+        };
+        assert_eq!(locate_in_spans(&spans, 0), wp(0, 0));
+        assert_eq!(locate_in_spans(&spans, 4), wp(0, 4));
         // The cap boundary belongs to the next span at local 0.
-        assert_eq!(locate_in_spans(&spans, 5), (1, 0));
-        assert_eq!(locate_in_spans(&spans, 7), (1, 2));
-        assert_eq!(locate_in_spans(&spans, 8), (2, 0));
+        assert_eq!(locate_in_spans(&spans, 5), wp(1, 0));
+        assert_eq!(locate_in_spans(&spans, 7), wp(1, 2));
+        assert_eq!(locate_in_spans(&spans, 8), wp(2, 0));
         // The live tail is open-ended.
-        assert_eq!(locate_in_spans(&spans, 100), (2, 92));
+        assert_eq!(locate_in_spans(&spans, 100), wp(2, 92));
     }
 
     #[test]

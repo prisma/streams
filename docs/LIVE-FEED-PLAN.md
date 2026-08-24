@@ -101,6 +101,37 @@ plus unit legs for the span linearization and signature compatibility.
 The legacy lineage streamer remains the connect-time path for
 already-split streams; LiveFeed eligibility at connect is unchanged.
 
+### Round-4 hardening (2026-08-24)
+
+The fourth review's four Stage 6 blockers, all with red legs:
+
+1. **Wire-position correctness**: `locate()` returns a typed
+   `WirePosition { seg_id, local_after }` and every emitted cursor
+   uses the SEGMENT-LOCAL offset — the old code wrote the linearized
+   offset into `KeyCursor.offset`, which resume reads as segment-local
+   and would have skipped records on reconnect.
+2. **Batch/generation binding**: `PreparedRecord` carries its wire
+   position bound at preparation time (sessions never re-locate a
+   record against a newer source); `PreparedBatch` and the `Solo`
+   outcome carry the source generation; raw sessions disconnect BEFORE
+   emitting any post-swap batch. `FeedSubscription` captures the
+   source generation and receiver atomically with the attach.
+3. **Fleet posture (same-owner)**: a lineage that cannot be built
+   locally (wrong-owner span, engine unavailable, inconsistent map)
+   disconnects-and-reroutes IMMEDIATELY with a typed outcome — never
+   a heartbeat-long retry limbo. Cross-owner continuation (remote
+   sealed-predecessor reads, local live tail) remains Stage 7+ scope.
+4. **Deterministic transition handoff**: a pending transition is
+   completed via `scaler3::resume` AWAITED under the driver permit
+   (bounded), then re-read immediately — continuation no longer
+   depends on the 15-s heartbeat.
+
+New legs: decode-and-resume across a split (cursor names the child
+segment with segment-local offset 1; resume has no gap and no
+duplicate), two shared subscribers through one swap (exactly-once on
+both, both cursors decode), and the held-publication handoff (no
+false terminal while held, prompt delivery on release).
+
 ## Stage 7 — Cutover & deletion — STATUS: PARTIAL
 
 POSTURE (corrected 2026-08-24, per the follow-up review): the DEFAULT
