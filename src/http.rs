@@ -2788,16 +2788,19 @@ pub(crate) async fn read_stitched(
             break;
         }
         if part.completed || cursor >= cap {
+            // Corruption guard (checked BEFORE the hop — the old order
+            // compared AFTER forcing cursor to cap, which could never
+            // be true): a completed ancestor whose durable end sits
+            // below the fork boundary means records were lost —
+            // surface it rather than silently hopping to the child.
+            if part.completed && scanned_after < cap {
+                return Err("fork ancestor ended below the fork boundary".into());
+            }
             // Ancestor drained to the cap (or its whole range): hop to
             // the next owner at the cap.
             cursor = cursor.max(cap);
             if cursor > from {
                 out.last = Some(cursor - 1);
-            }
-            if cursor < cap && part.completed {
-                // The ancestor's durable end sits below the cap only if
-                // records were lost — surface it rather than looping.
-                return Err("fork ancestor ended below the fork boundary".into());
             }
             continue;
         }

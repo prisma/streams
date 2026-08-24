@@ -167,6 +167,31 @@ exact bytes_out unit leg, and the exact terminal transcript leg. The
 failpoint until the whole window is durable). LiveFeed production
 counters are exported under `/v1/debug/load.sse_livefeed`.
 
+## Retained-ring rollover — STATUS: DONE (2026-08-24)
+
+One contained memory-accounting patch from the third review:
+
+1. Publication is a REPLACEMENT of reservations, not an independent
+   new one: the eviction set is computed first, and
+   `FeedMemoryBudget::try_replace` atomically swaps the evicted
+   charge for the new batch's charge — a full ring rolls forward at a
+   full global cap, and the cap is never exceeded.
+2. Every uncached path (oversized batch, or a net reservation the
+   budget cannot host) releases and clears the ENTIRE retained ring
+   before advancing the floor — nothing unreachable keeps a global
+   reservation.
+3. The `read_stitched` fork-boundary corruption check moved BEFORE
+   the cursor is forced to the cap (it previously compared after
+   `cursor = max(cap)`, where it could never fire).
+
+Legs: full-ring roll-forward at a full cap; external exhaustion
+clearing the unreachable ring while another feed's retention stays
+intact; oversized batch clearing the old ring; a barrier-driven
+32-feed concurrent-retention herd (cap holds at every instant,
+reserved == actual retained, teardown returns to zero).
+
+The Stage 6 lineage work is unblocked from here.
+
 ## Stage 8 — Field validation — STATUS: PENDING
 
 Below-edge canaries reuse the agreed 1000-connection geometries.

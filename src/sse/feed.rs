@@ -145,22 +145,27 @@ impl FeedMemoryBudget {
         self.max > 0
     }
 
-    fn try_reserve(&self, charge: usize) -> bool {
-        let charge = charge as u64;
-        if self.max == 0 {
-            return false; // zero budget = zero-retention posture
-        }
+    /// Net-of-replacement reservation (review round 3): a publication
+    /// that will REMOVE `released` bytes of this feed's own retained
+    /// batches replaces them with `add` new bytes ATOMICALLY — the
+    /// post-replacement total is what the cap checks, so a full ring
+    /// rolls forward at a full global cap. On success the counter
+    /// ALREADY reflects both sides: the caller must NOT release the
+    /// replaced batches again.
+    fn try_replace(&self, released: usize, add: usize) -> bool {
+        let (rel, add) = (released as u64, add as u64);
         let mut cur = self.reserved.load(Ordering::Relaxed);
         loop {
-            if cur + charge > self.max {
+            // cur >= rel by the accounting invariant: the replaced
+            // bytes are this feed's own prior reservation.
+            let after = cur - rel + add;
+            if after > self.max {
                 return false;
             }
-            match self.reserved.compare_exchange(
-                cur,
-                cur + charge,
-                Ordering::SeqCst,
-                Ordering::Relaxed,
-            ) {
+            match self
+                .reserved
+                .compare_exchange(cur, after, Ordering::SeqCst, Ordering::Relaxed)
+            {
                 Ok(_) => return true,
                 Err(actual) => cur = actual,
             }
@@ -471,12 +476,13 @@ impl LiveFeed {
         // reservation per retained batch, released on eviction and at
         // feed drop.
         let batch_charge = charge_for(&prepared);
-        // OVERSIZED batch (larger than the whole ring — possible for a
-        // single huge/base64 record even with the capped read):
-        // retaining it would evict it before ANY subscriber could
-        // consume it, so advance WITHOUT retention instead (review
-        // finding 4). Sessions below the new floor take the typed lag
-        // path and resume durably.
+        // UNCACHED posture (oversized batch, or a net reservation the
+        // process budget cannot host): release and clear EVERY retained
+        // batch — after `floor = head` that ring is unreachable anyway,
+        // and keeping it would pin the global budget (review round 3,
+        // retained-ring rollover). The head/floor still advance;
+        // sessions below the floor take the typed lag path and resume
+        // durably.
         if batch_charge > self.ring_budget {
             crate::sse::auth::sse_stats::FEED_OVERSIZE_DROPPED.fetch_add(1, Ordering::Relaxed);
             tracing::warn!(
@@ -484,15 +490,43 @@ impl LiveFeed {
                 ring = self.ring_budget,
                 "livefeed batch exceeds the feed ring; published without retention"
             );
+            clear_ring(&self.budget, &mut st, &self.retained_charge);
             st.floor = st.head;
             return DriveOutcome::Published;
         }
-        // Budget exhausted: same honest posture — advance, retain
-        // nothing (the LiveHub uncached posture; model B).
-        if !self.budget.try_reserve(batch_charge) {
+        // Which OLD batches must this publication evict to fit the
+        // ring? Determined FIRST, so the reservation can be the NET of
+        // replacement — a full ring rolls forward at a full global cap
+        // (review round 3).
+        let mut evict_n = 0usize;
+        let mut evict_charge = 0usize;
+        {
+            let mut projected = st.charge + batch_charge;
+            for b in &st.batches {
+                if projected <= self.ring_budget {
+                    break;
+                }
+                projected -= b.charge;
+                evict_charge += b.charge;
+                evict_n += 1;
+            }
+            debug_assert!(
+                projected <= self.ring_budget,
+                "batch fits the ring, so evictions always settle"
+            );
+        }
+        if !self.budget.try_replace(evict_charge, batch_charge) {
             crate::sse::auth::sse_stats::FEED_UNCACHED_PUBLISH.fetch_add(1, Ordering::Relaxed);
+            clear_ring(&self.budget, &mut st, &self.retained_charge);
             st.floor = st.head;
             return DriveOutcome::Published;
+        }
+        // The replacement ALREADY netted the evicted charges out of the
+        // global counter — pop them WITHOUT releasing again.
+        for _ in 0..evict_n {
+            let b = st.batches.pop_front().expect("eviction set pre-counted");
+            st.charge -= b.charge;
+            st.floor = st.floor.max(b.scan_to);
         }
         st.charge += batch_charge;
         st.batches.push_back(Arc::new(PreparedBatch {
@@ -500,22 +534,19 @@ impl LiveFeed {
             charge: batch_charge,
             records: prepared.into(),
         }));
-        // Ring bound: evict OLDEST first. The new batch fits the ring
-        // by the check above, so eviction can never remove a batch
-        // nobody has consumed.
-        while st.charge > self.ring_budget {
-            match st.batches.pop_front() {
-                Some(b) => {
-                    st.charge -= b.charge;
-                    st.floor = st.floor.max(b.scan_to);
-                    self.budget.release(b.charge);
-                }
-                None => break,
-            }
-        }
         self.retained_charge.store(st.charge, Ordering::Relaxed);
         DriveOutcome::Published
     }
+}
+
+/// Release and clear EVERY retained batch (uncached posture): nothing
+/// unreachable may keep a global reservation.
+fn clear_ring(budget: &Arc<FeedMemoryBudget>, st: &mut FeedState, gauge: &AtomicUsize) {
+    for b in st.batches.drain(..) {
+        budget.release(b.charge);
+    }
+    st.charge = 0;
+    gauge.store(0, Ordering::Relaxed);
 }
 
 fn st_lifecycle_active(st: &Mutex<FeedState>) -> bool {
@@ -1077,6 +1108,172 @@ pub(crate) mod tests {
                 outcome_name(&other)
             ),
         }
+    }
+
+    /// Rollover (red): a full ring at a full global cap rolls forward —
+    /// the new publication replaces the old batch's reservation
+    /// net-of-release; the cap is never exceeded and no uncached
+    /// publication occurs.
+    #[tokio::test]
+    async fn full_ring_rolls_forward_at_full_global_cap() {
+        // One 1-record batch charges 340; ring 500 fits exactly one.
+        let budget = Arc::new(FeedMemoryBudget::new_for_test(340));
+        let (feed, src) = feed_with(1, 8, 500, &budget);
+        feed.subscribe_locked();
+        feed.subscribe_locked();
+        match feed.drive_once().await {
+            Some(DriveOutcome::Published) => {}
+            other => panic!("expected Published, got {}", outcome_name(&other)),
+        }
+        assert_eq!(budget.reserved(), 340, "the first batch fills the cap");
+        src.frontier.store(2, Ordering::Relaxed);
+        match feed.drive_once().await {
+            Some(DriveOutcome::Published) => {}
+            other => panic!(
+                "the ring must roll forward at a full cap, got {}",
+                outcome_name(&other)
+            ),
+        }
+        assert_eq!(
+            budget.reserved(),
+            340,
+            "net replacement: cap never exceeded"
+        );
+        assert_eq!(feed.floor(), 1, "the replaced batch moved the floor");
+        match feed.take_visible(1) {
+            Take::Batch { batch, .. } => {
+                assert_eq!(batch.scan_to, 2, "the NEW batch is the one retained")
+            }
+            other => panic!("the new batch must be retained: {other:?}"),
+        }
+    }
+
+    /// Rollover (red): EXTERNAL budget exhaustion — the feed's next
+    /// publication cannot reserve, so its now-unreachable retained ring
+    /// is cleared and released; another feed's retention is untouched.
+    #[tokio::test]
+    async fn external_exhaustion_clears_unreachable_ring() {
+        // Room for exactly two 340 batches, held by two DIFFERENT feeds.
+        let budget = Arc::new(FeedMemoryBudget::new_for_test(680));
+        let src_a = Arc::new(FakeSource::new(0, 8));
+        let feed_a = LiveFeed::new_with_budget(
+            FeedKey::default_lane([1u8; 16]),
+            src_a.clone(),
+            1 << 20,
+            budget.clone(),
+        );
+        src_a.frontier.store(1, Ordering::Relaxed);
+        let src_b = Arc::new(FakeSource::new(0, 8));
+        let feed_b = LiveFeed::new_with_budget(
+            FeedKey::default_lane([2u8; 16]),
+            src_b.clone(),
+            1 << 20,
+            budget.clone(),
+        );
+        src_b.frontier.store(1, Ordering::Relaxed);
+        for f in [&feed_a, &feed_b] {
+            f.subscribe_locked();
+            f.subscribe_locked();
+        }
+        for f in [&feed_a, &feed_b] {
+            match f.drive_once().await {
+                Some(DriveOutcome::Published) => {}
+                other => panic!("expected Published, got {}", outcome_name(&other)),
+            }
+        }
+        assert_eq!(budget.reserved(), 680, "both feeds fill the cap");
+
+        // Feed A publishes again: no room (and A's huge ring evicts
+        // nothing of its own), so A's now-unreachable old ring must be
+        // cleared and released.
+        src_a.frontier.store(2, Ordering::Relaxed);
+        match feed_a.drive_once().await {
+            Some(DriveOutcome::Published) => {}
+            other => panic!("expected Published, got {}", outcome_name(&other)),
+        }
+        assert_eq!(feed_a.retained(), 0, "A's stale ring was cleared");
+        assert_eq!(
+            budget.reserved(),
+            340,
+            "A's reservation was released; B's is untouched"
+        );
+        assert_eq!(feed_a.floor(), 2, "A's floor advanced with the head");
+        match feed_a.take_visible(0) {
+            Take::Lagged { floor } => assert_eq!(floor, 2),
+            other => panic!("A's stale cursor is typed lag: {other:?}"),
+        }
+        // B's retention is fully intact and consumable.
+        match feed_b.take_visible(0) {
+            Take::Batch { batch, .. } => assert_eq!(batch.records.len(), 1),
+            other => panic!("B's ring is intact: {other:?}"),
+        }
+    }
+
+    /// Rollover (red): an oversized batch after ordinary retained
+    /// batches clears the old ring and its reservation too — not just
+    /// the new batch.
+    #[tokio::test]
+    async fn oversized_batch_clears_the_old_ring() {
+        let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
+        // Ring 500: a 1-record batch (340) fits; a 3-record batch (588)
+        // does not.
+        let (feed, src) = feed_with(1, 8, 500, &budget);
+        feed.subscribe_locked();
+        feed.subscribe_locked();
+        match feed.drive_once().await {
+            Some(DriveOutcome::Published) => {}
+            other => panic!("expected Published, got {}", outcome_name(&other)),
+        }
+        assert_eq!(feed.retained(), 340, "the ordinary batch is retained");
+        src.frontier.store(4, Ordering::Relaxed);
+        match feed.drive_once().await {
+            Some(DriveOutcome::Published) => {}
+            other => panic!("expected Published, got {}", outcome_name(&other)),
+        }
+        assert_eq!(feed.retained(), 0, "the old ring was cleared too");
+        assert_eq!(budget.reserved(), 0, "its reservation was released");
+        assert_eq!(feed.head(), 4);
+        assert_eq!(feed.floor(), 4);
+    }
+
+    /// Rollover (red): 32 shared feeds publishing CONCURRENTLY against
+    /// one budget — the hard cap holds at every instant, no underflow,
+    /// and teardown returns the budget to exactly zero.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+    async fn concurrent_retention_never_exceeds_cap() {
+        const MAX: u64 = 8 * 340; // room for 8 of 32 concurrent batches
+        let budget = Arc::new(FeedMemoryBudget::new_for_test(MAX));
+        let barrier = Arc::new(tokio::sync::Barrier::new(32));
+        let mut feeds = Vec::new();
+        let mut handles = Vec::new();
+        for _ in 0..32 {
+            let (feed, _src) = feed_with(1, 8, 1 << 20, &budget);
+            feed.subscribe_locked();
+            feed.subscribe_locked();
+            let b = barrier.clone();
+            let f = feed.clone();
+            handles.push(tokio::spawn(async move {
+                b.wait().await;
+                f.drive_once().await
+            }));
+            feeds.push(feed);
+        }
+        let mut retained_n = 0usize;
+        for h in handles {
+            if matches!(h.await.unwrap(), Some(DriveOutcome::Published)) {
+                retained_n += 1;
+            }
+        }
+        assert!(retained_n > 0, "some publications retained");
+        assert!(budget.reserved() <= MAX, "the hard cap held under a herd");
+        let retained_sum: usize = feeds.iter().map(|f| f.retained()).sum();
+        assert_eq!(
+            budget.reserved(),
+            retained_sum as u64,
+            "reserved == the sum of ACTUAL retained bytes (no phantom, no underflow)"
+        );
+        drop(feeds);
+        assert_eq!(budget.reserved(), 0, "teardown returns exactly to zero");
     }
 
     fn outcome_name(o: &Option<DriveOutcome>) -> &'static str {
