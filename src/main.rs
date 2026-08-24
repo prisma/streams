@@ -1718,7 +1718,6 @@ async fn async_main() -> anyhow::Result<()> {
          hub retention budget={}B",
         crate::livehub::hub_total_cap()
     );
-    let sse_configured_max_connections = args.sse_max_connections;
     validate_release_capacity(
         args.release_posture,
         std::env::var("MEMPROFILE_CERT").ok().as_deref(),

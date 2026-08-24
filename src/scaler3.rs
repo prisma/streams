@@ -452,9 +452,7 @@ async fn relay_segment_close(
         );
         return None;
     };
-    let Some(target) = crate::product::InternalTarget::of(desc, seg_id) else {
-        return None;
-    };
+    let target = crate::product::InternalTarget::of(desc, seg_id)?;
     let gen_q = seal_gen.map(|g| g.to_string()).unwrap_or_default();
     let name = crate::http::encode_stream_name_path(&desc.name);
     let mk = |bearer: Option<&str>| {

@@ -62,9 +62,12 @@ to itself when retention is zero), releases the permit BEFORE any
 socket write, and wakes the other sessions via the feed version watch.
 If the driving session disappears, another session takes over.
 
-`SSE_FEED_TOTAL_BYTES=0` disables shared retention entirely (every
-session drives for itself) while running the same code path — this is
-the emergency hatch, not a second implementation.
+`SSE_FEED_TOTAL_BYTES=0` is the singleton-only emergency posture: a
+second subscriber to the same feed is refused with
+`503 subscription_capacity`; every admitted session drives for itself
+on the same code path. (`SSE_FEED_RING_BYTES` / `SSE_FEED_TOTAL_BYTES`
+fall back to the legacy `SSE_HUB_*` names during the transition; the
+allowance is reserved once per shared feed and released at teardown.)
 
 ## Cursors
 

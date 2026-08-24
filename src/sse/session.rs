@@ -40,6 +40,10 @@ pub(crate) struct SessionCtx {
     key: crate::crypto::StreamKey,
     epoch: [u8; 16],
     rk_hash: [u8; 16],
+    /// The ACTUAL live segment this lane resolves to (finding 7): a
+    /// pruned-to-one segment map can leave a nonzero live segment ID,
+    /// and product cursors must name it, not hard-coded zero.
+    seg_id: u32,
 }
 
 impl SessionCtx {
@@ -50,7 +54,7 @@ impl SessionCtx {
                 let tok = crate::product_cursor::KeyCursor {
                     epoch: self.epoch,
                     key_hash: self.rk_hash,
-                    seg_id: 0,
+                    seg_id: self.seg_id,
                     offset: offset_after,
                 }
                 .encode(&self.desc.project_id, &self.key);
@@ -72,7 +76,7 @@ impl SessionCtx {
                 let tok = crate::product_cursor::KeyCursor {
                     epoch: self.epoch,
                     key_hash: self.rk_hash,
-                    seg_id: 0,
+                    seg_id: self.seg_id,
                     offset: offset_after,
                 }
                 .encode(&self.desc.project_id, &self.key);
@@ -112,7 +116,7 @@ fn sealed_of(closed: bool) -> bool {
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve(
     state: Arc<AppState>,
-    mut desc: crate::registry::StreamDesc,
+    desc: crate::registry::StreamDesc,
     key: crate::crypto::StreamKey,
     epoch: [u8; 16],
     handle: Arc<crate::shard::StreamHandle>,
@@ -149,7 +153,7 @@ pub(crate) async fn serve(
     // rejects THE NEW subscriber with a typed capacity refusal while
     // the existing singleton continues normally.
     let subscription = match state.live_feeds.subscribe(fkey.clone(), || {
-        LiveFeed::new(fkey.clone(), src.clone(), crate::livehub::hub_ring_bytes())
+        LiveFeed::new(fkey.clone(), src.clone(), crate::livehub::feed_ring_bytes())
     }) {
         Ok(sub) => sub,
         Err(_) => {
@@ -165,14 +169,19 @@ pub(crate) async fn serve(
     let feed = subscription.feed();
     // subscribe() already incremented the count (registry RAII owns
     // attach/detach — no second join here, finding 3's double-count).
-    let mut ver_rx = feed.version_watch();
+    // The handoff state CAPTURED under the subscribe lock is the one a
+    // session must use (finding 8): re-reading head/version-watch after
+    // the fact reopens the race where a pre-existing subscriber
+    // advances the feed between attach and session start, and Phase A
+    // would then privately deliver records the shared ring also holds.
+    let mut ver_rx = subscription.version_rx();
     let mut cursor = match start {
         crate::http::StartPos::At(p) => p,
         crate::http::StartPos::Now => src.frontier(),
     };
     // PHASE A handoff bound (finding 8): catch up only to the head
     // captured at subscribe time — never chase the moving frontier.
-    let join_head = feed.head();
+    let join_head = subscription.join_head();
 
     let ctx = SessionCtx {
         surface: match surface {
@@ -180,6 +189,9 @@ pub(crate) async fn serve(
             crate::http::SseSurface::Product => Surface::Product,
         },
         rk_hash: crate::crypto::stream_hash(&lane_rk),
+        // The ACTUAL segment this lane resolves to (finding 7): a map
+        // pruned to one live segment can carry a nonzero segment ID.
+        seg_id: desc.resolve_segment(&lane_rk).seg_id,
         epoch,
         key: key.clone(),
         desc: desc.clone(),
@@ -210,9 +222,8 @@ pub(crate) async fn serve(
         let sref = task_desc.sref();
         let mut need_status = true;
         // Exact status machine (finding 4): dedupe by reported frontier
-        // position; terminal emission is one-shot.
+        // position; the terminal control is emitted once, then EOF.
         let mut last_reported: Option<u64> = None;
-        let mut terminal_reported = false;
 
         // PHASE A: catch up to the CAPTURED join head only.
         while cursor < join_head {
@@ -222,6 +233,13 @@ pub(crate) async fn serve(
             match src.read_batch(cursor, 1024 * 1024).await {
                 Ok(batch) if batch.scan_to > cursor => {
                     for r in &batch.records {
+                        // NEVER emit beyond the captured handoff bound
+                        // (finding 8): records at/after join_head are
+                        // delivered through the shared ring in Phase B —
+                        // sending them here too would duplicate them.
+                        if r.off >= join_head {
+                            break;
+                        }
                         if r.off < cursor {
                             continue;
                         }
@@ -258,7 +276,18 @@ pub(crate) async fn serve(
             let mut ver_wait = Box::pin(async {
                 let _ = ver_rx.changed().await;
             });
-            let mut src_wait = Box::pin(feed.park_advance());
+            // The source waiter must be REGISTERED now, not at the
+            // final select! (finding: registration window): an unpolled
+            // `Notify::notified()` future has no waiter, so an append
+            // committing between the frontier read below and the park
+            // would be missed until the heartbeat. `enable()` registers
+            // the waiter eagerly; every state read in this iteration is
+            // covered, and the state reads themselves cover the gap
+            // since the previous iteration's registration.
+            let cur_src = feed.current_source();
+            let src_wait = cur_src.advance_notify().notified();
+            tokio::pin!(src_wait);
+            src_wait.as_mut().enable();
             match feed.take_visible(cursor) {
                 Take::Lagged { floor } => {
                     tracing::warn!(cursor, floor, "lag disconnect below feed floor");
@@ -292,17 +321,13 @@ pub(crate) async fn serve(
             let frontier = src.frontier();
             let closed = src.closed();
             if cursor >= frontier {
-                // TERMINAL takes precedence over the open-frontier
-                // status: at genuine close exactly ONE sealed control is
-                // emitted — never a preceding duplicate upToDate at the
-                // same position (finding 7).
+                // TERMINAL: at genuine close exactly ONE sealed control
+                // is emitted, then EOF — never a preceding duplicate
+                // upToDate at the same position (finding 7).
                 let genuine = closed && genuine_closure_checked(&task_state, &sref).await;
                 if genuine {
-                    if !terminal_reported {
-                        if !sse_send(&tx, ctx.status_ctl(cursor, true)).await {
-                            return;
-                        }
-                        terminal_reported = true;
+                    if !sse_send(&tx, ctx.status_ctl(cursor, true)).await {
+                        return;
                     }
                     return; // EOF after THE final control
                 }
@@ -357,7 +382,19 @@ pub(crate) async fn serve(
                         need_status = true;
                         continue;
                     }
-                    Some(_) => continue,
+                    // A publication or closure changed feed state (and
+                    // bumped the version): loop and consume it.
+                    Some(DriveOutcome::Published) | Some(DriveOutcome::Closed) => continue,
+                    // No-progress page or source failure: feed state did
+                    // NOT change and the version was NOT bumped — park
+                    // rather than spin (finding 6). The next durable
+                    // advance or the heartbeat retries.
+                    Some(DriveOutcome::NoProgress) => {}
+                    Some(DriveOutcome::SourceFailed) => {
+                        tracing::warn!("livefeed source read failed; parking until next wake");
+                    }
+                    // Head already covers the frontier: nothing to do.
+                    Some(DriveOutcome::Idle) => {}
                     // Contended: park; the winner's publication bumps
                     // ver_wait (registered at loop top).
                     None => {}
@@ -394,12 +431,15 @@ pub(crate) async fn serve(
 }
 
 /// Stream-incarnation identity + selector lane — the feed registry
-/// key derivation shared with tests.
+/// key derivation shared with tests. The identity leg is the
+/// domain-separated STORAGE identity (`storage_hash`: layout domain +
+/// project + name + epoch), NOT an ad hoc hash of the same inputs
+/// (follow-up review finding 7).
 pub(crate) fn feed_key_of(
     desc: &crate::registry::StreamDesc,
     rk_filter: &Option<String>,
 ) -> FeedKey {
-    let identity = crate::crypto::stream_hash(&format!("{}:{}", desc.sref(), desc.stream_epoch));
+    let identity = desc.storage_hash();
     match rk_filter.as_deref() {
         None | Some("") => FeedKey::default_lane(identity),
         Some(rk) => FeedKey::keyed(identity, rk),
@@ -411,10 +451,6 @@ async fn genuine_closure_checked(
     sref: &crate::tenant::TenantStreamRef,
 ) -> bool {
     crate::http::genuine_closure(state, sref, true).await
-}
-
-async fn wait_version(rx: &mut tokio::sync::watch::Receiver<u64>) {
-    let _ = rx.changed().await;
 }
 
 fn response_from_stream(
@@ -440,4 +476,106 @@ fn response_from_stream(
         builder = builder.header("Stream-SSE-Data-Encoding", "base64");
     }
     builder.body(axum::body::Body::from_stream(stream)).unwrap()
+}
+
+// ==================================================================
+// Unit tests (follow-up review finding 7): the product cursor must
+// name the ACTUAL live segment, not hard-coded zero.
+// ==================================================================
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// A materialized one-segment map whose only live segment has a
+    /// NONZERO id (a lineage pruned down to a later segment) meets the
+    /// LiveFeed eligibility condition — and its cursors must name that
+    /// segment.
+    #[test]
+    fn product_cursor_names_the_actual_live_segment() {
+        let mut desc = crate::sse::feed::tests::test_desc("segtest");
+        desc.segments = Some(crate::segmap::SegmentMap {
+            version: 7,
+            next_seg_id: 6,
+            pending: None,
+            segments: vec![crate::segmap::SegmentDesc {
+                seg_id: 5,
+                lo: 0,
+                hi: crate::segmap::KEYSPACE_END,
+                shard_prefix: String::new(),
+                route_hash: [0u8; 16],
+                created_ms: 1,
+                predecessors: vec![0],
+                successors: Vec::new(),
+                sealed_ms: None,
+                sealed_next_offset: None,
+            }],
+        });
+        let key = crate::crypto::StreamKey([9u8; 32]);
+        let epoch = [3u8; 16];
+        let lane_rk = String::new();
+        let ctx = SessionCtx {
+            surface: Surface::Product,
+            rk_hash: crate::crypto::stream_hash(&lane_rk),
+            seg_id: desc.resolve_segment(&lane_rk).seg_id,
+            epoch,
+            key: key.clone(),
+            desc: desc.clone(),
+        };
+        assert_eq!(ctx.seg_id, 5, "resolve must find the nonzero live segment");
+
+        // The emitted bare cursor control carries a KeyCursor naming
+        // segment 5, decodable and authenticated.
+        let ctl = ctx.record_ctl(42);
+        let text = String::from_utf8(ctl.to_vec()).unwrap();
+        let tok = text
+            .split("\"nextCursor\":\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("product control carries nextCursor");
+        let kc = crate::product_cursor::KeyCursor::decode(
+            tok,
+            &desc.project_id,
+            &key,
+            &epoch,
+            &ctx.rk_hash,
+        )
+        .expect("cursor decodes");
+        assert_eq!(kc.seg_id, 5, "the cursor names the actual segment");
+        assert_eq!(kc.offset, 42);
+
+        // And the standalone status control names it too.
+        let status = ctx.status_ctl(42, false);
+        let text = String::from_utf8(status.to_vec()).unwrap();
+        let tok = text
+            .split("\"nextCursor\":\"")
+            .nth(1)
+            .and_then(|rest| rest.split('"').next())
+            .expect("status control carries nextCursor");
+        let kc = crate::product_cursor::KeyCursor::decode(
+            tok,
+            &desc.project_id,
+            &key,
+            &epoch,
+            &ctx.rk_hash,
+        )
+        .expect("status cursor decodes");
+        assert_eq!(kc.seg_id, 5);
+    }
+
+    /// Finding 7 (identity): the feed identity leg IS the domain-
+    /// separated storage hash — distinct incarnations never share a
+    /// feed, and the derivation matches the storage keyspace identity.
+    #[test]
+    fn feed_identity_is_the_storage_hash() {
+        let desc = crate::sse::feed::tests::test_desc("ident");
+        let key = feed_key_of(&desc, &None);
+        assert_eq!(key.identity, desc.storage_hash());
+        let mut other = crate::sse::feed::tests::test_desc("ident");
+        other.stream_epoch = "ffffffffffffffffffffffffffffffff".into();
+        assert_ne!(
+            feed_key_of(&other, &None).identity,
+            key.identity,
+            "a recreated stream (new epoch) is a new feed identity"
+        );
+    }
 }

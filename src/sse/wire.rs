@@ -42,13 +42,11 @@ pub(crate) fn sse_control_tok(
     closed: bool,
 ) -> String {
     let mut fields = vec![format!("\"streamNextOffset\":\"{next_tok}\"")];
-    if !closed {
-        if let Some(c) = cursor {
-            fields.push(format!(
-                "\"streamCursor\":\"{}\"",
-                crate::http::interval_cursor(Some(c))
-            ));
-        }
+    if !closed && let Some(c) = cursor {
+        fields.push(format!(
+            "\"streamCursor\":\"{}\"",
+            crate::http::interval_cursor(Some(c))
+        ));
     }
     if up_to_date {
         fields.push("\"upToDate\":true".to_string());

@@ -33546,7 +33546,7 @@ async fn livefeed_two_subscribers_share_one_feed_and_one_source_read() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_revocation_terminates_the_subscription() {
-    let (_svc, state, addr) = {
+    let (_svc, _state, addr) = {
         let rig = auth_rig("proj-lfr", "ws_lf", &["c1"], None).await;
         rig.1
             .sse_engine_livefeed
@@ -33663,8 +33663,7 @@ async fn bench_shape(
     // Spawn one collector per connection.
     let mut handles = Vec::new();
     let mut idx = 0usize;
-    for s in 0..streams {
-        let name = format!("bs{s}");
+    for _ in 0..streams {
         for _ in 0..subs_per {
             let mut sck = socks.remove(0);
             idx += 1;
@@ -34061,8 +34060,8 @@ async fn livefeed_keyed_all_foreign_history_is_progress_not_lag() {
 
 /// Exact wire contract (finding 4): ONE cursor control per record, NO
 /// status flags on record controls, exactly ONE standalone upToDate at
-/// the open frontier — raw and product vocabulary, both directions of
-/// feed creation order.
+/// the open frontier — raw and product vocabulary, RAW-first creation
+/// order (the product-first direction is the next test).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_exact_framing_mixed_surfaces_share_one_lane() {
     let store = mem();
@@ -34143,4 +34142,72 @@ async fn hub_append_lf(addr: std::net::SocketAddr, name: &str, body: &str) {
     )
     .await;
     assert!(st == 200 || st == 204, "append {st}");
+}
+
+/// Finding 4 coverage, REVERSE creation order: PRODUCT creates the
+/// feed, RAW joins second. Same canonical framing assertions as the
+/// raw-first leg — feed creation order must not change the wire shape
+/// or cross the vocabularies.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_exact_framing_mixed_surfaces_product_first() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let ct = ("content-type", "application/json");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/lfp", &[ct], br#"[{"r":0}]"#).await;
+    assert!(st == 200 || st == 201);
+
+    // PRODUCT creates the feed first.
+    use tokio::io::AsyncWriteExt;
+    let mut prod = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let preq2 = format!(
+        "GET /v1/streams/lfp/records:sse?cursor=beginning HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
+    );
+    prod.write_all(preq2.as_bytes()).await.unwrap();
+    // RAW joins second.
+    let mut raw = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let start_tok = crate::offsets::encode_ep(0, crate::offsets::Offset::START);
+    let req = format!(
+        "GET /v1/stream/lfp?live=sse&offset={start_tok} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
+    );
+    raw.write_all(req.as_bytes()).await.unwrap();
+
+    hub_append_lf(addr, "lfp", r#"{"w":1}"#).await;
+
+    // The done predicate fires on the DATA frame; its trailing cursor
+    // control arrives in a separate chunk — drain one more beat.
+    let (prod_txt, _) = hub_sse_collect(&mut prod, 10, |t| t.contains("\"w\":1")).await;
+    let (extra_p, _) = hub_sse_collect(&mut prod, 2, |_| false).await;
+    let prod_txt = format!("{prod_txt}{extra_p}");
+    let (raw_txt, _) = hub_sse_collect(&mut raw, 10, |t| t.contains("\"w\":1")).await;
+    let (extra_r, _) = hub_sse_collect(&mut raw, 2, |_| false).await;
+    let raw_txt = format!("{raw_txt}{extra_r}");
+
+    for (side, txt) in [("raw", &raw_txt), ("product", &prod_txt)] {
+        let data = txt.matches("event: data").count();
+        let ctls = txt.matches("event: control").count();
+        assert_eq!(data, 2, "{side}: two data events expected:\n{txt}");
+        assert_eq!(
+            ctls, 4,
+            "{side}: per-record ctl x2 + standalone status x2 = 4:\n{txt}"
+        );
+        assert_eq!(
+            txt.matches("\"upToDate\":true").count(),
+            2,
+            "{side}: upToDate rides ONLY the standalone statuses:\n{txt}"
+        );
+        if side == "raw" {
+            assert!(
+                txt.contains("streamNextOffset") && !txt.contains("nextCursor"),
+                "raw must not speak product vocabulary:\n{txt}"
+            );
+        } else {
+            assert!(
+                txt.contains("nextCursor") && !txt.contains("streamNextOffset"),
+                "product must not speak raw vocabulary:\n{txt}"
+            );
+        }
+    }
 }

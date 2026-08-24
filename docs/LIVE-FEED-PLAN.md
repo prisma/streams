@@ -75,14 +75,53 @@ the dedicated lineage streamer under both engines.
 
 ## Stage 7 — Cutover & deletion — STATUS: PARTIAL
 
-DONE: production DEFAULT engine = livefeed; `legacy` remains an
-explicit A/B bridge REFUSED under the release posture.
+POSTURE (corrected 2026-08-24, per the follow-up review): the DEFAULT
+engine is `legacy`; `livefeed` is OPT-IN and REFUSED under the release
+posture until Stage 6 lands and the engine is certified. (An earlier
+revision of this document claimed livefeed was the production default —
+that never matched the shipped binary.)
 
 REMAINING (gated on Stage 6): delete sse_response / sse_hub_response /
 sse_lineage_response, DirectGuard, join_direct_or_promote, hub ring
-machinery, SSE_HUB_PROMOTE_AT; rename SSE_HUB_* → SSE_FEED_*; flip DST
-rig default and rewrite the ~16 hub-mechanics tests (obsolete pins die;
-wire-contract pins carry over). One focused session once Stage 6 lands.
+machinery, SSE_HUB_PROMOTE_AT; drop the SSE_HUB_* fallbacks of
+SSE_FEED_RING_BYTES/SSE_FEED_TOTAL_BYTES; flip DST rig default and
+rewrite the ~16 hub-mechanics tests (obsolete pins die; wire-contract
+pins carry over). One focused session once Stage 6 lands.
+
+## Follow-up review remediation — STATUS: DONE (2026-08-24)
+
+The follow-up review's blockers, all fixed with deterministic unit legs
+(`sse::feed::tests`, `sse::registry::tests`, `sse::session::tests`):
+
+1. `leave_locked` returned the PRE-decrement count — feeds never left
+   the registry. Now post-decrement, with a zero-decrement invariant.
+2. The process-global budget was reserved per EXTRA subscriber AND
+   again per retained batch (double count), and the allowance leaked.
+   Redesigned: EXACTLY ONE ring allowance per shared feed, reserved on
+   the 1→2 transition, released at feed drop; batch retention is
+   charged against the ring bound and never reserved globally again.
+3. The captured `join_head`/`ver_rx` were returned but ignored — the
+   session now uses them, closing the subscribe→serve handoff race.
+4. Phase A never emits records at/after `join_head` (they arrive via
+   the shared ring in Phase B — no duplicates).
+5. Shared→solo (2→1) no longer clears the retained ring out from under
+   an unread survivor; solo drives keep the floor put while the ring
+   drains; the allowance releases at zero subscribers.
+6. The source wake is REGISTERED at loop top (`Notified::enable()`)
+   before any state read — an append between observation and park can
+   no longer be missed until the heartbeat.
+7. No-progress partial pages and source failures are typed outcomes
+   that never bump the feed version — no wake-storm spin.
+8. Product cursors name the ACTUAL live segment (`resolve_segment`),
+   not hard-coded zero; feed identity is `desc.storage_hash()`.
+9. The dormant dedicated-driver code (`spawn_shared_driver` /
+   `ensure_shared_driver`) is deleted — cooperative driving is the one
+   execution model.
+10. `SSE_FEED_RING_BYTES`/`SSE_FEED_TOTAL_BYTES` are real now (legacy
+    `SSE_HUB_*` fallback, loud on unparseable); the zero-budget
+    contract is singleton-only, documented in LIVE-FEED.md.
+11. CI: a dedicated `livefeed` job runs the engine's unit and HTTP
+    legs on every push.
 
 ## Stage 8 — Field validation — STATUS: PENDING
 

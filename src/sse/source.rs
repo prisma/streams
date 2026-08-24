@@ -5,7 +5,7 @@
 use super::feed::{FeedSourceRead, SourceBatch};
 use crate::registry::StreamDesc;
 use crate::shard::{ShardEngine, StreamHandle};
-use bytes::{Bytes, BytesMut};
+use bytes::Bytes;
 use std::sync::Arc;
 
 pub(crate) struct SingleSource {
@@ -46,12 +46,16 @@ impl FeedSourceRead for SingleSource {
         };
         // HONEST scanned progress (finding 2): `last` advances over
         // NON-MATCHING ranges for filtered lanes — it is the consumed
-        // boundary even when zero records matched.
+        // boundary even when zero records matched. `completed` tells
+        // the driver whether this page reached the durable frontier; a
+        // partial page with no scanned progress is NOT a successful
+        // drive (finding 6).
         let scan_to = out.last.map(|x| x + 1).unwrap_or(from);
         Ok(SourceBatch {
             scan_from: from,
             scan_to,
             records: out.recs,
+            completed: out.completed,
         })
     }
 
@@ -61,10 +65,6 @@ impl FeedSourceRead for SingleSource {
 
     fn closed(&self) -> bool {
         self.handle.state.lock().unwrap().durable.closed
-    }
-
-    fn desc(&self) -> &StreamDesc {
-        &self.desc
     }
 
     fn prepare_data(&self, rec: &crate::http::PlainRec) -> Bytes {

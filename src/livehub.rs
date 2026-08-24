@@ -104,6 +104,50 @@ pub(crate) fn hub_total_cap() -> u64 {
     })
 }
 
+/// LiveFeed per-feed ring allowance. Env SSE_FEED_RING_BYTES; falls
+/// back to the legacy SSE_HUB_RING_BYTES during the engine transition
+/// (one configured budget serves both engines). An unparseable value
+/// warns — it must never masquerade as a tuned budget.
+pub(crate) fn feed_ring_bytes() -> usize {
+    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
+    *V.get_or_init(|| match std::env::var("SSE_FEED_RING_BYTES") {
+        Ok(raw) => match raw.trim().parse() {
+            Ok(v) => v,
+            Err(_) => {
+                tracing::warn!(
+                    "SSE_FEED_RING_BYTES={raw:?} does not parse as a byte count; \
+                     falling back to the SSE_HUB_RING_BYTES value"
+                );
+                hub_ring_bytes()
+            }
+        },
+        Err(_) => hub_ring_bytes(),
+    })
+}
+
+/// LiveFeed process-global shared-mode budget. Env
+/// SSE_FEED_TOTAL_BYTES; falls back to the legacy SSE_HUB_TOTAL_BYTES
+/// during the engine transition. Zero = singleton-only posture: a
+/// second subscriber to the same feed is refused with a typed capacity
+/// error (see docs/LIVE-FEED.md §Retention policy). An unparseable
+/// value warns — it must never masquerade as a tuned budget.
+pub(crate) fn feed_total_cap() -> u64 {
+    static V: std::sync::OnceLock<u64> = std::sync::OnceLock::new();
+    *V.get_or_init(|| match std::env::var("SSE_FEED_TOTAL_BYTES") {
+        Ok(raw) => match raw.trim().parse() {
+            Ok(v) => v,
+            Err(_) => {
+                tracing::warn!(
+                    "SSE_FEED_TOTAL_BYTES={raw:?} does not parse as a byte count; \
+                     falling back to the SSE_HUB_TOTAL_BYTES value"
+                );
+                hub_total_cap()
+            }
+        },
+        Err(_) => hub_total_cap(),
+    })
+}
+
 pub(crate) struct PreparedBatch {
     /// First scanned offset this batch covers (== the scan head when
     /// it was prepared).

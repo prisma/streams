@@ -45,6 +45,22 @@ jobs:
           if grep -E "^test result" /tmp/suite.log | grep -qv " 0 failed"; then
             echo "suite has failures"; exit 1
           fi
+  # Job: the LiveFeed engine (STREAMS_SSE_ENGINE=livefeed shape) —
+  # every LiveFeed-compatible SSE test runs under the opt-in engine on
+  # every push. A green legacy-default suite is NOT a replacement-
+  # engine certification: this job is the engine's own gate until the
+  # default flips (docs/LIVE-FEED-PLAN.md Stage 6/7).
+  livefeed:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: LiveFeed unit legs (feed + registry lifecycle/budget)
+        run: cargo test --release --bin streams-slate sse::
+      - name: LiveFeed HTTP legs (wire equivalence, fanout, framing)
+        run: cargo test --release --bin streams-slate livefeed_
+
   # Job: the REAL enforce-mode noisy-neighbor campaign (SR2-5),
   # nightly. Reduced herd for the 4-core runner (24 noisy, 100 idle)
   # with the SAME locked thresholds; the contract-scale 48/200 run is
