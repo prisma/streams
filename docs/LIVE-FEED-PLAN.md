@@ -97,16 +97,16 @@ The follow-up review's blockers, all fixed with deterministic unit legs
    the registry. Now post-decrement, with a zero-decrement invariant.
 2. The process-global budget was reserved per EXTRA subscriber AND
    again per retained batch (double count), and the allowance leaked.
-   Redesigned: EXACTLY ONE ring allowance per shared feed, reserved on
-   the 1→2 transition, released at feed drop; batch retention is
-   charged against the ring bound and never reserved globally again.
+   Interim fix: one allowance per shared feed. FINAL design (round 2,
+   item 3 below): the budget reserves the ACTUAL retained bytes per
+   batch, released on eviction/drop.
 3. The captured `join_head`/`ver_rx` were returned but ignored — the
    session now uses them, closing the subscribe→serve handoff race.
 4. Phase A never emits records at/after `join_head` (they arrive via
    the shared ring in Phase B — no duplicates).
 5. Shared→solo (2→1) no longer clears the retained ring out from under
    an unread survivor; solo drives keep the floor put while the ring
-   drains; the allowance releases at zero subscribers.
+   drains; retained bytes release at feed drop.
 6. The source wake is REGISTERED at loop top (`Notified::enable()`)
    before any state read — an append between observation and park can
    no longer be missed until the heartbeat.
@@ -122,6 +122,50 @@ The follow-up review's blockers, all fixed with deterministic unit legs
     contract is singleton-only, documented in LIVE-FEED.md.
 11. CI: a dedicated `livefeed` job runs the engine's unit and HTTP
     legs on every push.
+
+## Follow-up review remediation, round 2 — STATUS: DONE (2026-08-24)
+
+The second review's six findings:
+
+1. Shared admission no longer exposes `subscriber_count == 2` before
+   its memory posture is valid: the 1→2 check is STATIC (nonzero ring
+   AND nonzero global budget) and runs BEFORE the attach under the
+   registry lock — a refusal leaves no partial state to roll back.
+2. Initial catch-up can no longer be mistaken for live lag: sessions
+   track `reached_live`; a ring that overtakes a not-yet-live session
+   triggers durable re-catch-up to the current head (counted), never
+   a disconnect. Genuine lag after `upToDate` still disconnects.
+3. Budget geometry redesigned (model B): the process budget reserves
+   the ACTUAL retained bytes per batch (released on eviction/drop)
+   instead of one whole ring allowance per shared feed — the default
+   16 MiB now fits hundreds of mostly-idle shared feeds instead of 16.
+   The budget lives on `AppState` (per-rig isolation in tests), and a
+   batch the last subscriber has fully passed is drain-released
+   immediately (the budget cannot stay pinned after shared use).
+4. Ring-zero is singleton-only at admission; an oversized batch
+   (larger than the whole ring) is advanced WITHOUT retention — it can
+   never be evicted before anyone consumed it. The driver read is
+   capped at 2/3 of the ring so prepared batches fit in the ordinary
+   case.
+5. Version semantics exact: `Idle`/`NoProgress`/`SourceFailed` never
+   bump; the close transition bumps exactly once (single outcome
+   fold); sessions drain consecutive retained batches back-to-back
+   without driving or parking between them.
+6. `read_stitched` reports the CONSUMED boundary (scan progress over
+   match-free ranges and drained ancestors), not the last matching
+   record — fork lanes no longer rescan foreign-only windows.
+
+Coverage added this round: a REAL abort leg (barrier-gated source,
+actual task cancellation), the multi-batch drain leg, exact budget
+geometry legs (actual-bytes reservation, exhaustion posture,
+eviction release, zero-ring refusal), the deterministic join-head
+handoff leg (failpoint between attach and session start), the
+ring-wrap re-catch-up leg, the fork foreign-window leg (320 KiB of
+foreign records consumed as progress), the binary base64 leg, the
+exact bytes_out unit leg, and the exact terminal transcript leg. The
+640-KiB window leg is now deterministic (driving paused at a new
+failpoint until the whole window is durable). LiveFeed production
+counters are exported under `/v1/debug/load.sse_livefeed`.
 
 ## Stage 8 — Field validation — STATUS: PENDING
 

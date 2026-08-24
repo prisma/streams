@@ -4,10 +4,10 @@
 //! handle return happen under the registry lock — and `unsubscribe()`
 //! performs verify-pointer/decrement/evict under that SAME lock,
 //! closing the last-out/new-join race (follow-up review finding 4).
-//! Entering SHARED mode (the 1→2 transition) reserves this feed's ring
-//! allowance from the process-global budget EXACTLY ONCE; failure
-//! rejects the NEW subscriber with a typed capacity error instead of
-//! silently dropping shared delivery (finding 6-mem redesign).
+//! SHARED admission (the 1→2 transition) is validated BEFORE the
+//! attach on static configuration (nonzero ring AND nonzero global
+//! budget); retention itself reserves the ACTUAL retained bytes per
+//! batch from the process-global budget (budget model B).
 
 use super::feed::{FeedKey, LiveFeed};
 use std::collections::HashMap;
@@ -71,6 +71,17 @@ impl FeedRegistry {
         let (feed, join_head, ver_rx): (Arc<LiveFeed>, u64, tokio::sync::watch::Receiver<u64>) =
             match map.get(&key) {
                 Some(f) => {
+                    // SHARED admission (follow-up review finding 1): the
+                    // 1→2 transition is validated BEFORE the attach, on
+                    // STATIC configuration (nonzero ring AND nonzero
+                    // global budget) — never after exposing a count the
+                    // memory posture cannot support. There is nothing to
+                    // roll back on refusal because nothing happened yet.
+                    if f.subscriber_count() == 1 && !f.can_share() {
+                        crate::sse::auth::sse_stats::FEED_CAPACITY_REJECTED
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        return Err(CapacityRejected);
+                    }
                     let (head, rx) = f.subscribe_locked();
                     (f.clone(), head, rx)
                 }
@@ -81,17 +92,6 @@ impl FeedRegistry {
                     (f, head, rx)
                 }
             };
-        // Finding 6-mem (redesign): the 1→2 transition reserves this
-        // feed's ring allowance from the process-global budget EXACTLY
-        // ONCE (enter_shared_locked is idempotent; 2→3+ and re-entry
-        // after a solo dip cost nothing while the reservation is held).
-        // Failure rejects THE NEW subscriber — never silently drops
-        // shared delivery. The existing singleton continues normally.
-        if feed.subscriber_count() == 2 && !feed.enter_shared_locked() {
-            let remaining = feed.leave_locked();
-            debug_assert_eq!(remaining, 1, "the pre-existing singleton remains");
-            return Err(CapacityRejected);
-        }
         Ok(FeedSubscription {
             registry: Arc::clone(self),
             key,
@@ -118,6 +118,11 @@ impl FeedRegistry {
         if remaining == 0 {
             map.remove(key);
         }
+    }
+
+    /// Live feed count (observability: /v1/debug/load).
+    pub(crate) fn len(&self) -> usize {
+        self.map.lock().unwrap().len()
     }
 
     #[cfg(test)]
@@ -175,83 +180,60 @@ mod tests {
         assert_eq!(registry.len_for_test(), 0);
     }
 
-    /// Finding 6-mem (red), through the registry: three subscribers
-    /// reserve EXACTLY ONE allowance; final teardown returns the budget
-    /// to zero.
+    /// Budget model B, through the registry: subscribers NEVER reserve —
+    /// only retained batches do. Many subscribers on one feed cost
+    /// nothing until a publication retains bytes.
     #[test]
-    fn three_subscribers_one_allowance_released_at_zero() {
+    fn shared_subscribers_cost_nothing_until_retention() {
         let registry = Arc::new(FeedRegistry::new());
         let budget = Arc::new(FeedMemoryBudget::new_for_test(16 * RING as u64));
         let s1 = registry
             .subscribe(key(1), || make_feed(key(1), &budget))
             .expect("s1");
-        assert_eq!(budget.reserved(), 0, "singletons reserve nothing");
         let s2 = registry
             .subscribe(key(1), || make_feed(key(1), &budget))
             .expect("s2");
-        assert_eq!(
-            budget.reserved(),
-            RING as u64,
-            "the 1->2 transition reserves one allowance"
-        );
         let s3 = registry
             .subscribe(key(1), || make_feed(key(1), &budget))
             .expect("s3");
+        assert_eq!(s1.feed.subscriber_count(), 3);
         assert_eq!(
             budget.reserved(),
-            RING as u64,
-            "the third subscriber reserves nothing further"
+            0,
+            "no reservation exists before any retained batch (model B)"
         );
         drop(s1);
         drop(s2);
-        assert_eq!(
-            budget.reserved(),
-            RING as u64,
-            "drop-to-one keeps the allowance (the survivor may still drain)"
-        );
         assert_eq!(registry.len_for_test(), 1, "feed survives at one");
         drop(s3);
         assert_eq!(registry.len_for_test(), 0);
-        assert_eq!(budget.reserved(), 0, "final teardown releases it");
+        assert_eq!(budget.reserved(), 0);
     }
 
-    /// Finding 6-mem (red): budget exhaustion rejects the SECOND
-    /// subscriber with the typed error; the pre-existing singleton and
-    /// the feed survive untouched.
+    /// Finding 1 (red): the 1→2 admission check is STATIC and happens
+    /// BEFORE the attach — a refusal leaves NO partial state: count
+    /// untouched, feed resident, nothing reserved.
     #[test]
-    fn capacity_rejection_preserves_singleton_and_feed() {
+    fn shared_refusal_leaves_no_partial_state() {
         let registry = Arc::new(FeedRegistry::new());
-        // Room for exactly ONE shared allowance.
-        let budget = Arc::new(FeedMemoryBudget::new_for_test(RING as u64));
-        let a1 = registry
+        // Zero global budget: sharing is statically impossible.
+        let budget = Arc::new(FeedMemoryBudget::new_for_test(0));
+        let s1 = registry
             .subscribe(key(1), || make_feed(key(1), &budget))
-            .expect("a1");
-        let a2 = registry
-            .subscribe(key(1), || make_feed(key(1), &budget))
-            .expect("a2 enters shared mode");
-        assert_eq!(budget.reserved(), RING as u64);
-
-        let b1 = registry
-            .subscribe(key(2), || make_feed(key(2), &budget))
-            .expect("b1 singleton needs no allowance");
-        let rejected = registry.subscribe(key(2), || make_feed(key(2), &budget));
-        assert!(
-            matches!(rejected, Err(CapacityRejected)),
-            "the second subscriber on feed B must be rejected at capacity"
-        );
+            .expect("s1");
+        for _ in 0..3 {
+            let rejected = registry.subscribe(key(1), || make_feed(key(1), &budget));
+            assert!(matches!(rejected, Err(CapacityRejected)));
+        }
         assert_eq!(
-            b1.feed.subscriber_count(),
+            s1.feed.subscriber_count(),
             1,
-            "the rejected join rolled its attach back"
+            "repeated refusals never leak an attach"
         );
-        assert_eq!(registry.len_for_test(), 2, "both feeds remain resident");
-        assert_eq!(budget.reserved(), RING as u64, "no half-reservation");
-
-        drop(a1);
-        drop(a2);
-        drop(b1);
-        assert_eq!(registry.len_for_test(), 0);
+        assert_eq!(registry.len_for_test(), 1);
         assert_eq!(budget.reserved(), 0);
+        drop(s1);
+        assert_eq!(registry.len_for_test(), 0);
     }
 
     /// Zero-budget contract (docs/LIVE-FEED.md): singleton-only — the
@@ -270,33 +252,51 @@ mod tests {
         assert_eq!(registry.len_for_test(), 0);
     }
 
-    /// The cap is EXACT: feeds racing to enter shared mode fill the
-    /// budget allowance-for-allowance; the first feed past the cap is
-    /// refused, and full teardown returns the budget to zero.
+    /// Zero-RING contract (follow-up review finding 4): a zero-byte
+    /// ring cannot hold any batch, so the second subscriber is refused
+    /// BEFORE attach rather than admitted into instant lag.
     #[test]
-    fn many_feeds_fill_the_cap_exactly() {
+    fn zero_ring_is_singleton_only() {
+        let registry = Arc::new(FeedRegistry::new());
+        let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
+        let s1 = registry
+            .subscribe(key(1), || {
+                let src = Arc::new(FakeSource::new(0, 8));
+                LiveFeed::new_with_budget(key(1), src, 0, budget.clone())
+            })
+            .expect("singleton admitted on a zero-ring feed");
+        let rejected = registry.subscribe(key(1), || {
+            let src = Arc::new(FakeSource::new(0, 8));
+            LiveFeed::new_with_budget(key(1), src, 0, budget.clone())
+        });
+        assert!(matches!(rejected, Err(CapacityRejected)));
+        assert_eq!(s1.feed.subscriber_count(), 1);
+        drop(s1);
+        assert_eq!(registry.len_for_test(), 0);
+    }
+
+    /// Model B capacity: shared admission is not rationed by feed —
+    /// 32 feeds × 2 subscribers all attach; the process budget is
+    /// consumed only by ACTUAL retained bytes.
+    #[test]
+    fn many_shared_feeds_share_one_budget() {
         let registry = Arc::new(FeedRegistry::new());
         let budget = Arc::new(FeedMemoryBudget::new_for_test(4 * RING as u64));
         let mut subs = Vec::new();
-        // 32 singletons: no reservations at all.
         for n in 0..32u8 {
             subs.push(
                 registry
                     .subscribe(key(n), || make_feed(key(n), &budget))
                     .expect("singleton"),
             );
+            subs.push(
+                registry
+                    .subscribe(key(n), || make_feed(key(n), &budget))
+                    .expect("second subscriber — model B never rations feeds"),
+            );
         }
-        assert_eq!(budget.reserved(), 0);
-        // Second subscribers: exactly FOUR fit.
-        let mut shared = 0;
-        for n in 0..32u8 {
-            if let Ok(s2) = registry.subscribe(key(n), || make_feed(key(n), &budget)) {
-                shared += 1;
-                subs.push(s2);
-            }
-        }
-        assert_eq!(shared, 4, "the cap admits exactly four shared feeds");
-        assert_eq!(budget.reserved(), 4 * RING as u64);
+        assert_eq!(registry.len_for_test(), 32);
+        assert_eq!(budget.reserved(), 0, "nothing retained yet");
         drop(subs);
         assert_eq!(registry.len_for_test(), 0);
         assert_eq!(budget.reserved(), 0, "budget returns exactly to zero");

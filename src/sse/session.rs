@@ -153,7 +153,14 @@ pub(crate) async fn serve(
     // rejects THE NEW subscriber with a typed capacity refusal while
     // the existing singleton continues normally.
     let subscription = match state.live_feeds.subscribe(fkey.clone(), || {
-        LiveFeed::new(fkey.clone(), src.clone(), crate::livehub::feed_ring_bytes())
+        LiveFeed::new_with_budget(
+            fkey.clone(),
+            src.clone(),
+            state
+                .feed_ring_bytes
+                .load(std::sync::atomic::Ordering::Relaxed),
+            state.feed_budget.clone(),
+        )
     }) {
         Ok(sub) => sub,
         Err(_) => {
@@ -166,6 +173,10 @@ pub(crate) async fn serve(
             .into_response();
         }
     };
+    // Test failpoint: AFTER the atomic attach, BEFORE the session reads
+    // any feed state — the exact window of the join-head handoff race.
+    #[cfg(test)]
+    crate::failpoints::pause(crate::failpoints::Fp::SseFeedAfterSubscribe, &desc.name).await;
     let feed = subscription.feed();
     // subscribe() already incremented the count (registry RAII owns
     // attach/detach — no second join here, finding 3's double-count).
@@ -224,142 +235,102 @@ pub(crate) async fn serve(
         // Exact status machine (finding 4): dedupe by reported frontier
         // position; the terminal control is emitted once, then EOF.
         let mut last_reported: Option<u64> = None;
+        // Handoff state (finding 2): only a session that HAS reached
+        // live may be lag-disconnected. A session still in its initial
+        // handoff that the ring overtakes performs durable catch-up
+        // again — connecting from an old cursor is NEVER a lag.
+        let mut reached_live = false;
+        let mut catchup_bound = join_head;
 
-        // PHASE A: catch up to the CAPTURED join head only.
-        while cursor < join_head {
-            if lease_watch.revoked(&task_state) {
-                return;
-            }
-            match src.read_batch(cursor, 1024 * 1024).await {
-                Ok(batch) if batch.scan_to > cursor => {
-                    for r in &batch.records {
-                        // NEVER emit beyond the captured handoff bound
-                        // (finding 8): records at/after join_head are
-                        // delivered through the shared ring in Phase B —
-                        // sending them here too would duplicate them.
-                        if r.off >= join_head {
-                            break;
-                        }
-                        if r.off < cursor {
-                            continue;
-                        }
-                        let frame = ctx.compose_record(&src.prepare_data(r), r.off + 1);
-                        if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
-                            return;
-                        }
-                        crate::sse::auth::sse_stats::DELIVERED_RECORDS
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        crate::billing::meter_read_chunk(
-                            &task_state.billing_reads,
-                            &crate::billing::identity_of(&task_state, &task_desc),
-                            r.payload.len() as u64,
-                            1,
-                        );
-                        cursor = cursor.max(r.off + 1);
-                    }
-                    // Match-free scanned range still progresses.
-                    cursor = cursor.max(batch.scan_to.min(join_head));
-                }
-                _ => break,
-            }
-        }
-
-        // PHASE B: shared live consumption.
-        loop {
-            if lease_watch.revoked(&task_state) {
-                return;
-            }
-            // Wakeups registered at LOOP TOP (finding 7): every state
-            // read below is covered by these futures. `ver_rx` is THE
-            // persistent receiver — changed() consumes each publication
-            // exactly once (no clone-echo loops).
-            let mut ver_wait = Box::pin(async {
-                let _ = ver_rx.changed().await;
-            });
-            // The source waiter must be REGISTERED now, not at the
-            // final select! (finding: registration window): an unpolled
-            // `Notify::notified()` future has no waiter, so an append
-            // committing between the frontier read below and the park
-            // would be missed until the heartbeat. `enable()` registers
-            // the waiter eagerly; every state read in this iteration is
-            // covered, and the state reads themselves cover the gap
-            // since the previous iteration's registration.
-            let cur_src = feed.current_source();
-            let src_wait = cur_src.advance_notify().notified();
-            tokio::pin!(src_wait);
-            src_wait.as_mut().enable();
-            match feed.take_visible(cursor) {
-                Take::Lagged { floor } => {
-                    tracing::warn!(cursor, floor, "lag disconnect below feed floor");
+        // The handoff loop: durable catch-up to `catchup_bound`, then
+        // live consumption. Re-entered when the ring overtakes a
+        // not-yet-live session (the catch-up bound refreshes to the
+        // current feed head).
+        'handoff: loop {
+            // DURABLE CATCH-UP: private reads bounded by the catch-up
+            // bound — never emit at/after it (finding 8: those records
+            // arrive through the shared ring in the live phase).
+            while cursor < catchup_bound {
+                if lease_watch.revoked(&task_state) {
                     return;
                 }
-                Take::Batch { batch, start_index } => {
-                    for r in batch.records[start_index..].iter() {
-                        let frame = ctx.compose_record(&r.data_event, r.offset + 1);
-                        if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
-                            return;
+                match src.read_batch(cursor, 1024 * 1024).await {
+                    Ok(batch) if batch.scan_to > cursor => {
+                        for r in &batch.records {
+                            if r.off >= catchup_bound {
+                                break;
+                            }
+                            if r.off < cursor {
+                                continue;
+                            }
+                            let frame = ctx.compose_record(&src.prepare_data(r), r.off + 1);
+                            if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
+                                return;
+                            }
+                            crate::sse::auth::sse_stats::DELIVERED_RECORDS
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            crate::billing::meter_read_chunk(
+                                &task_state.billing_reads,
+                                &crate::billing::identity_of(&task_state, &task_desc),
+                                r.payload.len() as u64,
+                                1,
+                            );
+                            cursor = cursor.max(r.off + 1);
                         }
-                        crate::sse::auth::sse_stats::DELIVERED_RECORDS
+                        // Match-free scanned range still progresses.
+                        cursor = cursor.max(batch.scan_to.min(catchup_bound));
+                    }
+                    _ => {
+                        // Source failure mid-catch-up: bounded backoff,
+                        // then retry the SAME bound — never a hot loop
+                        // (finding 6 discipline applies here too).
+                        crate::sse::auth::sse_stats::FEED_SOURCE_FAILED
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        crate::billing::meter_read_chunk(
-                            &task_state.billing_reads,
-                            &crate::billing::identity_of(&task_state, &task_desc),
-                            u64::from(r.payload_len),
-                            1,
-                        );
+                        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
                     }
-                    cursor = cursor.max(batch.scan_to);
-                    need_status = true;
                 }
-                Take::Progress { next } => {
-                    // Match-free scanned range: pure cursor progress.
-                    cursor = next.max(cursor);
-                    need_status = true;
-                }
-                Take::AtHead => {}
-            }
-            let frontier = src.frontier();
-            let closed = src.closed();
-            if cursor >= frontier {
-                // TERMINAL: at genuine close exactly ONE sealed control
-                // is emitted, then EOF — never a preceding duplicate
-                // upToDate at the same position (finding 7).
-                let genuine = closed && genuine_closure_checked(&task_state, &sref).await;
-                if genuine {
-                    if !sse_send(&tx, ctx.status_ctl(cursor, true)).await {
-                        return;
-                    }
-                    return; // EOF after THE final control
-                }
-                // Transition (closed but NOT genuine): disconnect
-                // without a terminal control — the client resumes from
-                // its cursor into the new topology via the legacy
-                // lineage path (finding 5 minimum safe behavior).
-                if closed {
-                    tracing::info!("topology transition detected: disconnecting without terminal");
-                    return;
-                }
-                // Open frontier: one upToDate per position (deduped).
-                if need_status && last_reported != Some(cursor) {
-                    if !sse_send(&tx, ctx.status_ctl(cursor, false)).await
-                        || lease_watch.revoked(&task_state)
-                    {
-                        return;
-                    }
-                    need_status = false;
-                    last_reported = Some(cursor);
-                }
-            } else {
-                need_status = true;
             }
 
-            // Drive when progress is needed. Contended callers fall to
-            // the park below (ver_wait registered at loop top).
-            if cursor < frontier {
-                match feed.drive_once().await {
-                    Some(DriveOutcome::Solo { records, scan_to }) => {
-                        let at_cursor = cursor;
-                        for r in records.iter().filter(|r| r.offset >= at_cursor) {
+            // LIVE phase: shared consumption.
+            loop {
+                if lease_watch.revoked(&task_state) {
+                    return;
+                }
+                // Wakeups registered at LOOP TOP (finding 7): every
+                // state read below is covered by these futures.
+                // `ver_rx` is THE persistent receiver — changed()
+                // consumes each publication exactly once.
+                let mut ver_wait = Box::pin(async {
+                    let _ = ver_rx.changed().await;
+                });
+                // The source waiter must be REGISTERED now, not at the
+                // final select! (finding: registration window):
+                // `enable()` registers the waiter eagerly; every state
+                // read in this iteration is covered.
+                let cur_src = feed.current_source();
+                let src_wait = cur_src.advance_notify().notified();
+                tokio::pin!(src_wait);
+                src_wait.as_mut().enable();
+                match feed.take_visible(cursor) {
+                    Take::Lagged { floor } => {
+                        if reached_live {
+                            crate::sse::auth::sse_stats::FEED_LAG_DISCONNECTS
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            tracing::warn!(cursor, floor, "lag disconnect below feed floor");
+                            return;
+                        }
+                        // Still in the initial handoff and the ring
+                        // overtook us (finding 2): NOT lag — durable
+                        // catch-up resumes from our cursor to the
+                        // CURRENT feed head, then the live phase
+                        // re-enters. No records are skipped.
+                        crate::sse::auth::sse_stats::FEED_CATCHUP_RETRIES
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        catchup_bound = feed.head();
+                        continue 'handoff;
+                    }
+                    Take::Batch { batch, start_index } => {
+                        for r in batch.records[start_index..].iter() {
                             let frame = ctx.compose_record(&r.data_event, r.offset + 1);
                             if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
                                 return;
@@ -372,51 +343,131 @@ pub(crate) async fn serve(
                                 u64::from(r.payload_len),
                                 1,
                             );
-                            cursor = cursor.max(r.offset + 1);
                         }
-                        // ADVANCE TO SCANNED BATCH END ONLY (findings
-                        // 1+2): never jump to the live frontier and never
-                        // stop at the last MATCHING record — match-free
-                        // ranges are consumed progress.
-                        cursor = cursor.max(scan_to);
+                        cursor = cursor.max(batch.scan_to);
                         need_status = true;
+                        // DRAIN (finding 5): more retained batches may
+                        // already be visible — loop and consume them
+                        // immediately instead of driving or parking
+                        // between batches.
                         continue;
                     }
-                    // A publication or closure changed feed state (and
-                    // bumped the version): loop and consume it.
-                    Some(DriveOutcome::Published) | Some(DriveOutcome::Closed) => continue,
-                    // No-progress page or source failure: feed state did
-                    // NOT change and the version was NOT bumped — park
-                    // rather than spin (finding 6). The next durable
-                    // advance or the heartbeat retries.
-                    Some(DriveOutcome::NoProgress) => {}
-                    Some(DriveOutcome::SourceFailed) => {
-                        tracing::warn!("livefeed source read failed; parking until next wake");
+                    Take::AtHead => {}
+                }
+                let frontier = src.frontier();
+                let closed = src.closed();
+                if cursor >= frontier {
+                    // TERMINAL: at genuine close exactly ONE sealed
+                    // control is emitted, then EOF — never a preceding
+                    // duplicate upToDate at the same position (finding 7).
+                    let genuine = closed && genuine_closure_checked(&task_state, &sref).await;
+                    if genuine {
+                        if !sse_send(&tx, ctx.status_ctl(cursor, true)).await {
+                            return;
+                        }
+                        return; // EOF after THE final control
                     }
-                    // Head already covers the frontier: nothing to do.
-                    Some(DriveOutcome::Idle) => {}
-                    // Contended: park; the winner's publication bumps
-                    // ver_wait (registered at loop top).
-                    None => {}
-                }
-            }
-            // Park.
-            tokio::select! {
-                _ = &mut ver_wait => {}
-                _ = &mut src_wait => {}
-                _ = tx.closed() => {
-                    crate::sse::auth::sse_stats::DISCONNECT_CLIENT_CLOSED
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return;
-                }
-                _ = tokio::time::sleep(lease_watch.nap()) => {
-                    if lease_watch.revoked(&task_state) {
+                    // Transition (closed but NOT genuine): disconnect
+                    // without a terminal control — the client resumes
+                    // from its cursor into the new topology via the
+                    // legacy lineage path (finding 5 minimum safe
+                    // behavior).
+                    if closed {
+                        tracing::info!(
+                            "topology transition detected: disconnecting without terminal"
+                        );
                         return;
                     }
+                    // Open frontier: one upToDate per position (deduped).
+                    if need_status && last_reported != Some(cursor) {
+                        if !sse_send(&tx, ctx.status_ctl(cursor, false)).await
+                            || lease_watch.revoked(&task_state)
+                        {
+                            return;
+                        }
+                        need_status = false;
+                        last_reported = Some(cursor);
+                        // An HONEST upToDate was emitted: from here on,
+                        // falling below the floor is genuine lag.
+                        reached_live = true;
+                    }
+                } else {
+                    need_status = true;
                 }
-                _ = hb.changed() => {
-                    if !sse_send(&tx, Bytes::from(": keep-alive\n\n")).await {
+
+                // Drive when progress is needed. Contended callers fall
+                // to the park below (ver_wait registered at loop top).
+                if cursor < frontier {
+                    // Test failpoint: pause driving so a test can make
+                    // a whole window durable before any read occurs.
+                    #[cfg(test)]
+                    crate::failpoints::pause(
+                        crate::failpoints::Fp::SseFeedBeforeDrive,
+                        &task_desc.name,
+                    )
+                    .await;
+                    match feed.drive_once().await {
+                        Some(DriveOutcome::Solo { records, scan_to }) => {
+                            let at_cursor = cursor;
+                            for r in records.iter().filter(|r| r.offset >= at_cursor) {
+                                let frame = ctx.compose_record(&r.data_event, r.offset + 1);
+                                if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
+                                    return;
+                                }
+                                crate::sse::auth::sse_stats::DELIVERED_RECORDS
+                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                crate::billing::meter_read_chunk(
+                                    &task_state.billing_reads,
+                                    &crate::billing::identity_of(&task_state, &task_desc),
+                                    u64::from(r.payload_len),
+                                    1,
+                                );
+                                cursor = cursor.max(r.offset + 1);
+                            }
+                            // ADVANCE TO SCANNED BATCH END ONLY (findings
+                            // 1+2): never jump to the live frontier and
+                            // never stop at the last MATCHING record —
+                            // match-free ranges are consumed progress.
+                            cursor = cursor.max(scan_to);
+                            need_status = true;
+                            continue;
+                        }
+                        // A publication or closure changed feed state
+                        // (and bumped the version): loop and consume it.
+                        Some(DriveOutcome::Published) | Some(DriveOutcome::Closed) => continue,
+                        // No-progress page or source failure: feed state
+                        // did NOT change and the version was NOT bumped —
+                        // park rather than spin (finding 6). The next
+                        // durable advance or the heartbeat retries.
+                        Some(DriveOutcome::NoProgress) => {}
+                        Some(DriveOutcome::SourceFailed) => {
+                            tracing::warn!("livefeed source read failed; parking until next wake");
+                        }
+                        // Head already covers the frontier: nothing to do.
+                        Some(DriveOutcome::Idle) => {}
+                        // Contended: park; the winner's publication bumps
+                        // ver_wait (registered at loop top).
+                        None => {}
+                    }
+                }
+                // Park.
+                tokio::select! {
+                    _ = &mut ver_wait => {}
+                    _ = &mut src_wait => {}
+                    _ = tx.closed() => {
+                        crate::sse::auth::sse_stats::DISCONNECT_CLIENT_CLOSED
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         return;
+                    }
+                    _ = tokio::time::sleep(lease_watch.nap()) => {
+                        if lease_watch.revoked(&task_state) {
+                            return;
+                        }
+                    }
+                    _ = hb.changed() => {
+                        if !sse_send(&tx, Bytes::from(": keep-alive\n\n")).await {
+                            return;
+                        }
                     }
                 }
             }
@@ -576,6 +627,37 @@ mod tests {
             feed_key_of(&other, &None).identity,
             key.identity,
             "a recreated stream (new epoch) is a new feed identity"
+        );
+    }
+
+    /// Finding 10 coverage: bytes_out accounts EXACTLY the emitted
+    /// frame bytes — one counter increment per body chunk, no more,
+    /// no less (deterministic: a private Counters, no global state).
+    #[tokio::test]
+    async fn bytes_out_accounts_exactly_the_emitted_frames() {
+        let usage = std::sync::Arc::new(crate::usage::Counters::default());
+        let chunks: Vec<Result<Bytes, std::io::Error>> = vec![
+            Ok(Bytes::from_static(b"event: data\ndata:AAEC\n\n")),
+            Ok(Bytes::from_static(b"event: control\ndata:{}\n\n")),
+            Ok(Bytes::from_static(b": keep-alive\n\n")),
+        ];
+        let want: usize = chunks.iter().map(|c| c.as_ref().unwrap().len()).sum();
+        let resp = response_from_stream(futures_util::stream::iter(chunks), true, &usage);
+        assert_eq!(
+            resp.headers()
+                .get("stream-sse-data-encoding")
+                .and_then(|v| v.to_str().ok()),
+            Some("base64"),
+            "binary bodies carry the encoding header"
+        );
+        let body = axum::body::to_bytes(resp.into_body(), usize::MAX)
+            .await
+            .unwrap();
+        assert_eq!(body.len(), want);
+        assert_eq!(
+            usage.bytes_out.load(Ordering::Relaxed),
+            want as u64,
+            "bytes_out IS the emitted frame bytes, exactly"
         );
     }
 }

@@ -39,9 +39,11 @@ Every connection runs ONE state machine:
 
 ```text
 A subscriber CONNECTING from an old cursor performs durable catch-up.
-A subscriber that reached live and LATER falls behind the feed floor
-is disconnected with a typed lag error; it resumes from its last
-delivered cursor.
+A subscriber still in its initial handoff that the ring overtakes
+performs durable catch-up AGAIN — never a lag disconnect.
+A subscriber that HAS reached live (an honest upToDate was emitted)
+and LATER falls behind the feed floor is disconnected with a typed
+lag error; it resumes from its last delivered cursor.
 ```
 
 Slow subscribers must not become private historical readers. The stall
@@ -62,12 +64,19 @@ to itself when retention is zero), releases the permit BEFORE any
 socket write, and wakes the other sessions via the feed version watch.
 If the driving session disappears, another session takes over.
 
-`SSE_FEED_TOTAL_BYTES=0` is the singleton-only emergency posture: a
-second subscriber to the same feed is refused with
-`503 subscription_capacity`; every admitted session drives for itself
-on the same code path. (`SSE_FEED_RING_BYTES` / `SSE_FEED_TOTAL_BYTES`
-fall back to the legacy `SSE_HUB_*` names during the transition; the
-allowance is reserved once per shared feed and released at teardown.)
+The process budget reserves the ACTUAL retained bytes — one exact
+reservation per retained batch, released on eviction and at feed drop
+— so mostly-idle shared feeds cost nothing and hundreds of shared
+feeds fit the default budget. A publication that cannot reserve (or a
+batch larger than the whole ring) advances the head WITHOUT
+retention; subscribers below the new floor take the lag path above.
+
+`SSE_FEED_TOTAL_BYTES=0` (or `SSE_FEED_RING_BYTES=0`) is the
+singleton-only emergency posture: a second subscriber to the same
+feed is refused with `503 subscription_capacity` BEFORE it attaches;
+every admitted session drives for itself on the same code path.
+(`SSE_FEED_RING_BYTES` / `SSE_FEED_TOTAL_BYTES` fall back to the
+legacy `SSE_HUB_*` names during the transition.)
 
 ## Cursors
 

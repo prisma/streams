@@ -5812,6 +5812,9 @@ async fn http_rig_inner(
         sse_configured_max_connections: 0,
         sse_engine_livefeed: std::sync::atomic::AtomicBool::new(false),
         live_feeds: Arc::new(crate::sse::registry::FeedRegistry::new()),
+        // Per-rig budget: isolated from every other rig in the process.
+        feed_budget: Arc::new(crate::sse::feed::FeedMemoryBudget::from_env()),
+        feed_ring_bytes: std::sync::atomic::AtomicUsize::new(crate::livehub::feed_ring_bytes()),
         sse_connections: std::sync::atomic::AtomicU64::new(0),
         live_hubs: crate::livehub::HubRegistry::new(),
         sse_live_hub: std::sync::atomic::AtomicBool::new(false),
@@ -24231,7 +24234,7 @@ async fn a_bounded_cleanup_drains_residue_without_touching_the_live_generation()
 #[test]
 fn failpoint_registry_is_enumerable_and_described() {
     use crate::failpoints::Fp;
-    assert_eq!(Fp::ALL.len(), 19);
+    assert_eq!(Fp::ALL.len(), 21);
     for fp in Fp::ALL {
         assert!(!fp.site().is_empty(), "{fp:?} has no site contract");
     }
@@ -33939,7 +33942,10 @@ async fn livefeed_raw_surface_uses_the_raw_vocabulary() {
 /// Finding 1 red: a SOLO subscription whose append window exceeds the
 /// driver's 256-KiB bounded batch must deliver EVERY record exactly
 /// once — the cursor advances to the scanned batch end, never the
-/// live frontier.
+/// live frontier. DETERMINISTIC (follow-up review): driving is paused
+/// at a failpoint until the whole 640-KiB window is durable, so the
+/// driver really faces one oversized durable window, then must take
+/// MORE THAN ONE bounded source read to drain it.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_singleton_large_window_delivers_everything_exactly_once() {
     let store = mem();
@@ -33957,8 +33963,9 @@ async fn livefeed_singleton_large_window_delivers_everything_exactly_once() {
     .await;
     assert_eq!(st, 201);
 
-    // Park at tail FIRST (empty stream), then burst 40 x 16 KiB
-    // = 640 KiB > 256 KiB driver batch.
+    // Park at tail FIRST (empty stream), with driving PAUSED at the
+    // failpoint: the 40 appends below all land before any source read.
+    crate::failpoints::arm(crate::failpoints::Fp::SseFeedBeforeDrive, "lfbig");
     let mut sck = lf_connect(addr, "lfbig", "").await;
     let (_, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
 
@@ -33974,6 +33981,10 @@ async fn livefeed_singleton_large_window_delivers_everything_exactly_once() {
         .await;
         assert!(st == 200 || st == 204, "append {i}: {st}");
     }
+    // The session is now parked at the drive failpoint with the whole
+    // window durable.
+    wait_parked(crate::failpoints::Fp::SseFeedBeforeDrive, "lfbig", 1).await;
+    crate::failpoints::release(crate::failpoints::Fp::SseFeedBeforeDrive, "lfbig");
 
     // Collect ALL 40 data frames; each record id appears EXACTLY once.
     let (acc, eof) =
@@ -33990,6 +34001,36 @@ async fn livefeed_singleton_large_window_delivers_everything_exactly_once() {
             &acc[acc.len().saturating_sub(600)..]
         );
     }
+    // One 640-KiB durable window, drained by MULTIPLE bounded reads:
+    // the 256-KiB driver batch cap forces >= 3 source reads.
+    state.registry.invalidate(&state.raw_adapter_sref("lfbig"));
+    let desc = state
+        .registry
+        .get(&state.raw_adapter_sref("lfbig"))
+        .await
+        .unwrap()
+        .unwrap();
+    let key = crate::sse::session::feed_key_of(&desc, &Some(String::new()));
+    let feed = state
+        .live_feeds
+        .feed_for_test(&key)
+        .expect("the singleton feed must exist");
+    assert!(
+        feed.source_read_count() >= 2,
+        "a 640-KiB window under a 256-KiB read cap must cost multiple source reads, got {}",
+        feed.source_read_count()
+    );
+}
+
+/// Wait until at least `n` tasks are parked at a failpoint (test sync).
+async fn wait_parked(fp: crate::failpoints::Fp, name: &str, n: usize) {
+    for _ in 0..200 {
+        if crate::failpoints::parked(fp, name) >= n {
+            return;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    panic!("timed out waiting for {n} parked at {name}");
 }
 
 /// Finding 2 red (singleton): an ALL-FOREIGN historical range on a
@@ -34210,4 +34251,364 @@ async fn livefeed_exact_framing_mixed_surfaces_product_first() {
             );
         }
     }
+}
+
+/// Finding 8/handoff (deterministic): the feed ADVANCES between the
+/// atomic subscribe and the session's first state read. The captured
+/// join_head bounds Phase A; the live phase delivers what landed after
+/// it — every record exactly once, no duplicates across the boundary.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_handoff_feed_advances_between_subscribe_and_session_start() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lfh",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let mut sub1 = lf_connect(addr, "lfh", "").await;
+    let (_, _) = hub_sse_collect(&mut sub1, 8, |t| t.contains("upToDate")).await;
+    hub_append_lf(addr, "lfh", r#"{"h":1}"#).await;
+    let (c1, _) = hub_sse_collect(&mut sub1, 8, |t| t.contains("\"h\":1")).await;
+    assert!(c1.contains("\"h\":1"));
+
+    // Subscriber 2 attaches — and PARKS inside the failpoint with its
+    // join_head captured (= 1) BEFORE its session reads any feed state.
+    crate::failpoints::arm(crate::failpoints::Fp::SseFeedAfterSubscribe, "lfh");
+    let mut sub2 = lf_connect(addr, "lfh", "?cursor=beginning").await;
+    wait_parked(crate::failpoints::Fp::SseFeedAfterSubscribe, "lfh", 1).await;
+
+    // The feed advances through the OTHER subscriber while sub2 is
+    // still parked between attach and session start.
+    hub_append_lf(addr, "lfh", r#"{"h":2}"#).await;
+    let (c2, _) = hub_sse_collect(&mut sub1, 8, |t| t.contains("\"h\":2")).await;
+    assert!(c2.contains("\"h\":2"));
+    crate::failpoints::release(crate::failpoints::Fp::SseFeedAfterSubscribe, "lfh");
+
+    // sub2: h:1 via the bounded catch-up, h:2 via the shared ring —
+    // each EXACTLY once, in order.
+    let (acc, _) = hub_sse_collect(&mut sub2, 10, |t| {
+        t.contains("\"h\":2") && t.contains("upToDate")
+    })
+    .await;
+    assert_eq!(
+        acc.matches("\"h\":1").count(),
+        1,
+        "catch-up record exactly once:\n{acc}"
+    );
+    assert_eq!(
+        acc.matches("\"h\":2").count(),
+        1,
+        "ring record exactly once — no duplicate across the handoff:\n{acc}"
+    );
+    assert!(
+        acc.find("\"h\":1").unwrap() < acc.find("\"h\":2").unwrap(),
+        "in-order delivery across the handoff:\n{acc}"
+    );
+}
+
+/// Finding 2 (initial handoff, deterministic): the ring WRAPS past a
+/// not-yet-live subscriber while it is parked between attach and
+/// session start. That is NOT lag: the session performs durable
+/// re-catch-up and delivers everything from its cursor — no
+/// disconnect, no skipped records.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_ring_wrap_during_initial_handoff_recatchups() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    // A tiny ring so a handful of shared batches wraps the floor.
+    state
+        .feed_ring_bytes
+        .store(1024, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lfw",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let mut sub1 = lf_connect(addr, "lfw", "").await;
+    let (_, _) = hub_sse_collect(&mut sub1, 8, |t| t.contains("upToDate")).await;
+
+    crate::failpoints::arm(crate::failpoints::Fp::SseFeedAfterSubscribe, "lfw");
+    let mut sub2 = lf_connect(addr, "lfw", "").await;
+    wait_parked(crate::failpoints::Fp::SseFeedAfterSubscribe, "lfw", 1).await;
+
+    let retries_before = crate::sse::auth::sse_stats::FEED_CATCHUP_RETRIES
+        .load(std::sync::atomic::Ordering::Relaxed);
+    // Twelve shared batches wrap the 1-KiB ring several times over;
+    // sub2's join position falls below the floor while it is parked.
+    for i in 0..12u64 {
+        hub_append_lf(addr, "lfw", &format!(r#"{{"w":{i}}}"#)).await;
+        let (c, _) = hub_sse_collect(&mut sub1, 8, |t| t.contains(&format!("\"w\":{i}"))).await;
+        assert!(c.contains(&format!("\"w\":{i}")), "sub1 got w{i}");
+    }
+    crate::failpoints::release(crate::failpoints::Fp::SseFeedAfterSubscribe, "lfw");
+
+    // sub2 must NOT disconnect: durable re-catch-up delivers all twelve.
+    let (acc, eof) = hub_sse_collect(&mut sub2, 15, |t| {
+        t.matches("\"w\":").count() >= 12 && t.contains("upToDate")
+    })
+    .await;
+    assert!(
+        !eof,
+        "the ring overtaking a NEW subscriber is not lag:\n{acc}"
+    );
+    for i in 0..12u64 {
+        let needle = format!("\"w\":{i}}}");
+        assert_eq!(
+            acc.matches(&needle).count(),
+            1,
+            "record w{i} exactly once after re-catch-up:\n{acc}"
+        );
+    }
+    assert!(acc.contains("upToDate"), "reached live:\n{acc}");
+    let retries_after = crate::sse::auth::sse_stats::FEED_CATCHUP_RETRIES
+        .load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        retries_after > retries_before,
+        "the re-catch-up counter observed the recovery"
+    );
+}
+
+/// Finding 6 (fork progress, deterministic): a fork's OWN live window
+/// of foreign-key records larger than the 256-KiB driver batch is pure
+/// consumed progress for the default lane — the subscriber is NOT
+/// stuck rescanning it, and the default record behind the window
+/// flows.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_fork_foreign_only_window_is_progress() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/fpx",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append_lf(addr, "fpx", r#"{"p":0}"#).await;
+    let (_, h, _) = hreq(addr, "GET", "/v1/stream/fpx", &[], b"").await;
+    let boundary = h.get("stream-next-offset").cloned().unwrap_or_default();
+    let (st, _, b) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/fcx",
+        &[
+            ("content-type", "application/json"),
+            ("stream-forked-from", "fpx"),
+            ("stream-fork-offset", &boundary),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 201, "fork create: {}", String::from_utf8_lossy(&b));
+
+    let mut sck = lf_connect(addr, "fcx", "").await;
+    let (acc0, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    assert!(acc0.contains("upToDate"), "parks at the fork tail:\n{acc0}");
+
+    // Pause driving, then land a foreign-key window LARGER than the
+    // 256-KiB driver batch cap on the child: 20 x 16 KiB = 320 KiB.
+    // Without honest consumed progress this window is a rescan loop
+    // (no delivery until the 15-s heartbeat); with it, the window is
+    // consumed in a couple of bounded reads.
+    crate::failpoints::arm(crate::failpoints::Fp::SseFeedBeforeDrive, "fcx");
+    let pad = "y".repeat(16 * 1024);
+    for i in 0..20u64 {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/fcx/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", "kb"),
+            ],
+            format!(r#"{{"k":"kb","i":{i},"pad":"{pad}"}}"#).as_bytes(),
+        )
+        .await;
+        assert!(st == 200 || st == 204, "foreign append {i}: {st}");
+    }
+    // The default record BEHIND the foreign window.
+    hub_append_lf(addr, "fcx", r#"{"c":9}"#).await;
+    wait_parked(crate::failpoints::Fp::SseFeedBeforeDrive, "fcx", 1).await;
+    crate::failpoints::release(crate::failpoints::Fp::SseFeedBeforeDrive, "fcx");
+
+    // The default-lane subscriber consumes the foreign window as pure
+    // progress and receives the default record, then upToDate — well
+    // before the 15-s heartbeat that a stuck session would need.
+    let (acc, _) = hub_sse_collect(&mut sck, 10, |t| {
+        t.contains("\"c\":9") && t.contains("upToDate")
+    })
+    .await;
+    assert!(
+        acc.contains("\"c\":9"),
+        "the default record behind the foreign window must flow:\n{acc}"
+    );
+    assert!(
+        !acc.contains("\"k\":\"kb\""),
+        "foreign-key records never leak into the default lane:\n{acc}"
+    );
+    assert!(
+        acc.rfind("upToDate\":true").unwrap_or(0) > acc.find("\"c\":9").unwrap_or(usize::MAX),
+        "upToDate follows the default record:\n{acc}"
+    );
+
+    // Bounded work: the 320-KiB window costs a couple of reads, never
+    // a rescan loop.
+    state.registry.invalidate(&state.raw_adapter_sref("fcx"));
+    let desc = state
+        .registry
+        .get(&state.raw_adapter_sref("fcx"))
+        .await
+        .unwrap()
+        .unwrap();
+    let key = crate::sse::session::feed_key_of(&desc, &Some(String::new()));
+    let feed = state
+        .live_feeds
+        .feed_for_test(&key)
+        .expect("the fork feed must exist");
+    assert!(
+        feed.source_read_count() <= 4,
+        "foreign-window progress must not rescan ({} reads)",
+        feed.source_read_count()
+    );
+}
+
+/// Finding 10 coverage: a BINARY stream through LiveFeed carries
+/// `Stream-SSE-Data-Encoding: base64` and base64 data frames. (Exact
+/// bytes_out accounting is pinned by the deterministic unit leg
+/// `sse::session::tests::bytes_out_accounts_exactly_the_emitted_frames`;
+/// the process-global usage map overflows into a shared aggregate
+/// under a parallel suite, so an HTTP-level counter equality would be
+/// flaky by construction.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_binary_base64_header_and_exact_bytes_out() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let ct = ("content-type", "application/octet-stream");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/lfb2", &[ct], b"").await;
+    assert!(st == 200 || st == 201, "binary create: {st}");
+
+    let mut sck = lf_connect(addr, "lfb2", "").await;
+    // One binary record (non-UTF8 bytes prove base64, not lossy text).
+    let payload: &[u8] = b"\x00\x01\x02\xfe\xffbinary-tail";
+    let (st, _, _) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/lfb2",
+        &[("content-type", "application/octet-stream")],
+        payload,
+    )
+    .await;
+    assert!(st == 200 || st == 204, "binary append: {st}");
+
+    use base64::Engine;
+    let want_b64 = base64::engine::general_purpose::STANDARD.encode(payload);
+    let (acc, _) = hub_sse_collect(&mut sck, 10, |t| {
+        t.contains(&format!("data:{want_b64}")) && t.contains("upToDate")
+    })
+    .await;
+    let (more, _) = hub_sse_collect(&mut sck, 2, |_| false).await;
+    let acc = format!("{acc}{more}");
+
+    let lower = acc.to_ascii_lowercase();
+    assert!(
+        lower.contains("stream-sse-data-encoding: base64"),
+        "the base64 encoding header is on the response:\n{}",
+        &acc[..acc.len().min(600)]
+    );
+    assert!(
+        acc.contains(&format!("data:{want_b64}")),
+        "the binary payload is base64-framed:\n{acc}"
+    );
+    assert!(acc.contains("upToDate"), "status at head:\n{acc}");
+    // EXACT bytes_out accounting is pinned deterministically by the
+    // unit leg sse::session::tests::bytes_out_accounts_exactly_the_
+    // emitted_frames (the process-global usage map falls back to a
+    // shared overflow aggregate under a parallel suite, so a global-
+    // counter equality here would be flaky by construction).
+}
+
+/// Terminal transcript (exact): the final data record, its bare cursor
+/// control, then EXACTLY ONE sealed control and EOF — and NO open
+/// upToDate status at the terminal position preceding it.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_seal_transcript_exact_tail() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lft",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append_lf(addr, "lft", r#"{"t":1}"#).await;
+    let mut sck = lf_connect(addr, "lft", "?cursor=beginning").await;
+    let (acc0, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    assert!(acc0.contains("\"t\":1"), "backlog:\n{acc0}");
+
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/lft:seal",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{}",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let (tail, eof) = hub_sse_collect(&mut sck, 15, |_| false).await;
+    assert!(eof, "EOF after the terminal control");
+    // The post-seal tail carries EXACTLY ONE control: the terminal.
+    // The session was parked at an open frontier when the seal landed,
+    // so its closure discovery must NOT emit a standalone open
+    // upToDate at the terminal position first (the terminal control
+    // itself legitimately carries upToDate+sealed together).
+    assert!(
+        !tail.contains("\"upToDate\":true}"),
+        "no standalone open status may precede the terminal at the same position:\n{tail}"
+    );
+    assert_eq!(
+        tail.matches("\"sealed\":true").count(),
+        1,
+        "exactly ONE sealed control in the tail:\n{tail}"
+    );
+    let full = format!("{acc0}{tail}");
+    assert_eq!(
+        full.matches("\"sealed\":true").count(),
+        1,
+        "exactly ONE sealed control in the whole transcript:\n{full}"
+    );
+    // The sealed control is the LAST control of the transcript.
+    let last_ctl = &full[full.rfind("event: control").unwrap()..];
+    assert!(
+        last_ctl.contains("\"sealed\":true"),
+        "the last control is the terminal one:\n{last_ctl}"
+    );
 }

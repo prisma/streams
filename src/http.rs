@@ -151,6 +151,13 @@ pub struct AppState {
     /// of the legacy direct/hub pair. Per-instance, test-settable.
     pub sse_engine_livefeed: std::sync::atomic::AtomicBool,
     pub live_feeds: Arc<crate::sse::registry::FeedRegistry>,
+    /// LiveFeed retained-bytes budget — per AppState so test rigs are
+    /// isolated (follow-up review: a static OnceLock budget coupled
+    /// parallel HTTP rigs).
+    pub feed_budget: Arc<crate::sse::feed::FeedMemoryBudget>,
+    /// Per-feed ring allowance for feeds created from now on
+    /// (SSE_FEED_RING_BYTES; test rigs may shrink it).
+    pub feed_ring_bytes: std::sync::atomic::AtomicUsize,
     /// The CONFIGURED cap before any platform-driven clamp — exported
     /// next to the effective one so the fleet can detect a platform
     /// lowering RLIMIT_NOFILE under it.
@@ -1075,6 +1082,18 @@ async fn debug_load(
         "runtime_max_tick_gap_ms": RUNTIME_MAX_GAP_MS.load(std::sync::atomic::Ordering::Relaxed),
         "sse_pumps_live": crate::livehub::stats::PUMPS_LIVE.load(std::sync::atomic::Ordering::Relaxed),
         "sse_hub_walk": if walk { state.live_hubs.walk_json(40) } else { serde_json::Value::Null },
+        "sse_livefeed": {
+            "live_feeds": state.live_feeds.len(),
+            "reserved_bytes": state.feed_budget.reserved(),
+            "capacity_rejected": crate::sse::auth::sse_stats::FEED_CAPACITY_REJECTED.load(std::sync::atomic::Ordering::Relaxed),
+            "no_progress": crate::sse::auth::sse_stats::FEED_NO_PROGRESS.load(std::sync::atomic::Ordering::Relaxed),
+            "source_failed": crate::sse::auth::sse_stats::FEED_SOURCE_FAILED.load(std::sync::atomic::Ordering::Relaxed),
+            "oversize_dropped": crate::sse::auth::sse_stats::FEED_OVERSIZE_DROPPED.load(std::sync::atomic::Ordering::Relaxed),
+            "uncached_publish": crate::sse::auth::sse_stats::FEED_UNCACHED_PUBLISH.load(std::sync::atomic::Ordering::Relaxed),
+            "lag_disconnects": crate::sse::auth::sse_stats::FEED_LAG_DISCONNECTS.load(std::sync::atomic::Ordering::Relaxed),
+            "catchup_retries": crate::sse::auth::sse_stats::FEED_CATCHUP_RETRIES.load(std::sync::atomic::Ordering::Relaxed),
+            "version_bumps": crate::sse::auth::sse_stats::FEED_VERSION_BUMPS.load(std::sync::atomic::Ordering::Relaxed),
+        },
         "sse_canary": {
             "direct_subscribers": state.live_hubs.direct_subscribers(),
             "hub_subscribers": state.live_hubs.hub_subscribers(),
@@ -2671,6 +2690,10 @@ fn fork_chain_of(
 /// in the stream's OWN offset numbering, served from the ancestor
 /// chain below each fork boundary and from the stream itself at and
 /// above its boundary. `end`/`completed` describe the OWN tail.
+/// `last` is the CONSUMED boundary (last scanned offset), not the last
+/// matching record: match-free scanned ranges and drained ancestors
+/// count as progress (follow-up review finding 6), so filtered
+/// callers never rescan a range the chain already proved empty.
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn read_stitched(
     state: &Arc<AppState>,
@@ -2735,16 +2758,28 @@ pub(crate) async fn read_stitched(
             crate::shard::Deliver::Durable,
         )
         .await?;
-        let mut advanced = false;
+        // CONSUMED progress (finding 6): read_merged's `last` advances
+        // over scanned NON-MATCHING ranges inside this ancestor, so the
+        // child's consumed position moves by the SCAN boundary — capped
+        // at the next owner's boundary, never by emitted records alone.
+        let scanned_after = part.last.map(|l| l + 1).unwrap_or(cursor);
+        let consumed_here = scanned_after.min(cap);
+        let before = cursor;
+        let mut emitted = false;
         for r in part.recs {
             if r.off >= cap {
                 break;
             }
             budget = budget.saturating_sub(r.payload.len());
             cursor = r.off + 1;
-            out.last = Some(r.off);
             out.recs.push(r);
-            advanced = true;
+            emitted = true;
+        }
+        // Match-free scanned ranges are consumed progress: the child
+        // never revisits them.
+        cursor = cursor.max(consumed_here);
+        if cursor > from {
+            out.last = Some(cursor - 1);
         }
         if idx == 0 {
             // Own range: read_merged's completion IS the answer.
@@ -2756,6 +2791,9 @@ pub(crate) async fn read_stitched(
             // Ancestor drained to the cap (or its whole range): hop to
             // the next owner at the cap.
             cursor = cursor.max(cap);
+            if cursor > from {
+                out.last = Some(cursor - 1);
+            }
             if cursor < cap && part.completed {
                 // The ancestor's durable end sits below the cap only if
                 // records were lost — surface it rather than looping.
@@ -2763,8 +2801,9 @@ pub(crate) async fn read_stitched(
             }
             continue;
         }
-        if !advanced {
-            // Budget too small for one record: honest partial.
+        if !emitted && cursor == before {
+            // Budget too small for one record and no scanned progress:
+            // honest partial.
             break;
         }
     }

@@ -12,13 +12,15 @@
 //!   feed version watch. There is NO dedicated driver task.
 //!
 //! Retention: bounded per-feed ring + PROCESS-GLOBAL budget
-//! (`FeedMemoryBudget`, SSE_FEED_TOTAL_BYTES). The budget is reserved
-//! EXACTLY ONCE per feed, on the 1→2 subscriber transition (one ring
-//! allowance), and released when the feed is dropped at zero
-//! subscribers; per-batch retention is charged against the ring bound,
-//! never reserved from the global pool again. Zero global budget =
+//! (`FeedMemoryBudget`, SSE_FEED_TOTAL_BYTES). The budget reserves the
+//! ACTUAL retained bytes — one exact reservation per retained batch,
+//! released on eviction and at feed drop (the LiveHub accounting
+//! model): idle shared feeds cost nothing, busy feeds consume real
+//! bytes. A publication that cannot reserve advances WITHOUT
+//! retention; sessions below the new floor take the typed lag path
+//! and resume durably. Zero global budget (or a zero ring) =
 //! singleton-only posture: a second subscriber to the same feed is
-//! refused with a typed capacity error.
+//! refused with a typed capacity error before it attaches.
 
 use bytes::Bytes;
 use std::collections::VecDeque;
@@ -110,15 +112,12 @@ struct FeedState {
     lifecycle: Lifecycle,
 }
 
-/// PROCESS-GLOBAL shared-mode budget across ALL LiveFeeds (follow-up
-/// review finding 6, redesigned). A feed reserves EXACTLY ONE ring
-/// allowance when it enters SHARED mode (the 1→2 transition); the
-/// reservation is released when the feed is dropped at zero
-/// subscribers. Per-batch retention is bounded by the ring allowance
-/// itself and is NEVER reserved from this pool again — retained bytes
-/// and reserved bytes therefore describe the same memory exactly once.
-/// Cap from SSE_FEED_TOTAL_BYTES (falling back to SSE_HUB_TOTAL_BYTES;
-/// 16 MiB certified on 1-GiB).
+/// PROCESS-GLOBAL retained-bytes budget across ALL LiveFeeds (budget
+/// model B, per the follow-up review's capacity finding): ONE exact
+/// reservation per retained batch, released on eviction and at feed
+/// drop. Idle shared feeds cost nothing; busy feeds consume real
+/// bytes. Cap from SSE_FEED_TOTAL_BYTES (falling back to
+/// SSE_HUB_TOTAL_BYTES; 16 MiB certified on 1-GiB).
 pub(crate) struct FeedMemoryBudget {
     reserved: AtomicU64,
     max: u64,
@@ -138,6 +137,12 @@ impl FeedMemoryBudget {
             reserved: AtomicU64::new(0),
             max,
         }
+    }
+
+    /// Zero budget = singleton-only posture (docs/LIVE-FEED.md): no
+    /// feed may admit a second subscriber.
+    pub(crate) fn admits_shared(&self) -> bool {
+        self.max > 0
     }
 
     fn try_reserve(&self, charge: usize) -> bool {
@@ -166,7 +171,6 @@ impl FeedMemoryBudget {
         self.reserved.fetch_sub(charge as u64, Ordering::Relaxed);
     }
 
-    #[cfg(test)]
     pub(crate) fn reserved(&self) -> u64 {
         self.reserved.load(Ordering::Relaxed)
     }
@@ -180,14 +184,14 @@ pub(crate) struct LiveFeed {
     changed: tokio::sync::watch::Sender<u64>,
     driving: AtomicBool,
     subscribers: AtomicU64,
-    /// Set EXACTLY once, under the registry lock, on the 1→2
-    /// transition after the ring allowance was reserved from the
-    /// process budget; released when the feed is dropped at zero
-    /// subscribers (finding 6-mem redesign).
-    shared_reserved: AtomicBool,
     retained_charge: AtomicUsize,
     source_reads: AtomicU64,
     ring_budget: usize,
+    /// Driver read bound: derived from the ring so a prepared batch
+    /// (base64 worst case 4/3 + per-record overhead) almost always
+    /// fits; a single record that still exceeds the ring takes the
+    /// honest no-retention path (review finding 4).
+    read_cap: usize,
     budget: Arc<FeedMemoryBudget>,
 }
 
@@ -205,10 +209,6 @@ impl Drop for DriverPermit<'_> {
 }
 
 impl LiveFeed {
-    pub(crate) fn new(key: FeedKey, src: Arc<dyn FeedSourceRead>, ring_budget: usize) -> Arc<Self> {
-        Self::new_with_budget(key, src, ring_budget, crate::sse::feed_budget())
-    }
-
     pub(crate) fn new_with_budget(
         _key: FeedKey,
         src: Arc<dyn FeedSourceRead>,
@@ -230,12 +230,24 @@ impl LiveFeed {
             changed,
             driving: AtomicBool::new(false),
             subscribers: AtomicU64::new(0),
-            shared_reserved: AtomicBool::new(false),
             retained_charge: AtomicUsize::new(0),
             source_reads: AtomicU64::new(0),
             ring_budget,
+            // Prepared charge ≈ payload·4/3 (base64) + 64/record + 256,
+            // so a read bounded at 2/3 of the ring prepares a batch
+            // that fits the ring in the ordinary case.
+            read_cap: (ring_budget.saturating_mul(2) / 3).clamp(1024, MAX_DRIVER_BATCH_BYTES),
             budget,
         })
+    }
+
+    /// May this feed admit a SECOND subscriber? Static configuration
+    /// only (nonzero ring AND nonzero global budget) — checked BEFORE
+    /// the attach under the registry lock, so a shared admission never
+    /// exposes a subscriber count whose memory posture is not already
+    /// valid (follow-up review finding 1).
+    pub(crate) fn can_share(&self) -> bool {
+        self.ring_budget > 0 && self.budget.admits_shared()
     }
 
     /// The CURRENT read source (Stage 6 swap cell).
@@ -278,24 +290,7 @@ impl LiveFeed {
         prev.saturating_sub(1)
     }
 
-    /// Enter SHARED mode: reserve this feed's ring allowance from the
-    /// process-global budget EXACTLY ONCE, on the 1→2 subscriber
-    /// transition (finding 6-mem redesign). Idempotent: the 2→3+
-    /// transitions and any shared→solo→shared oscillation while the
-    /// reservation is still held cost nothing. Called under the
-    /// registry lock.
-    pub(crate) fn enter_shared_locked(&self) -> bool {
-        if self.shared_reserved.load(Ordering::SeqCst) {
-            return true;
-        }
-        if !self.budget.try_reserve(self.ring_budget) {
-            return false;
-        }
-        self.shared_reserved.store(true, Ordering::SeqCst);
-        true
-    }
-
-    #[cfg(test)]
+    /// Current feed head (session handoff re-catch-up bound; tests).
     pub(crate) fn head(&self) -> u64 {
         self.st.lock().unwrap().head
     }
@@ -313,12 +308,39 @@ impl LiveFeed {
     /// Consume retained records at/after `cursor`. Lagged = below floor
     /// → disconnect-and-resume per the lag contract.
     pub(crate) fn take_visible(&self, cursor: u64) -> Take {
-        let st = self.st.lock().unwrap();
+        let mut st = self.st.lock().unwrap();
         if cursor < st.floor {
             return Take::Lagged { floor: st.floor };
         }
+        // SOLO drain-release (review: the budget must not stay pinned
+        // after shared use): with ONE subscriber left, a batch it has
+        // fully passed can never be needed again — pop it and release
+        // its reservation immediately instead of at feed drop.
+        if self.subscribers.load(Ordering::Relaxed) == 1 {
+            let mut popped = false;
+            while let Some(b) = st.batches.front() {
+                if b.scan_to > cursor {
+                    break;
+                }
+                let b = st.batches.pop_front().expect("front checked");
+                st.charge -= b.charge;
+                self.budget.release(b.charge);
+                popped = true;
+            }
+            if popped {
+                if st.batches.is_empty() {
+                    // Nothing below the survivor's own cursor is owed
+                    // to anyone: the floor may follow it.
+                    st.floor = st.floor.max(cursor.min(st.head));
+                }
+                self.retained_charge.store(st.charge, Ordering::Relaxed);
+            }
+        }
         // ONE shared batch per hand-off; a match-free prepared range is
-        // pure PROGRESS (finding 2).
+        // pure PROGRESS (finding 2). When every retained batch is
+        // already consumed the session is AT the head — there is no
+        // second "progress" shape to drain (finding 5: sessions loop
+        // on this directly; it must be total).
         for b in &st.batches {
             if b.scan_to <= cursor {
                 continue;
@@ -331,11 +353,6 @@ impl LiveFeed {
             return Take::Batch {
                 batch: Arc::clone(b),
                 start_index,
-            };
-        }
-        if let Some(last_b) = st.batches.back() {
-            return Take::Progress {
-                next: last_b.scan_to,
             };
         }
         Take::AtHead
@@ -364,48 +381,56 @@ impl LiveFeed {
     async fn drive_under_permit(&self) -> DriveOutcome {
         let src = self.current_source();
         let head = self.st.lock().unwrap().head;
-        if head >= src.frontier() {
+        let outcome = if head >= src.frontier() {
             if src.closed() && st_lifecycle_active(&self.st) {
+                // Lifecycle transition ONLY; the version bump happens
+                // once, in the outcome fold below (finding 5).
                 let mut st = self.st.lock().unwrap();
                 if st.lifecycle == Lifecycle::Active {
                     st.lifecycle = Lifecycle::Closed;
-                    st.version += 1;
-                    let _ = self.changed.send(st.version);
                 }
-                return DriveOutcome::Closed;
+                DriveOutcome::Closed
+            } else {
+                DriveOutcome::Idle
             }
-            return DriveOutcome::Idle;
-        }
-        self.source_reads.fetch_add(1, Ordering::Relaxed);
-        let outcome = self.read_and_publish(&src, head).await;
-        // Bump the version ONLY when feed state actually changed
-        // (finding 6): a no-progress partial read or a source failure
-        // must never wake every session into another immediate drive —
-        // that is the busy retry loop.
+        } else {
+            self.source_reads.fetch_add(1, Ordering::Relaxed);
+            self.read_and_publish(&src, head).await
+        };
+        // Bump the version EXACTLY when feed state actually changed
+        // (findings 5+6): a delivery, a publication, or the lifecycle
+        // transition. Idle, no-progress and source failures changed
+        // nothing — bumping would wake every parked session into
+        // another immediate drive (the busy retry loop).
         match outcome {
-            DriveOutcome::NoProgress | DriveOutcome::SourceFailed => {}
-            _ => {
+            DriveOutcome::Solo { .. } | DriveOutcome::Published | DriveOutcome::Closed => {
                 let ver = {
                     let mut st = self.st.lock().unwrap();
                     st.version += 1;
                     st.version
                 };
+                crate::sse::auth::sse_stats::FEED_VERSION_BUMPS.fetch_add(1, Ordering::Relaxed);
                 let _ = self.changed.send(ver);
             }
+            DriveOutcome::Idle | DriveOutcome::NoProgress | DriveOutcome::SourceFailed => {}
         }
         outcome
     }
 
     async fn read_and_publish(&self, src: &Arc<dyn FeedSourceRead>, head: u64) -> DriveOutcome {
-        let batch = match src.read_batch(head, MAX_DRIVER_BATCH_BYTES).await {
+        let batch = match src.read_batch(head, self.read_cap).await {
             Ok(x) => x,
-            Err(_) => return DriveOutcome::SourceFailed,
+            Err(_) => {
+                crate::sse::auth::sse_stats::FEED_SOURCE_FAILED.fetch_add(1, Ordering::Relaxed);
+                return DriveOutcome::SourceFailed;
+            }
         };
         // No-progress partial page (finding 6): nothing scanned, nothing
         // matched — report it WITHOUT touching head/version. The session
         // parks; the next durable advance or heartbeat retries.
         if batch.scan_to <= batch.scan_from && batch.records.is_empty() {
             if !batch.completed {
+                crate::sse::auth::sse_stats::FEED_NO_PROGRESS.fetch_add(1, Ordering::Relaxed);
                 tracing::debug!(
                     feed_head = head,
                     "livefeed source read made no progress (partial empty page)"
@@ -441,22 +466,49 @@ impl LiveFeed {
                 scan_to,
             };
         }
-        // SHARED: retention is charged against this feed's ring bound —
-        // ALREADY paid for by the one-time process-global allowance
-        // reserved at the 1→2 transition; never reserved again here
-        // (finding 6-mem redesign: no double count, no leak).
+        // SHARED: retention reserves the ACTUAL retained bytes from
+        // the process-global budget (budget model B) — one exact
+        // reservation per retained batch, released on eviction and at
+        // feed drop.
         let batch_charge = charge_for(&prepared);
+        // OVERSIZED batch (larger than the whole ring — possible for a
+        // single huge/base64 record even with the capped read):
+        // retaining it would evict it before ANY subscriber could
+        // consume it, so advance WITHOUT retention instead (review
+        // finding 4). Sessions below the new floor take the typed lag
+        // path and resume durably.
+        if batch_charge > self.ring_budget {
+            crate::sse::auth::sse_stats::FEED_OVERSIZE_DROPPED.fetch_add(1, Ordering::Relaxed);
+            tracing::warn!(
+                batch_charge,
+                ring = self.ring_budget,
+                "livefeed batch exceeds the feed ring; published without retention"
+            );
+            st.floor = st.head;
+            return DriveOutcome::Published;
+        }
+        // Budget exhausted: same honest posture — advance, retain
+        // nothing (the LiveHub uncached posture; model B).
+        if !self.budget.try_reserve(batch_charge) {
+            crate::sse::auth::sse_stats::FEED_UNCACHED_PUBLISH.fetch_add(1, Ordering::Relaxed);
+            st.floor = st.head;
+            return DriveOutcome::Published;
+        }
         st.charge += batch_charge;
         st.batches.push_back(Arc::new(PreparedBatch {
             scan_to,
             charge: batch_charge,
             records: prepared.into(),
         }));
+        // Ring bound: evict OLDEST first. The new batch fits the ring
+        // by the check above, so eviction can never remove a batch
+        // nobody has consumed.
         while st.charge > self.ring_budget {
             match st.batches.pop_front() {
                 Some(b) => {
                     st.charge -= b.charge;
                     st.floor = st.floor.max(b.scan_to);
+                    self.budget.release(b.charge);
                 }
                 None => break,
             }
@@ -472,12 +524,11 @@ fn st_lifecycle_active(st: &Mutex<FeedState>) -> bool {
 
 impl Drop for LiveFeed {
     fn drop(&mut self) {
-        // Release the ONE shared-mode allowance back to the process
-        // budget; per-batch retention was charged against the ring
-        // bound that allowance paid for, so there is nothing else to
-        // release (finding 6-mem redesign).
-        if self.shared_reserved.load(Ordering::SeqCst) {
-            self.budget.release(self.ring_budget);
+        // Release the ACTUAL retained bytes back to the process budget
+        // (model B); the feed itself is being discarded.
+        let charge = self.st.get_mut().unwrap().charge;
+        if charge > 0 {
+            self.budget.release(charge);
         }
     }
 }
@@ -488,10 +539,6 @@ pub(crate) enum Take {
     Batch {
         batch: Arc<PreparedBatch>,
         start_index: usize,
-    },
-    /// Match-free prepared range: pure cursor progress.
-    Progress {
-        next: u64,
     },
     AtHead,
     Lagged {
@@ -507,7 +554,6 @@ impl std::fmt::Debug for Take {
                 .field("records", &batch.records.len())
                 .field("start_index", start_index)
                 .finish(),
-            Self::Progress { next } => f.debug_struct("Progress").field("next", next).finish(),
             Self::AtHead => f.write_str("AtHead"),
             Self::Lagged { floor } => f.debug_struct("Lagged").field("floor", floor).finish(),
         }
@@ -577,13 +623,17 @@ pub(crate) mod tests {
 
     /// Deterministic in-memory source: offsets [0, frontier) each with a
     /// fixed-size payload; `empty_pages` forces the no-progress partial
-    /// shape; `fail_reads` forces source errors.
+    /// shape; `fail_reads` forces source errors; `block_reads` parks a
+    /// read between `read_started` and `read_release` (abort leg).
     pub(crate) struct FakeSource {
         pub(crate) frontier: AtomicU64,
         pub(crate) closed: AtomicBool,
         pub(crate) notify: tokio::sync::Notify,
         pub(crate) fail_reads: AtomicBool,
         pub(crate) empty_pages: AtomicBool,
+        pub(crate) block_reads: AtomicBool,
+        pub(crate) read_started: tokio::sync::Notify,
+        pub(crate) read_release: tokio::sync::Notify,
         pub(crate) payload: usize,
     }
 
@@ -595,6 +645,9 @@ pub(crate) mod tests {
                 notify: tokio::sync::Notify::new(),
                 fail_reads: AtomicBool::new(false),
                 empty_pages: AtomicBool::new(false),
+                block_reads: AtomicBool::new(false),
+                read_started: tokio::sync::Notify::new(),
+                read_release: tokio::sync::Notify::new(),
                 payload,
             }
         }
@@ -605,6 +658,10 @@ pub(crate) mod tests {
         async fn read_batch(&self, from: u64, max_bytes: usize) -> anyhow::Result<SourceBatch> {
             if self.fail_reads.load(Ordering::Relaxed) {
                 anyhow::bail!("injected source failure");
+            }
+            if self.block_reads.load(Ordering::Relaxed) {
+                self.read_started.notify_waiters();
+                self.read_release.notified().await;
             }
             if self.empty_pages.load(Ordering::Relaxed) {
                 return Ok(SourceBatch {
@@ -679,44 +736,125 @@ pub(crate) mod tests {
         assert_eq!(feed.leave_locked(), 0, "1 -> 0 reports zero remaining");
     }
 
-    /// Finding 6-mem (red): exactly ONE allowance per shared feed,
-    /// however many subscribers join beyond the second.
-    #[test]
-    fn shared_allowance_is_reserved_exactly_once() {
-        let budget = Arc::new(FeedMemoryBudget::new_for_test(16 * 4096));
-        let (feed, _src) = feed_with(0, 8, 4096, &budget);
+    /// Budget model B (red): retention reserves the ACTUAL retained
+    /// bytes; extra subscribers cost nothing; teardown returns the
+    /// budget to exactly zero.
+    #[tokio::test]
+    async fn shared_retention_reserves_actual_bytes_only() {
+        let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
+        let (feed, _src) = feed_with(3, 8, 1 << 20, &budget);
         feed.subscribe_locked();
         assert_eq!(budget.reserved(), 0, "singletons reserve nothing");
         feed.subscribe_locked();
-        assert!(feed.enter_shared_locked());
-        assert_eq!(budget.reserved(), 4096, "the 1->2 transition reserves");
         feed.subscribe_locked();
         feed.subscribe_locked();
         assert_eq!(feed.subscriber_count(), 4);
-        assert!(
-            feed.enter_shared_locked(),
-            "re-entry while held is a no-op success"
-        );
         assert_eq!(
             budget.reserved(),
-            4096,
-            "subscribers 3+ reserve nothing further"
+            0,
+            "subscribers themselves never reserve — only retained batches do"
+        );
+        match feed.drive_once().await {
+            Some(DriveOutcome::Published) => {}
+            other => panic!("expected Published, got {}", outcome_name(&other)),
+        }
+        let retained = feed.retained();
+        assert!(retained > 0);
+        assert_eq!(
+            budget.reserved(),
+            retained as u64,
+            "the reservation IS the retained charge, exactly"
         );
     }
 
-    /// Finding 6-mem (red): the allowance comes back when the feed is
-    /// dropped at zero subscribers — budget returns EXACTLY to zero.
-    #[test]
-    fn allowance_returns_to_zero_at_teardown() {
-        let budget = Arc::new(FeedMemoryBudget::new_for_test(16 * 4096));
-        let (feed, _src) = feed_with(0, 8, 4096, &budget);
+    /// Model B: retained bytes come back when the feed is dropped at
+    /// zero subscribers — budget returns EXACTLY to zero.
+    #[tokio::test]
+    async fn retained_bytes_return_to_zero_at_teardown() {
+        let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
+        let (feed, _src) = feed_with(3, 8, 1 << 20, &budget);
         feed.subscribe_locked();
         feed.subscribe_locked();
-        assert!(feed.enter_shared_locked());
+        match feed.drive_once().await {
+            Some(DriveOutcome::Published) => {}
+            other => panic!("expected Published, got {}", outcome_name(&other)),
+        }
+        assert!(budget.reserved() > 0);
         assert_eq!(feed.leave_locked(), 1);
         assert_eq!(feed.leave_locked(), 0);
         drop(feed);
-        assert_eq!(budget.reserved(), 0, "teardown releases the allowance");
+        assert_eq!(budget.reserved(), 0, "teardown releases the charge");
+    }
+
+    /// Model B: a process budget too small for the batch admits the
+    /// shared feed but retains NOTHING — the honest uncached posture,
+    /// never a phantom reservation.
+    #[tokio::test]
+    async fn budget_exhaustion_publishes_without_retention() {
+        let budget = Arc::new(FeedMemoryBudget::new_for_test(16));
+        let (feed, _src) = feed_with(2, 8, 1 << 20, &budget);
+        feed.subscribe_locked();
+        feed.subscribe_locked();
+        match feed.drive_once().await {
+            Some(DriveOutcome::Published) => {}
+            other => panic!("expected Published, got {}", outcome_name(&other)),
+        }
+        assert_eq!(feed.retained(), 0, "nothing retained at exhaustion");
+        assert_eq!(feed.head(), 2, "the head still advances");
+        assert_eq!(feed.floor(), 2, "the floor follows the head");
+        assert_eq!(budget.reserved(), 0, "no phantom reservation");
+    }
+
+    /// Finding 4 (red): a batch larger than the whole ring is advanced
+    /// WITHOUT retention — it can never be evicted before anyone
+    /// consumed it. Subscribers below the new floor take the typed lag
+    /// path and resume durably.
+    #[tokio::test]
+    async fn oversized_batch_is_never_self_evicted() {
+        let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
+        // Ring far below one batch's prepared charge (508 > 500).
+        let (feed, _src) = feed_with(3, 8, 500, &budget);
+        feed.subscribe_locked();
+        feed.subscribe_locked();
+        match feed.drive_once().await {
+            Some(DriveOutcome::Published) => {}
+            other => panic!("expected Published, got {}", outcome_name(&other)),
+        }
+        assert_eq!(feed.retained(), 0, "the oversized batch is not retained");
+        assert_eq!(feed.head(), 3);
+        assert_eq!(feed.floor(), 3, "floor advanced with the head");
+        assert_eq!(budget.reserved(), 0);
+        match feed.take_visible(0) {
+            Take::Lagged { floor } => assert_eq!(floor, 3),
+            other => panic!("a cursor below the new floor is typed lag: {other:?}"),
+        }
+    }
+
+    /// Eviction releases exactly the evicted batch's reservation; the
+    /// surviving batch stays reserved and consumable.
+    #[tokio::test]
+    async fn eviction_releases_exactly_the_evicted_charge() {
+        let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
+        // Ring fits roughly one small batch.
+        let (feed, src) = feed_with(2, 8, 700, &budget);
+        feed.subscribe_locked();
+        feed.subscribe_locked();
+        match feed.drive_once().await {
+            Some(DriveOutcome::Published) => {}
+            other => panic!("expected Published, got {}", outcome_name(&other)),
+        }
+        let first = budget.reserved();
+        assert!(first > 0);
+        src.frontier.store(4, Ordering::Relaxed);
+        match feed.drive_once().await {
+            Some(DriveOutcome::Published) => {}
+            other => panic!("expected Published, got {}", outcome_name(&other)),
+        }
+        // The first batch was evicted by the second; only the second's
+        // charge remains reserved.
+        assert_eq!(feed.retained(), budget.reserved() as usize);
+        assert!(budget.reserved() < first + first, "no accumulation");
+        assert_eq!(feed.floor(), 2, "floor moved to the evicted scan_to");
     }
 
     /// Finding 4 (red): on 2 -> 1 the survivor keeps the retained ring —
@@ -728,7 +866,6 @@ pub(crate) mod tests {
         let (feed, src) = feed_with(3, 8, 1 << 20, &budget);
         feed.subscribe_locked();
         feed.subscribe_locked();
-        assert!(feed.enter_shared_locked());
 
         // Shared drive retains the batch.
         match feed.drive_once().await {
@@ -748,7 +885,6 @@ pub(crate) mod tests {
             }
             other => panic!("survivor must drain the retained batch, got {other:?}"),
         }
-
         // The survivor drives solo for NEW appends: no new retention,
         // and the floor must NOT jump past the still-unread ring.
         src.frontier.store(5, Ordering::Relaxed);
@@ -771,11 +907,20 @@ pub(crate) mod tests {
             Take::Batch { batch, .. } => assert_eq!(batch.records.len(), 3),
             other => panic!("retained batch survives the solo drive: {other:?}"),
         }
-        // Once the survivor's cursor passes the ring, pure progress.
+        // Once the survivor's cursor passes the ring, it is AT the
+        // head — and the drain-release popped the passed batch,
+        // returning its reservation to the process budget.
         match feed.take_visible(5) {
-            Take::Progress { next } => assert_eq!(next, 3),
-            other => panic!("expected Progress past the ring, got {other:?}"),
+            Take::AtHead => {}
+            other => panic!("expected AtHead past the ring, got {other:?}"),
         }
+        assert_eq!(feed.retained(), 0, "the passed batch was released");
+        assert_eq!(
+            budget.reserved(),
+            0,
+            "drain-release returns the reservation without waiting for feed drop"
+        );
+        assert_eq!(feed.floor(), 5, "the floor follows the survivor");
     }
 
     /// Finding 6 (red): a no-progress partial page changes nothing —
@@ -822,20 +967,116 @@ pub(crate) mod tests {
         assert!(feed.version() > v0, "a real drive bumps once");
     }
 
-    /// The driver permit survives an aborted drive: a task cancelled
-    /// mid-read must release the single-flight permit (finding 6 RAII).
+    /// Finding 5 (red): Idle and Closed version semantics. Nothing
+    /// durable beyond the head means NO state change and NO bump; the
+    /// close transition bumps EXACTLY once.
     #[tokio::test]
+    async fn idle_never_bumps_and_closed_bumps_exactly_once() {
+        let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
+        let (feed, src) = feed_with(2, 8, 1 << 20, &budget);
+        feed.subscribe_locked();
+        match feed.drive_once().await {
+            Some(DriveOutcome::Solo { .. }) => {}
+            other => panic!("expected Solo, got {}", outcome_name(&other)),
+        }
+        let v = feed.version();
+        // Idle: head already covers the frontier — no change, no bump.
+        for _ in 0..3 {
+            match feed.drive_once().await {
+                Some(DriveOutcome::Idle) => {}
+                other => panic!("expected Idle, got {}", outcome_name(&other)),
+            }
+        }
+        assert_eq!(feed.version(), v, "Idle never bumps");
+        // Closed: exactly ONE bump across the transition; subsequent
+        // drives are Idle again.
+        src.closed.store(true, Ordering::Relaxed);
+        match feed.drive_once().await {
+            Some(DriveOutcome::Closed) => {}
+            other => panic!("expected Closed, got {}", outcome_name(&other)),
+        }
+        assert_eq!(feed.version(), v + 1, "the close bumps exactly once");
+        match feed.drive_once().await {
+            Some(DriveOutcome::Idle) => {}
+            other => panic!("expected Idle after close, got {}", outcome_name(&other)),
+        }
+        assert_eq!(feed.version(), v + 1, "no second bump after the close");
+    }
+
+    /// Finding 5 (red): retained batches drain back-to-back — the
+    /// session loop consumes every visible batch with NO further source
+    /// reads and exactly one version bump per real publication.
+    #[tokio::test]
+    async fn retained_batches_drain_without_extra_reads() {
+        let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
+        let (feed, src) = feed_with(0, 8, 1 << 20, &budget);
+        feed.subscribe_locked();
+        feed.subscribe_locked();
+        // Three publications, one record each.
+        for i in 1..=3u64 {
+            src.frontier.store(i, Ordering::Relaxed);
+            match feed.drive_once().await {
+                Some(DriveOutcome::Published) => {}
+                other => panic!("expected Published, got {}", outcome_name(&other)),
+            }
+        }
+        assert_eq!(feed.source_read_count(), 3);
+        assert_eq!(feed.version(), 3, "one bump per real publication");
+        // Drain: take_visible must hand out all three batches with no
+        // further source read.
+        let mut cursor = 0u64;
+        let mut batches = 0;
+        loop {
+            match feed.take_visible(cursor) {
+                Take::Batch { batch, .. } => {
+                    batches += 1;
+                    cursor = cursor.max(batch.scan_to);
+                }
+                Take::AtHead => break,
+                Take::Lagged { floor } => panic!("unexpected lag: floor {floor}"),
+            }
+        }
+        assert_eq!(batches, 3, "all three retained batches drained");
+        assert_eq!(cursor, 3, "cursor reached the head");
+        assert_eq!(
+            feed.source_read_count(),
+            3,
+            "draining never touches the source"
+        );
+    }
+
+    /// The driver permit survives a REAL abort: a task cancelled
+    /// mid-read must release the single-flight permit, and the next
+    /// drive proceeds (finding 6 RAII, actually aborted this time).
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn aborted_drive_releases_the_permit() {
         let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
-        let (feed, _src) = feed_with(1, 8, 1 << 20, &budget);
+        let (feed, src) = feed_with(4, 8, 1 << 20, &budget);
         feed.subscribe_locked();
-        // First drive succeeds (permit acquired and released).
-        assert!(matches!(
-            feed.drive_once().await,
-            Some(DriveOutcome::Solo { .. })
-        ));
-        // A second drive is not stranded by the first.
-        assert!(matches!(feed.drive_once().await, Some(DriveOutcome::Idle)));
+        src.block_reads.store(true, Ordering::Relaxed);
+        // Register the started-signal BEFORE spawning (no lost wake).
+        let started = src.read_started.notified();
+        tokio::pin!(started);
+        started.as_mut().enable();
+        let driving = feed.clone();
+        let task = tokio::spawn(async move { driving.drive_once().await });
+        started.await; // the drive is INSIDE the source read now
+        task.abort();
+        let join = task.await;
+        assert!(join.is_err(), "the drive was aborted");
+        src.block_reads.store(false, Ordering::Relaxed);
+        src.read_release.notify_waiters();
+        // The permit must be free: a new drive proceeds to completion.
+        match feed.drive_once().await {
+            Some(DriveOutcome::Solo { records, scan_to }) => {
+                assert_eq!(records.len(), 4);
+                assert_eq!(scan_to, 4);
+            }
+            other => panic!(
+                "the post-abort drive must proceed, got {}",
+                outcome_name(&other)
+            ),
+        }
     }
 
     fn outcome_name(o: &Option<DriveOutcome>) -> &'static str {

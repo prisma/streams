@@ -1992,6 +1992,8 @@ async fn async_main() -> anyhow::Result<()> {
             args.streams_sse_engine == "livefeed",
         ),
         live_feeds: Arc::new(crate::sse::registry::FeedRegistry::new()),
+        feed_budget: Arc::new(crate::sse::feed::FeedMemoryBudget::from_env()),
+        feed_ring_bytes: std::sync::atomic::AtomicUsize::new(crate::livehub::feed_ring_bytes()),
         sse_connections: std::sync::atomic::AtomicU64::new(0),
         live_hubs: crate::livehub::HubRegistry::new(),
         sse_live_hub: std::sync::atomic::AtomicBool::new(args.sse_live_hub == 1),

@@ -61,10 +61,13 @@ pub enum Fp {
     ScalerBeforePublish,
     SseBeforeLeaseGate,
     StopBeforeSealedPublish,
+    // LiveFeed engine legs (follow-up review: deterministic race legs).
+    SseFeedAfterSubscribe,
+    SseFeedBeforeDrive,
 }
 
 impl Fp {
-    pub const ALL: [Fp; 19] = [
+    pub const ALL: [Fp; 21] = [
         Fp::StopAfterTombstone,
         Fp::StopBeforeMarkCommitted,
         Fp::StopAfterSealIntent,
@@ -84,6 +87,8 @@ impl Fp {
         Fp::ScalerBeforePublish,
         Fp::SseBeforeLeaseGate,
         Fp::StopBeforeSealedPublish,
+        Fp::SseFeedAfterSubscribe,
+        Fp::SseFeedBeforeDrive,
     ];
 
     /// The site contract: WHERE the point fires, stated as the
@@ -151,6 +156,18 @@ impl Fp {
                  durable, BEFORE the SEALED publication CAS — exactly \
                  the state a crash between the close loop and step 3 \
                  leaves; a plain retry must resume and complete"
+            }
+            Fp::SseFeedAfterSubscribe => {
+                "livefeed session: AFTER the atomic registry attach \
+                 (count, join_head, watch receiver captured), BEFORE \
+                 the session reads any feed state — the join-head \
+                 handoff window in which a pre-existing subscriber can \
+                 advance the feed"
+            }
+            Fp::SseFeedBeforeDrive => {
+                "livefeed session: parked BEFORE each cooperative drive \
+                 — lets a test make an entire window durable before any \
+                 bounded source read occurs"
             }
         }
     }
