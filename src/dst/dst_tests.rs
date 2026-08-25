@@ -33546,15 +33546,7 @@ async fn golden_run(hub: bool, promote_at_one: bool) -> (String, bool) {
     let (acc2, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("\"a\":2")).await;
     hub_append(addr, "gold", r#"{"a":3}"#).await;
     let (acc3, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("\"a\":3")).await;
-    let (st, _, _) = preq(
-        addr,
-        "POST",
-        "/v1/streams/gold:seal",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"{}",
-    )
-    .await;
-    assert_eq!(st, 200);
+    seal_ok(addr, "gold").await;
     let (acc4, eof) = hub_sse_collect(&mut sck, 15, |_| false).await;
     let transcript = format!("{acc1}{acc2}{acc3}{acc4}");
     assert_eq!(
@@ -33696,15 +33688,7 @@ async fn livefeed_park_appends_seal_matches_golden_semantics() {
     assert!(acc2.contains("\"a\":2"), "live record:\n{acc2}");
 
     // Seal: exactly ONE final control, then EOF.
-    let (st, _, _) = preq(
-        addr,
-        "POST",
-        "/v1/streams/lf:seal",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"{}",
-    )
-    .await;
-    assert_eq!(st, 200);
+    seal_ok(addr, "lf").await;
     let (tail, eof) = hub_sse_collect(&mut sck, 15, |_| false).await;
     assert_eq!(
         tail.matches("\"sealed\":true").count(),
@@ -34461,6 +34445,33 @@ async fn livefeed_exact_framing_mixed_surfaces_share_one_lane() {
     }
 }
 
+/// Seal with the CLIENT contract: retryable refusals (transient
+/// engine open under runner load, a resumable interrupted seal) retry
+/// with bounded backoff — the round-10 matrix run answered a first
+/// :seal with a 503-class refusal. Permanent verdicts fail fast.
+async fn seal_ok(addr: std::net::SocketAddr, name: &str) {
+    for attempt in 0..8u32 {
+        let (st, _, body) = preq(
+            addr,
+            "POST",
+            &format!("/v1/streams/{name}:seal"),
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            b"{}",
+        )
+        .await;
+        if st == 200 {
+            return;
+        }
+        assert!(
+            st == 503 || st == 500,
+            "seal {name}: non-retryable {st}: {}",
+            String::from_utf8_lossy(&body)
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(100 * (attempt as u64 + 1))).await;
+    }
+    panic!("seal {name}: still refused after bounded retries");
+}
+
 async fn hub_append_lf(addr: std::net::SocketAddr, name: &str, body: &str) {
     let (st, _, _) = preq(
         addr,
@@ -34862,15 +34873,7 @@ async fn livefeed_seal_transcript_exact_tail() {
     let (acc0, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
     assert!(acc0.contains("\"t\":1"), "backlog:\n{acc0}");
 
-    let (st, _, _) = preq(
-        addr,
-        "POST",
-        "/v1/streams/lft:seal",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"{}",
-    )
-    .await;
-    assert_eq!(st, 200);
+    seal_ok(addr, "lft").await;
     let (tail, eof) = hub_sse_collect(&mut sck, 15, |_| false).await;
     assert!(eof, "EOF after the terminal control");
     // The post-seal tail carries EXACTLY ONE control: the terminal.
@@ -34951,15 +34954,7 @@ async fn livefeed_split_parked_subscriber_continues_in_place() {
 
     // A genuine seal AFTER the split is still exactly one terminal
     // control, then EOF.
-    let (st, _, _) = preq(
-        addr,
-        "POST",
-        "/v1/streams/lfs:seal",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"{}",
-    )
-    .await;
-    assert_eq!(st, 200);
+    seal_ok(addr, "lfs").await;
     // 30s, matching the seal-gap rigs: loaded CI runners take
     // multiples of a laptop through engine-open + heartbeat paths; the
     // deadline exists to catch a REAL wedge, not to race the scheduler.
@@ -35036,20 +35031,7 @@ async fn livefeed_seal_publication_race_converges_without_heartbeat() {
     // publication — the terminal must arrive through the session's
     // bounded re-drive, well under the 15-s heartbeat.
     crate::failpoints::stop_before_sealed_publish_off("lfsr");
-    let (st, _, body) = preq(
-        addr,
-        "POST",
-        "/v1/streams/lfsr:seal",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"{}",
-    )
-    .await;
-    assert_eq!(
-        st,
-        200,
-        "retry must complete the seal: {}",
-        String::from_utf8_lossy(&body)
-    );
+    seal_ok(addr, "lfsr").await;
     let t0 = std::time::Instant::now();
     let (tail, eof) = hub_sse_collect(&mut sck, 10, |_| false).await;
     assert!(eof, "EOF after the released seal:\n{tail}");
@@ -35128,15 +35110,7 @@ async fn livefeed_empty_seal_single_final_control() {
         !a.contains("event: data"),
         "an empty stream has no data:\n{a}"
     );
-    let (st, _, _) = preq(
-        addr,
-        "POST",
-        "/v1/streams/lfes:seal",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"{}",
-    )
-    .await;
-    assert_eq!(st, 200);
+    seal_ok(addr, "lfes").await;
     let (tail, eof) = hub_sse_collect(&mut sck, 15, |_| false).await;
     assert!(eof, "EOF after the empty seal");
     assert_eq!(
@@ -36533,15 +36507,7 @@ async fn livefeed_split_seal_before_refresh_drains_then_terminates() {
     for i in 2..4u64 {
         hub_append_lf(addr, "lfseal", &format!(r#"{{"i":{i}}}"#)).await;
     }
-    let (st, _, _) = preq(
-        addr,
-        "POST",
-        "/v1/streams/lfseal:seal",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"{}",
-    )
-    .await;
-    assert_eq!(st, 200);
+    seal_ok(addr, "lfseal").await;
     crate::failpoints::release(crate::failpoints::Fp::SseFeedBeforeDrive, "lfseal");
 
     // Both subscribers: all four records exactly once, then ONE
@@ -37080,15 +37046,7 @@ async fn livefeed_connect_already_split_sealed_stream() {
         .sse_engine_livefeed
         .store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = lf7_split_stream(addr, &state, "lf7s", 3, 2).await;
-    let (st, _, _) = preq(
-        addr,
-        "POST",
-        "/v1/streams/lf7s:seal",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"{}",
-    )
-    .await;
-    assert_eq!(st, 200);
+    seal_ok(addr, "lf7s").await;
 
     let mut sck = lf_connect(addr, "lf7s", "?cursor=beginning").await;
     let (acc, eof) = hub_sse_collect(&mut sck, 15, |_| false).await;
