@@ -194,6 +194,19 @@ code path, leg 4 exercises its externally-completed shape).
 
 ### Stage 6 same-owner status: implementation + certification DONE
 
+### Round-7 process fix (2026-08-25)
+
+1. **CI incident**: an unquoted `sse::` scalar made `ci.yml` invalid
+   YAML — GitHub created ZERO jobs at `03d97b11` while the local gate
+   reported green. Fixed by quoting the command; `scripts/gate.sh`
+   now runs `actionlint` when available, and the deliberately minimal
+   `.github/workflows/workflow-lint.yml` enforces it in CI (a separate
+   file still reports errors when `ci.yml` itself cannot be parsed).
+2. **Deadline edge**: a resume that COMPLETES at the 10-s edge now
+   always earns its descriptor re-read (absolute deadline form);
+   RetryLater is reserved for budget exhaustion BEFORE a resume
+   attempt.
+
 ## Stage 7 — Cutover & deletion — STATUS: PARTIAL
 
 POSTURE (corrected 2026-08-24, per the follow-up review): the DEFAULT

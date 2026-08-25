@@ -8,6 +8,19 @@ HERE=$(cd "$(dirname "$0")/.." && pwd)
 OUT=${OUT:-/tmp/gate.txt}
 cd "$HERE"
 : > "$OUT"
+# The 2026-08-25 incident class: ci.yml was invalid YAML (an unquoted
+# `sse::` scalar), GitHub created ZERO jobs, and the local gate kept
+# reporting green. Every commit gate now validates workflow syntax
+# when actionlint is available (CI enforces it unconditionally via
+# .github/workflows/workflow-lint.yml).
+if command -v actionlint > /dev/null 2>&1; then
+  if ! actionlint .github/workflows/*.yml >> "$OUT" 2>&1; then
+    echo GATEFAIL-actionlint >> "$OUT"
+    exit 1
+  fi
+else
+  echo "actionlint: not installed locally; CI enforces it via workflow-lint.yml" >> "$OUT"
+fi
 if ! cargo fmt --check > /tmp/fmt.out 2>&1; then
   cat /tmp/fmt.out
   echo GATEFAIL-fmt >> "$OUT"

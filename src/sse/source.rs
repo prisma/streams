@@ -401,7 +401,10 @@ pub(crate) async fn refresh_transition(
     // ONE total deadline across all resume attempts (review round 6:
     // a two-iteration loop with a fresh 10-s timeout per iteration
     // could hold the driving session — and its heartbeat — for ~20 s).
-    let mut remaining = std::time::Duration::from_secs(10);
+    // Absolute deadline form: a resume that COMPLETES at the edge still
+    // earns its descriptor re-read (review round 7); only a fresh
+    // resume attempt is gated on remaining budget.
+    let deadline = tokio::time::Instant::now() + std::time::Duration::from_secs(10);
     for _ in 0..2 {
         // Fresh read, bypassing the descriptor cache: the swap decision
         // must see the newest published topology.
@@ -469,17 +472,17 @@ pub(crate) async fn refresh_transition(
         };
         if map.pending.is_some() {
             // Transition in flight: AWAIT the resumable completion
-            // under this permit (bounded by the ONE total deadline),
-            // then re-read IMMEDIATELY — regardless of resume's
-            // boolean (review round 5: an external actor may win the
-            // completion; the boolean is not evidence that the
-            // topology did not change).
-            let start = tokio::time::Instant::now();
-            let _ = tokio::time::timeout(remaining, crate::scaler3::resume(state, &sref)).await;
-            remaining = remaining.saturating_sub(start.elapsed());
+            // under this permit (bounded by the ONE absolute
+            // deadline), then re-read IMMEDIATELY — regardless of
+            // resume's boolean (review round 5: an external actor may
+            // win the completion; the boolean is not evidence that the
+            // topology did not change). A COMPLETED resume always
+            // earns its re-read, even at the deadline edge (round 7).
+            let remaining = deadline.saturating_duration_since(tokio::time::Instant::now());
             if remaining.is_zero() {
                 return Ok(SourceTransition::RetryLater);
             }
+            let _ = tokio::time::timeout(remaining, crate::scaler3::resume(state, &sref)).await;
             continue;
         }
         if map.segments.len() <= 1 {

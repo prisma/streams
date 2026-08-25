@@ -1,0 +1,21 @@
+name: workflow-lint
+
+# 2026-08-25 incident: an unquoted `sse::` scalar made ci.yml invalid
+# and GitHub created ZERO jobs while the local gate reported green.
+# This file is deliberately minimal and independent so it still runs
+# (and reports the error) when ci.yml itself cannot be parsed.
+
+on:
+  push:
+    branches: [main, slate]
+  pull_request:
+
+jobs:
+  actionlint:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Lint every workflow file
+        uses: rhysd/actionlint@v1
+        with:
+          args: .github/workflows/*.yml .github/workflows/*.yaml
