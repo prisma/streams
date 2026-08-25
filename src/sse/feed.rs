@@ -325,6 +325,10 @@ pub(crate) struct LiveFeed {
     /// honest no-retention path (review finding 4).
     read_cap: usize,
     budget: Arc<FeedMemoryBudget>,
+    /// Test-only: names this feed for the post-release drive failpoint
+    /// (`Fp::FeedAfterPermitRelease`); unset = the hook is inert.
+    #[cfg(test)]
+    pub(crate) fp_name: std::sync::OnceLock<String>,
 }
 
 const MAX_DRIVER_BATCH_BYTES: usize = 256 * 1024;
@@ -375,6 +379,8 @@ impl LiveFeed {
             // that fits the ring in the ordinary case.
             read_cap: (ring_budget.saturating_mul(2) / 3).clamp(1024, MAX_DRIVER_BATCH_BYTES),
             budget,
+            #[cfg(test)]
+            fp_name: std::sync::OnceLock::new(),
         })
     }
 
@@ -399,23 +405,36 @@ impl LiveFeed {
         self.src.read().unwrap().clone()
     }
 
-    /// Install a VALIDATED newer source (Stage 6.3): only the driver
-    /// (permit holder) may install, and only a replacement whose span
-    /// signature carries the CURRENT source's signature as a
-    /// compatible prefix — otherwise the cursor space would shift
-    /// underneath parked sessions, which is an incarnation change,
-    /// not a swap.
-    fn install_source(&self, next: Arc<dyn FeedSourceRead>) -> bool {
+    /// Install a VALIDATED newer source (Stage 6.3): only a
+    /// replacement whose span signature carries the CURRENT source's
+    /// signature as a compatible prefix AND is strictly longer —
+    /// otherwise the cursor space would shift underneath parked
+    /// sessions (incarnation change, not a swap). The decision and
+    /// the install are ONE atomic step under the source write lock
+    /// (round-9 review): a driver completing a transition and a
+    /// subscribe-time reconciliation may race to install the same
+    /// extension, and the loser must be an idempotent no-op — never a
+    /// second generation bump.
+    fn install_source(&self, next: Arc<dyn FeedSourceRead>) -> InstallOutcome {
         let mut w = self.src.write().unwrap();
-        if !sig_compatible(&w.source.span_sig(), &next.span_sig()) {
-            return false;
+        let old_sig = w.source.span_sig();
+        let new_sig = next.span_sig();
+        if !sig_compatible(&old_sig, &new_sig) {
+            return InstallOutcome::Incompatible;
+        }
+        if new_sig.len() <= old_sig.len() {
+            // Compatible but not a strict extension: this transition
+            // is already installed (a lost install race), or a
+            // same-length cap refresh the refresh path deliberately
+            // never installs (same spans = RetryLater/GenuineClose).
+            return InstallOutcome::AlreadyCurrent;
         }
         w.generation += 1;
         w.source = next;
         let g = w.generation;
         drop(w);
         let _ = self.source_changed.send(g);
-        true
+        InstallOutcome::Installed
     }
 
     /// Subscribe-time reconciliation (Stage 7A static concern): a feed
@@ -426,13 +445,12 @@ impl LiveFeed {
     /// keeps the existing source (the feed's own refresh converges).
     /// Called under the registry lock, BEFORE the join state is
     /// captured, so `join_head`/generation/`now` all bind to the
-    /// reconciled source.
+    /// reconciled source. The extension check lives INSIDE
+    /// install_source, under the source write lock — checking here
+    /// and installing there was the reconcile-vs-driver TOCTOU
+    /// (round-9 review).
     pub(crate) fn reconcile_locked(&self, requested: &Arc<dyn FeedSourceRead>) {
-        let cur_sig = self.current_source().span_sig();
-        let req_sig = requested.span_sig();
-        if req_sig.len() > cur_sig.len() && sig_compatible(&cur_sig, &req_sig) {
-            self.install_source(requested.clone());
-        }
+        let _ = self.install_source(requested.clone());
     }
 
     pub(crate) fn subscriber_count(&self) -> u64 {
@@ -552,11 +570,22 @@ impl LiveFeed {
         // RAII permit (follow-up review finding 6): an aborted session
         // (cancelled mid-read) drops its guard, releasing the permit —
         // it can never strand held.
-        let _permit = self.acquire_permit()?;
+        let permit = self.acquire_permit()?;
         let out = self.drive_under_permit().await;
-        // Release BEFORE any socket write by any consumer of the result.
-        drop(_permit);
-        self.driving.store(false, Ordering::SeqCst);
+        // Release BEFORE any socket write by any consumer of the
+        // result — and EXACTLY ONCE, via the RAII drop alone. A second
+        // `driving.store(false)` here reopened the single-flight
+        // window (round-9 review blocker): after the drop freed the
+        // permit and another driver acquired it, the redundant clear
+        // released THAT driver's permit, admitting a third mid-drive.
+        drop(permit);
+        // Test hook: park AFTER the release so a race leg can prove
+        // the permit changes hands exactly once (armed per feed via
+        // `fp_name`; inert everywhere else).
+        #[cfg(test)]
+        if let Some(n) = self.fp_name.get() {
+            crate::failpoints::pause(crate::failpoints::Fp::FeedAfterPermitRelease, n).await;
+        }
         Some(out)
     }
 
@@ -597,22 +626,31 @@ impl LiveFeed {
             }
             match src.next_source().await {
                 Ok(SourceTransition::NewSource(next)) => {
-                    if self.install_source(next) {
-                        // Validated continuation: re-evaluate with the
-                        // new source (its live tail may already have
-                        // records for this head).
-                        swap_attempts += 1;
-                        if swap_attempts >= 4 {
-                            break DriveOutcome::Idle;
+                    match self.install_source(next) {
+                        // Validated continuation — installed by us, or
+                        // already installed by a racing reconciliation
+                        // (AlreadyCurrent is a LOST RACE, never an
+                        // incarnation change): re-evaluate with the
+                        // current source (its live tail may already
+                        // have records for this head).
+                        InstallOutcome::Installed | InstallOutcome::AlreadyCurrent => {
+                            swap_attempts += 1;
+                            if swap_attempts >= 4 {
+                                break DriveOutcome::Idle;
+                            }
+                            continue;
                         }
-                        continue;
+                        // Incompatible topology: NOT a swap — sessions
+                        // disconnect without a terminal control.
+                        InstallOutcome::Incompatible => {
+                            let mut st = self.st.lock().unwrap();
+                            st.lifecycle = Lifecycle::Gone(SourceCutoff::IncompatibleTopology);
+                            transitioned = true;
+                            break DriveOutcome::IncarnationClosed(
+                                SourceCutoff::IncompatibleTopology,
+                            );
+                        }
                     }
-                    // Incompatible topology: NOT a swap — sessions
-                    // disconnect without a terminal control.
-                    let mut st = self.st.lock().unwrap();
-                    st.lifecycle = Lifecycle::Gone(SourceCutoff::IncompatibleTopology);
-                    transitioned = true;
-                    break DriveOutcome::IncarnationClosed(SourceCutoff::IncompatibleTopology);
                 }
                 Ok(SourceTransition::GenuineClose) => {
                     let mut st = self.st.lock().unwrap();
@@ -832,6 +870,21 @@ impl std::fmt::Debug for Take {
     }
 }
 
+/// The one atomic install decision (round-9 review): taken under the
+/// source write lock so racing installers of the same extension
+/// resolve to exactly one generation bump.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum InstallOutcome {
+    /// Strictly longer compatible extension: installed, generation +1.
+    Installed,
+    /// Compatible but not strictly longer: the transition is already
+    /// installed (or a same-length refresh that never installs) —
+    /// idempotent no-op, NO generation bump.
+    AlreadyCurrent,
+    /// Not a continuation of this feed's cursor space.
+    Incompatible,
+}
+
 pub(crate) enum DriveOutcome {
     /// Zero retention: these records belong to the driving session,
     /// plus the SCANNED boundary (finding 1/2 — the cursor must advance
@@ -913,7 +966,22 @@ pub(crate) mod tests {
         pub(crate) read_started: tokio::sync::Notify,
         pub(crate) read_release: tokio::sync::Notify,
         pub(crate) payload: usize,
+        /// Single-flight instrumentation: reads in flight right now,
+        /// and the maximum ever observed concurrently.
+        pub(crate) reads_in_flight: AtomicU64,
+        pub(crate) max_concurrent_reads: AtomicU64,
+        /// `next_source()` control: park between `next_started` and
+        /// `next_release` when blocked; return `NewSource` of
+        /// `next_result` when set (else the default GenuineClose).
+        pub(crate) next_source_block: AtomicBool,
+        pub(crate) next_started: tokio::sync::Notify,
+        pub(crate) next_release: tokio::sync::Notify,
+        pub(crate) next_result: Mutex<Option<Arc<dyn FeedSourceRead>>>,
+        /// Overrides `span_sig()` (default: one open span).
+        pub(crate) sig_override: SigOverride,
     }
+
+    pub(crate) type SigOverride = Mutex<Option<Vec<(u32, u64, Option<u64>)>>>;
 
     impl FakeSource {
         pub(crate) fn new(frontier: u64, payload: usize) -> Self {
@@ -927,13 +995,32 @@ pub(crate) mod tests {
                 read_started: tokio::sync::Notify::new(),
                 read_release: tokio::sync::Notify::new(),
                 payload,
+                reads_in_flight: AtomicU64::new(0),
+                max_concurrent_reads: AtomicU64::new(0),
+                next_source_block: AtomicBool::new(false),
+                next_started: tokio::sync::Notify::new(),
+                next_release: tokio::sync::Notify::new(),
+                next_result: Mutex::new(None),
+                sig_override: Mutex::new(None),
             }
+        }
+    }
+
+    /// Decrements `reads_in_flight` on every exit path of
+    /// `read_batch`, aborts included.
+    struct ReadInFlight<'a>(&'a FakeSource);
+    impl Drop for ReadInFlight<'_> {
+        fn drop(&mut self) {
+            self.0.reads_in_flight.fetch_sub(1, Ordering::SeqCst);
         }
     }
 
     #[async_trait::async_trait]
     impl FeedSourceRead for FakeSource {
         async fn read_batch(&self, from: u64, max_bytes: usize) -> anyhow::Result<SourceBatch> {
+            let cur = self.reads_in_flight.fetch_add(1, Ordering::SeqCst) + 1;
+            self.max_concurrent_reads.fetch_max(cur, Ordering::SeqCst);
+            let _in_flight = ReadInFlight(self);
             if self.fail_reads.load(Ordering::Relaxed) {
                 anyhow::bail!("injected source failure");
             }
@@ -994,9 +1081,19 @@ pub(crate) mod tests {
             CursorCapability::Scalar
         }
         fn span_sig(&self) -> Vec<(u32, u64, Option<u64>)> {
+            if let Some(s) = self.sig_override.lock().unwrap().clone() {
+                return s;
+            }
             vec![(0, 0, None)]
         }
         async fn next_source(&self) -> anyhow::Result<SourceTransition> {
+            if self.next_source_block.load(Ordering::Relaxed) {
+                self.next_started.notify_waiters();
+                self.next_release.notified().await;
+            }
+            if let Some(next) = self.next_result.lock().unwrap().take() {
+                return Ok(SourceTransition::NewSource(next));
+            }
             // The fake source has no topology: a closed tail is a
             // genuine close.
             Ok(SourceTransition::GenuineClose)
@@ -1385,6 +1482,109 @@ pub(crate) mod tests {
                 outcome_name(&other)
             ),
         }
+    }
+
+    /// Round-9 review blocker (red): the driver permit must be
+    /// released EXACTLY once. drive_once carried a redundant
+    /// `driving.store(false)` after the RAII drop; between the two
+    /// clears another driver legitimately acquires, and the redundant
+    /// clear then frees THAT driver's permit, admitting a third
+    /// mid-drive. Deterministic: A parks at the post-release
+    /// failpoint, B acquires and blocks inside a source read, A
+    /// resumes (on the buggy tree its second clear lands now), and a
+    /// third acquisition must still be refused.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn driver_permit_releases_exactly_once() {
+        let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
+        let (feed, src) = feed_with(1, 8, 4096, &budget);
+        feed.fp_name.set("permit-once".into()).unwrap();
+        crate::failpoints::arm(crate::failpoints::Fp::FeedAfterPermitRelease, "permit-once");
+        // A: drives one record, releases the permit, parks at the hook.
+        let feed_a = feed.clone();
+        let a = tokio::spawn(async move { feed_a.drive_once().await });
+        let mut parked = 0;
+        for _ in 0..400 {
+            parked = crate::failpoints::parked(
+                crate::failpoints::Fp::FeedAfterPermitRelease,
+                "permit-once",
+            );
+            if parked >= 1 {
+                break;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        assert!(parked >= 1, "A must park after its release");
+        // B: acquires the freed permit and blocks INSIDE the read.
+        src.frontier.store(2, Ordering::Relaxed);
+        src.block_reads.store(true, Ordering::Relaxed);
+        let started = src.read_started.notified();
+        tokio::pin!(started);
+        started.as_mut().enable();
+        let feed_b = feed.clone();
+        let b = tokio::spawn(async move { feed_b.drive_once().await });
+        started.await; // B holds the permit inside the source read
+        // A resumes and returns: no second release may occur.
+        crate::failpoints::release(crate::failpoints::Fp::FeedAfterPermitRelease, "permit-once");
+        let a_out = a.await.unwrap();
+        assert!(a_out.is_some(), "A's drive completed");
+        // C: the permit must still be HELD by B.
+        assert!(
+            feed.acquire_permit().is_none(),
+            "third driver admitted while B is mid-drive: the permit was released twice"
+        );
+        src.block_reads.store(false, Ordering::Relaxed);
+        src.read_release.notify_waiters();
+        let _ = b.await.unwrap();
+        assert_eq!(
+            src.max_concurrent_reads.load(Ordering::SeqCst),
+            1,
+            "source reads must stay single-flight"
+        );
+    }
+
+    /// Round-9 review (red): subscribe-time reconciliation and an
+    /// active driver racing to install the SAME extension must bump
+    /// the source generation exactly ONCE. The driver is held inside
+    /// next_source(), the reconciliation installs first, and the
+    /// driver's completion of the identical transition must be an
+    /// idempotent no-op (AlreadyCurrent), never a second bump.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn reconcile_and_driver_install_bump_generation_once() {
+        let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
+        let (feed, src) = feed_with(0, 8, 4096, &budget);
+        // The extension: sealed predecessor + live successor — a
+        // strictly longer compatible continuation of [(0, 0, None)].
+        let ext = Arc::new(FakeSource::new(0, 8));
+        *ext.sig_override.lock().unwrap() = Some(vec![(0, 0, Some(0)), (1, 0, None)]);
+        // Driver: closed tail -> next_source() parks, then returns the
+        // SAME extension.
+        src.closed.store(true, Ordering::Relaxed);
+        src.next_source_block.store(true, Ordering::Relaxed);
+        *src.next_result.lock().unwrap() = Some(ext.clone() as Arc<dyn FeedSourceRead>);
+        let started = src.next_started.notified();
+        tokio::pin!(started);
+        started.as_mut().enable();
+        let feed_a = feed.clone();
+        let a = tokio::spawn(async move { feed_a.drive_once().await });
+        started.await; // the driver is INSIDE next_source()
+        // Subscribe-time reconciliation installs the extension FIRST.
+        let req: Arc<dyn FeedSourceRead> = ext.clone();
+        feed.reconcile_locked(&req);
+        assert_eq!(feed.source_snapshot().generation, 1, "reconcile installed");
+        // The driver completes the identical transition: no re-bump.
+        src.next_release.notify_waiters();
+        let out = a.await.unwrap();
+        assert!(out.is_some(), "the driver's drive completed");
+        assert_eq!(
+            feed.source_snapshot().generation,
+            1,
+            "the losing installer must be an idempotent no-op"
+        );
+        // And the installed source IS the extension.
+        assert_eq!(
+            feed.current_source().span_sig(),
+            vec![(0, 0, Some(0)), (1, 0, None)]
+        );
     }
 
     /// Rollover (red): a full ring at a full global cap rolls forward —

@@ -40,11 +40,24 @@ jobs:
         run: cargo test --release --bin streams-slate multitenancy_identity_lint -- --nocapture
       - name: Test (product conformance + dual-surface + DST + cost budgets)
         run: |
-          cargo test --release 2>&1 | tee /tmp/suite.log
+          # pipefail: Cargo's own exit status must fail this step even
+          # when a test binary aborts WITHOUT printing its summary line
+          # (segfault/kill) after earlier binaries printed green ones —
+          # the summary greps below cannot see an absent line (round-9
+          # review certification hardening).
+          set -o pipefail
+          cargo test --release -- --skip post_split_throughput_scales 2>&1 | tee /tmp/suite.log
           grep -E "^test result" /tmp/suite.log
           if grep -E "^test result" /tmp/suite.log | grep -qv " 0 failed"; then
             echo "suite has failures"; exit 1
           fi
+      # The capacity-mechanism gate runs ALONE — its measurement owns
+      # the runner (the test's own precondition): inside the parallel
+      # suite, contention lands one-sidedly on the post-split phase and
+      # understates the ratio (observed 1.73-1.80 in-suite vs the 1.8x
+      # gate, with healthy single-segment baselines).
+      - name: Capacity mechanism gate (owns the runner)
+        run: cargo test --release --bin streams-slate post_split_throughput_scales -- --exact dst::dst_tests::post_split_throughput_scales
   # Job: the LiveFeed engine (STREAMS_SSE_ENGINE=livefeed shape) —
   # every LiveFeed-compatible SSE test runs under the opt-in engine on
   # every push. A green legacy-default suite is NOT a replacement-

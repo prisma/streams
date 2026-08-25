@@ -66,10 +66,11 @@ pub enum Fp {
     SseFeedBeforeDrive,
     SseFeedBeforeSubscribe,
     SseBeforeSend,
+    FeedAfterPermitRelease,
 }
 
 impl Fp {
-    pub const ALL: [Fp; 23] = [
+    pub const ALL: [Fp; 24] = [
         Fp::StopAfterTombstone,
         Fp::StopBeforeMarkCommitted,
         Fp::StopAfterSealIntent,
@@ -93,6 +94,7 @@ impl Fp {
         Fp::SseFeedBeforeDrive,
         Fp::SseFeedBeforeSubscribe,
         Fp::SseBeforeSend,
+        Fp::FeedAfterPermitRelease,
     ];
 
     /// The site contract: WHERE the point fires, stated as the
@@ -184,6 +186,13 @@ impl Fp {
                  — lets an authorization-cutoff test revoke while the \
                  producer is held, then prove ZERO post-cutoff frames \
                  are yielded (CI residue-bound flake class)"
+            }
+            Fp::FeedAfterPermitRelease => {
+                "livefeed drive_once: parked AFTER the driver permit's \
+                 RAII release, BEFORE returning — the window in which \
+                 a redundant second release (round-9 review blocker) \
+                 freed the permit a NEW driver already held; armed per \
+                 feed via LiveFeed::fp_name"
             }
         }
     }
