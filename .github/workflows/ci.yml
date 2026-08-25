@@ -57,7 +57,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: LiveFeed unit legs (feed + registry lifecycle/budget)
-        run: 'cargo test --release --bin streams-slate sse::'
+        run: cargo test --release --bin streams-slate sse::
       - name: LiveFeed HTTP legs (wire equivalence, fanout, framing)
         run: cargo test --release --bin streams-slate livefeed_
 
