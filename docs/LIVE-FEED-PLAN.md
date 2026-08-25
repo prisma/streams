@@ -207,7 +207,7 @@ code path, leg 4 exercises its externally-completed shape).
    RetryLater is reserved for budget exhaustion BEFORE a resume
    attempt.
 
-## Stage 7 — Cutover & deletion — STATUS: PARTIAL
+## Stage 7 — Cutover & deletion — STATUS: IN PROGRESS
 
 POSTURE (corrected 2026-08-24, per the follow-up review): the DEFAULT
 engine is `legacy`; `livefeed` is OPT-IN and REFUSED under the release
@@ -215,12 +215,61 @@ posture until Stage 6 lands and the engine is certified. (An earlier
 revision of this document claimed livefeed was the production default —
 that never matched the shipped binary.)
 
-REMAINING (gated on Stage 6): delete sse_response / sse_hub_response /
-sse_lineage_response, DirectGuard, join_direct_or_promote, hub ring
-machinery, SSE_HUB_PROMOTE_AT; drop the SSE_HUB_* fallbacks of
-SSE_FEED_RING_BYTES/SSE_FEED_TOTAL_BYTES; flip DST rig default and
-rewrite the ~16 hub-mechanics tests (obsolete pins die; wire-contract
-pins carry over). One focused session once Stage 6 lands.
+### Stage 7A — connect-time product lineage — STATUS: DONE (2026-08-25)
+
+A product SSE request arriving at an ALREADY-split stream (nothing
+pending) now builds a `LineageSource` at connect and rides the same
+engine — the legacy lineage streamer is bypassed for that shape:
+
+* `LineageSource::build` at connect in `read_v3_lineage_inner`'s SSE
+  lane (product surface only; raw stays on the legacy path).
+* `logicalize(WirePosition)` (the inverse of `locate`) converts the
+  signed product cursor — segment id + segment-local offset — into the
+  linearized feed cursor; invalid positions (unknown segment, beyond a
+  sealed cap, beyond the durable frontier) are `invalid_offset` 400s,
+  never a silent clamp.
+* `CursorCapability { Scalar, Segmented }` on `FeedSourceRead` replaces
+  the generation-0 proxy in the raw compatibility gate (a connect-time
+  `LineageSource` may be generation 0).
+* `SourceCutoff { IncarnationChanged, WrongOwner,
+  IncompatibleTopology }` types every disconnect-and-resume; per-reason
+  counters exported at `/v1/debug/load.sse_livefeed`.
+
+Legs: beginning/now on an already-split stream; signed cursor in a
+sealed predecessor, in the live tail, and exactly at a span boundary;
+cursor beyond a sealed cap (400); unknown segment (400); sealed
+multi-segment stream (exactly one terminal); two sequential splits;
+merge continuation in place (split → lane record → merge → merged
+record, cursor decodes to (merged, local 1)).
+
+### Stage 7B — engine matrix — STATUS: GREEN (2026-08-25)
+
+The DST rig honors `STREAMS_SSE_ENGINE` at construction, so the whole
+generic SSE corpus runs under either engine. The `livefeed-matrix` CI
+job runs the full suite under livefeed on every push.
+
+Evidence run (2026-08-25): 572 passed, 0 failed, 15 excluded.
+
+The exclusions (`scripts/livefeed-matrix-skips.txt`) are all hub-
+MECHANICS pins (hub formation is bypassed under livefeed); they die
+with the legacy hub implementation at Stage 7 deletion. Found and
+fixed by the matrix: `sse_head` test helper over-read body chunks
+coalesced with response headers (LiveFeed's first status arrives
+faster than the legacy producer's).
+
+Exclusion list (must reach zero before legacy deletion):
+
+```text
+14 hub_* mechanics tests + off_mode_subscriptions_are_untouched_by_staleness
+```
+
+REMAINING (gated on fleet work + canaries): two-instance
+disconnect/reroute certification; below-edge canaries; then delete
+sse_response / sse_hub_response / sse_lineage_response, DirectGuard,
+join_direct_or_promote, hub ring machinery, SSE_HUB_PROMOTE_AT; drop
+the SSE_HUB_* fallbacks of SSE_FEED_RING_BYTES/SSE_FEED_TOTAL_BYTES;
+flip DST rig default and rewrite the ~16 hub-mechanics tests
+(obsolete pins die; wire-contract pins carry over).
 
 ## Follow-up review remediation — STATUS: DONE (2026-08-24)
 

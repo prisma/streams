@@ -103,6 +103,14 @@ pub(crate) trait FeedSourceRead: Send + Sync {
     /// the feed's cursor space is linearized across sealed predecessor
     /// caps; the wire names segments with segment-local offsets.
     fn locate(&self, logical_after: u64) -> WirePosition;
+    /// The inverse of `locate` (Stage 7A): convert a wire cursor
+    /// position into this source's linearized space. None = the cursor
+    /// names a segment outside this lineage, or a local offset beyond
+    /// what the segment can prove (past a sealed cap / the durable
+    /// frontier) — an invalid cursor, never a silent clamp.
+    fn logicalize(&self, pos: WirePosition) -> Option<u64>;
+    /// Which cursor vocabulary this source honors (raw gate).
+    fn cursor_capability(&self) -> CursorCapability;
     /// Span signature `(seg_id, logical_start, sealed cap)` for swap
     /// validation: an installed replacement must carry the CURRENT
     /// source's signature as an exact prefix, or the cursor space
@@ -113,16 +121,30 @@ pub(crate) trait FeedSourceRead: Send + Sync {
     async fn next_source(&self) -> anyhow::Result<SourceTransition>;
 }
 
+/// Why a feed's source was cut off (typed for canary telemetry —
+/// the wire behavior is disconnect-and-resume in all cases, but the
+/// reasons must be distinguishable in metrics and logs).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum SourceCutoff {
+    /// Delete/recreate or descriptor gone: a DIFFERENT incarnation.
+    IncarnationChanged,
+    /// A lineage span is owned by another instance (409-class).
+    WrongOwner,
+    /// The topology no longer contains this feed's cursor space
+    /// (incompatible spans, malformed lineage).
+    IncompatibleTopology,
+}
+
 /// What a descriptor refresh decided about the current source.
 pub(crate) enum SourceTransition {
     /// A validated newer source (longer lineage, same prefix).
     NewSource(Arc<dyn FeedSourceRead>),
     /// Genuine collection closure: exactly one terminal control, EOF.
     GenuineClose,
-    /// The incarnation moved on (delete/recreate) or the topology is
-    /// not a compatible continuation: sessions disconnect WITHOUT a
-    /// terminal control (typed; clients resume from their cursors).
-    IncarnationChanged,
+    /// The source cannot continue here (typed reason): sessions
+    /// disconnect WITHOUT a terminal control; clients resume from
+    /// their cursors.
+    IncarnationChanged(SourceCutoff),
     /// Transition still in flight: retry on the next wake.
     RetryLater,
 }
@@ -136,6 +158,17 @@ pub(crate) enum SourceTransition {
 pub(crate) struct WirePosition {
     pub(crate) seg_id: u32,
     pub(crate) local_after: u64,
+}
+
+/// Which cursor vocabulary a source can honor (Stage 7A): raw scalar
+/// offsets work only on a single-segment source; a segmented lineage
+/// needs epoch/segment (or signed product) cursors. Raw sessions may
+/// join ONLY Scalar sources — generation alone cannot prove this once
+/// connect-time lineage exists (a lineage source may be generation 0).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CursorCapability {
+    Scalar,
+    Segmented,
 }
 
 /// A feed-owned source plus its generation (Stage 6.1). Every session
@@ -173,9 +206,9 @@ enum Lifecycle {
     Active,
     /// Genuine collection close: one terminal control, then EOF.
     Closed,
-    /// Incarnation moved on / incompatible topology: sessions
-    /// disconnect WITHOUT a terminal control (Stage 6).
-    Gone,
+    /// The source cannot continue here (typed reason, Stage 6/7):
+    /// sessions disconnect WITHOUT a terminal control.
+    Gone(SourceCutoff),
 }
 
 struct FeedState {
@@ -539,7 +572,7 @@ impl LiveFeed {
             let lifecycle = self.st.lock().unwrap().lifecycle;
             match lifecycle {
                 Lifecycle::Closed => break DriveOutcome::Closed,
-                Lifecycle::Gone => break DriveOutcome::IncarnationClosed,
+                Lifecycle::Gone(reason) => break DriveOutcome::IncarnationClosed(reason),
                 Lifecycle::Active => {}
             }
             if !src.closed() {
@@ -560,9 +593,9 @@ impl LiveFeed {
                     // Incompatible topology: NOT a swap — sessions
                     // disconnect without a terminal control.
                     let mut st = self.st.lock().unwrap();
-                    st.lifecycle = Lifecycle::Gone;
+                    st.lifecycle = Lifecycle::Gone(SourceCutoff::IncompatibleTopology);
                     transitioned = true;
-                    break DriveOutcome::IncarnationClosed;
+                    break DriveOutcome::IncarnationClosed(SourceCutoff::IncompatibleTopology);
                 }
                 Ok(SourceTransition::GenuineClose) => {
                     let mut st = self.st.lock().unwrap();
@@ -570,11 +603,11 @@ impl LiveFeed {
                     transitioned = true;
                     break DriveOutcome::Closed;
                 }
-                Ok(SourceTransition::IncarnationChanged) => {
+                Ok(SourceTransition::IncarnationChanged(reason)) => {
                     let mut st = self.st.lock().unwrap();
-                    st.lifecycle = Lifecycle::Gone;
+                    st.lifecycle = Lifecycle::Gone(reason);
                     transitioned = true;
-                    break DriveOutcome::IncarnationClosed;
+                    break DriveOutcome::IncarnationClosed(reason);
                 }
                 Ok(SourceTransition::RetryLater) => break DriveOutcome::Idle,
                 Err(_) => {
@@ -591,7 +624,7 @@ impl LiveFeed {
         // another immediate drive (the busy retry loop).
         let bump = match outcome {
             DriveOutcome::Solo { .. } | DriveOutcome::Published => true,
-            DriveOutcome::Closed | DriveOutcome::IncarnationClosed => transitioned,
+            DriveOutcome::Closed | DriveOutcome::IncarnationClosed(_) => transitioned,
             DriveOutcome::Idle | DriveOutcome::NoProgress | DriveOutcome::SourceFailed => false,
         };
         if bump {
@@ -800,11 +833,10 @@ pub(crate) enum DriveOutcome {
     /// The session parks instead of spinning (finding 6).
     NoProgress,
     Closed,
-    /// The stream incarnation moved on (delete/recreate) or the
-    /// topology is not a compatible continuation: sessions disconnect
-    /// WITHOUT a terminal control (Stage 6; clients resume from their
-    /// cursors through the legacy lineage path).
-    IncarnationClosed,
+    /// The source cannot continue here (typed reason): sessions
+    /// disconnect WITHOUT a terminal control (Stage 6; clients resume
+    /// from their cursors through the legacy lineage path).
+    IncarnationClosed(SourceCutoff),
     /// The source read failed; no state changed, no version bump. The
     /// session parks and retries on the next wake (finding 6).
     SourceFailed,
@@ -937,6 +969,12 @@ pub(crate) mod tests {
                 seg_id: 0,
                 local_after: logical_after,
             }
+        }
+        fn logicalize(&self, pos: WirePosition) -> Option<u64> {
+            (pos.seg_id == 0).then_some(pos.local_after)
+        }
+        fn cursor_capability(&self) -> CursorCapability {
+            CursorCapability::Scalar
         }
         fn span_sig(&self) -> Vec<(u32, u64, Option<u64>)> {
             vec![(0, 0, None)]
@@ -1505,7 +1543,7 @@ pub(crate) mod tests {
             Some(DriveOutcome::Idle) => "Idle",
             Some(DriveOutcome::NoProgress) => "NoProgress",
             Some(DriveOutcome::Closed) => "Closed",
-            Some(DriveOutcome::IncarnationClosed) => "IncarnationClosed",
+            Some(DriveOutcome::IncarnationClosed(_)) => "IncarnationClosed",
             Some(DriveOutcome::SourceFailed) => "SourceFailed",
             None => "Contended",
         }

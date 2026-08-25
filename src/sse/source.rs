@@ -8,7 +8,10 @@
 //! use, translated back to `(seg_id, segment-local)` by `locate()`
 //! for the wire.
 
-use super::feed::{FeedSourceRead, SourceBatch, SourceTransition, WirePosition, sig_compatible};
+use super::feed::{
+    CursorCapability, FeedSourceRead, SourceBatch, SourceCutoff, SourceTransition, WirePosition,
+    sig_compatible,
+};
 use crate::registry::StreamDesc;
 use crate::shard::{ShardEngine, StreamHandle};
 use bytes::Bytes;
@@ -96,6 +99,17 @@ impl FeedSourceRead for SingleSource {
         }
     }
 
+    fn logicalize(&self, pos: WirePosition) -> Option<u64> {
+        if pos.seg_id != self.lane_seg_id() || pos.local_after > self.frontier() {
+            return None;
+        }
+        Some(pos.local_after)
+    }
+
+    fn cursor_capability(&self) -> CursorCapability {
+        CursorCapability::Scalar
+    }
+
     fn span_sig(&self) -> Vec<(u32, u64, Option<u64>)> {
         vec![(self.lane_seg_id(), 0, None)]
     }
@@ -151,9 +165,12 @@ pub(crate) struct LineageSource {
 /// (review round 5: a TRANSIENT engine failure must never become a
 /// feed-wide incarnation cutoff).
 pub(crate) enum LineageBuildError {
-    /// Durable: this instance cannot serve the lineage (wrong owner,
-    /// no span, inconsistent map) — disconnect-and-reroute.
-    Permanent(String),
+    /// A lineage span is owned by another instance (409-class):
+    /// disconnect-and-reroute.
+    WrongOwner(String),
+    /// The lineage itself is inconsistent (no span, live predecessor):
+    /// NOT a continuation of this feed's cursor space.
+    IncompatibleTopology(String),
     /// Transient: engine opening / anti-flap holdoff — retry.
     Transient(String),
 }
@@ -161,7 +178,8 @@ pub(crate) enum LineageBuildError {
 impl std::fmt::Display for LineageBuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::Permanent(m) => write!(f, "permanent: {m}"),
+            Self::WrongOwner(m) => write!(f, "wrong-owner: {m}"),
+            Self::IncompatibleTopology(m) => write!(f, "incompatible-topology: {m}"),
             Self::Transient(m) => write!(f, "transient: {m}"),
         }
     }
@@ -180,7 +198,9 @@ impl LineageSource {
         rk_filter: Option<String>,
     ) -> Result<Arc<Self>, LineageBuildError> {
         let map = desc.segments.as_ref().ok_or_else(|| {
-            LineageBuildError::Permanent("lineage source needs a materialized segment map".into())
+            LineageBuildError::IncompatibleTopology(
+                "lineage source needs a materialized segment map".into(),
+            )
         })?;
         let lane = rk_filter.clone().unwrap_or_default();
         let point = StreamDesc::key_point(&lane);
@@ -188,7 +208,7 @@ impl LineageSource {
             map.segments.iter().filter(|s| s.contains(point)).collect();
         segs.sort_by_key(|s| (s.created_ms, s.seg_id));
         if segs.is_empty() {
-            return Err(LineageBuildError::Permanent(
+            return Err(LineageBuildError::IncompatibleTopology(
                 "lineage has no span for the lane's key point".into(),
             ));
         }
@@ -206,7 +226,7 @@ impl LineageSource {
                 Ok(e) => e,
                 Err(resp) => {
                     if resp.status() == axum::http::StatusCode::CONFLICT {
-                        return Err(LineageBuildError::Permanent(format!(
+                        return Err(LineageBuildError::WrongOwner(format!(
                             "segment {} is owned by another instance",
                             sg.seg_id
                         )));
@@ -243,7 +263,7 @@ impl LineageSource {
             .take(spans.len().saturating_sub(1))
             .any(|s| s.cap.is_none())
         {
-            return Err(LineageBuildError::Permanent(
+            return Err(LineageBuildError::IncompatibleTopology(
                 "lineage has a live span before the tail".into(),
             ));
         }
@@ -365,6 +385,27 @@ impl FeedSourceRead for LineageSource {
         locate_in_spans(&self.span_sig(), logical_after)
     }
 
+    fn logicalize(&self, pos: WirePosition) -> Option<u64> {
+        for span in &self.spans {
+            if span.seg_id != pos.seg_id {
+                continue;
+            }
+            let within = match span.cap {
+                Some(c) => pos.local_after <= c,
+                None => pos.local_after <= span.handle.state.lock().unwrap().durable.next,
+            };
+            if within {
+                return Some(span.logical_start + pos.local_after);
+            }
+            return None;
+        }
+        None
+    }
+
+    fn cursor_capability(&self) -> CursorCapability {
+        CursorCapability::Segmented
+    }
+
     fn span_sig(&self) -> Vec<(u32, u64, Option<u64>)> {
         self.spans
             .iter()
@@ -411,11 +452,15 @@ pub(crate) async fn refresh_transition(
         state.registry.invalidate(&sref);
         let Some(d) = state.registry.get(&sref).await? else {
             // Deleted: no continuation exists for this feed.
-            return Ok(SourceTransition::IncarnationChanged);
+            return Ok(SourceTransition::IncarnationChanged(
+                SourceCutoff::IncarnationChanged,
+            ));
         };
         if d.stream_epoch != desc.stream_epoch {
             // Delete/recreate: a DIFFERENT incarnation, never a swap.
-            return Ok(SourceTransition::IncarnationChanged);
+            return Ok(SourceTransition::IncarnationChanged(
+                SourceCutoff::IncarnationChanged,
+            ));
         }
         if d.sealed {
             // A SEALED descriptor may still extend a COMPATIBLE lineage
@@ -442,7 +487,9 @@ pub(crate) async fn refresh_transition(
                     Ok(next) => {
                         let new_sig = next.span_sig();
                         if !sig_compatible(current_sig, &new_sig) {
-                            return Ok(SourceTransition::IncarnationChanged);
+                            return Ok(SourceTransition::IncarnationChanged(
+                                SourceCutoff::IncompatibleTopology,
+                            ));
                         }
                         if new_sig.len() > current_sig.len() {
                             return Ok(SourceTransition::NewSource(next));
@@ -455,13 +502,25 @@ pub(crate) async fn refresh_transition(
                         tracing::warn!(stream = %sref, error = %e, "sealed lineage drain deferred");
                         return Ok(SourceTransition::RetryLater);
                     }
-                    Err(LineageBuildError::Permanent(e)) => {
+                    Err(LineageBuildError::WrongOwner(e)) => {
                         tracing::warn!(
                             stream = %sref,
                             error = %e,
                             "sealed lineage cannot be drained here; disconnecting to reroute"
                         );
-                        return Ok(SourceTransition::IncarnationChanged);
+                        return Ok(SourceTransition::IncarnationChanged(
+                            SourceCutoff::WrongOwner,
+                        ));
+                    }
+                    Err(LineageBuildError::IncompatibleTopology(e)) => {
+                        tracing::warn!(
+                            stream = %sref,
+                            error = %e,
+                            "sealed lineage is inconsistent; disconnecting"
+                        );
+                        return Ok(SourceTransition::IncarnationChanged(
+                            SourceCutoff::IncompatibleTopology,
+                        ));
                     }
                 }
             }
@@ -493,15 +552,27 @@ pub(crate) async fn refresh_transition(
                 .await
             {
                 Ok(n) => n,
-                // Durable wrong-owner / inconsistent topology:
-                // disconnect-and-reroute NOW (fleet posture).
-                Err(LineageBuildError::Permanent(e)) => {
+                // Durable wrong-owner: disconnect-and-reroute NOW
+                // (fleet posture).
+                Err(LineageBuildError::WrongOwner(e)) => {
                     tracing::warn!(
                         stream = %sref,
                         error = %e,
-                        "lineage source cannot be built here; disconnecting to reroute"
+                        "lineage source is owned elsewhere; disconnecting to reroute"
                     );
-                    return Ok(SourceTransition::IncarnationChanged);
+                    return Ok(SourceTransition::IncarnationChanged(
+                        SourceCutoff::WrongOwner,
+                    ));
+                }
+                Err(LineageBuildError::IncompatibleTopology(e)) => {
+                    tracing::warn!(
+                        stream = %sref,
+                        error = %e,
+                        "lineage topology is inconsistent; disconnecting"
+                    );
+                    return Ok(SourceTransition::IncarnationChanged(
+                        SourceCutoff::IncompatibleTopology,
+                    ));
                 }
                 // Transient (engine opening, anti-flap holdoff):
                 // RETRY — never a feed-wide incarnation cutoff
@@ -515,7 +586,9 @@ pub(crate) async fn refresh_transition(
         if !sig_compatible(current_sig, &new_sig) {
             // The topology no longer contains this feed's cursor space —
             // not a swap. Sessions disconnect without a terminal control.
-            return Ok(SourceTransition::IncarnationChanged);
+            return Ok(SourceTransition::IncarnationChanged(
+                SourceCutoff::IncompatibleTopology,
+            ));
         }
         if new_sig.len() == current_sig.len() {
             // Spurious wake on an unchanged map.

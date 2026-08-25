@@ -113,17 +113,32 @@ fn sealed_of(closed: bool) -> bool {
     closed // product vocabulary names it `sealed`; raw uses streamClosed
 }
 
+/// Typed cutoff accounting (Stage 7 canary telemetry): one counter
+/// per `SourceCutoff` reason.
+fn count_cutoff(reason: super::feed::SourceCutoff) {
+    use super::feed::SourceCutoff;
+    let c = match reason {
+        SourceCutoff::IncarnationChanged => &crate::sse::auth::sse_stats::FEED_CUTOFF_INCARNATION,
+        SourceCutoff::WrongOwner => &crate::sse::auth::sse_stats::FEED_CUTOFF_WRONG_OWNER,
+        SourceCutoff::IncompatibleTopology => {
+            &crate::sse::auth::sse_stats::FEED_CUTOFF_INCOMPATIBLE
+        }
+    };
+    c.fetch_add(1, Ordering::Relaxed);
+}
+
 /// Entry point for ALL product/raw SSE when the instance runs the
 /// livefeed engine. The slot is acquired ONCE by the caller and moved
-/// here (finding 9).
+/// here (finding 9). The caller builds the initial read source
+/// (`SingleSource` for single-segment/fork streams, `LineageSource`
+/// for connect-time lineage, Stage 7A).
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn serve(
     state: Arc<AppState>,
     desc: crate::registry::StreamDesc,
     key: crate::crypto::StreamKey,
     epoch: [u8; 16],
-    handle: Arc<crate::shard::StreamHandle>,
-    engine: Arc<crate::shard::ShardEngine>,
+    src: Arc<dyn super::feed::FeedSourceRead>,
     start: crate::http::StartPos,
     params: ReadParams,
     rk_filter: Option<String>,
@@ -140,30 +155,22 @@ pub(crate) async fn serve(
 
     let lane_rk = rk_filter.clone().unwrap_or_default();
     let fkey = feed_key_of(&desc, &rk_filter);
-    // RAW source-compatibility gate (review round 5): raw scalar
-    // cursors cannot name segments, so a raw session may only join a
-    // SINGLE-SEGMENT source at generation 0. If the lane's feed already
-    // swapped to a lineage source, the raw request takes the typed
-    // immediate-disconnect fallback (its client resumes through the
-    // legacy lineage path). Two-level check: peek BEFORE attach, then
-    // the atomically captured join generation AFTER (the swap may land
-    // between them).
+    // RAW source-compatibility gate (review round 5 + Stage 7A): raw
+    // scalar cursors cannot name segments, so a raw session may only
+    // join a Scalar-capability source. If the lane's feed swapped to a
+    // lineage source (or the request arrived at an already-split
+    // stream), the raw request takes the typed immediate-disconnect
+    // fallback (its client resumes through the legacy lineage path).
+    // Two-level check: peek BEFORE attach, then the source captured
+    // AT attach (a swap may land between them).
     let raw_surface = matches!(surface, crate::http::SseSurface::Raw);
     if raw_surface
         && let Some(existing) = state.live_feeds.feed_for(&fkey)
-        && existing.source_snapshot().generation != 0
+        && existing.source_snapshot().source.cursor_capability()
+            != super::feed::CursorCapability::Scalar
     {
         return raw_lineage_fallback_response(&state, &desc);
     }
-    let src = Arc::new(super::source::SingleSource {
-        state: state.clone(),
-        rk_filter: Some(lane_rk.clone()),
-        desc: desc.clone(),
-        key: key.clone(),
-        epoch,
-        engine: engine.clone(),
-        handle: handle.clone(),
-    });
     // Test failpoint: AFTER the compatibility peek, BEFORE the atomic
     // attach — the window in which a feed can swap generations between
     // the two raw-gate checks.
@@ -196,7 +203,10 @@ pub(crate) async fn serve(
             .into_response();
         }
     };
-    if raw_surface && subscription.join_gen() != 0 {
+    if raw_surface
+        && subscription.feed().current_source().cursor_capability()
+            != super::feed::CursorCapability::Scalar
+    {
         // The feed swapped between the peek and the atomic attach:
         // detach and take the same typed fallback.
         drop(subscription);
@@ -490,12 +500,14 @@ pub(crate) async fn serve(
                                     }
                                     return; // EOF after THE final control
                                 }
-                                DriveOutcome::IncarnationClosed => {
+                                DriveOutcome::IncarnationClosed(reason) => {
+                                    count_cutoff(reason);
                                     crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
                                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                                     tracing::info!(
                                         stream = %sref,
-                                        "livefeed incarnation/topology changed; disconnecting without terminal"
+                                        ?reason,
+                                        "livefeed source cutoff; disconnecting without terminal"
                                     );
                                     return;
                                 }
@@ -650,12 +662,14 @@ pub(crate) async fn serve(
                         // A publication or closure changed feed state
                         // (and bumped the version): loop and consume it.
                         Some(DriveOutcome::Published) | Some(DriveOutcome::Closed) => continue,
-                        Some(DriveOutcome::IncarnationClosed) => {
+                        Some(DriveOutcome::IncarnationClosed(reason)) => {
+                            count_cutoff(reason);
                             crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             tracing::info!(
                                 stream = %sref,
-                                "livefeed incarnation changed mid-stream; disconnecting"
+                                ?reason,
+                                "livefeed source cutoff mid-stream; disconnecting"
                             );
                             return;
                         }

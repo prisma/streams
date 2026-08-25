@@ -5810,7 +5810,13 @@ async fn http_rig_inner(
         admit_shed_rss: std::sync::atomic::AtomicU64::new(0),
         sse_max_connections: 0,
         sse_configured_max_connections: 0,
-        sse_engine_livefeed: std::sync::atomic::AtomicBool::new(false),
+        sse_engine_livefeed: std::sync::atomic::AtomicBool::new(
+            // The engine matrix: the suite's default posture can be
+            // flipped process-wide, so the generic SSE corpus runs
+            // under BOTH engines in CI (exclusions tracked in
+            // docs/LIVE-FEED-PLAN.md).
+            std::env::var("STREAMS_SSE_ENGINE").as_deref() == Ok("livefeed"),
+        ),
         live_feeds: Arc::new(crate::sse::registry::FeedRegistry::new()),
         // Per-rig budget: isolated from every other rig in the process.
         feed_budget: Arc::new(crate::sse::feed::FeedMemoryBudget::from_env()),
@@ -32421,7 +32427,12 @@ impl Drop for SseGateGuard {
 /// Read one HTTP response head. Returns (status, head text).
 async fn sse_head(sck: &mut tokio::net::TcpStream) -> (u16, String) {
     use tokio::io::AsyncReadExt;
-    let mut buf = vec![0u8; 1024];
+    // ONE byte at a time: the SSE producer may coalesce the first body
+    // chunk with the response headers (LiveFeed emits the head status
+    // immediately), and a wider read would silently EAT that chunk —
+    // the following body collect then never sees it (engine-matrix
+    // flake `raw_sse_terminates_at_workload_token_expiry`).
+    let mut buf = vec![0u8; 1];
     let mut acc: Vec<u8> = Vec::new();
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
     loop {
@@ -35635,4 +35646,424 @@ async fn livefeed_refresh_installs_after_external_completion() {
         }
         _ => panic!("refresh after external completion must install the lineage"),
     }
+}
+
+// ==================================================================
+// LIVE-FEED Stage 7A legs: connect-time product lineage. A stream
+// ALREADY split when the request arrives builds a LineageSource at
+// connect and rides the same engine — beginning, now, signed cursors
+// in every span position, invalid cursors, and sealed streams.
+// ==================================================================
+
+/// Create a stream, append records, split, append more — return the
+/// post-split descriptor.
+async fn lf7_split_stream(
+    addr: std::net::SocketAddr,
+    state: &Arc<crate::http::AppState>,
+    name: &str,
+    pre: u64,
+    post: u64,
+) -> crate::registry::StreamDesc {
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        &format!("/v1/streams/{name}"),
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for i in 0..pre {
+        hub_append_lf(addr, name, &format!(r#"{{"i":{i}}}"#)).await;
+    }
+    split_and_await(state, name, 0).await;
+    for i in pre..(pre + post) {
+        hub_append_lf(addr, name, &format!(r#"{{"i":{i}}}"#)).await;
+    }
+    state.registry.invalidate(&state.raw_adapter_sref(name));
+    state
+        .registry
+        .get(&state.raw_adapter_sref(name))
+        .await
+        .unwrap()
+        .unwrap()
+}
+
+/// Connect at `cursor=beginning` on an ALREADY-split stream: the full
+/// lineage (predecessor + successor) drains through LiveFeed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_connect_already_split_beginning_drains_lineage() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = lf7_split_stream(addr, &state, "lf7b", 3, 2).await;
+
+    let mut sck = lf_connect(addr, "lf7b", "?cursor=beginning").await;
+    let (acc, _) = hub_sse_collect(&mut sck, 12, |t| {
+        t.matches("event: data").count() >= 5 && t.contains("upToDate")
+    })
+    .await;
+    for i in 0..5u64 {
+        let needle = format!("\"i\":{i}}}");
+        assert_eq!(
+            acc.matches(&needle).count(),
+            1,
+            "record {i} exactly once through connect-time lineage:\n{acc}"
+        );
+    }
+    assert!(acc.contains("upToDate"), "reached the head:\n{acc}");
+
+    // And live records keep flowing on the same connection.
+    hub_append_lf(addr, "lf7b", r#"{"i":5}"#).await;
+    let (acc2, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"i\":5")).await;
+    assert!(acc2.contains("\"i\":5"), "live records flow:\n{acc2}");
+}
+
+/// Connect at `cursor=now` on an already-split stream: only records
+/// written after the connect arrive.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_connect_already_split_now() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = lf7_split_stream(addr, &state, "lf7n", 3, 2).await;
+
+    let mut sck = lf_connect(addr, "lf7n", "?cursor=now").await;
+    let (acc0, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    assert!(
+        !acc0.contains("event: data"),
+        "now starts at the tail:\n{acc0}"
+    );
+    hub_append_lf(addr, "lf7n", r#"{"i":5}"#).await;
+    let (acc, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"i\":5")).await;
+    assert!(acc.contains("\"i\":5"), "only post-connect records:\n{acc}");
+    assert!(!acc.contains("\"i\":4"), "no history:\n{acc}");
+}
+
+/// Connect with a SIGNED cursor inside a sealed predecessor: the
+/// predecessor remainder plus the successor tail arrive exactly once.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_connect_already_split_cursor_in_sealed_predecessor() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let desc = lf7_split_stream(addr, &state, "lf7p", 3, 2).await;
+    let epoch = desc.epoch_bytes().unwrap();
+
+    // Cursor: consumed through predecessor record 1 (local offset 2).
+    let tok = crate::product_cursor::KeyCursor {
+        epoch,
+        key_hash: crate::crypto::stream_hash(""),
+        seg_id: 0,
+        offset: 2,
+    }
+    .encode(&desc.project_id, &skey());
+    let mut sck = lf_connect(addr, "lf7p", &format!("?cursor={tok}")).await;
+    let (acc, _) = hub_sse_collect(&mut sck, 12, |t| {
+        t.matches("event: data").count() >= 3 && t.contains("upToDate")
+    })
+    .await;
+    for i in [2u64, 3, 4] {
+        let needle = format!("\"i\":{i}}}");
+        assert_eq!(
+            acc.matches(&needle).count(),
+            1,
+            "record {i} exactly once from the predecessor cursor:\n{acc}"
+        );
+    }
+    assert!(
+        !acc.contains("\"i\":0") && !acc.contains("\"i\":1"),
+        "records at/below the cursor are not redelivered:\n{acc}"
+    );
+}
+
+/// Connect with a signed cursor in the live tail and exactly at a span
+/// boundary; a cursor beyond a sealed cap is a 400; an unknown segment
+/// is a 400.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_connect_already_split_cursor_positions() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let desc = lf7_split_stream(addr, &state, "lf7c", 3, 2).await;
+    let epoch = desc.epoch_bytes().unwrap();
+    let child_seg = desc.resolve_segment("").seg_id;
+    let mk = |seg_id: u32, offset: u64| {
+        crate::product_cursor::KeyCursor {
+            epoch,
+            key_hash: crate::crypto::stream_hash(""),
+            seg_id,
+            offset,
+        }
+        .encode(&desc.project_id, &skey())
+    };
+
+    // In the live tail (child, 0): only successor records.
+    let mut s1 = lf_connect(addr, "lf7c", &format!("?cursor={}", mk(child_seg, 0))).await;
+    let (a1, _) = hub_sse_collect(&mut s1, 10, |t| t.matches("event: data").count() >= 2).await;
+    assert!(
+        a1.contains("\"i\":3") && a1.contains("\"i\":4"),
+        "live tail:\n{a1}"
+    );
+    assert!(
+        !a1.contains("\"i\":2"),
+        "no predecessor records from a tail cursor:\n{a1}"
+    );
+
+    // Exactly at the span boundary (seg 0, cap): continues into the
+    // successor with no gap and no duplicate.
+    let mut s2 = lf_connect(addr, "lf7c", &format!("?cursor={}", mk(0, 3))).await;
+    let (a2, _) = hub_sse_collect(&mut s2, 10, |t| t.matches("event: data").count() >= 2).await;
+    assert!(
+        a2.contains("\"i\":3") && a2.contains("\"i\":4"),
+        "boundary resumes into the successor:\n{a2}"
+    );
+    assert!(
+        !a2.contains("\"i\":2"),
+        "no duplicate at the boundary:\n{a2}"
+    );
+
+    // Beyond the sealed cap: 400.
+    let (st, _, _) = preq(
+        addr,
+        "GET",
+        &format!("/v1/streams/lf7c/records:sse?cursor={}", mk(0, 99)),
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 400, "beyond a sealed cap is invalid_cursor");
+
+    // Unknown segment: 400.
+    let (st, _, _) = preq(
+        addr,
+        "GET",
+        &format!("/v1/streams/lf7c/records:sse?cursor={}", mk(77, 0)),
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 400, "an unknown segment is invalid_cursor");
+}
+
+/// Connect at beginning on a SEALED split stream: full lineage, then
+/// exactly one terminal control, then EOF.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_connect_already_split_sealed_stream() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = lf7_split_stream(addr, &state, "lf7s", 3, 2).await;
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/lf7s:seal",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{}",
+    )
+    .await;
+    assert_eq!(st, 200);
+
+    let mut sck = lf_connect(addr, "lf7s", "?cursor=beginning").await;
+    let (acc, eof) = hub_sse_collect(&mut sck, 15, |_| false).await;
+    assert!(eof, "EOF after the terminal");
+    for i in 0..5u64 {
+        let needle = format!("\"i\":{i}}}");
+        assert_eq!(
+            acc.matches(&needle).count(),
+            1,
+            "record {i} exactly once on the sealed stream:\n{acc}"
+        );
+    }
+    assert_eq!(
+        acc.matches("\"sealed\":true").count(),
+        1,
+        "exactly one terminal control:\n{acc}"
+    );
+}
+
+/// Two sequential splits before connect: the three-span lineage
+/// drains in order.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_connect_after_two_sequential_splits() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lf7t",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append_lf(addr, "lf7t", r#"{"i":0}"#).await;
+    split_and_await(&state, "lf7t", 0).await;
+    hub_append_lf(addr, "lf7t", r#"{"i":1}"#).await;
+    state.registry.invalidate(&state.raw_adapter_sref("lf7t"));
+    let desc = state
+        .registry
+        .get(&state.raw_adapter_sref("lf7t"))
+        .await
+        .unwrap()
+        .unwrap();
+    let live_seg = desc.resolve_segment("").seg_id;
+    split_and_await(&state, "lf7t", live_seg).await;
+    hub_append_lf(addr, "lf7t", r#"{"i":2}"#).await;
+
+    let mut sck = lf_connect(addr, "lf7t", "?cursor=beginning").await;
+    let (acc, _) = hub_sse_collect(&mut sck, 12, |t| {
+        t.matches("event: data").count() >= 3 && t.contains("upToDate")
+    })
+    .await;
+    for i in 0..3u64 {
+        let needle = format!("\"i\":{i}}}");
+        assert_eq!(
+            acc.matches(&needle).count(),
+            1,
+            "record {i} exactly once across two splits:\n{acc}"
+        );
+    }
+}
+
+/// Merge continuation: split, append on the lane's child, MERGE the
+/// children, append on the merged successor — the same connection
+/// continues in place, cursors decode, no false terminal.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_merge_continuation_in_place() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lf7m",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append_lf(addr, "lf7m", r#"{"i":0}"#).await;
+    let mut sck = lf_connect(addr, "lf7m", "").await;
+    let (acc0, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    assert!(acc0.contains("\"i\":0"), "backlog:\n{acc0}");
+
+    // Split, then one record on the lane's child.
+    split_and_await(&state, "lf7m", 0).await;
+    hub_append_lf(addr, "lf7m", r#"{"i":1}"#).await;
+    let (acc1, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"i\":1")).await;
+    assert!(acc1.contains("\"i\":1"), "split record:\n{acc1}");
+
+    // MERGE the two children; the lane's chain becomes
+    // [seg0 sealed, child sealed, merged live].
+    state.registry.invalidate(&state.raw_adapter_sref("lf7m"));
+    let desc = state
+        .registry
+        .get(&state.raw_adapter_sref("lf7m"))
+        .await
+        .unwrap()
+        .unwrap();
+    let mut children: Vec<u32> = desc
+        .segments
+        .as_ref()
+        .unwrap()
+        .segments
+        .iter()
+        .filter(|s| s.is_live())
+        .map(|s| s.seg_id)
+        .collect();
+    children.sort_unstable();
+    assert_eq!(children.len(), 2, "a split leaves two live children");
+    // The return value is deliberately not asserted (same race as
+    // execute_split: a livefeed session observing the pending merge
+    // spawns the same resumable resume and may win the completion).
+    let _ = crate::scaler3::execute_merge(
+        &state,
+        &state.raw_adapter_sref("lf7m"),
+        children[0],
+        children[1],
+    )
+    .await;
+    // Await the merged topology.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
+    loop {
+        state.registry.invalidate(&state.raw_adapter_sref("lf7m"));
+        let d = state
+            .registry
+            .get(&state.raw_adapter_sref("lf7m"))
+            .await
+            .unwrap()
+            .unwrap();
+        let done = d.segments.as_ref().is_some_and(|m| {
+            m.pending.is_none() && m.segments.iter().filter(|s| s.is_live()).count() == 1
+        });
+        if done {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "merge did not complete"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+
+    // The same connection continues: the record on the merged segment
+    // arrives, no disconnect, no false terminal.
+    hub_append_lf(addr, "lf7m", r#"{"i":2}"#).await;
+    let (acc2, eof) = hub_sse_collect(&mut sck, 12, |t| {
+        t.contains("\"i\":2") && t.matches("\"upToDate\":true").count() >= 3
+    })
+    .await;
+    assert!(!eof, "a merge must not disconnect the session");
+    let full = format!("{acc0}{acc1}{acc2}");
+    for i in 0..3u64 {
+        let needle = format!("\"i\":{i}}}");
+        assert_eq!(
+            full.matches(&needle).count(),
+            1,
+            "record {i} exactly once across split+merge:\n{full}"
+        );
+    }
+    assert!(
+        !full.contains("\"sealed\":true"),
+        "no false terminal across split+merge:\n{full}"
+    );
+
+    // The head cursor decodes to the merged segment at local 1.
+    state.registry.invalidate(&state.raw_adapter_sref("lf7m"));
+    let desc = state
+        .registry
+        .get(&state.raw_adapter_sref("lf7m"))
+        .await
+        .unwrap()
+        .unwrap();
+    let epoch = desc.epoch_bytes().unwrap();
+    let merged_seg = desc.resolve_segment("").seg_id;
+    let expected = crate::product_cursor::KeyCursor {
+        epoch,
+        key_hash: crate::crypto::stream_hash(""),
+        seg_id: merged_seg,
+        offset: 1,
+    }
+    .encode(&desc.project_id, &skey());
+    assert_eq!(
+        last_next_cursor(&acc2),
+        expected,
+        "the head cursor IS (merged segment, segment-local 1)"
+    );
 }

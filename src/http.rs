@@ -1092,6 +1092,9 @@ async fn debug_load(
             "uncached_publish": crate::sse::auth::sse_stats::FEED_UNCACHED_PUBLISH.load(std::sync::atomic::Ordering::Relaxed),
             "lag_disconnects": crate::sse::auth::sse_stats::FEED_LAG_DISCONNECTS.load(std::sync::atomic::Ordering::Relaxed),
             "topology_disconnects": crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS.load(std::sync::atomic::Ordering::Relaxed),
+            "cutoff_incarnation": crate::sse::auth::sse_stats::FEED_CUTOFF_INCARNATION.load(std::sync::atomic::Ordering::Relaxed),
+            "cutoff_wrong_owner": crate::sse::auth::sse_stats::FEED_CUTOFF_WRONG_OWNER.load(std::sync::atomic::Ordering::Relaxed),
+            "cutoff_incompatible": crate::sse::auth::sse_stats::FEED_CUTOFF_INCOMPATIBLE.load(std::sync::atomic::Ordering::Relaxed),
             "catchup_retries": crate::sse::auth::sse_stats::FEED_CATCHUP_RETRIES.load(std::sync::atomic::Ordering::Relaxed),
             "version_bumps": crate::sse::auth::sse_stats::FEED_VERSION_BUMPS.load(std::sync::atomic::Ordering::Relaxed),
         },
@@ -7763,8 +7766,17 @@ async fn sse_response(
             .is_none_or(|m| m.segments.len() <= 1 && m.pending.is_none())
     {
         let rk_filter = params.key.clone();
+        let src = Arc::new(crate::sse::source::SingleSource {
+            state: state.clone(),
+            rk_filter: rk_filter.clone(),
+            desc: desc.clone(),
+            key: key.clone(),
+            epoch,
+            engine: engine.clone(),
+            handle: handle.clone(),
+        });
         return crate::sse::session::serve(
-            state, desc, key, epoch, handle, engine, start, params, rk_filter, surface, slot,
+            state, desc, key, epoch, src, start, params, rk_filter, surface, slot,
         )
         .await;
     }
@@ -8568,6 +8580,74 @@ async fn read_v3_lineage_inner(
 
     if live == Some("sse") {
         let rk = params.key.clone().unwrap_or_default();
+        // Stage 7A: connect-time product lineage through LiveFeed —
+        // an already-split stream (nothing pending) builds a
+        // LineageSource NOW instead of the legacy lineage streamer.
+        // Raw stays on the legacy path (scalar cursors cannot name
+        // segments; see the raw capability gate in sse/session.rs).
+        if state
+            .sse_engine_livefeed
+            .load(std::sync::atomic::Ordering::Relaxed)
+            && surface == SseSurface::Product
+            && desc.segments.as_ref().is_some_and(|m| m.pending.is_none())
+        {
+            let rk_filter = params.key.clone();
+            match crate::sse::source::LineageSource::build(
+                state.clone(),
+                desc.clone(),
+                key.clone(),
+                epoch,
+                rk_filter.clone(),
+            )
+            .await
+            {
+                Ok(src) => {
+                    // Convert the segment-local cursor into the
+                    // linearized feed cursor space (logicalize — the
+                    // inverse of locate).
+                    use crate::sse::feed::FeedSourceRead as _;
+                    let start = if scan_from == u64::MAX {
+                        StartPos::Now
+                    } else {
+                        let seg = &lineage[pos];
+                        match src.logicalize(crate::sse::feed::WirePosition {
+                            seg_id: seg.seg_id,
+                            local_after: scan_from,
+                        }) {
+                            Some(l) => StartPos::At(l),
+                            None => {
+                                return err_resp(
+                                    StatusCode::BAD_REQUEST,
+                                    "invalid_offset",
+                                    "offset is outside this lineage's readable range",
+                                );
+                            }
+                        }
+                    };
+                    let slot = match sse_acquire(&state) {
+                        Ok(s) => s,
+                        Err(r) => return *r,
+                    };
+                    return crate::sse::session::serve(
+                        state, desc, key, epoch, src, start, params, rk_filter, surface, slot,
+                    )
+                    .await;
+                }
+                Err(e) => {
+                    // Cannot serve the lineage here (wrong owner,
+                    // transient engine failure): the legacy streamer
+                    // has the cross-owner relay and its own retry
+                    // posture — fall back to it.
+                    tracing::warn!(
+                        error = %e,
+                        "livefeed connect-time lineage build failed; serving via legacy lineage streamer"
+                    );
+                    return sse_lineage_response(
+                        state, desc, key, epoch, lineage, pos, scan_from, rk, params, surface,
+                    );
+                }
+            }
+        }
         // #268: single-segment, unfiltered, unforked product SSE rides
         // the shared live hub (SSE_LIVE_HUB=1) — the product dispatch
         // routes ALL :sse here, so this is the hub's real front door;

@@ -38,6 +38,10 @@ pub(crate) mod sse_stats {
     /// transition did not settle in bounds, or a raw session met a
     /// source swap (Stage 6 typed disconnect-and-resume).
     pub static FEED_TOPOLOGY_DISCONNECTS: AtomicU64 = AtomicU64::new(0);
+    /// Typed source cutoffs by reason (Stage 7 canary telemetry).
+    pub static FEED_CUTOFF_INCARNATION: AtomicU64 = AtomicU64::new(0);
+    pub static FEED_CUTOFF_WRONG_OWNER: AtomicU64 = AtomicU64::new(0);
+    pub static FEED_CUTOFF_INCOMPATIBLE: AtomicU64 = AtomicU64::new(0);
     /// Initial-handoff durable re-catch-ups (the ring overtook a
     /// session that had not reached live yet — NOT a disconnect).
     pub static FEED_CATCHUP_RETRIES: AtomicU64 = AtomicU64::new(0);
