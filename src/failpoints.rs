@@ -65,10 +65,11 @@ pub enum Fp {
     SseFeedAfterSubscribe,
     SseFeedBeforeDrive,
     SseFeedBeforeSubscribe,
+    SseBeforeSend,
 }
 
 impl Fp {
-    pub const ALL: [Fp; 22] = [
+    pub const ALL: [Fp; 23] = [
         Fp::StopAfterTombstone,
         Fp::StopBeforeMarkCommitted,
         Fp::StopAfterSealIntent,
@@ -91,6 +92,7 @@ impl Fp {
         Fp::SseFeedAfterSubscribe,
         Fp::SseFeedBeforeDrive,
         Fp::SseFeedBeforeSubscribe,
+        Fp::SseBeforeSend,
     ];
 
     /// The site contract: WHERE the point fires, stated as the
@@ -176,6 +178,12 @@ impl Fp {
                  BEFORE the atomic registry attach — the exact window \
                  in which a feed can swap generations between the two \
                  checks (raw compatibility gate, round 5)"
+            }
+            Fp::SseBeforeSend => {
+                "sse producer: parked BEFORE the next data-frame send \
+                 — lets an authorization-cutoff test revoke while the \
+                 producer is held, then prove ZERO post-cutoff frames \
+                 are yielded (CI residue-bound flake class)"
             }
         }
     }

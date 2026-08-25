@@ -24240,7 +24240,7 @@ async fn a_bounded_cleanup_drains_residue_without_touching_the_live_generation()
 #[test]
 fn failpoint_registry_is_enumerable_and_described() {
     use crate::failpoints::Fp;
-    assert_eq!(Fp::ALL.len(), 22);
+    assert_eq!(Fp::ALL.len(), 23);
     for fp in Fp::ALL {
         assert!(!fp.site().is_empty(), "{fp:?} has no site contract");
     }
@@ -32213,47 +32213,47 @@ async fn off_mode_subscriptions_are_untouched_by_staleness() {
 // ------------------------------------------------------------------
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn revocation_interrupts_active_hub_delivery_and_drops_queued_frames() {
-    use tokio::io::AsyncReadExt;
-    let (svc, _state, addr) = auth_rig("proj-rv1", "ws_rv", &["c1", "c2"], None).await;
+    // DETERMINISTIC cutoff leg (replaces the timing-dependent TCP
+    // residue bound that flaked CI): the producer parks at the send
+    // failpoint with a queued frame in hand, the credential is
+    // revoked, and the resumed producer must yield ZERO post-cutoff
+    // frames.
+    let (svc, state, addr) = auth_rig("proj-rv1", "ws_rv", &["c1", "c2"], None).await;
     let tok1 = mint_token("c1", "proj-rv1", "ws_rv", 1, 1, "r1", 600);
     let tok2 = mint_token("c2", "proj-rv1", "ws_rv", 1, 1, "r2", 600);
+    // Promote-at-one: the SINGLE test subscriber rides a hub, so
+    // exactly ONE producer exists to park at the failpoint. A separate
+    // promoter connection would also prepare the trigger frame, and
+    // waiting for one arrival could attribute the park to the promoter
+    // while the sub's producer sends pre-cutoff (TCP residue — the
+    // flake class this rewrite removes).
+    state
+        .hub_promote_at
+        .store(1, std::sync::atomic::Ordering::Relaxed);
     rig_create(addr, "rv1", &tok1).await;
-    // 200 x 16 KiB backlog BEFORE subscribing: the catch-up is a long
-    // inner send loop.
-    // 96 KiB frames: macOS loopback autotunes the server send buffer
-    // to ~0.5 MB, so already-written bytes on resume are <= ~5 frames
-    // (with 16 KiB frames they were ~30 and swamped the yield bound);
-    // larger frames trip admission on the burst (429).
-    let pad = "x".repeat(96 * 1024);
-    for i in 0..40 {
-        rig_append_retry(addr, "rv1", &tok1, &format!(r#"{{"i":{i},"pad":"{pad}"}}"#)).await;
+    for i in 0..4 {
+        rig_append_retry(addr, "rv1", &tok1, &format!(r#"{{"i":{i}}}"#)).await;
     }
-    // Promoter parks at the tail (direct); the test subscriber joins
-    // from the start and rides the hub's durable catch-up.
-    let mut promoter = rig_sse(addr, "rv1", &tok1, "?cursor=now", None).await;
-    let (a, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;
-    assert!(a.contains("upToDate"));
-    let mut sub = rig_sse(addr, "rv1", &tok1, "", Some(8192)).await;
-    // Read until TWO records arrived, then stall (tiny rcvbuf => the
-    // producer blocks in sse_send within a few frames).
-    let mut buf = vec![0u8; 4096];
-    let mut acc = String::new();
-    let t0 = std::time::Instant::now();
-    while data_frames(&acc) < 2 && t0.elapsed().as_secs() < 10 {
-        let n = sub.read(&mut buf).await.unwrap();
-        if n == 0 {
-            break;
-        }
-        acc.push_str(&String::from_utf8_lossy(&buf[..n]));
-    }
-    assert!(
-        data_frames(&acc) >= 2,
-        "catch-up started:\n{}",
-        &acc[..acc.len().min(300)]
+    let mut sub = rig_sse(addr, "rv1", &tok1, "", None).await;
+    let (acc, _) = hub_sse_collect(&mut sub, 8, |t| t.contains("upToDate")).await;
+    assert!(data_frames(&acc) >= 2, "catch-up delivered:\n{acc}");
+
+    // The producer is now PROVABLY parked at the tail (it emitted
+    // upToDate) — arming here cannot be raced by an in-flight
+    // catch-up, unlike arming at an unknown producer position (the
+    // round-8 suite flake: a fast producer drained the whole backlog
+    // before the arm and never returned to a send). The next append
+    // forces the very next send through the failpoint.
+    crate::failpoints::arm(crate::failpoints::Fp::SseBeforeSend, "rv1");
+    assert_eq!(
+        rig_append(addr, "rv1", &tok1, r#"{"TRIGGER":0}"#).await,
+        200
     );
-    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+    wait_parked(crate::failpoints::Fp::SseBeforeSend, "rv1", 1).await;
+
     // CUTOFF: revoke c1 (c2 stays valid), then land post-cutoff markers
-    // with c2 — none may ever reach the revoked subscriber.
+    // with c2 — neither the queued trigger frame nor any marker may
+    // ever reach the revoked subscriber.
     rig_publish_grants(
         &svc,
         "proj-rv1",
@@ -32270,58 +32270,49 @@ async fn revocation_interrupts_active_hub_delivery_and_drops_queued_frames() {
             200
         );
     }
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
-    // Resume reading: the body must end promptly; frames that were
-    // already in kernel buffers are unavoidable (bounded small), but
-    // the producer/body must not keep feeding the revoked client.
+
+    // Resume the producer: the per-frame body gate refuses every
+    // queued frame — the client sees NOTHING further, then EOF.
+    crate::failpoints::release(crate::failpoints::Fp::SseBeforeSend, "rv1");
     let (after, eof) = hub_sse_collect(&mut sub, 15, |_| false).await;
-    let frames_after = data_frames(&after);
-    assert!(
-        !after.contains("MARKER"),
-        "post-cutoff records reached a revoked subscriber:\n{}",
-        &after[after.len().saturating_sub(400)..]
+    assert!(eof, "revoked subscription must terminate");
+    assert_eq!(
+        data_frames(&after),
+        0,
+        "ZERO post-cutoff frames may be yielded:\n{after}"
     );
-    assert!(eof, "revoked subscription must terminate within the bound");
-    // Residue = bytes hyper had ALREADY written before the cutoff
-    // (kernel send+recv buffers, ~0.5-1 MB on loopback => <= ~10
-    // frames at 96 KiB). The body gate guarantees no further YIELDS;
-    // the bound pins that the producer stopped too.
     assert!(
-        frames_after <= 12,
-        "delivery continued after revocation: {frames_after} frames after the cutoff"
+        !after.contains("MARKER") && !after.contains("TRIGGER"),
+        "post-cutoff records reached a revoked subscriber:\n{after}"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn revocation_interrupts_active_direct_delivery() {
-    use tokio::io::AsyncReadExt;
+    // Same deterministic interleaving as the hub leg, on the DIRECT
+    // producer path.
     let (svc, _state, addr) = auth_rig("proj-rv2", "ws_rv", &["c1", "c2"], None).await;
     let tok1 = mint_token("c1", "proj-rv2", "ws_rv", 1, 1, "d1", 600);
     let tok2 = mint_token("c2", "proj-rv2", "ws_rv", 1, 1, "d2", 600);
     rig_create(addr, "rv2", &tok1).await;
-    // 96 KiB frames: macOS loopback autotunes the server send buffer
-    // to ~0.5 MB, so already-written bytes on resume are <= ~5 frames
-    // (with 16 KiB frames they were ~30 and swamped the yield bound);
-    // larger frames trip admission on the burst (429).
-    let pad = "x".repeat(96 * 1024);
-    for i in 0..40 {
-        rig_append_retry(addr, "rv2", &tok1, &format!(r#"{{"i":{i},"pad":"{pad}"}}"#)).await;
+    for i in 0..4 {
+        rig_append_retry(addr, "rv2", &tok1, &format!(r#"{{"i":{i}}}"#)).await;
     }
-    // Single subscriber from the start = the DIRECT path's large
-    // catch-up read budget.
-    let mut sub = rig_sse(addr, "rv2", &tok1, "", Some(8192)).await;
-    let mut buf = vec![0u8; 4096];
-    let mut acc = String::new();
-    let t0 = std::time::Instant::now();
-    while data_frames(&acc) < 2 && t0.elapsed().as_secs() < 10 {
-        let n = sub.read(&mut buf).await.unwrap();
-        if n == 0 {
-            break;
-        }
-        acc.push_str(&String::from_utf8_lossy(&buf[..n]));
-    }
-    assert!(data_frames(&acc) >= 2, "catch-up started");
-    tokio::time::sleep(std::time::Duration::from_millis(2500)).await;
+    // Single subscriber from the start = the DIRECT path.
+    let mut sub = rig_sse(addr, "rv2", &tok1, "", None).await;
+    let (acc, _) = hub_sse_collect(&mut sub, 8, |t| t.contains("upToDate")).await;
+    assert!(data_frames(&acc) >= 2, "catch-up delivered:\n{acc}");
+
+    // Producer provably parked at the tail (upToDate emitted): arm,
+    // then force the next send through the failpoint with a trigger
+    // append (same discipline as the hub leg).
+    crate::failpoints::arm(crate::failpoints::Fp::SseBeforeSend, "rv2");
+    assert_eq!(
+        rig_append(addr, "rv2", &tok1, r#"{"TRIGGER":0}"#).await,
+        200
+    );
+    wait_parked(crate::failpoints::Fp::SseBeforeSend, "rv2", 1).await;
+
     rig_publish_grants(
         &svc,
         "proj-rv2",
@@ -32338,63 +32329,218 @@ async fn revocation_interrupts_active_direct_delivery() {
             200
         );
     }
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    crate::failpoints::release(crate::failpoints::Fp::SseBeforeSend, "rv2");
     let (after, eof) = hub_sse_collect(&mut sub, 15, |_| false).await;
-    assert!(
-        !after.contains("MARKER"),
-        "post-cutoff records reached a revoked direct subscriber"
+    assert!(eof, "revoked direct subscription must terminate");
+    assert_eq!(
+        data_frames(&after),
+        0,
+        "ZERO post-cutoff frames may be yielded:\n{after}"
     );
     assert!(
-        eof,
-        "revoked direct subscription must terminate within the bound"
-    );
-    // Same TCP-residue bound as the hub leg.
-    assert!(
-        data_frames(&after) <= 12,
-        "direct delivery continued after revocation: {} frames",
-        data_frames(&after)
+        !after.contains("MARKER") && !after.contains("TRIGGER"),
+        "post-cutoff records reached a revoked direct subscriber:\n{after}"
     );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn token_expiry_interrupts_slowly_progressing_delivery() {
-    use tokio::io::AsyncReadExt;
     // LEASE_TERMINATIONS is process-global; serialize with the other
     // expiry tests that move it (gap_lock convention).
     let _serial = gap_lock().lock().await;
     let (_svc, _state, addr) = auth_rig("proj-ex1", "ws_ex", &["c1"], None).await;
-    // Expires in 6 s; the backlog takes far longer to drain at the
-    // client's deliberately slow pace.
-    let tok = mint_token("c1", "proj-ex1", "ws_ex", 1, 1, "e1", 6);
-    rig_create(addr, "ex1", &tok).await;
-    // 96 KiB frames: macOS loopback autotunes the server send buffer
-    // to ~0.5 MB, so already-written bytes on resume are <= ~5 frames
-    // (with 16 KiB frames they were ~30 and swamped the yield bound);
-    // larger frames trip admission on the burst (429).
-    let pad = "x".repeat(96 * 1024);
-    for i in 0..40 {
-        rig_append_retry(addr, "ex1", &tok, &format!(r#"{{"i":{i},"pad":"{pad}"}}"#)).await;
+    // Setup (create, backlog, trigger) rides a LONG-lived token; only
+    // the SUBSCRIPTION's lease is short (5 s) — the timing-sensitive
+    // window is just connect + catch-up, not the whole rig setup on a
+    // loaded runner. The producer is then parked at the send
+    // failpoint PAST the lease's expiry.
+    let tok_setup = mint_token("c1", "proj-ex1", "ws_ex", 1, 1, "e0", 600);
+    rig_create(addr, "ex1", &tok_setup).await;
+    for i in 0..4 {
+        rig_append_retry(addr, "ex1", &tok_setup, &format!(r#"{{"i":{i}}}"#)).await;
     }
-    let exp_at = std::time::Instant::now() + std::time::Duration::from_secs(6);
-    let mut sub = rig_sse(addr, "ex1", &tok, "", Some(8192)).await;
-    // Continuous SLOW progress until expiry: one small read every
-    // 400 ms keeps each queue send completing inside its 10 s timeout.
-    let mut buf = vec![0u8; 2048];
-    while std::time::Instant::now() < exp_at {
-        let _ = tokio::time::timeout(std::time::Duration::from_secs(3), sub.read(&mut buf)).await;
-        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
-    }
-    // Past expiry: drain at full speed. The server keeps the TCP
-    // connection alive after the body ends, so "ended" is the chunked
-    // terminator (hub_sse_collect understands it), not TCP close.
-    tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let tok = mint_token("c1", "proj-ex1", "ws_ex", 1, 1, "e1", 5);
+    let mut sub = rig_sse(addr, "ex1", &tok, "", None).await;
+    let (acc, _) = hub_sse_collect(&mut sub, 8, |t| t.contains("upToDate")).await;
+    assert!(data_frames(&acc) >= 2, "catch-up delivered:\n{acc}");
+
+    // Producer provably parked at the tail: arm, force the next send
+    // into the failpoint, and let the lease expire while it is held.
+    crate::failpoints::arm(crate::failpoints::Fp::SseBeforeSend, "ex1");
+    assert_eq!(
+        rig_append(addr, "ex1", &tok_setup, r#"{"TRIGGER":0}"#).await,
+        200
+    );
+    wait_parked(crate::failpoints::Fp::SseBeforeSend, "ex1", 1).await;
+    tokio::time::sleep(std::time::Duration::from_secs(6)).await;
+
+    // Resume PAST expiry: the body gate refuses every queued frame —
+    // the client sees NOTHING further, then the chunked terminator.
+    crate::failpoints::release(crate::failpoints::Fp::SseBeforeSend, "ex1");
     let (after, eof) = hub_sse_collect(&mut sub, 12, |_| false).await;
-    let frames_after_exp = data_frames(&after);
     assert!(eof, "expired token must end a slowly progressing delivery");
-    // TCP-residue bound (see the revocation legs).
+    assert_eq!(
+        data_frames(&after),
+        0,
+        "ZERO post-expiry frames may be yielded:\n{after}"
+    );
+}
+
+/// Round-8 review blocker 1, SHARED-feed leg: two LiveFeed
+/// subscribers on ONE shared feed, both parked at the send failpoint
+/// with the trigger frame in hand; ONE credential is revoked. The
+/// revoked subscriber yields ZERO post-cutoff frames and terminates;
+/// the survivor receives every record exactly once and stays open —
+/// the body gate is PER SUBSCRIBER, not per feed.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_shared_feed_revocation_gates_one_subscriber_only() {
+    let (svc, state, addr) = auth_rig("proj-rv3", "ws_rv", &["c1", "c2"], None).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let tok1 = mint_token("c1", "proj-rv3", "ws_rv", 1, 1, "s1", 600);
+    let tok2 = mint_token("c2", "proj-rv3", "ws_rv", 1, 1, "s2", 600);
+    rig_create(addr, "rv3", &tok1).await;
+    for i in 0..2 {
+        rig_append_retry(addr, "rv3", &tok1, &format!(r#"{{"i":{i}}}"#)).await;
+    }
+    let mut sub_a = rig_sse(addr, "rv3", &tok1, "", None).await;
+    let (acc_a, _) = hub_sse_collect(&mut sub_a, 8, |t| t.contains("upToDate")).await;
+    assert!(data_frames(&acc_a) >= 2, "A catch-up delivered:\n{acc_a}");
+    let mut sub_b = rig_sse(addr, "rv3", &tok2, "", None).await;
+    let (acc_b, _) = hub_sse_collect(&mut sub_b, 8, |t| t.contains("upToDate")).await;
+    assert!(data_frames(&acc_b) >= 2, "B catch-up delivered:\n{acc_b}");
+
+    // Both PROVABLY parked at the tail: arm, then force BOTH sessions'
+    // next send into the failpoint with one trigger append.
+    crate::failpoints::arm(crate::failpoints::Fp::SseBeforeSend, "rv3");
+    assert_eq!(
+        rig_append(addr, "rv3", &tok2, r#"{"TRIGGER":0}"#).await,
+        200
+    );
+    wait_parked(crate::failpoints::Fp::SseBeforeSend, "rv3", 2).await;
+
+    // Revoke c1 ONLY, land post-cutoff markers with c2, resume.
+    rig_publish_grants(
+        &svc,
+        "proj-rv3",
+        &[
+            ("c1", crate::project_policy::CredentialStatus::Revoked, 2),
+            ("c2", crate::project_policy::CredentialStatus::Active, 1),
+        ],
+        2,
+    )
+    .unwrap();
+    for m in 0..2 {
+        assert_eq!(
+            rig_append(addr, "rv3", &tok2, &format!(r#"{{"MARKER":{m}}}"#)).await,
+            200
+        );
+    }
+    crate::failpoints::release(crate::failpoints::Fp::SseBeforeSend, "rv3");
+
+    // A (revoked): zero frames, EOF.
+    let (after_a, eof_a) = hub_sse_collect(&mut sub_a, 15, |_| false).await;
+    assert!(eof_a, "revoked shared subscriber must terminate");
+    assert_eq!(
+        data_frames(&after_a),
+        0,
+        "ZERO post-cutoff frames on the revoked subscriber:\n{after_a}"
+    );
     assert!(
-        frames_after_exp <= 12,
-        "delivery continued well past token expiry: {frames_after_exp} frames"
+        !after_a.contains("TRIGGER") && !after_a.contains("MARKER"),
+        "post-cutoff records reached the revoked subscriber:\n{after_a}"
+    );
+    // B (active): trigger + both markers exactly once, connection open.
+    let (after_b, eof_b) = hub_sse_collect(&mut sub_b, 10, |t| t.contains("\"MARKER\":1")).await;
+    assert!(!eof_b, "the survivor must stay open:\n{after_b}");
+    for needle in ["\"TRIGGER\":0", "\"MARKER\":0", "\"MARKER\":1"] {
+        assert_eq!(
+            after_b.matches(needle).count(),
+            1,
+            "survivor receives {needle} exactly once:\n{after_b}"
+        );
+    }
+}
+
+/// Round-8 review blocker 1, MID-SUBSCRIPTION SOURCE-SWAP leg: the
+/// subscriber rides a split in place (source generation +1), parks at
+/// the send failpoint with a successor-segment frame in hand, and is
+/// revoked. Zero post-cutoff frames, no fabricated terminal, EOF —
+/// the swapped source must not carry an outdated authorization
+/// binding past the cutoff.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_source_swap_revocation_yields_zero_post_cutoff_frames() {
+    let (svc, state, addr) = auth_rig("proj-rv4", "ws_rv", &["c1", "c2"], None).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let tok1 = mint_token("c1", "proj-rv4", "ws_rv", 1, 1, "w1", 600);
+    let tok2 = mint_token("c2", "proj-rv4", "ws_rv", 1, 1, "w2", 600);
+    rig_create(addr, "rv4", &tok1).await;
+    for i in 0..2 {
+        rig_append_retry(addr, "rv4", &tok1, &format!(r#"{{"i":{i}}}"#)).await;
+    }
+    let mut sub = rig_sse(addr, "rv4", &tok1, "", None).await;
+    let (acc, _) = hub_sse_collect(&mut sub, 8, |t| t.contains("upToDate")).await;
+    assert!(data_frames(&acc) >= 2, "catch-up delivered:\n{acc}");
+
+    // Split while parked: the session continues in place on the
+    // successor source (mid-subscription swap). The stream lives under
+    // the TOKEN's project, so the split targets the project-scoped
+    // sref (split_and_await's raw-adapter sref names a different
+    // tenant).
+    let sref = crate::tenant::ProjectId::new("proj-rv4")
+        .unwrap()
+        .stream_ref("rv4");
+    let _ = crate::scaler3::execute_split(&state, &sref, 0, 0x8000_0000_0000_0000).await;
+    for _ in 0..200 {
+        state.registry.invalidate(&sref);
+        let d = state.registry.get(&sref).await.unwrap().unwrap();
+        if d.segments
+            .as_ref()
+            .is_some_and(|m| m.pending.is_none() && m.segments.len() > 1)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    // Park the next send: the trigger lands on the SUCCESSOR segment.
+    crate::failpoints::arm(crate::failpoints::Fp::SseBeforeSend, "rv4");
+    assert_eq!(
+        rig_append(addr, "rv4", &tok2, r#"{"TRIGGER":0}"#).await,
+        200
+    );
+    wait_parked(crate::failpoints::Fp::SseBeforeSend, "rv4", 1).await;
+
+    rig_publish_grants(
+        &svc,
+        "proj-rv4",
+        &[
+            ("c1", crate::project_policy::CredentialStatus::Revoked, 2),
+            ("c2", crate::project_policy::CredentialStatus::Active, 1),
+        ],
+        2,
+    )
+    .unwrap();
+    assert_eq!(rig_append(addr, "rv4", &tok2, r#"{"MARKER":0}"#).await, 200);
+    crate::failpoints::release(crate::failpoints::Fp::SseBeforeSend, "rv4");
+
+    let (after, eof) = hub_sse_collect(&mut sub, 15, |_| false).await;
+    assert!(eof, "revoked post-swap subscription must terminate");
+    assert_eq!(
+        data_frames(&after),
+        0,
+        "ZERO post-cutoff frames after the source swap:\n{after}"
+    );
+    assert!(
+        !after.contains("TRIGGER") && !after.contains("MARKER"),
+        "post-cutoff successor records reached a revoked subscriber:\n{after}"
+    );
+    assert!(
+        !after.contains("\"sealed\":true"),
+        "a cutoff must never fabricate a terminal control:\n{after}"
     );
 }
 
@@ -34684,10 +34830,7 @@ async fn livefeed_split_parked_subscriber_continues_in_place() {
 
     // Successor records flow on the SAME connection.
     hub_append_lf(addr, "lfs", r#"{"s":1}"#).await;
-    let (acc1, eof1) = hub_sse_collect(&mut sck, 10, |t| {
-        t.contains("\"s\":1") && t.matches("\"upToDate\":true").count() >= 2
-    })
-    .await;
+    let (acc1, eof1) = hub_sse_collect(&mut sck, 10, |t| lf_record_and_status(t, "\"s\":1")).await;
     assert!(
         !eof1,
         "a split must NOT disconnect a product livefeed session:\n{acc1}"
@@ -34709,12 +34852,108 @@ async fn livefeed_split_parked_subscriber_continues_in_place() {
     )
     .await;
     assert_eq!(st, 200);
-    let (tail, eof2) = hub_sse_collect(&mut sck, 15, |_| false).await;
+    // 30s, matching the seal-gap rigs: loaded CI runners take
+    // multiples of a laptop through engine-open + heartbeat paths; the
+    // deadline exists to catch a REAL wedge, not to race the scheduler.
+    let (tail, eof2) = hub_sse_collect(&mut sck, 30, |_| false).await;
     assert!(eof2, "EOF after the genuine seal");
     assert_eq!(
         tail.matches("\"sealed\":true").count(),
         1,
         "exactly one terminal control after the split:\n{tail}"
+    );
+}
+
+/// The seal's two-step window, held open DETERMINISTICALLY (the
+/// suite-wedge class this round root-caused): step 2 closes the live
+/// segment — firing the handle notify the parked session consumes —
+/// while step 3 (the Sealed publication) is withheld at the crash
+/// boundary. The woken session drives against the pre-publication
+/// topology (RetryLater, no version bump) and the publication itself
+/// touches no feed state, so ONLY the session's own bounded re-drive
+/// can deliver the terminal: with a dead heartbeat ticker and the
+/// 3600-s no-lease nap, the pre-fix park wedged forever.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_seal_publication_race_converges_without_heartbeat() {
+    let _serial = gap_lock().lock().await; // global failpoint registry
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lfsr",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append_lf(addr, "lfsr", r#"{"s":0}"#).await;
+    let mut sck = lf_connect(addr, "lfsr", "").await;
+    let (acc0, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    assert!(acc0.contains("\"s\":0"), "backlog:\n{acc0}");
+    split_and_await(&state, "lfsr", 0).await;
+    hub_append_lf(addr, "lfsr", r#"{"s":1}"#).await;
+    let (acc1, eof1) = hub_sse_collect(&mut sck, 10, |t| lf_record_and_status(t, "\"s\":1")).await;
+    assert!(!eof1, "the split must not disconnect:\n{acc1}");
+
+    // Hold the seal at the crash boundary: segment closes durable
+    // (notify fires; the parked session wakes into the withheld
+    // window), Sealed publication withheld.
+    crate::failpoints::stop_before_sealed_publish("lfsr");
+    let (st, _, body) = preq(
+        addr,
+        "POST",
+        "/v1/streams/lfsr:seal",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{}",
+    )
+    .await;
+    let text = String::from_utf8_lossy(&body);
+    assert!(
+        st == 500 || st == 503,
+        "the interruption must answer retryable failure: {st} {text}"
+    );
+    // No false terminal, no EOF while the publication is withheld.
+    let (mid, eof_mid) = hub_sse_collect(&mut sck, 2, |_| false).await;
+    assert!(!eof_mid, "no EOF while the publication is withheld:\n{mid}");
+    assert!(
+        !mid.contains("\"sealed\":true"),
+        "no false terminal in the withheld window:\n{mid}"
+    );
+
+    // Release and complete the seal. NOTHING wakes the feed for this
+    // publication — the terminal must arrive through the session's
+    // bounded re-drive, well under the 15-s heartbeat.
+    crate::failpoints::stop_before_sealed_publish_off("lfsr");
+    let (st, _, body) = preq(
+        addr,
+        "POST",
+        "/v1/streams/lfsr:seal",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{}",
+    )
+    .await;
+    assert_eq!(
+        st,
+        200,
+        "retry must complete the seal: {}",
+        String::from_utf8_lossy(&body)
+    );
+    let t0 = std::time::Instant::now();
+    let (tail, eof) = hub_sse_collect(&mut sck, 10, |_| false).await;
+    assert!(eof, "EOF after the released seal:\n{tail}");
+    assert!(
+        t0.elapsed() < std::time::Duration::from_secs(8),
+        "the terminal must arrive by bounded re-drive, not a heartbeat rescue ({:?})",
+        t0.elapsed()
+    );
+    assert_eq!(
+        tail.matches("\"sealed\":true").count(),
+        1,
+        "exactly one terminal control:\n{tail}"
     );
 }
 
@@ -35034,6 +35273,17 @@ fn last_next_cursor(t: &str) -> String {
     rest.split('"').next().expect("cursor value").to_string()
 }
 
+/// LiveFeed collect stop: the successor record arrived AND the
+/// standalone status control after it. LiveFeed record controls are
+/// BARE (no flags) — a stop condition counting per-record `upToDate`
+/// flags matches the LEGACY hub shape only and burns its entire
+/// deadline on the LiveFeed engine (30 s of idle collect per
+/// subscriber is exactly where loaded CI runners breed flakes).
+fn lf_record_and_status(t: &str, needle: &str) -> bool {
+    t.find(needle)
+        .is_some_and(|at| t[at..].contains("\"upToDate\":true"))
+}
+
 /// Round-4 blocker 1 (red): the cursor emitted after a split must
 /// name the successor segment AND the SEGMENT-LOCAL offset — and it
 /// must be usable to resume with no gap and no duplicate.
@@ -35063,10 +35313,7 @@ async fn livefeed_split_cursor_decodes_to_segment_local_and_resumes() {
     split_and_await(&state, "lfcur", 0).await;
     // The FIRST child record (child-local offset 0).
     hub_append_lf(addr, "lfcur", r#"{"i":5}"#).await;
-    let (acc1, _) = hub_sse_collect(&mut sck, 10, |t| {
-        t.contains("\"i\":5") && t.matches("\"upToDate\":true").count() >= 2
-    })
-    .await;
+    let (acc1, _) = hub_sse_collect(&mut sck, 10, |t| lf_record_and_status(t, "\"i\":5")).await;
     assert!(acc1.contains("\"i\":5"), "successor record:\n{acc1}");
 
     // Decode the cursor at the head: it must be (child, 1) — the
@@ -35141,11 +35388,42 @@ async fn livefeed_split_shared_subscribers_swap_once_deliver_twice() {
 
     let mut curs = Vec::new();
     for (n, s) in [(1, &mut sub1), (2, &mut sub2)] {
-        let (acc, eof) = hub_sse_collect(s, 10, |t| {
-            t.contains("\"i\":1") && t.matches("\"upToDate\":true").count() >= 2
-        })
-        .await;
-        assert!(!eof, "sub{n} must not disconnect across the split");
+        let (acc, eof) = hub_sse_collect(s, 30, |t| lf_record_and_status(t, "\"i\":1")).await;
+        if eof {
+            let topo = crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let lag = crate::sse::auth::sse_stats::FEED_LAG_DISCONNECTS
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let srcf = crate::sse::auth::sse_stats::FEED_SOURCE_FAILED
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let retries = crate::sse::auth::sse_stats::FEED_CATCHUP_RETRIES
+                .load(std::sync::atomic::Ordering::Relaxed);
+            let feed_state = state
+                .live_feeds
+                .feed_for_test(&crate::sse::session::feed_key_of(
+                    &state
+                        .registry
+                        .get(&state.raw_adapter_sref("lfsh"))
+                        .await
+                        .unwrap()
+                        .unwrap(),
+                    &Some(String::new()),
+                ))
+                .map(|f| {
+                    format!(
+                        "subs={} head={} floor={} gen={} retained={}",
+                        f.subscriber_count(),
+                        f.head(),
+                        f.floor(),
+                        f.source_snapshot().generation,
+                        f.retained()
+                    )
+                })
+                .unwrap_or_else(|| "feed-gone".to_string());
+            panic!(
+                "sub{n} disconnected across the split: topo={topo} lag={lag} srcfailed={srcf} retries={retries} feed[{feed_state}]"
+            );
+        }
         assert_eq!(
             acc.matches("\"i\":1").count(),
             1,
@@ -36065,5 +36343,69 @@ async fn livefeed_merge_continuation_in_place() {
         last_next_cursor(&acc2),
         expected,
         "the head cursor IS (merged segment, segment-local 1)"
+    );
+}
+
+/// Stage 7A static-concern red leg: a feed that EXISTS from before a
+/// split must not hand a new subscriber a stale frontier. `cursor=now`
+/// binds to the RECONCILED source — records durable before the
+/// subscribe are never delivered under "now".
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_cursor_now_uses_the_reconciled_source() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lfnow",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append_lf(addr, "lfnow", r#"{"i":0}"#).await;
+    let mut sub1 = lf_connect(addr, "lfnow", "").await;
+    let (_, _) = hub_sse_collect(&mut sub1, 8, |t| t.contains("upToDate")).await;
+
+    // Freeze the existing subscriber's drive so the feed stays at the
+    // PRE-SPLIT source (generation 0, frontier 1) across the split.
+    crate::failpoints::arm(crate::failpoints::Fp::SseFeedBeforeDrive, "lfnow");
+    split_and_await(&state, "lfnow", 0).await;
+    // A successor record becomes durable while the feed is stale.
+    hub_append_lf(addr, "lfnow", r#"{"i":1}"#).await;
+
+    // A second client connects with cursor=now against the CURRENT
+    // descriptor: reconcile must install the lineage BEFORE its join
+    // state is captured, so "now" = the successor tail (2), never the
+    // stale parent frontier (1).
+    let mut sub2 = lf_connect(addr, "lfnow", "?cursor=now").await;
+    let (acc0, _) = hub_sse_collect(&mut sub2, 6, |t| t.contains("upToDate")).await;
+    assert!(
+        !acc0.contains("\"i\":1"),
+        "cursor=now must not deliver the pre-subscribe successor record:\n{acc0}"
+    );
+
+    // Unfreeze the drive failpoint (the first subscriber now swaps
+    // and drains; its drain batch ends AT the second subscriber's
+    // cursor and is correctly skipped).
+    crate::failpoints::release(crate::failpoints::Fp::SseFeedBeforeDrive, "lfnow");
+
+    // Only records written AFTER the subscribe arrive.
+    hub_append_lf(addr, "lfnow", r#"{"i":2}"#).await;
+    let (acc2, _) = hub_sse_collect(&mut sub2, 10, |t| t.contains("\"i\":2")).await;
+    assert!(acc2.contains("\"i\":2"), "the new record arrives:\n{acc2}");
+    assert!(
+        !acc2.contains("\"i\":1"),
+        "still no pre-subscribe record:\n{acc2}"
+    );
+
+    // The first subscriber drains the whole lineage.
+    let (acc1, _) = hub_sse_collect(&mut sub1, 10, |t| t.contains("\"i\":2")).await;
+    assert!(
+        acc1.contains("\"i\":1") && acc1.contains("\"i\":2"),
+        "the parked subscriber drains the whole lineage:\n{acc1}"
     );
 }

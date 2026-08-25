@@ -1,8 +1,8 @@
-# Engine-matrix exclusions (docs/LIVE-FEED-PLAN.md §Stage 7B): tests
-# that pin LiveHub MECHANICS — irrelevant under the livefeed engine
-# (the livefeed gate bypasses hub formation). One test name per line;
-# consumed by the livefeed-matrix CI job. This list must reach ZERO
-# before legacy deletion.
+# Engine-matrix exclusions. One test name per line; consumed by the
+# livefeed-matrix CI job. NOT all of these are mere hub-mechanics
+# pins: the per-test classification (reason / replacement / removal
+# condition) lives in docs/LIVE-FEED-PLAN.md §Stage 7B. This list
+# must reach ZERO before legacy deletion.
 hub_catchup_conveys_up_to_date
 hub_delayed_reader_lands_on_the_current_scan_head
 hub_empty_seal_single_final_control

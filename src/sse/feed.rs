@@ -418,6 +418,23 @@ impl LiveFeed {
         true
     }
 
+    /// Subscribe-time reconciliation (Stage 7A static concern): a feed
+    /// that exists from BEFORE a topology change must not hand a new
+    /// subscriber a stale source. The REQUESTED source — built from
+    /// the current descriptor — is installed when it is a strictly
+    /// longer compatible extension of the current one; anything else
+    /// keeps the existing source (the feed's own refresh converges).
+    /// Called under the registry lock, BEFORE the join state is
+    /// captured, so `join_head`/generation/`now` all bind to the
+    /// reconciled source.
+    pub(crate) fn reconcile_locked(&self, requested: &Arc<dyn FeedSourceRead>) {
+        let cur_sig = self.current_source().span_sig();
+        let req_sig = requested.span_sig();
+        if req_sig.len() > cur_sig.len() && sig_compatible(&cur_sig, &req_sig) {
+            self.install_source(requested.clone());
+        }
+    }
+
     pub(crate) fn subscriber_count(&self) -> u64 {
         self.subscribers.load(Ordering::SeqCst)
     }

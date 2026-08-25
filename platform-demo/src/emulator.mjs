@@ -445,10 +445,29 @@ const server = http.createServer(async (req, res) => {
           // ownership_version.
           const p = projects.get(body.project);
           if (!p) return json(res, 404, { error: "unknown project" });
+          p.prev_workspace ??= p.workspace_id;
           p.workspace_id = body.toWorkspace ?? `${p.workspace_id}-hostile`;
           p.ppv += 1;
           project();
           return json(res, 200, { fault: "workspace-swap-no-bump", project: body.project, workspace_id: p.workspace_id, ownership_version: p.ov });
+        }
+        case "workspace-restore": {
+          // Undo the hostile swap LEGITIMATELY: workspace back to the
+          // remembered owner WITH an ownership_version increment, so
+          // the next publication is acceptable to the cell. Without a
+          // restore the emulator keeps publishing the unbumped hostile
+          // workspace forever — the cell refuses every later snapshot
+          // and every later-minted token for the project carries the
+          // hostile workspace (the battery's 401/workspace_mismatch
+          // contamination class).
+          const p = projects.get(body.project);
+          if (!p || p.prev_workspace == null) return json(res, 409, { error: "nothing to restore" });
+          p.workspace_id = p.prev_workspace;
+          delete p.prev_workspace;
+          p.ov += 1;
+          p.ppv += 1;
+          project();
+          return json(res, 200, { fault: "workspace-restore", project: body.project, workspace_id: p.workspace_id, ownership_version: p.ov });
         }
         case "freeze": // stale feeds: no further projections
           faultModes.set(cellId, { ...(faultModes.get(cellId) ?? {}), freeze: true });

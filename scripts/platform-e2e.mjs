@@ -322,6 +322,21 @@ await sleep(2500);
 check("retired-kid resurrection refused: old-kid token stays dead", (await readRecords(bBase, "e2e/orders", tokBOld)).status === 401);
 check("refused snapshot does not clobber good state: current-kid token still serves",
   (await readRecords(bBase, "e2e/orders", tokB2.body.accessToken)).status === 200);
+// RESTORE the ownership tuple the hostile leg mutated. Without this
+// the emulator republishes proj-b@ws-hostile at the unbumped
+// ownership_version forever: cell B (correctly) refuses every later
+// policy snapshot, and every later-minted proj-b token carries
+// ws-hostile against the cell's kept ws-b — the quota, usage, and
+// foreign-probe legs then fail 401/workspace_mismatch (round-8
+// review: ownership-state contamination, a TEST defect). The restore
+// is a legitimate owner progression (ownership_version increments),
+// so it lands; tokens minted BEFORE the swap die with it
+// (OwnershipChanged) — every later leg mints fresh.
+await fault({ kind: "workspace-restore", project: "proj-b" });
+await sleep(2500);
+const tokRestored = await j(await exchange(SECRET_B));
+check("restored ownership tuple lands: freshly minted token serves on cell B",
+  (await readRecords(bBase, "e2e/orders", tokRestored.body.accessToken)).status === 200);
 
 // ---- §14.3: shared schemas actually reject hostile shapes ------------------
 // The emulator refuses to publish schema-invalid snapshots at runtime

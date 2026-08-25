@@ -250,18 +250,41 @@ job runs the full suite under livefeed on every push.
 
 Evidence run (2026-08-25): 572 passed, 0 failed, 15 excluded.
 
-The exclusions (`scripts/livefeed-matrix-skips.txt`) are all hub-
-MECHANICS pins (hub formation is bypassed under livefeed); they die
-with the legacy hub implementation at Stage 7 deletion. Found and
-fixed by the matrix: `sse_head` test helper over-read body chunks
-coalesced with response headers (LiveFeed's first status arrives
-faster than the legacy producer's).
+Found and fixed by the matrix: `sse_head` test helper over-read body
+chunks coalesced with response headers (LiveFeed's first status
+arrives faster than the legacy producer's).
 
-Exclusion list (must reach zero before legacy deletion):
+Exclusion classification (round-8 review requirement — the earlier
+"all hub-mechanics pins" summary was too broad; per-test read
+2026-08-25). Removal condition abbreviations: **delete-with-legacy** =
+the test asserts hub implementation state that has no LiveFeed
+meaning, delete it when the hub dies; **unskip-or-delete** = the
+observable contract is already covered by the named livefeed test,
+either port the rig or delete at legacy deletion; **needs-replacement**
+= real coverage gap, write the LiveFeed leg BEFORE removing the
+exclusion.
 
-```text
-14 hub_* mechanics tests + off_mode_subscriptions_are_untouched_by_staleness
-```
+| Excluded test | Reason | Replacement test | Removal condition |
+| --- | --- | --- | --- |
+| `hub_promote_at_one_gives_the_first_subscriber_a_hub` | pure hub mechanics (promotion threshold) | n/a | delete-with-legacy |
+| `hub_promotes_on_second_subscriber_only` | pure hub mechanics (asserts the opposite architecture) | `livefeed_two_subscribers_share_one_feed_and_one_source_read` covers the shared tail | delete-with-legacy |
+| `hub_catchup_conveys_up_to_date` | wire contract via hub rig | `livefeed_catches_up_from_beginning_cursor` (stricter ordering) | unskip-or-delete |
+| `hub_seal_with_data_delivers_final_flags_then_eof` | wire contract via hub rig | `livefeed_park_appends_seal_matches_golden_semantics`, `livefeed_seal_transcript_exact_tail`; `x-accel-buffering` via `golden_run` (not skipped) | unskip-or-delete |
+| `hub_offset_now_delivers_only_post_subscribe_appends` | wire contract via hub rig | `livefeed_connect_already_split_now`, `livefeed_cursor_now_uses_the_reconciled_source` | unskip-or-delete |
+| `hub_foreign_key_appends_advance_default_cursor` | wire contract via hub rig | `livefeed_keyed_lane_scopes_records_and_shares_preparation`, `livefeed_keyed_all_foreign_history_is_progress_not_lag` | unskip-or-delete |
+| `hub_split_transition_disconnects_without_sealed` | legacy-only by design (livefeed product sessions CONTINUE across a split) | `livefeed_raw_disconnects_without_terminal_on_split` covers the surviving no-false-terminal half | delete-with-legacy |
+| `hub_empty_seal_single_final_control` | contract: EMPTY-stream seal terminal | NONE — livefeed seal legs all carry data | needs-replacement |
+| `hub_mass_disconnect_tears_down_within_deadline` | contract: teardown deadline at the wire | unit `last_subscriber_evicts_and_reconnect_does_not_grow` only | needs-replacement |
+| `hub_oversized_event_delivered_via_uncached_catchup` | contract: over-ring record still delivered | unit `oversized_batch_is_never_self_evicted` only | needs-replacement |
+| `hub_global_cap_exhaustion_goes_uncached_but_delivers` | mostly hub accounting; delivery-under-exhaustion is contract | unit budget tests (`budget_exhaustion_publishes_without_retention` et al.) | needs-replacement (wire leg) |
+| `hub_no_up_to_date_while_pump_holds_backlog` | contract (honest upToDate) driven by hub-only pump throttle | partial: `livefeed_exact_framing_mixed_surfaces_share_one_lane` | needs-replacement |
+| `hub_prepared_batch_must_not_carry_stale_up_to_date` | contract (stale flags) driven by hub-only pump throttle | partial: `livefeed_seal_transcript_exact_tail` | needs-replacement |
+| `hub_delayed_reader_lands_on_the_current_scan_head` | contract: delayed-reader cursor convergence | NONE at the wire | needs-replacement |
+| `off_mode_subscriptions_are_untouched_by_staleness` | contract (AuthMode::Off never terminates), skipped ONLY for its `hub_count()` assert | NONE (positive-side lease legs exist) | needs-replacement (one-line rig swap) |
+
+The list must reach ZERO before legacy deletion: every
+needs-replacement row gets its LiveFeed leg first; unskip-or-delete
+rows die with the hub or get their rig ported, whichever lands first.
 
 REMAINING (gated on fleet work + canaries): two-instance
 disconnect/reroute certification; below-edge canaries; then delete

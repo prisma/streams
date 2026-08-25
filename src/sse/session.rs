@@ -182,16 +182,20 @@ pub(crate) async fn serve(
     // ring allowance from the process-global budget — exhaustion
     // rejects THE NEW subscriber with a typed capacity refusal while
     // the existing singleton continues normally.
-    let subscription = match state.live_feeds.subscribe(fkey.clone(), || {
-        LiveFeed::new_with_budget(
-            fkey.clone(),
-            src.clone(),
-            state
-                .feed_ring_bytes
-                .load(std::sync::atomic::Ordering::Relaxed),
-            state.feed_budget.clone(),
-        )
-    }) {
+    let subscription = match state.live_feeds.subscribe(
+        fkey.clone(),
+        || {
+            LiveFeed::new_with_budget(
+                fkey.clone(),
+                src.clone(),
+                state
+                    .feed_ring_bytes
+                    .load(std::sync::atomic::Ordering::Relaxed),
+                state.feed_budget.clone(),
+            )
+        },
+        Some(&src),
+    ) {
         Ok(sub) => sub,
         Err(_) => {
             use axum::response::IntoResponse;
@@ -314,6 +318,15 @@ pub(crate) async fn serve(
                             }
                             let frame =
                                 ctx.compose_record(&csrc.prepare_data(r), csrc.locate(r.off + 1));
+                            // Test failpoint: authorization-cutoff legs
+                            // park the producer before the next send
+                            // (every data-send site, all engines).
+                            #[cfg(test)]
+                            crate::failpoints::pause(
+                                crate::failpoints::Fp::SseBeforeSend,
+                                &task_desc.name,
+                            )
+                            .await;
                             if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
                                 return;
                             }
@@ -415,6 +428,12 @@ pub(crate) async fn serve(
                         }
                         for r in batch.records[start_index..].iter() {
                             let frame = ctx.compose_record(&r.data_event, r.pos);
+                            #[cfg(test)]
+                            crate::failpoints::pause(
+                                crate::failpoints::Fp::SseBeforeSend,
+                                &task_desc.name,
+                            )
+                            .await;
                             if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
                                 return;
                             }
@@ -548,6 +567,12 @@ pub(crate) async fn serve(
                                     let at_cursor = cursor;
                                     for r in records.iter().filter(|r| r.offset >= at_cursor) {
                                         let frame = ctx.compose_record(&r.data_event, r.pos);
+                                        #[cfg(test)]
+                                        crate::failpoints::pause(
+                                            crate::failpoints::Fp::SseBeforeSend,
+                                            &task_desc.name,
+                                        )
+                                        .await;
                                         if !sse_send(&tx, frame).await
                                             || lease_watch.revoked(&task_state)
                                         {
@@ -638,6 +663,12 @@ pub(crate) async fn serve(
                             let at_cursor = cursor;
                             for r in records.iter().filter(|r| r.offset >= at_cursor) {
                                 let frame = ctx.compose_record(&r.data_event, r.pos);
+                                #[cfg(test)]
+                                crate::failpoints::pause(
+                                    crate::failpoints::Fp::SseBeforeSend,
+                                    &task_desc.name,
+                                )
+                                .await;
                                 if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
                                     return;
                                 }
@@ -688,7 +719,21 @@ pub(crate) async fn serve(
                         None => {}
                     }
                 }
-                // Park.
+                // Park. BOUNDED while the observed source is closed: a
+                // collection seal closes the segment (firing the handle
+                // notify) BEFORE it publishes the Sealed descriptor —
+                // a session woken by that notify drives against the
+                // pre-publication topology (RetryLater/Idle, no version
+                // bump) and the publication itself touches no feed
+                // state, so nothing else ever wakes it. Re-drive on a
+                // short bound until the transition resolves (the
+                // transition_retries cap turns a genuinely stuck
+                // transition into the typed disconnect).
+                let park_bound = if closed {
+                    std::time::Duration::from_millis(250)
+                } else {
+                    lease_watch.nap()
+                };
                 tokio::select! {
                     _ = &mut ver_wait => {}
                     _ = &mut gen_wait => {}
@@ -698,7 +743,7 @@ pub(crate) async fn serve(
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         return;
                     }
-                    _ = tokio::time::sleep(lease_watch.nap()) => {
+                    _ = tokio::time::sleep(park_bound) => {
                         if lease_watch.revoked(&task_state) {
                             return;
                         }

@@ -6902,22 +6902,36 @@ pub(crate) async fn read_inner(
 /// alive" writes spread by the writer pool — accepted trade for
 /// removing N independent timers.
 pub(crate) fn sse_heartbeat() -> tokio::sync::watch::Receiver<u64> {
-    static HB: std::sync::OnceLock<tokio::sync::watch::Receiver<u64>> = std::sync::OnceLock::new();
+    static HB: std::sync::OnceLock<tokio::sync::watch::Sender<u64>> = std::sync::OnceLock::new();
+    // subscribe() per call: a receiver cloned from the shared one
+    // inherits its NEVER-POLLED version and fires `changed()` instantly
+    // on every new connection — a spurious keep-alive in the first
+    // window, which paired with a duplicated status control (the
+    // conformance SSE duplicate-delivery failures).
     HB.get_or_init(|| {
-        let (tx, rx) = tokio::sync::watch::channel(0u64);
-        tokio::spawn(async move {
-            let mut n = 0u64;
-            loop {
-                tokio::time::sleep(Duration::from_secs(15)).await;
-                n += 1;
-                if tx.send(n).is_err() {
-                    return;
+        let (tx, _) = tokio::sync::watch::channel(0u64);
+        let tx2 = tx.clone();
+        // A dedicated OS thread, NOT a tokio task: the ticker must
+        // outlive the runtime that first touched it (every
+        // #[tokio::test] runs its own runtime — a ticker task spawned
+        // on the first one dies with it, silently freezing every later
+        // session's keep-alive). And send_replace, NOT send: send fails
+        // the moment zero receivers exist — one 15-s tick landing in an
+        // idle window would kill the ticker for the process's lifetime.
+        std::thread::Builder::new()
+            .name("sse-heartbeat".into())
+            .spawn(move || {
+                let mut n = 0u64;
+                loop {
+                    std::thread::sleep(Duration::from_secs(15));
+                    n += 1;
+                    tx2.send_replace(n);
                 }
-            }
-        });
-        rx
+            })
+            .expect("spawn sse-heartbeat ticker");
+        tx
     })
-    .clone()
+    .subscribe()
 }
 
 /// #267: bounded-deadline SSE send. The queue is 4 slots and the
@@ -7598,6 +7612,12 @@ async fn sse_hub_response(
                                         r,
                                         r.off + 1,
                                     );
+                                    #[cfg(test)]
+                                    crate::failpoints::pause(
+                                        crate::failpoints::Fp::SseBeforeSend,
+                                        &ctx.desc.name,
+                                    )
+                                    .await;
                                     if !sse_send(&tx, Bytes::from(ev)).await
                                         || lease_watch.revoked(&state)
                                     {
@@ -7629,6 +7649,15 @@ async fn sse_hub_response(
                     // Per-batch billing identity (ownership can move).
                     let bill_id = crate::billing::identity_of(&state, &ctx.desc);
                     for (b, plen) in evs {
+                        // Test failpoint: authorization-cutoff legs park
+                        // the producer before the next send — the LIVE
+                        // ring delivery, not only the catch-up branch.
+                        #[cfg(test)]
+                        crate::failpoints::pause(
+                            crate::failpoints::Fp::SseBeforeSend,
+                            &ctx.desc.name,
+                        )
+                        .await;
                         if !sse_send(&tx, b).await || lease_watch.revoked(&state) {
                             return;
                         }
@@ -7861,6 +7890,9 @@ async fn sse_response(
         };
         let from_now = matches!(start, StartPos::Now);
         let mut first = true;
+        // Standalone status dedupe: one per reported frontier position
+        // (see the status block below).
+        let mut last_status_reported: Option<u64> = None;
         // Review V4 + round-4 F1: re-prove authorization for the
         // connection's life — starting from a generation-stable INITIAL
         // proof (a lease already dead at construction never schedules).
@@ -7958,6 +7990,14 @@ async fn sse_response(
                                 ),
                             };
                             ev.push_str(&ctl);
+                            // Test failpoint: authorization-cutoff legs
+                            // park the producer before the next send.
+                            #[cfg(test)]
+                            crate::failpoints::pause(
+                                crate::failpoints::Fp::SseBeforeSend,
+                                &desc.name,
+                            )
+                            .await;
                             if !sse_send(&tx, Bytes::from(ev)).await || lease_watch.revoked(&state)
                             {
                                 return;
@@ -7976,6 +8016,13 @@ async fn sse_response(
                         if let Some(last) = out.last {
                             pos = last + 1;
                         }
+                        // The batch's last per-record control carried
+                        // upToDate at this position: it counts as the
+                        // reported status for the dedupe (no standalone
+                        // repeat may follow at the same position).
+                        if will_end {
+                            last_status_reported = Some(pos);
+                        }
                         if !out.completed {
                             continue; // keep draining before control
                         }
@@ -7987,15 +8034,26 @@ async fn sse_response(
                 }
             }
             let at_end = pos >= end;
-            if (at_end || first) && !sent_any {
+            // Dedupe by reported position: the standalone OPEN status is
+            // emitted ONCE per frontier position — after a keep-alive
+            // or a lease nap the loop wakes to the same position and
+            // must NOT repeat it (the conformance SSE duplicate-control
+            // failures). Data frames carry their own controls; a
+            // position change re-arms reporting. A closure at the end
+            // ALWAYS overrides the dedupe: a genuine seal landing after
+            // the position was reported open still owes its one
+            // terminal control (the golden direct/hub transcript leg),
+            // and a transition's seal still owes the connection its
+            // close (the return below).
+            let closing = closed && at_end;
+            let report_closed = closing && genuine_closure(&state, &desc.sref(), true).await;
+            if (at_end || first) && !sent_any && (last_status_reported != Some(pos) || closing) {
                 // Empty drain (connect at tail / offset=now): one
                 // status-only control. A close observed mid-SSE can be a
                 // split's seal, not a user close: genuine closure sends
                 // the final closed control; a transition ends the
                 // connection WITHOUT it and the reconnect's fresh
                 // dispatch serves the successors.
-                let report_closed =
-                    closed && at_end && genuine_closure(&state, &desc.sref(), true).await;
                 let ctl = match surface {
                     SseSurface::Raw => {
                         crate::sse::wire::sse_control(pos, cursor.as_deref(), at_end, report_closed)
@@ -8015,6 +8073,7 @@ async fn sse_response(
                 if !sse_send(&tx, Bytes::from(ctl)).await {
                     return;
                 }
+                last_status_reported = Some(pos);
                 if closed && at_end {
                     return; // final control sent; close connection
                 }
