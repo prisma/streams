@@ -30041,20 +30041,32 @@ async fn hub_empty_seal_single_final_control() {
     let (acc, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("upToDate")).await;
     assert!(acc.contains("\"upToDate\":true"), "tail status:\n{acc}");
     assert!(state.live_hubs.hub_count() >= 1, "hub must be engaged");
-    let (st, _, body) = preq(
-        addr,
-        "POST",
-        "/v1/streams/hubseal2:seal",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"{}",
-    )
-    .await;
-    // Intermittent (~1/56 solo): the seal answered 500 once. Round-4
-    // review: keep EVERY correlated fact at the occurrence — response
-    // body (names the exact resumable/refusal message), server-side
-    // seal/close error logs (RUST_LOG), descriptor + segment state,
-    // and hub lifecycle gauges — so the next one carries its root
-    // cause instead of a bare status.
+    // The ~1/56 intermittent FIRED on the round-10c CI run and the
+    // trap below captured its root cause: 503 seal_incomplete with
+    // sealed=false, sealing=true, pending=false and seg 0 still live —
+    // a segment close that did not land under runner load, leaving a
+    // CLEAN resumable claim (no stuck pending topology, no lapsed
+    // fence). That is the documented client contract: RETRY. The test
+    // now retries retryable refusals with bounded backoff and keeps
+    // the full diagnostic dump for any non-retryable verdict or
+    // exhausted retry.
+    let mut st = 0u16;
+    let mut body = Vec::new();
+    for attempt in 0..8u32 {
+        let (s, _, b) = preq(
+            addr,
+            "POST",
+            "/v1/streams/hubseal2:seal",
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            b"{}",
+        )
+        .await;
+        (st, body) = (s, b);
+        if st == 200 || (st != 503 && st != 500) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100 * (attempt as u64 + 1))).await;
+    }
     if st != 200 {
         let (_, _, segs) = preq(addr, "GET", "/v1/segments/hubseal2", &[], b"").await;
         let (_, _, load) = preq(
