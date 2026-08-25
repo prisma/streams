@@ -6939,12 +6939,30 @@ pub(crate) fn sse_heartbeat() -> tokio::sync::watch::Receiver<u64> {
 /// stream is DISCONNECT + resume-from-cursor — never a private replay
 /// buffer. Returns false when the subscriber should be dropped
 /// (receiver gone or deadline elapsed with the queue still full).
-pub(crate) async fn sse_send(
-    tx: &tokio::sync::mpsc::Sender<Result<Bytes, std::io::Error>>,
+pub(crate) async fn sse_send(tx: &SseTx, b: Bytes) -> bool {
+    // Zero billable weight: controls, cursors, terminals, keep-alives.
+    sse_send_billed(tx, b, 0, 0).await
+}
+
+pub(crate) type SseTx = tokio::sync::mpsc::Sender<crate::sse::auth::SseChunk>;
+
+/// Bounded send carrying the chunk's BILLABLE weight. Metering does
+/// NOT happen here: `GatedSseBody` meters at the authoritative yield
+/// boundary, so a queued frame the gate discards at a cutoff is never
+/// charged (round-9 review).
+pub(crate) async fn sse_send_billed(
+    tx: &SseTx,
     b: Bytes,
+    payload_bytes: u64,
+    records: u64,
 ) -> bool {
+    let chunk = crate::sse::auth::SseChunk {
+        bytes: b,
+        payload_bytes,
+        records,
+    };
     let ok = matches!(
-        tokio::time::timeout(Duration::from_secs(10), tx.send(Ok(b))).await,
+        tokio::time::timeout(Duration::from_secs(10), tx.send(chunk)).await,
         Ok(Ok(()))
     );
     if !ok {
@@ -7170,7 +7188,7 @@ pub(crate) fn sse_lineage_response(
     };
     // #267: 4 slots + disconnect-on-lag, shared heartbeat — see
     // sse_response.
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
+    let (tx, rx) = tokio::sync::mpsc::channel::<crate::sse::auth::SseChunk>(4);
     let mut hb = sse_heartbeat();
     let sse_hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
     // One subscribe operation; delivered bytes meter per chunk (§5).
@@ -7209,6 +7227,7 @@ pub(crate) fn sse_lineage_response(
     };
     // Review round 3 F2: the response body carries its own lease gate.
     let body_state = state.clone();
+    let body_desc = desc.clone();
     tokio::spawn(async move {
         let mut first = true;
         // Review V4 + round-4 F1: re-prove authorization for the
@@ -7284,7 +7303,6 @@ pub(crate) fn sse_lineage_response(
                                 && will_end
                                 && genuine_closure(&state, &desc.sref(), true).await;
                             let n = out.recs.len();
-                            let bill_id = crate::billing::identity_of(&state, &desc);
                             for (i, r) in out.recs.iter().enumerate() {
                                 // #267: one combined data+control Bytes.
                                 let mut ev = crate::sse::wire::sse_data_event(&desc, &r.payload);
@@ -7314,20 +7332,12 @@ pub(crate) fn sse_lineage_response(
                                     ),
                                 };
                                 ev.push_str(&ctl);
-                                if !sse_send(&tx, Bytes::from(ev)).await
+                                if !sse_send_billed(&tx, Bytes::from(ev), r.payload.len() as u64, 1)
+                                    .await
                                     || lease_watch.revoked(&state)
                                 {
                                     return;
                                 }
-                                // §4.2: each emitted payload, pre-framing.
-                                crate::sse::auth::sse_stats::DELIVERED_RECORDS
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                crate::billing::meter_read_chunk(
-                                    &state.billing_reads,
-                                    &bill_id,
-                                    r.payload.len() as u64,
-                                    1,
-                                );
                                 sent_any = true;
                             }
                             if let Some(last) = out.last {
@@ -7423,7 +7433,7 @@ pub(crate) fn sse_lineage_response(
     let sse_usage = crate::usage::counters(&sse_hash);
     let stream = futures_util::StreamExt::map(
         // Slot rides the body (#267); lease gate too (round 3 F2).
-        crate::sse::auth::GatedSseBody::new(body_state, rx, slot, body_watch, gen_rx),
+        crate::sse::auth::GatedSseBody::new(body_state, rx, body_desc, slot, body_watch, gen_rx),
         move |item| {
             if let Ok(b) = &item {
                 sse_usage
@@ -7485,7 +7495,7 @@ async fn sse_hub_response(
         Err(reason) => return crate::sse::auth::lease_refusal_response(reason),
     };
     let sse_hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
+    let (tx, rx) = tokio::sync::mpsc::channel::<crate::sse::auth::SseChunk>(4);
     let mut hb = sse_heartbeat();
     crate::billing::meter_read(&state, &desc, 0, 0);
     let binary = {
@@ -7524,6 +7534,10 @@ async fn sse_hub_response(
     drop((desc, key, engine));
     let ctx = hub.ctx.clone().expect("production hubs carry a context");
     // Review round 3 F2: the response body carries its own lease gate.
+    // Round 9: the body also METERS at yield — its identity resolution
+    // needs the descriptor (from the hub context: the connection's own
+    // copy was deliberately dropped, #273 F5).
+    let body_desc = ctx.desc.clone();
     let body_state = state.clone();
     let sse_task = async move {
         let _sub = SubGuard(hub.clone());
@@ -7598,10 +7612,6 @@ async fn sse_hub_response(
                         .await;
                         match out {
                             Ok(out) => {
-                                // Billing identity resolves PER BATCH:
-                                // ownership transfers mid-subscription
-                                // must bill the new workspace (review).
-                                let bill_id = crate::billing::identity_of(&state, &ctx.desc);
                                 for r in out.recs.iter() {
                                     let ev = hub_event_at(
                                         &ctx.desc,
@@ -7618,19 +7628,17 @@ async fn sse_hub_response(
                                         &ctx.desc.name,
                                     )
                                     .await;
-                                    if !sse_send(&tx, Bytes::from(ev)).await
+                                    if !sse_send_billed(
+                                        &tx,
+                                        Bytes::from(ev),
+                                        r.payload.len() as u64,
+                                        1,
+                                    )
+                                    .await
                                         || lease_watch.revoked(&state)
                                     {
                                         return;
                                     }
-                                    crate::sse::auth::sse_stats::DELIVERED_RECORDS
-                                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                    crate::billing::meter_read_chunk(
-                                        &state.billing_reads,
-                                        &bill_id,
-                                        r.payload.len() as u64,
-                                        1,
-                                    );
                                 }
                                 match out.last {
                                     Some(l) => pos = l + 1,
@@ -7646,8 +7654,6 @@ async fn sse_hub_response(
                     need_utd = true;
                 }
                 crate::livehub::HubRead::Events(evs, next) => {
-                    // Per-batch billing identity (ownership can move).
-                    let bill_id = crate::billing::identity_of(&state, &ctx.desc);
                     for (b, plen) in evs {
                         // Test failpoint: authorization-cutoff legs park
                         // the producer before the next send — the LIVE
@@ -7658,17 +7664,11 @@ async fn sse_hub_response(
                             &ctx.desc.name,
                         )
                         .await;
-                        if !sse_send(&tx, b).await || lease_watch.revoked(&state) {
+                        if !sse_send_billed(&tx, b, plen as u64, 1).await
+                            || lease_watch.revoked(&state)
+                        {
                             return;
                         }
-                        crate::sse::auth::sse_stats::DELIVERED_RECORDS
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        crate::billing::meter_read_chunk(
-                            &state.billing_reads,
-                            &bill_id,
-                            plen as u64,
-                            1,
-                        );
                     }
                     pos = next;
                     need_utd = true;
@@ -7738,7 +7738,7 @@ async fn sse_hub_response(
     tokio::spawn(sse_task);
     let sse_usage = crate::usage::counters(&sse_hash);
     let stream = futures_util::StreamExt::map(
-        crate::sse::auth::GatedSseBody::new(body_state, rx, slot, body_watch, gen_rx),
+        crate::sse::auth::GatedSseBody::new(body_state, rx, body_desc, slot, body_watch, gen_rx),
         move |item| {
             if let Ok(b) = &item {
                 sse_usage
@@ -7845,7 +7845,7 @@ async fn sse_response(
     let sse_hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
     // #267: 4 slots, not 64 — a slow client keeps a cursor and a
     // socket, not a private replay buffer (sse_send disconnects it).
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
+    let (tx, rx) = tokio::sync::mpsc::channel::<crate::sse::auth::SseChunk>(4);
     let mut hb = sse_heartbeat();
     // One subscribe operation; delivered bytes meter per chunk (§5).
     crate::billing::meter_read(&state, &desc, 0, 0);
@@ -7857,6 +7857,7 @@ async fn sse_response(
     let key_filter = params.key.clone();
     // Review round 3 F2: the response body carries its own lease gate.
     let body_state = state.clone();
+    let body_desc = desc.clone();
     // Round-4 finding 1: subscribe to the generation watch BEFORE the
     // initial proof so a publication landing between the two is still
     // observed by this body; then prove the lease generation-stably —
@@ -7957,7 +7958,6 @@ async fn sse_response(
                         let report_closed =
                             closed && will_end && genuine_closure(&state, &desc.sref(), true).await;
                         let n = out.recs.len();
-                        let bill_id = crate::billing::identity_of(&state, &desc);
                         for (i, r) in out.recs.iter().enumerate() {
                             // #267: data + its paired control ride ONE
                             // Bytes — identical on the wire (SSE frames
@@ -7998,19 +7998,12 @@ async fn sse_response(
                                 &desc.name,
                             )
                             .await;
-                            if !sse_send(&tx, Bytes::from(ev)).await || lease_watch.revoked(&state)
+                            if !sse_send_billed(&tx, Bytes::from(ev), r.payload.len() as u64, 1)
+                                .await
+                                || lease_watch.revoked(&state)
                             {
                                 return;
                             }
-                            // §4.2: each emitted payload, pre-framing.
-                            crate::sse::auth::sse_stats::DELIVERED_RECORDS
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            crate::billing::meter_read_chunk(
-                                &state.billing_reads,
-                                &bill_id,
-                                r.payload.len() as u64,
-                                1,
-                            );
                             sent_any = true;
                         }
                         if let Some(last) = out.last {
@@ -8121,7 +8114,7 @@ async fn sse_response(
         // Slot rides the body: dropping the response stream frees the
         // instance SSE budget entry (#267); the lease gate (round 3
         // F2) rides it too.
-        crate::sse::auth::GatedSseBody::new(body_state, rx, slot, body_watch, gen_rx),
+        crate::sse::auth::GatedSseBody::new(body_state, rx, body_desc, slot, body_watch, gen_rx),
         move |item| {
             if let Ok(b) = &item {
                 sse_usage

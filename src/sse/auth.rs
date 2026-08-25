@@ -274,16 +274,34 @@ impl LeaseWatch {
     }
 }
 
+/// One queued SSE chunk plus its BILLABLE weight. Metering happens at
+/// the AUTHORITATIVE yield boundary in `GatedSseBody` — producer-side
+/// billing at enqueue time charged for frames the body gate then
+/// discarded at a revocation/expiry cutoff (round-9 review: the
+/// customer received no payload but read usage was charged). Status
+/// controls, cursors, terminals and keep-alives carry zero weight.
+pub(crate) struct SseChunk {
+    pub(crate) bytes: Bytes,
+    pub(crate) payload_bytes: u64,
+    pub(crate) records: u64,
+}
+
 /// Review round 3 F2: the AUTHORITATIVE lease gate sits at the
 /// response-body boundary — immediately before bytes leave the HTTP
 /// body. The producer checks are an optimization that stops work; this
 /// gate guarantees that no queued frame is yielded after a revocation,
 /// expiry, or staleness boundary has been observed (the channel's
 /// buffered items included). Wakes on: the next queued frame, an auth
-/// generation change (watch), or the lease deadline.
+/// generation change (watch), or the lease deadline. Round-9: it is
+/// also the METERING boundary — `DELIVERED_RECORDS` and read billing
+/// move exactly with the yield, so a discarded frame is never charged.
 pub(crate) struct GatedSseBody {
     state: Arc<AppState>,
-    rx: tokio::sync::mpsc::Receiver<Result<Bytes, std::io::Error>>,
+    rx: tokio::sync::mpsc::Receiver<SseChunk>,
+    /// Billing identity resolution at YIELD time (ownership can move
+    /// mid-connection; the identity is re-resolved per billed chunk,
+    /// the same rule the hub producer applied per batch).
+    desc: crate::registry::StreamDesc,
     _slot: SseSlot,
     watch: LeaseWatch,
     gen_rx: tokio::sync::watch::Receiver<u64>,
@@ -300,7 +318,8 @@ impl GatedSseBody {
     /// missed wakeup between "proved" and "parked".
     pub(crate) fn new(
         state: Arc<AppState>,
-        rx: tokio::sync::mpsc::Receiver<Result<Bytes, std::io::Error>>,
+        rx: tokio::sync::mpsc::Receiver<SseChunk>,
+        desc: crate::registry::StreamDesc,
         slot: SseSlot,
         watch: LeaseWatch,
         gen_rx: tokio::sync::watch::Receiver<u64>,
@@ -310,6 +329,7 @@ impl GatedSseBody {
             gen_rx,
             state,
             rx,
+            desc,
             _slot: slot,
             watch,
             gen_changed: None,
@@ -367,8 +387,23 @@ impl futures_util::Stream for GatedSseBody {
                 return Poll::Ready(None);
             }
         }
+        // Test failpoint: park THIS poll BEFORE dequeuing — the frame
+        // stays IN the channel across an authorization cutoff, and the
+        // resumed body must discard it unyielded AND unbilled (round-9
+        // review's queued-frame billing leg). Sync poll context: park
+        // by returning Pending and re-waking on release.
+        #[cfg(test)]
+        if crate::failpoints::hit(crate::failpoints::Fp::SseBodyBeforeYield, &this.desc.name) {
+            let waker = cx.waker().clone();
+            let name = this.desc.name.clone();
+            tokio::spawn(async move {
+                crate::failpoints::pause(crate::failpoints::Fp::SseBodyBeforeYield, &name).await;
+                waker.wake();
+            });
+            return Poll::Pending;
+        }
         match this.rx.poll_recv(cx) {
-            Poll::Ready(Some(item)) => {
+            Poll::Ready(Some(chunk)) => {
                 // The authoritative per-frame gate: cheap (atomic +
                 // deadline compare) unless something moved.
                 if this.watch.revoked(&this.state) {
@@ -376,7 +411,20 @@ impl futures_util::Stream for GatedSseBody {
                     this.rx.close();
                     return Poll::Ready(None);
                 }
-                Poll::Ready(Some(item))
+                // Metering rides the YIELD (round-9 review): §4.2's
+                // "each emitted payload" is what actually leaves the
+                // body, never a queued frame the gate discards.
+                if chunk.records > 0 {
+                    sse_stats::DELIVERED_RECORDS
+                        .fetch_add(chunk.records, std::sync::atomic::Ordering::Relaxed);
+                    crate::billing::meter_read_chunk(
+                        &this.state.billing_reads,
+                        &crate::billing::identity_of(&this.state, &this.desc),
+                        chunk.payload_bytes,
+                        chunk.records,
+                    );
+                }
+                Poll::Ready(Some(Ok(chunk.bytes)))
             }
             Poll::Ready(None) => {
                 this.ended = true;

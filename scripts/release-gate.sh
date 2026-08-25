@@ -1,10 +1,13 @@
 #!/bin/sh
 # The LOCAL half of the release gate: fmt, clippy (fingerprint-gated),
-# the Rust/DST binary suite, and supply-chain checks. It does NOT run
-# the Durable Streams conformance corpus, SDK smoke, field/capacity/
-# handoff campaigns, or cross-owner fan-out — those produce artifacts
-# that scripts/rc-certify.sh verifies against the release binary. R30
-# review: this scope statement must match what the script runs.
+# workflow lint (actionlint, REQUIRED — the zero-jobs incident class),
+# the Rust/DST binary suite (capacity mechanism gate isolated so the
+# measurement owns the machine), the LiveFeed engine matrix, and
+# supply-chain checks. It does NOT run the Durable Streams conformance
+# corpus, SDK smoke, field/capacity/handoff campaigns, or cross-owner
+# fan-out — those produce artifacts that scripts/rc-certify.sh
+# verifies against the release binary. R30 review: this scope
+# statement must match what the script runs.
 set -e
 cd "$(dirname "$0")/.."
 
@@ -46,8 +49,30 @@ echo "clippy: no new warning fingerprints"
 echo "== multitenancy conversion audit =="
 scripts/multitenancy-audit.sh
 
+echo "== workflow lint =="
+# Round-9 review: an RC must never certify a tree whose workflows do
+# not parse (the 2026-08-25 zero-jobs incident class). Bare
+# invocation, matching the independent workflow-lint job.
+if command -v actionlint > /dev/null 2>&1; then
+  actionlint
+else
+  echo "FAIL: actionlint is required for release certification (brew install actionlint)"
+  exit 1
+fi
+
 echo "== tests =="
-cargo test --bin streams-slate
+cargo test --bin streams-slate -- --skip post_split_throughput_scales
+
+echo "== capacity mechanism gate (owns the machine) =="
+cargo test --bin streams-slate post_split_throughput_scales -- --exact dst::dst_tests::post_split_throughput_scales
+
+echo "== livefeed engine matrix =="
+# Round-9 review: the replacement engine's certification is part of
+# the release gate, not only a CI job — the generic SSE corpus runs
+# under the livefeed engine with the tracked exclusions.
+SKIPS=$(grep -v '^#' scripts/livefeed-matrix-skips.txt | sed 's/^/--skip /' | tr '\n' ' ')
+# shellcheck disable=SC2086  # SKIPS must word-split into repeated --skip flags
+STREAMS_SSE_ENGINE=livefeed cargo test --bin streams-slate -- $SKIPS --skip post_split_throughput_scales
 
 echo "== supply chain =="
 cargo deny check

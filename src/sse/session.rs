@@ -23,7 +23,9 @@
 
 use super::auth::{GatedSseBody, LeaseWatch, SseLease};
 use super::feed::{DriveOutcome, FeedKey, LiveFeed, Take};
-use crate::http::{AppState, ReadParams, SseSlot, err_resp, sse_heartbeat, sse_send};
+use crate::http::{
+    AppState, ReadParams, SseSlot, err_resp, sse_heartbeat, sse_send, sse_send_billed,
+};
 use bytes::{Bytes, BytesMut};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -257,7 +259,7 @@ pub(crate) async fn serve(
         mt != "application/json" && !mt.starts_with("text/")
     };
     let usage = crate::usage::counters(&crate::crypto::RouteHash::for_stream(&desc.sref()).0);
-    let (tx, rx) = tokio::sync::mpsc::channel::<Result<Bytes, std::io::Error>>(4);
+    let (tx, rx) = tokio::sync::mpsc::channel::<crate::sse::auth::SseChunk>(4);
     let mut hb = sse_heartbeat();
     crate::billing::meter_read(&state, &desc, 0, 0);
     let body_state = state.clone();
@@ -327,17 +329,11 @@ pub(crate) async fn serve(
                                 &task_desc.name,
                             )
                             .await;
-                            if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
+                            if !sse_send_billed(&tx, frame, r.payload.len() as u64, 1).await
+                                || lease_watch.revoked(&task_state)
+                            {
                                 return;
                             }
-                            crate::sse::auth::sse_stats::DELIVERED_RECORDS
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            crate::billing::meter_read_chunk(
-                                &task_state.billing_reads,
-                                &crate::billing::identity_of(&task_state, &task_desc),
-                                r.payload.len() as u64,
-                                1,
-                            );
                             cursor = cursor.max(r.off + 1);
                         }
                         // Match-free scanned range still progresses.
@@ -434,17 +430,11 @@ pub(crate) async fn serve(
                                 &task_desc.name,
                             )
                             .await;
-                            if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
+                            if !sse_send_billed(&tx, frame, u64::from(r.payload_len), 1).await
+                                || lease_watch.revoked(&task_state)
+                            {
                                 return;
                             }
-                            crate::sse::auth::sse_stats::DELIVERED_RECORDS
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            crate::billing::meter_read_chunk(
-                                &task_state.billing_reads,
-                                &crate::billing::identity_of(&task_state, &task_desc),
-                                u64::from(r.payload_len),
-                                1,
-                            );
                         }
                         cursor = cursor.max(batch.scan_to);
                         need_status = true;
@@ -573,19 +563,12 @@ pub(crate) async fn serve(
                                             &task_desc.name,
                                         )
                                         .await;
-                                        if !sse_send(&tx, frame).await
+                                        if !sse_send_billed(&tx, frame, u64::from(r.payload_len), 1)
+                                            .await
                                             || lease_watch.revoked(&task_state)
                                         {
                                             return;
                                         }
-                                        crate::sse::auth::sse_stats::DELIVERED_RECORDS
-                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                        crate::billing::meter_read_chunk(
-                                            &task_state.billing_reads,
-                                            &crate::billing::identity_of(&task_state, &task_desc),
-                                            u64::from(r.payload_len),
-                                            1,
-                                        );
                                         cursor = cursor.max(r.offset + 1);
                                     }
                                     cursor = cursor.max(scan_to);
@@ -669,17 +652,11 @@ pub(crate) async fn serve(
                                     &task_desc.name,
                                 )
                                 .await;
-                                if !sse_send(&tx, frame).await || lease_watch.revoked(&task_state) {
+                                if !sse_send_billed(&tx, frame, u64::from(r.payload_len), 1).await
+                                    || lease_watch.revoked(&task_state)
+                                {
                                     return;
                                 }
-                                crate::sse::auth::sse_stats::DELIVERED_RECORDS
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                crate::billing::meter_read_chunk(
-                                    &task_state.billing_reads,
-                                    &crate::billing::identity_of(&task_state, &task_desc),
-                                    u64::from(r.payload_len),
-                                    1,
-                                );
                                 cursor = cursor.max(r.offset + 1);
                             }
                             // ADVANCE TO SCANNED BATCH END ONLY (findings
@@ -759,7 +736,7 @@ pub(crate) async fn serve(
     });
 
     let stream = futures_util::StreamExt::map(
-        GatedSseBody::new(body_state, rx, slot, body_watch, gen_rx),
+        GatedSseBody::new(body_state, rx, desc, slot, body_watch, gen_rx),
         move |item| item,
     );
     response_from_stream(stream, binary, &usage)

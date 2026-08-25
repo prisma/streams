@@ -3222,7 +3222,7 @@ async fn wait_all_absorbed(engine: &Arc<crate::shard::ShardEngine>, hashes: &[[u
 /// the 10 s deadline instant.
 #[tokio::test(start_paused = true)]
 async fn sse_send_disconnects_a_stalled_subscriber() {
-    let (tx, mut rx) = tokio::sync::mpsc::channel::<Result<bytes::Bytes, std::io::Error>>(4);
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<crate::sse::auth::SseChunk>(4);
     for _ in 0..4 {
         assert!(crate::http::sse_send(&tx, bytes::Bytes::from_static(b"x")).await);
     }
@@ -24249,7 +24249,7 @@ async fn a_bounded_cleanup_drains_residue_without_touching_the_live_generation()
 #[test]
 fn failpoint_registry_is_enumerable_and_described() {
     use crate::failpoints::Fp;
-    assert_eq!(Fp::ALL.len(), 24);
+    assert_eq!(Fp::ALL.len(), 25);
     for fp in Fp::ALL {
         assert!(!fp.site().is_empty(), "{fp:?} has no site contract");
     }
@@ -32321,6 +32321,7 @@ async fn revocation_interrupts_active_direct_delivery() {
         200
     );
     wait_parked(crate::failpoints::Fp::SseBeforeSend, "rv2", 1).await;
+    let bill_before = read_billing_sum(&_state);
 
     rig_publish_grants(
         &svc,
@@ -32350,6 +32351,13 @@ async fn revocation_interrupts_active_direct_delivery() {
     assert!(
         !after.contains("MARKER") && !after.contains("TRIGGER"),
         "post-cutoff records reached a revoked direct subscriber:\n{after}"
+    );
+    // Round-9 metering boundary: the discarded post-cutoff frames must
+    // not have been billed either (metering rides the yield).
+    assert_eq!(
+        read_billing_sum(&_state),
+        bill_before,
+        "discarded post-cutoff frames were billed"
     );
 }
 
@@ -32396,6 +32404,84 @@ async fn token_expiry_interrupts_slowly_progressing_delivery() {
     );
 }
 
+/// Rig-local read-billing sum (payload bytes, records) across every
+/// identity in the ACTIVE accumulator — the yield-boundary metering
+/// assertions compare snapshots of this. (The process-global
+/// DELIVERED_RECORDS gauge is shared across parallel tests and cannot
+/// carry a delta assertion; the accumulator is per rig.)
+fn read_billing_sum(state: &Arc<crate::http::AppState>) -> (u64, u64) {
+    state
+        .billing_reads
+        .snapshot_active()
+        .iter()
+        .fold((0, 0), |(b, r), (_, d)| {
+            (b + d.read_payload_bytes, r + d.read_records)
+        })
+}
+
+/// Round-9 review metering boundary: a frame QUEUED IN THE CHANNEL
+/// across an authorization cutoff is discarded unyielded AND
+/// unbilled. The body is parked BEFORE its next dequeue
+/// (SseBodyBeforeYield), the producer enqueues the trigger frame, the
+/// credential is revoked, the body resumes: EOF with zero data frames
+/// and a ZERO read-billing delta — billing rides the authoritative
+/// yield, never the enqueue.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn queued_frame_is_discarded_and_unbilled_at_revocation() {
+    let (svc, state, addr) = auth_rig("proj-rvq", "ws_rv", &["c1", "c2"], None).await;
+    let tok1 = mint_token("c1", "proj-rvq", "ws_rv", 1, 1, "q1", 600);
+    let tok2 = mint_token("c2", "proj-rvq", "ws_rv", 1, 1, "q2", 600);
+    rig_create(addr, "rvq", &tok1).await;
+    rig_append_retry(addr, "rvq", &tok1, r#"{"i":0}"#).await;
+    let mut sub = rig_sse(addr, "rvq", &tok1, "", None).await;
+    let (acc, _) = hub_sse_collect(&mut sub, 8, |t| t.contains("upToDate")).await;
+    assert!(data_frames(&acc) >= 1, "catch-up delivered:\n{acc}");
+
+    // Every pre-cutoff yield is already billed (metering is
+    // synchronous with the yield the client observed). The snapshot
+    // sits BEFORE the trigger append: enqueue-time billing of the
+    // never-yielded trigger frame (the pre-round-9 boundary) must land
+    // INSIDE the measured window, not inside the baseline.
+    let before = read_billing_sum(&state);
+    // Park the BODY before its next dequeue, then land one frame: the
+    // trigger sits IN the channel, undelivered, across the cutoff.
+    crate::failpoints::arm(crate::failpoints::Fp::SseBodyBeforeYield, "rvq");
+    assert_eq!(
+        rig_append(addr, "rvq", &tok2, r#"{"TRIGGER":0}"#).await,
+        200
+    );
+    wait_parked(crate::failpoints::Fp::SseBodyBeforeYield, "rvq", 1).await;
+
+    rig_publish_grants(
+        &svc,
+        "proj-rvq",
+        &[
+            ("c1", crate::project_policy::CredentialStatus::Revoked, 2),
+            ("c2", crate::project_policy::CredentialStatus::Active, 1),
+        ],
+        2,
+    )
+    .unwrap();
+    crate::failpoints::release(crate::failpoints::Fp::SseBodyBeforeYield, "rvq");
+
+    let (after, eof) = hub_sse_collect(&mut sub, 15, |_| false).await;
+    assert!(eof, "revoked subscription must terminate");
+    assert_eq!(
+        data_frames(&after),
+        0,
+        "the queued frame must not be yielded:\n{after}"
+    );
+    assert!(
+        !after.contains("TRIGGER"),
+        "the queued record reached a revoked subscriber:\n{after}"
+    );
+    assert_eq!(
+        read_billing_sum(&state),
+        before,
+        "a discarded queued frame must never be billed"
+    );
+}
+
 /// Round-8 review blocker 1, SHARED-feed leg: two LiveFeed
 /// subscribers on ONE shared feed, both parked at the send failpoint
 /// with the trigger frame in hand; ONE credential is revoked. The
@@ -32429,6 +32515,7 @@ async fn livefeed_shared_feed_revocation_gates_one_subscriber_only() {
         200
     );
     wait_parked(crate::failpoints::Fp::SseBeforeSend, "rv3", 2).await;
+    let bill_before = read_billing_sum(&state);
 
     // Revoke c1 ONLY, land post-cutoff markers with c2, resume.
     rig_publish_grants(
@@ -32471,6 +32558,17 @@ async fn livefeed_shared_feed_revocation_gates_one_subscriber_only() {
             "survivor receives {needle} exactly once:\n{after_b}"
         );
     }
+    // Round-9 metering boundary, exactly-once billing on a SHARED
+    // feed: the survivor's three yielded records bill exactly three
+    // read records; the revoked subscriber's discarded copies bill
+    // ZERO.
+    let (_, recs_after) = read_billing_sum(&state);
+    let (_, recs_before) = bill_before;
+    assert_eq!(
+        recs_after - recs_before,
+        3,
+        "the shared cutoff must bill exactly the survivor's three records"
+    );
 }
 
 /// Round-8 review blocker 1, MID-SUBSCRIPTION SOURCE-SWAP leg: the

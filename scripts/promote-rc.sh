@@ -30,19 +30,27 @@ SHA=$(git rev-parse --verify "$COMMIT^{commit}")
 
 echo "== promote-rc: $SHA -> $TAG =="
 
-echo "== 1/4 required named CI jobs at $SHA =="
-REQUIRED_JOBS=(rust mt-cert-1000 durable-streams-server-conformance product-field-gate sdk-package platform-e2e)
-RUN_ID=$(gh run list --commit "$SHA" --workflow ci --limit 1 --json databaseId --jq '.[0].databaseId')
-[ -n "$RUN_ID" ] || { echo "FAIL: no CI run for $SHA"; exit 1; }
-JOBS_JSON=$(gh run view "$RUN_ID" --json jobs --jq '[.jobs[] | {name, conclusion}]')
-for j in "${REQUIRED_JOBS[@]}"; do
-  C=$(echo "$JOBS_JSON" | python3 -c "
+echo "== 1/4 required check runs at $SHA =="
+# Round-9 review item 4: query ALL check runs attached to the exact
+# SHA, not one workflow run's jobs — workflow-lint lives in its OWN
+# workflow (check-run name `actionlint`), and the LiveFeed engine +
+# matrix are the replacement engine's certification. A commit with a
+# red matrix or an unparseable workflow must never receive an RC tag.
+REQUIRED_CHECKS=(rust livefeed livefeed-matrix platform-e2e mt-cert-1000
+  durable-streams-server-conformance product-field-gate sdk-package actionlint)
+CHECKS_JSON=$(gh api "repos/{owner}/{repo}/commits/$SHA/check-runs?per_page=100" \
+  --jq '[.check_runs[] | {name, conclusion}]')
+for c in "${REQUIRED_CHECKS[@]}"; do
+  C=$(echo "$CHECKS_JSON" | python3 -c "
 import sys, json
-jobs = json.load(sys.stdin)
-m = [x['conclusion'] for x in jobs if x['name'] == '$j']
-print(m[0] if m else 'missing')")
-  if [ "$C" != "success" ]; then echo "FAIL: job $j = $C"; exit 1; fi
-  echo "ok   $j"
+runs = json.load(sys.stdin)
+m = [x['conclusion'] for x in runs if x['name'] == '$c']
+# A check may run more than once at a SHA (re-runs): require it to
+# exist and EVERY run of that name to have succeeded — a red run
+# alongside a green re-run is not clean evidence.
+print('missing' if not m else ('success' if all(x == 'success' for x in m) else next(x for x in m if x != 'success')))")
+  if [ "$C" != "success" ]; then echo "FAIL: check $c = $C"; exit 1; fi
+  echo "ok   $c"
 done
 
 echo "== 2/4 clean detached worktree at $SHA =="
@@ -100,7 +108,7 @@ FIELD_LINE="capacity + handoff manifests verified via rc-certify.sh"
 git tag -a "$TAG" "$SHA" -m "release candidate $TAG
 
 Certified at $SHA (all gates ran in a clean detached worktree):
-- required named CI jobs green: ${REQUIRED_JOBS[*]}
+- required check runs green at the SHA: ${REQUIRED_CHECKS[*]}
 - local release gate + bare multitenancy audit
 - noisy-neighbor campaign at contract scale (locked thresholds)
 - $FIELD_LINE

@@ -14,7 +14,10 @@ cd "$HERE"
 # when actionlint is available (CI enforces it unconditionally via
 # .github/workflows/workflow-lint.yml).
 if command -v actionlint > /dev/null 2>&1; then
-  if ! actionlint .github/workflows/*.yml >> "$OUT" 2>&1; then
+  # Bare invocation, matching the independent workflow-lint job:
+  # actionlint auto-detects the project and lints every workflow file
+  # (.yml AND .yaml — an explicit .yml glob silently misses .yaml).
+  if ! actionlint >> "$OUT" 2>&1; then
     echo GATEFAIL-actionlint >> "$OUT"
     exit 1
   fi

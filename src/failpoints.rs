@@ -67,10 +67,11 @@ pub enum Fp {
     SseFeedBeforeSubscribe,
     SseBeforeSend,
     FeedAfterPermitRelease,
+    SseBodyBeforeYield,
 }
 
 impl Fp {
-    pub const ALL: [Fp; 24] = [
+    pub const ALL: [Fp; 25] = [
         Fp::StopAfterTombstone,
         Fp::StopBeforeMarkCommitted,
         Fp::StopAfterSealIntent,
@@ -95,6 +96,7 @@ impl Fp {
         Fp::SseFeedBeforeSubscribe,
         Fp::SseBeforeSend,
         Fp::FeedAfterPermitRelease,
+        Fp::SseBodyBeforeYield,
     ];
 
     /// The site contract: WHERE the point fires, stated as the
@@ -193,6 +195,13 @@ impl Fp {
                  a redundant second release (round-9 review blocker) \
                  freed the permit a NEW driver already held; armed per \
                  feed via LiveFeed::fp_name"
+            }
+            Fp::SseBodyBeforeYield => {
+                "GatedSseBody poll: parked BEFORE dequeuing the next \
+                 chunk — the frame stays IN the channel across an \
+                 authorization cutoff, and the resumed body must \
+                 discard it unyielded AND unbilled (round-9 metering \
+                 boundary)"
             }
         }
     }

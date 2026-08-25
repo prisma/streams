@@ -402,6 +402,19 @@ The Stage 6 lineage work is unblocked from here.
 
 Below-edge canaries reuse the agreed 1000-connection geometries.
 
+Round-9 review addition — the bounded seal park at scale: while a
+source reads closed and the descriptor publication is unresolved,
+EVERY attached subscriber wakes on a 250 ms timer and contests the
+one driver permit. The canary for the delayed-publication shape (seal
+held at the crash boundary) must run at high fan-out and:
+
+* measure timer wakeups + CPU during the withheld window;
+* assert source reads stay single-flight (one read in flight, the
+  rest contend and park);
+* if the wakeup load is material, move the retry timer to
+  feed/driver scope or notify feeds explicitly after the sealed
+  publication (either removes the per-session herd).
+
 ---
 
 ## Benchmarks (local, memstore rigs; RELEASE build)
