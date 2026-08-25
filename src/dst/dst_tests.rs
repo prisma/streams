@@ -35400,6 +35400,196 @@ async fn livefeed_budget_exhaustion_publishes_uncached_and_resumes() {
     }
 }
 
+/// Two-instance rig: a full instance over the shared store with the
+/// complete 2-bit shard prefix code, so segment routes split across
+/// shards that can be owned by different instances.
+async fn http_rig_owner(
+    store: Arc<dyn ObjectStore>,
+    instance: &str,
+) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+    http_rig_inner(
+        store,
+        ["00", "01", "10", "11"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect(),
+        crate::shard::ShardConfig::default(),
+        0,
+        None,
+        Some(instance.to_string()),
+        None,
+        None,
+        None,
+        None,
+    )
+    .await
+}
+
+/// Round-10 two-instance groundwork (red): a subscriber landing on
+/// the CHILD's owner streams the WHOLE lineage — the sealed
+/// predecessor is read from ITS owner over the bounded internal
+/// segment-scan surface, the live child locally. Before the
+/// SpanReader split, LineageSource::build refused ANY lineage with a
+/// foreign span (WrongOwner), so the child's owner could not serve a
+/// split stream's history at all. The live tail must still be local:
+/// remote ownership of the TAIL stays a typed WrongOwner cutoff.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_remote_sealed_predecessor_streams_through_owner() {
+    let store = mem();
+    let (state_a, addr_a) = http_rig_owner(store.clone(), "inst-a").await;
+    let (state_b, addr_b) = http_rig_owner(store, "inst-b").await;
+    state_b
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    // History on A, then a split (parent seg0 seals, the child opens).
+    let (st, _, _) = preq(
+        addr_a,
+        "PUT",
+        "/v1/streams/xown",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append_lf(addr_a, "xown", r#"{"h":0}"#).await;
+    hub_append_lf(addr_a, "xown", r#"{"h":1}"#).await;
+    let sref = state_a.raw_adapter_sref("xown");
+    let _ = crate::scaler3::execute_split(&state_a, &sref, 0, 0x8000_0000_0000_0000).await;
+    for _ in 0..200 {
+        state_a.registry.invalidate(&sref);
+        let d = state_a.registry.get(&sref).await.unwrap().unwrap();
+        if d.segments
+            .as_ref()
+            .is_some_and(|m| m.pending.is_none() && m.segments.len() > 1)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    state_b.registry.invalidate(&sref);
+    let desc = state_b.registry.get(&sref).await.unwrap().unwrap();
+    let child_seg = desc.resolve_segment("").seg_id;
+    // The parent's shard belongs to A (an override on B + A's peer
+    // URL); the child's shard differs, so B serves it itself. The
+    // fixed stream name makes both routes deterministic.
+    let p_parent =
+        crate::registry::shard_for_hash(&state_b.shard_prefixes, &desc.segment_route_by_id(0));
+    let p_child = crate::registry::shard_for_hash(
+        &state_b.shard_prefixes,
+        &desc.segment_route_by_id(child_seg),
+    );
+    assert_ne!(
+        p_parent, p_child,
+        "pick a stream name whose parent/child routes differ"
+    );
+    // B's view of the fleet: both instances active; the parent's
+    // shard is pinned to A, every other shard to B (explicit
+    // overrides beat the rendezvous pick for determinism).
+    *state_b.ring_active.write().unwrap() = vec!["inst-a".to_string(), "inst-b".to_string()];
+    {
+        let mut ov = state_b.ring_overrides.write().unwrap();
+        for p in state_b.shard_prefixes.clone() {
+            let owner = if p == p_parent { "inst-a" } else { "inst-b" };
+            ov.insert(p, owner.to_string());
+        }
+    }
+    state_b
+        .peer_urls
+        .write()
+        .unwrap()
+        .insert("inst-a".to_string(), format!("http://{addr_a}"));
+    // The successor record lands through B (B owns the child's shard;
+    // its open fences A's copy of that shard).
+    hub_append_lf(addr_b, "xown", r#"{"h":2}"#).await;
+
+    // THE contract: a subscriber on B streams the whole lineage —
+    // remote sealed parent, local live child — and parks live ON THE
+    // LIVEFEED ENGINE. (The legacy lineage streamer also relays
+    // remote reads, so delivery alone cannot distinguish the engines;
+    // legacy dies at Stage 7 deletion, so the feed itself must carry
+    // this session.)
+    let mut sck = lf_connect(addr_b, "xown", "?cursor=beginning").await;
+    let (acc, eof) = hub_sse_collect(&mut sck, 15, |t| lf_record_and_status(t, "\"h\":2")).await;
+    assert!(
+        !eof,
+        "the child's owner must serve the split stream in place:\n{acc}"
+    );
+    assert!(
+        state_b.live_feeds.len() >= 1,
+        "the session must ride the LIVEFEED engine, not the legacy lineage fallback"
+    );
+    for i in 0..3u64 {
+        let needle = format!("\"h\":{i}");
+        assert_eq!(
+            acc.matches(&needle).count(),
+            1,
+            "{needle} exactly once across the ownership boundary:\n{acc}"
+        );
+    }
+    let last_data = acc.rfind("\"h\":2").expect("frontier record");
+    let utd = acc.find("\"upToDate\":true").expect("status");
+    assert!(
+        utd > last_data,
+        "honest upToDate after the full lineage:\n{acc}"
+    );
+    // Liveness on the local child after the remote catch-up.
+    hub_append_lf(addr_b, "xown", r#"{"h":3}"#).await;
+    let (tail, eof2) = hub_sse_collect(&mut sck, 10, |t| lf_record_and_status(t, "\"h\":3")).await;
+    assert!(!eof2, "still live:\n{tail}");
+    assert_eq!(tail.matches("\"h\":3").count(), 1);
+    // Internal pages are UNBILLED on the serving owner: A relayed the
+    // sealed parent's records but its read accumulator must not have
+    // metered them (customer metering happens once, at B's external
+    // body yield).
+    assert_eq!(
+        read_billing_sum(&state_a),
+        (0, 0),
+        "internal segment-scan pages must never meter customer reads"
+    );
+
+    // PEER OUTAGE: a fresh subscriber whose remote predecessor pages
+    // cannot be fetched STALLS with bounded retries — no data, no
+    // false terminal, no EOF — and RECOVERS in place the moment the
+    // peer returns. The first subscriber must be gone first: its
+    // feed's retained ring covers the whole lineage and would serve a
+    // late attacher without touching the peer.
+    drop(sck);
+    for _ in 0..200 {
+        if state_b.live_feeds.len() == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(state_b.live_feeds.len(), 0, "the feed tears down at zero");
+    state_b
+        .peer_urls
+        .write()
+        .unwrap()
+        .insert("inst-a".to_string(), "http://127.0.0.1:9".to_string());
+    let mut down = lf_connect(addr_b, "xown", "?cursor=beginning").await;
+    let (held, eof3) = hub_sse_collect(&mut down, 2, |_| false).await;
+    assert!(!eof3, "a peer outage is a stall, not a disconnect:\n{held}");
+    assert!(
+        !held.contains("event: data") && !held.contains("\"sealed\":true"),
+        "no data and no false terminal while the peer is down:\n{held}"
+    );
+    state_b
+        .peer_urls
+        .write()
+        .unwrap()
+        .insert("inst-a".to_string(), format!("http://{addr_a}"));
+    let (rec, eof4) = hub_sse_collect(&mut down, 15, |t| lf_record_and_status(t, "\"h\":3")).await;
+    assert!(!eof4, "recovery completes in place:\n{rec}");
+    for i in 0..4u64 {
+        let needle = format!("\"h\":{i}");
+        assert_eq!(
+            rec.matches(&needle).count(),
+            1,
+            "{needle} exactly once after peer recovery:\n{rec}"
+        );
+    }
+}
+
 /// Round-10 review: the per-RECORD payload ceiling is independent of
 /// the request-body ceiling — a batch of many small records passes
 /// while ONE record over the ceiling is refused 413, on both the

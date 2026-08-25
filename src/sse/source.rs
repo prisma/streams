@@ -136,8 +136,28 @@ struct LineageSpan {
     cap: Option<u64>,
     #[allow(dead_code)] // identity is informational (engine/handle keying)
     identity: [u8; 16],
-    engine: Arc<ShardEngine>,
-    handle: Arc<StreamHandle>,
+    reader: SpanReader,
+}
+
+/// HOW a span's records are read (round-10 two-instance model):
+/// metadata (`seg_id`/`logical_start`/`cap`) answers `locate`/
+/// `logicalize` without opening anything; only reads need a reader.
+enum SpanReader {
+    Local {
+        engine: Arc<ShardEngine>,
+        handle: Arc<StreamHandle>,
+    },
+    /// A SEALED predecessor owned by another instance: bounded pages
+    /// over the workload-authenticated internal segment-scan surface.
+    /// The OWNER NAME is stored, never a URL — every page resolves the
+    /// peer from the live table, so ownership movement and peer
+    /// address changes self-heal per read. A LIVE tail is never
+    /// remote — build refuses it as WrongOwner (disconnect; the
+    /// gateway reroutes to the tail's owner).
+    RemoteSealed {
+        owner: String,
+        target: crate::product::InternalTarget,
+    },
 }
 
 impl LineageSpan {
@@ -156,9 +176,14 @@ pub(crate) struct LineageSource {
     state: Arc<crate::http::AppState>,
     desc: StreamDesc,
     key: crate::crypto::StreamKey,
+    /// The stream key in wire form for internal relays (computed once).
+    key_b64: String,
     epoch: [u8; 16],
     rk_filter: Option<String>,
     spans: Vec<LineageSpan>,
+    /// Returned as the advance notify for a sealed (possibly remote)
+    /// tail: a sealed tail never advances, so nothing ever fires it.
+    idle_notify: tokio::sync::Notify,
 }
 
 /// Why a lineage cannot be built here, split by retry semantics
@@ -222,15 +247,50 @@ impl LineageSource {
             // close them as internal custody while the feed lives.
             // 409 not_ring_owner is the DURABLE wrong-owner signal;
             // 503-class errors (open wait, anti-flap) are transient.
-            let engine = match state.engine_for(&desc.segment_route(sg)).await {
-                Ok(e) => e,
-                Err(resp) => {
-                    if resp.status() == axum::http::StatusCode::CONFLICT {
-                        return Err(LineageBuildError::WrongOwner(format!(
-                            "segment {} is owned by another instance",
-                            sg.seg_id
-                        )));
+            let cap = sg.sealed_next_offset;
+            let reader = match state.engine_for(&desc.segment_route(sg)).await {
+                Ok(engine) => {
+                    let handle = engine
+                        .stream_handle(identity)
+                        .await
+                        .map_err(|e| LineageBuildError::Transient(format!("stream handle: {e}")))?;
+                    state.keys.put(identity, key.clone(), epoch);
+                    SpanReader::Local { engine, handle }
+                }
+                Err(resp) if resp.status() == axum::http::StatusCode::CONFLICT => {
+                    // Round-10 two-instance model: a SEALED span owned
+                    // elsewhere is read remotely over the internal
+                    // segment-scan surface; a LIVE tail must be local
+                    // (typed WrongOwner — disconnect and reroute).
+                    let owner = resp
+                        .headers()
+                        .get("streams-replay-to")
+                        .and_then(|v| v.to_str().ok())
+                        .map(str::to_string);
+                    match (
+                        cap.is_some(),
+                        owner,
+                        crate::product::InternalTarget::of(&desc, sg.seg_id),
+                    ) {
+                        (true, Some(owner), Some(target)) => {
+                            SpanReader::RemoteSealed { owner, target }
+                        }
+                        (true, _, _) => {
+                            return Err(LineageBuildError::WrongOwner(format!(
+                                "sealed segment {} is owned by another instance with no \
+                                 routable peer",
+                                sg.seg_id
+                            )));
+                        }
+                        (false, _, _) => {
+                            return Err(LineageBuildError::WrongOwner(format!(
+                                "live segment {} is owned by another instance",
+                                sg.seg_id
+                            )));
+                        }
                     }
+                }
+                Err(resp) => {
                     return Err(LineageBuildError::Transient(format!(
                         "segment {} engine unavailable ({})",
                         sg.seg_id,
@@ -238,19 +298,12 @@ impl LineageSource {
                     )));
                 }
             };
-            let handle = engine
-                .stream_handle(identity)
-                .await
-                .map_err(|e| LineageBuildError::Transient(format!("stream handle: {e}")))?;
-            state.keys.put(identity, key.clone(), epoch);
-            let cap = sg.sealed_next_offset;
             spans.push(LineageSpan {
                 seg_id: sg.seg_id,
                 logical_start: logical,
                 cap,
                 identity,
-                engine,
-                handle,
+                reader,
             });
             if let Some(c) = cap {
                 logical += c;
@@ -270,10 +323,12 @@ impl LineageSource {
         Ok(Arc::new(Self {
             state,
             desc,
+            key_b64: key.to_b64(),
             key,
             epoch,
             rk_filter,
             spans,
+            idle_notify: tokio::sync::Notify::new(),
         }))
     }
 
@@ -297,20 +352,65 @@ impl FeedSourceRead for LineageSource {
                 continue;
             }
             let local_from = cursor - span.logical_start;
-            let part = crate::http::read_records(
-                &self.state,
-                &self.desc,
-                &self.key,
-                &self.epoch,
-                &span.handle,
-                &span.engine,
-                local_from,
-                self.rk_filter.as_deref(),
-                budget,
-                crate::shard::Deliver::Durable,
-            )
-            .await
-            .map_err(|e| anyhow::anyhow!(e))?;
+            let part = match &span.reader {
+                SpanReader::Local { engine, handle } => crate::http::read_records(
+                    &self.state,
+                    &self.desc,
+                    &self.key,
+                    &self.epoch,
+                    handle,
+                    engine,
+                    local_from,
+                    self.rk_filter.as_deref(),
+                    budget,
+                    crate::shard::Deliver::Durable,
+                )
+                .await
+                .map_err(|e| anyhow::anyhow!(e))?,
+                SpanReader::RemoteSealed { owner, target } => {
+                    // Bounded internal page from the span's owner,
+                    // whose URL is resolved from the LIVE peer table
+                    // on every page (movement self-heals). A peer
+                    // failure is a SOURCE failure: the session takes
+                    // the bounded-backoff retry, never a false
+                    // terminal. Internal pages are unbilled — customer
+                    // metering happens once, at the external body
+                    // yield.
+                    let base = self
+                        .state
+                        .peer_urls
+                        .read()
+                        .unwrap()
+                        .get(owner)
+                        .cloned()
+                        .ok_or_else(|| {
+                            anyhow::anyhow!("no peer url for owner {owner} (span {})", span.seg_id)
+                        })?;
+                    let mut out = crate::product::relay_segment_scan(
+                        &self.state,
+                        &base,
+                        &self.desc.name,
+                        target,
+                        local_from,
+                        budget,
+                        &self.key_b64,
+                    )
+                    .await
+                    .ok_or_else(|| {
+                        anyhow::anyhow!(
+                            "remote sealed span {} page failed (peer unavailable)",
+                            span.seg_id
+                        )
+                    })?;
+                    // The internal scan returns every lane's records:
+                    // apply THIS lane's filter exactly as the local
+                    // read does (scanned progress stays honest).
+                    if let Some(k) = self.rk_filter.as_deref() {
+                        out.recs.retain(|r| r.rkey == k);
+                    }
+                    out
+                }
+            };
             // CONSUMED progress (finding 2/6): the scanned boundary,
             // capped at the span's sealed cap — match-free ranges
             // count, records beyond the cap belong to the next span.
@@ -363,14 +463,28 @@ impl FeedSourceRead for LineageSource {
 
     fn frontier(&self) -> u64 {
         let tail = self.tail();
-        match tail.logical_end() {
-            Some(e) => e,
-            None => tail.logical_start + tail.handle.state.lock().unwrap().durable.next,
+        match (tail.logical_end(), &tail.reader) {
+            (Some(e), _) => e,
+            (None, SpanReader::Local { handle, .. }) => {
+                tail.logical_start + handle.state.lock().unwrap().durable.next
+            }
+            (None, SpanReader::RemoteSealed { .. }) => {
+                unreachable!("build refuses a remote LIVE tail")
+            }
         }
     }
 
     fn closed(&self) -> bool {
-        self.tail().handle.state.lock().unwrap().durable.closed
+        let tail = self.tail();
+        if tail.cap.is_some() {
+            // A sealed cap IS closure — no handle read needed (the
+            // tail may be a remote sealed span after a full seal).
+            return true;
+        }
+        match &tail.reader {
+            SpanReader::Local { handle, .. } => handle.state.lock().unwrap().durable.closed,
+            SpanReader::RemoteSealed { .. } => unreachable!("build refuses a remote LIVE tail"),
+        }
     }
 
     fn prepare_data(&self, rec: &crate::http::PlainRec) -> Bytes {
@@ -378,7 +492,12 @@ impl FeedSourceRead for LineageSource {
     }
 
     fn advance_notify(&self) -> &tokio::sync::Notify {
-        &self.tail().handle.notify
+        match &self.tail().reader {
+            SpanReader::Local { handle, .. } => &handle.notify,
+            // A sealed tail never advances: park on a notify nothing
+            // fires (the session's other wakeups drive closure).
+            SpanReader::RemoteSealed { .. } => &self.idle_notify,
+        }
     }
 
     fn locate(&self, logical_after: u64) -> WirePosition {
@@ -390,9 +509,14 @@ impl FeedSourceRead for LineageSource {
             if span.seg_id != pos.seg_id {
                 continue;
             }
-            let within = match span.cap {
-                Some(c) => pos.local_after <= c,
-                None => pos.local_after <= span.handle.state.lock().unwrap().durable.next,
+            let within = match (span.cap, &span.reader) {
+                (Some(c), _) => pos.local_after <= c,
+                (None, SpanReader::Local { handle, .. }) => {
+                    pos.local_after <= handle.state.lock().unwrap().durable.next
+                }
+                (None, SpanReader::RemoteSealed { .. }) => {
+                    unreachable!("build refuses a remote LIVE tail")
+                }
             };
             if within {
                 return Some(span.logical_start + pos.local_after);

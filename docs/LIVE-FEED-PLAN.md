@@ -119,8 +119,18 @@ The fourth review's four Stage 6 blockers, all with red legs:
 3. **Fleet posture (same-owner)**: a lineage that cannot be built
    locally (wrong-owner span, engine unavailable, inconsistent map)
    disconnects-and-reroutes IMMEDIATELY with a typed outcome — never
-   a heartbeat-long retry limbo. Cross-owner continuation (remote
-   sealed-predecessor reads, local live tail) remains Stage 7+ scope.
+   a heartbeat-long retry limbo. Round 10: cross-owner continuation
+   LANDED — `SpanReader { Local, RemoteSealed }`: a SEALED predecessor
+   owned elsewhere pages through the workload-authenticated internal
+   segment-scan surface (owner NAME stored, peer URL resolved from
+   the live table per page, so movement self-heals); the LIVE tail
+   must be local (remote live tail stays a typed WrongOwner
+   disconnect-and-reroute). Internal pages are unbilled; peer outage
+   is a stall with bounded retry + in-place recovery, never a false
+   terminal (two-instance in-process leg
+   `livefeed_remote_sealed_predecessor_streams_through_owner`). The
+   full two-process certification battery (owner movement matrix,
+   security cases, cursor positions) remains next-stage scope.
 4. **Deterministic transition handoff**: a pending transition is
    completed via `scaler3::resume` AWAITED under the driver permit
    (bounded), then re-read immediately — continuation no longer

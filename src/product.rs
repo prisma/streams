@@ -5547,7 +5547,9 @@ pub(crate) async fn internal_segment_scan(
 }
 
 /// Relay one scan page's segment read to its owner; None on failure.
-async fn relay_segment_scan(
+/// Shared by the scan surface and the LiveFeed remote-sealed span
+/// reader (round-10 two-instance model).
+pub(crate) async fn relay_segment_scan(
     state: &Arc<AppState>,
     base: &str,
     name: &str,
