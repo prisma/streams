@@ -432,6 +432,15 @@ struct Args {
     #[arg(long, env = "STREAMS_RELEASE_POSTURE", default_value = "false", value_parser = parse_bool_flag)]
     release_posture: bool,
 
+    /// Per-RECORD payload ceiling, independent of the request-body
+    /// ceiling (round-10 review): a request may carry MANY records,
+    /// but ONE record whose prepared SSE frame exceeds the certified
+    /// feed ring turns a valid append into an O(subscribers)
+    /// reconnect herd on a shared feed. Unset = unlimited (dev
+    /// posture); the release posture REQUIRES a ring-consistent value.
+    #[arg(long, env = "MAX_RECORD_PAYLOAD_BYTES")]
+    max_record_payload_bytes: Option<usize>,
+
     /// Billing tenant boundary: the account every stream created on
     /// this deployment bills to (docs/OBSERVABILITY-BILLING.md §3.2).
     #[arg(long, env = "ACCOUNT_ID", default_value = "acct_local")]
@@ -969,6 +978,35 @@ fn validate_sse_engine(args: &Args) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Round-10 review: the release posture requires an explicit
+/// per-record payload ceiling whose WORST-CASE prepared SSE frame
+/// fits the certified feed ring — otherwise one legal oversized
+/// append forces every shared-feed subscriber into the reconnect
+/// posture at once (O(subscribers) EOFs, TLS re-establishment burst,
+/// durable read amplification).
+fn validate_record_ceiling(release_posture: bool, ceiling: Option<usize>) -> anyhow::Result<()> {
+    if !release_posture {
+        return Ok(());
+    }
+    let Some(ceiling) = ceiling else {
+        anyhow::bail!(
+            "STREAMS_RELEASE_POSTURE=1 requires MAX_RECORD_PAYLOAD_BYTES — one record \
+             whose prepared SSE frame exceeds SSE_FEED_RING_BYTES would disconnect \
+             every shared-feed subscriber at once (round-10 review)"
+        );
+    };
+    let ring = crate::livehub::feed_ring_bytes();
+    let worst = crate::sse::feed::worst_prepared_charge(ceiling);
+    if worst > ring {
+        anyhow::bail!(
+            "MAX_RECORD_PAYLOAD_BYTES={ceiling}: worst-case prepared SSE frame is \
+             {worst} bytes, exceeding SSE_FEED_RING_BYTES={ring} — raise the ring or \
+             lower the record ceiling (release posture requires the frame to fit)"
+        );
+    }
+    Ok(())
+}
+
 fn validate_fleet_auth(args: &Args, fleet_mode: bool) -> anyhow::Result<()> {
     match args.fleet_auth_mode.as_str() {
         "static" => {
@@ -1250,6 +1288,29 @@ mod config_validation_tests {
         assert!(
             validate_fleet_auth(&a, true).is_err(),
             "static fleet mode still requires the token"
+        );
+    }
+
+    /// Round-10 review: the release posture requires a per-record
+    /// payload ceiling whose worst-case prepared SSE frame fits the
+    /// feed ring.
+    #[test]
+    fn release_posture_requires_a_ring_consistent_record_ceiling() {
+        // Off-release: no ceiling required.
+        assert!(validate_record_ceiling(false, None).is_ok());
+        // Release without a ceiling: refused.
+        assert!(validate_record_ceiling(true, None).is_err());
+        // Release with a ceiling whose frame exceeds the ring: refused.
+        let ring = crate::livehub::feed_ring_bytes();
+        assert!(validate_record_ceiling(true, Some(ring * 4)).is_err());
+        // Release with a fitting ceiling: accepted (a quarter of the
+        // ring leaves ample framing headroom).
+        assert!(validate_record_ceiling(true, Some(ring / 4)).is_ok());
+        // The frame arithmetic itself: base64 4/3 plus overheads.
+        assert!(crate::sse::feed::worst_prepared_charge(0) > 0);
+        assert!(
+            crate::sse::feed::worst_prepared_charge(3000) >= 4000,
+            "base64 expansion must be accounted"
         );
     }
 
@@ -1709,6 +1770,7 @@ async fn async_main() -> anyhow::Result<()> {
     // routes would let any customer token corrupt any consumer.
     validate_sse_engine(&args)?;
     validate_fleet_auth(&args, fleet_mode)?;
+    validate_record_ceiling(args.release_posture, args.max_record_payload_bytes)?;
     // Round-4 review: validate the capacity posture against the real
     // descriptor ceiling BEFORE any state is built — the SSE cap may
     // be clamped to what nofile_hard can actually carry.
@@ -1994,6 +2056,9 @@ async fn async_main() -> anyhow::Result<()> {
         live_feeds: Arc::new(crate::sse::registry::FeedRegistry::new()),
         feed_budget: Arc::new(crate::sse::feed::FeedMemoryBudget::from_env()),
         feed_ring_bytes: std::sync::atomic::AtomicUsize::new(crate::livehub::feed_ring_bytes()),
+        max_record_payload_bytes: std::sync::atomic::AtomicUsize::new(
+            args.max_record_payload_bytes.unwrap_or(0),
+        ),
         sse_connections: std::sync::atomic::AtomicU64::new(0),
         live_hubs: crate::livehub::HubRegistry::new(),
         sse_live_hub: std::sync::atomic::AtomicBool::new(args.sse_live_hub == 1),

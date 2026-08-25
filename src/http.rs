@@ -158,6 +158,10 @@ pub struct AppState {
     /// Per-feed ring allowance for feeds created from now on
     /// (SSE_FEED_RING_BYTES; test rigs may shrink it).
     pub feed_ring_bytes: std::sync::atomic::AtomicUsize,
+    /// Per-record payload ceiling (round-10 review); 0 = unlimited
+    /// (dev posture). The release posture requires a value whose
+    /// worst-case prepared SSE frame fits the feed ring.
+    pub max_record_payload_bytes: std::sync::atomic::AtomicUsize,
     /// The CONFIGURED cap before any platform-driven clamp — exported
     /// next to the effective one so the fleet can detect a platform
     /// lowering RLIMIT_NOFILE under it.
@@ -1090,6 +1094,7 @@ async fn debug_load(
             "source_failed": crate::sse::auth::sse_stats::FEED_SOURCE_FAILED.load(std::sync::atomic::Ordering::Relaxed),
             "oversize_dropped": crate::sse::auth::sse_stats::FEED_OVERSIZE_DROPPED.load(std::sync::atomic::Ordering::Relaxed),
             "uncached_publish": crate::sse::auth::sse_stats::FEED_UNCACHED_PUBLISH.load(std::sync::atomic::Ordering::Relaxed),
+            "project_cap_uncached": crate::sse::auth::sse_stats::FEED_PROJECT_CAP_UNCACHED.load(std::sync::atomic::Ordering::Relaxed),
             "lag_disconnects": crate::sse::auth::sse_stats::FEED_LAG_DISCONNECTS.load(std::sync::atomic::Ordering::Relaxed),
             "topology_disconnects": crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS.load(std::sync::atomic::Ordering::Relaxed),
             "cutoff_incarnation": crate::sse::auth::sse_stats::FEED_CUTOFF_INCARNATION.load(std::sync::atomic::Ordering::Relaxed),
@@ -3012,6 +3017,20 @@ fn json_entries(body: &[u8], allow_empty_array: bool) -> Result<Vec<Bytes>, Stri
     }
 }
 
+/// Round-10 review: the per-RECORD payload ceiling, independent of
+/// the request-body ceiling. Returns the first offending record's
+/// size. 0 = unlimited (dev posture); the release posture requires a
+/// ring-consistent value (main.rs boot validation).
+fn over_record_ceiling(state: &AppState, entries: &[Bytes]) -> Option<usize> {
+    let cap = state
+        .max_record_payload_bytes
+        .load(std::sync::atomic::Ordering::Relaxed);
+    if cap == 0 {
+        return None;
+    }
+    entries.iter().map(|e| e.len()).find(|l| *l > cap)
+}
+
 fn parse_producer(headers: &HeaderMap) -> Result<Option<crate::shard::ProducerReq>, String> {
     let id = hdr(headers, "producer-id");
     let epoch = hdr(headers, "producer-epoch");
@@ -3997,6 +4016,16 @@ pub(crate) async fn create_stream(
         } else {
             vec![body.clone()]
         };
+        if let Some(over) = over_record_ceiling(&state, &entries) {
+            return err_resp(
+                StatusCode::PAYLOAD_TOO_LARGE,
+                "record_too_large",
+                &format!(
+                    "record of {over} bytes exceeds the per-record ceiling \
+                     (MAX_RECORD_PAYLOAD_BYTES)"
+                ),
+            );
+        }
         // The materialized sub-offset partial is the fork's FIRST own
         // record; an initial body follows it in the same command.
         if let Some(m) = materialize_entry {
@@ -5211,6 +5240,19 @@ async fn append_core(
             }
         } else {
             entries = vec![body.clone()];
+        }
+        if deferred.is_none()
+            && let Some(over) = over_record_ceiling(&state, &entries)
+        {
+            let m = format!(
+                "record of {over} bytes exceeds the per-record ceiling \
+                 (MAX_RECORD_PAYLOAD_BYTES)"
+            );
+            if producer.is_some() {
+                deferred = Some(crate::shard::DeferredErr::BadBody(m));
+            } else {
+                return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "record_too_large", &m);
+            }
         }
     }
 
@@ -6956,6 +6998,9 @@ pub(crate) async fn sse_send_billed(
     payload_bytes: u64,
     records: u64,
 ) -> bool {
+    // A billable payload with zero record weight would silently skip
+    // the yield-boundary metering (round-10 hardening).
+    debug_assert!(payload_bytes == 0 || records > 0);
     let chunk = crate::sse::auth::SseChunk {
         bytes: b,
         payload_bytes,

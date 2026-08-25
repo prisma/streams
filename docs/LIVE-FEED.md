@@ -42,8 +42,14 @@ A subscriber CONNECTING from an old cursor performs durable catch-up.
 A subscriber still in its initial handoff that the ring overtakes
 performs durable catch-up AGAIN — never a lag disconnect.
 A subscriber that HAS reached live (an honest upToDate was emitted)
-and LATER falls behind the feed floor is disconnected with a typed
-lag error; it resumes from its last delivered cursor.
+and LATER falls behind the feed floor is disconnected: the WIRE
+receives a RESUMABLE EOF — no error control, no terminal sealed
+control — while the typed reason lives SERVER-SIDE (the
+FEED_LAG_DISCONNECTS counter and a cursor/floor log line). The client
+resumes from its last delivered cursor; the SDK treats every
+nonterminal EOF as reconnectable. (Round-9 review wording fix: a
+lagging or blocked socket is not a reliable place to deliver one
+final explanatory event, so none is promised.)
 ```
 
 Slow subscribers must not become private historical readers. The stall

@@ -187,9 +187,13 @@ mod tests {
 
     const RING: usize = 4096;
 
+    fn tpid() -> crate::tenant::ProjectId {
+        crate::tenant::ProjectId::new("proj-feed-test").unwrap()
+    }
+
     fn make_feed(key: FeedKey, budget: &Arc<FeedMemoryBudget>) -> Arc<LiveFeed> {
         let src = Arc::new(FakeSource::new(0, 8));
-        LiveFeed::new_with_budget(key, src, RING, budget.clone())
+        LiveFeed::new_with_budget(key, src, RING, budget.clone(), tpid())
     }
 
     fn key(n: u8) -> FeedKey {
@@ -302,7 +306,7 @@ mod tests {
                 key(1),
                 || {
                     let src = Arc::new(FakeSource::new(0, 8));
-                    LiveFeed::new_with_budget(key(1), src, 0, budget.clone())
+                    LiveFeed::new_with_budget(key(1), src, 0, budget.clone(), tpid())
                 },
                 None,
             )
@@ -311,7 +315,7 @@ mod tests {
             key(1),
             || {
                 let src = Arc::new(FakeSource::new(0, 8));
-                LiveFeed::new_with_budget(key(1), src, 0, budget.clone())
+                LiveFeed::new_with_budget(key(1), src, 0, budget.clone(), tpid())
             },
             None,
         );

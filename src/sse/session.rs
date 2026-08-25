@@ -194,6 +194,7 @@ pub(crate) async fn serve(
                     .feed_ring_bytes
                     .load(std::sync::atomic::Ordering::Relaxed),
                 state.feed_budget.clone(),
+                desc.project_id.clone(),
             )
         },
         Some(&src),

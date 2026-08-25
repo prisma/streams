@@ -30,6 +30,10 @@ pub(crate) mod sse_stats {
     pub static FEED_OVERSIZE_DROPPED: AtomicU64 = AtomicU64::new(0);
     /// Publications without retention: process budget exhausted.
     pub static FEED_UNCACHED_PUBLISH: AtomicU64 = AtomicU64::new(0);
+    /// Publications without retention: the PROJECT's own allowance
+    /// exhausted (round-10 isolation — the offender takes the
+    /// uncached posture; the cell ceiling was not the refusal).
+    pub static FEED_PROJECT_CAP_UNCACHED: AtomicU64 = AtomicU64::new(0);
     /// Live sessions disconnected for genuine lag (below the floor
     /// AFTER having reached live).
     pub static FEED_LAG_DISCONNECTS: AtomicU64 = AtomicU64::new(0);

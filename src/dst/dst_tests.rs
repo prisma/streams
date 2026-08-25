@@ -5821,6 +5821,7 @@ async fn http_rig_inner(
         // Per-rig budget: isolated from every other rig in the process.
         feed_budget: Arc::new(crate::sse::feed::FeedMemoryBudget::from_env()),
         feed_ring_bytes: std::sync::atomic::AtomicUsize::new(crate::livehub::feed_ring_bytes()),
+        max_record_payload_bytes: std::sync::atomic::AtomicUsize::new(0),
         sse_connections: std::sync::atomic::AtomicU64::new(0),
         live_hubs: crate::livehub::HubRegistry::new(),
         sse_live_hub: std::sync::atomic::AtomicBool::new(false),
@@ -35306,8 +35307,9 @@ async fn livefeed_oversized_record_solo_in_place_shared_resumes_durably() {
     );
 
     // SHARED: the second oversized publication goes uncached; both
-    // subscribers take the typed lag disconnect (NO terminal) and
-    // resume durably from their cursors with no gap and no duplicate.
+    // subscribers take a RESUMABLE EOF (the typed reason is
+    // server-side only — counter + log; no wire error control, NO
+    // terminal) and resume durably with no gap and no duplicate.
     let mut s2 = lf_connect(addr, "lfbig2", "").await;
     let (b, _) = hub_sse_collect(&mut s2, 8, |t| t.contains("upToDate")).await;
     let cur2 = last_next_cursor(&b);
@@ -35339,9 +35341,10 @@ async fn livefeed_oversized_record_solo_in_place_shared_resumes_durably() {
 
 /// Replaces `hub_global_cap_exhaustion_goes_uncached_but_delivers` for
 /// the LiveFeed posture: with the process retention budget exhausted,
-/// a shared feed's publication goes UNCACHED — parked subscribers take
-/// the typed lag disconnect (no terminal, no loss) and, once budget
-/// exists again, resume durably with no gap and no duplicate.
+/// a shared feed's publication goes UNCACHED — parked subscribers get
+/// a resumable EOF (typed reason server-side only; no terminal, no
+/// loss) and, once budget exists again, resume durably with no gap
+/// and no duplicate.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_budget_exhaustion_publishes_uncached_and_resumes() {
     let store = mem();
@@ -35393,6 +35396,199 @@ async fn livefeed_budget_exhaustion_publishes_uncached_and_resumes() {
             r.matches("\"c\":1").count(),
             1,
             "sub{n}: the record arrives exactly once on resume:\n{r}"
+        );
+    }
+}
+
+/// Round-10 review: the per-RECORD payload ceiling is independent of
+/// the request-body ceiling — a batch of many small records passes
+/// while ONE record over the ceiling is refused 413, on both the
+/// plain-append and the create-with-content paths.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn record_ceiling_refuses_one_oversized_record_not_the_batch() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .max_record_payload_bytes
+        .store(4096, std::sync::atomic::Ordering::Relaxed);
+    let ct = [("content-type", "application/json")];
+    // A JSON stream on the raw surface: appended ARRAYS split into
+    // individual records, so the per-record ceiling is observable.
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/ceil", &ct, b"").await;
+    assert!(st == 200 || st == 201, "create {st}");
+    // A batch of MANY small records whose TOTAL far exceeds the
+    // per-record ceiling: admitted (the ceiling is per record, never
+    // per body).
+    let batch: Vec<String> = (0..8)
+        .map(|i| format!(r#"{{"i":{i},"pad":"{}"}}"#, "x".repeat(1024)))
+        .collect();
+    let (st, _, dbg) = hreq(
+        addr,
+        "POST",
+        "/v1/stream/ceil",
+        &ct,
+        format!("[{}]", batch.join(",")).as_bytes(),
+    )
+    .await;
+    assert!(
+        st == 200 || st == 204,
+        "a small-record batch passes: {st} {}",
+        String::from_utf8_lossy(&dbg)
+    );
+    // ONE record over the ceiling: typed 413.
+    let big = format!(r#"{{"big":"{}"}}"#, "y".repeat(8 * 1024));
+    let (st, _, body) = hreq(addr, "POST", "/v1/stream/ceil", &ct, big.as_bytes()).await;
+    assert_eq!(st, 413, "one oversized record is refused");
+    assert!(
+        String::from_utf8_lossy(&body).contains("record_too_large"),
+        "typed refusal:\n{}",
+        String::from_utf8_lossy(&body)
+    );
+    // A small record alongside one oversized record: the whole append
+    // is refused (no partial admission).
+    let mixed = format!(r#"[{{"ok":1}},{big}]"#);
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/ceil", &ct, mixed.as_bytes()).await;
+    assert_eq!(st, 413, "no partial admission of a mixed batch");
+    // The PRODUCT surface treats the append body as ONE record: the
+    // same oversized body is refused there too (the product error
+    // translator renders the 413 as its generic body_too_large).
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/ceil/records",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        big.as_bytes(),
+    )
+    .await;
+    assert_eq!(
+        st, 413,
+        "the product surface enforces the ceiling per body-record"
+    );
+    // Create-with-content enforces the same ceiling.
+    let (st, _, body) = hreq(addr, "PUT", "/v1/stream/ceil2", &ct, big.as_bytes()).await;
+    assert_eq!(st, 413, "create-with-content enforces the ceiling");
+    assert!(
+        String::from_utf8_lossy(&body).contains("record_too_large"),
+        "typed refusal on create-with-content:\n{}",
+        String::from_utf8_lossy(&body)
+    );
+}
+
+/// Round-10 review reopen (red): PROJECT ISOLATION of the feed
+/// retention budget. The process budget is a CELL safety ceiling —
+/// one noisy project consuming it must not force an unrelated,
+/// quota-respecting project's healthy subscribers into the uncached
+/// reconnect posture. Noisy project A fills the (shrunk) global
+/// budget with real retained rings across many two-subscriber
+/// streams; victim project B then publishes on its own stream: B's
+/// subscribers must receive the record IN PLACE — no EOF, no lag
+/// disconnect. Multitenancy contract: only the offending project is
+/// constrained.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_budget_noisy_project_cannot_evict_another() {
+    let (svc, state, addr) = auth_rig("proj-noisy", "ws_iso", &["ca"], None).await;
+    // Second project in the same cell: republish policies + grants at
+    // v2 carrying BOTH projects (an omission would kill proj-noisy via
+    // the high-water rules).
+    {
+        let mut projects = std::collections::HashMap::new();
+        for p in ["proj-noisy", "proj-victim"] {
+            let pol = rig_policy(p, "ws_iso", 1, 1);
+            projects.insert(pol.project_id.clone(), pol);
+        }
+        svc.publish_policies(crate::project_policy::PolicySnapshot {
+            projects,
+            fetched_at_unix: crate::shard::now_ms() / 1000,
+            feed_version: 2,
+        })
+        .unwrap();
+        let mut credentials = std::collections::HashMap::new();
+        for (cred, proj) in [("ca", "proj-noisy"), ("cb", "proj-victim")] {
+            credentials.insert(
+                std::sync::Arc::from(cred),
+                crate::project_policy::CredentialGrant {
+                    credential_id: std::sync::Arc::from(cred),
+                    project_id: crate::tenant::ProjectId::new(proj).unwrap(),
+                    grant_version: 1,
+                    status: crate::project_policy::CredentialStatus::Active,
+                    scopes: crate::tenant::ScopeSet::parse(RIG_SCOPES).0,
+                    grant: crate::tenant::StreamGrant::All,
+                    expires_at: None,
+                },
+            );
+        }
+        svc.publish_grants(crate::project_policy::GrantSnapshot {
+            credentials,
+            fetched_at_unix: crate::shard::now_ms() / 1000,
+            feed_version: 2,
+        })
+        .unwrap();
+    }
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    // Cheap exhaustion geometry: 32-KiB rings under a 256-KiB cell
+    // ceiling — twelve noisy feeds demand ~384 KiB of retention.
+    state
+        .feed_ring_bytes
+        .store(32 * 1024, std::sync::atomic::Ordering::Relaxed);
+    state.feed_budget.set_max_for_test(256 * 1024);
+    let tok_a = mint_token("ca", "proj-noisy", "ws_iso", 1, 1, "na", 600);
+    let tok_b = mint_token("cb", "proj-victim", "ws_iso", 1, 1, "vb", 600);
+
+    // Noisy project A: 12 two-subscriber streams, rings filled with
+    // real retained batches (8-KiB payloads; ~11-KiB prepared charge).
+    let payload_a = format!(r#"{{"fill":"{}"}}"#, "a".repeat(8 * 1024));
+    let mut noisy_subs = Vec::new();
+    for s in 0..12 {
+        let name = format!("na{s}");
+        rig_create(addr, &name, &tok_a).await;
+        for _ in 0..2 {
+            let mut sck = rig_sse(addr, &name, &tok_a, "", None).await;
+            let (acc, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+            assert!(acc.contains("upToDate"));
+            noisy_subs.push(sck);
+        }
+        for _ in 0..4 {
+            assert_eq!(rig_append(addr, &name, &tok_a, &payload_a).await, 200);
+        }
+    }
+    // Let the noisy drives settle: the reserved gauge quiesces once
+    // every publication decided its retention posture.
+    let mut last = u64::MAX;
+    for _ in 0..100 {
+        let now = state.feed_budget.reserved();
+        if now == last {
+            break;
+        }
+        last = now;
+        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+    }
+
+    // Victim project B: one stream, two healthy parked subscribers.
+    rig_create(addr, "vb", &tok_b).await;
+    let mut v1 = rig_sse(addr, "vb", &tok_b, "", None).await;
+    let (b1, _) = hub_sse_collect(&mut v1, 8, |t| t.contains("upToDate")).await;
+    assert!(b1.contains("upToDate"));
+    let mut v2 = rig_sse(addr, "vb", &tok_b, "", None).await;
+    let (b2, _) = hub_sse_collect(&mut v2, 8, |t| t.contains("upToDate")).await;
+    assert!(b2.contains("upToDate"));
+    // B publishes one 16-KiB record.
+    let payload_b = format!(r#"{{"victim":"{}"}}"#, "b".repeat(16 * 1024));
+    assert_eq!(rig_append(addr, "vb", &tok_b, &payload_b).await, 200);
+    for (n, v) in [(1, &mut v1), (2, &mut v2)] {
+        let (acc, eof) =
+            hub_sse_collect(v, 10, |t| lf_record_and_status(t, "\"victim\":\"bb")).await;
+        assert!(
+            !eof,
+            "victim sub{n}: a NOISY NEIGHBOR forced an unrelated project's \
+             subscriber into the reconnect posture:\n…{}",
+            &acc[acc.len().saturating_sub(400)..]
+        );
+        assert_eq!(
+            acc.matches("\"victim\":\"").count(),
+            1,
+            "victim sub{n}: the record arrives in place exactly once"
         );
     }
 }
