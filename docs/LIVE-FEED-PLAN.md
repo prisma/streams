@@ -166,6 +166,34 @@ records exactly once each, one terminal each, terminal cursor IS
 scalar lineage data, no terminal); sweep-custody decline on the
 swapped child engine.
 
+### Round-6 certification patch (2026-08-25)
+
+1. **ONE total 10-s deadline** across all resume attempts in a
+   refresh (the two-iteration loop previously allowed ~20 s of driver
+   hold — and a suppressed session heartbeat).
+2. **Adoption leg corrected**: the child engine is adopted by the
+   LIVEFEED BUILD itself — the leg parks the subscriber, splits with
+   an EMPTY successor, waits for the swap, then asserts
+   `last_external_seq > 0` (no customer request ever touched the
+   child) plus custody decline under sweeps.
+3. **Raw peek→attach race pinned**: new `Fp::SseFeedBeforeSubscribe`
+   failpoint; a swap landing between the compatibility peek and the
+   atomic attach is refused by the captured join generation (failpoint
+   registry now 22).
+4. **Refresh-after-external-completion leg**: a refresh with a stale
+   descriptor + signature installs the externally completed lineage
+   (unconditional re-read regression).
+5. **Seal leg hardened**: the two-subscriber seal test now waits for
+   BOTH sessions to park at the drive failpoint before the
+   append+seal sequence, so the intended interleaving is reached
+   every run.
+
+The resume-false exact interleaving (external actor wins the CAS) is
+covered by the unconditional re-read in `refresh_transition` (one
+code path, leg 4 exercises its externally-completed shape).
+
+### Stage 6 same-owner status: implementation + certification DONE
+
 ## Stage 7 — Cutover & deletion — STATUS: PARTIAL
 
 POSTURE (corrected 2026-08-24, per the follow-up review): the DEFAULT

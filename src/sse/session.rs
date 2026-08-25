@@ -164,6 +164,11 @@ pub(crate) async fn serve(
         engine: engine.clone(),
         handle: handle.clone(),
     });
+    // Test failpoint: AFTER the compatibility peek, BEFORE the atomic
+    // attach — the window in which a feed can swap generations between
+    // the two raw-gate checks.
+    #[cfg(test)]
+    crate::failpoints::pause(crate::failpoints::Fp::SseFeedBeforeSubscribe, &desc.name).await;
     // RAII subscription (finding 3): atomic create-or-join under the
     // registry lock; Drop detaches, clears retention at one and evicts
     // at zero. Finding 6-mem: entering SHARED mode reserves this feed's

@@ -398,6 +398,10 @@ pub(crate) async fn refresh_transition(
     current_sig: &[(u32, u64, Option<u64>)],
 ) -> anyhow::Result<SourceTransition> {
     let sref = desc.sref();
+    // ONE total deadline across all resume attempts (review round 6:
+    // a two-iteration loop with a fresh 10-s timeout per iteration
+    // could hold the driving session — and its heartbeat — for ~20 s).
+    let mut remaining = std::time::Duration::from_secs(10);
     for _ in 0..2 {
         // Fresh read, bypassing the descriptor cache: the swap decision
         // must see the newest published topology.
@@ -465,15 +469,17 @@ pub(crate) async fn refresh_transition(
         };
         if map.pending.is_some() {
             // Transition in flight: AWAIT the resumable completion
-            // under this permit (bounded), then re-read IMMEDIATELY —
-            // regardless of resume's boolean (review round 5: an
-            // external actor may win the completion; the boolean is
-            // not evidence that the topology did not change).
-            let _ = tokio::time::timeout(
-                std::time::Duration::from_secs(10),
-                crate::scaler3::resume(state, &sref),
-            )
-            .await;
+            // under this permit (bounded by the ONE total deadline),
+            // then re-read IMMEDIATELY — regardless of resume's
+            // boolean (review round 5: an external actor may win the
+            // completion; the boolean is not evidence that the
+            // topology did not change).
+            let start = tokio::time::Instant::now();
+            let _ = tokio::time::timeout(remaining, crate::scaler3::resume(state, &sref)).await;
+            remaining = remaining.saturating_sub(start.elapsed());
+            if remaining.is_zero() {
+                return Ok(SourceTransition::RetryLater);
+            }
             continue;
         }
         if map.segments.len() <= 1 {

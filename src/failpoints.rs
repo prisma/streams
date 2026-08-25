@@ -64,10 +64,11 @@ pub enum Fp {
     // LiveFeed engine legs (follow-up review: deterministic race legs).
     SseFeedAfterSubscribe,
     SseFeedBeforeDrive,
+    SseFeedBeforeSubscribe,
 }
 
 impl Fp {
-    pub const ALL: [Fp; 21] = [
+    pub const ALL: [Fp; 22] = [
         Fp::StopAfterTombstone,
         Fp::StopBeforeMarkCommitted,
         Fp::StopAfterSealIntent,
@@ -89,6 +90,7 @@ impl Fp {
         Fp::StopBeforeSealedPublish,
         Fp::SseFeedAfterSubscribe,
         Fp::SseFeedBeforeDrive,
+        Fp::SseFeedBeforeSubscribe,
     ];
 
     /// The site contract: WHERE the point fires, stated as the
@@ -168,6 +170,12 @@ impl Fp {
                 "livefeed session: parked BEFORE each cooperative drive \
                  — lets a test make an entire window durable before any \
                  bounded source read occurs"
+            }
+            Fp::SseFeedBeforeSubscribe => {
+                "livefeed session: AFTER the raw compatibility peek, \
+                 BEFORE the atomic registry attach — the exact window \
+                 in which a feed can swap generations between the two \
+                 checks (raw compatibility gate, round 5)"
             }
         }
     }

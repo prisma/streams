@@ -24234,7 +24234,7 @@ async fn a_bounded_cleanup_drains_residue_without_touching_the_live_generation()
 #[test]
 fn failpoint_registry_is_enumerable_and_described() {
     use crate::failpoints::Fp;
-    assert_eq!(Fp::ALL.len(), 21);
+    assert_eq!(Fp::ALL.len(), 22);
     for fp in Fp::ALL {
         assert!(!fp.site().is_empty(), "{fp:?} has no site contract");
     }
@@ -35297,9 +35297,12 @@ async fn livefeed_split_seal_before_refresh_drains_then_terminates() {
     let (_, _) = hub_sse_collect(&mut sub2, 8, |t| t.contains("upToDate")).await;
 
     // Hold BOTH subscribers' drives, then: split, append successor
-    // records, seal the collection — ALL before any refresh.
+    // records, seal the collection — ALL before any refresh. Wait for
+    // both sessions to actually PARK at the drive failpoint first
+    // (round 6: the intended interleaving must be reached every run).
     crate::failpoints::arm(crate::failpoints::Fp::SseFeedBeforeDrive, "lfseal");
     split_and_await(&state, "lfseal", 0).await;
+    wait_parked(crate::failpoints::Fp::SseFeedBeforeDrive, "lfseal", 2).await;
     for i in 2..4u64 {
         hub_append_lf(addr, "lfseal", &format!(r#"{{"i":{i}}}"#)).await;
     }
@@ -35417,9 +35420,11 @@ async fn livefeed_raw_late_attach_after_swap_gets_no_lineage_scalars() {
     );
 }
 
-/// Round-5 blocker 2 (red): engines opened for a customer LiveFeed
-/// lineage carry the EXTERNAL adoption stamp — a maintenance sweep
-/// can never install custody over them while the feed lives.
+/// Round-5/6 blocker 2 (red): the child engine LiveFeed opens for a
+/// swapped lineage carries the EXTERNAL adoption stamp FROM THE
+/// LIVEFEED BUILD ITSELF — no customer request ever touches the empty
+/// successor (round-6 correction: the old version appended first,
+/// which itself stamped the engine and masked the implementation).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_swap_externally_adopts_child_engines() {
     let _serial = sweep_lock().lock().await;
@@ -35448,12 +35453,10 @@ async fn livefeed_swap_externally_adopts_child_engines() {
     let (_, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
 
     split_and_await(&state, "lfad", 0).await;
-    hub_append_lf(addr, "lfad", r#"{"i":1}"#).await;
-    let (acc, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"i\":1")).await;
-    assert!(acc.contains("\"i\":1"), "the swap delivered:\n{acc}");
 
-    // The child engine LiveFeed opened must carry the external stamp:
-    // repeated sweeps neither close it nor install custody.
+    // Wait for LiveFeed to observe the sealed parent and build/install
+    // the EMPTY child lineage (feed generation 1). No customer request
+    // has touched the child.
     state.registry.invalidate(&state.raw_adapter_sref("lfad"));
     let desc = state
         .registry
@@ -35461,6 +35464,26 @@ async fn livefeed_swap_externally_adopts_child_engines() {
         .await
         .unwrap()
         .unwrap();
+    let fkey = crate::sse::session::feed_key_of(&desc, &Some(String::new()));
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
+    loop {
+        let g = state
+            .live_feeds
+            .feed_for_test(&fkey)
+            .map(|f| f.source_snapshot().generation);
+        if g == Some(1) {
+            break;
+        }
+        assert!(
+            std::time::Instant::now() < deadline,
+            "the feed never swapped to the lineage source (gen={g:?})"
+        );
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+
+    // The child engine must carry the external adoption stamp from the
+    // LiveFeed build (last_external_seq > 0), and sweeps must neither
+    // close it nor install custody.
     let child_route = desc.segment_route_by_id(desc.resolve_segment("").seg_id);
     let prefix = crate::registry::shard_for_hash(&state.shard_prefixes, &child_route);
     let engine = state
@@ -35470,6 +35493,13 @@ async fn livefeed_swap_externally_adopts_child_engines() {
         .get(&prefix)
         .cloned()
         .expect("the child engine is resident after the swap");
+    assert!(
+        engine
+            .last_external_seq
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 0,
+        "the LiveFeed build itself must stamp external adoption — no customer request touched the child"
+    );
     for _ in 0..6 {
         crate::billing::sweep_owned_outboxes(&state).await;
     }
@@ -35484,4 +35514,125 @@ async fn livefeed_swap_externally_adopts_child_engines() {
         0,
         "custody must never be installed over a customer LiveFeed engine"
     );
+
+    // And delivery through the swapped source still works.
+    hub_append_lf(addr, "lfad", r#"{"i":1}"#).await;
+    let (acc, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"i\":1")).await;
+    assert!(acc.contains("\"i\":1"), "the swap delivered:\n{acc}");
+}
+
+/// Round-6 raw gate second level (red): the swap lands BETWEEN the
+/// compatibility peek and the atomic attach — the atomically captured
+/// join generation (not the peek) is what must refuse the raw session.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_raw_swap_between_peek_and_attach_is_refused() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let ct = ("content-type", "application/json");
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/lfr5", &[ct], br#"[{"r":0}]"#).await;
+    assert!(st == 200 || st == 201);
+
+    // A PRODUCT subscriber holds the default lane's feed (generation 0,
+    // so the peek would PASS for a raw request).
+    let mut prod = lf_connect(addr, "lfr5", "").await;
+    let (_, _) = hub_sse_collect(&mut prod, 8, |t| t.contains("upToDate")).await;
+
+    // The raw request parks AFTER the peek, BEFORE the attach.
+    crate::failpoints::arm(crate::failpoints::Fp::SseFeedBeforeSubscribe, "lfr5");
+    use tokio::io::AsyncWriteExt;
+    let mut raw = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let start_tok = crate::offsets::encode_ep(0, crate::offsets::Offset::START);
+    raw.write_all(
+        format!(
+            "GET /v1/stream/lfr5?live=sse&offset={start_tok} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
+        )
+        .as_bytes(),
+    )
+    .await
+    .unwrap();
+    wait_parked(crate::failpoints::Fp::SseFeedBeforeSubscribe, "lfr5", 1).await;
+
+    // Split + successor append: the PRODUCT session swaps the feed to
+    // generation 1 in the window between peek and attach.
+    split_and_await(&state, "lfr5", 0).await;
+    hub_append_lf(addr, "lfr5", r#"{"r":1}"#).await;
+    let (p1, _) = hub_sse_collect(&mut prod, 10, |t| t.contains("\"r\":1")).await;
+    assert!(p1.contains("\"r\":1"), "product rode the swap:\n{p1}");
+
+    // Resume the raw request: the ATOMIC attach captures generation 1
+    // and the raw session is refused — immediate EOF, never scalar
+    // lineage data, never a terminal control.
+    crate::failpoints::release(crate::failpoints::Fp::SseFeedBeforeSubscribe, "lfr5");
+    let (acc, eof) = hub_sse_collect(&mut raw, 10, |_| false).await;
+    assert!(
+        eof,
+        "the raw request attaching to a swapped feed is refused"
+    );
+    assert!(
+        !acc.contains("\"streamClosed\":true"),
+        "the refusal is never a terminal control:\n{acc}"
+    );
+    assert!(
+        !acc.contains("\"r\":1"),
+        "no successor data with scalar cursors:\n{acc}"
+    );
+}
+
+/// Round-6 refresh regression (red): a transition completed EXTERNALLY
+/// must be picked up by a later refresh with a stale descriptor and
+/// signature — the unconditional re-read installs the lineage (the
+/// resume boolean is never treated as evidence of no change).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_refresh_installs_after_external_completion() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lfx5",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append_lf(addr, "lfx5", r#"{"i":0}"#).await;
+
+    // Capture the PRE-SPLIT descriptor, then complete the split
+    // EXTERNALLY (no LiveFeed involvement).
+    let old_desc = state
+        .registry
+        .get(&state.raw_adapter_sref("lfx5"))
+        .await
+        .unwrap()
+        .unwrap();
+    split_and_await(&state, "lfx5", 0).await;
+
+    // Refresh with the stale descriptor + old span signature: the
+    // re-read must install the longer compatible lineage.
+    let epoch = old_desc.epoch_bytes().unwrap();
+    let outcome = crate::sse::source::refresh_transition(
+        &state,
+        &old_desc,
+        &skey(),
+        &epoch,
+        &Some(String::new()),
+        &[(0, 0, None)],
+    )
+    .await
+    .unwrap();
+    match outcome {
+        crate::sse::feed::SourceTransition::NewSource(src) => {
+            let sig = src.span_sig();
+            assert_eq!(sig.len(), 2, "the refreshed lineage has both spans");
+            assert_eq!(sig[0], (0, 0, Some(1)), "the parent gained its cap");
+            assert_eq!(sig[1].1, 1, "the successor starts at the cap");
+        }
+        _ => panic!("refresh after external completion must install the lineage"),
+    }
 }
