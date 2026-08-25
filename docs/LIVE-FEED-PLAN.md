@@ -273,18 +273,20 @@ exclusion.
 | `hub_offset_now_delivers_only_post_subscribe_appends` | wire contract via hub rig | `livefeed_connect_already_split_now`, `livefeed_cursor_now_uses_the_reconciled_source` | unskip-or-delete |
 | `hub_foreign_key_appends_advance_default_cursor` | wire contract via hub rig | `livefeed_keyed_lane_scopes_records_and_shares_preparation`, `livefeed_keyed_all_foreign_history_is_progress_not_lag` | unskip-or-delete |
 | `hub_split_transition_disconnects_without_sealed` | legacy-only by design (livefeed product sessions CONTINUE across a split) | `livefeed_raw_disconnects_without_terminal_on_split` covers the surviving no-false-terminal half | delete-with-legacy |
-| `hub_empty_seal_single_final_control` | contract: EMPTY-stream seal terminal | NONE — livefeed seal legs all carry data | needs-replacement |
-| `hub_mass_disconnect_tears_down_within_deadline` | contract: teardown deadline at the wire | unit `last_subscriber_evicts_and_reconnect_does_not_grow` only | needs-replacement |
-| `hub_oversized_event_delivered_via_uncached_catchup` | contract: over-ring record still delivered | unit `oversized_batch_is_never_self_evicted` only | needs-replacement |
-| `hub_global_cap_exhaustion_goes_uncached_but_delivers` | mostly hub accounting; delivery-under-exhaustion is contract | unit budget tests (`budget_exhaustion_publishes_without_retention` et al.) | needs-replacement (wire leg) |
-| `hub_no_up_to_date_while_pump_holds_backlog` | contract (honest upToDate) driven by hub-only pump throttle | partial: `livefeed_exact_framing_mixed_surfaces_share_one_lane` | needs-replacement |
-| `hub_prepared_batch_must_not_carry_stale_up_to_date` | contract (stale flags) driven by hub-only pump throttle | partial: `livefeed_seal_transcript_exact_tail` | needs-replacement |
-| `hub_delayed_reader_lands_on_the_current_scan_head` | contract: delayed-reader cursor convergence | NONE at the wire | needs-replacement |
-| `off_mode_subscriptions_are_untouched_by_staleness` | contract (AuthMode::Off never terminates), skipped ONLY for its `hub_count()` assert | NONE (positive-side lease legs exist) | needs-replacement (one-line rig swap) |
+| `hub_empty_seal_single_final_control` | contract: EMPTY-stream seal terminal | `livefeed_empty_seal_single_final_control` | delete-with-legacy (replacement landed 2026-08-25) |
+| `hub_mass_disconnect_tears_down_within_deadline` | contract: teardown deadline at the wire | `livefeed_mass_disconnect_tears_down_within_deadline` | delete-with-legacy (replacement landed 2026-08-25) |
+| `hub_oversized_event_delivered_via_uncached_catchup` | contract: over-ring record still delivered | `livefeed_oversized_record_solo_in_place_shared_resumes_durably` — DELIBERATE divergence: solo delivers in place; shared takes the typed lag disconnect + durable resume (bounded-memory posture) | delete-with-legacy (replacement landed 2026-08-25) |
+| `hub_global_cap_exhaustion_goes_uncached_but_delivers` | mostly hub accounting; delivery-under-exhaustion is contract | `livefeed_budget_exhaustion_publishes_uncached_and_resumes` (same disconnect-and-resume divergence) + unit budget tests | delete-with-legacy (replacement landed 2026-08-25) |
+| `hub_no_up_to_date_while_pump_holds_backlog` | contract (honest upToDate) driven by hub-only pump throttle | `livefeed_no_up_to_date_while_backlog_is_undriven` | delete-with-legacy (replacement landed 2026-08-25) |
+| `hub_prepared_batch_must_not_carry_stale_up_to_date` | contract (stale flags) driven by hub-only pump throttle | `livefeed_late_attach_never_claims_stale_up_to_date` | delete-with-legacy (replacement landed 2026-08-25) |
+| `hub_delayed_reader_lands_on_the_current_scan_head` | contract: delayed-reader cursor convergence | `livefeed_delayed_reader_lands_on_the_current_scan_head` | delete-with-legacy (replacement landed 2026-08-25) |
+| `off_mode_subscriptions_are_untouched_by_staleness` | contract (AuthMode::Off never terminates), skipped ONLY for its `hub_count()` assert | `livefeed_off_mode_subscription_ignores_staleness` | delete-with-legacy (replacement landed 2026-08-25) |
 
-The list must reach ZERO before legacy deletion: every
-needs-replacement row gets its LiveFeed leg first; unskip-or-delete
-rows die with the hub or get their rig ported, whichever lands first.
+Every row now names a landed LiveFeed replacement (or is pure hub
+mechanics): the generic observable SSE contract has ZERO uncovered
+exclusions. The skip-list entries themselves die with the legacy hub
+implementation at Stage 7 deletion — the excluded tests assert hub
+internals and cannot run under the livefeed engine.
 
 REMAINING (gated on fleet work + canaries): two-instance
 disconnect/reroute certification; below-edge canaries; then delete

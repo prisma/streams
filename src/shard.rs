@@ -2114,13 +2114,19 @@ impl ShardEngine {
         op: crate::queue::QueueOp,
     ) -> Result<crate::queue::QueueOut, String> {
         let (tx, rx) = oneshot::channel();
-        #[cfg(test)]
-        self.appends_enqueued
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         self.tx
             .send(CommitOp::Queue { hash, op, resp: tx })
             .await
             .map_err(|_| "committer gone".to_string())?;
+        // Entered-proof AFTER the send: the counter's contract is
+        // "made the queue". Incrementing before the ASYNC send let a
+        // test's ordering guard pass while this task was still
+        // suspended short of the channel — a later submission could
+        // overtake it (round-9 CI: a group-local delete overtook the
+        // settle whose counter tick had already been observed).
+        #[cfg(test)]
+        self.appends_enqueued
+            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         rx.await
             .map_err(|_| "committer dropped request".to_string())?
     }

@@ -45,12 +45,15 @@ const j = async (r) => ({ status: r.status, body: await r.json().catch(() => ({}
 // Retry RETRYABLE refusals (503 temporarily_unavailable / 429) the way
 // a real client does — engine warm-up on loaded CI runners answers the
 // first touch with a retryable. Auth verdicts (401/403/421) return
-// immediately: the battery's strictness lives there.
+// immediately: the battery's strictness lives there. Budget ~27s with
+// backoff: a shared runner's cold shard open blew the old ~4.5s
+// budget (round-9 CI) and the miss cascaded into the isolation and
+// usage legs.
 const rfetch = async (url, opts) => {
   for (let i = 0; ; i++) {
     const r = await sfetch(url, opts);
-    if ((r.status !== 503 && r.status !== 429) || i >= 8) return r;
-    await sleep(500);
+    if ((r.status !== 503 && r.status !== 429) || i >= 15) return r;
+    await sleep(Math.min(500 * (i + 1), 2000));
   }
 };
 

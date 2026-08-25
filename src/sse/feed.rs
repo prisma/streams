@@ -247,6 +247,29 @@ impl FeedMemoryBudget {
         }
     }
 
+    /// Test-only exhaustion: reserve everything that remains, so the
+    /// next publication takes the uncached path. Returns the amount to
+    /// hand back via `release_for_test`.
+    #[cfg(test)]
+    pub(crate) fn exhaust_for_test(&self) -> u64 {
+        loop {
+            let cur = self.reserved.load(Ordering::SeqCst);
+            let take = self.max.saturating_sub(cur);
+            if self
+                .reserved
+                .compare_exchange(cur, cur + take, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                return take;
+            }
+        }
+    }
+
+    #[cfg(test)]
+    pub(crate) fn release_for_test(&self, n: u64) {
+        self.reserved.fetch_sub(n, Ordering::SeqCst);
+    }
+
     /// Zero budget = singleton-only posture (docs/LIVE-FEED.md): no
     /// feed may admit a second subscriber.
     pub(crate) fn admits_shared(&self) -> bool {
