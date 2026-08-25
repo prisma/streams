@@ -75,6 +75,7 @@ jobs:
       - name: Generic SSE corpus under the livefeed engine
         run: |
           SKIPS=$(grep -v '^#' scripts/livefeed-matrix-skips.txt | sed 's/^/--skip /' | tr '\n' ' ')
+          # shellcheck disable=SC2086  # SKIPS must word-split into repeated --skip flags
           STREAMS_SSE_ENGINE=livefeed cargo test --release --bin streams-slate -- $SKIPS
 
   # Job: the REAL enforce-mode noisy-neighbor campaign (SR2-5),
@@ -168,7 +169,7 @@ jobs:
             --max-unflushed-bytes 67108864 &
           sleep 2
           cd /tmp/consumer
-          STREAMS_SDK=@prisma/streams node $GITHUB_WORKSPACE/sdk/smoke.mjs http://127.0.0.1:8090
+          STREAMS_SDK=@prisma/streams node "$GITHUB_WORKSPACE"/sdk/smoke.mjs http://127.0.0.1:8090
       - uses: actions/setup-node@v4
         with:
           node-version: 18
@@ -179,7 +180,7 @@ jobs:
             --max-unflushed-bytes 67108864 &
           sleep 2
           cd /tmp/consumer
-          STREAMS_SDK=@prisma/streams node $GITHUB_WORKSPACE/sdk/smoke.mjs http://127.0.0.1:8091
+          STREAMS_SDK=@prisma/streams node "$GITHUB_WORKSPACE"/sdk/smoke.mjs http://127.0.0.1:8091
       # The SDK claims Bun and Deno too, so gate them rather than assert
       # them. Both run the same package through the same smoke.
       - uses: oven-sh/setup-bun@v2
@@ -190,7 +191,7 @@ jobs:
             --max-unflushed-bytes 67108864 &
           sleep 2
           cd /tmp/consumer
-          STREAMS_SDK=@prisma/streams bun $GITHUB_WORKSPACE/sdk/smoke.mjs http://127.0.0.1:8092
+          STREAMS_SDK=@prisma/streams bun "$GITHUB_WORKSPACE"/sdk/smoke.mjs http://127.0.0.1:8092
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
@@ -202,7 +203,7 @@ jobs:
           sleep 2
           cd /tmp/consumer
           STREAMS_SDK=@prisma/streams deno run -A --node-modules-dir \
-            $GITHUB_WORKSPACE/sdk/smoke.mjs http://127.0.0.1:8093
+            "$GITHUB_WORKSPACE"/sdk/smoke.mjs http://127.0.0.1:8093
 
   # Job: the pinned upstream Durable Streams server conformance suite,
   # UNMODIFIED, against a fresh namespace (spec appendix §7). The
