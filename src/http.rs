@@ -146,10 +146,6 @@ pub struct AppState {
     /// configured value after release-posture clamping to the real
     /// descriptor ceiling; 0 = unlimited, non-release only).
     pub sse_max_connections: u64,
-    /// LIVE-FEED Stage 3: when true, eligible product SSE connections
-    /// attach to a LiveFeed (one engine, adaptive retention) instead
-    /// of the legacy direct/hub pair. Per-instance, test-settable.
-    pub sse_engine_livefeed: std::sync::atomic::AtomicBool,
     pub live_feeds: Arc<crate::sse::registry::FeedRegistry>,
     /// LiveFeed retained-bytes budget — per AppState so test rigs are
     /// isolated (follow-up review: a static OnceLock budget coupled
@@ -177,20 +173,6 @@ pub struct AppState {
     /// lowering RLIMIT_NOFILE under it.
     pub sse_configured_max_connections: u64,
     pub sse_connections: std::sync::atomic::AtomicU64,
-    /// #268 SSE Phase 2: per-stream live fanout hubs (SSE_LIVE_HUB=1).
-    pub live_hubs: crate::livehub::HubRegistry,
-    /// Hub enablement — an INSTANCE field, not a process-global env
-    /// OnceLock, so hub-on and hub-off HTTP tests coexist in one suite
-    /// without order dependence (review note).
-    pub sse_live_hub: std::sync::atomic::AtomicBool,
-    /// Hub retention accounting target + ceiling (AppState-resident
-    /// for the same reason as the flag: rigs need per-instance
-    /// control; OnceLock env knobs are process-global).
-    pub hub_total: &'static std::sync::atomic::AtomicU64,
-    pub hub_total_cap: std::sync::atomic::AtomicU64,
-    /// Nth concurrent subscriber that promotes a stream to a hub
-    /// (review V6; 2 = reviewed default, 1 = canary).
-    pub hub_promote_at: std::sync::atomic::AtomicU64,
     /// RSS shed threshold (MB): writes are 429'd while resident memory
     /// exceeds this. Converts cgroup/instance OOM death (docker phase 1:
     /// RSS 218→1030 MB at full throughput, OOMKilled=true) into graceful
@@ -1013,9 +995,7 @@ async fn debug_load(
     headers: HeaderMap,
     axum::extract::Query(q): axum::extract::Query<std::collections::HashMap<String, String>>,
 ) -> Response {
-    // Review round 3: the O(hubs) ring walk is a drift DIAGNOSTIC, not
-    // a gauge to scrape every few seconds — opt in with ?walk=1.
-    let walk = q.get("walk").map(|v| v == "1").unwrap_or(false);
+    let _ = &q;
     if !authorized(&state, &headers) {
         return err_resp(
             StatusCode::UNAUTHORIZED,
@@ -1082,21 +1062,12 @@ async fn debug_load(
         "sse_max_connections": state.sse_max_connections,
         "sse_configured_max_connections": state.sse_configured_max_connections,
         "sse_effective_max_connections": state.sse_max_connections,
-        "sse_future_bytes": SSE_FUTURE_BYTES.load(std::sync::atomic::Ordering::Relaxed),
-        "sse_live_hubs": state.live_hubs.hub_count(),
-        "sse_hub_future_bytes": SSE_HUB_FUTURE_BYTES.load(std::sync::atomic::Ordering::Relaxed),
-        "sse_hub_total_bytes": state.hub_total.load(std::sync::atomic::Ordering::Relaxed),
-        "sse_hub_ring_bytes_walked": if walk { serde_json::Value::from(state.live_hubs.ring_bytes_total()) } else { serde_json::Value::Null },
-        "sse_hub_logical_bytes": if walk { serde_json::Value::from(state.live_hubs.logical_bytes_total()) } else { serde_json::Value::Null },
         "lease_terminations": crate::sse::auth::lease_terminations_json(),
         "nofile_soft": NOFILE_SOFT.load(std::sync::atomic::Ordering::Relaxed),
         "nofile_hard": NOFILE_HARD.load(std::sync::atomic::Ordering::Relaxed),
         "open_fds": open_fds(),
         "runtime_tick_age_ms": crate::shard::now_ms() - RUNTIME_LAST_TICK_MS.load(std::sync::atomic::Ordering::Relaxed),
         "runtime_max_tick_gap_ms": RUNTIME_MAX_GAP_MS.load(std::sync::atomic::Ordering::Relaxed),
-        "sse_pumps_live": crate::livehub::stats::PUMPS_LIVE.load(std::sync::atomic::Ordering::Relaxed),
-        "sse_hub_walk": if walk { state.live_hubs.walk_json(40) } else { serde_json::Value::Null },
-        "legacy_sse_dispatches": LEGACY_SSE_DISPATCHES.load(std::sync::atomic::Ordering::Relaxed),
         "sse_livefeed": {
             "live_feeds": state.live_feeds.len(),
             "reserved_bytes": state.feed_budget.reserved(),
@@ -1123,19 +1094,9 @@ async fn debug_load(
             "version_bumps": crate::sse::auth::sse_stats::FEED_VERSION_BUMPS.load(std::sync::atomic::Ordering::Relaxed),
         },
         "sse_canary": {
-            "direct_subscribers": state.live_hubs.direct_subscribers(),
-            "hub_subscribers": state.live_hubs.hub_subscribers(),
-            "promotions": crate::livehub::stats::PROMOTIONS.load(std::sync::atomic::Ordering::Relaxed),
-            "uncached_per_hub": crate::livehub::stats::UNCACHED_PER_HUB.load(std::sync::atomic::Ordering::Relaxed),
-            "uncached_process_cap": crate::livehub::stats::UNCACHED_PROCESS_CAP.load(std::sync::atomic::Ordering::Relaxed),
             "below_floor_catchups": crate::sse::auth::sse_stats::BELOW_FLOOR_CATCHUPS.load(std::sync::atomic::Ordering::Relaxed),
             "disconnect_send_timeout": crate::sse::auth::sse_stats::DISCONNECT_SEND_TIMEOUT.load(std::sync::atomic::Ordering::Relaxed),
             "disconnect_client_closed": crate::sse::auth::sse_stats::DISCONNECT_CLIENT_CLOSED.load(std::sync::atomic::Ordering::Relaxed),
-            "disconnect_hub_dead": crate::sse::auth::sse_stats::DISCONNECT_HUB_DEAD.load(std::sync::atomic::Ordering::Relaxed),
-            "pump_read_errors": crate::livehub::stats::PUMP_READ_ERRORS.load(std::sync::atomic::Ordering::Relaxed),
-            "pump_transitions": crate::livehub::stats::PUMP_TRANSITIONS.load(std::sync::atomic::Ordering::Relaxed),
-            "pump_closed": crate::livehub::stats::PUMP_CLOSED.load(std::sync::atomic::Ordering::Relaxed),
-            "prepared_records": crate::livehub::stats::PREPARED_RECORDS.load(std::sync::atomic::Ordering::Relaxed),
             "delivered_records": crate::sse::auth::sse_stats::DELIVERED_RECORDS.load(std::sync::atomic::Ordering::Relaxed),
         },
         "absorb_reserved_bytes_now": crate::history::absorb_reserved_bytes(),
@@ -5978,6 +5939,7 @@ pub(crate) struct ReadOut {
 }
 
 /// Merged two-tier read returning plaintext records.
+#[allow(clippy::too_many_arguments)]
 pub(crate) async fn read_records(
     _state: &AppState,
     _desc: &StreamDesc,
@@ -7028,47 +6990,6 @@ pub(crate) async fn sse_send_billed(
     ok
 }
 
-/// Round-11.3 transition telemetry: legacy SSE producer dispatches.
-/// MUST stay zero whenever the livefeed engine is selected — the
-/// test tripwire below turns any violation into a loud failure, and
-/// the canary reads the counter in the field.
-pub(crate) static LEGACY_SSE_DISPATCHES: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
-pub(crate) fn note_legacy_sse_dispatch(which: &str) {
-    LEGACY_SSE_DISPATCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    #[cfg(test)]
-    if std::env::var("STREAMS_SSE_ENGINE").as_deref() == Ok("livefeed") {
-        panic!("legacy SSE producer `{which}` dispatched under the livefeed engine");
-    }
-    let _ = which;
-}
-
-/// #267 diagnostic: byte size of the LAST spawned SSE task future —
-/// the direct measure of what boxing the reads bought. The parked
-/// future used to embed the whole read machinery; after Phase 1 this
-/// should be a few hundred bytes, not tens of KB.
-pub(crate) static SSE_FUTURE_BYTES: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-/// #273: size of the LAST spawned HUB subscriber task future — the
-/// direct measure of the cursor-only claim (the Phase-1 gauge measures
-/// only the direct path).
-pub(crate) static SSE_HUB_FUTURE_BYTES: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
-/// #274: attach an RAII value to a response BODY — dropped when the
-/// client disconnects or the stream ends. Used for the direct-path
-/// registration guard (the response was built by a path that cannot
-/// carry it).
-pub(crate) fn hold_on_body(resp: Response, hold: impl Send + 'static) -> Response {
-    let (parts, body) = resp.into_parts();
-    let stream = futures_util::StreamExt::map(body.into_data_stream(), move |c| {
-        let _keep = &hold;
-        c
-    });
-    Response::from_parts(parts, Body::from_stream(stream))
-}
-
 /// #267: RAII connection slot against the instance SSE budget. Held by
 /// the response stream's map closure — dropping the body releases it.
 pub(crate) struct SseSlot(pub(crate) Arc<AppState>);
@@ -7113,37 +7034,6 @@ pub(crate) fn sse_acquire(state: &Arc<AppState>) -> Result<SseSlot, Box<Response
 pub(crate) enum SseSurface {
     Raw,
     Product,
-}
-
-/// #268: the hub pump's read — the ordinary ring-preferring pipeline,
-/// product/durable, DEFAULT-key lane (Some("")): the product surface
-/// always reads a routing key and the empty key is its unfiltered
-/// lane, so the hub must filter identically or it would over-deliver
-/// keyed records the Phase-1 path never serves.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn read_records_for_hub(
-    state: &AppState,
-    desc: &StreamDesc,
-    key: &StreamKey,
-    epoch: &[u8; 16],
-    handle: &Arc<crate::shard::StreamHandle>,
-    engine: &Arc<ShardEngine>,
-    scan_from: u64,
-    max_bytes: usize,
-) -> Result<ReadOut, String> {
-    read_records(
-        state,
-        desc,
-        key,
-        epoch,
-        handle,
-        engine,
-        scan_from,
-        Some(""),
-        max_bytes,
-        crate::shard::Deliver::Durable,
-    )
-    .await
 }
 
 /// #268: one prepared hub event — the combined data+control text every
@@ -7214,616 +7104,8 @@ pub(crate) fn spawn_runtime_watchdog() {
     });
 }
 
-pub(crate) fn hub_event_at(
-    desc: &StreamDesc,
-    key: &StreamKey,
-    epoch: [u8; 16],
-    rk_hash: [u8; 16],
-    seg_id: u32,
-    rec: &PlainRec,
-    ctl_at: u64,
-) -> String {
-    let mut ev = crate::sse::wire::sse_data_event(desc, &rec.payload);
-    let ctl = crate::sse::wire::sse_control_product(
-        &crate::product_cursor::KeyCursor {
-            epoch,
-            key_hash: rk_hash,
-            seg_id,
-            offset: ctl_at,
-        }
-        .encode(&desc.project_id, key),
-        false,
-        false,
-    );
-    ev.push_str(&ctl);
-    ev
-}
-
-/// Product SSE control frame: signed key cursor + product field names.
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn sse_lineage_response(
-    state: Arc<AppState>,
-    desc: StreamDesc,
-    key: StreamKey,
-    epoch: [u8; 16],
-    lineage: Vec<crate::segmap::SegmentDesc>,
-    mut pos: usize,
-    mut scan_from: u64,
-    rk: String,
-    params: ReadParams,
-    surface: SseSurface,
-) -> Response {
-    note_legacy_sse_dispatch("sse_lineage_response");
-    let slot = match sse_acquire(&state) {
-        Ok(s) => s,
-        Err(r) => return *r,
-    };
-    // #267: 4 slots + disconnect-on-lag, shared heartbeat — see
-    // sse_response.
-    let (tx, rx) = tokio::sync::mpsc::channel::<crate::sse::auth::SseChunk>(4);
-    let sse_hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
-    // One subscribe operation; delivered bytes meter per chunk (§5).
-    crate::billing::meter_read(&state, &desc, 0, 0);
-    let cursor = params.cursor.clone();
-    let rk_hash = crate::crypto::stream_hash(&rk);
-    // Round-4 finding 1: subscribe to the generation watch BEFORE the
-    // initial proof so a publication landing between the two is still
-    // observed by this body; then prove the lease generation-stably —
-    // a subscription never starts on authorization that was already
-    // invalidated while the response was assembled.
-    let gen_rx = state.auth.generation_watch();
-    // Round-4 finding 4: ONE exactly-once termination record per
-    // connection, shared by the producer watch and the body gate —
-    // whoever detects the invalidation first records the reason once.
-    let term = std::sync::Arc::new(crate::sse::auth::TerminateOnce::default());
-    let body_watch = match crate::sse::auth::LeaseWatch::new_checked(
-        &state,
-        crate::sse::auth::SseLease::of(&params),
-        // Round-4 finding 4: the body gate shares the connection's
-        // exactly-once termination record with its producer.
-        term.clone(),
-    ) {
-        Ok(w) => w,
-        Err(reason) => return crate::sse::auth::lease_refusal_response(reason),
-    };
-    let seg_tok = |seg_id: u32, next: u64| {
-        crate::offsets::encode_ep(
-            seg_id,
-            if next == 0 {
-                Offset::START
-            } else {
-                Offset(Some(next - 1))
-            },
-        )
-    };
-    // Review round 3 F2: the response body carries its own lease gate.
-    let body_state = state.clone();
-    let body_desc = desc.clone();
-    tokio::spawn(async move {
-        let mut first = true;
-        // Review V4 + round-4 F1: re-prove authorization for the
-        // connection's life — starting from a generation-stable INITIAL
-        // proof (a lease already dead at construction never schedules).
-        let mut lease_watch = match crate::sse::auth::LeaseWatch::new_checked(
-            &state,
-            crate::sse::auth::SseLease::of(&params),
-            // Round-4 finding 4: producer-side detection shares the
-            // same exactly-once record as the body gate.
-            term,
-        ) {
-            Ok(w) => w,
-            Err(_) => return,
-        };
-        'lineage: loop {
-            if lease_watch.revoked(&state) {
-                return;
-            }
-            let sg = &lineage[pos];
-            let identity = desc.dynamic_segment_identity(sg.seg_id);
-            let Ok(engine) = state
-                .engine_for_scaler(&desc.segment_route(sg))
-                .await
-                .ok_or(())
-            else {
-                return;
-            };
-            let Ok(handle) = engine.stream_handle(identity).await else {
-                return;
-            };
-            state.keys.put(identity, key.clone(), epoch);
-            let is_last = pos + 1 >= lineage.len();
-            loop {
-                let (end, closed) = {
-                    let st = handle.state.lock().unwrap();
-                    (st.durable.next, st.durable.closed)
-                };
-                if scan_from == u64::MAX {
-                    scan_from = end; // offset=now on the live tail
-                }
-                let seg_end = sg.sealed_next_offset.unwrap_or(end);
-                let mut sent_any = false;
-                if scan_from < seg_end {
-                    // #267: boxed out of the parked future — see
-                    // sse_response.
-                    match Box::pin(read_records(
-                        &state,
-                        &desc,
-                        &key,
-                        &epoch,
-                        &handle,
-                        &engine,
-                        scan_from,
-                        Some(&rk),
-                        MAX_READ_BYTES,
-                        // SSE is durable-only: Applied would need
-                        // session-position machinery this streamer does
-                        // not have; product_read rejects the combination.
-                        crate::shard::Deliver::Durable,
-                    ))
-                    .await
-                    {
-                        Ok(out) => {
-                            // One control per data event; the batch's
-                            // last carries the flags (pinned baseline).
-                            let pos_after = out
-                                .last
-                                .map(|l| (l + 1).min(seg_end.max(scan_from)))
-                                .unwrap_or(scan_from);
-                            let will_end = out.completed && pos_after >= seg_end && is_last;
-                            let report_closed = closed
-                                && will_end
-                                && genuine_closure(&state, &desc.sref(), true).await;
-                            let n = out.recs.len();
-                            for (i, r) in out.recs.iter().enumerate() {
-                                // #267: one combined data+control Bytes.
-                                let mut ev = crate::sse::wire::sse_data_event(&desc, &r.payload);
-                                let last_rec = i + 1 == n && out.completed;
-                                let (utd, cls) = if last_rec {
-                                    (will_end, report_closed)
-                                } else {
-                                    (false, false)
-                                };
-                                let ctl = match surface {
-                                    SseSurface::Raw => crate::sse::wire::sse_control_tok(
-                                        &seg_tok(sg.seg_id, r.off + 1),
-                                        cursor.as_deref(),
-                                        utd,
-                                        cls,
-                                    ),
-                                    SseSurface::Product => crate::sse::wire::sse_control_product(
-                                        &crate::product_cursor::KeyCursor {
-                                            epoch,
-                                            key_hash: rk_hash,
-                                            seg_id: sg.seg_id,
-                                            offset: r.off + 1,
-                                        }
-                                        .encode(&desc.project_id, &key),
-                                        utd,
-                                        cls,
-                                    ),
-                                };
-                                ev.push_str(&ctl);
-                                if !sse_send_billed(&tx, Bytes::from(ev), r.payload.len() as u64, 1)
-                                    .await
-                                    || lease_watch.revoked(&state)
-                                {
-                                    return;
-                                }
-                                sent_any = true;
-                            }
-                            if let Some(last) = out.last {
-                                scan_from = (last + 1).min(seg_end.max(scan_from));
-                            }
-                            if !out.completed {
-                                continue; // keep draining before control
-                            }
-                            if report_closed && scan_from >= seg_end {
-                                return; // final closed control sent
-                            }
-                        }
-                        Err(_) => return,
-                    }
-                }
-                if scan_from >= seg_end && !is_last {
-                    // Sealed predecessor drained: hop to the successor.
-                    pos += 1;
-                    scan_from = 0;
-                    continue 'lineage;
-                }
-                let at_end = scan_from >= seg_end;
-                if (at_end || first) && !sent_any {
-                    // Empty drain: one status-only control. A close on
-                    // the LAST segment can be a split's seal: genuine
-                    // closure sends the final closed control; a
-                    // transition ends the connection silently and the
-                    // reconnect follows the successors.
-                    let report_closed =
-                        closed && at_end && genuine_closure(&state, &desc.sref(), true).await;
-                    let ctl = match surface {
-                        SseSurface::Raw => crate::sse::wire::sse_control_tok(
-                            &seg_tok(sg.seg_id, scan_from),
-                            cursor.as_deref(),
-                            at_end,
-                            report_closed,
-                        ),
-                        SseSurface::Product => crate::sse::wire::sse_control_product(
-                            &crate::product_cursor::KeyCursor {
-                                epoch,
-                                key_hash: rk_hash,
-                                seg_id: sg.seg_id,
-                                offset: scan_from,
-                            }
-                            .encode(&desc.project_id, &key),
-                            at_end,
-                            report_closed,
-                        ),
-                    };
-                    if !sse_send(&tx, Bytes::from(ctl)).await {
-                        return;
-                    }
-                    if closed && at_end {
-                        return;
-                    }
-                } else if closed && at_end && sent_any {
-                    if genuine_closure(&state, &desc.sref(), true).await {
-                        return; // final flags rode the last per-data control
-                    }
-                    return; // transition: silent end, reconnect follows successors
-                }
-                first = false;
-                // Wait for new durable data on the live tail.
-                let notified = handle.notify.notified();
-                let cur_end = handle.state.lock().unwrap().durable.next;
-                if cur_end > scan_from {
-                    continue;
-                }
-                tokio::select! {
-                    _ = notified => {}
-                    // #274 F9: dropped body ends the task immediately.
-                    _ = tx.closed() => {
-                            crate::sse::auth::sse_stats::DISCONNECT_CLIENT_CLOSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            return;
-                        }
-                    // Review V4: terminate no later than token expiry.
-                    _ = tokio::time::sleep(lease_watch.nap()) => {
-                        if lease_watch.revoked(&state) {
-                            return;
-                        }
-                    }
-                }
-            }
-        }
-    });
-    let sse_usage = crate::usage::counters(&sse_hash);
-    let stream = futures_util::StreamExt::map(
-        // Slot rides the body (#267); lease gate too (round 3 F2).
-        crate::sse::auth::GatedSseBody::new(body_state, rx, body_desc, slot, body_watch, gen_rx),
-        move |item| {
-            if let Ok(b) = &item {
-                sse_usage
-                    .bytes_out
-                    .fetch_add(b.len() as u64, std::sync::atomic::Ordering::Relaxed);
-            }
-            item
-        },
-    );
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "text/event-stream")
-        // The Compute edge buffers streaming responses in ~8-16 KB
-        // increments unless told not to (bench/edge-repro): without
-        // this header, parked subscribers never receive heartbeats
-        // through the edge and present as silent zombies.
-        .header("x-accel-buffering", "no")
-        .header(header::CACHE_CONTROL, "no-store")
-        .header("Cross-Origin-Resource-Policy", "cross-origin")
-        .body(Body::from_stream(stream))
-        .unwrap()
-}
-
-/// #268: hub-backed SSE subscriber. Owns a cursor and a 4-slot queue;
-/// the per-stream pump owns the read pipeline. Catch-up below the hub
-/// floor runs through boxed durable reads and re-checks the floor
-/// after (gap-free: the stream is durable and cursor-addressable, so
-/// a wrapped ring just means another catch-up round).
-#[allow(clippy::too_many_arguments)]
-async fn sse_hub_response(
-    lease: crate::sse::auth::SseLease,
-    state: Arc<AppState>,
-    desc: StreamDesc,
-    key: StreamKey,
-    epoch: [u8; 16],
-    engine: Arc<ShardEngine>,
-    handle: Arc<crate::shard::StreamHandle>,
-    start: StartPos,
-    slot: SseSlot,
-) -> Response {
-    note_legacy_sse_dispatch("sse_hub_response");
-    // Round-4 finding 1: prove the lease BEFORE joining a hub — a
-    // refusal here must not leave a subscribed slot on the hub for a
-    // connection that never exists. The generation receiver is
-    // subscribed FIRST so nothing published between proof and parking
-    // is lost.
-    let gen_rx = state.auth.generation_watch();
-    // Round-4 finding 4: ONE exactly-once termination record per
-    // connection, shared by the producer watch and the body gate —
-    // whoever detects the invalidation first records the reason once.
-    let term = std::sync::Arc::new(crate::sse::auth::TerminateOnce::default());
-    let body_watch = match crate::sse::auth::LeaseWatch::new_checked(
-        &state,
-        lease.clone(),
-        // Round-4 finding 4: the body gate shares the connection's
-        // exactly-once termination record with its producer.
-        term.clone(),
-    ) {
-        Ok(w) => w,
-        Err(reason) => return crate::sse::auth::lease_refusal_response(reason),
-    };
-    let sse_hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
-    let (tx, rx) = tokio::sync::mpsc::channel::<crate::sse::auth::SseChunk>(4);
-    crate::billing::meter_read(&state, &desc, 0, 0);
-    let binary = {
-        let mt = crate::registry::media_type(&desc.content_type);
-        mt != "application/json" && !mt.starts_with("text/")
-    };
-    let hub = crate::livehub::HubRegistry::subscribe(
-        &state,
-        &desc,
-        key.clone(),
-        epoch,
-        engine.clone(),
-        handle.clone(),
-    );
-    struct SubGuard(Arc<crate::livehub::LiveHub>);
-    impl Drop for SubGuard {
-        fn drop(&mut self) {
-            // #274 F9: the LAST subscriber out wakes the pump
-            // immediately (it parks on the handle notify) — no poll
-            // timer between mass disconnect and hub retirement.
-            if self
-                .0
-                .subscribers
-                .fetch_sub(1, std::sync::atomic::Ordering::SeqCst)
-                == 1
-                && let Some(ctx) = &self.0.ctx
-            {
-                ctx.handle.notify.notify_waiters();
-            }
-        }
-    }
-    // #273 F5: the subscriber owns the hub Arc, a cursor and small
-    // connection state; descriptor/key/engine/handle live ONCE on the
-    // hub context. Drop this connection's own copies before the task
-    // captures anything.
-    drop((desc, key, engine));
-    let ctx = hub.ctx.clone().expect("production hubs carry a context");
-    // Review round 3 F2: the response body carries its own lease gate.
-    // Round 9: the body also METERS at yield — its identity resolution
-    // needs the descriptor (from the hub context: the connection's own
-    // copy was deliberately dropped, #273 F5).
-    let body_desc = ctx.desc.clone();
-    let body_state = state.clone();
-    let sse_task = async move {
-        let _sub = SubGuard(hub.clone());
-        let mut pos = match start {
-            StartPos::At(p) => p,
-            // #272: durable tail, not the hub's processed head.
-            StartPos::Now => handle.state.lock().unwrap().durable.next,
-        };
-        drop(handle);
-        let status_ctl = |at: u64, utd: bool, cls: bool| {
-            crate::sse::wire::sse_control_product(
-                &crate::product_cursor::KeyCursor {
-                    epoch: ctx.epoch,
-                    key_hash: ctx.rk_hash,
-                    seg_id: ctx.seg_id,
-                    offset: at,
-                }
-                .encode(&ctx.desc.project_id, &ctx.key),
-                utd,
-                cls,
-            )
-        };
-        // Review V1: status is decided HERE, per subscriber, against
-        // the durable frontier — batches carry no terminal facts.
-        let mut need_utd = true;
-        // Review V4 + round-4 F1: the lease travels with the
-        // subscription, re-proved for as long as the connection lives,
-        // starting from a generation-stable INITIAL proof.
-        let mut lease_watch = match crate::sse::auth::LeaseWatch::new_checked(
-            &state, lease,
-            // Round-4 finding 4: producer-side detection shares the
-            // same exactly-once record as the body gate.
-            term,
-        ) {
-            Ok(w) => w,
-            Err(_) => return,
-        };
-        loop {
-            if lease_watch.revoked(&state) {
-                return;
-            }
-            match hub.read_from(pos) {
-                crate::livehub::HubRead::Dead => {
-                    crate::sse::auth::sse_stats::DISCONNECT_HUB_DEAD
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    return;
-                }
-                crate::livehub::HubRead::Progress(next) => {
-                    // Scanned-no-match progress (#272): jump the cursor;
-                    // the AtHead status control conveys it to the
-                    // client.
-                    pos = next;
-                    need_utd = true;
-                }
-                crate::livehub::HubRead::BelowFloor => {
-                    crate::sse::auth::sse_stats::BELOW_FLOOR_CATCHUPS
-                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    // Durable catch-up to the hub's captured head; the
-                    // read machinery is boxed and transient (#267).
-                    let h0 = hub.snapshot_head();
-                    while pos < h0 {
-                        let out = Box::pin(read_records_for_hub(
-                            &state,
-                            &ctx.desc,
-                            &ctx.key,
-                            &ctx.epoch,
-                            &ctx.handle,
-                            &ctx.engine,
-                            pos,
-                            MAX_READ_BYTES,
-                        ))
-                        .await;
-                        match out {
-                            Ok(out) => {
-                                for r in out.recs.iter() {
-                                    let ev = hub_event_at(
-                                        &ctx.desc,
-                                        &ctx.key,
-                                        ctx.epoch,
-                                        ctx.rk_hash,
-                                        ctx.seg_id,
-                                        r,
-                                        r.off + 1,
-                                    );
-                                    #[cfg(test)]
-                                    crate::failpoints::pause(
-                                        crate::failpoints::Fp::SseBeforeSend,
-                                        &ctx.desc.name,
-                                    )
-                                    .await;
-                                    if !sse_send_billed(
-                                        &tx,
-                                        Bytes::from(ev),
-                                        r.payload.len() as u64,
-                                        1,
-                                    )
-                                    .await
-                                        || lease_watch.revoked(&state)
-                                    {
-                                        return;
-                                    }
-                                }
-                                match out.last {
-                                    Some(l) => pos = l + 1,
-                                    None if out.completed => break,
-                                    None => {}
-                                }
-                            }
-                            Err(_) => return,
-                        }
-                    }
-                    // Catch-up events carry no flags: the upToDate
-                    // handoff happens at the AtHead recheck (#270/F4).
-                    need_utd = true;
-                }
-                crate::livehub::HubRead::Events(evs, next) => {
-                    for (b, plen) in evs {
-                        // Test failpoint: authorization-cutoff legs park
-                        // the producer before the next send — the LIVE
-                        // ring delivery, not only the catch-up branch.
-                        #[cfg(test)]
-                        crate::failpoints::pause(
-                            crate::failpoints::Fp::SseBeforeSend,
-                            &ctx.desc.name,
-                        )
-                        .await;
-                        if !sse_send_billed(&tx, b, plen as u64, 1).await
-                            || lease_watch.revoked(&state)
-                        {
-                            return;
-                        }
-                    }
-                    pos = next;
-                    need_utd = true;
-                }
-                crate::livehub::HubRead::AtHead {
-                    closed,
-                    pump_caught_up,
-                } => {
-                    // Arm the wakeup FIRST: an append that commits
-                    // after the frontier check below must wake this
-                    // subscriber, never strand it (review V1: the
-                    // durable comparison happens after arming).
-                    let notified = hub.notify.notified();
-                    if hub.snapshot_head() > pos {
-                        continue;
-                    }
-                    // upToDate is a statement about the DURABLE
-                    // stream, not the pump: claim it only when the
-                    // ring is drained, the pump reports itself caught
-                    // up, and the LIVE durable frontier agrees.
-                    let frontier = pump_caught_up && {
-                        let d = ctx.handle.state.lock().unwrap().durable.next;
-                        hub.snapshot_head() >= d
-                    };
-
-                    if closed && frontier {
-                        // Exactly one sealed control (#270): sent here
-                        // and only here, and the task returns with it.
-                        let _ = sse_send(&tx, Bytes::from(status_ctl(pos, true, true))).await;
-                        return;
-                    }
-                    if frontier && need_utd {
-                        if !sse_send(&tx, Bytes::from(status_ctl(pos, true, false))).await {
-                            return;
-                        }
-                        need_utd = false;
-                    }
-                    tokio::select! {
-                        _ = notified => {}
-                        // #274 F9: a dropped body ends the task NOW,
-                        // not at the next record or heartbeat.
-                        _ = tx.closed() => {
-                            crate::sse::auth::sse_stats::DISCONNECT_CLIENT_CLOSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            return;
-                        }
-                        // Review V4: terminate no later than token
-                        // expiry, even with no traffic and no feeds.
-                        _ = tokio::time::sleep(lease_watch.nap()) => {
-                            if lease_watch.revoked(&state) {
-                                return;
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    };
-    SSE_HUB_FUTURE_BYTES.store(
-        std::mem::size_of_val(&sse_task) as u64,
-        std::sync::atomic::Ordering::Relaxed,
-    );
-    tokio::spawn(sse_task);
-    let sse_usage = crate::usage::counters(&sse_hash);
-    let stream = futures_util::StreamExt::map(
-        crate::sse::auth::GatedSseBody::new(body_state, rx, body_desc, slot, body_watch, gen_rx),
-        move |item| {
-            if let Ok(b) = &item {
-                sse_usage
-                    .bytes_out
-                    .fetch_add(b.len() as u64, std::sync::atomic::Ordering::Relaxed);
-            }
-            item
-        },
-    );
-    let mut r = Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "text/event-stream")
-        // The Compute edge buffers streaming responses in ~8-16 KB
-        // increments unless told not to (bench/edge-repro): without
-        // this header, parked subscribers never receive heartbeats
-        // through the edge and present as silent zombies.
-        .header("x-accel-buffering", "no")
-        .header(header::CACHE_CONTROL, "no-cache")
-        .header("Cross-Origin-Resource-Policy", "cross-origin");
-    if binary {
-        r = r.header("Stream-SSE-Data-Encoding", "base64");
-    }
-    r.body(Body::from_stream(stream)).unwrap()
-}
-
+/// The single-segment SSE dispatch: the livefeed session (round 11.8:
+/// the only engine) with the typed segmented-at-dispatch retryable.
 #[allow(clippy::too_many_arguments)]
 async fn sse_response(
     state: Arc<AppState>,
@@ -7846,13 +7128,10 @@ async fn sse_response(
     // AND keyed lanes ride it on single-segment streams; FORKS join
     // here too (read_fork_inner reaches this same producer with the
     // raw vocabulary, which the session composes byte-identically).
-    if state
-        .sse_engine_livefeed
-        .load(std::sync::atomic::Ordering::Relaxed)
-        && desc
-            .segments
-            .as_ref()
-            .is_none_or(|m| m.segments.len() <= 1 && m.pending.is_none())
+    if desc
+        .segments
+        .as_ref()
+        .is_none_or(|m| m.segments.len() <= 1 && m.pending.is_none())
     {
         let rk_filter = params.key.clone();
         let src = Arc::new(crate::sse::source::SingleSource {
@@ -7870,334 +7149,24 @@ async fn sse_response(
         )
         .await;
     }
-    // Round-11.3: from here on, this IS the legacy direct producer
-    // (the livefeed arm above returned for every livefeed session).
-    note_legacy_sse_dispatch("sse_response");
-    // #268: shared live fanout (SSE_LIVE_HUB=1) — see src/livehub.rs.
-    // Product-surface, unforked, unfiltered connections ride a
-    // per-stream hub that decrypts and formats each record ONCE.
-    // The product layer always materializes the DEFAULT routing key as
-    // Some("") — that IS the unfiltered product lane. #274 F8: the
-    // FIRST subscriber stays on the direct path below (guard held on
-    // the response body); the second concurrent one promotes to a hub.
-    let mut direct_guard = None;
-    if state
-        .sse_live_hub
-        .load(std::sync::atomic::Ordering::Relaxed)
-        && surface == SseSurface::Product
-        && desc.forked_from.is_none()
-        && params.key.as_deref().is_none_or(str::is_empty)
+    // Round-11.8: the legacy direct/hub producers are DELETED — the
+    // livefeed arm above serves every single-segment connection. A
+    // topology that changed between the caller's dispatch and here
+    // (fresh split; pending transition) answers the typed retryable
+    // and helps the transition along; the retry re-dispatches through
+    // the lineage path.
     {
-        match crate::livehub::join_direct_or_promote(&state, handle.hash) {
-            Some(g) => direct_guard = Some(g),
-            None => {
-                return sse_hub_response(
-                    crate::sse::auth::SseLease::of(&params),
-                    state,
-                    desc,
-                    key,
-                    epoch,
-                    engine,
-                    handle,
-                    start,
-                    slot,
-                )
-                .await;
-            }
-        }
+        let st = state.clone();
+        let srf = desc.sref();
+        tokio::spawn(async move {
+            crate::scaler3::resume(&st, &srf).await;
+        });
     }
-    let sse_hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
-    // #267: 4 slots, not 64 — a slow client keeps a cursor and a
-    // socket, not a private replay buffer (sse_send disconnects it).
-    let (tx, rx) = tokio::sync::mpsc::channel::<crate::sse::auth::SseChunk>(4);
-    // One subscribe operation; delivered bytes meter per chunk (§5).
-    crate::billing::meter_read(&state, &desc, 0, 0);
-    let binary = {
-        let mt = crate::registry::media_type(&desc.content_type);
-        mt != "application/json" && !mt.starts_with("text/")
-    };
-    let cursor = params.cursor.clone();
-    let key_filter = params.key.clone();
-    // Review round 3 F2: the response body carries its own lease gate.
-    let body_state = state.clone();
-    let body_desc = desc.clone();
-    // Round-4 finding 1: subscribe to the generation watch BEFORE the
-    // initial proof so a publication landing between the two is still
-    // observed by this body; then prove the lease generation-stably —
-    // BEFORE any producer work is scheduled. A subscription whose
-    // authorization was already invalidated while the response was
-    // assembled is refused here, never established.
-    let gen_rx = state.auth.generation_watch();
-    // Round-4 finding 4: ONE exactly-once termination record per
-    // connection, shared by the producer watch and the body gate —
-    // whoever detects the invalidation first records the reason once.
-    let term = std::sync::Arc::new(crate::sse::auth::TerminateOnce::default());
-    let body_watch = match crate::sse::auth::LeaseWatch::new_checked(
-        &state,
-        crate::sse::auth::SseLease::of(&params),
-        // Round-4 finding 4: the body gate shares the connection's
-        // exactly-once termination record with its producer.
-        term.clone(),
-    ) {
-        Ok(w) => w,
-        Err(reason) => return crate::sse::auth::lease_refusal_response(reason),
-    };
-    let rk_hash = crate::crypto::stream_hash(key_filter.as_deref().unwrap_or(""));
-    let ctl_seg_id = desc
-        .resolve_segment(key_filter.as_deref().unwrap_or(""))
-        .seg_id;
-
-    let sse_task = async move {
-        let mut pos = match start {
-            StartPos::At(p) => p,
-            StartPos::Now => handle.state.lock().unwrap().durable.next,
-        };
-        let from_now = matches!(start, StartPos::Now);
-        let mut first = true;
-        // Standalone status dedupe: one per reported frontier position
-        // (see the status block below).
-        let mut last_status_reported: Option<u64> = None;
-        // Review V4 + round-4 F1: re-prove authorization for the
-        // connection's life — starting from a generation-stable INITIAL
-        // proof (a lease already dead at construction never schedules).
-        let mut lease_watch = match crate::sse::auth::LeaseWatch::new_checked(
-            &state,
-            crate::sse::auth::SseLease::of(&params),
-            // Round-4 finding 4: producer-side detection shares the
-            // same exactly-once record as the body gate.
-            term,
-        ) {
-            Ok(w) => w,
-            Err(_) => return,
-        };
-        loop {
-            if lease_watch.revoked(&state) {
-                return;
-            }
-            let (end, closed) = {
-                let st = handle.state.lock().unwrap();
-                (st.durable.next, st.durable.closed)
-            };
-            let mut sent_any = false;
-            if pos < end && !from_now || (from_now && !first && pos < end) {
-                // #267: the read machinery is BOXED out of this task's
-                // future. Inlined, the parked task's allocation stays
-                // sized for read_stitched/read_records' largest
-                // suspension state for the connection's lifetime; boxed,
-                // the parked future holds one pointer and the read
-                // allocation exists only while a delivery is active.
-                let read = Box::pin(async {
-                    if desc.forked_from.is_some() {
-                        // Fork SSE catch-up: inherited records stitch
-                        // through the ancestor chain.
-                        read_stitched(&state, &desc, &key, pos, MAX_READ_BYTES).await
-                    } else {
-                        read_records(
-                            &state,
-                            &desc,
-                            &key,
-                            &epoch,
-                            &handle,
-                            &engine,
-                            pos,
-                            key_filter.as_deref(),
-                            MAX_READ_BYTES,
-                            // SSE is durable-only (see sse_lineage_response).
-                            crate::shard::Deliver::Durable,
-                        )
-                        .await
-                    }
-                })
-                .await;
-                match read {
-                    Ok(out) => {
-                        // Pinned baseline: every data event pairs with
-                        // exactly ONE control naming the position after
-                        // it; the batch's LAST control carries the
-                        // up-to-date/closed flags (no separate batch
-                        // control follows).
-                        let pos_after = out.last.map(|l| l + 1).unwrap_or(pos);
-                        let will_end = out.completed && pos_after >= end;
-                        let report_closed =
-                            closed && will_end && genuine_closure(&state, &desc.sref(), true).await;
-                        let n = out.recs.len();
-                        for (i, r) in out.recs.iter().enumerate() {
-                            // #267: data + its paired control ride ONE
-                            // Bytes — identical on the wire (SSE frames
-                            // are self-delimiting), half the queue
-                            // traffic.
-                            let mut ev = crate::sse::wire::sse_data_event(&desc, &r.payload);
-                            let last_rec = i + 1 == n && out.completed;
-                            let (utd, cls) = if last_rec {
-                                (will_end, report_closed)
-                            } else {
-                                (false, false)
-                            };
-                            let ctl = match surface {
-                                SseSurface::Raw => crate::sse::wire::sse_control(
-                                    r.off + 1,
-                                    cursor.as_deref(),
-                                    utd,
-                                    cls,
-                                ),
-                                SseSurface::Product => crate::sse::wire::sse_control_product(
-                                    &crate::product_cursor::KeyCursor {
-                                        epoch,
-                                        key_hash: rk_hash,
-                                        seg_id: ctl_seg_id,
-                                        offset: r.off + 1,
-                                    }
-                                    .encode(&desc.project_id, &key),
-                                    utd,
-                                    cls,
-                                ),
-                            };
-                            ev.push_str(&ctl);
-                            // Test failpoint: authorization-cutoff legs
-                            // park the producer before the next send.
-                            #[cfg(test)]
-                            crate::failpoints::pause(
-                                crate::failpoints::Fp::SseBeforeSend,
-                                &desc.name,
-                            )
-                            .await;
-                            if !sse_send_billed(&tx, Bytes::from(ev), r.payload.len() as u64, 1)
-                                .await
-                                || lease_watch.revoked(&state)
-                            {
-                                return;
-                            }
-                            sent_any = true;
-                        }
-                        if let Some(last) = out.last {
-                            pos = last + 1;
-                        }
-                        // The batch's last per-record control carried
-                        // upToDate at this position: it counts as the
-                        // reported status for the dedupe (no standalone
-                        // repeat may follow at the same position).
-                        if will_end {
-                            last_status_reported = Some(pos);
-                        }
-                        if !out.completed {
-                            continue; // keep draining before control
-                        }
-                        if closed && pos >= end && report_closed {
-                            return; // final closed control sent
-                        }
-                    }
-                    Err(_) => return,
-                }
-            }
-            let at_end = pos >= end;
-            // Dedupe by reported position: the standalone OPEN status is
-            // emitted ONCE per frontier position — after a keep-alive
-            // or a lease nap the loop wakes to the same position and
-            // must NOT repeat it (the conformance SSE duplicate-control
-            // failures). Data frames carry their own controls; a
-            // position change re-arms reporting. A closure at the end
-            // ALWAYS overrides the dedupe: a genuine seal landing after
-            // the position was reported open still owes its one
-            // terminal control (the golden direct/hub transcript leg),
-            // and a transition's seal still owes the connection its
-            // close (the return below).
-            let closing = closed && at_end;
-            let report_closed = closing && genuine_closure(&state, &desc.sref(), true).await;
-            if (at_end || first) && !sent_any && (last_status_reported != Some(pos) || closing) {
-                // Empty drain (connect at tail / offset=now): one
-                // status-only control. A close observed mid-SSE can be a
-                // split's seal, not a user close: genuine closure sends
-                // the final closed control; a transition ends the
-                // connection WITHOUT it and the reconnect's fresh
-                // dispatch serves the successors.
-                let ctl = match surface {
-                    SseSurface::Raw => {
-                        crate::sse::wire::sse_control(pos, cursor.as_deref(), at_end, report_closed)
-                    }
-                    SseSurface::Product => crate::sse::wire::sse_control_product(
-                        &crate::product_cursor::KeyCursor {
-                            epoch,
-                            key_hash: rk_hash,
-                            seg_id: ctl_seg_id,
-                            offset: pos,
-                        }
-                        .encode(&desc.project_id, &key),
-                        at_end,
-                        report_closed,
-                    ),
-                };
-                if !sse_send(&tx, Bytes::from(ctl)).await {
-                    return;
-                }
-                last_status_reported = Some(pos);
-                if closed && at_end {
-                    return; // final control sent; close connection
-                }
-            } else if closed && at_end && sent_any {
-                return; // final flags rode the last per-data control
-            }
-            first = false;
-            // Wait for new durable data.
-            let notified = handle.notify.notified();
-            let cur_end = handle.state.lock().unwrap().durable.next;
-            if cur_end > pos {
-                continue;
-            }
-            tokio::select! {
-                _ = notified => {}
-                // #274 F9: dropped body ends the task immediately.
-                _ = tx.closed() => {
-                            crate::sse::auth::sse_stats::DISCONNECT_CLIENT_CLOSED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            return;
-                        }
-                // Review V4: terminate no later than token expiry.
-                _ = tokio::time::sleep(lease_watch.nap()) => {
-                    if lease_watch.revoked(&state) {
-                        return;
-                    }
-                }
-            }
-        }
-    };
-    SSE_FUTURE_BYTES.store(
-        std::mem::size_of_val(&sse_task) as u64,
-        std::sync::atomic::Ordering::Relaxed,
-    );
-    tokio::spawn(sse_task);
-
-    let sse_usage = crate::usage::counters(&sse_hash);
-    let stream = futures_util::StreamExt::map(
-        // Slot rides the body: dropping the response stream frees the
-        // instance SSE budget entry (#267); the lease gate (round 3
-        // F2) rides it too.
-        crate::sse::auth::GatedSseBody::new(body_state, rx, body_desc, slot, body_watch, gen_rx),
-        move |item| {
-            if let Ok(b) = &item {
-                sse_usage
-                    .bytes_out
-                    .fetch_add(b.len() as u64, std::sync::atomic::Ordering::Relaxed);
-            }
-            item
-        },
-    );
-    let mut r = Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "text/event-stream")
-        // The Compute edge buffers streaming responses in ~8-16 KB
-        // increments unless told not to (bench/edge-repro): without
-        // this header, parked subscribers never receive heartbeats
-        // through the edge and present as silent zombies.
-        .header("x-accel-buffering", "no")
-        .header(header::CACHE_CONTROL, "no-cache")
-        .header("Cross-Origin-Resource-Policy", "cross-origin");
-    if binary {
-        r = r.header("Stream-SSE-Data-Encoding", "base64");
-    }
-    let resp = r.body(Body::from_stream(stream)).unwrap();
-    match direct_guard {
-        Some(g) => hold_on_body(resp, g),
-        None => resp,
-    }
+    err_resp(
+        StatusCode::SERVICE_UNAVAILABLE,
+        "segment_transition",
+        "the stream segmented at dispatch; retry",
+    )
 }
 
 // ---- per-key ordering read surface (PER-KEY-ORDERING.md §4) ----
@@ -8687,18 +7656,13 @@ async fn read_v3_lineage_inner(
     };
 
     if live == Some("sse") {
-        let rk = params.key.clone().unwrap_or_default();
         // Round-11.3: connect-time lineage through LiveFeed for BOTH
         // surfaces — raw controls carry epoch/segment tokens, so a
         // segmented lineage is fully representable on raw. A pending
         // transition at connect is a typed retryable, and a failed
         // build is a typed refusal: once LiveFeed is selected, NO
         // request silently invokes a legacy producer.
-        if state
-            .sse_engine_livefeed
-            .load(std::sync::atomic::Ordering::Relaxed)
-            && desc.segments.as_ref().is_some_and(|m| m.pending.is_some())
-        {
+        if desc.segments.as_ref().is_some_and(|m| m.pending.is_some()) {
             // Round-11.4 fleet finding: HELP the transition along
             // before refusing (idempotent, non-blocking — the read_v3
             // pattern). An ORPHANED pending transition (executor died
@@ -8718,10 +7682,6 @@ async fn read_v3_lineage_inner(
                 "a segment transition is in flight; retry",
             );
         }
-        if state
-            .sse_engine_livefeed
-            .load(std::sync::atomic::Ordering::Relaxed)
-            && desc.segments.as_ref().is_some_and(|m| m.pending.is_none())
         {
             let rk_filter = params.key.clone();
             match crate::sse::source::LineageSource::build(
@@ -8804,72 +7764,9 @@ async fn read_v3_lineage_inner(
                 }
             }
         }
-        // #268: single-segment, unfiltered, unforked product SSE rides
-        // the shared live hub (SSE_LIVE_HUB=1) — the product dispatch
-        // routes ALL :sse here, so this is the hub's real front door;
-        // splits, key filters and forks keep the lineage streamer. If
-        // resolution fails the RAII slot drops and the lineage path
-        // (which re-resolves inside its task) serves the connection.
-        if state
-            .sse_live_hub
-            .load(std::sync::atomic::Ordering::Relaxed)
-            && surface == SseSurface::Product
-            && lineage.len() == 1
-            && rk.is_empty()
-            && desc.forked_from.is_none()
-        {
-            let sg = &lineage[0];
-            let identity = desc.dynamic_segment_identity(sg.seg_id);
-            if let Some(engine) = state.engine_for_scaler(&desc.segment_route(sg)).await
-                && let Ok(handle) = engine.stream_handle(identity).await
-            {
-                // #274 F8: the FIRST subscriber rides the direct path
-                // (no hub, no pump — the 100k x 1 shape must not pay
-                // for shared machinery it cannot share); the SECOND
-                // concurrent subscriber promotes the stream to a hub;
-                // the existing direct one stays direct until
-                // reconnect (one duplicate reader is negligible on a
-                // fanned-out stream).
-                if let Some(guard) = crate::livehub::join_direct_or_promote(&state, handle.hash) {
-                    let resp = sse_lineage_response(
-                        state, desc, key, epoch, lineage, pos, scan_from, rk, params, surface,
-                    );
-                    return hold_on_body(resp, guard);
-                }
-                let slot = match sse_acquire(&state) {
-                    Ok(s) => s,
-                    Err(r) => return *r,
-                };
-                state.keys.put(identity, key.clone(), epoch);
-                // #272: "now" is the DURABLE tail at request time —
-                // never the hub's processed head, which can lag it.
-                let start = if scan_from == u64::MAX {
-                    StartPos::At(handle.state.lock().unwrap().durable.next)
-                } else {
-                    StartPos::At(scan_from)
-                };
-                return sse_hub_response(
-                    crate::sse::auth::SseLease::of(&params),
-                    state,
-                    desc,
-                    key,
-                    epoch,
-                    engine,
-                    handle,
-                    start,
-                    slot,
-                )
-                .await;
-            }
-        }
-        // Keyed SSE across lineage (review deferral, now wired): drain
-        // every predecessor's matches, then live-follow the key's live
-        // segment. A seal observed mid-stream that is NOT a genuine
-        // close ends the connection without streamClosed — the
-        // reconnect's fresh dispatch serves the successors.
-        return sse_lineage_response(
-            state, desc, key, epoch, lineage, pos, scan_from, rk, params, surface,
-        );
+        // Round-11.8: the legacy lineage/hub producers are DELETED —
+        // the livefeed block above returns on EVERY dispatch (serve,
+        // typed refusal, or the pending retryable).
     }
     // Hop forward over already-drained sealed segments so one request
     // always serves records when any exist ahead.

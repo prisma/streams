@@ -33,30 +33,6 @@ pub(crate) fn sse_data_event(desc: &StreamDesc, payload: &[u8]) -> String {
     ev
 }
 
-/// Raw-surface control with a pre-encoded (epoch) cursor token — the
-/// lineage streamer's controls name segments, not scalar offsets.
-pub(crate) fn sse_control_tok(
-    next_tok: &str,
-    cursor: Option<&str>,
-    up_to_date: bool,
-    closed: bool,
-) -> String {
-    let mut fields = vec![format!("\"streamNextOffset\":\"{next_tok}\"")];
-    if !closed && let Some(c) = cursor {
-        fields.push(format!(
-            "\"streamCursor\":\"{}\"",
-            crate::http::interval_cursor(Some(c))
-        ));
-    }
-    if up_to_date {
-        fields.push("\"upToDate\":true".to_string());
-    }
-    if closed {
-        fields.push("\"streamClosed\":true".to_string());
-    }
-    format!("event: control\ndata:{{{}}}\n\n", fields.join(","))
-}
-
 /// Product control: signed key cursor + product field names.
 pub(crate) fn sse_control_product(cursor_tok: &str, up_to_date: bool, sealed: bool) -> String {
     let mut fields = vec![format!("\"nextCursor\":\"{cursor_tok}\"")];
@@ -92,31 +68,6 @@ pub(crate) fn sse_control_ep(
         },
     );
     let mut fields = vec![format!("\"streamNextOffset\":\"{tok}\"")];
-    if !closed {
-        fields.push(format!(
-            "\"streamCursor\":\"{}\"",
-            crate::http::interval_cursor(cursor)
-        ));
-    }
-    if up_to_date {
-        fields.push("\"upToDate\":true".to_string());
-    }
-    if closed {
-        fields.push("\"streamClosed\":true".to_string());
-    }
-    format!("event: control\ndata:{{{}}}\n\n", fields.join(","))
-}
-
-pub(crate) fn sse_control(
-    next: u64,
-    cursor: Option<&str>,
-    up_to_date: bool,
-    closed: bool,
-) -> String {
-    let mut fields = vec![format!(
-        "\"streamNextOffset\":\"{}\"",
-        crate::http::tail_token(next)
-    )];
     if !closed {
         fields.push(format!(
             "\"streamCursor\":\"{}\"",

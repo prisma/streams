@@ -2,8 +2,8 @@
 # The LOCAL half of the release gate: fmt, clippy (fingerprint-gated),
 # workflow lint (actionlint, REQUIRED — the zero-jobs incident class),
 # the Rust/DST binary suite (capacity mechanism gate isolated so the
-# measurement owns the machine), the LiveFeed engine matrix, and
-# supply-chain checks. It does NOT run the Durable Streams conformance
+# measurement owns the machine), and supply-chain checks (round 11.8:
+# livefeed IS the engine — the suite step is the engine coverage). It does NOT run the Durable Streams conformance
 # corpus, SDK smoke, field/capacity/handoff campaigns, or cross-owner
 # fan-out — those produce artifacts that scripts/rc-certify.sh
 # verifies against the release binary. R30 review: this scope
@@ -67,13 +67,6 @@ echo "== capacity mechanism gate (owns the machine) =="
 cargo test --bin streams-slate post_split_throughput_scales -- --exact dst::dst_tests::post_split_throughput_scales
 
 echo "== livefeed engine matrix =="
-# Round-9 review: the replacement engine's certification is part of
-# the release gate, not only a CI job — the generic SSE corpus runs
-# under the livefeed engine with the tracked exclusions.
-SKIPS=$(grep -v '^#' scripts/livefeed-matrix-skips.txt | sed 's/^/--skip /' | tr '\n' ' ')
-# shellcheck disable=SC2086  # SKIPS must word-split into repeated --skip flags
-STREAMS_SSE_ENGINE=livefeed cargo test --bin streams-slate -- $SKIPS --skip post_split_throughput_scales
-
 echo "== supply chain =="
 cargo deny check
 

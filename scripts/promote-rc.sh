@@ -33,10 +33,10 @@ echo "== promote-rc: $SHA -> $TAG =="
 echo "== 1/4 required check runs at $SHA =="
 # Round-9 review item 4: query ALL check runs attached to the exact
 # SHA, not one workflow run's jobs — workflow-lint lives in its OWN
-# workflow (check-run name `actionlint`), and the LiveFeed engine +
-# matrix are the replacement engine's certification. A commit with a
-# red matrix or an unparseable workflow must never receive an RC tag.
-REQUIRED_CHECKS=(rust livefeed livefeed-matrix livefeed-fleet-cert platform-e2e
+# workflow (check-run name `actionlint`), and the LiveFeed engine job
+# + real-fleet certification are the engine's certification. A commit
+# with an unparseable workflow must never receive an RC tag.
+REQUIRED_CHECKS=(rust livefeed livefeed-fleet-cert platform-e2e
   mt-cert-1000 durable-streams-server-conformance product-field-gate sdk-package
   actionlint)
 # Filter to the github-actions app: a required name must be satisfied

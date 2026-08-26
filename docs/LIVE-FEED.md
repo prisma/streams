@@ -5,8 +5,10 @@ concurrency level. There is no direct-versus-hub implementation switch:
 the one-subscriber and many-subscriber cases differ only in **retention
 and read coordination**, never in protocol code.
 
-This document is the long-term contract. The staged transition lives in
-`docs/LIVE-FEED-PLAN.md` and is deleted once complete.
+This document is the long-term contract. The staged transition
+(`docs/LIVE-FEED-PLAN.md`) COMPLETED at round 11.8 and its plan file
+is deleted; the transition record is folded into §Transition record
+below.
 
 ## Request flow
 
@@ -119,10 +121,10 @@ semantics; billing redesign; distributed collection sealing.
 
 | Decision | Status | Evidence |
 |---|---|---|
-| Cooperative driver replaces pump task | ADOPTED (gated on E1) | LIVE-FEED-PLAN.md §E1 |
-| Controls emitted as separate chunks from sessions | ADOPTED (gated on E2) | §E2 |
-| Solo retention = zero | ADOPTED (gated on E3) | §E3 |
-| Ring default derived from stall-budget experiment | PENDING E4 | §E4 |
+| Cooperative driver replaces pump task | ADOPTED (E1) | §Transition record |
+| Controls emitted as separate chunks from sessions | REJECTED by measurement (E2: folded frames) | §Transition record |
+| Solo retention = zero | ADOPTED (E3; retained==0 asserted, RSS −28%) | §Transition record |
+| Ring default derived from stall-budget experiment | SUPERSEDED: 1 MiB pinned by the 1-GiB certification | deploy/profiles/compute-1g.env |
 
 ## Default engine + rollback (round 11.7)
 
@@ -155,3 +157,34 @@ reason + cursor resume; clients that reconnect-and-resume observe no
 data difference between engines. A rollback therefore needs no data
 migration in either direction — the engines share the wire contract,
 the cursor vocabulary, and the durable store.
+
+
+## Transition record (the deleted LIVE-FEED-PLAN.md, round 11.8)
+
+Stages 0–7 (contract freeze, session shell, core, single-segment
+cutover, selectors, forks, raw surface, lineage, cutover) and the
+follow-up remediation rounds all landed and were certified per commit
+by `scripts/gate.sh` + CI. Stage 8 (field validation) closed with the
+real-fleet certification (`bench/fleet/livefeed-cert.sh`, CI job
+`livefeed-fleet-cert`) and the field-canary battery
+(`bench/canary/livefeed-canary.sh`, tag `livefeed-canary-rc1`). Round
+11.7 flipped the default; round 11.8 deleted the legacy direct/hub
+engines, the `STREAMS_SSE_ENGINE` selector, and the engine matrix — a
+CI lint keeps the deleted symbols dead.
+
+Benchmark read-out that survived the transition (local memstore rigs,
+release build; harness `STREAMS_SSE_BENCH=1 cargo test -- bench_sse_`):
+
+- SINGLETON (50x1): livefeed −7% wall / −28% RSS vs the legacy direct
+  path — protect-the-singleton holds with no promotion threshold.
+- FANOUT micro-burst (4x25): livefeed ~25% above the legacy hub on a
+  tiny burst (330 vs 254 ms) with LOWER RSS; the residual is the
+  cooperative driver's per-session scheduling vs a dedicated pump.
+  OPEN OPTIMIZATION (tracked, non-blocking): hybrid driver — spawn a
+  dedicated reader task only while subscribers >= 2.
+- Efficiency invariant asserted in-suite: exactly ONE source read per
+  append window regardless of subscriber count.
+
+The Stage 7B exclusion table (8 engine-neutral contracts) was fully
+replaced by livefeed legs in round 9c; zero uncovered exclusions
+remained at deletion time. The matrix skip list died with the matrix.

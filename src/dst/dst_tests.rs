@@ -5810,29 +5810,14 @@ async fn http_rig_inner(
         admit_shed_rss: std::sync::atomic::AtomicU64::new(0),
         sse_max_connections: 0,
         sse_configured_max_connections: 0,
-        sse_engine_livefeed: std::sync::atomic::AtomicBool::new(
-            // The engine matrix: the suite's default posture can be
-            // flipped process-wide, so the generic SSE corpus runs
-            // under BOTH engines in CI (exclusions tracked in
-            // docs/LIVE-FEED-PLAN.md).
-            std::env::var("STREAMS_SSE_ENGINE").as_deref() == Ok("livefeed"),
-        ),
         live_feeds: Arc::new(crate::sse::registry::FeedRegistry::new()),
         // Per-rig budget: isolated from every other rig in the process.
         feed_budget: Arc::new(crate::sse::feed::FeedMemoryBudget::from_env()),
-        feed_ring_bytes: std::sync::atomic::AtomicUsize::new(crate::livehub::feed_ring_bytes()),
+        feed_ring_bytes: std::sync::atomic::AtomicUsize::new(crate::sse::budget::feed_ring_bytes()),
         max_record_payload_bytes: std::sync::atomic::AtomicUsize::new(0),
         cert_sealed_publish_delay_ms: std::sync::atomic::AtomicU64::new(0),
         sse_heartbeat_ms: std::sync::atomic::AtomicU64::new(15_000),
         sse_connections: std::sync::atomic::AtomicU64::new(0),
-        live_hubs: crate::livehub::HubRegistry::new(),
-        sse_live_hub: std::sync::atomic::AtomicBool::new(false),
-        // Per-rig accounting: the global gauge is shared across the
-        // parallel test binary and would let sibling rigs' retained
-        // bytes trip THIS rig's cap.
-        hub_total: Box::leak(Box::new(std::sync::atomic::AtomicU64::new(0))),
-        hub_total_cap: std::sync::atomic::AtomicU64::new(crate::livehub::hub_total_cap()),
-        hub_promote_at: std::sync::atomic::AtomicU64::new(2),
         admit_max_inflight_per_stream: per_segment_slots,
         stream_inflight: std::sync::Mutex::new(std::collections::HashMap::new()),
         stream_shed: std::sync::atomic::AtomicU64::new(0),
@@ -29965,9 +29950,6 @@ async fn hub_rig_stream(
 ) {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_live_hub
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -29996,454 +29978,9 @@ async fn hub_append(addr: std::net::SocketAddr, name: &str, body: &str) {
     assert!(st == 200 || st == 204, "append {st}");
 }
 
-/// F1 leg 1: data then seal — the subscriber must receive the final
-/// record AND exactly one sealed control, then EOF. The broken pump
-/// marked the closed hub dead first, so the subscriber saw Dead and
-/// hung up with neither.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_seal_with_data_delivers_final_flags_then_eof() {
-    let (state, addr, _promoter, mut sck) = hub_rig_stream("hubseal").await;
-    hub_append(addr, "hubseal", r#"{"n":1}"#).await;
-    let (acc, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"n\":1")).await;
-    assert!(acc.contains("\"n\":1"), "first record must arrive:\n{acc}");
-    assert!(
-        acc.to_lowercase().contains("x-accel-buffering: no"),
-        "SSE responses must opt out of edge response buffering:\n{acc}"
-    );
-    assert!(
-        state.live_hubs.hub_count() >= 1,
-        "the hub path must be engaged (not Phase 1)"
-    );
-    hub_append(addr, "hubseal", r#"{"n":2}"#).await;
-    let (acc, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"n\":2")).await;
-    assert!(acc.contains("\"n\":2"), "second record must arrive:\n{acc}");
-    let (st, _, _) = preq(
-        addr,
-        "POST",
-        "/v1/streams/hubseal:seal",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"{}",
-    )
-    .await;
-    assert_eq!(st, 200, "seal");
-    let (acc, eof) = hub_sse_collect(&mut sck, 15, |_| false).await;
-    let sealed = acc.matches("\"sealed\":true").count();
-    assert_eq!(
-        sealed, 1,
-        "exactly one sealed control after genuine close, got {sealed}:\n{acc}"
-    );
-    assert!(eof, "connection must END after the sealed control:\n{acc}");
-}
-
-/// F1 leg 2: empty seal — one final control (sealed + upToDate), EOF.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_empty_seal_single_final_control() {
-    let (state, addr, _promoter, mut sck) = hub_rig_stream("hubseal2").await;
-    // Connect-at-tail status control arrives first.
-    let (acc, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("upToDate")).await;
-    assert!(acc.contains("\"upToDate\":true"), "tail status:\n{acc}");
-    assert!(state.live_hubs.hub_count() >= 1, "hub must be engaged");
-    // The ~1/56 intermittent FIRED on the round-10c CI run and the
-    // trap below captured its root cause: 503 seal_incomplete with
-    // sealed=false, sealing=true, pending=false and seg 0 still live —
-    // a segment close that did not land under runner load, leaving a
-    // CLEAN resumable claim (no stuck pending topology, no lapsed
-    // fence). That is the documented client contract: RETRY. The test
-    // now retries retryable refusals with bounded backoff and keeps
-    // the full diagnostic dump for any non-retryable verdict or
-    // exhausted retry.
-    let mut st = 0u16;
-    let mut body = Vec::new();
-    for attempt in 0..8u32 {
-        let (s, _, b) = preq(
-            addr,
-            "POST",
-            "/v1/streams/hubseal2:seal",
-            &[("prisma-encryption-key", PRISMA_KEY)],
-            b"{}",
-        )
-        .await;
-        (st, body) = (s, b);
-        // Round-10e: only the typed 503 seal_incomplete retries; a 500
-        // internal falls through to the diagnostic dump immediately.
-        if st == 200 || st != 503 || !String::from_utf8_lossy(&body).contains("seal_incomplete") {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100 * (attempt as u64 + 1))).await;
-    }
-    if st != 200 {
-        let (_, _, segs) = preq(addr, "GET", "/v1/segments/hubseal2", &[], b"").await;
-        let (_, _, load) = preq(
-            addr,
-            "GET",
-            "/v1/debug/load?walk=1",
-            &[("authorization", "Bearer dst-bearer")],
-            b"",
-        )
-        .await;
-        panic!(
-            "seal status {st}: {}\n--- segments ---\n{}\n--- debug/load ---\n{}",
-            String::from_utf8_lossy(&body),
-            String::from_utf8_lossy(&segs),
-            String::from_utf8_lossy(&load)
-        );
-    }
-    let (acc, eof) = hub_sse_collect(&mut sck, 15, |_| false).await;
-    assert_eq!(
-        acc.matches("\"sealed\":true").count(),
-        1,
-        "exactly one sealed control:\n{acc}"
-    );
-    assert!(eof, "EOF after the final control:\n{acc}");
-}
-
-/// F1 leg 4: a subscriber arriving AFTER the close still drains the
-/// records and the sealed control (fresh hub over a closed stream).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_late_subscriber_after_close_drains_and_seals() {
-    use tokio::io::AsyncWriteExt;
-    let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_live_hub
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    let (st, _, _) = preq(
-        addr,
-        "PUT",
-        "/v1/streams/hublate",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        br#"{"format":{"kind":"json"}}"#,
-    )
-    .await;
-    assert_eq!(st, 201);
-    hub_append(addr, "hublate", r#"{"n":7}"#).await;
-    let (st, _, _) = preq(
-        addr,
-        "POST",
-        "/v1/streams/hublate:seal",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"{}",
-    )
-    .await;
-    assert_eq!(st, 200);
-    let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let req = format!(
-        "GET /v1/streams/hublate/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
-    );
-    sck.write_all(req.as_bytes()).await.unwrap();
-    let (acc, eof) = hub_sse_collect(&mut sck, 15, |_| false).await;
-    assert!(acc.contains("\"n\":7"), "record must arrive:\n{acc}");
-    assert_eq!(
-        acc.matches("\"sealed\":true").count(),
-        1,
-        "one sealed control:\n{acc}"
-    );
-    assert!(eof, "EOF after drain:\n{acc}");
-}
-
-/// F4: catch-up from the beginning on a stream that already has data
-/// must end with an upToDate signal while the connection stays OPEN.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_catchup_conveys_up_to_date() {
-    let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_live_hub
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    let (st, _, _) = preq(
-        addr,
-        "PUT",
-        "/v1/streams/hubcu",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        br#"{"format":{"kind":"json"}}"#,
-    )
-    .await;
-    assert_eq!(st, 201);
-    for n in 0..3 {
-        hub_append(addr, "hubcu", &format!("{{\"n\":{n}}}")).await;
-    }
-    let mut promoter = hub_sse_connect(addr, "hubcu").await;
-    let (pacc, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;
-    assert!(pacc.contains("upToDate"));
-    let mut sck = hub_sse_connect(addr, "hubcu").await;
-    let (acc, eof) = hub_sse_collect(&mut sck, 12, |t| {
-        t.contains("\"n\":2") && t.contains("\"upToDate\":true")
-    })
-    .await;
-    assert!(state.live_hubs.hub_count() >= 1, "hub must be engaged");
-    for n in 0..3 {
-        assert!(acc.contains(&format!("\"n\":{n}")), "record {n}:\n{acc}");
-    }
-    assert!(
-        acc.contains("\"upToDate\":true"),
-        "catch-up must convey upToDate:\n{acc}"
-    );
-    assert!(!eof, "stream stays open");
-}
-
 // ---- #271 hub registry identity + lifecycle (Søren review F2) ------
 
-/// F2 unit red: hubs must be keyed by the stream INCARNATION
-/// (handle.hash — the segment identity), not the name-stable route.
-/// Two handles simulating delete/recreate incarnations of one name
-/// must get two different hubs; the pre-fix route key hands the
-/// second subscriber the first incarnation's hub.
-#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn hub_registry_keys_by_incarnation() {
-    let store = mem();
-    let (state, _addr) = http_rig(store.clone()).await;
-    let db = slatedb::Db::builder("hubreg", store.clone() as Arc<dyn ObjectStore>)
-        .build()
-        .await
-        .expect("open db");
-    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
-    let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-        .await
-        .expect("maint");
-    let engine = crate::shard::ShardEngine::start(
-        "hubreg".to_string(),
-        Arc::new(db),
-        store.clone(),
-        crate::shard::ShardConfig::default(),
-        absorb_tx,
-        None,
-        __maint,
-    );
-    let old_handle = engine.stream_handle([1u8; 16]).await.unwrap();
-    let new_handle = engine.stream_handle([2u8; 16]).await.unwrap();
-    let desc = crate::registry::StreamDesc {
-        seal_gen_counter: 0,
-        account_id: None,
-        project_id: state.tenant.clone(),
-        name: "abaunit".to_string(),
-        stream_epoch: "e1".to_string(),
-        key_fingerprint: "fp".into(),
-        created_ms: 1,
-        expires_at_ms: None,
-        deleted: false,
-        soft_deleted: false,
-        logical_close_ms: None,
-        forked_from: None,
-        fork_children: Vec::new(),
-        init: None,
-        sealing: None,
-        seal_op: None,
-        content_type: "application/json".into(),
-        ttl_secs: None,
-        segments: None,
-        sealed: false,
-        watch_definitions: Vec::new(),
-        watch_sig_key: None,
-        parent_ref_pending: false,
-        layout_version: crate::registry::LAYOUT_VERSION,
-    };
-    let h1 = crate::livehub::HubRegistry::subscribe(
-        &state,
-        &desc,
-        skey(),
-        [3u8; 16],
-        engine.clone(),
-        old_handle,
-    );
-    let h2 = crate::livehub::HubRegistry::subscribe(
-        &state,
-        &desc,
-        skey(),
-        [3u8; 16],
-        engine.clone(),
-        new_handle,
-    );
-    assert!(
-        !Arc::ptr_eq(&h1, &h2),
-        "two incarnations of one name must never share a hub"
-    );
-}
-
-/// F2 behavioral: delete + recreate a subscribed stream — a new
-/// subscriber must receive the NEW incarnation's records (the old
-/// hub, pinned alive by the first subscriber, must not capture it).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_recreate_delivers_new_incarnation() {
-    use tokio::io::AsyncWriteExt;
-    let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_live_hub
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    let mk = |addr| async move {
-        let (st, _, _) = preq(
-            addr,
-            "PUT",
-            "/v1/streams/hubre",
-            &[("prisma-encryption-key", PRISMA_KEY)],
-            br#"{"format":{"kind":"json"}}"#,
-        )
-        .await;
-        st
-    };
-    assert_eq!(mk(addr).await, 201);
-    // First subscriber pins a hub on the FIRST incarnation.
-    let mut sck1 = tokio::net::TcpStream::connect(addr).await.unwrap();
-    sck1.write_all(
-        format!(
-            "GET /v1/streams/hubre/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
-        )
-        .as_bytes(),
-    )
-    .await
-    .unwrap();
-    let (acc, _) = hub_sse_collect(&mut sck1, 10, |t| t.contains("upToDate")).await;
-    assert!(acc.contains("upToDate"), "sub1 status:\n{acc}");
-    // Post-#274/F8 the first subscriber rides the DIRECT path — it
-    // pins the old incarnation via its direct registration, not a hub.
-    assert_eq!(state.live_hubs.hub_count(), 0);
-    let (st, _, _) = preq(
-        addr,
-        "DELETE",
-        "/v1/streams/hubre",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"",
-    )
-    .await;
-    assert!(st == 200 || st == 202 || st == 204, "delete {st}");
-    // Recreate may briefly race deletion cleanup.
-    let mut created = false;
-    for _ in 0..50 {
-        if mk(addr).await == 201 {
-            created = true;
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
-    }
-    assert!(created, "recreate");
-    hub_append(addr, "hubre", r#"{"v":"new"}"#).await;
-    let mut promoter2 = hub_sse_connect(addr, "hubre").await;
-    let (pacc, _) = hub_sse_collect(&mut promoter2, 8, |t| t.contains("upToDate")).await;
-    assert!(
-        pacc.contains("upToDate"),
-        "new-incarnation promoter:\n{pacc}"
-    );
-    let mut sck2 = hub_sse_connect(addr, "hubre").await;
-    let (acc, _) = hub_sse_collect(&mut sck2, 12, |t| t.contains("\"v\":\"new\"")).await;
-    assert!(
-        acc.contains("\"v\":\"new\""),
-        "new incarnation's record must reach the new subscriber:\n{acc}"
-    );
-}
-
-/// F2 lifecycle stress: rapid subscribe/disconnect churn against one
-/// stream must never hang a subscriber or leak hubs — the
-/// last-subscriber pump exit must either serve a racing join or let
-/// it create a replacement, never hand it a retiring hub.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_subscribe_churn_never_hangs() {
-    use tokio::io::AsyncWriteExt;
-    let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_live_hub
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    let (st, _, _) = preq(
-        addr,
-        "PUT",
-        "/v1/streams/hubchurn",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        br#"{"format":{"kind":"json"}}"#,
-    )
-    .await;
-    assert_eq!(st, 201);
-    let mut tasks = Vec::new();
-    for _ in 0..4 {
-        tasks.push(tokio::spawn(async move {
-            for _ in 0..30 {
-                let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
-                sck.write_all(
-                    format!(
-                        "GET /v1/streams/hubchurn/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
-                    )
-                    .as_bytes(),
-                )
-                .await
-                .unwrap();
-                let (acc, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
-                assert!(acc.contains("upToDate"), "churn join must serve:\n{acc}");
-                drop(sck);
-            }
-        }));
-    }
-    for t in tasks {
-        tokio::time::timeout(std::time::Duration::from_secs(120), t)
-            .await
-            .expect("churn task hung")
-            .unwrap();
-    }
-}
-
 // ---- #272 hub scanned progress (Søren review F3) --------------------
-
-/// F3 red: the hub pump reads the default lane; a FOREIGN-key append
-/// advances the scan position but produced no matching records — the
-/// pre-fix pump advanced its private position without publishing, so
-/// default subscribers' control cursors stagnated (and the hub head
-/// lagged the pump forever). The subscriber must observe cursor
-/// progress within the deadline, and interleaved default records on
-/// both sides of the foreign one must all arrive.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_foreign_key_appends_advance_default_cursor() {
-    let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_live_hub
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    let (st, _, _) = preq(
-        addr,
-        "PUT",
-        "/v1/streams/hubmix",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        br#"{"format":{"kind":"json"}}"#,
-    )
-    .await;
-    assert_eq!(st, 201);
-    let mut promoter = hub_sse_connect(addr, "hubmix").await;
-    let (pacc, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;
-    assert!(pacc.contains("upToDate"));
-    let mut sck = hub_sse_connect(addr, "hubmix").await;
-    let (acc0, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("upToDate")).await;
-    assert!(acc0.contains("upToDate"), "tail status:\n{acc0}");
-    assert!(state.live_hubs.hub_count() >= 1, "hub engaged");
-    // default @0
-    hub_append(addr, "hubmix", r#"{"d":0}"#).await;
-    let (acc1, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"d\":0")).await;
-    assert!(acc1.contains("\"d\":0"), "default@0:\n{acc1}");
-    // FOREIGN @1: no data for this subscriber, but its cursor must move.
-    let (st, _, _) = preq(
-        addr,
-        "POST",
-        "/v1/streams/hubmix/records",
-        &[
-            ("prisma-encryption-key", PRISMA_KEY),
-            ("prisma-routing-key", "customer-a"),
-        ],
-        br#"{"f":1}"#,
-    )
-    .await;
-    assert!(st == 200 || st == 204);
-    // Each collect starts a fresh accumulator: ANY control arriving
-    // after the foreign append is the cursor advancement.
-    let (acc2, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("event: control")).await;
-    assert!(
-        acc2.contains("event: control"),
-        "a foreign-key append must advance the default subscriber's control cursor:\n{acc2}"
-    );
-    assert!(
-        !acc2.contains("\"f\":1"),
-        "the foreign record must NOT be delivered on the default lane:\n{acc2}"
-    );
-    // default @2 after the foreign one — must still arrive.
-    hub_append(addr, "hubmix", r#"{"d":2}"#).await;
-    let (acc3, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"d\":2")).await;
-    assert!(acc3.contains("\"d\":2"), "default@2 after foreign:\n{acc3}");
-}
 
 /// #272 part 2 red: the DEFAULT-lane read (key_filter Some("")) must
 /// serve from the durable-tail ring like unfiltered reads do — the
@@ -30509,237 +30046,6 @@ async fn keyed_tail_reads_serve_from_ring() {
 }
 
 // ---- #274 hub promotion + teardown (Søren review F8+F9) ------------
-
-/// F9 red: after a mass disconnect, subscriber tasks and hubs must be
-/// gone within a TIGHT deadline. Pre-fix the parked producer task
-/// noticed a dropped body only at the next record or the 15 s shared
-/// heartbeat, and the pump swept the zero count on a 5 s poll — the
-/// application state lingered 15-20 s.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_mass_disconnect_tears_down_within_deadline() {
-    use tokio::io::AsyncWriteExt;
-    let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_live_hub
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    let (st, _, _) = preq(
-        addr,
-        "PUT",
-        "/v1/streams/hubmass",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        br#"{"format":{"kind":"json"}}"#,
-    )
-    .await;
-    assert_eq!(st, 201);
-    let mut socks = Vec::new();
-    for _ in 0..20 {
-        let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
-        sck.write_all(
-            format!(
-                "GET /v1/streams/hubmass/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
-            )
-            .as_bytes(),
-        )
-        .await
-        .unwrap();
-        let (acc, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
-        assert!(acc.contains("upToDate"));
-        socks.push(sck);
-    }
-    assert!(state.live_hubs.hub_count() >= 1);
-    drop(socks);
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
-    loop {
-        let conns = state
-            .sse_connections
-            .load(std::sync::atomic::Ordering::Relaxed);
-        let hubs = state.live_hubs.hub_count();
-        if conns == 0 && hubs == 0 {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "teardown deadline: conns={conns} hubs={hubs} after 3s"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-    }
-}
-
-/// F8 red: one subscriber per stream must ride the DIRECT path — a
-/// hub + pump per single-subscriber stream is strictly more machinery
-/// than Phase 1 (the 100k x 1 shape). The hub is created by the
-/// SECOND concurrent subscriber; the first direct one stays direct
-/// until reconnect (one duplicate reader on a fanned-out stream is
-/// negligible).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_promotes_on_second_subscriber_only() {
-    use tokio::io::AsyncWriteExt;
-    let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_live_hub
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    let (st, _, _) = preq(
-        addr,
-        "PUT",
-        "/v1/streams/hubpromo",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        br#"{"format":{"kind":"json"}}"#,
-    )
-    .await;
-    assert_eq!(st, 201);
-    let connect = |addr| async move {
-        let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
-        sck.write_all(
-            format!(
-                "GET /v1/streams/hubpromo/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
-            )
-            .as_bytes(),
-        )
-        .await
-        .unwrap();
-        let (acc, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
-        assert!(acc.contains("upToDate"));
-        sck
-    };
-    let mut s1 = connect(addr).await;
-    assert_eq!(
-        state.live_hubs.hub_count(),
-        0,
-        "a single subscriber must NOT create a hub (direct path)"
-    );
-    let mut s2 = connect(addr).await;
-    assert!(
-        state.live_hubs.hub_count() >= 1,
-        "the second subscriber promotes the stream to a hub"
-    );
-    // Both delivery paths serve the same append.
-    hub_append(addr, "hubpromo", r#"{"p":1}"#).await;
-    let (a1, _) = hub_sse_collect(&mut s1, 8, |t| t.contains("\"p\":1")).await;
-    let (a2, _) = hub_sse_collect(&mut s2, 8, |t| t.contains("\"p\":1")).await;
-    assert!(a1.contains("\"p\":1"), "direct subscriber:\n{a1}");
-    assert!(a2.contains("\"p\":1"), "hub subscriber:\n{a2}");
-}
-
-/// #275 leg 3: a SPLIT while subscribed is a transition, not a user
-/// close — the hub subscriber must disconnect WITHOUT streamClosed/
-/// sealed (the reconnect's fresh dispatch serves the successors).
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_split_transition_disconnects_without_sealed() {
-    let _l = gap_lock().lock().await;
-    let (state, addr, _promoter, mut sck) = hub_rig_stream("hubsplit").await;
-    let (acc, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
-    assert!(acc.contains("upToDate"));
-    hub_append(addr, "hubsplit", r#"{"n":0}"#).await;
-    let (acc, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("\"n\":0")).await;
-    assert!(acc.contains("\"n\":0"));
-    assert!(state.live_hubs.hub_count() >= 1, "hub engaged");
-    assert!(
-        crate::scaler3::execute_split(
-            &state,
-            &state.raw_adapter_sref("hubsplit"),
-            0,
-            0x8000_0000_0000_0000
-        )
-        .await,
-        "split"
-    );
-    let (acc, ended) = hub_sse_collect(&mut sck, 20, |_| false).await;
-    assert!(ended, "transition must END the connection:\n{acc}");
-    assert!(
-        !acc.contains("\"sealed\":true") && !acc.contains("streamClosed"),
-        "a split is NOT a genuine close — no sealed flags:\n{acc}"
-    );
-}
-
-/// #275 leg 10: a slow client (stops reading) must be DISCONNECTED by
-/// the bounded send deadline while a healthy subscriber keeps
-/// receiving — never buffered privately. One-batch reads bound the
-/// in-flight allocation; this pins the end-to-end policy.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_slow_client_disconnected_while_healthy_delivers() {
-    // healthy = the promoter (direct path, its status control was
-    // consumed by the rig); the slow HUB subscriber below connects
-    // with a TINY receive buffer so loopback buffering cannot mask
-    // the backpressure.
-    let (state, addr, mut healthy, prewarm) = hub_rig_stream("hubslow").await;
-    drop(prewarm);
-    let slow_sock = tokio::net::TcpSocket::new_v4().unwrap();
-    slow_sock.set_recv_buffer_size(8192).unwrap();
-    let mut slow = slow_sock.connect(addr).await.unwrap();
-    {
-        use tokio::io::AsyncWriteExt;
-        let req = format!(
-            "GET /v1/streams/hubslow/records:sse HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
-        );
-        slow.write_all(req.as_bytes()).await.unwrap();
-    }
-    // Let the subscription register before flooding.
-    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
-    let conns0 = state
-        .sse_connections
-        .load(std::sync::atomic::Ordering::Relaxed);
-    assert!(conns0 >= 1, "hub subscriber counted");
-    let big = "x".repeat(16 * 1024);
-    for n in 0..200 {
-        hub_append(addr, "hubslow", &format!("{{\"n\":{n},\"pad\":\"{big}\"}}")).await;
-    }
-    // The healthy subscriber drains everything (~3.2 MB — decisively
-    // past any auto-tuned loopback buffering on the slow socket).
-    let (hacc, _) = hub_sse_collect(&mut healthy, 60, |t| t.contains("\"n\":199")).await;
-    assert!(
-        hacc.contains("\"n\":199"),
-        "healthy subscriber must keep up"
-    );
-    // The slow one is cut by the 10 s send deadline: its subscriber
-    // TASK returns, the SubGuard drops, and — as the hub's only
-    // subscriber — the pump retires and the hub is removed. (The
-    // connection SLOT can outlive the task while hyper's blocked
-    // socket write pins the response body; the app-level teardown is
-    // what the policy promises.)
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(25);
-    loop {
-        let hubs = state.live_hubs.hub_count();
-        if hubs == 0 {
-            break;
-        }
-        assert!(
-            std::time::Instant::now() < deadline,
-            "slow hub subscriber must be cut by the send deadline (hubs={hubs})"
-        );
-        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
-    }
-    let _ = conns0;
-    drop(slow);
-}
-
-/// #275 leg 11: one record larger than the per-hub ring allowance
-/// flows through the UNCACHED posture — nothing retained, parked
-/// subscribers re-read it durably and still receive it.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_oversized_event_delivered_via_uncached_catchup() {
-    let (state, addr, _promoter, mut sck) = hub_rig_stream("hubbig").await;
-    let (acc, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
-    assert!(acc.contains("upToDate"));
-    assert!(state.live_hubs.hub_count() >= 1);
-    // ~1.5 MiB record vs the 1 MiB default per-hub allowance.
-    let big = "y".repeat(1536 * 1024);
-    hub_append(addr, "hubbig", &format!("{{\"big\":\"{big}\"}}")).await;
-    let (acc, _) = hub_sse_collect(&mut sck, 20, |t| t.contains("\"big\":\"yyyy")).await;
-    assert!(
-        acc.contains("\"big\":\"yyyy"),
-        "oversized record must arrive via durable catch-up:\n{}",
-        &acc[..acc.len().min(400)]
-    );
-    // Per-rig accounting counter (the process-global gauge is shared
-    // across the parallel test binary and was a latent flake source).
-    let total = state.hub_total.load(std::sync::atomic::Ordering::Relaxed);
-    assert!(
-        total < 1024 * 1024,
-        "the oversized range must not be retained (total={total})"
-    );
-}
 
 /// Review round 3 F3 replacement (1): the billing resolver uses the
 /// CURRENT workspace-at-event state — a valid transfer (ownership
@@ -30888,396 +30194,6 @@ async fn valid_transfer_bills_each_workspace_on_its_own_side() {
     );
 }
 
-/// Battery leg 12 (#275): GLOBAL RING EXHAUSTION over HTTP. When the
-/// process-wide hub retention cap is hit, later batches go UNCACHED
-/// (nothing retained, floor jumps) and parked subscribers still get
-/// every record via durable catch-up — the cap bounds MEMORY, never
-/// delivery. Cap and accounting are AppState-resident so this rig can
-/// shrink them without touching the process-global knobs.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_global_cap_exhaustion_goes_uncached_but_delivers() {
-    let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_live_hub
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    state
-        .hub_total_cap
-        .store(24 * 1024, std::sync::atomic::Ordering::Relaxed);
-    let mk = |name: &'static str| async move {
-        let (st, _, _) = preq(
-            addr,
-            "PUT",
-            &format!("/v1/streams/{name}"),
-            &[("prisma-encryption-key", PRISMA_KEY)],
-            br#"{"format":{"kind":"json"}}"#,
-        )
-        .await;
-        assert_eq!(st, 201);
-        let mut promoter = hub_sse_connect(addr, name).await;
-        let (acc, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;
-        assert!(acc.contains("upToDate"), "{name} promoter parks:\n{acc}");
-        let sub = hub_sse_connect(addr, name).await;
-        (promoter, sub)
-    };
-    let (_pa, mut sa) = mk("capx-a").await;
-    let (_pb, mut sb) = mk("capx-b").await;
-    let big = "x".repeat(16 * 1024);
-
-    // Stream A's batch fits under the 24 KiB cap and is RETAINED.
-    hub_append(addr, "capx-a", &format!(r#"{{"a":1,"pad":"{big}"}}"#)).await;
-    let (acc, _) = hub_sse_collect(&mut sa, 10, |t| t.contains("\"a\":1")).await;
-    assert!(acc.contains("\"a\":1"), "A delivers:\n{acc}");
-    let retained_a = state.live_hubs.ring_bytes_total();
-    assert!(retained_a > 0, "A's batch must be retained (cap not hit)");
-    assert!(
-        retained_a <= 24 * 1024,
-        "retention within cap: {retained_a}"
-    );
-
-    // Stream B's batch would cross the cap: it goes uncached — and the
-    // parked subscriber STILL receives it (durable catch-up).
-    hub_append(addr, "capx-b", &format!(r#"{{"b":1,"pad":"{big}"}}"#)).await;
-    let (acc, _) = hub_sse_collect(&mut sb, 15, |t| t.contains("\"b\":1")).await;
-    assert!(
-        acc.contains("\"b\":1"),
-        "B must deliver despite going uncached:\n{acc}"
-    );
-    let after_b = state.live_hubs.ring_bytes_total();
-    assert!(
-        after_b <= 24 * 1024 && after_b == retained_a,
-        "B retained nothing (uncached): before={retained_a} after={after_b}"
-    );
-
-    // The posture is per batch, not a death spiral: B keeps
-    // delivering subsequent over-cap batches the same way.
-    hub_append(addr, "capx-b", &format!(r#"{{"b":2,"pad":"{big}"}}"#)).await;
-    let (acc, _) = hub_sse_collect(&mut sb, 15, |t| t.contains("\"b\":2")).await;
-    assert!(acc.contains("\"b\":2"), "B second uncached batch:\n{acc}");
-    assert!(
-        state.live_hubs.hub_count() >= 2,
-        "both hubs stay alive through cap pressure"
-    );
-}
-
-/// Battery leg 6 (#275): CURSOR=NOW HONESTY over HTTP. A hub
-/// subscriber joining with ?cursor=now must see NOTHING from before
-/// its subscription — no replayed history, and a first control that
-/// acknowledges the position — then receive exactly the appends that
-/// land after it. (`offset` is a rejected legacy field on this
-/// surface — writing this leg with it produced a uniform 400 whose
-/// body vacuously passed a not-contains assert; the leg now demands
-/// a 200 + control frame explicitly. The durable.next exactness and
-/// the join/append race are pinned at unit level in the F3 tests.)
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_offset_now_delivers_only_post_subscribe_appends() {
-    use tokio::io::AsyncWriteExt;
-    let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_live_hub
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    let (st, _, _) = preq(
-        addr,
-        "PUT",
-        "/v1/streams/nowx",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        br#"{"format":{"kind":"json"}}"#,
-    )
-    .await;
-    assert_eq!(st, 201);
-    for i in 1..=3 {
-        hub_append(addr, "nowx", &format!(r#"{{"r":{i}}}"#)).await;
-    }
-    let sse_now = || async {
-        let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
-        let req = format!(
-            "GET /v1/streams/nowx/records:sse?cursor=now HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n"
-        );
-        sck.write_all(req.as_bytes()).await.unwrap();
-        sck
-    };
-    let mut promoter = sse_now().await;
-    let (acc, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("event: control")).await;
-    assert!(
-        acc.contains(" 200 ") && acc.contains("event: control"),
-        "promoter must join at now with a control ack (a 400 body \
-         passes a bare not-contains check):\n{acc}"
-    );
-    assert!(
-        !acc.contains("\"r\":1") && !acc.contains("\"r\":3"),
-        "cursor=now must not replay history (promoter):\n{acc}"
-    );
-    let mut sub = sse_now().await;
-    let (acc0, _) = hub_sse_collect(&mut sub, 8, |t| t.contains("event: control")).await;
-    assert!(
-        acc0.contains(" 200 ") && acc0.contains("event: control"),
-        "first frame acknowledges the position:\n{acc0}"
-    );
-    assert!(
-        !acc0.contains("event: data"),
-        "no data may precede the now-position ack:\n{acc0}"
-    );
-    hub_append(addr, "nowx", r#"{"r":4}"#).await;
-    let (acc1, _) = hub_sse_collect(&mut sub, 10, |t| t.contains("\"r\":4")).await;
-    let all = format!("{acc0}{acc1}");
-    assert!(
-        all.contains("\"r\":4"),
-        "post-subscribe append arrives:\n{all}"
-    );
-    for i in 1..=3 {
-        assert!(
-            !all.contains(&format!("\"r\":{i}")),
-            "history record r={i} leaked through offset=now:\n{all}"
-        );
-    }
-    assert!(
-        state.live_hubs.hub_count() >= 1,
-        "second offset=now subscriber must promote the hub"
-    );
-}
-
-/// REVIEW V1 red (form 1): while the pump is mid-backlog, the hub head
-/// is NOT the durable frontier — a subscriber that drains the ring
-/// must not be told upToDate until the pump actually reaches the end.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_no_up_to_date_while_pump_holds_backlog() {
-    let (state, addr, _promoter, mut sck) = hub_rig_stream("rvfront").await;
-    let (acc0, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
-    assert!(acc0.contains("upToDate"), "parked:\n{acc0}");
-    // Freeze the pump completely, land a 3-batch backlog, then allow
-    // exactly ONE publish: the ring ends far short of durable.next.
-    let p0 = state
-        .live_hubs
-        .pump_published
-        .load(std::sync::atomic::Ordering::Relaxed);
-    state
-        .live_hubs
-        .pump_max
-        .store(p0, std::sync::atomic::Ordering::Relaxed);
-    let pad = "x".repeat(300 * 1024);
-    for i in 1..=3 {
-        hub_append(addr, "rvfront", &format!(r#"{{"n":{i},"pad":"{pad}"}}"#)).await;
-    }
-    state
-        .live_hubs
-        .pump_max
-        .store(p0 + 1, std::sync::atomic::Ordering::Relaxed);
-    let (acc1, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"n\":1")).await;
-    assert!(acc1.contains("\"n\":1"), "first batch record:\n{acc1}");
-    // Anything after the record, plus a further quiet window, must not
-    // claim upToDate — two more records are durable and unprocessed.
-    let (acc2, _) = hub_sse_collect(&mut sck, 3, |_| false).await;
-    let after = format!("{}{}", acc1.split("\"n\":1").last().unwrap_or(""), acc2);
-    assert!(
-        !after.contains("\"upToDate\":true"),
-        "upToDate claimed while the pump holds a durable backlog:\n{after}"
-    );
-    // Liveness half: release the pump; the rest of the backlog and an
-    // honest upToDate must arrive.
-    state
-        .live_hubs
-        .pump_max
-        .store(u64::MAX, std::sync::atomic::Ordering::Relaxed);
-    let (acc3, _) = hub_sse_collect(&mut sck, 20, |t| t.contains("\"n\":3")).await;
-    assert!(
-        acc3.contains("\"n\":3"),
-        "backlog drains after release:\n{acc3}"
-    );
-    let (acc4, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"upToDate\":true")).await;
-    assert!(
-        format!("{acc3}{acc4}").contains("\"upToDate\":true"),
-        "honest upToDate after the frontier is reached:\n{acc3}{acc4}"
-    );
-}
-
-/// REVIEW V1 red (form 3): a prepared batch must not carry a stale
-/// upToDate. Durable data lands AFTER the batch was prepared; a late
-/// ring reader draining that batch must not be told upToDate.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_prepared_batch_must_not_carry_stale_up_to_date() {
-    use tokio::io::AsyncWriteExt;
-    let (state, addr, _promoter, mut sck) = hub_rig_stream("rvstale").await;
-    let (acc0, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
-    assert!(acc0.contains("upToDate"), "parked:\n{acc0}");
-    // Cursor at the hub floor, captured BEFORE any data lands.
-    let (st, hdrs, _) = preq(
-        addr,
-        "GET",
-        "/v1/streams/rvstale/records",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"",
-    )
-    .await;
-    assert_eq!(st, 200);
-    let c0 = hdrs
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("prisma-next-cursor"))
-        .map(|(_, v)| v.clone())
-        .expect("floor cursor");
-    // Publish exactly ONE batch containing r1 (upToDate true at
-    // prepare time), then freeze and land r2 durably.
-    let p0 = state
-        .live_hubs
-        .pump_published
-        .load(std::sync::atomic::Ordering::Relaxed);
-    state
-        .live_hubs
-        .pump_max
-        .store(p0 + 1, std::sync::atomic::Ordering::Relaxed);
-    hub_append(addr, "rvstale", r#"{"r":1}"#).await;
-    for _ in 0..200 {
-        if state
-            .live_hubs
-            .pump_published
-            .load(std::sync::atomic::Ordering::Relaxed)
-            > p0
-        {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
-    }
-    hub_append(addr, "rvstale", r#"{"r":2}"#).await;
-    // A late ring reader from the floor drains the retained batch.
-    let mut sub2 = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let req = format!(
-        "GET /v1/streams/rvstale/records:sse?cursor={} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n",
-        c0.replace('=', "%3D")
-    );
-    sub2.write_all(req.as_bytes()).await.unwrap();
-    let (b1, _) = hub_sse_collect(&mut sub2, 10, |t| t.contains("\"r\":1")).await;
-    assert!(b1.contains("\"r\":1"), "retained batch drains:\n{b1}");
-    let (b2, _) = hub_sse_collect(&mut sub2, 3, |_| false).await;
-    let after = format!("{}{}", b1.split("\"r\":1").last().unwrap_or(""), b2);
-    assert!(
-        !after.contains("\"upToDate\":true"),
-        "stale prepared upToDate delivered while r2 is durable:\n{after}"
-    );
-    state
-        .live_hubs
-        .pump_max
-        .store(u64::MAX, std::sync::atomic::Ordering::Relaxed);
-    let (b3, _) = hub_sse_collect(&mut sub2, 15, |t| t.contains("\"r\":2")).await;
-    assert!(b3.contains("\"r\":2"), "r2 arrives after release:\n{b3}");
-}
-
-/// REVIEW V1 red (form 2): a delayed reader draining a RETAINED batch
-/// after foreign-key-only head advance must end at the CURRENT scan
-/// head — the same cursor a live subscriber was given — not the
-/// batch's stale prepare-time cursor.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_delayed_reader_lands_on_the_current_scan_head() {
-    use tokio::io::AsyncWriteExt;
-    let (state, addr, _promoter, mut sck) = hub_rig_stream("rvlag").await;
-    let (acc0, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
-    assert!(acc0.contains("upToDate"), "parked:\n{acc0}");
-    assert!(state.live_hubs.hub_count() >= 1);
-    let (st, hdrs, _) = preq(
-        addr,
-        "GET",
-        "/v1/streams/rvlag/records",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"",
-    )
-    .await;
-    assert_eq!(st, 200);
-    let c0 = hdrs
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("prisma-next-cursor"))
-        .map(|(_, v)| v.clone())
-        .expect("floor cursor");
-    // Default-key record -> retained batch; live sub drains it.
-    hub_append(addr, "rvlag", r#"{"d":0}"#).await;
-    let (a1, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"d\":0")).await;
-    assert!(a1.contains("\"d\":0"));
-    // Foreign-key records advance the scan head without a batch.
-    for i in 0..3 {
-        let (st, _, _) = preq(
-            addr,
-            "POST",
-            "/v1/streams/rvlag/records",
-            &[
-                ("prisma-encryption-key", PRISMA_KEY),
-                ("prisma-routing-key", "customer-a"),
-            ],
-            format!(r#"{{"f":{i}}}"#).as_bytes(),
-        )
-        .await;
-        assert!(st == 200 || st == 204);
-    }
-    // The live subscriber's cursor moves toward the new head (its
-    // controls may arrive one Progress at a time under suite load, so
-    // it only proves liveness here). The AUTHORITATIVE expectation is
-    // the durable tail cursor after all three foreign appends.
-    let (a2, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("nextCursor")).await;
-    assert!(a2.contains("nextCursor"), "live subscriber advances:\n{a2}");
-    let (st, hdrs2, _) = preq(
-        addr,
-        "GET",
-        "/v1/streams/rvlag/records",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"",
-    )
-    .await;
-    assert_eq!(st, 200);
-    let live_cursor = hdrs2
-        .iter()
-        .find(|(k, _)| k.eq_ignore_ascii_case("prisma-next-cursor"))
-        .map(|(_, v)| v.clone())
-        .expect("tail cursor after foreign appends");
-    // Delayed reader from the floor drains the retained batch; its
-    // FINAL visible cursor must equal the live subscriber's.
-    let mut sub2 = tokio::net::TcpStream::connect(addr).await.unwrap();
-    let req = format!(
-        "GET /v1/streams/rvlag/records:sse?cursor={} HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nprisma-encryption-key: {PRISMA_KEY}\r\n\r\n",
-        c0.replace('=', "%3D")
-    );
-    sub2.write_all(req.as_bytes()).await.unwrap();
-    let (b1, _) = hub_sse_collect(&mut sub2, 10, |t| t.contains("\"d\":0")).await;
-    assert!(b1.contains("\"d\":0"), "retained record drains:\n{b1}");
-    let expect = live_cursor.clone();
-    let (b2, _) = hub_sse_collect(&mut sub2, 8, move |t| t.contains(&expect)).await;
-    let all = format!("{b1}{b2}");
-    assert!(
-        all.contains(&live_cursor),
-        "delayed reader must land on the current scan head {live_cursor}:\n{all}"
-    );
-}
-
-/// Review V6: SSE_HUB_PROMOTE_AT=1 promotes on the FIRST subscriber
-/// (canary posture for the promote-on-first experiment); the reviewed
-/// default (2) keeps the F8 behavior pinned by the existing legs.
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_promote_at_one_gives_the_first_subscriber_a_hub() {
-    let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_live_hub
-        .store(true, std::sync::atomic::Ordering::Relaxed);
-    state
-        .hub_promote_at
-        .store(1, std::sync::atomic::Ordering::Relaxed);
-    let (st, _, _) = preq(
-        addr,
-        "PUT",
-        "/v1/streams/pfirst",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        br#"{"format":{"kind":"json"}}"#,
-    )
-    .await;
-    assert_eq!(st, 201);
-    let mut sck = hub_sse_connect(addr, "pfirst").await;
-    let (acc, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
-    assert!(acc.contains("upToDate"), "first subscriber parks:\n{acc}");
-    assert!(
-        state.live_hubs.hub_count() >= 1,
-        "threshold 1: the FIRST subscriber must ride a hub"
-    );
-    hub_append(addr, "pfirst", r#"{"p":1}"#).await;
-    let (acc1, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"p\":1")).await;
-    assert!(acc1.contains("\"p\":1"), "hub delivers:\n{acc1}");
-}
-
 /// Review V4 red (t1): a REAL ownership transfer (ownership_version
 /// bump + old credential revoked) must TERMINATE established live
 /// subscriptions — an old owner must not keep receiving records
@@ -31356,10 +30272,7 @@ async fn transfer_terminates_established_subscriptions() {
         .unwrap();
     };
     grant(1, crate::project_policy::CredentialStatus::Active, 1);
-    let (state, addr) = http_rig_with_auth_service(mem(), svc.clone()).await;
-    state
-        .sse_live_hub
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_state, addr) = http_rig_with_auth_service(mem(), svc.clone()).await;
 
     #[derive(serde::Serialize)]
     struct C<'a> {
@@ -31534,10 +30447,7 @@ async fn subscription_terminates_at_token_expiry() {
         feed_version: 1,
     })
     .unwrap();
-    let (state, addr) = http_rig_with_auth_service(mem(), svc).await;
-    state
-        .sse_live_hub
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_state, addr) = http_rig_with_auth_service(mem(), svc).await;
 
     #[derive(serde::Serialize)]
     struct C<'a> {
@@ -31684,10 +30594,7 @@ async fn suspension_terminates_established_subscriptions() {
         .unwrap();
     };
     grant(1, crate::project_policy::CredentialStatus::Active, 1);
-    let (state, addr) = http_rig_with_auth_service(mem(), svc.clone()).await;
-    state
-        .sse_live_hub
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_state, addr) = http_rig_with_auth_service(mem(), svc.clone()).await;
 
     #[derive(serde::Serialize)]
     struct C<'a> {
@@ -31886,9 +30793,6 @@ async fn auth_rig(
         .collect();
     rig_publish_grants(&svc, project, &cs, 1).unwrap();
     let (state, addr) = http_rig_with_auth_service(mem(), svc.clone()).await;
-    state
-        .sse_live_hub
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     (svc, state, addr)
 }
 
@@ -32150,31 +31054,6 @@ async fn omit_reintroduce_owner_swap_gains_no_authority() {
     assert_eq!(st, 200, "the legitimate owner keeps working");
 }
 
-// ------------------------------------------------------------------
-// F1 (red): feed staleness must terminate ESTABLISHED subscriptions,
-// exactly as it refuses new requests (fail closed at the window).
-// ------------------------------------------------------------------
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_subscription_terminates_when_policy_feed_goes_stale() {
-    let (_svc, _state, addr) = auth_rig("proj-st1", "ws_st", &["c1"], Some(3)).await;
-    let tok = mint_token("c1", "proj-st1", "ws_st", 1, 1, "s1", 600);
-    rig_create(addr, "st1", &tok).await;
-    let mut promoter = rig_sse(addr, "st1", &tok, "", None).await;
-    let (a, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;
-    assert!(a.contains("upToDate"), "promoter parks:\n{a}");
-    let mut sub = rig_sse(addr, "st1", &tok, "", None).await;
-    let (b, _) = hub_sse_collect(&mut sub, 8, |t| t.contains("upToDate")).await;
-    assert!(b.contains("upToDate"), "hub sub parks:\n{b}");
-    // No feed refresh: the snapshots cross the 3 s window while idle.
-    let (_, eof_p) = hub_sse_collect(&mut promoter, 14, |_| false).await;
-    let (_, eof_s) = hub_sse_collect(&mut sub, 4, |_| false).await;
-    assert!(
-        eof_p && eof_s,
-        "stale policy feed must terminate established subscriptions \
-         (direct eof={eof_p}, hub eof={eof_s})"
-    );
-}
-
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn subscription_terminates_when_only_the_grant_feed_goes_stale() {
     let (svc, _state, addr) = auth_rig("proj-st2", "ws_st", &["c1"], Some(3)).await;
@@ -32228,89 +31107,9 @@ async fn off_mode_subscriptions_are_untouched_by_staleness() {
     let (state, _addr, _promoter, mut sck) = hub_rig_stream("offst").await;
     let (a, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
     assert!(a.contains("upToDate"));
-    assert!(state.live_hubs.hub_count() >= 1);
+    assert!(state.live_feeds.len_for_test() >= 1);
     let (_, eof) = hub_sse_collect(&mut sck, 5, |_| false).await;
     assert!(!eof, "Off mode: no lease, no staleness termination");
-}
-
-// ------------------------------------------------------------------
-// F2 (red): revocation/expiry must interrupt ACTIVE delivery, and no
-// queued frame may be yielded after the cutoff is observed.
-// ------------------------------------------------------------------
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn revocation_interrupts_active_hub_delivery_and_drops_queued_frames() {
-    // DETERMINISTIC cutoff leg (replaces the timing-dependent TCP
-    // residue bound that flaked CI): the producer parks at the send
-    // failpoint with a queued frame in hand, the credential is
-    // revoked, and the resumed producer must yield ZERO post-cutoff
-    // frames.
-    let (svc, state, addr) = auth_rig("proj-rv1", "ws_rv", &["c1", "c2"], None).await;
-    let tok1 = mint_token("c1", "proj-rv1", "ws_rv", 1, 1, "r1", 600);
-    let tok2 = mint_token("c2", "proj-rv1", "ws_rv", 1, 1, "r2", 600);
-    // Promote-at-one: the SINGLE test subscriber rides a hub, so
-    // exactly ONE producer exists to park at the failpoint. A separate
-    // promoter connection would also prepare the trigger frame, and
-    // waiting for one arrival could attribute the park to the promoter
-    // while the sub's producer sends pre-cutoff (TCP residue — the
-    // flake class this rewrite removes).
-    state
-        .hub_promote_at
-        .store(1, std::sync::atomic::Ordering::Relaxed);
-    rig_create(addr, "rv1", &tok1).await;
-    for i in 0..4 {
-        rig_append_retry(addr, "rv1", &tok1, &format!(r#"{{"i":{i}}}"#)).await;
-    }
-    let mut sub = rig_sse(addr, "rv1", &tok1, "", None).await;
-    let (acc, _) = hub_sse_collect(&mut sub, 8, |t| t.contains("upToDate")).await;
-    assert!(data_frames(&acc) >= 2, "catch-up delivered:\n{acc}");
-
-    // The producer is now PROVABLY parked at the tail (it emitted
-    // upToDate) — arming here cannot be raced by an in-flight
-    // catch-up, unlike arming at an unknown producer position (the
-    // round-8 suite flake: a fast producer drained the whole backlog
-    // before the arm and never returned to a send). The next append
-    // forces the very next send through the failpoint.
-    crate::failpoints::arm(crate::failpoints::Fp::SseBeforeSend, "rv1");
-    assert_eq!(
-        rig_append(addr, "rv1", &tok1, r#"{"TRIGGER":0}"#).await,
-        200
-    );
-    wait_parked(crate::failpoints::Fp::SseBeforeSend, "rv1", 1).await;
-
-    // CUTOFF: revoke c1 (c2 stays valid), then land post-cutoff markers
-    // with c2 — neither the queued trigger frame nor any marker may
-    // ever reach the revoked subscriber.
-    rig_publish_grants(
-        &svc,
-        "proj-rv1",
-        &[
-            ("c1", crate::project_policy::CredentialStatus::Revoked, 2),
-            ("c2", crate::project_policy::CredentialStatus::Active, 1),
-        ],
-        2,
-    )
-    .unwrap();
-    for m in 0..3 {
-        assert_eq!(
-            rig_append(addr, "rv1", &tok2, &format!(r#"{{"MARKER":{m}}}"#)).await,
-            200
-        );
-    }
-
-    // Resume the producer: the per-frame body gate refuses every
-    // queued frame — the client sees NOTHING further, then EOF.
-    crate::failpoints::release(crate::failpoints::Fp::SseBeforeSend, "rv1");
-    let (after, eof) = hub_sse_collect(&mut sub, 15, |_| false).await;
-    assert!(eof, "revoked subscription must terminate");
-    assert_eq!(
-        data_frames(&after),
-        0,
-        "ZERO post-cutoff frames may be yielded:\n{after}"
-    );
-    assert!(
-        !after.contains("MARKER") && !after.contains("TRIGGER"),
-        "post-cutoff records reached a revoked subscriber:\n{after}"
-    );
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
@@ -32508,9 +31307,6 @@ async fn queued_frame_is_discarded_and_unbilled_at_revocation() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_shared_feed_revocation_gates_one_subscriber_only() {
     let (svc, state, addr) = auth_rig("proj-rv3", "ws_rv", &["c1", "c2"], None).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let tok1 = mint_token("c1", "proj-rv3", "ws_rv", 1, 1, "s1", 600);
     let tok2 = mint_token("c2", "proj-rv3", "ws_rv", 1, 1, "s2", 600);
     rig_create(addr, "rv3", &tok1).await;
@@ -32597,9 +31393,6 @@ async fn livefeed_shared_feed_revocation_gates_one_subscriber_only() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_source_swap_revocation_yields_zero_post_cutoff_frames() {
     let (svc, state, addr) = auth_rig("proj-rv4", "ws_rv", &["c1", "c2"], None).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let tok1 = mint_token("c1", "proj-rv4", "ws_rv", 1, 1, "w1", 600);
     let tok2 = mint_token("c2", "proj-rv4", "ws_rv", 1, 1, "w2", 600);
     rig_create(addr, "rv4", &tok1).await;
@@ -32765,84 +31558,6 @@ async fn assert_no_frames_after_pre_establishment_invalidation(
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn direct_sse_refuses_authorization_invalidated_before_body_construction() {
-    let _serial = gap_lock().lock().await;
-    let (svc, state, addr) = auth_rig("proj-f1d", "ws_f1", &["c1"], None).await;
-    state
-        .sse_live_hub
-        .store(false, std::sync::atomic::Ordering::Relaxed); // DIRECT path only
-    let tok = mint_token("c1", "proj-f1d", "ws_f1", 1, 1, "f1d", 600);
-    rig_create(addr, "f1d", &tok).await;
-
-    crate::failpoints::park_sse_before_lease_gate("f1d");
-    let _guard = SseGateGuard("f1d".into());
-    let mut sub = rig_sse(addr, "f1d", &tok, "", None).await;
-    // Token verified; the request is parked INSIDE the window.
-    for _ in 0..200 {
-        if crate::failpoints::parked(crate::failpoints::Fp::SseBeforeLeaseGate, "f1d") > 0 {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
-    assert!(
-        crate::failpoints::parked(crate::failpoints::Fp::SseBeforeLeaseGate, "f1d") > 0,
-        "request never reached the construction window"
-    );
-    // THE RACE: invalidate while the subscription is half-built.
-    rig_publish_policy(&svc, rig_policy("proj-f1d", "ws_other", 2, 2), 2).unwrap();
-    rig_publish_grants(
-        &svc,
-        "proj-f1d",
-        &[("c1", crate::project_policy::CredentialStatus::Revoked, 2)],
-        2,
-    )
-    .unwrap();
-    crate::failpoints::release_sse_before_lease_gate("f1d");
-
-    assert_no_frames_after_pre_establishment_invalidation(&mut sub, "direct").await;
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn hub_sse_refuses_authorization_invalidated_before_body_construction() {
-    let _serial = gap_lock().lock().await;
-    let (svc, _state, addr) = auth_rig("proj-f1h", "ws_f1", &["c1"], None).await;
-    let tok = mint_token("c1", "proj-f1h", "ws_f1", 1, 1, "f1h", 600);
-    rig_create(addr, "f1h", &tok).await;
-    // Promoter parks direct so the subscriber below rides the HUB.
-    let mut promoter = rig_sse(addr, "f1h", &tok, "?cursor=now", None).await;
-    let (a, _) = hub_sse_collect(&mut promoter, 8, |t| t.contains("upToDate")).await;
-    assert!(a.contains("upToDate"), "promoter parks:\n{a}");
-
-    crate::failpoints::park_sse_before_lease_gate("f1h");
-    let _guard = SseGateGuard("f1h".into());
-    let mut sub = rig_sse(addr, "f1h", &tok, "", None).await;
-    for _ in 0..200 {
-        if crate::failpoints::parked(crate::failpoints::Fp::SseBeforeLeaseGate, "f1h") > 0 {
-            break;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-    }
-    assert!(
-        crate::failpoints::parked(crate::failpoints::Fp::SseBeforeLeaseGate, "f1h") > 0,
-        "request never reached the construction window"
-    );
-    rig_publish_policy(&svc, rig_policy("proj-f1h", "ws_other", 2, 2), 2).unwrap();
-    rig_publish_grants(
-        &svc,
-        "proj-f1h",
-        &[("c1", crate::project_policy::CredentialStatus::Revoked, 2)],
-        2,
-    )
-    .unwrap();
-    crate::failpoints::release_sse_before_lease_gate("f1h");
-
-    assert_no_frames_after_pre_establishment_invalidation(&mut sub, "hub").await;
-    // And the ESTABLISHED promoter still terminates on the same feed.
-    let (_, eof_p) = hub_sse_collect(&mut promoter, 10, |_| false).await;
-    assert!(eof_p, "established promoter must also see the transfer");
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn lineage_sse_refuses_authorization_invalidated_before_body_construction() {
     let _serial = gap_lock().lock().await;
     let (svc, state, addr) = auth_rig("proj-f1l", "ws_f1", &["c1"], None).await;
@@ -32866,7 +31581,7 @@ async fn lineage_sse_refuses_authorization_invalidated_before_body_construction(
         }
     }
     // Split: keyed lineage SSE traverses segments via
-    // sse_lineage_response (its own LeaseWatch construction). The
+    // the deleted legacy lineage responder (own LeaseWatch). The
     // stream lives on the PRODUCT surface, so the sref is
     // project-qualified.
     let f1l_ref = crate::tenant::ProjectId::new("proj-f1l")
@@ -33509,156 +32224,10 @@ async fn collection_seal_relays_segment_closes_to_the_foreign_owner() {
 // after it. This corpus arbitrates the LiveFeed cutover.
 // ==================================================================
 
-fn normalize_cursors(s: &str) -> String {
-    // Replace every "nextCursor":"<opaque token>" with a placeholder;
-    // tokens embed per-incarnation epochs, so byte-equality across rigs
-    // holds only modulo them.
-    let mut out = String::with_capacity(s.len());
-    let mut rest = s;
-    while let Some(pos) = rest.find("\"nextCursor\":\"") {
-        out.push_str(&rest[..pos]);
-        let after = &rest[pos + "\"nextCursor\":\"".len()..];
-        match after.find('"') {
-            Some(end) => {
-                out.push_str("\"nextCursor\":\"CURSOR\"");
-                rest = &after[end + 1..];
-            }
-            None => {
-                out.push_str(&rest[pos..]);
-                rest = "";
-            }
-        }
-    }
-    out.push_str(rest);
-    out
-}
-
-async fn golden_run(hub: bool, promote_at_one: bool) -> (String, bool) {
-    let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_live_hub
-        .store(hub, std::sync::atomic::Ordering::Relaxed);
-    if promote_at_one {
-        state
-            .hub_promote_at
-            .store(1, std::sync::atomic::Ordering::Relaxed);
-    }
-    let (st, _, _) = preq(
-        addr,
-        "PUT",
-        "/v1/streams/gold",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        br#"{"format":{"kind":"json"}}"#,
-    )
-    .await;
-    assert_eq!(st, 201);
-    hub_append(addr, "gold", r#"{"a":1}"#).await;
-    let mut sck = hub_sse_connect(addr, "gold").await;
-    // First frames: tail status control, then the backlog record.
-    let (acc1, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("\"a\":1")).await;
-    assert!(acc1.contains("upToDate\":true"), "tail status:\n{acc1}");
-    hub_append(addr, "gold", r#"{"a":2}"#).await;
-    let (acc2, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("\"a\":2")).await;
-    hub_append(addr, "gold", r#"{"a":3}"#).await;
-    let (acc3, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("\"a\":3")).await;
-    seal_ok(addr, "gold").await;
-    let (acc4, eof) = hub_sse_collect(&mut sck, 15, |_| false).await;
-    let transcript = format!("{acc1}{acc2}{acc3}{acc4}");
-    assert_eq!(
-        transcript.matches("\"sealed\":true").count(),
-        1,
-        "exactly one sealed control ({hub}):{transcript}"
-    );
-    assert!(eof, "EOF after final control ({hub})");
-    assert!(
-        transcript.contains("x-accel-buffering: no"),
-        "edge buffering opt-out ({hub})"
-    );
-    (normalize_cursors(&transcript), eof)
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn golden_direct_and_hub_transcripts_are_identical() {
-    let _serial = gap_lock().lock().await;
-    let (direct, _) = golden_run(false, false).await;
-    let (hub, _) = golden_run(true, true).await;
-    // STAGE 0 FINDING: the two legacy producers are NOT frame-identical.
-    // Direct pairs each data frame with a control that carries the
-    // batch's flags (upToDate on the last); the hub emits bare
-    // per-record controls plus ONE standalone status control decided
-    // against the durable frontier at send time (the reviewed-correct
-    // rule, #270/#272). Canonical semantics for LiveFeed = the hub
-    // style; the assertion below therefore checks SEMANTIC equivalence:
-    // identical data payload sequence, identical cursor sequence,
-    // upToDate only at true head, exactly one sealed, EOF.
-    let d = canon_events(&direct);
-    let h = canon_events(&hub);
-    // Semantic equivalence between the two legacy framings:
-    //   * identical data payload sequence;
-    //   * identical cursor progression (consecutive duplicates folded —
-    //     the hub repeats the head cursor in its standalone status);
-    //   * upToDate asserted only alongside true head on BOTH paths;
-    //   * exactly ONE sealed control, terminating the stream.
-    let datas = |e: &[(String, String)]| -> Vec<String> {
-        e.iter()
-            .filter(|(k, _)| k == "data")
-            .map(|(_, v)| v.clone())
-            .collect()
-    };
-    assert_eq!(
-        datas(&d),
-        datas(&h),
-        "data payload sequences diverge:\nDIRECT:\n{direct}\nHUB:\n{hub}"
-    );
-    for (side, e) in [("direct", &d), ("hub", &h)] {
-        let sealed = e
-            .iter()
-            .filter(|(k, v)| k == "control" && v.contains("\"sealed\":true"))
-            .count();
-        assert_eq!(sealed, 1, "{side}: exactly one sealed control required");
-        assert!(
-            e.iter()
-                .any(|(k, v)| k == "control" && v.contains("\"upToDate\":true")),
-            "{side}: must assert upToDate at head"
-        );
-        assert!(
-            e.last().is_some_and(
-                |(k, v): &(String, String)| k == "control" && v.contains("\"sealed\":true")
-            ),
-            "{side}: the sealed control must terminate the stream"
-        );
-    }
-}
-
-/// Reduce an SSE transcript to its canonical event stream:
-/// (kind, payload-or-fields) with chunk framing, heartbeat comments and
-/// HTTP head removed; cursor tokens normalized.
-fn canon_events(transcript: &str) -> Vec<(String, String)> {
-    let body = match transcript.find("\r\n\r\n") {
-        Some(p) => &transcript[p + 4..],
-        None => transcript,
-    };
-    let mut evs = Vec::new();
-    let mut lines = body.lines();
-    while let Some(l) = lines.next() {
-        if let Some(kind) = l.strip_prefix("event: ") {
-            let raw = lines.next().unwrap_or("");
-            let data = raw
-                .strip_prefix("data: ")
-                .or_else(|| raw.strip_prefix("data:"))
-                .unwrap_or("");
-            let norm = normalize_cursors(data).replace('\r', "");
-            evs.push((kind.to_string(), norm));
-        }
-    }
-    evs
-}
-
 // ==================================================================
 // LIVE-FEED Stage 3 equivalence legs: the same wire contract the
 // golden corpus pins on the legacy paths, asserted against the
-// LiveFeed engine (STREAMS_SSE_ENGINE=livefeed shape).
+// LiveFeed engine (THE engine since round 11.8).
 // ==================================================================
 
 async fn lf_connect(addr: std::net::SocketAddr, name: &str, query: &str) -> tokio::net::TcpStream {
@@ -33674,10 +32243,7 @@ async fn lf_connect(addr: std::net::SocketAddr, name: &str, query: &str) -> toki
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_park_appends_seal_matches_golden_semantics() {
     let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_state, addr) = http_rig(store).await;
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -33717,10 +32283,7 @@ async fn livefeed_park_appends_seal_matches_golden_semantics() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_catches_up_from_beginning_cursor() {
     let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_state, addr) = http_rig(store).await;
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -33751,9 +32314,6 @@ async fn livefeed_catches_up_from_beginning_cursor() {
 async fn livefeed_two_subscribers_share_one_feed_and_one_source_read() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -33814,13 +32374,7 @@ async fn livefeed_two_subscribers_share_one_feed_and_one_source_read() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_revocation_terminates_the_subscription() {
-    let (_svc, _state, addr) = {
-        let rig = auth_rig("proj-lfr", "ws_lf", &["c1"], None).await;
-        rig.1
-            .sse_engine_livefeed
-            .store(true, std::sync::atomic::Ordering::Relaxed);
-        rig
-    };
+    let (_svc, _state, addr) = auth_rig("proj-lfr", "ws_lf", &["c1"], None).await;
     let tok = mint_token("c1", "proj-lfr", "ws_lf", 1, 1, "lf1", 600);
     rig_create(addr, "lfr", &tok).await;
     let mut sub = rig_sse(addr, "lfr", &tok, "", None).await;
@@ -33851,161 +32405,6 @@ async fn livefeed_revocation_terminates_the_subscription() {
 // engine-specific shared-state counters.
 // ==================================================================
 
-fn bench_enabled() -> bool {
-    std::env::var("STREAMS_SSE_BENCH").as_deref() == Ok("1")
-}
-
-/// Collect `want` data frames (or EOF). Returns (data_frames, tail, eof).
-async fn bench_collect(
-    sck: &mut tokio::net::TcpStream,
-    want: usize,
-    deadline_secs: u64,
-) -> (usize, String, bool) {
-    use tokio::io::AsyncReadExt;
-    let mut buf = vec![0u8; 16384];
-    let mut acc = Vec::new();
-    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(deadline_secs);
-    loop {
-        let text = String::from_utf8_lossy(&acc);
-        let frames = text.matches("event: data").count();
-        if frames >= want || text.ends_with("0\r\n\r\n") {
-            return (frames, text.to_string(), text.ends_with("0\r\n\r\n"));
-        }
-        if std::time::Instant::now() > deadline {
-            let text = String::from_utf8_lossy(&acc);
-            return (text.matches("event: data").count(), text.to_string(), false);
-        }
-        match tokio::time::timeout(std::time::Duration::from_millis(500), sck.read(&mut buf)).await
-        {
-            Ok(Ok(0)) => {
-                let text = String::from_utf8_lossy(&acc);
-                return (text.matches("event: data").count(), text.to_string(), true);
-            }
-            Ok(Ok(n)) => acc.extend_from_slice(&buf[..n]),
-            Ok(Err(_)) | Err(_) => continue,
-        }
-    }
-}
-
-async fn bench_shape(
-    engine_livefeed: bool,
-    streams: usize,
-    subs_per: usize,
-    records: usize,
-) -> (f64, f64, usize, usize, usize) {
-    let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(engine_livefeed, std::sync::atomic::Ordering::Relaxed);
-
-    for s in 0..streams {
-        let name = format!("bs{s}");
-        let (st, _, _) = preq(
-            addr,
-            "PUT",
-            &format!("/v1/streams/{name}"),
-            &[("prisma-encryption-key", PRISMA_KEY)],
-            br#"{"format":{"kind":"json"}}"#,
-        )
-        .await;
-        assert_eq!(st, 201);
-    }
-
-    // Park every subscriber (upToDate seen) BEFORE timing starts.
-    let mut socks: Vec<tokio::net::TcpStream> = Vec::new();
-    for s in 0..streams {
-        let name = format!("bs{s}");
-        for _ in 0..subs_per {
-            let mut sck = hub_sse_connect(addr, &name).await;
-            let (_, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("upToDate")).await;
-            socks.push(sck);
-        }
-    }
-    let total_conns = streams * subs_per;
-
-    let rss_before = crate::fleet::rss_bytes();
-    let delivered_before =
-        crate::sse::auth::sse_stats::DELIVERED_RECORDS.load(std::sync::atomic::Ordering::Relaxed);
-
-    // Spawn one collector per connection.
-    let mut handles = Vec::new();
-    let mut idx = 0usize;
-    for _ in 0..streams {
-        for _ in 0..subs_per {
-            let mut sck = socks.remove(0);
-            idx += 1;
-            handles.push(tokio::spawn(async move {
-                let (frames, _, _) = bench_collect(&mut sck, records, 60).await;
-                (idx, frames)
-            }));
-        }
-    }
-
-    let t0 = std::time::Instant::now();
-    for r in 0..records {
-        for s in 0..streams {
-            let name = format!("bs{s}");
-            hub_append(addr, &name, &format!(r#"{{"r":{r}}}"#)).await;
-        }
-    }
-    let appended_at = t0.elapsed().as_millis() as u64;
-    let mut max_frames = 0usize;
-    for h in handles {
-        let (_i, frames) = h.await.unwrap();
-        assert_eq!(
-            frames, records,
-            "every subscriber must receive every record"
-        );
-        max_frames += frames;
-    }
-    let elapsed_ms = t0.elapsed().as_millis() as u64;
-    let rss_after = crate::fleet::rss_bytes();
-    let rss_mb = (rss_after.saturating_sub(rss_before)) as f64 / 1048576.0;
-    let delivered_after =
-        crate::sse::auth::sse_stats::DELIVERED_RECORDS.load(std::sync::atomic::Ordering::Relaxed);
-
-    let feeds_or_hubs = if engine_livefeed {
-        state.live_feeds.len_for_test()
-    } else {
-        state.live_hubs.hub_count()
-    };
-    let _ = max_frames;
-    tracing::debug!(appended_at_ms = appended_at, "append loop done");
-    (
-        elapsed_ms as f64,
-        rss_mb,
-        (delivered_after - delivered_before) as usize,
-        feeds_or_hubs,
-        total_conns,
-    )
-}
-
-#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
-async fn bench_sse_singleton_and_fanout_both_engines() {
-    if !bench_enabled() {
-        return;
-    }
-    for engine in [false, true] {
-        let tag = if engine { "livefeed" } else { "legacy" };
-        let (ms, rss_mb, delivered, feeds, conns) = bench_shape(engine, 50, 1, 20).await;
-        println!(
-            "BENCH engine={tag} shape=singleton streams=50 subs=1 records=20 \
-             elapsed_ms={ms} rss_delta_mb={rss_mb:.1} delivered={delivered} \
-             feeds_or_hubs={feeds} conns={conns}"
-        );
-    }
-    for engine in [false, true] {
-        let tag = if engine { "livefeed" } else { "legacy" };
-        let (ms, rss_mb, delivered, feeds, conns) = bench_shape(engine, 4, 25, 10).await;
-        println!(
-            "BENCH engine={tag} shape=fanout streams=4 subs=25 records=10 \
-             elapsed_ms={ms} rss_delta_mb={rss_mb:.1} delivered={delivered} \
-             feeds_or_hubs={feeds} conns={conns}"
-        );
-    }
-}
-
 /// Stage 4: KEYED lanes. A routing-key-filtered subscriber on a
 /// single-segment stream rides its own LiveFeed lane: it receives only
 /// its key's records, foreign-key-only windows advance the cursor, and
@@ -34014,9 +32413,6 @@ async fn bench_sse_singleton_and_fanout_both_engines() {
 async fn livefeed_keyed_lane_scopes_records_and_shares_preparation() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -34086,10 +32482,7 @@ async fn livefeed_keyed_lane_scopes_records_and_shares_preparation() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_fork_subscriptions_stitch_the_ancestor_chain() {
     let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_state, addr) = http_rig(store).await;
     // Parent created once, then three appended records.
     let (st, _, _) = preq(
         addr,
@@ -34165,10 +32558,7 @@ async fn livefeed_fork_subscriptions_stitch_the_ancestor_chain() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_raw_surface_uses_the_raw_vocabulary() {
     let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_state, addr) = http_rig(store).await;
     let ct = ("content-type", "application/json");
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/lfr", &[ct], br#"[{"r":0}]"#).await;
     assert!(st == 200 || st == 201, "create {st}");
@@ -34215,9 +32605,6 @@ async fn livefeed_raw_surface_uses_the_raw_vocabulary() {
 async fn livefeed_singleton_large_window_delivers_everything_exactly_once() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -34327,10 +32714,7 @@ async fn split_and_await(state: &Arc<crate::http::AppState>, name: &str, seg_id:
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_keyed_all_foreign_history_is_progress_not_lag() {
     let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_state, addr) = http_rig(store).await;
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -34394,10 +32778,7 @@ async fn livefeed_keyed_all_foreign_history_is_progress_not_lag() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_exact_framing_mixed_surfaces_share_one_lane() {
     let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_state, addr) = http_rig(store).await;
     let ct = ("content-type", "application/json");
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/lfx", &[ct], br#"[{"r":0}]"#).await;
     assert!(st == 200 || st == 201);
@@ -34511,10 +32892,7 @@ async fn hub_append_lf(addr: std::net::SocketAddr, name: &str, body: &str) {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_exact_framing_mixed_surfaces_product_first() {
     let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_state, addr) = http_rig(store).await;
     let ct = ("content-type", "application/json");
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/lfp", &[ct], br#"[{"r":0}]"#).await;
     assert!(st == 200 || st == 201);
@@ -34579,10 +32957,7 @@ async fn livefeed_exact_framing_mixed_surfaces_product_first() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_handoff_feed_advances_between_subscribe_and_session_start() {
     let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_state, addr) = http_rig(store).await;
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -34642,9 +33017,6 @@ async fn livefeed_handoff_feed_advances_between_subscribe_and_session_start() {
 async fn livefeed_ring_wrap_during_initial_handoff_recatchups() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     // A tiny ring so a handful of shared batches wraps the floor.
     state
         .feed_ring_bytes
@@ -34711,9 +33083,6 @@ async fn livefeed_ring_wrap_during_initial_handoff_recatchups() {
 async fn livefeed_fork_foreign_only_window_is_progress() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -34821,10 +33190,7 @@ async fn livefeed_fork_foreign_only_window_is_progress() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_binary_base64_header_and_exact_bytes_out() {
     let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_state, addr) = http_rig(store).await;
     let ct = ("content-type", "application/octet-stream");
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/lfb2", &[ct], b"").await;
     assert!(st == 200 || st == 201, "binary create: {st}");
@@ -34875,10 +33241,7 @@ async fn livefeed_binary_base64_header_and_exact_bytes_out() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_seal_transcript_exact_tail() {
     let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_state, addr) = http_rig(store).await;
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -34939,9 +33302,6 @@ async fn livefeed_seal_transcript_exact_tail() {
 async fn livefeed_split_parked_subscriber_continues_in_place() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -35001,9 +33361,6 @@ async fn livefeed_seal_publication_race_converges_without_heartbeat() {
     let _serial = gap_lock().lock().await; // global failpoint registry
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -35071,7 +33428,7 @@ async fn livefeed_seal_publication_race_converges_without_heartbeat() {
 // STAGE 7B replacement legs (round-9 review Phase 2): the
 // engine-neutral contracts the excluded hub_* tests pinned,
 // re-asserted against the LiveFeed engine at the wire. The exclusion
-// table in docs/LIVE-FEED-PLAN.md §Stage 7B names each replacement;
+// table (docs/LIVE-FEED.md §Transition record) named each replacement;
 // the old hub tests die with the legacy engine.
 // ==================================================================
 
@@ -35081,10 +33438,7 @@ async fn livefeed_seal_publication_race_converges_without_heartbeat() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_off_mode_subscription_ignores_staleness() {
     let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_state, addr) = http_rig(store).await;
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -35111,10 +33465,7 @@ async fn livefeed_off_mode_subscription_ignores_staleness() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_empty_seal_single_final_control() {
     let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_state, addr) = http_rig(store).await;
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -35151,10 +33502,7 @@ async fn livefeed_empty_seal_single_final_control() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_no_up_to_date_while_backlog_is_undriven() {
     let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_state, addr) = http_rig(store).await;
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -35207,10 +33555,7 @@ async fn livefeed_no_up_to_date_while_backlog_is_undriven() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_late_attach_never_claims_stale_up_to_date() {
     let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_state, addr) = http_rig(store).await;
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -35268,9 +33613,6 @@ async fn livefeed_late_attach_never_claims_stale_up_to_date() {
 async fn livefeed_oversized_record_solo_in_place_shared_resumes_durably() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     // Tiny feed ring: a 64-KiB record can never be retained.
     state
         .feed_ring_bytes
@@ -35343,9 +33685,6 @@ async fn livefeed_oversized_record_solo_in_place_shared_resumes_durably() {
 async fn livefeed_budget_exhaustion_publishes_uncached_and_resumes() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -35490,9 +33829,6 @@ async fn livefeed_remote_sealed_predecessor_streams_through_owner() {
     let store = mem();
     let (state_a, addr_a) = http_rig_owner(store.clone(), "inst-a").await;
     let (state_b, addr_b) = http_rig_owner(store, "inst-b").await;
-    state_b
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     // History on A, then a split (parent seg0 seals, the child opens).
     let (st, _, _) = preq(
         addr_a,
@@ -35650,9 +33986,6 @@ async fn livefeed_remote_sealed_predecessor_streams_through_owner() {
 async fn livefeed_rawkey_records_sse_survives_split() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -35716,9 +34049,6 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
     let (state_a, addr_a) = http_rig_owner(store.clone(), "inst-a").await;
     let (state_b, addr_b) = http_rig_owner(store.clone(), "inst-b").await;
     let (_state_c, addr_c) = http_rig_owner(store, "inst-c").await;
-    state_b
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr_a,
         "PUT",
@@ -35917,9 +34247,6 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
 async fn certification_seal_publish_delay_widens_the_gap() {
     let store = mem();
     let (state, addr) = http_rig_owner(store, "inst-b").await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -35972,9 +34299,6 @@ async fn certification_seal_publish_delay_widens_the_gap() {
 async fn livefeed_pending_transition_connect_drives_resume() {
     let store = mem();
     let (state, addr) = http_rig_owner(store, "inst-b").await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -36050,9 +34374,6 @@ async fn livefeed_pending_transition_connect_drives_resume() {
 async fn livefeed_parked_live_session_is_cut_off_by_engine_close() {
     let store = mem();
     let (state_b, addr_b) = http_rig_owner(store, "inst-b").await;
-    state_b
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr_b,
         "PUT",
@@ -36119,9 +34440,6 @@ async fn livefeed_blackholed_peer_never_suppresses_heartbeats() {
     let store = mem();
     let (state_a, addr_a) = http_rig_owner(store.clone(), "inst-a").await;
     let (state_b, addr_b) = http_rig_owner(store, "inst-b").await;
-    state_b
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     // Fast keep-alives so the leg proves cadence in seconds.
     state_b
         .sse_heartbeat_ms
@@ -36249,9 +34567,6 @@ async fn livefeed_seal_retry_is_one_task_per_feed_at_fanout() {
     let _serial = gap_lock().lock().await; // global failpoint registry
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -36445,9 +34760,6 @@ async fn livefeed_budget_noisy_project_cannot_evict_another() {
         })
         .unwrap();
     }
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     // Cheap exhaustion geometry: 32-KiB rings under a 256-KiB cell
     // ceiling — twelve noisy feeds demand ~384 KiB of retention.
     state
@@ -36521,10 +34833,7 @@ async fn livefeed_budget_noisy_project_cannot_evict_another() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn livefeed_delayed_reader_lands_on_the_current_scan_head() {
     let store = mem();
-    let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (_state, addr) = http_rig(store).await;
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -36593,9 +34902,6 @@ async fn livefeed_delayed_reader_lands_on_the_current_scan_head() {
 async fn livefeed_mass_disconnect_tears_down_within_deadline() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -36638,9 +34944,6 @@ async fn livefeed_mass_disconnect_tears_down_within_deadline() {
 async fn livefeed_split_during_initial_catchup_delivers_everything() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -36690,9 +34993,6 @@ async fn livefeed_split_during_initial_catchup_delivers_everything() {
 async fn livefeed_keyed_lane_survives_split() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -36743,9 +35043,6 @@ async fn livefeed_keyed_lane_survives_split() {
 async fn livefeed_raw_disconnects_without_terminal_on_split() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let ct = ("content-type", "application/json");
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/lfr2", &[ct], br#"[{"r":0}]"#).await;
     assert!(st == 200 || st == 201);
@@ -36783,9 +35080,6 @@ async fn livefeed_raw_disconnects_without_terminal_on_split() {
 async fn livefeed_two_sequential_splits_continue_in_place() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -36851,9 +35145,6 @@ async fn livefeed_two_sequential_splits_continue_in_place() {
 async fn livefeed_delete_recreate_isolates_incarnations() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -36970,9 +35261,6 @@ fn lf_record_and_status(t: &str, needle: &str) -> bool {
 async fn livefeed_split_cursor_decodes_to_segment_local_and_resumes() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -37044,9 +35332,6 @@ async fn livefeed_split_cursor_decodes_to_segment_local_and_resumes() {
 async fn livefeed_split_shared_subscribers_swap_once_deliver_twice() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -37151,9 +35436,6 @@ async fn livefeed_split_held_publication_handoff_is_prompt() {
     let _gap = gap_lock().lock().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -37244,9 +35526,6 @@ async fn livefeed_split_held_publication_handoff_is_prompt() {
 async fn livefeed_split_seal_before_refresh_drains_then_terminates() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -37329,9 +35608,6 @@ async fn livefeed_split_seal_before_refresh_drains_then_terminates() {
 async fn livefeed_raw_late_attach_after_swap_gets_no_lineage_scalars() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let ct = ("content-type", "application/json");
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/lfr3", &[ct], br#"[{"r":0}]"#).await;
     assert!(st == 200 || st == 201);
@@ -37396,9 +35672,6 @@ async fn livefeed_swap_externally_adopts_child_engines() {
         "11".to_string(),
     ];
     let (state, addr) = http_rig_cold_absorb(store, prefixes.clone()).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -37488,9 +35761,6 @@ async fn livefeed_swap_externally_adopts_child_engines() {
 async fn livefeed_raw_swap_between_peek_and_attach_is_refused() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let ct = ("content-type", "application/json");
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/lfr5", &[ct], br#"[{"r":0}]"#).await;
     assert!(st == 200 || st == 201);
@@ -37549,9 +35819,6 @@ async fn livefeed_raw_swap_between_peek_and_attach_is_refused() {
 async fn livefeed_refresh_installs_after_external_completion() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -37644,9 +35911,6 @@ async fn lf7_split_stream(
 async fn livefeed_connect_already_split_beginning_drains_lineage() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = lf7_split_stream(addr, &state, "lf7b", 3, 2).await;
 
     let mut sck = lf_connect(addr, "lf7b", "?cursor=beginning").await;
@@ -37676,9 +35940,6 @@ async fn livefeed_connect_already_split_beginning_drains_lineage() {
 async fn livefeed_connect_already_split_now() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = lf7_split_stream(addr, &state, "lf7n", 3, 2).await;
 
     let mut sck = lf_connect(addr, "lf7n", "?cursor=now").await;
@@ -37699,9 +35960,6 @@ async fn livefeed_connect_already_split_now() {
 async fn livefeed_connect_already_split_cursor_in_sealed_predecessor() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let desc = lf7_split_stream(addr, &state, "lf7p", 3, 2).await;
     let epoch = desc.epoch_bytes().unwrap();
 
@@ -37739,9 +35997,6 @@ async fn livefeed_connect_already_split_cursor_in_sealed_predecessor() {
 async fn livefeed_connect_already_split_cursor_positions() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let desc = lf7_split_stream(addr, &state, "lf7c", 3, 2).await;
     let epoch = desc.epoch_bytes().unwrap();
     let child_seg = desc.resolve_segment("").seg_id;
@@ -37809,9 +36064,6 @@ async fn livefeed_connect_already_split_cursor_positions() {
 async fn livefeed_connect_already_split_sealed_stream() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let _ = lf7_split_stream(addr, &state, "lf7s", 3, 2).await;
     seal_ok(addr, "lf7s").await;
 
@@ -37839,9 +36091,6 @@ async fn livefeed_connect_already_split_sealed_stream() {
 async fn livefeed_connect_after_two_sequential_splits() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -37887,9 +36136,6 @@ async fn livefeed_connect_after_two_sequential_splits() {
 async fn livefeed_merge_continuation_in_place() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -38017,9 +36263,6 @@ async fn livefeed_merge_continuation_in_place() {
 async fn livefeed_cursor_now_uses_the_reconciled_source() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .sse_engine_livefeed
-        .store(true, std::sync::atomic::Ordering::Relaxed);
     let (st, _, _) = preq(
         addr,
         "PUT",

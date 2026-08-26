@@ -256,8 +256,7 @@ struct FeedState {
 /// model B, per the follow-up review's capacity finding): ONE exact
 /// reservation per retained batch, released on eviction and at feed
 /// drop. Idle shared feeds cost nothing; busy feeds consume real
-/// bytes. Cap from SSE_FEED_TOTAL_BYTES (falling back to
-/// SSE_HUB_TOTAL_BYTES; 16 MiB certified on 1-GiB).
+/// bytes. Cap from SSE_FEED_TOTAL_BYTES (16 MiB certified on 1-GiB).
 pub(crate) struct FeedMemoryBudget {
     reserved: AtomicU64,
     max: AtomicU64,
@@ -309,7 +308,7 @@ pub(crate) enum ReserveOutcome {
 
 impl FeedMemoryBudget {
     pub(crate) fn from_env() -> Self {
-        let max = crate::livehub::feed_total_cap();
+        let max = crate::sse::budget::feed_total_cap();
         // One noisy project can never evict every other project's
         // retention, while a handful of busy projects can still fill
         // the cell — a defensible shared-cell contract (round-10

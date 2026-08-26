@@ -18,7 +18,6 @@ pub(crate) mod sse_stats {
     pub static BELOW_FLOOR_CATCHUPS: AtomicU64 = AtomicU64::new(0);
     pub static DISCONNECT_SEND_TIMEOUT: AtomicU64 = AtomicU64::new(0);
     pub static DISCONNECT_CLIENT_CLOSED: AtomicU64 = AtomicU64::new(0);
-    pub static DISCONNECT_HUB_DEAD: AtomicU64 = AtomicU64::new(0);
     // LiveFeed engine counters (follow-up review: field observability).
     /// Shared-admission refusals (zero budget or zero ring).
     pub static FEED_CAPACITY_REJECTED: AtomicU64 = AtomicU64::new(0);

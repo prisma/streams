@@ -12,7 +12,6 @@ mod failpoints;
 mod fleet;
 mod history;
 mod http;
-mod livehub;
 #[cfg(test)]
 mod mt_lint;
 mod offsets;
@@ -535,35 +534,6 @@ struct Args {
     #[arg(long, env = "SSE_MAX_CONNECTIONS", default_value_t = 10_000)]
     sse_max_connections: u64,
 
-    /// SSE Phase 2 live-hub fanout (#268): eligible product SSE
-    /// connections ride per-stream shared hubs. DEFAULT ON since the
-    /// review's three gating fixes landed (durable-frontier status,
-    /// atomic cap reservation, conservative charge — ef05bb4d);
-    /// SSE_LIVE_HUB=0 is the emergency kill switch.
-    #[arg(long, env = "SSE_LIVE_HUB", default_value_t = 1)]
-    sse_live_hub: u8,
-
-    /// Hub promotion threshold (review V6): the Nth concurrent
-    /// subscriber on a stream promotes it to a hub. 2 = reviewed
-    /// default (first rides direct; a hub+pump per single-subscriber
-    /// stream is more machinery than Phase 1); 1 = canary/experiment
-    /// posture for the matched-shape comparison.
-    #[arg(long, env = "SSE_HUB_PROMOTE_AT", default_value_t = 2)]
-    sse_hub_promote_at: u64,
-
-    /// SSE subscription engine. "livefeed" (the DEFAULT since round
-    /// 11.7) = the unified certified engine: in-proc battery,
-    /// exact-binary matrix, real-fleet certification and field
-    /// canaries all green. "legacy" = the previous direct/hub pair,
-    /// kept ONLY as the rollback switch until round 11.8 deletes it.
-    /// Rollback criteria (docs/LIVE-FEED.md §Rollback): flip back on
-    /// evidence of wire regressions the typed counters corroborate
-    /// (nonzero legacy-run deltas in delivery exactness, cutoff
-    /// storms with no ownership movement, or feed-budget accounting
-    /// drift) — never on load alone.
-    #[arg(long, env = "STREAMS_SSE_ENGINE", default_value = "livefeed")]
-    streams_sse_engine: String,
-
     /// Per-stream inflight append cap (0 = off): one hot stream cannot
     /// occupy every admission slot of its shard owner (scoped 429).
     #[arg(long, env = "ADMIT_MAX_INFLIGHT_PER_STREAM", default_value_t = 64)]
@@ -966,22 +936,6 @@ fn parse_bool_flag(s: &str) -> Result<bool, String> {
     }
 }
 
-fn validate_sse_engine(args: &Args) -> anyhow::Result<()> {
-    match args.streams_sse_engine.as_str() {
-        "legacy" => {}
-        "livefeed" => {
-            // Round-11.5: certified for release — the in-proc battery,
-            // the exact-binary matrix, and the REAL three-instance
-            // fleet certification (11.4, bench/fleet/livefeed-cert.sh)
-            // are all green. Legacy stays the default until the 11.7
-            // flip.
-            tracing::info!("STREAMS_SSE_ENGINE=livefeed: certified engine enabled");
-        }
-        other => anyhow::bail!("STREAMS_SSE_ENGINE must be legacy|livefeed, got {other:?}"),
-    }
-    Ok(())
-}
-
 /// Round-10 review: the release posture requires an explicit
 /// per-record payload ceiling whose WORST-CASE prepared SSE frame
 /// fits the certified feed ring — otherwise one legal oversized
@@ -1043,7 +997,7 @@ fn validate_record_ceiling(release_posture: bool, ceiling: Option<usize>) -> any
              STREAMS_RELEASE_POSTURE=1"
         );
     }
-    let ring = crate::livehub::feed_ring_bytes();
+    let ring = crate::sse::budget::feed_ring_bytes();
     // CHECKED true worst-case bound (round-10e: text framing expands
     // ~6x, more than base64's 4/3; an absurd ceiling must fail here,
     // never wrap).
@@ -1066,7 +1020,7 @@ fn validate_record_ceiling(release_posture: bool, ceiling: Option<usize>) -> any
     // and a project cap at/above the cell ceiling disables the
     // isolation the backstop exists to provide. An unparseable
     // project-cap setting fails boot here (the dev path only warns).
-    let global = crate::livehub::feed_total_cap();
+    let global = crate::sse::budget::feed_total_cap();
     let project = crate::sse::feed::configured_project_cap(global)
         .map_err(|m| anyhow::anyhow!("{m} (STREAMS_RELEASE_POSTURE=1 refuses the fallback)"))?;
     if project == 0 {
@@ -1167,7 +1121,7 @@ pub(crate) const MAX_EXERCISED_HUB_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 /// review finding 4: one process-global "largest ever exercised"
 /// number must not govern every instance class. A larger tier defines
 /// its own entry once certified there.
-fn profile_hub_budget_max(profile: Option<&str>) -> u64 {
+fn profile_feed_budget_max(profile: Option<&str>) -> u64 {
     match profile {
         // The 1-GiB profile certifies at 16 MiB (64 MiB tripped RSS
         // shed at ~505 publishing hubs; 16 MiB held ~354 MB, zero shed).
@@ -1184,7 +1138,7 @@ const FD_RESERVE: u64 = 1024;
 /// Round-4 review: lock the safe 1-GiB defaults at boot. Pure over its
 /// inputs so the suite can exercise every shape without touching
 /// process environment or rlimits.
-/// * `hub_total_env` — the raw SSE_HUB_TOTAL_BYTES value, when set.
+/// * `feed_total_env` — the raw SSE_FEED_TOTAL_BYTES value, when set.
 /// * `sse_max_connections` — configured cap; CLAMPED in place to the
 ///   effective ceiling when it exceeds what the descriptor budget can
 ///   actually carry (clamp + emit, per the review's acceptable arm).
@@ -1193,34 +1147,35 @@ const FD_RESERVE: u64 = 1024;
 pub(crate) fn validate_release_capacity(
     release_posture: bool,
     profile: Option<&str>,
-    hub_total_env: Option<&str>,
+    feed_total_env: Option<&str>,
     sse_max_connections: &mut u64,
     nofile_hard: u64,
 ) -> anyhow::Result<()> {
-    // The hub budget: refuse an explicit override above the largest
-    // certified posture, and refuse a value that would silently parse
-    // as the default (a typo'd byte count must not masquerade as a
-    // tuned budget).
-    if let Some(raw) = hub_total_env {
+    // The feed retention budget: refuse an explicit override above the
+    // largest certified posture, and refuse a value that would
+    // silently parse as the default (a typo'd byte count must not
+    // masquerade as a tuned budget).
+    if let Some(raw) = feed_total_env {
         let parsed: Option<u64> = raw.trim().parse().ok();
         match parsed {
             None => {
                 anyhow::bail!(
-                    "SSE_HUB_TOTAL_BYTES={raw:?} does not parse as a byte count \
+                    "SSE_FEED_TOTAL_BYTES={raw:?} does not parse as a byte count \
                      (an unparseable value would silently fall back to the default)"
                 );
             }
-            Some(v) if v > profile_hub_budget_max(profile) => {
-                let max = profile_hub_budget_max(profile);
+            Some(v) if v > profile_feed_budget_max(profile) => {
+                let max = profile_feed_budget_max(profile);
                 if release_posture {
                     anyhow::bail!(
-                        "SSE_HUB_TOTAL_BYTES={v} exceeds the {max}-byte release-safe                          maximum for memory profile {:?} (the 1-GiB class certifies at \
-                         16 MiB; 64 MiB tripped RSS shed at ~505 hubs)",
+                        "SSE_FEED_TOTAL_BYTES={v} exceeds the {max}-byte release-safe \
+                         maximum for memory profile {:?} (the 1-GiB class certifies at \
+                         16 MiB; 64 MiB tripped RSS shed at ~505 feeds)",
                         profile.unwrap_or("default")
                     );
                 }
                 tracing::warn!(
-                    "SSE_HUB_TOTAL_BYTES={v} exceeds the {max}-byte release-safe \
+                    "SSE_FEED_TOTAL_BYTES={v} exceeds the {max}-byte release-safe \
                      maximum for memory profile {:?}",
                     profile.unwrap_or("default")
                 );
@@ -1383,17 +1338,6 @@ mod config_validation_tests {
         );
     }
 
-    /// Round-11.7: LIVEFEED is the default engine. Legacy remains
-    /// selectable (STREAMS_SSE_ENGINE=legacy) as the rollback switch
-    /// until round 11.8 deletes it.
-    #[test]
-    fn the_default_sse_engine_is_livefeed() {
-        let a = Args::try_parse_from(vec!["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"])
-            .expect("test args must parse");
-        assert_eq!(a.streams_sse_engine, "livefeed");
-        assert!(validate_sse_engine(&a).is_ok());
-    }
-
     /// Round-11.6: the seal-publication delay is a certification
     /// instrument — armed without STREAMS_CERTIFICATION_MODE=1 it
     /// refuses boot; unset and malformed shapes behave predictably.
@@ -1408,28 +1352,6 @@ mod config_validation_tests {
             500
         );
         assert!(cert_sealed_publish_delay_from(Some("abc"), Some("1")).is_err());
-    }
-
-    /// Round-11.5: the real-fleet certification (11.4) closed the
-    /// release blocker — livefeed is PERMITTED under
-    /// STREAMS_RELEASE_POSTURE=1 (legacy stays the default until the
-    /// 11.7 flip; unknown engines stay refused).
-    #[test]
-    fn release_posture_permits_the_certified_livefeed_engine() {
-        let parse = |extra: &[&str]| {
-            let mut v = vec!["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"];
-            v.extend_from_slice(extra);
-            Args::try_parse_from(v).expect("test args must parse")
-        };
-        let a = parse(&["--streams-sse-engine", "livefeed", "--release-posture"]);
-        assert!(
-            validate_sse_engine(&a).is_ok(),
-            "the certified engine must boot under the release posture"
-        );
-        let a = parse(&["--streams-sse-engine", "legacy", "--release-posture"]);
-        assert!(validate_sse_engine(&a).is_ok(), "legacy remains selectable");
-        let a = parse(&["--streams-sse-engine", "hub", "--release-posture"]);
-        assert!(validate_sse_engine(&a).is_err(), "unknown engines refused");
     }
 
     /// Round-10 review: the release posture requires a per-record
@@ -1447,7 +1369,7 @@ mod config_validation_tests {
         // wrapped.
         assert!(validate_record_ceiling(true, Some(usize::MAX)).is_err());
         // Release with a ceiling whose frame exceeds the ring: refused.
-        let ring = crate::livehub::feed_ring_bytes();
+        let ring = crate::sse::budget::feed_ring_bytes();
         assert!(validate_record_ceiling(true, Some(ring)).is_err());
         // Release with a fitting ceiling: accepted (an eighth of the
         // ring leaves headroom under the 6x worst-case text framing).
@@ -1939,7 +1861,6 @@ async fn async_main() -> anyhow::Result<()> {
     // the customer account token, and fleet mode must not start without
     // one — a fleet that silently accepted the public bearer on those
     // routes would let any customer token corrupt any consumer.
-    validate_sse_engine(&args)?;
     validate_fleet_auth(&args, fleet_mode)?;
     validate_record_ceiling(args.release_posture, args.max_record_payload_bytes)?;
     // Round-4 review: validate the capacity posture against the real
@@ -1948,13 +1869,13 @@ async fn async_main() -> anyhow::Result<()> {
     let (nofile_soft, nofile_hard) = crate::http::raise_nofile();
     tracing::info!(
         "nofile soft={nofile_soft} hard={nofile_hard} (raised to hard at boot); \
-         hub retention budget={}B",
-        crate::livehub::hub_total_cap()
+         feed retention budget={}B",
+        crate::sse::budget::feed_total_cap()
     );
     validate_release_capacity(
         args.release_posture,
         std::env::var("MEMPROFILE_CERT").ok().as_deref(),
-        std::env::var("SSE_HUB_TOTAL_BYTES").ok().as_deref(),
+        std::env::var("SSE_FEED_TOTAL_BYTES").ok().as_deref(),
         &mut args.sse_max_connections,
         nofile_hard,
     )?;
@@ -2221,12 +2142,9 @@ async fn async_main() -> anyhow::Result<()> {
         admit_shed_rss: std::sync::atomic::AtomicU64::new(0),
         sse_max_connections: args.sse_max_connections,
         sse_configured_max_connections: args.sse_max_connections,
-        sse_engine_livefeed: std::sync::atomic::AtomicBool::new(
-            args.streams_sse_engine == "livefeed",
-        ),
         live_feeds: Arc::new(crate::sse::registry::FeedRegistry::new()),
         feed_budget: Arc::new(crate::sse::feed::FeedMemoryBudget::from_env()),
-        feed_ring_bytes: std::sync::atomic::AtomicUsize::new(crate::livehub::feed_ring_bytes()),
+        feed_ring_bytes: std::sync::atomic::AtomicUsize::new(crate::sse::budget::feed_ring_bytes()),
         max_record_payload_bytes: std::sync::atomic::AtomicUsize::new(
             args.max_record_payload_bytes.unwrap_or(0),
         ),
@@ -2244,11 +2162,6 @@ async fn async_main() -> anyhow::Result<()> {
                 .unwrap_or(15_000),
         ),
         sse_connections: std::sync::atomic::AtomicU64::new(0),
-        live_hubs: crate::livehub::HubRegistry::new(),
-        sse_live_hub: std::sync::atomic::AtomicBool::new(args.sse_live_hub == 1),
-        hub_total: crate::livehub::hub_total_global(),
-        hub_total_cap: std::sync::atomic::AtomicU64::new(crate::livehub::hub_total_cap()),
-        hub_promote_at: std::sync::atomic::AtomicU64::new(args.sse_hub_promote_at.max(1)),
         admit_max_inflight_per_stream: args.admit_max_inflight_per_stream,
         stream_inflight: std::sync::Mutex::new(HashMap::new()),
         stream_shed: std::sync::atomic::AtomicU64::new(0),

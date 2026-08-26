@@ -36,8 +36,6 @@ stream-hash	src/history.rs key_hash: crate::crypto::stream_hash(""),
 stream-hash	src/history.rs let h = crate::crypto::stream_hash(&absorber.shard.prefix);	
 stream-hash	src/history.rs let h = crate::crypto::stream_hash(prefix);	
 stream-hash	src/http.rs key_hash: crate::crypto::stream_hash(""),	
-stream-hash	src/http.rs let rk_hash = crate::crypto::stream_hash(&rk);	
-stream-hash	src/http.rs let rk_hash = crate::crypto::stream_hash(key_filter.as_deref().unwrap_or(""));	
 stream-hash	src/product.rs key_hash: crate::crypto::stream_hash(""),	
 stream-hash	src/product.rs key_hash: crate::crypto::stream_hash(routing_key),	
 stream-hash	src/product.rs keys_map.insert(r.off, crate::crypto::stream_hash(&r.rkey));	

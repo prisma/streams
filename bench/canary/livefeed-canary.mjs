@@ -664,7 +664,7 @@ async function moveEverythingTo(target) {
     reconciliation[n] = {
       live_feeds: lf.live_feeds ?? null,
       reserved_bytes: lf.reserved_bytes ?? null,
-      legacy_sse_dispatches: d?.legacy_sse_dispatches ?? null,
+      legacy_engine_fields_absent: d?.legacy_sse_dispatches === undefined,
       cutoff_wrong_owner: lf.cutoff_wrong_owner ?? 0,
       cutoff_fleet_auth: lf.cutoff_fleet_auth ?? 0,
       cutoff_incarnation: lf.cutoff_incarnation ?? 0,
@@ -673,7 +673,9 @@ async function moveEverythingTo(target) {
       cutoff_redirect_loop: lf.cutoff_redirect_loop ?? 0,
       scaler: d?.scaler ?? null,
     };
-    const legacy = d?.legacy_sse_dispatches ?? -1;
+    // Round-11.8: the legacy engine is DELETED — the counter's very
+    // field must be gone from the debug surface.
+    const legacy = d?.legacy_sse_dispatches === undefined ? 0 : 1;
     const feeds = lf.live_feeds ?? -1;
     const reserved = lf.reserved_bytes ?? -1;
     if (legacy !== 0) { ok = false; detail += `${n}:legacy=${legacy} `; }
