@@ -1697,6 +1697,16 @@ impl ShardEngine {
         }
         let _ = self.close_tx.send(true);
         self.pump_wake.notify_one();
+        // Wake every parked live reader. A session parked on an idle
+        // tail has no traffic to surface the fence to it: its next
+        // read re-checks ownership (owned_here) and takes the typed
+        // WrongOwner cutoff — but only if something wakes it. Without
+        // this, a moved-away shard's SSE sessions held keep-alives
+        // indefinitely and never rerouted (round-11.4 fleet finding).
+        for h in self.streams.lock().unwrap().values() {
+            h.notify.notify_waiters();
+            h.applied_notify.notify_waiters();
+        }
         let stranded: Vec<InFlightGroup> = self.in_flight.lock().unwrap().drain(..).collect();
         for group in stranded {
             for (resp, _) in group.acks {
@@ -5014,6 +5024,16 @@ impl ShardEngine {
                     // Wake the group-commit pump so it observes closed and
                     // exits instead of parking on its Notify forever.
                     self.pump_wake.notify_one();
+                    // And every parked live reader (round-11.4): the
+                    // fence-driven close raced the fleet tick's yield in
+                    // the certification battery — whichever path closes
+                    // the engine first must wake parked SSE sessions
+                    // into their ownership re-check, or a session on an
+                    // idle tail sleeps through the move on keep-alives.
+                    for h in self.streams.lock().unwrap().values() {
+                        h.notify.notify_waiters();
+                        h.applied_notify.notify_waiters();
+                    }
                     let stranded: Vec<InFlightGroup> =
                         self.in_flight.lock().unwrap().drain(..).collect();
                     for group in stranded {

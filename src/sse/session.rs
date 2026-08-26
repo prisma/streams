@@ -687,6 +687,24 @@ pub(crate) async fn serve(
                         None => {}
                     }
                 }
+                // Round-11.4 fleet finding: an at-tail session has no
+                // read to surface an ownership move (read_batch's check
+                // never runs), so the park is guarded. Ordering is
+                // register → check → park: src_wait was registered at
+                // loop top, and the loser's engine close fires the
+                // advance notify — a move landing after this check
+                // wakes the park, and the next iteration's check cuts.
+                if let Some(reason) = cur_src.cut_off() {
+                    count_cutoff(reason);
+                    crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    tracing::info!(
+                        stream = %sref,
+                        ?reason,
+                        "livefeed ownership moved under a parked session; disconnecting"
+                    );
+                    return;
+                }
                 // Park. Seal-publication convergence is the feed's ONE
                 // retry task (round-11.1) — its resolving drive bumps
                 // the version and wakes every parked session; no

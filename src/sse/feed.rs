@@ -116,6 +116,15 @@ pub(crate) trait FeedSourceRead: Send + Sync {
     /// Stage 6: refresh the descriptor and decide the source's future
     /// (called ONLY under the feed's driver permit).
     async fn next_source(&self) -> anyhow::Result<SourceTransition>;
+    /// Round-11.4: is this source's LIVE tail no longer servable here?
+    /// An at-tail parked session has no read to surface an ownership
+    /// move (read_batch's check never runs), so the park re-checks
+    /// this after every wake — the loser's engine close fires the
+    /// advance notify, and the woken session takes the typed cutoff
+    /// instead of sleeping through the fence on keep-alives.
+    fn cut_off(&self) -> Option<SourceCutoff> {
+        None
+    }
 }
 
 /// Why a feed's source was cut off (typed for canary telemetry —

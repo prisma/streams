@@ -127,6 +127,29 @@ jobs:
       - name: Platform end-to-end battery
         run: node scripts/platform-e2e.mjs
 
+  # Job: the REAL three-process LiveFeed fleet certification (round
+  # 11.4). Three streams-slate processes over one shared s3lite store,
+  # real TCP listeners, real fleet heartbeats + overrides steering,
+  # enforce-mode auth from the platform emulator, rotating workload
+  # JWTs, a REAL scaler split — then the battery: cross-instance
+  # replays, typed reroutes, ownership movement under established and
+  # parked sessions, a SIGSTOP'd (blackholed) remote owner, workload
+  # rotation, revocation, and residual accounting. Produces
+  # target/livefeed-cert-manifest.json.
+  livefeed-fleet-cert:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+      - name: Fleet certification battery
+        run: bash bench/fleet/livefeed-cert.sh
+      - name: Manifest
+        run: cat target/livefeed-cert-manifest.json
+
   # Job: the shared-cell certification smoke at CONTRACT scale
   # (docs/MULTITENANCY.md §18 Stage 8 / SR-6). The suite's default run
   # exercises the same test at 128 projects; this job runs the

@@ -35878,6 +35878,20 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
             acc.contains("HTTP/1.1 409"),
             "a moved live tail at connect is the typed routing refusal:\n{acc}"
         );
+        // Round-11.4 field finding: without Streams-Replay-To the
+        // product translator renders an ownership bounce as the
+        // non-retryable cursor_beyond_tail — SDKs rewind healthy
+        // cursors and routers never learn the new owner. The refusal
+        // must carry the routing signal and keep its ownership code.
+        let lower = acc.to_ascii_lowercase();
+        assert!(
+            lower.contains("streams-replay-to: inst-a"),
+            "the ownership refusal must name the owner for the router:\n{acc}"
+        );
+        assert!(
+            !acc.contains("cursor_beyond_tail"),
+            "an ownership bounce is never a cursor condition:\n{acc}"
+        );
         assert!(
             !acc.contains("event: data") && !acc.contains("\"sealed\":true"),
             "no stale data, no terminal:\n{acc}"
@@ -35890,6 +35904,156 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
         "the moved tail must be counted under WrongOwner"
     );
     drop(sub1);
+}
+
+/// Round-11.4 fleet finding (red): an ORPHANED pending transition —
+/// the executor died between the durable intent and the publication
+/// (a crash, a fence, an ownership move mid-merge) — starved the
+/// WHOLE stream: every livefeed connect answered 503
+/// segment_transition, and resume() was driven only by sessions,
+/// which could no longer exist. The certification fleet wedged in
+/// pending=merge with every instance refusing every connect. The
+/// refusal must HELP the transition along (spawn the idempotent
+/// resume) so retrying clients converge.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_pending_transition_connect_drives_resume() {
+    let store = mem();
+    let (state, addr) = http_rig_owner(store, "inst-b").await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/xpend",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    for i in 0..3 {
+        hub_append_lf(addr, "xpend", &format!(r#"{{"q":{i}}}"#)).await;
+    }
+    // Enter the seal-to-publication gap, then ORPHAN it: the executor
+    // dies with the intent durable and the publication never issued.
+    crate::failpoints::arm_scaler_before_publish("xpend");
+    let sref = state.raw_adapter_sref("xpend");
+    let split = {
+        let state = state.clone();
+        let sref = sref.clone();
+        tokio::spawn(async move {
+            crate::scaler3::execute_split(&state, &sref, 0, 0x8000_0000_0000_0000).await
+        })
+    };
+    let mut pending_seen = false;
+    for _ in 0..400 {
+        state.registry.invalidate(&sref);
+        let d = state.registry.get(&sref).await.unwrap().unwrap();
+        if d.segments.as_ref().is_some_and(|m| m.pending.is_some()) {
+            pending_seen = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    assert!(pending_seen, "the split must reach the durable-intent gap");
+    split.abort();
+    let _ = split.await;
+    crate::failpoints::release_scaler_before_publish("xpend");
+    // A retrying client must converge: the typed 503 is retryable
+    // BECAUSE the refusal drives the resume. Without that, nothing
+    // ever completes the transition and this loops 503 forever.
+    let mut served = false;
+    for _ in 0..80 {
+        let mut sck = lf_connect(addr, "xpend", "?cursor=beginning").await;
+        let (acc, _) = hub_sse_collect(&mut sck, 5, |t| {
+            t.contains("HTTP/1.1 503") || t.contains("\"upToDate\":true")
+        })
+        .await;
+        if acc.contains("\"upToDate\":true") {
+            assert!(
+                acc.contains("\"q\":0"),
+                "records replay after resume:\n{acc}"
+            );
+            served = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(250)).await;
+    }
+    assert!(
+        served,
+        "an orphaned pending transition must converge under client retries"
+    );
+}
+
+/// Round-11.4 fleet finding (red): a PARKED live session at a shard
+/// that loses ownership must be WOKEN by the engine close and take
+/// the typed WrongOwner cutoff — resumable EOF, no terminal, no
+/// stale serving. On the real fleet the loser's engine closes when
+/// slatedb fencing surfaces (or a straggler request forces the
+/// possession-yield), but begin_close woke no parked readers: the
+/// certification harness held a moved-away session on keep-alives
+/// for 40 s with the new owner already serving.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_parked_live_session_is_cut_off_by_engine_close() {
+    let store = mem();
+    let (state_b, addr_b) = http_rig_owner(store, "inst-b").await;
+    state_b
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr_b,
+        "PUT",
+        "/v1/streams/xpark",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append_lf(addr_b, "xpark", r#"{"p":0}"#).await;
+    let wrong_before = crate::sse::auth::sse_stats::FEED_CUTOFF_WRONG_OWNER
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let mut sub = lf_connect(addr_b, "xpark", "?cursor=now").await;
+    let (a0, eof0) = hub_sse_collect(&mut sub, 15, |t| t.contains("\"upToDate\":true")).await;
+    assert!(
+        a0.contains("\"upToDate\":true") && !eof0,
+        "session parked at the live tail:\n{a0}"
+    );
+    // Ownership moves away; the loser's engine closes (fence). The
+    // parked session must observe it WITHOUT any traffic.
+    *state_b.ring_active.write().unwrap() = ["inst-a", "inst-b"].map(str::to_string).to_vec();
+    {
+        let mut ov = state_b.ring_overrides.write().unwrap();
+        for p in state_b.shard_prefixes.clone() {
+            ov.insert(p, "inst-a".to_string());
+        }
+    }
+    let engines: Vec<_> = state_b.shards.read().unwrap().values().cloned().collect();
+    for e in engines {
+        e.begin_close();
+    }
+    let (a1, eof1) = hub_sse_collect(&mut sub, 10, |_| false).await;
+    assert!(
+        eof1,
+        "the parked session must take the cutoff, not keep-alive forever:\n{a1}"
+    );
+    assert!(
+        !a1.contains("event: data") && !a1.contains("\"sealed\":true"),
+        "no stale data, no terminal:\n{a1}"
+    );
+    assert!(
+        crate::sse::auth::sse_stats::FEED_CUTOFF_WRONG_OWNER
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > wrong_before,
+        "the cutoff must be classified WrongOwner"
+    );
+    drop(sub);
+    for _ in 0..300 {
+        if state_b.live_feeds.len() == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(state_b.live_feeds.len(), 0, "feed teardown");
 }
 
 /// Round-11.1 (red): a BLACKHOLED peer — TCP accepted, request read,

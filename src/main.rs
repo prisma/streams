@@ -2142,7 +2142,16 @@ async fn async_main() -> anyhow::Result<()> {
         max_record_payload_bytes: std::sync::atomic::AtomicUsize::new(
             args.max_record_payload_bytes.unwrap_or(0),
         ),
-        sse_heartbeat_ms: std::sync::atomic::AtomicU64::new(15_000),
+        sse_heartbeat_ms: std::sync::atomic::AtomicU64::new(
+            // Operational cadence knob (fleet certification runs it at
+            // 500ms to observe keep-alives inside short stall windows);
+            // GatedSseBody clamps to its 50ms floor.
+            std::env::var("SSE_HEARTBEAT_MS")
+                .ok()
+                .and_then(|v| v.parse().ok())
+                .filter(|v| *v > 0)
+                .unwrap_or(15_000),
+        ),
         sse_connections: std::sync::atomic::AtomicU64::new(0),
         live_hubs: crate::livehub::HubRegistry::new(),
         sse_live_hub: std::sync::atomic::AtomicBool::new(args.sse_live_hub == 1),

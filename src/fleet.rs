@@ -775,6 +775,32 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     *state.ring_overrides.write().unwrap() = map;
                 }
 
+                // Possession yields at the TICK, not only on straggler
+                // traffic (round-11.4 fleet finding): a loser with zero
+                // routed requests kept its engine — and its parked SSE
+                // sessions — until slatedb fencing surfaced on a write
+                // that never came. Close anything the ring says is no
+                // longer ours; begin_close wakes parked readers into
+                // the typed WrongOwner cutoff, and the zombie db dies
+                // now instead of at the winner's first fence.
+                {
+                    let held: Vec<String> = state.shards.read().unwrap().keys().cloned().collect();
+                    for prefix in held {
+                        let owner = state.effective_owner(&prefix);
+                        if owner.as_deref().is_some_and(|o| o != cfg.instance) {
+                            let eng = state.shards.write().unwrap().remove(&prefix);
+                            if let Some(e) = eng {
+                                tracing::info!(
+                                    shard = %prefix,
+                                    to = %owner.unwrap_or_default(),
+                                    "possession yields at tick: shard moved away"
+                                );
+                                e.begin_close();
+                            }
+                        }
+                    }
+                }
+
                 // Eager handoff: open any shard newly assigned to ME right
                 // now instead of waiting for the first routed request —
                 // the open fences the loser's db immediately (ladder p3:

@@ -1212,6 +1212,19 @@ async fn debug_load(
                 .unwrap_or(serde_json::json!(null)),
         },
         "scaler": crate::scaler3::stats_json(),
+        // Routing state as THIS instance sees it — the fleet
+        // certification harness waits on real override convergence
+        // instead of guessing at tick cadence.
+        "ring": {
+            "active": state.ring_active.read().unwrap().clone(),
+            "overrides": state
+                .ring_overrides
+                .read()
+                .unwrap()
+                .iter()
+                .map(|(k, v)| (k.clone(), v.clone()))
+                .collect::<std::collections::BTreeMap<_, _>>(),
+        },
         // Cross-layout absorb advances rejected by the committer's
         // layout seal. Nonzero = the absorber's lane classification
         // raced dispatch somewhere; the seal made it harmless, but it
@@ -8679,6 +8692,19 @@ async fn read_v3_lineage_inner(
             .load(std::sync::atomic::Ordering::Relaxed)
             && desc.segments.as_ref().is_some_and(|m| m.pending.is_some())
         {
+            // Round-11.4 fleet finding: HELP the transition along
+            // before refusing (idempotent, non-blocking — the read_v3
+            // pattern). An ORPHANED pending transition (executor died
+            // between intent and publication) otherwise starves the
+            // stream forever: resume() was driven only by sessions,
+            // and no session can exist while every connect refuses.
+            {
+                let st = state.clone();
+                let srf = desc.sref();
+                tokio::spawn(async move {
+                    crate::scaler3::resume(&st, &srf).await;
+                });
+            }
             return err_resp(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "segment_transition",
@@ -8741,12 +8767,23 @@ async fn read_v3_lineage_inner(
                     use crate::sse::source::LineageBuildError as B;
                     tracing::warn!(error = %e, "livefeed connect-time lineage build failed");
                     return match e {
-                        B::WrongOwner(m) => {
+                        B::WrongOwner { msg, owner } => {
                             crate::sse::auth::sse_stats::FEED_CUTOFF_WRONG_OWNER
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                             crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
                                 .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            err_resp(StatusCode::CONFLICT, "not_ring_owner", &m)
+                            let mut r = err_resp(StatusCode::CONFLICT, "not_ring_owner", &msg);
+                            // Round-11.4: the refusal must carry the
+                            // router-convergence signal — without it the
+                            // product translator maps this 409 to the
+                            // non-retryable cursor_beyond_tail and SDKs
+                            // rewind healthy cursors on ownership moves.
+                            if let Some(o) = owner
+                                && let Ok(v) = axum::http::HeaderValue::from_str(&o)
+                            {
+                                r.headers_mut().insert("streams-replay-to", v);
+                            }
+                            r
                         }
                         B::Transient(m) => err_resp(
                             StatusCode::SERVICE_UNAVAILABLE,

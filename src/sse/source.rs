@@ -103,6 +103,10 @@ impl FeedSourceRead for SingleSource {
         &self.handle.notify
     }
 
+    fn cut_off(&self) -> Option<super::feed::SourceCutoff> {
+        (!owned_here(&self.state, &self.route)).then_some(super::feed::SourceCutoff::WrongOwner)
+    }
+
     fn locate(&self, logical_after: u64) -> WirePosition {
         WirePosition {
             seg_id: self.lane_seg_id(),
@@ -234,8 +238,11 @@ pub(crate) struct LineageSource {
 /// feed-wide incarnation cutoff).
 pub(crate) enum LineageBuildError {
     /// A lineage span is owned by another instance (409-class):
-    /// disconnect-and-reroute.
-    WrongOwner(String),
+    /// disconnect-and-reroute. Carries the owner name when the ring
+    /// knows it — the refusal must surface Streams-Replay-To or the
+    /// product translator renders an ownership bounce as the
+    /// non-retryable cursor_beyond_tail (round-11.4 fleet finding).
+    WrongOwner { msg: String, owner: Option<String> },
     /// The lineage itself is inconsistent (no span, live predecessor):
     /// NOT a continuation of this feed's cursor space.
     IncompatibleTopology(String),
@@ -246,7 +253,7 @@ pub(crate) enum LineageBuildError {
 impl std::fmt::Display for LineageBuildError {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
-            Self::WrongOwner(m) => write!(f, "wrong-owner: {m}"),
+            Self::WrongOwner { msg, .. } => write!(f, "wrong-owner: {msg}"),
             Self::IncompatibleTopology(m) => write!(f, "incompatible-topology: {m}"),
             Self::Transient(m) => write!(f, "transient: {m}"),
         }
@@ -324,10 +331,18 @@ impl LineageSource {
                         }
                     }
                     Err(resp) if resp.status() == axum::http::StatusCode::CONFLICT => {
-                        return Err(LineageBuildError::WrongOwner(format!(
-                            "live segment {} is owned by another instance",
-                            sg.seg_id
-                        )));
+                        // engine_for's refusal names the ring owner in
+                        // Streams-Replay-To; thread it through so the
+                        // connect-time refusal keeps the routing signal.
+                        let owner = resp
+                            .headers()
+                            .get("streams-replay-to")
+                            .and_then(|v| v.to_str().ok())
+                            .map(str::to_string);
+                        return Err(LineageBuildError::WrongOwner {
+                            msg: format!("live segment {} is owned by another instance", sg.seg_id),
+                            owner,
+                        });
                     }
                     Err(resp) => {
                         return Err(LineageBuildError::Transient(format!(
@@ -655,6 +670,17 @@ impl FeedSourceRead for LineageSource {
         }
     }
 
+    fn cut_off(&self) -> Option<super::feed::SourceCutoff> {
+        // Only the LIVE tail cuts a parked session off — sealed spans
+        // are ownership-dynamic and re-resolve per page.
+        match &self.tail().reader {
+            SpanReader::LiveLocal { route, .. } if !owned_here(&self.state, route) => {
+                Some(super::feed::SourceCutoff::WrongOwner)
+            }
+            _ => None,
+        }
+    }
+
     fn locate(&self, logical_after: u64) -> WirePosition {
         locate_in_spans(&self.span_sig(), logical_after)
     }
@@ -781,7 +807,7 @@ pub(crate) async fn refresh_transition(
                         tracing::warn!(stream = %sref, error = %e, "sealed lineage drain deferred");
                         return Ok(SourceTransition::RetryLater);
                     }
-                    Err(LineageBuildError::WrongOwner(e)) => {
+                    Err(LineageBuildError::WrongOwner { msg: e, .. }) => {
                         tracing::warn!(
                             stream = %sref,
                             error = %e,
@@ -833,7 +859,7 @@ pub(crate) async fn refresh_transition(
                 Ok(n) => n,
                 // Durable wrong-owner: disconnect-and-reroute NOW
                 // (fleet posture).
-                Err(LineageBuildError::WrongOwner(e)) => {
+                Err(LineageBuildError::WrongOwner { msg: e, .. }) => {
                     tracing::warn!(
                         stream = %sref,
                         error = %e,
