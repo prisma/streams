@@ -995,13 +995,66 @@ fn validate_record_ceiling(release_posture: bool, ceiling: Option<usize>) -> any
              every shared-feed subscriber at once (round-10 review)"
         );
     };
+    // Round-10e review: zero means UNLIMITED on the request path — a
+    // release configuration that looks set but silently disables the
+    // mechanism is refused.
+    if ceiling == 0 {
+        anyhow::bail!(
+            "MAX_RECORD_PAYLOAD_BYTES=0 is unlimited and is not permitted under \
+             STREAMS_RELEASE_POSTURE=1"
+        );
+    }
     let ring = crate::livehub::feed_ring_bytes();
-    let worst = crate::sse::feed::worst_prepared_charge(ceiling);
+    // CHECKED true worst-case bound (round-10e: text framing expands
+    // ~6x, more than base64's 4/3; an absurd ceiling must fail here,
+    // never wrap).
+    let Some(worst) = crate::sse::feed::worst_prepared_charge(ceiling) else {
+        anyhow::bail!(
+            "MAX_RECORD_PAYLOAD_BYTES={ceiling}: the worst-case prepared-frame \
+             calculation overflows — the ceiling is not a plausible record size"
+        );
+    };
     if worst > ring {
         anyhow::bail!(
             "MAX_RECORD_PAYLOAD_BYTES={ceiling}: worst-case prepared SSE frame is \
              {worst} bytes, exceeding SSE_FEED_RING_BYTES={ring} — raise the ring or \
              lower the record ceiling (release posture requires the frame to fit)"
+        );
+    }
+    // Round-10e: one legal record must also fit BOTH retention caps,
+    // and the project backstop must actually isolate: a zero project
+    // cap disconnects every shared subscriber on first publication,
+    // and a project cap at/above the cell ceiling disables the
+    // isolation the backstop exists to provide. An unparseable
+    // project-cap setting fails boot here (the dev path only warns).
+    let global = crate::livehub::feed_total_cap();
+    let project = crate::sse::feed::configured_project_cap(global)
+        .map_err(|m| anyhow::anyhow!("{m} (STREAMS_RELEASE_POSTURE=1 refuses the fallback)"))?;
+    if project == 0 {
+        anyhow::bail!(
+            "SSE_FEED_PROJECT_BYTES=0 admits shared subscribers and then disconnects \
+             them on the first publication — not permitted under release posture"
+        );
+    }
+    if project >= global {
+        anyhow::bail!(
+            "SSE_FEED_PROJECT_BYTES={project} >= SSE_FEED_TOTAL_BYTES={global}: one \
+             project could consume the whole cell budget — the project backstop must \
+             be strictly below the cell ceiling"
+        );
+    }
+    if (worst as u64) > project {
+        anyhow::bail!(
+            "worst-case prepared record ({worst} bytes) exceeds \
+             SSE_FEED_PROJECT_BYTES={project}: a single legal record could never be \
+             retained by any project"
+        );
+    }
+    if (worst as u64) > global {
+        anyhow::bail!(
+            "worst-case prepared record ({worst} bytes) exceeds \
+             SSE_FEED_TOTAL_BYTES={global}: a single legal record could never be \
+             retained at all"
         );
     }
     Ok(())
@@ -1300,17 +1353,47 @@ mod config_validation_tests {
         assert!(validate_record_ceiling(false, None).is_ok());
         // Release without a ceiling: refused.
         assert!(validate_record_ceiling(true, None).is_err());
+        // Round-10e: ZERO is the unlimited sentinel — refused.
+        assert!(validate_record_ceiling(true, Some(0)).is_err());
+        // Round-10e: an overflow-inducing ceiling is refused, not
+        // wrapped.
+        assert!(validate_record_ceiling(true, Some(usize::MAX)).is_err());
         // Release with a ceiling whose frame exceeds the ring: refused.
         let ring = crate::livehub::feed_ring_bytes();
-        assert!(validate_record_ceiling(true, Some(ring * 4)).is_err());
-        // Release with a fitting ceiling: accepted (a quarter of the
-        // ring leaves ample framing headroom).
-        assert!(validate_record_ceiling(true, Some(ring / 4)).is_ok());
-        // The frame arithmetic itself: base64 4/3 plus overheads.
-        assert!(crate::sse::feed::worst_prepared_charge(0) > 0);
+        assert!(validate_record_ceiling(true, Some(ring)).is_err());
+        // Release with a fitting ceiling: accepted (an eighth of the
+        // ring leaves headroom under the 6x worst-case text framing).
+        assert!(validate_record_ceiling(true, Some(ring / 8)).is_ok());
+        // The bound covers the TRUE worst framing (round-10e): a
+        // newline-heavy text payload (6 bytes of SSE output per input
+        // byte), lossy invalid UTF-8 (3 bytes per byte), JSON and
+        // binary all stay under worst_prepared_charge.
+        let bound = |n: usize| crate::sse::feed::worst_prepared_charge(n).expect("plausible size");
+        let text_desc = {
+            let mut d = crate::sse::feed::tests::test_desc("wcase");
+            d.content_type = "text/plain".into();
+            d
+        };
+        let newlines = vec![b'\n'; 1024];
         assert!(
-            crate::sse::feed::worst_prepared_charge(3000) >= 4000,
-            "base64 expansion must be accounted"
+            crate::sse::wire::sse_data_event(&text_desc, &newlines).len() <= bound(1024),
+            "newline-heavy text must fit the worst-case bound"
+        );
+        let invalid = vec![0xFFu8; 1024];
+        assert!(
+            crate::sse::wire::sse_data_event(&text_desc, &invalid).len() <= bound(1024),
+            "lossy invalid UTF-8 must fit the worst-case bound"
+        );
+        let bin_desc = {
+            let mut d = crate::sse::feed::tests::test_desc("wcase2");
+            d.content_type = "application/octet-stream".into();
+            d
+        };
+        assert!(crate::sse::wire::sse_data_event(&bin_desc, &invalid).len() <= bound(1024));
+        let json_desc = crate::sse::feed::tests::test_desc("wcase3");
+        assert!(
+            crate::sse::wire::sse_data_event(&json_desc, &newlines).len() <= bound(1024),
+            "json framing must fit the worst-case bound"
         );
     }
 

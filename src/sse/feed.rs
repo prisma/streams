@@ -202,15 +202,21 @@ fn charge_for(events: &[PreparedRecord]) -> usize {
 }
 
 /// Worst-case retained charge of ONE prepared record of `payload`
-/// bytes: base64 expansion (4/3, rounded up to the 4-byte group) plus
-/// SSE framing, mirroring `charge_for`'s per-record and per-batch
-/// overheads. The release posture requires
-/// `worst_prepared_charge(MAX_RECORD_PAYLOAD_BYTES) <=
-/// SSE_FEED_RING_BYTES` (round-10 review): a single legal record whose
-/// frame exceeds the ring turns a valid append into an O(subscribers)
-/// reconnect herd on a shared feed.
-pub(crate) fn worst_prepared_charge(payload: usize) -> usize {
-    payload.div_ceil(3) * 4 + 64 + 64 + 256
+/// bytes, over EVERY encoding (round-10e review — base64's 4/3 was
+/// not the worst case):
+///
+///   * text/*: each line gains a `data:` prefix + newline, so a
+///     payload of newline bytes expands ~6x ("data:\n" per byte);
+///     lossy UTF-8 replacement is 3x per byte and stays under that;
+///   * binary: base64 4/3;
+///   * JSON: 1x plus brackets.
+///
+/// 6x + framing/accounting overheads bounds them all. CHECKED: an
+/// absurd configured ceiling must fail validation, never wrap. The
+/// release posture requires the bound to fit the feed ring AND both
+/// retention caps.
+pub(crate) fn worst_prepared_charge(payload: usize) -> Option<usize> {
+    payload.checked_mul(6)?.checked_add(64 + 64 + 256)
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -246,7 +252,32 @@ pub(crate) struct FeedMemoryBudget {
     /// A project exceeding its own allowance takes the uncached
     /// posture ITSELF — it can never force an unrelated project to.
     project_cap: AtomicU64,
-    by_project: Mutex<std::collections::HashMap<crate::tenant::ProjectId, Arc<AtomicU64>>>,
+    by_project: Mutex<std::collections::HashMap<crate::tenant::ProjectId, Arc<ProjectRetention>>>,
+}
+
+/// One project's live retention entry. BOUNDED lifetime (round-10e
+/// review): feeds hold the Arc; the LAST feed of a project removes
+/// the entry on drop once its reservation is zero — the map tracks
+/// projects WITH live feeds, never every project ever observed.
+pub(crate) struct ProjectRetention {
+    reserved: AtomicU64,
+    /// Publications this project pushed into the uncached posture by
+    /// ITS OWN allowance (per-project cap-hit observability without
+    /// unbounded metric cardinality: rows exist only while feeds do).
+    cap_hits: AtomicU64,
+}
+
+/// The project allowance: SSE_FEED_PROJECT_BYTES, defaulting to a
+/// QUARTER of the cell ceiling. Strict form for release validation
+/// (an unparseable value must fail boot, round-10e).
+pub(crate) fn configured_project_cap(global: u64) -> Result<u64, String> {
+    match std::env::var("SSE_FEED_PROJECT_BYTES") {
+        Err(_) => Ok(global / 4),
+        Ok(raw) => raw
+            .trim()
+            .parse()
+            .map_err(|_| format!("SSE_FEED_PROJECT_BYTES={raw:?} does not parse as a byte count")),
+    }
 }
 
 /// Outcome of a retention reservation, split by WHICH ceiling refused
@@ -265,15 +296,19 @@ pub(crate) enum ReserveOutcome {
 impl FeedMemoryBudget {
     pub(crate) fn from_env() -> Self {
         let max = crate::livehub::feed_total_cap();
-        // A project's default allowance is a QUARTER of the cell
-        // ceiling (override: SSE_FEED_PROJECT_BYTES): one noisy
-        // project can never evict every other project's retention,
-        // while a handful of busy projects can still fill the cell —
-        // a defensible shared-cell contract (round-10 review).
-        let project_cap = std::env::var("SSE_FEED_PROJECT_BYTES")
-            .ok()
-            .and_then(|v| v.trim().parse().ok())
-            .unwrap_or(max / 4);
+        // One noisy project can never evict every other project's
+        // retention, while a handful of busy projects can still fill
+        // the cell — a defensible shared-cell contract (round-10
+        // review). Release boot validates this STRICTLY (unparseable
+        // or isolation-defeating values refuse to boot); the dev
+        // fallback warns.
+        let project_cap = match configured_project_cap(max) {
+            Ok(v) => v,
+            Err(m) => {
+                tracing::warn!("{m}; falling back to the quarter-of-cell default");
+                max / 4
+            }
+        };
         Self {
             reserved: AtomicU64::new(0),
             max: AtomicU64::new(max),
@@ -303,15 +338,67 @@ impl FeedMemoryBudget {
         self.project_cap.store(max / 4, Ordering::SeqCst);
     }
 
-    /// The per-project retained-bytes counter, shared by every feed of
-    /// the project in this process.
-    pub(crate) fn project_counter(&self, project: &crate::tenant::ProjectId) -> Arc<AtomicU64> {
+    /// The per-project retention entry, shared by every feed of the
+    /// project in this process; created on first use, removed by the
+    /// LAST feed's drop (see `release_project_entry`).
+    pub(crate) fn project_retention(
+        &self,
+        project: &crate::tenant::ProjectId,
+    ) -> Arc<ProjectRetention> {
         self.by_project
             .lock()
             .unwrap()
             .entry(project.clone())
-            .or_insert_with(|| Arc::new(AtomicU64::new(0)))
+            .or_insert_with(|| {
+                Arc::new(ProjectRetention {
+                    reserved: AtomicU64::new(0),
+                    cap_hits: AtomicU64::new(0),
+                })
+            })
             .clone()
+    }
+
+    /// Bounded-lifetime cleanup (round-10e review): called from a
+    /// dropping feed AFTER it released its retained charge. Removes
+    /// the project's entry when this feed is the LAST holder (map +
+    /// caller = 2 strong refs) and nothing is reserved; `ptr_eq`
+    /// guards against removing a replacement entry a concurrent
+    /// subscribe raced in.
+    fn release_project_entry(
+        &self,
+        project: &crate::tenant::ProjectId,
+        entry: &Arc<ProjectRetention>,
+    ) {
+        let mut map = self.by_project.lock().unwrap();
+        if let Some(cur) = map.get(project)
+            && Arc::ptr_eq(cur, entry)
+            && Arc::strong_count(entry) == 2
+            && entry.reserved.load(Ordering::SeqCst) == 0
+        {
+            map.remove(project);
+        }
+    }
+
+    /// Live per-project retention rows (debug surface): bounded by
+    /// projects WITH live feeds.
+    pub(crate) fn project_rows(&self) -> Vec<(String, u64, u64)> {
+        self.by_project
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, e)| {
+                (
+                    p.as_str().to_string(),
+                    e.reserved.load(Ordering::Relaxed),
+                    e.cap_hits.load(Ordering::Relaxed),
+                )
+            })
+            .collect()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn project_entries_for_test(&self) -> usize {
+        self.by_project.lock().unwrap().len()
     }
 
     /// Test-only exhaustion: reserve everything that remains, so the
@@ -351,22 +438,27 @@ impl FeedMemoryBudget {
     /// ALREADY reflects both sides: the caller must NOT release the
     /// replaced batches again. Checked arithmetic: any accounting
     /// drift fails CLOSED rather than wrapping.
-    fn try_replace(&self, proj: &AtomicU64, released: usize, add: usize) -> ReserveOutcome {
+    fn try_replace(&self, proj: &ProjectRetention, released: usize, add: usize) -> ReserveOutcome {
         let (rel, add) = (released as u64, add as u64);
         // PROJECT leg first (round-10 isolation): the offending
         // project fails its OWN reservation; unrelated projects never
         // see this refusal. The replaced bytes are this feed's own
         // prior reservation, hence part of this project's counter.
         let cap = self.project_cap.load(Ordering::Relaxed);
-        let mut pcur = proj.load(Ordering::Relaxed);
+        let mut pcur = proj.reserved.load(Ordering::Relaxed);
         loop {
             let Some(after) = pcur.checked_sub(rel).and_then(|b| b.checked_add(add)) else {
+                proj.cap_hits.fetch_add(1, Ordering::Relaxed);
                 return ReserveOutcome::ProjectOver; // drift: fail closed
             };
             if after > cap {
+                proj.cap_hits.fetch_add(1, Ordering::Relaxed);
                 return ReserveOutcome::ProjectOver;
             }
-            match proj.compare_exchange(pcur, after, Ordering::SeqCst, Ordering::Relaxed) {
+            match proj
+                .reserved
+                .compare_exchange(pcur, after, Ordering::SeqCst, Ordering::Relaxed)
+            {
                 Ok(_) => break,
                 Err(actual) => pcur = actual,
             }
@@ -377,13 +469,13 @@ impl FeedMemoryBudget {
         let mut cur = self.reserved.load(Ordering::Relaxed);
         loop {
             let Some(after) = cur.checked_sub(rel).and_then(|b| b.checked_add(add)) else {
-                proj.fetch_add(rel, Ordering::SeqCst);
-                proj.fetch_sub(add, Ordering::SeqCst);
+                proj.reserved.fetch_add(rel, Ordering::SeqCst);
+                proj.reserved.fetch_sub(add, Ordering::SeqCst);
                 return ReserveOutcome::GlobalOver; // drift: fail closed
             };
             if after > self.max.load(Ordering::Relaxed) {
-                proj.fetch_add(rel, Ordering::SeqCst);
-                proj.fetch_sub(add, Ordering::SeqCst);
+                proj.reserved.fetch_add(rel, Ordering::SeqCst);
+                proj.reserved.fetch_sub(add, Ordering::SeqCst);
                 return ReserveOutcome::GlobalOver;
             }
             match self
@@ -396,9 +488,9 @@ impl FeedMemoryBudget {
         }
     }
 
-    fn release(&self, proj: &AtomicU64, charge: usize) {
+    fn release(&self, proj: &ProjectRetention, charge: usize) {
         let charge = charge as u64;
-        for counter in [&self.reserved, proj] {
+        for counter in [&self.reserved, &proj.reserved] {
             let mut cur = counter.load(Ordering::Relaxed);
             loop {
                 let Some(next) = cur.checked_sub(charge) else {
@@ -437,10 +529,12 @@ pub(crate) struct LiveFeed {
     /// honest no-retention path (review finding 4).
     read_cap: usize,
     budget: Arc<FeedMemoryBudget>,
-    /// This feed's project's shared retained-bytes counter (round-10
+    /// This feed's project's shared retention entry (round-10
     /// isolation) — every reservation and release pairs the global
-    /// counter with this one.
-    project_reserved: Arc<AtomicU64>,
+    /// counter with it; the last feed's drop removes it (round-10e
+    /// bounded lifetime).
+    project: crate::tenant::ProjectId,
+    project_reserved: Arc<ProjectRetention>,
     /// Test-only: names this feed for the post-release drive failpoint
     /// (`Fp::FeedAfterPermitRelease`); unset = the hook is inert.
     #[cfg(test)]
@@ -468,7 +562,7 @@ impl LiveFeed {
         budget: Arc<FeedMemoryBudget>,
         project: crate::tenant::ProjectId,
     ) -> Arc<Self> {
-        let project_reserved = budget.project_counter(&project);
+        let project_reserved = budget.project_retention(&project);
         let head = src.frontier();
         let (changed, _) = tokio::sync::watch::channel(0u64);
         let (source_changed, _) = tokio::sync::watch::channel(0u64);
@@ -497,6 +591,7 @@ impl LiveFeed {
             // that fits the ring in the ordinary case.
             read_cap: (ring_budget.saturating_mul(2) / 3).clamp(1024, MAX_DRIVER_BATCH_BYTES),
             budget,
+            project,
             project_reserved,
             #[cfg(test)]
             fp_name: std::sync::OnceLock::new(),
@@ -970,7 +1065,7 @@ impl LiveFeed {
 /// unreachable may keep a global reservation.
 fn clear_ring(
     budget: &Arc<FeedMemoryBudget>,
-    proj: &AtomicU64,
+    proj: &ProjectRetention,
     st: &mut FeedState,
     gauge: &AtomicUsize,
 ) {
@@ -989,6 +1084,10 @@ impl Drop for LiveFeed {
         if charge > 0 {
             self.budget.release(&self.project_reserved, charge);
         }
+        // Bounded project-tracker lifetime (round-10e): the last feed
+        // of a project retires its retention entry.
+        self.budget
+            .release_project_entry(&self.project, &self.project_reserved);
     }
 }
 
@@ -1693,6 +1792,56 @@ pub(crate) mod tests {
             src.max_concurrent_reads.load(Ordering::SeqCst),
             1,
             "source reads must stay single-flight"
+        );
+    }
+
+    /// Round-10e review (red): the per-project retention tracker is
+    /// BOUNDED — churning feeds across many distinct projects must
+    /// return the map to its steady state (entries live only while a
+    /// project has live feeds), and an ACTIVE project's entry is never
+    /// evicted by other projects' churn.
+    #[tokio::test]
+    async fn project_retention_tracker_is_bounded_under_churn() {
+        let budget = Arc::new(FeedMemoryBudget::new_for_test(1 << 20));
+        // A long-lived feed pins its project's entry across the churn.
+        let pinned_src = Arc::new(FakeSource::new(0, 8));
+        let pinned = LiveFeed::new_with_budget(
+            FeedKey::default_lane([9u8; 16]),
+            pinned_src,
+            4096,
+            budget.clone(),
+            crate::tenant::ProjectId::new("proj-pinned").unwrap(),
+        );
+        // Churn: far more distinct projects than any plausible steady
+        // state, each feed dropped immediately.
+        for i in 0..300 {
+            let src = Arc::new(FakeSource::new(0, 8));
+            let feed = LiveFeed::new_with_budget(
+                FeedKey::default_lane([i as u8; 16]),
+                src,
+                4096,
+                budget.clone(),
+                crate::tenant::ProjectId::new(&format!("proj-churn-{i}")).unwrap(),
+            );
+            drop(feed);
+        }
+        assert_eq!(
+            budget.project_entries_for_test(),
+            1,
+            "churned projects must leave the tracker; only the pinned project remains"
+        );
+        assert_eq!(budget.reserved(), 0, "no retention outlives its feeds");
+        let rows = budget.project_rows();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].0, "proj-pinned",
+            "the ACTIVE project is never evicted"
+        );
+        drop(pinned);
+        assert_eq!(
+            budget.project_entries_for_test(),
+            0,
+            "the last feed retires the last entry"
         );
     }
 

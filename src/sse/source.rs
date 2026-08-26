@@ -150,8 +150,12 @@ enum SpanReader {
     /// A SEALED predecessor owned by another instance: bounded pages
     /// over the workload-authenticated internal segment-scan surface.
     /// The OWNER NAME is stored, never a URL — every page resolves the
-    /// peer from the live table, so ownership movement and peer
-    /// address changes self-heal per read. A LIVE tail is never
+    /// peer from the live table, so PEER-ADDRESS changes self-heal per
+    /// read. SEGMENT-OWNER movement does NOT self-heal yet (round-10e
+    /// review): the old owner's wrong-owner refusal surfaces as a
+    /// bounded-retry source failure; the typed one-redirect protocol
+    /// (verify Streams-Replay-To, update the span's owner, refuse a
+    /// second redirect) is next-stage scope. A LIVE tail is never
     /// remote — build refuses it as WrongOwner (disconnect; the
     /// gateway reroutes to the tail's owner).
     RemoteSealed {

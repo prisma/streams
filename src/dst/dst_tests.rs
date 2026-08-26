@@ -30062,7 +30062,9 @@ async fn hub_empty_seal_single_final_control() {
         )
         .await;
         (st, body) = (s, b);
-        if st == 200 || (st != 503 && st != 500) {
+        // Round-10e: only the typed 503 seal_incomplete retries; a 500
+        // internal falls through to the diagnostic dump immediately.
+        if st == 200 || st != 503 || !String::from_utf8_lossy(&body).contains("seal_incomplete") {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(100 * (attempt as u64 + 1))).await;
@@ -34474,10 +34476,14 @@ async fn seal_ok(addr: std::net::SocketAddr, name: &str) {
         if st == 200 {
             return;
         }
+        // Round-10e review: ONLY the typed resumable refusal retries.
+        // A 500 internal (invariant/corruption/store failure) must
+        // fail the test immediately — a retry that happened to
+        // succeed would hide a real regression behind a green run.
+        let text = String::from_utf8_lossy(&body).to_string();
         assert!(
-            st == 503 || st == 500,
-            "seal {name}: non-retryable {st}: {}",
-            String::from_utf8_lossy(&body)
+            st == 503 && text.contains("seal_incomplete"),
+            "seal {name}: non-retryable {st}: {text}"
         );
         tokio::time::sleep(std::time::Duration::from_millis(100 * (attempt as u64 + 1))).await;
     }
@@ -35384,6 +35390,64 @@ async fn livefeed_budget_exhaustion_publishes_uncached_and_resumes() {
             "sub{n}: the record arrives exactly once on resume:\n{r}"
         );
     }
+}
+
+/// Round-10e review (red): a FORK's materialized partial record is a
+/// customer record the child persists — it must satisfy the
+/// per-record ceiling BEFORE any fork lifecycle work becomes durable.
+/// The source record predates the ceiling ("created under a different
+/// profile"); the oversized partial must refuse the fork with NO
+/// externally visible child, and a compliant partial must still work.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn fork_materialized_partial_respects_the_record_ceiling() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let ct = [("content-type", "text/plain")];
+    // The source record is created BEFORE the ceiling exists.
+    let big = "x".repeat(8 * 1024);
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/fbig", &ct, big.as_bytes()).await;
+    assert!(st == 200 || st == 201, "source create {st}");
+    state
+        .max_record_payload_bytes
+        .store(4096, std::sync::atomic::Ordering::Relaxed);
+    // An oversized materialized partial (6000 > 4096): refused, and
+    // the child never becomes externally visible.
+    let (st, _, body) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/fbig-child",
+        &[
+            ("content-type", "text/plain"),
+            ("stream-forked-from", "/v1/stream/fbig"),
+            ("stream-fork-offset", "0000000000000000_0000000000000000"),
+            ("stream-fork-sub-offset", "6000"),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 413, "{}", String::from_utf8_lossy(&body));
+    assert!(
+        String::from_utf8_lossy(&body).contains("record_too_large"),
+        "typed refusal:\n{}",
+        String::from_utf8_lossy(&body)
+    );
+    let (st, _, _) = hreq(addr, "GET", "/v1/stream/fbig-child", &[], b"").await;
+    assert_eq!(st, 404, "no child may survive the refused fork");
+    // A compliant partial still forks.
+    let (st, _, body) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/fbig-child2",
+        &[
+            ("content-type", "text/plain"),
+            ("stream-forked-from", "/v1/stream/fbig"),
+            ("stream-fork-offset", "0000000000000000_0000000000000000"),
+            ("stream-fork-sub-offset", "1000"),
+        ],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 201, "{}", String::from_utf8_lossy(&body));
 }
 
 /// Two-instance rig: a full instance over the shared store with the

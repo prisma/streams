@@ -123,7 +123,9 @@ The fourth review's four Stage 6 blockers, all with red legs:
    LANDED — `SpanReader { Local, RemoteSealed }`: a SEALED predecessor
    owned elsewhere pages through the workload-authenticated internal
    segment-scan surface (owner NAME stored, peer URL resolved from
-   the live table per page, so movement self-heals); the LIVE tail
+   the live table per page, so peer-ADDRESS changes self-heal;
+   segment-OWNER movement needs the typed one-redirect protocol —
+   round-11A scope); the LIVE tail
    must be local (remote live tail stays a typed WrongOwner
    disconnect-and-reroute). Internal pages are unbilled; peer outage
    is a stall with bounded retry + in-place recovery, never a false

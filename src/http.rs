@@ -1095,6 +1095,11 @@ async fn debug_load(
             "oversize_dropped": crate::sse::auth::sse_stats::FEED_OVERSIZE_DROPPED.load(std::sync::atomic::Ordering::Relaxed),
             "uncached_publish": crate::sse::auth::sse_stats::FEED_UNCACHED_PUBLISH.load(std::sync::atomic::Ordering::Relaxed),
             "project_cap_uncached": crate::sse::auth::sse_stats::FEED_PROJECT_CAP_UNCACHED.load(std::sync::atomic::Ordering::Relaxed),
+            // Bounded cardinality: rows exist only while a project has
+            // live feeds (round-10e per-project observability).
+            "project_retention": state.feed_budget.project_rows().into_iter().map(|(p, reserved, cap_hits)| {
+                serde_json::json!({"project": p, "reserved_bytes": reserved, "cap_hits": cap_hits})
+            }).collect::<Vec<_>>(),
             "lag_disconnects": crate::sse::auth::sse_stats::FEED_LAG_DISCONNECTS.load(std::sync::atomic::Ordering::Relaxed),
             "topology_disconnects": crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS.load(std::sync::atomic::Ordering::Relaxed),
             "cutoff_incarnation": crate::sse::auth::sse_stats::FEED_CUTOFF_INCARNATION.load(std::sync::atomic::Ordering::Relaxed),
@@ -3490,7 +3495,26 @@ pub(crate) async fn create_stream(
                     boundary = base + 1; // whole record inherited
                 } else {
                     boundary = base; // partial materializes at `base`
-                    materialize = Some(rec.payload.slice(..sub as usize));
+                    let m = rec.payload.slice(..sub as usize);
+                    // Round-10e review: the materialized partial is a
+                    // CUSTOMER record this child will persist — it
+                    // must satisfy the per-record ceiling HERE, before
+                    // any fork lifecycle work (tail seed, source
+                    // reference) becomes durable. A source record
+                    // created under a different profile or an older,
+                    // larger ceiling must not smuggle an over-ring
+                    // record past release certification.
+                    if let Some(over) = over_record_ceiling(&state, std::slice::from_ref(&m)) {
+                        return err_resp(
+                            StatusCode::PAYLOAD_TOO_LARGE,
+                            "record_too_large",
+                            &format!(
+                                "the fork's materialized partial record of {over} bytes \
+                                 exceeds the per-record ceiling (MAX_RECORD_PAYLOAD_BYTES)"
+                            ),
+                        );
+                    }
+                    materialize = Some(m);
                 }
             }
         }
