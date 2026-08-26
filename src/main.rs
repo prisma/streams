@@ -551,12 +551,17 @@ struct Args {
     #[arg(long, env = "SSE_HUB_PROMOTE_AT", default_value_t = 2)]
     sse_hub_promote_at: u64,
 
-    /// SSE subscription engine. "legacy" = the reviewed direct/hub
-    /// pair (the DEFAULT until the LiveFeed transition completes its
-    /// red battery and field canaries); "livefeed" = the new unified
-    /// implementation, opt-in for tests and local development, refused
-    /// under the release posture until certified.
-    #[arg(long, env = "STREAMS_SSE_ENGINE", default_value = "legacy")]
+    /// SSE subscription engine. "livefeed" (the DEFAULT since round
+    /// 11.7) = the unified certified engine: in-proc battery,
+    /// exact-binary matrix, real-fleet certification and field
+    /// canaries all green. "legacy" = the previous direct/hub pair,
+    /// kept ONLY as the rollback switch until round 11.8 deletes it.
+    /// Rollback criteria (docs/LIVE-FEED.md §Rollback): flip back on
+    /// evidence of wire regressions the typed counters corroborate
+    /// (nonzero legacy-run deltas in delivery exactness, cutoff
+    /// storms with no ownership movement, or feed-budget accounting
+    /// drift) — never on load alone.
+    #[arg(long, env = "STREAMS_SSE_ENGINE", default_value = "livefeed")]
     streams_sse_engine: String,
 
     /// Per-stream inflight append cap (0 = off): one hot stream cannot
@@ -1376,6 +1381,17 @@ mod config_validation_tests {
             validate_fleet_auth(&a, true).is_err(),
             "static fleet mode still requires the token"
         );
+    }
+
+    /// Round-11.7: LIVEFEED is the default engine. Legacy remains
+    /// selectable (STREAMS_SSE_ENGINE=legacy) as the rollback switch
+    /// until round 11.8 deletes it.
+    #[test]
+    fn the_default_sse_engine_is_livefeed() {
+        let a = Args::try_parse_from(vec!["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"])
+            .expect("test args must parse");
+        assert_eq!(a.streams_sse_engine, "livefeed");
+        assert!(validate_sse_engine(&a).is_ok());
     }
 
     /// Round-11.6: the seal-publication delay is a certification

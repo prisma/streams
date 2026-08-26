@@ -92,7 +92,9 @@ const instEnv = (name) => ({
   PROJECT_ID: "proj-lc",
   USAGE_STREAM_KEY: KEY_B64,
   AUTH_TOKEN: DEBUG_TOKEN,
-  STREAMS_SSE_ENGINE: "livefeed",
+  // Round-11.7: NO engine selection — the release binary defaults to
+  // livefeed, and the teardown leg's zero-legacy-dispatches assertion
+  // certifies the default engaged.
   FLEET_ALLOW_HTTP_PEERS: "1",
   SSE_HEARTBEAT_MS: "1000",
   INSTANCE_NAME: name,

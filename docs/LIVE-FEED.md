@@ -123,3 +123,35 @@ semantics; billing redesign; distributed collection sealing.
 | Controls emitted as separate chunks from sessions | ADOPTED (gated on E2) | §E2 |
 | Solo retention = zero | ADOPTED (gated on E3) | §E3 |
 | Ring default derived from stall-budget experiment | PENDING E4 | §E4 |
+
+## Default engine + rollback (round 11.7)
+
+`STREAMS_SSE_ENGINE` defaults to **`livefeed`** as of round 11.7. The
+certification basis: the in-proc battery + engine matrix (CI:
+`livefeed`, `livefeed-matrix`), the REAL three-instance fleet
+certification (`bench/fleet/livefeed-cert.sh`, CI:
+`livefeed-fleet-cert`), and the field-canary battery
+(`bench/canary/livefeed-canary.sh`, tag `livefeed-canary-rc1`) — all
+on the release posture with the pinned 1-GiB profile.
+
+**Rollback switch**: `STREAMS_SSE_ENGINE=legacy` (kept selectable
+until round 11.8 deletes the legacy engine). Roll back ONLY on
+evidence the typed counters corroborate, never on load alone:
+
+- **Delivery exactness regressions** — duplicate or missing records /
+  duplicate terminals on a replay a legacy-pinned rerun serves
+  correctly (compare `delivered_records` and the billing boundary
+  against the reconciled generator ledger).
+- **Cutoff storms without ownership movement** — sustained nonzero
+  `cutoff_wrong_owner` / `cutoff_incarnation` deltas on
+  `/v1/debug/load` while `fleet/overrides.json` and the ring are
+  stable.
+- **Feed-budget accounting drift** — `reserved_bytes` on an idle cell
+  failing to return to zero, or `project_retention` rows growing
+  without live subscribers.
+
+Every livefeed failure mode is a NONTERMINAL EOF + server-side typed
+reason + cursor resume; clients that reconnect-and-resume observe no
+data difference between engines. A rollback therefore needs no data
+migration in either direction — the engines share the wire contract,
+the cursor vocabulary, and the durable store.
