@@ -32,8 +32,10 @@ use std::sync::atomic::Ordering;
 #[derive(Clone, Copy, PartialEq, Eq)]
 pub(crate) enum Surface {
     Product,
-    /// Raw scalar offsets on single-segment streams and forks.
-    RawScalar,
+    /// Raw epoch/segment offset tokens (round-11.3): byte-compatible
+    /// with the scalar encoding at segment 0, segment-aware on
+    /// successors — the ONE raw vocabulary across every lineage.
+    RawToken,
 }
 
 #[derive(Clone)]
@@ -63,7 +65,8 @@ impl SessionCtx {
                 .encode(&self.desc.project_id, &self.key);
                 Bytes::from(crate::sse::wire::sse_control_product(&tok, false, false))
             }
-            Surface::RawScalar => Bytes::from(crate::sse::wire::sse_control(
+            Surface::RawToken => Bytes::from(crate::sse::wire::sse_control_ep(
+                pos.seg_id,
                 pos.local_after,
                 None,
                 false,
@@ -89,7 +92,8 @@ impl SessionCtx {
                     sealed_of(closed),
                 ))
             }
-            Surface::RawScalar => Bytes::from(crate::sse::wire::sse_control(
+            Surface::RawToken => Bytes::from(crate::sse::wire::sse_control_ep(
+                pos.seg_id,
                 pos.local_after,
                 None,
                 true,
@@ -157,26 +161,20 @@ pub(crate) async fn serve(
     };
 
     let lane_rk = rk_filter.clone().unwrap_or_default();
+    // Round-11.3: KEYED raw rides every lineage via epoch/segment
+    // tokens; KEYLESS raw remains scalar-total-order only — a keyless
+    // subscriber semantically wants EVERY record, which no single
+    // lane linearizes once a stream splits. Mid-flight splits and
+    // post-swap attaches take the typed disconnect (the reconnect is
+    // refused upstream with 400 keyless_live).
+    let raw_keyless = matches!(surface, crate::http::SseSurface::Raw)
+        && rk_filter.as_deref().is_none_or(str::is_empty);
     let fkey = feed_key_of(&desc, &rk_filter);
-    // RAW source-compatibility gate (review round 5 + Stage 7A): raw
-    // scalar cursors cannot name segments, so a raw session may only
-    // join a Scalar-capability source. If the lane's feed swapped to a
-    // lineage source (or the request arrived at an already-split
-    // stream), the raw request takes the typed immediate-disconnect
-    // fallback (its client resumes through the legacy lineage path).
-    // Two-level check: peek BEFORE attach, then the source captured
-    // AT attach (a swap may land between them).
-    let raw_surface = matches!(surface, crate::http::SseSurface::Raw);
-    if raw_surface
-        && let Some(existing) = state.live_feeds.feed_for(&fkey)
-        && existing.source_snapshot().source.cursor_capability()
-            != super::feed::CursorCapability::Scalar
-    {
-        return raw_lineage_fallback_response(&state, &desc);
-    }
-    // Test failpoint: AFTER the compatibility peek, BEFORE the atomic
-    // attach — the window in which a feed can swap generations between
-    // the two raw-gate checks.
+    // Round-11.3: the raw capability gate is GONE — raw controls carry
+    // epoch/segment tokens, so every lineage shape is representable on
+    // the raw surface and a source swap needs no raw disconnect.
+    // Test failpoint: BEFORE the atomic attach — the window in which a
+    // feed can swap generations between dispatch and attach.
     #[cfg(test)]
     crate::failpoints::pause(crate::failpoints::Fp::SseFeedBeforeSubscribe, &desc.name).await;
     // RAII subscription (finding 3): atomic create-or-join under the
@@ -211,20 +209,29 @@ pub(crate) async fn serve(
             .into_response();
         }
     };
-    if raw_surface
-        && subscription.feed().current_source().cursor_capability()
-            != super::feed::CursorCapability::Scalar
-    {
-        // The feed swapped between the peek and the atomic attach:
-        // detach and take the same typed fallback.
-        drop(subscription);
-        return raw_lineage_fallback_response(&state, &desc);
-    }
     // Test failpoint: AFTER the atomic attach, BEFORE the session reads
     // any feed state — the exact window of the join-head handoff race.
     #[cfg(test)]
     crate::failpoints::pause(crate::failpoints::Fp::SseFeedAfterSubscribe, &desc.name).await;
     let feed = subscription.feed();
+    if raw_keyless
+        && feed.current_source().cursor_capability() != super::feed::CursorCapability::Scalar
+    {
+        // A keyless raw subscriber cannot ride a segmented lineage:
+        // typed disconnect as an EMPTY SSE stream (immediate EOF; the
+        // reconnect dispatch answers 400 keyless_live) — a plain 400
+        // here would ride a keep-alive connection without EOF.
+        crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        drop(subscription);
+        let usage = crate::usage::counters(&crate::crypto::RouteHash::for_stream(&desc.sref()).0);
+        let mt = crate::registry::media_type(&desc.content_type);
+        return response_from_stream(
+            futures_util::stream::empty::<Result<Bytes, std::io::Error>>(),
+            mt != "application/json" && !mt.starts_with("text/"),
+            &usage,
+        );
+    }
     // subscribe() already incremented the count (registry RAII owns
     // attach/detach — no second join here, finding 3's double-count).
     // The handoff state CAPTURED under the subscribe lock is the one a
@@ -248,7 +255,7 @@ pub(crate) async fn serve(
 
     let ctx = SessionCtx {
         surface: match surface {
-            crate::http::SseSurface::Raw => Surface::RawScalar,
+            crate::http::SseSurface::Raw => Surface::RawToken,
             crate::http::SseSurface::Product => Surface::Product,
         },
         rk_hash: crate::crypto::stream_hash(&lane_rk),
@@ -396,14 +403,10 @@ pub(crate) async fn serve(
                 // iteration re-snapshots.
                 let snap = feed.source_snapshot();
                 let cur_src = snap.source.clone();
-                // RAW scalar cursors cannot name a segment: a raw
-                // session never survives a source swap in place — it
-                // takes the typed disconnect-and-resume fallback into
-                // the legacy lineage path (Stage 6.4).
-                if ctx.surface == Surface::RawScalar && snap.generation != join_gen {
+                if raw_keyless && snap.generation != join_gen {
                     crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
                         .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    tracing::info!("livefeed raw session: source swap; disconnecting to resume");
+                    tracing::info!("keyless raw session: source swap; disconnecting to resume");
                     return;
                 }
                 let src_wait = cur_src.advance_notify().notified();
@@ -428,19 +431,6 @@ pub(crate) async fn serve(
                         continue 'handoff;
                     }
                     Take::Batch { batch, start_index } => {
-                        // Raw fallback binding (review round 4): a raw
-                        // session NEVER emits a batch prepared after a
-                        // source swap — scalar cursors cannot name the
-                        // successor segment.
-                        if ctx.surface == Surface::RawScalar && batch.source_generation != join_gen
-                        {
-                            crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            tracing::info!(
-                                "livefeed raw session: post-swap batch; disconnecting to resume"
-                            );
-                            return;
-                        }
                         for r in batch.records[start_index..].iter() {
                             let frame = ctx.compose_record(&r.data_event, r.pos);
                             #[cfg(test)]
@@ -523,17 +513,6 @@ pub(crate) async fn serve(
                                     // never emit a terminal cursor
                                     // computed on the predecessor).
                                     let snap3 = feed.source_snapshot();
-                                    // Raw fallback: a terminal that
-                                    // belongs to a post-join generation
-                                    // is NOT emitted — raw disconnects
-                                    // instead.
-                                    if ctx.surface == Surface::RawScalar
-                                        && snap3.generation != join_gen
-                                    {
-                                        crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
-                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                        return;
-                                    }
                                     if !sse_send(
                                         &tx,
                                         ctx.status_ctl(snap3.source.locate(cursor), true),
@@ -566,25 +545,8 @@ pub(crate) async fn serve(
                                 // ours to emit — dropping them
                                 // would silently lose them (the
                                 // feed head already advanced).
-                                DriveOutcome::Solo {
-                                    records,
-                                    scan_to,
-                                    source_generation,
-                                } => {
+                                DriveOutcome::Solo { records, scan_to } => {
                                     transition_retries = 0;
-                                    // Raw fallback binding: a raw
-                                    // session never emits records
-                                    // prepared after a source swap.
-                                    if ctx.surface == Surface::RawScalar
-                                        && source_generation != join_gen
-                                    {
-                                        crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
-                                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                        tracing::info!(
-                                            "livefeed raw session: post-swap solo batch; disconnecting"
-                                        );
-                                        return;
-                                    }
                                     // The wire positions are bound in
                                     // the prepared records (located
                                     // with the READING source) — emit
@@ -670,21 +632,7 @@ pub(crate) async fn serve(
                     )
                     .await;
                     match feed.drive_once().await {
-                        Some(DriveOutcome::Solo {
-                            records,
-                            scan_to,
-                            source_generation,
-                        }) => {
-                            // Raw fallback binding (same rule as the
-                            // shared batch arm).
-                            if ctx.surface == Surface::RawScalar && source_generation != join_gen {
-                                crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
-                                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                                tracing::info!(
-                                    "livefeed raw session: post-swap solo batch; disconnecting"
-                                );
-                                return;
-                            }
+                        Some(DriveOutcome::Solo { records, scan_to }) => {
                             let at_cursor = cursor;
                             for r in records.iter().filter(|r| r.offset >= at_cursor) {
                                 let frame = ctx.compose_record(&r.data_event, r.pos);
@@ -783,25 +731,6 @@ pub(crate) fn feed_key_of(
         None | Some("") => FeedKey::default_lane(identity),
         Some(rk) => FeedKey::keyed(identity, rk),
     }
-}
-
-/// Raw fallback for the lineage compatibility gate: a well-formed SSE
-/// response that ends immediately — the same disconnect-and-resume
-/// contract every topology fallback uses (never a terminal control).
-/// The raw client resumes through the legacy lineage path.
-fn raw_lineage_fallback_response(
-    _state: &Arc<AppState>,
-    desc: &crate::registry::StreamDesc,
-) -> axum::response::Response {
-    crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-    let usage = crate::usage::counters(&crate::crypto::RouteHash::for_stream(&desc.sref()).0);
-    let mt = crate::registry::media_type(&desc.content_type);
-    response_from_stream(
-        futures_util::stream::empty::<Result<Bytes, std::io::Error>>(),
-        mt != "application/json" && !mt.starts_with("text/"),
-        &usage,
-    )
 }
 
 fn response_from_stream(

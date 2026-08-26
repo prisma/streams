@@ -70,6 +70,43 @@ pub(crate) fn sse_control_product(cursor_tok: &str, up_to_date: bool, sealed: bo
 }
 
 /// Raw scalar-offset control (the pinned single-segment surface).
+/// Round-11.3: the ONE raw vocabulary — an epoch/segment offset token
+/// with the exact field layout of the scalar control. For segment 0
+/// the token is byte-identical to the scalar encoding
+/// (`encode_ep(0, o) == Offset::encode(o)`), so unsplit raw
+/// transcripts do not change; successor segments carry the
+/// segment-aware token the legacy lineage streamer already proved.
+pub(crate) fn sse_control_ep(
+    seg_id: u32,
+    next: u64,
+    cursor: Option<&str>,
+    up_to_date: bool,
+    closed: bool,
+) -> String {
+    let tok = crate::offsets::encode_ep(
+        seg_id,
+        if next == 0 {
+            crate::offsets::Offset::START
+        } else {
+            crate::offsets::Offset(Some(next - 1))
+        },
+    );
+    let mut fields = vec![format!("\"streamNextOffset\":\"{tok}\"")];
+    if !closed {
+        fields.push(format!(
+            "\"streamCursor\":\"{}\"",
+            crate::http::interval_cursor(cursor)
+        ));
+    }
+    if up_to_date {
+        fields.push("\"upToDate\":true".to_string());
+    }
+    if closed {
+        fields.push("\"streamClosed\":true".to_string());
+    }
+    format!("event: control\ndata:{{{}}}\n\n", fields.join(","))
+}
+
 pub(crate) fn sse_control(
     next: u64,
     cursor: Option<&str>,

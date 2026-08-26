@@ -1089,6 +1089,7 @@ async fn debug_load(
         "runtime_max_tick_gap_ms": RUNTIME_MAX_GAP_MS.load(std::sync::atomic::Ordering::Relaxed),
         "sse_pumps_live": crate::livehub::stats::PUMPS_LIVE.load(std::sync::atomic::Ordering::Relaxed),
         "sse_hub_walk": if walk { state.live_hubs.walk_json(40) } else { serde_json::Value::Null },
+        "legacy_sse_dispatches": LEGACY_SSE_DISPATCHES.load(std::sync::atomic::Ordering::Relaxed),
         "sse_livefeed": {
             "live_feeds": state.live_feeds.len(),
             "reserved_bytes": state.feed_budget.reserved(),
@@ -7007,6 +7008,22 @@ pub(crate) async fn sse_send_billed(
     ok
 }
 
+/// Round-11.3 transition telemetry: legacy SSE producer dispatches.
+/// MUST stay zero whenever the livefeed engine is selected — the
+/// test tripwire below turns any violation into a loud failure, and
+/// the canary reads the counter in the field.
+pub(crate) static LEGACY_SSE_DISPATCHES: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+pub(crate) fn note_legacy_sse_dispatch(which: &str) {
+    LEGACY_SSE_DISPATCHES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    #[cfg(test)]
+    if std::env::var("STREAMS_SSE_ENGINE").as_deref() == Ok("livefeed") {
+        panic!("legacy SSE producer `{which}` dispatched under the livefeed engine");
+    }
+    let _ = which;
+}
+
 /// #267 diagnostic: byte size of the LAST spawned SSE task future —
 /// the direct measure of what boxing the reads bought. The parked
 /// future used to embed the whole read machinery; after Phase 1 this
@@ -7217,6 +7234,7 @@ pub(crate) fn sse_lineage_response(
     params: ReadParams,
     surface: SseSurface,
 ) -> Response {
+    note_legacy_sse_dispatch("sse_lineage_response");
     let slot = match sse_acquire(&state) {
         Ok(s) => s,
         Err(r) => return *r,
@@ -7501,6 +7519,7 @@ async fn sse_hub_response(
     start: StartPos,
     slot: SseSlot,
 ) -> Response {
+    note_legacy_sse_dispatch("sse_hub_response");
     // Round-4 finding 1: prove the lease BEFORE joining a hub — a
     // refusal here must not leave a subscribed slot on the hub for a
     // connection that never exists. The generation receiver is
@@ -7831,6 +7850,9 @@ async fn sse_response(
         )
         .await;
     }
+    // Round-11.3: from here on, this IS the legacy direct producer
+    // (the livefeed arm above returned for every livefeed session).
+    note_legacy_sse_dispatch("sse_response");
     // #268: shared live fanout (SSE_LIVE_HUB=1) — see src/livehub.rs.
     // Product-surface, unforked, unfiltered connections ride a
     // per-stream hub that decrypts and formats each record ONCE.
@@ -8646,15 +8668,26 @@ async fn read_v3_lineage_inner(
 
     if live == Some("sse") {
         let rk = params.key.clone().unwrap_or_default();
-        // Stage 7A: connect-time product lineage through LiveFeed —
-        // an already-split stream (nothing pending) builds a
-        // LineageSource NOW instead of the legacy lineage streamer.
-        // Raw stays on the legacy path (scalar cursors cannot name
-        // segments; see the raw capability gate in sse/session.rs).
+        // Round-11.3: connect-time lineage through LiveFeed for BOTH
+        // surfaces — raw controls carry epoch/segment tokens, so a
+        // segmented lineage is fully representable on raw. A pending
+        // transition at connect is a typed retryable, and a failed
+        // build is a typed refusal: once LiveFeed is selected, NO
+        // request silently invokes a legacy producer.
         if state
             .sse_engine_livefeed
             .load(std::sync::atomic::Ordering::Relaxed)
-            && surface == SseSurface::Product
+            && desc.segments.as_ref().is_some_and(|m| m.pending.is_some())
+        {
+            return err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "segment_transition",
+                "a segment transition is in flight; retry",
+            );
+        }
+        if state
+            .sse_engine_livefeed
+            .load(std::sync::atomic::Ordering::Relaxed)
             && desc.segments.as_ref().is_some_and(|m| m.pending.is_none())
         {
             let rk_filter = params.key.clone();
@@ -8700,27 +8733,30 @@ async fn read_v3_lineage_inner(
                     .await;
                 }
                 Err(e) => {
-                    // Round-11.2: connect-time cutoffs carry the SAME
-                    // typed canary telemetry as mid-subscription ones
-                    // (a moved live tail at connect is a WrongOwner
-                    // cutoff either way).
-                    if let crate::sse::source::LineageBuildError::WrongOwner(_) = &e {
-                        crate::sse::auth::sse_stats::FEED_CUTOFF_WRONG_OWNER
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                        crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
-                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                    // Cannot serve the lineage here (wrong owner,
-                    // transient engine failure): the legacy streamer
-                    // has the cross-owner relay and its own retry
-                    // posture — fall back to it (dies at 11.3).
-                    tracing::warn!(
-                        error = %e,
-                        "livefeed connect-time lineage build failed; serving via legacy lineage streamer"
-                    );
-                    return sse_lineage_response(
-                        state, desc, key, epoch, lineage, pos, scan_from, rk, params, surface,
-                    );
+                    // Round-11.2/11.3: connect-time cutoffs carry the
+                    // typed canary telemetry AND a typed HTTP verdict —
+                    // never a silent legacy dispatch. WrongOwner: the
+                    // gateway reroutes the retry; Transient: plain
+                    // retryable; Incompatible: conflict.
+                    use crate::sse::source::LineageBuildError as B;
+                    tracing::warn!(error = %e, "livefeed connect-time lineage build failed");
+                    return match e {
+                        B::WrongOwner(m) => {
+                            crate::sse::auth::sse_stats::FEED_CUTOFF_WRONG_OWNER
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            err_resp(StatusCode::CONFLICT, "not_ring_owner", &m)
+                        }
+                        B::Transient(m) => err_resp(
+                            StatusCode::SERVICE_UNAVAILABLE,
+                            "temporarily_unavailable",
+                            &m,
+                        ),
+                        B::IncompatibleTopology(m) => {
+                            err_resp(StatusCode::CONFLICT, "incompatible_topology", &m)
+                        }
+                    };
                 }
             }
         }

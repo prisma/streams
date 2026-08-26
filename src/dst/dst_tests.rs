@@ -35641,6 +35641,66 @@ async fn livefeed_remote_sealed_predecessor_streams_through_owner() {
     }
 }
 
+/// Round-11.3: KEYED live reads (raw-key records:sse with routingKey)
+/// ride LiveFeed across a split IN PLACE — product cursor vocabulary,
+/// exactly-once delivery, no false terminal. (The singular raw SSE
+/// surface is keyless by design; keyed live subscriptions live here.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_rawkey_records_sse_survives_split() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lfrk",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let append_ka = |i: u64| async move {
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/lfrk/records",
+            &[
+                ("prisma-encryption-key", PRISMA_KEY),
+                ("prisma-routing-key", "ka"),
+            ],
+            format!(r#"{{"r":{i}}}"#).as_bytes(),
+        )
+        .await;
+        assert!(st == 200 || st == 204, "append {i}: {st}");
+    };
+    append_ka(0).await;
+    let mut sck = lf_connect(addr, "lfrk", "?routingKey=ka").await;
+    let (acc0, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
+    assert!(acc0.contains("\"r\":0"), "keyed backlog:\n{acc0}");
+
+    split_and_await(&state, "lfrk", 0).await;
+    append_ka(1).await;
+    let (acc1, eof1) = hub_sse_collect(&mut sck, 10, |t| lf_record_and_status(t, "\"r\":1")).await;
+    assert!(!eof1, "keyed live rides the split in place:\n{acc1}");
+    assert!(
+        !acc1.contains("\"sealed\":true"),
+        "no false terminal:\n{acc1}"
+    );
+    assert_eq!(acc1.matches("\"r\":1").count(), 1, "exactly once:\n{acc1}");
+    // Resume from the emitted cursor: exactly the tail.
+    let tok = last_next_cursor(&acc1);
+    append_ka(2).await;
+    let mut r2 = lf_connect(addr, "lfrk", &format!("?routingKey=ka&cursor={tok}")).await;
+    let (a2, eof2) = hub_sse_collect(&mut r2, 10, |t| lf_record_and_status(t, "\"r\":2")).await;
+    assert!(!eof2);
+    assert!(
+        a2.contains("\"r\":2") && !a2.contains("\"r\":1") && !a2.contains("\"r\":0"),
+        "resume from the split cursor: exactly the tail:\n{a2}"
+    );
+}
+
 /// Round-11.2 (red): the typed remote-span protocol across THREE
 /// instances. Phase 1: a sealed predecessor whose owner MOVED follows
 /// exactly ONE verified redirect (A answers 409 replay-to inst-c; C
@@ -35808,11 +35868,19 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
         .insert(p_child.clone(), "inst-a".to_string());
     {
         let mut sub2 = lf_connect(addr_b, "xmv", "?cursor=beginning").await;
-        let (acc, eof) = hub_sse_collect(&mut sub2, 15, |_| false).await;
-        assert!(eof, "a moved live tail is a prompt resumable EOF:\n{acc}");
+        let (acc, _) = hub_sse_collect(&mut sub2, 15, |t| t.contains("HTTP/1.1 409")).await;
+        // Round-11.3: the connect-time answer is the TYPED routing
+        // refusal (the gateway reroutes the retry; the product
+        // translator renders the inner not_ring_owner as its 409
+        // conflict) — never a legacy fallback, never data from stale
+        // state, never a terminal.
         assert!(
-            !acc.contains("\"sealed\":true"),
-            "never a terminal on an ownership cutoff:\n{acc}"
+            acc.contains("HTTP/1.1 409"),
+            "a moved live tail at connect is the typed routing refusal:\n{acc}"
+        );
+        assert!(
+            !acc.contains("event: data") && !acc.contains("\"sealed\":true"),
+            "no stale data, no terminal:\n{acc}"
         );
     }
     assert!(
@@ -36475,7 +36543,11 @@ async fn livefeed_raw_disconnects_without_terminal_on_split() {
 
     split_and_await(&state, "lfr2", 0).await;
     let (tail, eof) = hub_sse_collect(&mut raw, 12, |_| false).await;
-    assert!(eof, "the raw session takes the typed disconnect");
+    assert!(
+        eof,
+        "the raw session takes the typed disconnect; feeds={} tail:\n{tail}",
+        state.live_feeds.len()
+    );
     assert!(
         !tail.contains("\"streamClosed\":true"),
         "a topology fallback is NEVER a terminal control:\n{tail}"

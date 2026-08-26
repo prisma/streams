@@ -65,9 +65,6 @@ pub(crate) struct PreparedRecord {
 
 pub(crate) struct PreparedBatch {
     pub(crate) scan_to: u64,
-    /// Source generation the batch was prepared with (raw fallback
-    /// binding: a raw session never emits a post-swap batch).
-    pub(crate) source_generation: u64,
     pub(crate) records: Arc<[PreparedRecord]>,
     pub(crate) charge: usize,
 }
@@ -936,7 +933,7 @@ impl LiveFeed {
             let head = self.st.lock().unwrap().head;
             if head < src.frontier() {
                 self.source_reads.fetch_add(1, Ordering::Relaxed);
-                break self.read_and_publish(&src, snap.generation, head).await;
+                break self.read_and_publish(&src, head).await;
             }
             // Nothing durable beyond the head. A closed tail is either
             // a genuine collection close or a topology transition —
@@ -1024,12 +1021,7 @@ impl LiveFeed {
         outcome
     }
 
-    async fn read_and_publish(
-        &self,
-        src: &Arc<dyn FeedSourceRead>,
-        generation: u64,
-        head: u64,
-    ) -> DriveOutcome {
+    async fn read_and_publish(&self, src: &Arc<dyn FeedSourceRead>, head: u64) -> DriveOutcome {
         let read = tokio::select! {
             r = src.read_batch(head, self.read_cap) => r,
             // Round-11.1: feed teardown cancels in-flight source work
@@ -1099,7 +1091,6 @@ impl LiveFeed {
             return DriveOutcome::Solo {
                 records: prepared,
                 scan_to,
-                source_generation: generation,
             };
         }
         // SHARED: retention reserves the ACTUAL retained bytes from
@@ -1187,7 +1178,6 @@ impl LiveFeed {
         st.charge += batch_charge;
         st.batches.push_back(Arc::new(PreparedBatch {
             scan_to,
-            source_generation: generation,
             charge: batch_charge,
             records: prepared.into(),
         }));
@@ -1271,12 +1261,12 @@ enum InstallOutcome {
 pub(crate) enum DriveOutcome {
     /// Zero retention: these records belong to the driving session,
     /// plus the SCANNED boundary (finding 1/2 — the cursor must advance
-    /// to scan_to, covering match-free ranges) and the source
-    /// generation they were prepared with (raw fallback binding).
+    /// to scan_to, covering match-free ranges). Wire positions are
+    /// bound per record at preparation (round-11.3: the raw
+    /// generation binding is gone — tokens name segments directly).
     Solo {
         records: Vec<PreparedRecord>,
         scan_to: u64,
-        source_generation: u64,
     },
     Published,
     /// Nothing durable beyond head.
