@@ -1108,6 +1108,9 @@ async fn debug_load(
             "cutoff_incarnation": crate::sse::auth::sse_stats::FEED_CUTOFF_INCARNATION.load(std::sync::atomic::Ordering::Relaxed),
             "cutoff_wrong_owner": crate::sse::auth::sse_stats::FEED_CUTOFF_WRONG_OWNER.load(std::sync::atomic::Ordering::Relaxed),
             "cutoff_incompatible": crate::sse::auth::sse_stats::FEED_CUTOFF_INCOMPATIBLE.load(std::sync::atomic::Ordering::Relaxed),
+            "cutoff_target_mismatch": crate::sse::auth::sse_stats::FEED_CUTOFF_TARGET_MISMATCH.load(std::sync::atomic::Ordering::Relaxed),
+            "cutoff_fleet_auth": crate::sse::auth::sse_stats::FEED_CUTOFF_FLEET_AUTH.load(std::sync::atomic::Ordering::Relaxed),
+            "cutoff_redirect_loop": crate::sse::auth::sse_stats::FEED_CUTOFF_REDIRECT_LOOP.load(std::sync::atomic::Ordering::Relaxed),
             "catchup_retries": crate::sse::auth::sse_stats::FEED_CATCHUP_RETRIES.load(std::sync::atomic::Ordering::Relaxed),
             "version_bumps": crate::sse::auth::sse_stats::FEED_VERSION_BUMPS.load(std::sync::atomic::Ordering::Relaxed),
         },
@@ -7819,6 +7822,7 @@ async fn sse_response(
             desc: desc.clone(),
             key: key.clone(),
             epoch,
+            route: crate::crypto::RouteHash::for_stream(&desc.sref()).0,
             engine: engine.clone(),
             handle: handle.clone(),
         });
@@ -8696,10 +8700,20 @@ async fn read_v3_lineage_inner(
                     .await;
                 }
                 Err(e) => {
+                    // Round-11.2: connect-time cutoffs carry the SAME
+                    // typed canary telemetry as mid-subscription ones
+                    // (a moved live tail at connect is a WrongOwner
+                    // cutoff either way).
+                    if let crate::sse::source::LineageBuildError::WrongOwner(_) = &e {
+                        crate::sse::auth::sse_stats::FEED_CUTOFF_WRONG_OWNER
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                        crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
+                            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    }
                     // Cannot serve the lineage here (wrong owner,
                     // transient engine failure): the legacy streamer
                     // has the cross-owner relay and its own retry
-                    // posture — fall back to it.
+                    // posture — fall back to it (dies at 11.3).
                     tracing::warn!(
                         error = %e,
                         "livefeed connect-time lineage build failed; serving via legacy lineage streamer"

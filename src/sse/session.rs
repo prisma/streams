@@ -123,6 +123,9 @@ fn count_cutoff(reason: super::feed::SourceCutoff) {
         SourceCutoff::IncompatibleTopology => {
             &crate::sse::auth::sse_stats::FEED_CUTOFF_INCOMPATIBLE
         }
+        SourceCutoff::TargetMismatch => &crate::sse::auth::sse_stats::FEED_CUTOFF_TARGET_MISMATCH,
+        SourceCutoff::FleetAuth => &crate::sse::auth::sse_stats::FEED_CUTOFF_FLEET_AUTH,
+        SourceCutoff::RedirectLoop => &crate::sse::auth::sse_stats::FEED_CUTOFF_REDIRECT_LOOP,
     };
     c.fetch_add(1, Ordering::Relaxed);
 }
@@ -350,7 +353,17 @@ pub(crate) async fn serve(
                     // re-snapshots and, if the ring moved, re-catches-up
                     // through the 'handoff path.
                     Ok(_) => break,
-                    Err(_) => {
+                    Err(e) => {
+                        // Round-11.2: fatal span outcomes disconnect
+                        // with the typed reason (no terminal) instead
+                        // of retrying forever.
+                        if let Some(cut) = e.downcast_ref::<crate::sse::source::FatalSpanCutoff>() {
+                            count_cutoff(cut.0);
+                            crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
+                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                            tracing::info!(reason = ?cut.0, "livefeed catch-up fatal cutoff");
+                            return;
+                        }
                         // Source failure mid-catch-up: bounded backoff,
                         // then retry the SAME bound — never a hot loop
                         // (finding 6 discipline applies here too).

@@ -46,6 +46,9 @@ pub(crate) mod sse_stats {
     pub static FEED_CUTOFF_INCARNATION: AtomicU64 = AtomicU64::new(0);
     pub static FEED_CUTOFF_WRONG_OWNER: AtomicU64 = AtomicU64::new(0);
     pub static FEED_CUTOFF_INCOMPATIBLE: AtomicU64 = AtomicU64::new(0);
+    pub static FEED_CUTOFF_TARGET_MISMATCH: AtomicU64 = AtomicU64::new(0);
+    pub static FEED_CUTOFF_FLEET_AUTH: AtomicU64 = AtomicU64::new(0);
+    pub static FEED_CUTOFF_REDIRECT_LOOP: AtomicU64 = AtomicU64::new(0);
     /// Initial-handoff durable re-catch-ups (the ring overtook a
     /// session that had not reached live yet — NOT a disconnect).
     pub static FEED_CATCHUP_RETRIES: AtomicU64 = AtomicU64::new(0);

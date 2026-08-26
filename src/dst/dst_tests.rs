@@ -35641,6 +35641,189 @@ async fn livefeed_remote_sealed_predecessor_streams_through_owner() {
     }
 }
 
+/// Round-11.2 (red): the typed remote-span protocol across THREE
+/// instances. Phase 1: a sealed predecessor whose owner MOVED follows
+/// exactly ONE verified redirect (A answers 409 replay-to inst-c; C
+/// serves). Phase 2: a redirect loop (C points back at A) is refused
+/// with the typed cutoff — nonterminal EOF, no endless retry. Phase
+/// 3: a predecessor that moves TO the reading instance is adopted
+/// locally. Phase 4: a MOVED LIVE TAIL is never served from stale
+/// state — typed WrongOwner cutoff at the read.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
+    let store = mem();
+    let (state_a, addr_a) = http_rig_owner(store.clone(), "inst-a").await;
+    let (state_b, addr_b) = http_rig_owner(store.clone(), "inst-b").await;
+    let (_state_c, addr_c) = http_rig_owner(store, "inst-c").await;
+    state_b
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr_a,
+        "PUT",
+        "/v1/streams/xmv",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append_lf(addr_a, "xmv", r#"{"h":0}"#).await;
+    hub_append_lf(addr_a, "xmv", r#"{"h":1}"#).await;
+    let sref = state_a.raw_adapter_sref("xmv");
+    let _ = crate::scaler3::execute_split(&state_a, &sref, 0, 0x8000_0000_0000_0000).await;
+    for _ in 0..200 {
+        state_a.registry.invalidate(&sref);
+        let d = state_a.registry.get(&sref).await.unwrap().unwrap();
+        if d.segments
+            .as_ref()
+            .is_some_and(|m| m.pending.is_none() && m.segments.len() > 1)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    state_b.registry.invalidate(&sref);
+    let desc = state_b.registry.get(&sref).await.unwrap().unwrap();
+    let child_seg = desc.resolve_segment("").seg_id;
+    let p_parent =
+        crate::registry::shard_for_hash(&state_b.shard_prefixes, &desc.segment_route_by_id(0));
+    let p_child = crate::registry::shard_for_hash(
+        &state_b.shard_prefixes,
+        &desc.segment_route_by_id(child_seg),
+    );
+    assert_ne!(p_parent, p_child);
+    let all = ["inst-a", "inst-b", "inst-c"].map(str::to_string).to_vec();
+    *state_b.ring_active.write().unwrap() = all.clone();
+    {
+        let mut ov = state_b.ring_overrides.write().unwrap();
+        for p in state_b.shard_prefixes.clone() {
+            let owner = if p == p_parent { "inst-a" } else { "inst-b" };
+            ov.insert(p, owner.to_string());
+        }
+    }
+    {
+        let mut urls = state_b.peer_urls.write().unwrap();
+        urls.insert("inst-a".to_string(), format!("http://{addr_a}"));
+        urls.insert("inst-c".to_string(), format!("http://{addr_c}"));
+    }
+    hub_append_lf(addr_b, "xmv", r#"{"h":2}"#).await;
+    let teardown = |state_b: Arc<crate::http::AppState>| async move {
+        for _ in 0..300 {
+            if state_b.live_feeds.len() == 0 {
+                return;
+            }
+            tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+        }
+        panic!("feed teardown stalled");
+    };
+
+    // PHASE 1 — one verified redirect: A no longer owns the parent
+    // and names inst-c; C serves the pages.
+    *state_a.ring_active.write().unwrap() = all.clone();
+    state_a
+        .ring_overrides
+        .write()
+        .unwrap()
+        .insert(p_parent.clone(), "inst-c".to_string());
+    {
+        let mut sck = lf_connect(addr_b, "xmv", "?cursor=beginning").await;
+        let (acc, eof) =
+            hub_sse_collect(&mut sck, 15, |t| lf_record_and_status(t, "\"h\":2")).await;
+        assert!(!eof, "redirected reads serve in place:\n{acc}");
+        for i in 0..3u64 {
+            let needle = format!("\"h\":{i}");
+            assert_eq!(
+                acc.matches(&needle).count(),
+                1,
+                "{needle} exactly once through the redirect:\n{acc}"
+            );
+        }
+        drop(sck);
+    }
+    teardown(state_b.clone()).await;
+
+    // PHASE 2 — redirect LOOP refused: C points the parent back at A.
+    *_state_c.ring_active.write().unwrap() = all.clone();
+    _state_c
+        .ring_overrides
+        .write()
+        .unwrap()
+        .insert(p_parent.clone(), "inst-a".to_string());
+    let loops_before = crate::sse::auth::sse_stats::FEED_CUTOFF_REDIRECT_LOOP
+        .load(std::sync::atomic::Ordering::Relaxed);
+    {
+        let mut sck = lf_connect(addr_b, "xmv", "?cursor=beginning").await;
+        let (acc, eof) = hub_sse_collect(&mut sck, 15, |_| false).await;
+        assert!(
+            eof,
+            "a redirect loop is a typed cutoff, not a stall:\n{acc}"
+        );
+        assert!(
+            !acc.contains("event: data") && !acc.contains("\"sealed\":true"),
+            "no data, no false terminal on the loop cutoff:\n{acc}"
+        );
+    }
+    assert!(
+        crate::sse::auth::sse_stats::FEED_CUTOFF_REDIRECT_LOOP
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > loops_before,
+        "the loop must be counted under its typed reason"
+    );
+    teardown(state_b.clone()).await;
+
+    // PHASE 3 — the predecessor moves TO the reader: B now owns it
+    // and adopts it locally.
+    state_b
+        .ring_overrides
+        .write()
+        .unwrap()
+        .insert(p_parent.clone(), "inst-b".to_string());
+    {
+        let mut sck = lf_connect(addr_b, "xmv", "?cursor=beginning").await;
+        let (acc, eof) =
+            hub_sse_collect(&mut sck, 15, |t| lf_record_and_status(t, "\"h\":2")).await;
+        assert!(
+            !eof,
+            "a locally-adopted predecessor serves in place:\n{acc}"
+        );
+        assert_eq!(acc.matches("\"h\":0").count(), 1, "local adoption:\n{acc}");
+        drop(sck);
+    }
+    teardown(state_b.clone()).await;
+
+    // PHASE 4 — the LIVE TAIL moves away UNDER an established feed:
+    // the next read takes the typed WrongOwner cutoff (nonterminal
+    // EOF), never stale local serving. Sub1 establishes the feed
+    // while B still owns the child; the move lands; sub2 joins the
+    // SAME feed and its catch-up read hits the moved tail.
+    let wrong_before = crate::sse::auth::sse_stats::FEED_CUTOFF_WRONG_OWNER
+        .load(std::sync::atomic::Ordering::Relaxed);
+    let mut sub1 = lf_connect(addr_b, "xmv", "?cursor=beginning").await;
+    let (a1, _) = hub_sse_collect(&mut sub1, 15, |t| lf_record_and_status(t, "\"h\":2")).await;
+    assert!(a1.contains("\"h\":2"), "sub1 established:\n{a1}");
+    state_b
+        .ring_overrides
+        .write()
+        .unwrap()
+        .insert(p_child.clone(), "inst-a".to_string());
+    {
+        let mut sub2 = lf_connect(addr_b, "xmv", "?cursor=beginning").await;
+        let (acc, eof) = hub_sse_collect(&mut sub2, 15, |_| false).await;
+        assert!(eof, "a moved live tail is a prompt resumable EOF:\n{acc}");
+        assert!(
+            !acc.contains("\"sealed\":true"),
+            "never a terminal on an ownership cutoff:\n{acc}"
+        );
+    }
+    assert!(
+        crate::sse::auth::sse_stats::FEED_CUTOFF_WRONG_OWNER
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > wrong_before,
+        "the moved tail must be counted under WrongOwner"
+    );
+    drop(sub1);
+}
+
 /// Round-11.1 (red): a BLACKHOLED peer — TCP accepted, request read,
 /// no response ever — must not suppress SSE keep-alives (the body
 /// owns them), must not cancel other subscribers, must cancel its

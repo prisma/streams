@@ -133,6 +133,14 @@ pub(crate) enum SourceCutoff {
     /// The topology no longer contains this feed's cursor space
     /// (incompatible spans, malformed lineage).
     IncompatibleTopology,
+    /// Round-11.2: the remote owner refused the incarnation-bound
+    /// target (epoch/identity/project mismatch).
+    TargetMismatch,
+    /// Round-11.2: 401 AFTER the one forced workload-token refresh —
+    /// a fleet-auth failure, never a generic source stall.
+    FleetAuth,
+    /// Round-11.2: a second ownership redirect in one operation.
+    RedirectLoop,
 }
 
 /// What a descriptor refresh decided about the current source.
@@ -1030,7 +1038,20 @@ impl LiveFeed {
         };
         let batch = match read {
             Ok(x) => x,
-            Err(_) => {
+            Err(e) => {
+                // Round-11.2: FATAL span outcomes become the typed
+                // lifecycle cutoff — never an endless retry.
+                if let Some(cut) = e.downcast_ref::<crate::sse::source::FatalSpanCutoff>() {
+                    let reason = cut.0;
+                    let mut st = self.st.lock().unwrap();
+                    st.lifecycle = Lifecycle::Gone(reason);
+                    st.version += 1;
+                    let ver = st.version;
+                    drop(st);
+                    crate::sse::auth::sse_stats::FEED_VERSION_BUMPS.fetch_add(1, Ordering::Relaxed);
+                    let _ = self.changed.send(ver);
+                    return DriveOutcome::IncarnationClosed(reason);
+                }
                 crate::sse::auth::sse_stats::FEED_SOURCE_FAILED.fetch_add(1, Ordering::Relaxed);
                 return DriveOutcome::SourceFailed;
             }
