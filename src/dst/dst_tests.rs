@@ -32810,22 +32810,29 @@ async fn livefeed_exact_framing_mixed_surfaces_share_one_lane() {
     let prod_txt = format!("{prod_txt}{extra_p}");
 
     for (side, txt) in [("raw", &raw_txt), ("product", &prod_txt)] {
-        // CANONICAL SHAPE per drained window: 1 data + 1 bare ctl, then
-        // ONE standalone upToDate at the head. Two windows here
-        // (backlog record + live record) => 2 data, 4 controls, 2
-        // upToDate flags — a duplicated/cross-surface cursor control
-        // would push controls to 6.
+        // PER-SURFACE SHAPE per drained window (round 11.8): PRODUCT
+        // keeps the canonical LiveFeed framing — 1 data + 1 bare ctl,
+        // then ONE standalone upToDate at the head. RAW follows the
+        // PINNED conformance protocol — each data event pairs with
+        // exactly ONE flag-carrying control and the duplicate
+        // standalone is suppressed. Two windows here (backlog + live)
+        // => 2 data; product 4 controls, raw 2; 2 upToDate each. A
+        // duplicated/cross-surface cursor control would push counts up.
         let data = txt.matches("event: data").count();
         let ctls = txt.matches("event: control").count();
         assert_eq!(data, 2, "{side}: two data events expected:\n{txt}");
-        assert_eq!(
-            ctls, 4,
-            "{side}: per-record ctl x2 + standalone status x2 = 4:\n{txt}"
-        );
+        if side == "raw" {
+            assert_eq!(ctls, 2, "{side}: ONE paired control per data event:\n{txt}");
+        } else {
+            assert_eq!(
+                ctls, 4,
+                "{side}: per-record ctl x2 + standalone status x2 = 4:\n{txt}"
+            );
+        }
         assert_eq!(
             txt.matches("\"upToDate\":true").count(),
             2,
-            "{side}: upToDate rides ONLY the standalone statuses:\n{txt}"
+            "{side}: upToDate once per at-head delivery:\n{txt}"
         );
         // Vocabulary isolation.
         if side == "raw" {
@@ -32927,14 +32934,23 @@ async fn livefeed_exact_framing_mixed_surfaces_product_first() {
         let data = txt.matches("event: data").count();
         let ctls = txt.matches("event: control").count();
         assert_eq!(data, 2, "{side}: two data events expected:\n{txt}");
-        assert_eq!(
-            ctls, 4,
-            "{side}: per-record ctl x2 + standalone status x2 = 4:\n{txt}"
-        );
+        // Round-11.8 per-surface framing: PRODUCT keeps the canonical
+        // LiveFeed shape (bare per-record ctl + standalone status);
+        // RAW follows the PINNED conformance protocol — each data
+        // event pairs with exactly ONE control that carries the flags,
+        // and the duplicate standalone status is suppressed.
+        if side == "raw" {
+            assert_eq!(ctls, 2, "{side}: ONE paired control per data event:\n{txt}");
+        } else {
+            assert_eq!(
+                ctls, 4,
+                "{side}: per-record ctl x2 + standalone status x2 = 4:\n{txt}"
+            );
+        }
         assert_eq!(
             txt.matches("\"upToDate\":true").count(),
             2,
-            "{side}: upToDate rides ONLY the standalone statuses:\n{txt}"
+            "{side}: upToDate once per at-head delivery:\n{txt}"
         );
         if side == "raw" {
             assert!(

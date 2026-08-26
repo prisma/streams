@@ -45,15 +45,25 @@ pub(crate) struct SessionCtx {
     key: crate::crypto::StreamKey,
     epoch: [u8; 16],
     rk_hash: [u8; 16],
+    /// The client's `?cursor=` on the RAW surface — the pinned
+    /// protocol's collision-jitter input: an emitted streamCursor
+    /// must exceed a presented numeric cursor (round 11.8: livefeed
+    /// serves the conformance surface directly).
+    raw_cursor: Option<String>,
 }
 
 impl SessionCtx {
-    /// Bare cursor control (no status flags) for one record boundary.
-    /// `pos` is the wire position bound AT PREPARATION (or located
-    /// with the source that owns the position) — segment id AND
-    /// segment-local offset, never the linearized offset (review
-    /// round 4, blocker 1).
-    fn record_ctl(&self, pos: super::feed::WirePosition) -> Bytes {
+    /// Cursor control for one record boundary. `pos` is the wire
+    /// position bound AT PREPARATION (or located with the source that
+    /// owns the position) — segment id AND segment-local offset,
+    /// never the linearized offset (review round 4, blocker 1).
+    ///
+    /// PRODUCT: always BARE (the canonical framing — flags ride the
+    /// standalone status control only). RAW: the pinned conformance
+    /// protocol pairs each data event with ONE control that carries
+    /// the flags, so `at_head` folds upToDate into the LAST record's
+    /// control (round 11.8: livefeed serves the conformance surface).
+    fn record_ctl(&self, pos: super::feed::WirePosition, at_head: bool) -> Bytes {
         match self.surface {
             Surface::Product => {
                 let tok = crate::product_cursor::KeyCursor {
@@ -68,8 +78,8 @@ impl SessionCtx {
             Surface::RawToken => Bytes::from(crate::sse::wire::sse_control_ep(
                 pos.seg_id,
                 pos.local_after,
-                None,
-                false,
+                self.raw_cursor.as_deref(),
+                at_head,
                 false,
             )),
         }
@@ -95,17 +105,23 @@ impl SessionCtx {
             Surface::RawToken => Bytes::from(crate::sse::wire::sse_control_ep(
                 pos.seg_id,
                 pos.local_after,
-                None,
+                self.raw_cursor.as_deref(),
                 true,
                 sealed_of(closed),
             )),
         }
     }
 
-    /// Shared data event + this session's bare cursor control = ONE
-    /// wire chunk (small local concat over the shared payload).
-    fn compose_record(&self, data: &Bytes, pos: super::feed::WirePosition) -> Bytes {
-        let ctl = self.record_ctl(pos);
+    /// `at_head` = this is the LAST record of a delivered batch AND
+    /// the cursor reached the durable frontier — the RAW surface's
+    /// paired control carries the upToDate flag (Product stays bare).
+    fn compose_record_flagged(
+        &self,
+        data: &Bytes,
+        pos: super::feed::WirePosition,
+        at_head: bool,
+    ) -> Bytes {
+        let ctl = self.record_ctl(pos, at_head);
         let mut out = BytesMut::with_capacity(data.len() + ctl.len());
         out.extend_from_slice(data);
         out.extend_from_slice(&ctl);
@@ -262,6 +278,7 @@ pub(crate) async fn serve(
         epoch,
         key: key.clone(),
         desc: desc.clone(),
+        raw_cursor: params.cursor.clone(),
     };
     let binary = {
         let mt = crate::registry::media_type(&desc.content_type);
@@ -334,8 +351,25 @@ pub(crate) async fn serve(
                             if r.off < cursor {
                                 continue;
                             }
-                            let frame =
-                                ctx.compose_record(&csrc.prepare_data(r), csrc.locate(r.off + 1));
+                            // RAW pairing (round 11.8): the pinned
+                            // conformance protocol pairs each data
+                            // event with ONE flag-carrying control —
+                            // the LAST catch-up record that lands
+                            // exactly on the durable frontier folds
+                            // upToDate into its paired control, and
+                            // the live phase suppresses the duplicate
+                            // standalone status. Product stays bare.
+                            let next = r.off + 1;
+                            let at_head = ctx.surface == Surface::RawToken
+                                && next >= catchup_bound
+                                && batch.scan_to.min(catchup_bound) <= next
+                                && next >= csrc.frontier()
+                                && !csrc.closed();
+                            let frame = ctx.compose_record_flagged(
+                                &csrc.prepare_data(r),
+                                csrc.locate(next),
+                                at_head,
+                            );
                             // Test failpoint: authorization-cutoff legs
                             // park the producer before the next send
                             // (every data-send site, all engines).
@@ -350,7 +384,12 @@ pub(crate) async fn serve(
                             {
                                 return;
                             }
-                            cursor = cursor.max(r.off + 1);
+                            cursor = cursor.max(next);
+                            if at_head {
+                                need_status = false;
+                                last_reported = Some(cursor);
+                                reached_live = true;
+                            }
                         }
                         // Match-free scanned range still progresses.
                         cursor = cursor.max(batch.scan_to.min(catchup_bound));
@@ -431,8 +470,18 @@ pub(crate) async fn serve(
                         continue 'handoff;
                     }
                     Take::Batch { batch, start_index } => {
-                        for r in batch.records[start_index..].iter() {
-                            let frame = ctx.compose_record(&r.data_event, r.pos);
+                        // RAW pairing (round 11.8): the LAST record's
+                        // control carries upToDate when the batch ends
+                        // at the durable frontier — the pinned
+                        // conformance protocol pairs each data event
+                        // with ONE flag-carrying control. Product
+                        // framing stays bare + standalone status.
+                        let after = cursor.max(batch.scan_to);
+                        let head_here = after >= cur_src.frontier() && !cur_src.closed();
+                        let last_i = batch.records.len();
+                        for (i, r) in batch.records[start_index..].iter().enumerate() {
+                            let at_head = head_here && start_index + i + 1 == last_i;
+                            let frame = ctx.compose_record_flagged(&r.data_event, r.pos, at_head);
                             #[cfg(test)]
                             crate::failpoints::pause(
                                 crate::failpoints::Fp::SseBeforeSend,
@@ -445,8 +494,17 @@ pub(crate) async fn serve(
                                 return;
                             }
                         }
-                        cursor = cursor.max(batch.scan_to);
-                        need_status = true;
+                        cursor = after;
+                        if head_here && ctx.surface == Surface::RawToken {
+                            // The paired control already reported the
+                            // head — the standalone status would be a
+                            // duplicate the pinned protocol forbids.
+                            need_status = false;
+                            last_reported = Some(cursor);
+                            reached_live = true;
+                        } else {
+                            need_status = true;
+                        }
                         // DRAIN (finding 5): more retained batches may
                         // already be visible — loop and consume them
                         // immediately instead of driving or parking
@@ -550,10 +608,26 @@ pub(crate) async fn serve(
                                     // The wire positions are bound in
                                     // the prepared records (located
                                     // with the READING source) — emit
-                                    // them as-is.
+                                    // them as-is. RAW pairing: the
+                                    // last record's control carries
+                                    // upToDate at the frontier
+                                    // (round 11.8, see Take::Batch).
                                     let at_cursor = cursor;
+                                    let after = cursor.max(scan_to);
+                                    let head_here =
+                                        after >= cur_src.frontier() && !cur_src.closed();
+                                    let last_off = records
+                                        .iter()
+                                        .filter(|r| r.offset >= at_cursor)
+                                        .map(|r| r.offset)
+                                        .max();
                                     for r in records.iter().filter(|r| r.offset >= at_cursor) {
-                                        let frame = ctx.compose_record(&r.data_event, r.pos);
+                                        let at_head = head_here && Some(r.offset) == last_off;
+                                        let frame = ctx.compose_record_flagged(
+                                            &r.data_event,
+                                            r.pos,
+                                            at_head,
+                                        );
                                         #[cfg(test)]
                                         crate::failpoints::pause(
                                             crate::failpoints::Fp::SseBeforeSend,
@@ -568,8 +642,17 @@ pub(crate) async fn serve(
                                         }
                                         cursor = cursor.max(r.offset + 1);
                                     }
-                                    cursor = cursor.max(scan_to);
-                                    need_status = true;
+                                    cursor = after.max(cursor);
+                                    if head_here
+                                        && last_off.is_some()
+                                        && ctx.surface == Surface::RawToken
+                                    {
+                                        need_status = false;
+                                        last_reported = Some(cursor);
+                                        reached_live = true;
+                                    } else {
+                                        need_status = true;
+                                    }
                                     continue;
                                 }
                                 DriveOutcome::Cancelled => return,
@@ -633,9 +716,20 @@ pub(crate) async fn serve(
                     .await;
                     match feed.drive_once().await {
                         Some(DriveOutcome::Solo { records, scan_to }) => {
+                            // RAW pairing at the frontier — see
+                            // Take::Batch (round 11.8).
                             let at_cursor = cursor;
+                            let after = cursor.max(scan_to);
+                            let head_here = after >= cur_src.frontier() && !cur_src.closed();
+                            let last_off = records
+                                .iter()
+                                .filter(|r| r.offset >= at_cursor)
+                                .map(|r| r.offset)
+                                .max();
                             for r in records.iter().filter(|r| r.offset >= at_cursor) {
-                                let frame = ctx.compose_record(&r.data_event, r.pos);
+                                let at_head = head_here && Some(r.offset) == last_off;
+                                let frame =
+                                    ctx.compose_record_flagged(&r.data_event, r.pos, at_head);
                                 #[cfg(test)]
                                 crate::failpoints::pause(
                                     crate::failpoints::Fp::SseBeforeSend,
@@ -653,8 +747,14 @@ pub(crate) async fn serve(
                             // 1+2): never jump to the live frontier and
                             // never stop at the last MATCHING record —
                             // match-free ranges are consumed progress.
-                            cursor = cursor.max(scan_to);
-                            need_status = true;
+                            cursor = after.max(cursor);
+                            if head_here && last_off.is_some() && ctx.surface == Surface::RawToken {
+                                need_status = false;
+                                last_reported = Some(cursor);
+                                reached_live = true;
+                            } else {
+                                need_status = true;
+                            }
                             continue;
                         }
                         // A publication or closure changed feed state
@@ -817,16 +917,20 @@ mod tests {
             epoch,
             key: key.clone(),
             desc: desc.clone(),
+            raw_cursor: None,
         };
         let seg_id = desc.resolve_segment(&lane_rk).seg_id;
         assert_eq!(seg_id, 5, "resolve must find the nonzero live segment");
 
         // The emitted bare cursor control carries a KeyCursor naming
         // segment 5, decodable and authenticated.
-        let ctl = ctx.record_ctl(crate::sse::feed::WirePosition {
-            seg_id,
-            local_after: 42,
-        });
+        let ctl = ctx.record_ctl(
+            crate::sse::feed::WirePosition {
+                seg_id,
+                local_after: 42,
+            },
+            false,
+        );
         let text = String::from_utf8(ctl.to_vec()).unwrap();
         let tok = text
             .split("\"nextCursor\":\"")
