@@ -33,6 +33,11 @@ const PORTS = { "streams-1": 9872, "streams-2": 9874, "streams-3": 9876 };
 const BUCKET = `lfcanary-${Date.now()}`;
 const KEY_B64 = Buffer.from(Array(32).fill(9)).toString("base64");
 const DEBUG_TOKEN = "lfcanary-debug-token-0123456789";
+// Exact-artifact mode (round 11.8 RC mint): point both binaries at
+// verified release artifacts and pin the manifest commit when git is
+// not resolvable in the sandbox (defaults = the local build/repo).
+const SERVER_BIN = process.env.CANARY_SERVER_BIN ?? "./target/release/streams-slate";
+const S3LITE_BIN = process.env.CANARY_S3LITE_BIN ?? "./target/release/s3lite";
 const legs = {};
 const reconciliation = {};
 let failed = 0;
@@ -59,7 +64,7 @@ const emu = spawn(process.execPath, [
   "--fixture", "proj-noisy:ws-noisy:cell-a",
   "--enable-fault-api",
 ], { stdio: ["ignore", "inherit", "inherit"] });
-const s3 = spawn("./target/release/s3lite", ["--listen", `127.0.0.1:${S3}`, "--latency-ms", "2"], { stdio: "ignore" });
+const s3 = spawn(S3LITE_BIN, ["--listen", `127.0.0.1:${S3}`, "--latency-ms", "2"], { stdio: "ignore" });
 await sleep(800);
 
 // The PINNED 1-GiB profile, verbatim — the battery certifies the file
@@ -121,7 +126,7 @@ const procs = {};
 mkdirSync("target/canary-logs", { recursive: true });
 for (const n of Object.keys(PORTS)) {
   const log = openSync(`target/canary-logs/${n}.log`, "w");
-  procs[n] = spawn("./target/release/streams-slate", args(n), { env: instEnv(n), stdio: ["ignore", log, log] });
+  procs[n] = spawn(SERVER_BIN, args(n), { env: instEnv(n), stdio: ["ignore", log, log] });
 }
 const kill = () => {
   if (holdActive) return;
@@ -694,9 +699,9 @@ async function moveEverythingTo(target) {
 
 function finish() {
   kill();
-  const sha = createHash("sha256").update(readFileSync("./target/release/streams-slate")).digest("hex");
+  const sha = createHash("sha256").update(readFileSync(SERVER_BIN)).digest("hex");
   const manifest = {
-    commit: execSync("git rev-parse HEAD").toString().trim(),
+    commit: process.env.CANARY_COMMIT ?? execSync("git rev-parse HEAD").toString().trim(),
     server_sha256: sha,
     verdict: failed === 0 ? "PASS" : "FAIL",
     legs,
