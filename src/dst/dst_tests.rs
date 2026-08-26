@@ -36553,11 +36553,17 @@ async fn livefeed_delayed_reader_lands_on_the_current_scan_head() {
         .await;
         assert!(st == 200 || st == 204, "foreign append {st}");
     }
-    let (live, eof) = hub_sse_collect(&mut s1, 10, |t| {
-        t.matches("\"upToDate\":true").count() >= 1 && t.contains("nextCursor")
-    })
-    .await;
+    // Drain to QUIESCENCE, not to the first control: the session may
+    // emit an intermediate upToDate between the three appends on a
+    // slow runner, and grabbing that cursor races the scan head (CI
+    // flake at 11.6). All appends are durable before this collect, so
+    // a bounded full drain always ends at the final head.
+    let (live, eof) = hub_sse_collect(&mut s1, 3, |_| false).await;
     assert!(!eof, "foreign progress never disconnects:\n{live}");
+    assert!(
+        live.matches("\"upToDate\":true").count() >= 1 && live.contains("nextCursor"),
+        "the live subscriber reports the advanced scan head:\n{live}"
+    );
     assert!(
         !live.contains("\"f\":"),
         "foreign records must not cross lanes:\n{live}"
