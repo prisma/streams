@@ -115,6 +115,10 @@ if [ "$STEP" = servers ]; then
       --env PATH_PREFIX="${FLEET_DATA_PREFIX:-fleetd2}" --env INSTANCE_NAME="streams-$i" \
       ${SELFARG[@]+"${SELFARG[@]}"} \
       --env FLEET_PREFIX=fleetops --env FLEET_MAX=4 \
+      --env FLEET_MIN="${FLEET_MIN:-1}" \
+      --env REBALANCE_LAG_SECS="${REBALANCE_LAG_SECS:-60}" \
+      --env REBALANCE_RETURN_SECS="${REBALANCE_RETURN_SECS:-300}" \
+      --env MAX_ABSORB_LAG_SECS="${MAX_ABSORB_LAG_SECS:-900}" \
       --env SCALE_OUT_CPU_PCT=30 --env SCALE_CPU_SUSTAIN_SECS=10 \
       --env SCALE_IN_CPU_PCT=5 --env SCALE_IN_SECS=900 \
       --env INITIAL_SHARDS=16 \
