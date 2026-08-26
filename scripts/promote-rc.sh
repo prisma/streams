@@ -36,8 +36,9 @@ echo "== 1/4 required check runs at $SHA =="
 # workflow (check-run name `actionlint`), and the LiveFeed engine +
 # matrix are the replacement engine's certification. A commit with a
 # red matrix or an unparseable workflow must never receive an RC tag.
-REQUIRED_CHECKS=(rust livefeed livefeed-matrix platform-e2e mt-cert-1000
-  durable-streams-server-conformance product-field-gate sdk-package actionlint)
+REQUIRED_CHECKS=(rust livefeed livefeed-matrix livefeed-fleet-cert platform-e2e
+  mt-cert-1000 durable-streams-server-conformance product-field-gate sdk-package
+  actionlint)
 # Filter to the github-actions app: a required name must be satisfied
 # by OUR workflows, never by another installed app that happens to
 # publish a check run with the same name (round-10 hardening).

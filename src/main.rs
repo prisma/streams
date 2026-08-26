@@ -965,13 +965,12 @@ fn validate_sse_engine(args: &Args) -> anyhow::Result<()> {
     match args.streams_sse_engine.as_str() {
         "legacy" => {}
         "livefeed" => {
-            if args.release_posture {
-                anyhow::bail!(
-                    "STREAMS_SSE_ENGINE=livefeed is not yet certified under \
-                     STREAMS_RELEASE_POSTURE=1 (transition in progress)"
-                );
-            }
-            tracing::warn!("STREAMS_SSE_ENGINE=livefeed: transition engine enabled");
+            // Round-11.5: certified for release — the in-proc battery,
+            // the exact-binary matrix, and the REAL three-instance
+            // fleet certification (11.4, bench/fleet/livefeed-cert.sh)
+            // are all green. Legacy stays the default until the 11.7
+            // flip.
+            tracing::info!("STREAMS_SSE_ENGINE=livefeed: certified engine enabled");
         }
         other => anyhow::bail!("STREAMS_SSE_ENGINE must be legacy|livefeed, got {other:?}"),
     }
@@ -1342,6 +1341,28 @@ mod config_validation_tests {
             validate_fleet_auth(&a, true).is_err(),
             "static fleet mode still requires the token"
         );
+    }
+
+    /// Round-11.5: the real-fleet certification (11.4) closed the
+    /// release blocker — livefeed is PERMITTED under
+    /// STREAMS_RELEASE_POSTURE=1 (legacy stays the default until the
+    /// 11.7 flip; unknown engines stay refused).
+    #[test]
+    fn release_posture_permits_the_certified_livefeed_engine() {
+        let parse = |extra: &[&str]| {
+            let mut v = vec!["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"];
+            v.extend_from_slice(extra);
+            Args::try_parse_from(v).expect("test args must parse")
+        };
+        let a = parse(&["--streams-sse-engine", "livefeed", "--release-posture"]);
+        assert!(
+            validate_sse_engine(&a).is_ok(),
+            "the certified engine must boot under the release posture"
+        );
+        let a = parse(&["--streams-sse-engine", "legacy", "--release-posture"]);
+        assert!(validate_sse_engine(&a).is_ok(), "legacy remains selectable");
+        let a = parse(&["--streams-sse-engine", "hub", "--release-posture"]);
+        assert!(validate_sse_engine(&a).is_err(), "unknown engines refused");
     }
 
     /// Round-10 review: the release posture requires a per-record
