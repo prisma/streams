@@ -165,6 +165,13 @@ pub struct AppState {
     /// SSE keep-alive cadence (round-11.1: OWNED BY GatedSseBody, so
     /// no blocked read can suppress it); tests shrink it per rig.
     pub sse_heartbeat_ms: std::sync::atomic::AtomicU64,
+    /// Round-11.6 field canary ONLY: widen the seal close→publication
+    /// gap by this many ms so the seal-herd campaign can observe the
+    /// two-step window on a real release binary at fleet scale. Boot
+    /// refuses a nonzero value unless STREAMS_CERTIFICATION_MODE=1;
+    /// zero = inert (production). Atomic so certification rigs can
+    /// arm it on a live state.
+    pub cert_sealed_publish_delay_ms: std::sync::atomic::AtomicU64,
     /// The CONFIGURED cap before any platform-driven clamp — exported
     /// next to the effective one so the fleet can detect a platform
     /// lowering RLIMIT_NOFILE under it.

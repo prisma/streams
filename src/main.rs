@@ -983,6 +983,41 @@ fn validate_sse_engine(args: &Args) -> anyhow::Result<()> {
 /// append forces every shared-feed subscriber into the reconnect
 /// posture at once (O(subscribers) EOFs, TLS re-establishment burst,
 /// durable read amplification).
+/// Round-11.6: the seal-publication delay is a CERTIFICATION
+/// instrument, never a production knob — a nonzero delay without
+/// STREAMS_CERTIFICATION_MODE=1 refuses boot (fail-loud beats a
+/// silently armed canary fault in production).
+fn cert_sealed_publish_delay() -> anyhow::Result<u64> {
+    let ms = cert_sealed_publish_delay_from(
+        std::env::var("STREAMS_CERT_SEALED_PUBLISH_DELAY_MS")
+            .ok()
+            .as_deref(),
+        std::env::var("STREAMS_CERTIFICATION_MODE").ok().as_deref(),
+    )?;
+    if ms > 0 {
+        tracing::warn!(ms, "CERTIFICATION MODE: sealed publication delayed");
+    }
+    Ok(ms)
+}
+
+/// Pure core of `cert_sealed_publish_delay` (unit-testable without
+/// process-global env mutation).
+fn cert_sealed_publish_delay_from(delay: Option<&str>, mode: Option<&str>) -> anyhow::Result<u64> {
+    let ms: u64 = match delay {
+        Some(v) => v.parse().map_err(|_| {
+            anyhow::anyhow!("STREAMS_CERT_SEALED_PUBLISH_DELAY_MS must be an integer")
+        })?,
+        None => 0,
+    };
+    if ms > 0 && mode != Some("1") {
+        anyhow::bail!(
+            "STREAMS_CERT_SEALED_PUBLISH_DELAY_MS is a certification instrument and \
+             requires STREAMS_CERTIFICATION_MODE=1"
+        );
+    }
+    Ok(ms)
+}
+
 fn validate_record_ceiling(release_posture: bool, ceiling: Option<usize>) -> anyhow::Result<()> {
     if !release_posture {
         return Ok(());
@@ -1341,6 +1376,22 @@ mod config_validation_tests {
             validate_fleet_auth(&a, true).is_err(),
             "static fleet mode still requires the token"
         );
+    }
+
+    /// Round-11.6: the seal-publication delay is a certification
+    /// instrument — armed without STREAMS_CERTIFICATION_MODE=1 it
+    /// refuses boot; unset and malformed shapes behave predictably.
+    #[test]
+    fn cert_sealed_publish_delay_is_gated_on_certification_mode() {
+        assert_eq!(cert_sealed_publish_delay_from(None, None).unwrap(), 0);
+        assert_eq!(cert_sealed_publish_delay_from(Some("0"), None).unwrap(), 0);
+        assert!(cert_sealed_publish_delay_from(Some("500"), None).is_err());
+        assert!(cert_sealed_publish_delay_from(Some("500"), Some("0")).is_err());
+        assert_eq!(
+            cert_sealed_publish_delay_from(Some("500"), Some("1")).unwrap(),
+            500
+        );
+        assert!(cert_sealed_publish_delay_from(Some("abc"), Some("1")).is_err());
     }
 
     /// Round-11.5: the real-fleet certification (11.4) closed the
@@ -2162,6 +2213,9 @@ async fn async_main() -> anyhow::Result<()> {
         feed_ring_bytes: std::sync::atomic::AtomicUsize::new(crate::livehub::feed_ring_bytes()),
         max_record_payload_bytes: std::sync::atomic::AtomicUsize::new(
             args.max_record_payload_bytes.unwrap_or(0),
+        ),
+        cert_sealed_publish_delay_ms: std::sync::atomic::AtomicU64::new(
+            cert_sealed_publish_delay().unwrap_or_else(|e| panic!("{e}")),
         ),
         sse_heartbeat_ms: std::sync::atomic::AtomicU64::new(
             // Operational cadence knob (fleet certification runs it at

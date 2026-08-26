@@ -1692,21 +1692,27 @@ impl ShardEngine {
             )
             .shard(&self.prefix),
         );
+        // Wake every parked live reader — on EVERY call, before the
+        // double-close guard. A session parked on an idle tail has no
+        // traffic to surface the fence to it: its next read re-checks
+        // ownership (owned_here) and takes the typed WrongOwner
+        // cutoff — but only if something wakes it AFTER the ownership
+        // map moved. The slatedb fence can close the engine BEFORE
+        // the loser's override mirror updates: that early wake finds
+        // the OLD map and re-parks, and the fleet tick's later
+        // begin_close used to early-return through this guard without
+        // notifying — the parked session then held keep-alives
+        // forever (round-11.4 fleet finding; the guarded-skip variant
+        // reproduced only on slow CI runners).
+        for h in self.streams.lock().unwrap().values() {
+            h.notify.notify_waiters();
+            h.applied_notify.notify_waiters();
+        }
         if self.closed.swap(true, Ordering::SeqCst) {
             return; // already closing
         }
         let _ = self.close_tx.send(true);
         self.pump_wake.notify_one();
-        // Wake every parked live reader. A session parked on an idle
-        // tail has no traffic to surface the fence to it: its next
-        // read re-checks ownership (owned_here) and takes the typed
-        // WrongOwner cutoff — but only if something wakes it. Without
-        // this, a moved-away shard's SSE sessions held keep-alives
-        // indefinitely and never rerouted (round-11.4 fleet finding).
-        for h in self.streams.lock().unwrap().values() {
-            h.notify.notify_waiters();
-            h.applied_notify.notify_waiters();
-        }
         let stranded: Vec<InFlightGroup> = self.in_flight.lock().unwrap().drain(..).collect();
         for group in stranded {
             for (resp, _) in group.acks {

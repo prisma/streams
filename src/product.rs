@@ -2927,6 +2927,18 @@ pub(crate) async fn run_seal(
         // renews the claim, re-closes idempotently, and publishes.
         return Err("stopped before the sealed publication; seal is resumable".into());
     }
+    // Round-11.6 field canary: hold the close→publication window open
+    // for the configured delay so the seal-herd campaign observes the
+    // two-step gap on a real release binary. Boot refuses a nonzero
+    // value outside STREAMS_CERTIFICATION_MODE=1; zero is inert.
+    {
+        let ms = state
+            .cert_sealed_publish_delay_ms
+            .load(std::sync::atomic::Ordering::Relaxed);
+        if ms > 0 {
+            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
+        }
+    }
     // 3. Publish SEALED only now — and only if no topology transition
     //    reappeared while the segments were closing.
     let published = state

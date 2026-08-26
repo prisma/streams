@@ -396,6 +396,12 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
             .unwrap_or(60);
         let mut last_cpu = cpu_time_secs();
         let mut ewma_cpu = 0.0f64;
+        // (ring_active, overrides) as last observed — the parked-session
+        // wake fires only on real ownership-view changes.
+        let mut last_ownership_view: Option<(
+            Vec<String>,
+            std::collections::BTreeMap<String, String>,
+        )> = None;
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
             let ops = state.fleet_ops.load(Ordering::Relaxed);
@@ -773,6 +779,32 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                         .map(|(k, v)| (k.clone(), v.to.clone()))
                         .collect();
                     *state.ring_overrides.write().unwrap() = map;
+                }
+
+                // Round-11.4: when the OWNERSHIP VIEW changed, wake
+                // every parked SSE session — each re-checks its
+                // source's ownership before re-parking. The engine
+                // close alone cannot carry this signal: a slatedb
+                // fence firing BEFORE this mirror update evicts the
+                // engine from the serving map, and the too-early wake
+                // re-parks on the stale map with nothing left to fire.
+                {
+                    let view = (
+                        state.ring_active.read().unwrap().clone(),
+                        state
+                            .ring_overrides
+                            .read()
+                            .unwrap()
+                            .iter()
+                            .map(|(k, v)| (k.clone(), v.clone()))
+                            .collect::<std::collections::BTreeMap<_, _>>(),
+                    );
+                    if last_ownership_view.as_ref() != Some(&view) {
+                        if last_ownership_view.is_some() {
+                            state.live_feeds.wake_all_sessions();
+                        }
+                        last_ownership_view = Some(view);
+                    }
                 }
 
                 // Possession yields at the TICK, not only on straggler

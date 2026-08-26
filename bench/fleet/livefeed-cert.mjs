@@ -495,13 +495,17 @@ let fullReplayRecords = 0;
   procs["streams-1"].kill("SIGSTOP");
   w.pump();
   // Let the buffered prefix drain, then observe the stall window.
+  // Violations: a terminal, or an OPEN session whose keep-alives
+  // stopped (heartbeat suppression — the defect this leg exists
+  // for). A session that already drained to its resumable EOF (its
+  // buffered lineage sufficed on a slow runner) is not a violation.
   await waitFor(() => false, 3000);
-  const mark = { len: w.text.length, ka: count(w.text, ": keep-alive"), recs: count(w.text, '"k":') };
+  const mark = { ka: count(w.text, ": keep-alive"), recs: count(w.text, '"k":') };
   await waitFor(() => false, 5000);
   const ka2 = count(w.text, ": keep-alive");
   const recs2 = count(w.text, '"k":');
   leg("blackholed remote owner: body-owned keep-alives continue, no data, no terminal",
-    !w.eof && ka2 > mark.ka && recs2 === mark.recs && !w.text.includes('"sealed":true'),
+    !w.text.includes('"sealed":true') && (w.eof || (ka2 > mark.ka && recs2 === mark.recs)),
     `eof=${w.eof} ka=${mark.ka}->${ka2} recs=${mark.recs}->${recs2}`);
   procs["streams-1"].kill("SIGCONT");
   const drained = await waitFor(() => w.eof, 30000);

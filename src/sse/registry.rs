@@ -156,6 +156,23 @@ impl FeedRegistry {
         }
     }
 
+    /// Round-11.4: wake every parked session across every feed —
+    /// fired by the fleet tick when the OWNERSHIP VIEW changes. A
+    /// parked session re-checks its source's ownership before
+    /// re-parking (the session's park guard), so the wake turns a
+    /// moved-away live tail into the typed WrongOwner cutoff even
+    /// when no engine close can carry the signal: a slatedb fence
+    /// that fired BEFORE the override mirror updated had already
+    /// evicted the engine from the serving map, and the woken-early
+    /// session re-parked on the stale map with nothing left to wake
+    /// it (the certification fleet's B2 leg, CI-timing variant).
+    pub(crate) fn wake_all_sessions(&self) {
+        let feeds: Vec<Arc<LiveFeed>> = self.map.lock().unwrap().values().cloned().collect();
+        for f in feeds {
+            f.source_snapshot().source.advance_notify().notify_waiters();
+        }
+    }
+
     /// Live feed count (observability: /v1/debug/load).
     pub(crate) fn len(&self) -> usize {
         self.map.lock().unwrap().len()

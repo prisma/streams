@@ -5822,6 +5822,7 @@ async fn http_rig_inner(
         feed_budget: Arc::new(crate::sse::feed::FeedMemoryBudget::from_env()),
         feed_ring_bytes: std::sync::atomic::AtomicUsize::new(crate::livehub::feed_ring_bytes()),
         max_record_payload_bytes: std::sync::atomic::AtomicUsize::new(0),
+        cert_sealed_publish_delay_ms: std::sync::atomic::AtomicU64::new(0),
         sse_heartbeat_ms: std::sync::atomic::AtomicU64::new(15_000),
         sse_connections: std::sync::atomic::AtomicU64::new(0),
         live_hubs: crate::livehub::HubRegistry::new(),
@@ -35904,6 +35905,58 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
         "the moved tail must be counted under WrongOwner"
     );
     drop(sub1);
+}
+
+/// Round-11.6 (red): the certification-mode seal-publication delay.
+/// STREAMS_CERT_SEALED_PUBLISH_DELAY_MS widens the close→publication
+/// gap so the field seal-herd campaign can observe the two-step
+/// window on a REAL release binary. The knob must actually hold the
+/// publication open for the configured window — and the seal must
+/// still complete (the delay is a wider gap, not a broken seal).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn certification_seal_publish_delay_widens_the_gap() {
+    let store = mem();
+    let (state, addr) = http_rig_owner(store, "inst-b").await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/xdelay",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append_lf(addr, "xdelay", r#"{"d":0}"#).await;
+    state
+        .cert_sealed_publish_delay_ms
+        .store(600, std::sync::atomic::Ordering::Relaxed);
+    let t0 = std::time::Instant::now();
+    seal_ok(addr, "xdelay").await;
+    let elapsed = t0.elapsed();
+    assert!(
+        elapsed >= std::time::Duration::from_millis(600),
+        "the armed delay must hold the publication window open: {elapsed:?}"
+    );
+    // The seal COMPLETED (seal_ok asserted success); the delay is a
+    // window, never a wedge. And it is one-shot per seal drive, not a
+    // tax on every later read: a replay serves promptly.
+    state
+        .cert_sealed_publish_delay_ms
+        .store(0, std::sync::atomic::Ordering::Relaxed);
+    let t1 = std::time::Instant::now();
+    let mut sck = lf_connect(addr, "xdelay", "?cursor=beginning").await;
+    let (acc, _) = hub_sse_collect(&mut sck, 10, |t| t.contains("\"sealed\":true")).await;
+    assert!(
+        acc.contains("\"d\":0") && acc.contains("\"sealed\":true"),
+        "sealed replay serves records + terminal:\n{acc}"
+    );
+    assert!(
+        t1.elapsed() < std::time::Duration::from_secs(5),
+        "reads after the seal are undelayed"
+    );
 }
 
 /// Round-11.4 fleet finding (red): an ORPHANED pending transition —
