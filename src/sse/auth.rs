@@ -311,6 +311,12 @@ pub(crate) struct GatedSseBody {
     gen_rx: tokio::sync::watch::Receiver<u64>,
     gen_changed: Option<std::pin::Pin<Box<dyn std::future::Future<Output = ()> + Send>>>,
     deadline: std::pin::Pin<Box<tokio::time::Sleep>>,
+    /// Round-11.1: the body OWNS keep-alives — a blocked local read,
+    /// remote page, topology refresh, or store operation can never
+    /// suppress network heartbeats. Any successful outbound chunk
+    /// resets the timer (no keep-alive right after data).
+    heartbeat: std::pin::Pin<Box<tokio::time::Sleep>>,
+    heartbeat_interval: std::time::Duration,
     ended: bool,
 }
 
@@ -329,6 +335,12 @@ impl GatedSseBody {
         gen_rx: tokio::sync::watch::Receiver<u64>,
     ) -> Self {
         let nap = watch.nap();
+        let heartbeat_interval = std::time::Duration::from_millis(
+            state
+                .sse_heartbeat_ms
+                .load(std::sync::atomic::Ordering::Relaxed)
+                .max(50),
+        );
         Self {
             gen_rx,
             state,
@@ -338,6 +350,8 @@ impl GatedSseBody {
             watch,
             gen_changed: None,
             deadline: Box::pin(tokio::time::sleep(nap)),
+            heartbeat: Box::pin(tokio::time::sleep(heartbeat_interval)),
+            heartbeat_interval,
             ended: false,
         }
     }
@@ -428,13 +442,36 @@ impl futures_util::Stream for GatedSseBody {
                         chunk.records,
                     );
                 }
+                // Data IS liveness: push the next keep-alive out.
+                this.heartbeat
+                    .as_mut()
+                    .reset(tokio::time::Instant::now() + this.heartbeat_interval);
                 Poll::Ready(Some(Ok(chunk.bytes)))
             }
             Poll::Ready(None) => {
                 this.ended = true;
                 Poll::Ready(None)
             }
-            Poll::Pending => Poll::Pending,
+            Poll::Pending => {
+                // Round-11.1 body-owned keep-alive: producer progress
+                // and network liveness are INDEPENDENT. The lease is
+                // re-checked (cheap fast path) so a keep-alive can
+                // never outlive a cutoff the deadline/generation arms
+                // would have caught.
+                if this.heartbeat.as_mut().poll(cx).is_ready() {
+                    if this.watch.revoked(&this.state) {
+                        this.ended = true;
+                        this.rx.close();
+                        return Poll::Ready(None);
+                    }
+                    this.heartbeat
+                        .as_mut()
+                        .reset(tokio::time::Instant::now() + this.heartbeat_interval);
+                    let _ = this.heartbeat.as_mut().poll(cx);
+                    return Poll::Ready(Some(Ok(Bytes::from_static(b": keep-alive\n\n"))));
+                }
+                Poll::Pending
+            }
         }
     }
 }

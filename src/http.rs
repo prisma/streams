@@ -162,6 +162,9 @@ pub struct AppState {
     /// (dev posture). The release posture requires a value whose
     /// worst-case prepared SSE frame fits the feed ring.
     pub max_record_payload_bytes: std::sync::atomic::AtomicUsize,
+    /// SSE keep-alive cadence (round-11.1: OWNED BY GatedSseBody, so
+    /// no blocked read can suppress it); tests shrink it per rig.
+    pub sse_heartbeat_ms: std::sync::atomic::AtomicU64,
     /// The CONFIGURED cap before any platform-driven clamp — exported
     /// next to the effective one so the fleet can detect a platform
     /// lowering RLIMIT_NOFILE under it.
@@ -6960,46 +6963,6 @@ pub(crate) async fn read_inner(
 /// sse_control with a pre-encoded (epoch) cursor token — the lineage
 /// streamer's controls name segments, not scalar offsets.
 
-/// #267 SSE Phase 1: ONE process heartbeat clock. Every parked SSE
-/// task used to own a fresh 15-second Sleep per loop iteration — a
-/// timer-wheel entry and future state per subscriber. One ticker and a
-/// watch channel replace them all; the keep-alives synchronize into a
-/// burst every 15 s, which at the 100k target is ~2 MB of ": keep-
-/// alive" writes spread by the writer pool — accepted trade for
-/// removing N independent timers.
-pub(crate) fn sse_heartbeat() -> tokio::sync::watch::Receiver<u64> {
-    static HB: std::sync::OnceLock<tokio::sync::watch::Sender<u64>> = std::sync::OnceLock::new();
-    // subscribe() per call: a receiver cloned from the shared one
-    // inherits its NEVER-POLLED version and fires `changed()` instantly
-    // on every new connection — a spurious keep-alive in the first
-    // window, which paired with a duplicated status control (the
-    // conformance SSE duplicate-delivery failures).
-    HB.get_or_init(|| {
-        let (tx, _) = tokio::sync::watch::channel(0u64);
-        let tx2 = tx.clone();
-        // A dedicated OS thread, NOT a tokio task: the ticker must
-        // outlive the runtime that first touched it (every
-        // #[tokio::test] runs its own runtime — a ticker task spawned
-        // on the first one dies with it, silently freezing every later
-        // session's keep-alive). And send_replace, NOT send: send fails
-        // the moment zero receivers exist — one 15-s tick landing in an
-        // idle window would kill the ticker for the process's lifetime.
-        std::thread::Builder::new()
-            .name("sse-heartbeat".into())
-            .spawn(move || {
-                let mut n = 0u64;
-                loop {
-                    std::thread::sleep(Duration::from_secs(15));
-                    n += 1;
-                    tx2.send_replace(n);
-                }
-            })
-            .expect("spawn sse-heartbeat ticker");
-        tx
-    })
-    .subscribe()
-}
-
 /// #267: bounded-deadline SSE send. The queue is 4 slots and the
 /// correct slow-consumer policy on a durable, cursor-addressable
 /// stream is DISCONNECT + resume-from-cursor — never a private replay
@@ -7258,7 +7221,6 @@ pub(crate) fn sse_lineage_response(
     // #267: 4 slots + disconnect-on-lag, shared heartbeat — see
     // sse_response.
     let (tx, rx) = tokio::sync::mpsc::channel::<crate::sse::auth::SseChunk>(4);
-    let mut hb = sse_heartbeat();
     let sse_hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
     // One subscribe operation; delivered bytes meter per chunk (§5).
     crate::billing::meter_read(&state, &desc, 0, 0);
@@ -7488,13 +7450,6 @@ pub(crate) fn sse_lineage_response(
                             return;
                         }
                     }
-                    // #267: shared process clock, not a per-subscriber
-                    // Sleep.
-                    _ = hb.changed() => {
-                        if !sse_send(&tx, Bytes::from(": keep-alive\n\n")).await {
-                            return;
-                        }
-                    }
                 }
             }
         }
@@ -7565,7 +7520,6 @@ async fn sse_hub_response(
     };
     let sse_hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
     let (tx, rx) = tokio::sync::mpsc::channel::<crate::sse::auth::SseChunk>(4);
-    let mut hb = sse_heartbeat();
     crate::billing::meter_read(&state, &desc, 0, 0);
     let binary = {
         let mt = crate::registry::media_type(&desc.content_type);
@@ -7790,11 +7744,6 @@ async fn sse_hub_response(
                                 return;
                             }
                         }
-                        _ = hb.changed() => {
-                            if !sse_send(&tx, Bytes::from(": keep-alive\n\n")).await {
-                                return;
-                            }
-                        }
                     }
                 }
             }
@@ -7915,7 +7864,6 @@ async fn sse_response(
     // #267: 4 slots, not 64 — a slow client keeps a cursor and a
     // socket, not a private replay buffer (sse_send disconnects it).
     let (tx, rx) = tokio::sync::mpsc::channel::<crate::sse::auth::SseChunk>(4);
-    let mut hb = sse_heartbeat();
     // One subscribe operation; delivered bytes meter per chunk (§5).
     crate::billing::meter_read(&state, &desc, 0, 0);
     let binary = {
@@ -8159,13 +8107,6 @@ async fn sse_response(
                 // Review V4: terminate no later than token expiry.
                 _ = tokio::time::sleep(lease_watch.nap()) => {
                     if lease_watch.revoked(&state) {
-                        return;
-                    }
-                }
-                // #267: shared process clock, not a per-subscriber Sleep.
-                _ = hb.changed() => {
-                    // heartbeat comment keeps proxies happy
-                    if !sse_send(&tx, Bytes::from(": keep-alive\n\n")).await {
                         return;
                     }
                 }

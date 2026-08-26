@@ -149,6 +149,10 @@ impl FeedRegistry {
         let remaining = expected.leave_locked();
         if remaining == 0 {
             map.remove(key);
+            // Round-11.1: teardown cancels every in-flight source
+            // operation of the evicted feed (only the LAST leave —
+            // one subscriber's disconnect never cancels shared work).
+            expected.cancel.fire();
         }
     }
 

@@ -23,9 +23,7 @@
 
 use super::auth::{GatedSseBody, LeaseWatch, SseLease};
 use super::feed::{DriveOutcome, FeedKey, LiveFeed, Take};
-use crate::http::{
-    AppState, ReadParams, SseSlot, err_resp, sse_heartbeat, sse_send, sse_send_billed,
-};
+use crate::http::{AppState, ReadParams, SseSlot, err_resp, sse_send, sse_send_billed};
 use bytes::{Bytes, BytesMut};
 use std::sync::Arc;
 use std::sync::atomic::Ordering;
@@ -261,7 +259,6 @@ pub(crate) async fn serve(
     };
     let usage = crate::usage::counters(&crate::crypto::RouteHash::for_stream(&desc.sref()).0);
     let (tx, rx) = tokio::sync::mpsc::channel::<crate::sse::auth::SseChunk>(4);
-    let mut hb = sse_heartbeat();
     crate::billing::meter_read(&state, &desc, 0, 0);
     let body_state = state.clone();
 
@@ -310,7 +307,15 @@ pub(crate) async fn serve(
                 if lease_watch.revoked(&task_state) {
                     return;
                 }
-                match csrc.read_batch(cursor, 1024 * 1024).await {
+                // Round-11.1: the private catch-up read races the
+                // client/body — a dropped body (or the body gate's
+                // cutoff, which closes the channel) cancels a blocked
+                // read instead of letting it run to completion.
+                let read = tokio::select! {
+                    r = csrc.read_batch(cursor, 1024 * 1024) => r,
+                    _ = tx.closed() => return,
+                };
+                match read {
                     Ok(batch) if batch.scan_to > cursor => {
                         for r in &batch.records {
                             if r.off >= catchup_bound {
@@ -463,10 +468,26 @@ pub(crate) async fn serve(
                         // Genuine close OR topology transition — ONLY
                         // the drive (driver permit → descriptor refresh)
                         // decides, and it installs the successor source
-                        // on a transition (Stage 6.3). Contended (None):
-                        // the winner swaps or closes; ver/gen waits
-                        // observe it.
-                        if let Some(outcome) = feed.drive_once().await {
+                        // on a transition (Stage 6.3).
+                        let drive = feed.drive_once().await;
+                        if drive.is_none() {
+                            // CONTENDED at a CLOSED source (round-11.1
+                            // herd leg): the lifecycle transition bumps
+                            // the version EXACTLY ONCE, and it fires
+                            // while the resolving drive still holds the
+                            // permit — a session woken by that bump can
+                            // lose the permit race, park having already
+                            // consumed the only bump, and never wake
+                            // (the producer heartbeat that papered
+                            // over this is gone). The window is
+                            // transient: re-check on a short bound.
+                            tokio::select! {
+                                _ = tokio::time::sleep(std::time::Duration::from_millis(25)) => {}
+                                _ = tx.closed() => return,
+                            }
+                            continue;
+                        }
+                        if let Some(outcome) = drive {
                             match outcome {
                                 DriveOutcome::Closed => {
                                     // DRAIN BEFORE TERMINAL (round-5
@@ -576,9 +597,16 @@ pub(crate) async fn serve(
                                     need_status = true;
                                     continue;
                                 }
+                                DriveOutcome::Cancelled => return,
                                 DriveOutcome::Idle
                                 | DriveOutcome::NoProgress
                                 | DriveOutcome::SourceFailed => {
+                                    // ONE retry task per feed drives
+                                    // the unresolved transition; this
+                                    // session parks on the version
+                                    // watch (round-11.1: no per-
+                                    // session timer herd).
+                                    feed.schedule_transition_retry();
                                     transition_retries += 1;
                                     if transition_retries > 64 {
                                         crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
@@ -692,26 +720,16 @@ pub(crate) async fn serve(
                         }
                         // Head already covers the frontier: nothing to do.
                         Some(DriveOutcome::Idle) => {}
+                        Some(DriveOutcome::Cancelled) => return,
                         // Contended: park; the winner's publication bumps
                         // ver_wait (registered at loop top).
                         None => {}
                     }
                 }
-                // Park. BOUNDED while the observed source is closed: a
-                // collection seal closes the segment (firing the handle
-                // notify) BEFORE it publishes the Sealed descriptor —
-                // a session woken by that notify drives against the
-                // pre-publication topology (RetryLater/Idle, no version
-                // bump) and the publication itself touches no feed
-                // state, so nothing else ever wakes it. Re-drive on a
-                // short bound until the transition resolves (the
-                // transition_retries cap turns a genuinely stuck
-                // transition into the typed disconnect).
-                let park_bound = if closed {
-                    std::time::Duration::from_millis(250)
-                } else {
-                    lease_watch.nap()
-                };
+                // Park. Seal-publication convergence is the feed's ONE
+                // retry task (round-11.1) — its resolving drive bumps
+                // the version and wakes every parked session; no
+                // per-session timer exists.
                 tokio::select! {
                     _ = &mut ver_wait => {}
                     _ = &mut gen_wait => {}
@@ -721,13 +739,8 @@ pub(crate) async fn serve(
                             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                         return;
                     }
-                    _ = tokio::time::sleep(park_bound) => {
+                    _ = tokio::time::sleep(lease_watch.nap()) => {
                         if lease_watch.revoked(&task_state) {
-                            return;
-                        }
-                    }
-                    _ = hb.changed() => {
-                        if !sse_send(&tx, Bytes::from(": keep-alive\n\n")).await {
                             return;
                         }
                     }

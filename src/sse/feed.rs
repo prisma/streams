@@ -535,6 +535,12 @@ pub(crate) struct LiveFeed {
     /// bounded lifetime).
     project: crate::tenant::ProjectId,
     project_reserved: Arc<ProjectRetention>,
+    /// Round-11.1: teardown cancellation + the ONE transition-retry
+    /// scheduler per feed (never a per-session timer herd).
+    pub(crate) cancel: CancelFlag,
+    retry_scheduled: AtomicBool,
+    #[cfg(test)]
+    pub(crate) retry_spawns: AtomicU64,
     /// Test-only: names this feed for the post-release drive failpoint
     /// (`Fp::FeedAfterPermitRelease`); unset = the hook is inert.
     #[cfg(test)]
@@ -542,6 +548,46 @@ pub(crate) struct LiveFeed {
 }
 
 const MAX_DRIVER_BATCH_BYTES: usize = 256 * 1024;
+
+/// Round-11.1 teardown token: fired by the registry when the LAST
+/// subscriber leaves — every in-flight source operation (local read,
+/// remote page, refresh) selects against it, so no source work
+/// survives feed teardown. A single subscriber's disconnect never
+/// fires it.
+pub(crate) struct CancelFlag {
+    fired: AtomicBool,
+    notify: tokio::sync::Notify,
+}
+
+impl CancelFlag {
+    fn new() -> Self {
+        Self {
+            fired: AtomicBool::new(false),
+            notify: tokio::sync::Notify::new(),
+        }
+    }
+    pub(crate) fn fire(&self) {
+        self.fired.store(true, Ordering::SeqCst);
+        self.notify.notify_waiters();
+    }
+    pub(crate) fn is_fired(&self) -> bool {
+        self.fired.load(Ordering::SeqCst)
+    }
+    pub(crate) async fn cancelled(&self) {
+        loop {
+            if self.is_fired() {
+                return;
+            }
+            let n = self.notify.notified();
+            tokio::pin!(n);
+            n.as_mut().enable();
+            if self.is_fired() {
+                return;
+            }
+            n.await;
+        }
+    }
+}
 
 /// RAII single-flight driver permit (finding 6): dropping it —
 /// including via task abort while awaiting a source read — releases
@@ -593,6 +639,10 @@ impl LiveFeed {
             budget,
             project,
             project_reserved,
+            cancel: CancelFlag::new(),
+            retry_scheduled: AtomicBool::new(false),
+            #[cfg(test)]
+            retry_spawns: AtomicU64::new(0),
             #[cfg(test)]
             fp_name: std::sync::OnceLock::new(),
         })
@@ -674,6 +724,15 @@ impl LiveFeed {
     #[cfg(test)]
     pub(crate) fn source_read_count(&self) -> u64 {
         self.source_reads.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub(crate) fn lifecycle_for_test(&self) -> &'static str {
+        match self.st.lock().unwrap().lifecycle {
+            Lifecycle::Active => "Active",
+            Lifecycle::Closed => "Closed",
+            Lifecycle::Gone(_) => "Gone",
+        }
     }
 
     #[cfg(test)]
@@ -778,6 +837,52 @@ impl LiveFeed {
             };
         }
         Take::AtHead
+    }
+
+    /// Round-11.1: ONE transient-transition retry scheduler per feed.
+    /// A parked fan-out never creates a timer herd: the first session
+    /// that observes an unresolved closed source arms one task; the
+    /// task re-drives at 250 ms until the transition resolves, the
+    /// subscribers leave, or the feed tears down. Resolution bumps
+    /// the version, waking every parked session.
+    pub(crate) fn schedule_transition_retry(self: &Arc<Self>) {
+        if self
+            .retry_scheduled
+            .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+            .is_err()
+        {
+            return;
+        }
+        #[cfg(test)]
+        self.retry_spawns.fetch_add(1, Ordering::Relaxed);
+        let feed = self.clone();
+        tokio::spawn(async move {
+            // Bounded: 20 minutes of 250 ms attempts, far beyond any
+            // real transition; sessions' own caps disconnect earlier.
+            for _ in 0..4800u32 {
+                tokio::select! {
+                    _ = tokio::time::sleep(std::time::Duration::from_millis(250)) => {}
+                    _ = feed.cancel.cancelled() => break,
+                }
+                if feed.subscriber_count() == 0 || feed.cancel.is_fired() {
+                    break;
+                }
+                match feed.drive_once().await {
+                    Some(DriveOutcome::Idle)
+                    | Some(DriveOutcome::NoProgress)
+                    | Some(DriveOutcome::SourceFailed)
+                    | None => {
+                        let unresolved = feed.current_source().closed()
+                            && matches!(feed.st.lock().unwrap().lifecycle, Lifecycle::Active);
+                        if !unresolved {
+                            break;
+                        }
+                    }
+                    _ => break,
+                }
+            }
+            feed.retry_scheduled.store(false, Ordering::SeqCst);
+        });
     }
 
     pub(crate) async fn drive_once(&self) -> Option<DriveOutcome> {
@@ -894,7 +999,10 @@ impl LiveFeed {
         let bump = match outcome {
             DriveOutcome::Solo { .. } | DriveOutcome::Published => true,
             DriveOutcome::Closed | DriveOutcome::IncarnationClosed(_) => transitioned,
-            DriveOutcome::Idle | DriveOutcome::NoProgress | DriveOutcome::SourceFailed => false,
+            DriveOutcome::Idle
+            | DriveOutcome::NoProgress
+            | DriveOutcome::SourceFailed
+            | DriveOutcome::Cancelled => false,
         };
         if bump {
             let ver = {
@@ -914,7 +1022,13 @@ impl LiveFeed {
         generation: u64,
         head: u64,
     ) -> DriveOutcome {
-        let batch = match src.read_batch(head, self.read_cap).await {
+        let read = tokio::select! {
+            r = src.read_batch(head, self.read_cap) => r,
+            // Round-11.1: feed teardown cancels in-flight source work
+            // (the dropped future aborts a remote page's request).
+            _ = self.cancel.cancelled() => return DriveOutcome::Cancelled,
+        };
+        let batch = match read {
             Ok(x) => x,
             Err(_) => {
                 crate::sse::auth::sse_stats::FEED_SOURCE_FAILED.fetch_add(1, Ordering::Relaxed);
@@ -1158,6 +1272,9 @@ pub(crate) enum DriveOutcome {
     /// The source read failed; no state changed, no version bump. The
     /// session parks and retries on the next wake (finding 6).
     SourceFailed,
+    /// The feed is tearing down (last subscriber left): the read was
+    /// cancelled mid-flight. Nothing to deliver, nothing to retry.
+    Cancelled,
 }
 
 // ==================================================================
@@ -2067,6 +2184,7 @@ pub(crate) mod tests {
             Some(DriveOutcome::Closed) => "Closed",
             Some(DriveOutcome::IncarnationClosed(_)) => "IncarnationClosed",
             Some(DriveOutcome::SourceFailed) => "SourceFailed",
+            Some(DriveOutcome::Cancelled) => "Cancelled",
             None => "Contended",
         }
     }

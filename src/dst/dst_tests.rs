@@ -5822,6 +5822,7 @@ async fn http_rig_inner(
         feed_budget: Arc::new(crate::sse::feed::FeedMemoryBudget::from_env()),
         feed_ring_bytes: std::sync::atomic::AtomicUsize::new(crate::livehub::feed_ring_bytes()),
         max_record_payload_bytes: std::sync::atomic::AtomicUsize::new(0),
+        sse_heartbeat_ms: std::sync::atomic::AtomicU64::new(15_000),
         sse_connections: std::sync::atomic::AtomicU64::new(0),
         live_hubs: crate::livehub::HubRegistry::new(),
         sse_live_hub: std::sync::atomic::AtomicBool::new(false),
@@ -35638,6 +35639,218 @@ async fn livefeed_remote_sealed_predecessor_streams_through_owner() {
             "{needle} exactly once after peer recovery:\n{rec}"
         );
     }
+}
+
+/// Round-11.1 (red): a BLACKHOLED peer — TCP accepted, request read,
+/// no response ever — must not suppress SSE keep-alives (the body
+/// owns them), must not cancel other subscribers, must cancel its
+/// in-flight page on final client drop (feed teardown), and must
+/// recover in place when the peer returns.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_blackholed_peer_never_suppresses_heartbeats() {
+    let store = mem();
+    let (state_a, addr_a) = http_rig_owner(store.clone(), "inst-a").await;
+    let (state_b, addr_b) = http_rig_owner(store, "inst-b").await;
+    state_b
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    // Fast keep-alives so the leg proves cadence in seconds.
+    state_b
+        .sse_heartbeat_ms
+        .store(300, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr_a,
+        "PUT",
+        "/v1/streams/xbh",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append_lf(addr_a, "xbh", r#"{"h":0}"#).await;
+    let sref = state_a.raw_adapter_sref("xbh");
+    let _ = crate::scaler3::execute_split(&state_a, &sref, 0, 0x8000_0000_0000_0000).await;
+    for _ in 0..200 {
+        state_a.registry.invalidate(&sref);
+        let d = state_a.registry.get(&sref).await.unwrap().unwrap();
+        if d.segments
+            .as_ref()
+            .is_some_and(|m| m.pending.is_none() && m.segments.len() > 1)
+        {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+    state_b.registry.invalidate(&sref);
+    let desc = state_b.registry.get(&sref).await.unwrap().unwrap();
+    let child_seg = desc.resolve_segment("").seg_id;
+    let p_parent =
+        crate::registry::shard_for_hash(&state_b.shard_prefixes, &desc.segment_route_by_id(0));
+    let p_child = crate::registry::shard_for_hash(
+        &state_b.shard_prefixes,
+        &desc.segment_route_by_id(child_seg),
+    );
+    assert_ne!(p_parent, p_child);
+    *state_b.ring_active.write().unwrap() = vec!["inst-a".to_string(), "inst-b".to_string()];
+    {
+        let mut ov = state_b.ring_overrides.write().unwrap();
+        for p in state_b.shard_prefixes.clone() {
+            let owner = if p == p_parent { "inst-a" } else { "inst-b" };
+            ov.insert(p, owner.to_string());
+        }
+    }
+    hub_append_lf(addr_b, "xbh", r#"{"h":1}"#).await;
+
+    // The BLACKHOLE: accepts, reads the request, never answers.
+    let hole = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+    let hole_addr = hole.local_addr().unwrap();
+    let held: Arc<std::sync::Mutex<Vec<tokio::net::TcpStream>>> = Arc::new(Default::default());
+    let held2 = held.clone();
+    tokio::spawn(async move {
+        loop {
+            let Ok((mut sck, _)) = hole.accept().await else {
+                return;
+            };
+            let held = held2.clone();
+            tokio::spawn(async move {
+                use tokio::io::AsyncReadExt;
+                let mut buf = [0u8; 4096];
+                let _ = sck.read(&mut buf).await; // consume the request
+                held.lock().unwrap().push(sck); // hold forever
+            });
+        }
+    });
+    state_b
+        .peer_urls
+        .write()
+        .unwrap()
+        .insert("inst-a".to_string(), format!("http://{hole_addr}"));
+
+    // Two subscribers whose remote catch-up is blackholed.
+    let mut s1 = lf_connect(addr_b, "xbh", "?cursor=beginning").await;
+    let s2 = lf_connect(addr_b, "xbh", "?cursor=beginning").await;
+    let (held_acc, eof) = hub_sse_collect(&mut s1, 2, |_| false).await;
+    assert!(!eof, "a blackholed peer is a stall, not a disconnect");
+    assert!(
+        !held_acc.contains("event: data"),
+        "no data while blackholed:\n{held_acc}"
+    );
+    assert!(
+        held_acc.matches(": keep-alive").count() >= 3,
+        "the BODY owns keep-alives — a blocked remote read must not \
+         suppress them (got {}):\n{held_acc}",
+        held_acc.matches(": keep-alive").count()
+    );
+    // One client's drop must not cancel the shared feed's work.
+    drop(s2);
+    let (still, eof2) = hub_sse_collect(&mut s1, 1, |_| false).await;
+    assert!(!eof2, "the survivor stays open");
+    assert!(
+        still.matches(": keep-alive").count() >= 1,
+        "still alive:\n{still}"
+    );
+
+    // Peer restored: recovery completes in place.
+    state_b
+        .peer_urls
+        .write()
+        .unwrap()
+        .insert("inst-a".to_string(), format!("http://{addr_a}"));
+    let (rec, eof3) = hub_sse_collect(&mut s1, 30, |t| lf_record_and_status(t, "\"h\":1")).await;
+    assert!(!eof3, "recovery in place:\n{rec}");
+    for i in 0..2u64 {
+        let needle = format!("\"h\":{i}");
+        assert_eq!(rec.matches(&needle).count(), 1, "{needle} once:\n{rec}");
+    }
+    // Final drop tears the feed down and CANCELS in-flight work.
+    drop(s1);
+    for _ in 0..200 {
+        if state_b.live_feeds.len() == 0 {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(10)).await;
+    }
+    assert_eq!(state_b.live_feeds.len(), 0, "teardown reaches zero feeds");
+}
+
+/// Round-11.1 (red): a delayed seal publication over a parked FAN-OUT
+/// creates ONE feed retry task, never a per-session timer herd — and
+/// still converges promptly on release.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn livefeed_seal_retry_is_one_task_per_feed_at_fanout() {
+    let _serial = gap_lock().lock().await; // global failpoint registry
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    state
+        .sse_engine_livefeed
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/lfherd",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    hub_append_lf(addr, "lfherd", r#"{"s":0}"#).await;
+    // The RetryLater window needs a SPLIT topology: a single-segment
+    // close resolves as genuine closure without any retry.
+    split_and_await(&state, "lfherd", 0).await;
+    hub_append_lf(addr, "lfherd", r#"{"s":1}"#).await;
+    let mut subs = Vec::new();
+    for _ in 0..24 {
+        let mut sck = lf_connect(addr, "lfherd", "").await;
+        let (a, _) = hub_sse_collect(&mut sck, 8, |t| lf_record_and_status(t, "\"s\":1")).await;
+        assert!(a.contains("upToDate"), "parked:\n{a}");
+        subs.push(sck);
+    }
+    crate::failpoints::stop_before_sealed_publish("lfherd");
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/lfherd:seal",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{}",
+    )
+    .await;
+    assert!(st == 500 || st == 503, "withheld publication: {st}");
+    // Let the withheld window breathe: every parked session wakes on
+    // the close notify and observes the unresolved transition.
+    tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
+    let key = crate::sse::session::feed_key_of(
+        &state
+            .registry
+            .get(&state.raw_adapter_sref("lfherd"))
+            .await
+            .unwrap()
+            .unwrap(),
+        &Some(String::new()),
+    );
+    let feed = state.live_feeds.feed_for_test(&key).expect("shared feed");
+    let spawns = feed.retry_spawns.load(std::sync::atomic::Ordering::Relaxed);
+    assert!(
+        (1..=3).contains(&spawns),
+        "ONE retry scheduler per feed (a few re-arms tolerated), got {spawns} for 24 sessions"
+    );
+    crate::failpoints::stop_before_sealed_publish_off("lfherd");
+    seal_ok(addr, "lfherd").await;
+    let mut stuck = Vec::new();
+    for (n, mut sck) in subs.into_iter().enumerate() {
+        let (tail, eof) = hub_sse_collect(&mut sck, 5, |_| false).await;
+        if !(eof && tail.matches("\"sealed\":true").count() == 1) {
+            stuck.push((n, eof, tail.matches("\"sealed\":true").count()));
+        }
+    }
+    assert!(
+        stuck.is_empty(),
+        "stuck subs {stuck:?}; feed={:?}",
+        state.live_feeds.feed_for_test(&key).map(|f| (
+            f.subscriber_count(),
+            f.lifecycle_for_test(),
+            f.current_source().closed(),
+        )),
+    );
 }
 
 /// Round-10 review: the per-RECORD payload ceiling is independent of
