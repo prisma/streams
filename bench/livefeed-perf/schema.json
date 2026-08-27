@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "livefeed-perf run manifest",
+  "type": "object",
+  "required": ["arm", "engine", "commit", "binary_sha256", "shape", "phases", "reconciliation", "verdict"],
+  "properties": {
+    "arm": {"enum": ["a", "b", "c"]},
+    "engine": {"enum": ["legacy", "livefeed", "final"]},
+    "commit": {"type": "string"},
+    "binary_sha256": {"type": "string"},
+    "store_latency_ms": {"type": "number"},
+    "cgroup": {"type": "object"},
+    "shape": {"type": "object", "properties": {"feeds": {"type": "number"}, "subscribers": {"type": "number"}}},
+    "config": {"type": "object"},
+    "phases": {"type": "array", "items": {"type": "object", "required": ["name", "client"]}},
+    "reconciliation": {"type": "object", "required": ["missing", "duplicate_free"]},
+    "proc_peak_rss_kb": {"type": "number"},
+    "verdict": {"enum": ["PASS", "FAIL"]}
+  }
+}
