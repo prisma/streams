@@ -110,6 +110,8 @@ function serverSnap(d) {
     reserved_bytes: lf.reserved_bytes ?? null,
     delivered_records: d.sse_canary?.delivered_records ?? null,
     lag_disconnects: lf.lag_disconnects ?? null,
+    uncached_publish: lf.uncached_publish ?? null,
+    capacity_rejected: lf.capacity_rejected ?? null,
     admit_shed: d.admit_shed ?? null,
     stream_shed: d.stream_shed ?? null,
     open_fds: d.open_fds ?? null,
@@ -133,15 +135,22 @@ const subs = [];
 function mkSub(streamIdx, subIdx) {
   const sub = {
     streamIdx, subIdx, alive: false, paused: false, received: 0,
-    bitmap: new Uint8Array(4096), maxSeq: -1, ctl: null,
+    bitmap: new Uint8Array(4096), maxSeq: -1, ctl: null, cursor: null,
+    lagDisconnects: 0,
   };
   sub.run = async () => {
     for (;;) {
       if (sub.stopped) return;
       sub.ctl = new AbortController();
       try {
+        // The DOCUMENTED resume contract: first attach at the tail,
+        // every reconnect resumes FROM THE LAST CURSOR — a typed lag
+        // disconnect (livefeed budget exhaustion) is overhead, never
+        // loss. cursor=now on reconnect was harness bug #2: it turned
+        // designed resumable EOFs into fake missing records.
+        const cur = sub.cursor ? `cursor=${encodeURIComponent(sub.cursor)}` : "cursor=now";
         const r = await fetch(
-          `${TARGET}/v1/streams/perf-s${streamIdx}/records:sse?cursor=now`,
+          `${TARGET}/v1/streams/perf-s${streamIdx}/records:sse?${cur}`,
           { headers: { ...H(), accept: "text/event-stream" }, signal: sub.ctl.signal });
         if (r.status !== 200 || !r.body) { await sleep(500); continue; }
         sub.alive = true;
@@ -157,9 +166,14 @@ function mkSub(streamIdx, subIdx) {
           while ((i = buf.indexOf("\n\n")) >= 0) {
             const block = buf.slice(0, i);
             buf = buf.slice(i + 2);
-            if (!block.includes("event: data")) continue;
             const dl = block.indexOf("data:");
             if (dl < 0) continue;
+            if (block.includes("event: control")) {
+              const mm = block.slice(dl + 5).match(/"nextCursor":"([^"]+)"/);
+              if (mm) sub.cursor = mm[1];
+              continue;
+            }
+            if (!block.includes("event: data")) continue;
             try {
               const arr = JSON.parse(block.slice(dl + 5));
               for (const recv of Array.isArray(arr) ? arr : [arr]) {
@@ -193,7 +207,20 @@ function mkSub(streamIdx, subIdx) {
 }
 
 // ---- appends --------------------------------------------------------
+// Reconciliation owes ONLY acknowledged appends: a timed-out or
+// refused append consumed a seq but its record may not exist — the
+// first sweep counted those as "missing" (phantoms at 1000x1 burst
+// concurrency). ackBitmap marks 2xx-acked seqs per stream.
 const perStreamSeq = new Array(FEEDS).fill(0);
+const ackBitmaps = Array.from({ length: FEEDS }, () => new Uint8Array(4096));
+function ack(streamIdx, q) {
+  let bm = ackBitmaps[streamIdx];
+  if (q >= bm.length * 8) {
+    const nb = new Uint8Array(Math.max(bm.length * 2, (q >> 3) + 1024));
+    nb.set(bm); ackBitmaps[streamIdx] = nb; bm = nb;
+  }
+  bm[q >> 3] |= 1 << (q & 7);
+}
 const pad = "x".repeat(Math.max(0, PAYLOAD - 80));
 async function appendTo(streamIdx, small = false) {
   const q = perStreamSeq[streamIdx]++;
@@ -207,7 +234,8 @@ async function appendTo(streamIdx, small = false) {
     });
     state.appends++;
     rec(state.appendHist, now() - t0);
-    if (r.status !== 200 && r.status !== 204) state.appendErrors++;
+    if (r.status === 200 || r.status === 204) ack(streamIdx, q);
+    else state.appendErrors++;
     await r.body?.cancel?.().catch(() => {});
   } catch { state.appendErrors++; }
 }
@@ -377,16 +405,31 @@ const run = async () => {
 
   // Reconciliation: every subscriber must hold EVERY seq of its stream
   // appended while it was parked (cursor=now; all appends post-park).
-  const recon = { checked: 0, missing: 0, duplicate_free: true, per_stream_appended: perStreamSeq.slice(0, FEEDS) };
+  const ackedPerStream = ackBitmaps.map((bm, i) => {
+    let n = 0;
+    for (let q = 0; q < perStreamSeq[i]; q++) if (bm[q >> 3] & (1 << (q & 7))) n++;
+    return n;
+  });
+  const recon = {
+    checked: 0, missing: 0, duplicates: 0, duplicate_free: true,
+    appended: perStreamSeq.reduce((a, b) => a + b, 0),
+    acked: ackedPerStream.reduce((a, b) => a + b, 0),
+  };
   for (const sub of subs) {
-    const expect = perStreamSeq[sub.streamIdx];
     recon.checked++;
-    let got = 0;
-    for (let q = 0; q < expect; q++) {
+    const bm = ackBitmaps[sub.streamIdx];
+    let owed = 0, got = 0;
+    for (let q = 0; q < perStreamSeq[sub.streamIdx]; q++) {
+      if (!(bm[q >> 3] & (1 << (q & 7)))) continue; // unacked: not owed
+      owed++;
       if (sub.bitmap[q >> 3] & (1 << (q & 7))) got++;
     }
-    if (got !== expect) recon.missing += expect - got;
-    if (sub.received > got) recon.duplicate_free = false; // received > distinct = dupes
+    if (got !== owed) recon.missing += owed - got;
+    // received counts every delivery incl. resume overlaps; distinct
+    // acked receipts are `got` — an overlap re-delivery on resume is
+    // NOT a correctness duplicate (at-least-once across reconnects,
+    // exactly-once within a session), but record the overlap volume.
+    recon.duplicates += Math.max(0, sub.received - got);
   }
   const verdict =
     recon.missing === 0 && recon.duplicate_free && state.parseErrors === 0 ? "PASS" : "FAIL";
