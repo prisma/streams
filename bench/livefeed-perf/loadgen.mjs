@@ -37,6 +37,12 @@ const TEARDOWN = SECS("TEARDOWN_SECS", 600);
 const FANOUT_RATE = Number(process.env.FANOUT_DELIVERY_RATE ?? 1000);
 const MIXED_BG = Number(process.env.MIXED_BG_RATE ?? 200);
 const PAYLOAD = Number(process.env.PAYLOAD_BYTES ?? 1024);
+// Capacity-ladder geometry: appends target only the first
+// WRITE_BREADTH streams (default: all) so subscriber count scales
+// while the WRITE workload stays constant — the v1 ladder scaled
+// write breadth with feeds and measured the absorber's RSS ceiling
+// instead of subscriber capacity.
+const WRITE_BREADTH = Math.min(FEEDS, Number(process.env.WRITE_BREADTH || FEEDS));
 
 mkdirSync(OUT, { recursive: true });
 const series = join(OUT, "series.jsonl");
@@ -262,7 +268,7 @@ async function pacedAppends(secs, rate, { bgRate = 0, small = false } = {}) {
     budget += rate / 10;
     bgBudget += bgRate / 10;
     const jobs = [];
-    while (budget >= 1) { budget -= 1; jobs.push(appendTo(idx++ % FEEDS, small)); }
+    while (budget >= 1) { budget -= 1; jobs.push(appendTo(idx++ % WRITE_BREADTH, small)); }
     while (bgBudget >= 1) { bgBudget -= 1; jobs.push(bgAppend(bg++)); }
     if (jobs.length) await Promise.all(jobs);
     const rem = 100 - (now() - tickStart);
@@ -363,6 +369,7 @@ const run = async () => {
 
   // 6. fanout: target FANOUT_RATE deliveries/s at PAYLOAD bytes.
   const appendRate = Math.max(1, Math.round(FANOUT_RATE / SUBS_PER));
+  // (delivery rate = appendRate x SUBS_PER regardless of breadth)
   await phase("fanout", async () => { await pacedAppends(FANOUT, appendRate); });
 
   // 7. mixed: fanout writes + background writes to unsubscribed streams.
@@ -385,7 +392,10 @@ const run = async () => {
   await phase("settle", async () => {
     const end = now() + 90_000;
     for (;;) {
-      const behind = subs.filter((s) => s.alive && s.maxSeq + 1 < perStreamSeq[s.streamIdx]).length;
+      // A sub mid-reconnect (alive=false, not stopped) is still owed
+      // its resume — settling only on alive subs raced the slow set's
+      // reconnect and cut their tails (v2 residual FAILs).
+      const behind = subs.filter((s) => !s.stopped && s.maxSeq + 1 < perStreamSeq[s.streamIdx]).length;
       if (behind === 0 || now() > end) {
         if (behind > 0) console.log(`WARN: ${behind} subscribers still behind at settle deadline`);
         break;

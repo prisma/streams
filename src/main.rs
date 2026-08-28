@@ -1123,9 +1123,14 @@ pub(crate) const MAX_EXERCISED_HUB_TOTAL_BYTES: u64 = 64 * 1024 * 1024;
 /// its own entry once certified there.
 fn profile_feed_budget_max(profile: Option<&str>) -> u64 {
     match profile {
-        // The 1-GiB profile certifies at 16 MiB (64 MiB tripped RSS
-        // shed at ~505 publishing hubs; 16 MiB held ~354 MB, zero shed).
-        Some("compute-1g") => 16 * 1024 * 1024,
+        // Round-12 re-derivation (docs/PERF-LIVEFEED.md): the LiveFeed
+        // retention model reserves exact bytes per retained batch, and
+        // the controlled 1-GiB study certified 64 MiB (10,000 parked
+        // subscribers idle at 307 MB, peak 399 MB — 101 MB below the
+        // shed line). The former 16 MiB ceiling was the deleted hub's
+        // uncertainty envelope (its 64-MiB rung tripped RSS shed at
+        // ~505 hubs because hub retention was NOT exactly accounted).
+        Some("compute-1g") => 64 * 1024 * 1024,
         _ => MAX_EXERCISED_HUB_TOTAL_BYTES,
     }
 }
@@ -1423,18 +1428,33 @@ mod config_validation_tests {
     #[test]
     fn hub_budget_maximum_is_profile_specific() {
         const THIRTY_TWO_MIB: &str = "33554432";
-        // compute-1g + release + 32 MiB: REFUSED (profile max 16 MiB).
+        // Round-12: the LiveFeed retention model is exactly accounted
+        // (bounded reservation per retained batch, released on
+        // eviction), and the perf study certified 64 MiB on the 1-GiB
+        // class: 10,000 parked subscribers idle at 307 MB, peak
+        // 399 MB, 101 MB below the shed line (docs/PERF-LIVEFEED.md
+        // §3). The old 16 MiB ceiling was the HUB's uncertainty.
+        let mut cap = 10_000;
+        validate_release_capacity(
+            true,
+            Some("compute-1g"),
+            Some("67108864"),
+            &mut cap,
+            u32::MAX as u64,
+        )
+        .unwrap();
+        // Above the newly certified 64 MiB: still refused.
         let mut cap = 10_000;
         assert!(
             validate_release_capacity(
                 true,
                 Some("compute-1g"),
-                Some(THIRTY_TWO_MIB),
+                Some("134217728"),
                 &mut cap,
                 u32::MAX as u64
             )
             .is_err(),
-            "the 1-GiB profile must refuse a hub budget above its certified 16 MiB"
+            "the 1-GiB profile must refuse a feed budget above its certified 64 MiB"
         );
         // Unknown/default profile + release + 32 MiB: allowed (largest
         // EXERCISED envelope until that tier certifies its own).
