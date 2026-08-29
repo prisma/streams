@@ -79,22 +79,49 @@ const summarize = (h) => ({ n: h.n, p50: pct(h, 50), p99: pct(h, 99), p999: pct(
 const state = {
   phase: "boot",
   deliveries: 0,
-  appends: 0,
+  resumeOverlaps: 0, // re-deliveries of already-held seqs (resume overlap)
+  // Append ledger (review round: the gate denominator is SCHEDULED
+  // intent, never completed responses — a closed-loop writer that
+  // slows down under overload must not launder its own shortfall).
+  appendsScheduled: 0,
+  appendsLaunched: 0,
+  appendConcDrops: 0,
+  appends: 0, // completed (any outcome)
+  appendOk: 0,
+  append429: 0,
+  append503: 0,
+  appendStatusOther: 0,
+  appendTimeouts: 0,
+  appendTransport: 0,
   appendErrors: 0,
   reconnects: 0,
   subEofs: 0,
   parseErrors: 0,
   deliveryHist: mkHist(),
   appendHist: mkHist(),
+  subAppendHist: mkHist(), // subscribed-stream appends only
+  bgAppendHist: mkHist(), // background appends only
 };
 function resetPhaseCounters() {
   state.deliveries = 0;
+  state.resumeOverlaps = 0;
+  state.appendsScheduled = 0;
+  state.appendsLaunched = 0;
+  state.appendConcDrops = 0;
   state.appends = 0;
+  state.appendOk = 0;
+  state.append429 = 0;
+  state.append503 = 0;
+  state.appendStatusOther = 0;
+  state.appendTimeouts = 0;
+  state.appendTransport = 0;
   state.appendErrors = 0;
   state.reconnects = 0;
   state.subEofs = 0;
   state.deliveryHist = mkHist();
   state.appendHist = mkHist();
+  state.subAppendHist = mkHist();
+  state.bgAppendHist = mkHist();
 }
 
 // ---- server debug sampling -----------------------------------------
@@ -191,6 +218,7 @@ function mkSub(streamIdx, subIdx) {
                   const nb = new Uint8Array(Math.max(sub.bitmap.length * 2, (recv.q >> 3) + 1024));
                   nb.set(sub.bitmap); sub.bitmap = nb;
                 }
+                if (sub.bitmap[recv.q >> 3] & (1 << (recv.q & 7))) state.resumeOverlaps++;
                 sub.bitmap[recv.q >> 3] |= 1 << (recv.q & 7);
                 if (recv.q > sub.maxSeq) sub.maxSeq = recv.q;
               }
@@ -228,6 +256,26 @@ function ack(streamIdx, q) {
   bm[q >> 3] |= 1 << (q & 7);
 }
 const pad = "x".repeat(Math.max(0, PAYLOAD - 80));
+// Bounded client concurrency for the OPEN-LOOP scheduler below; an
+// attempt scheduled while the pool is saturated is counted as a
+// concurrency drop, never silently delayed.
+const MAX_INFLIGHT_APPENDS = Number(process.env.MAX_INFLIGHT_APPENDS || 512);
+let appendInflight = 0;
+function classify(r) {
+  state.appends++;
+  if (r.status === 200 || r.status === 204) { state.appendOk++; return true; }
+  if (r.status === 429) state.append429++;
+  else if (r.status === 503) state.append503++;
+  else state.appendStatusOther++;
+  state.appendErrors++;
+  return false;
+}
+function classifyErr(e) {
+  state.appends++;
+  if (e?.name === "TimeoutError" || e?.name === "AbortError") state.appendTimeouts++;
+  else state.appendTransport++;
+  state.appendErrors++;
+}
 async function appendTo(streamIdx, small = false) {
   const q = perStreamSeq[streamIdx]++;
   const body = JSON.stringify(small
@@ -238,42 +286,59 @@ async function appendTo(streamIdx, small = false) {
     const r = await fetch(`${TARGET}/v1/streams/perf-s${streamIdx}/records`, {
       method: "POST", headers: H(), body, signal: AbortSignal.timeout(15000),
     });
-    state.appends++;
     rec(state.appendHist, now() - t0);
-    if (r.status === 200 || r.status === 204) ack(streamIdx, q);
-    else state.appendErrors++;
+    rec(state.subAppendHist, now() - t0);
+    if (classify(r)) ack(streamIdx, q);
     await r.body?.cancel?.().catch(() => {});
-  } catch { state.appendErrors++; }
+  } catch (e) { classifyErr(e); }
 }
 async function bgAppend(i) {
+  // Review blocker 1: this timer read `state._bgT0`, which was never
+  // assigned — every background append recorded a ~0 ms sample and
+  // (at 200/s bg vs 10/s subscribed) drowned the mixed-phase append
+  // histogram in bogus zeros. Real t0 per attempt, split histogram.
+  const t0 = now();
   try {
     const r = await fetch(`${TARGET}/v1/streams/perf-bg${i % 64}/records`, {
       method: "POST", headers: H(), body: JSON.stringify({ b: i, t: now(), pad }),
       signal: AbortSignal.timeout(15000),
     });
-    state.appends++;
-    rec(state.appendHist, now() - (state._bgT0 ?? now()));
-    if (r.status !== 200 && r.status !== 204) state.appendErrors++;
+    rec(state.appendHist, now() - t0);
+    rec(state.bgAppendHist, now() - t0);
+    classify(r);
     await r.body?.cancel?.().catch(() => {});
-  } catch { state.appendErrors++; }
+  } catch (e) { classifyErr(e); }
+}
+function launch(fn) {
+  state.appendsScheduled++;
+  if (appendInflight >= MAX_INFLIGHT_APPENDS) { state.appendConcDrops++; return; }
+  state.appendsLaunched++;
+  appendInflight++;
+  fn().finally(() => { appendInflight--; });
 }
 // Paced append loop: `rate`/s spread over subscribed streams.
+// OPEN-LOOP (review blocker 4): ticks fire on an absolute schedule and
+// never await the requests they launch — a server slower than the
+// offer rate shows up as inflight saturation + concurrency drops, not
+// as a silently reduced offer.
 async function pacedAppends(secs, rate, { bgRate = 0, small = false } = {}) {
   // Fractional token budgets per 100ms tick — sub-10/s rates must not
   // floor to one append per tick (the smoke run measured 10x).
   const end = now() + secs * 1000;
   let idx = 0, bg = 0, budget = 0, bgBudget = 0;
+  let nextTick = now();
   while (now() < end) {
-    const tickStart = now();
     budget += rate / 10;
     bgBudget += bgRate / 10;
-    const jobs = [];
-    while (budget >= 1) { budget -= 1; jobs.push(appendTo(idx++ % WRITE_BREADTH, small)); }
-    while (bgBudget >= 1) { bgBudget -= 1; jobs.push(bgAppend(bg++)); }
-    if (jobs.length) await Promise.all(jobs);
-    const rem = 100 - (now() - tickStart);
+    while (budget >= 1) { budget -= 1; const s = idx++ % WRITE_BREADTH; launch(() => appendTo(s, small)); }
+    while (bgBudget >= 1) { bgBudget -= 1; const b = bg++; launch(() => bgAppend(b)); }
+    nextTick += 100;
+    const rem = nextTick - now();
     if (rem > 0) await sleep(rem);
   }
+  // Drain: phase accounting must attribute every launched attempt.
+  const drainEnd = now() + 16_000;
+  while (appendInflight > 0 && now() < drainEnd) await sleep(100);
 }
 
 // ---- phase machinery ------------------------------------------------
@@ -286,23 +351,40 @@ async function phase(name, fn) {
   await fn();
   const after = serverSnap(await debugLoad());
   const durMs = now() - t0;
+  const unique = state.deliveries - state.resumeOverlaps;
   phases.push({
-    name, dur_secs: Math.round(durMs / 1000),
+    // Epoch bounds: the analyzer joins these against proc.jsonl for
+    // PER-PHASE CPU deltas (review blocker 2 — whole-run CPU divided
+    // by four phases' deliveries was never CPU/delivery).
+    name, dur_secs: Math.round(durMs / 1000), start_ms: t0, end_ms: t0 + durMs,
     client: {
       deliveries: state.deliveries,
+      unique_deliveries: unique,
+      resume_overlaps: state.resumeOverlaps,
       deliveries_per_sec: +(state.deliveries / (durMs / 1000)).toFixed(1),
+      appends_scheduled: state.appendsScheduled,
+      appends_launched: state.appendsLaunched,
+      append_conc_drops: state.appendConcDrops,
       appends: state.appends,
+      append_ok: state.appendOk,
+      append_429: state.append429,
+      append_503: state.append503,
+      append_status_other: state.appendStatusOther,
+      append_timeouts: state.appendTimeouts,
+      append_transport: state.appendTransport,
       append_errors: state.appendErrors,
       reconnects: state.reconnects,
       sub_eofs: state.subEofs,
       parse_errors: state.parseErrors,
       append_latency_ms: summarize(state.appendHist),
+      append_latency_subscribed_ms: summarize(state.subAppendHist),
+      append_latency_bg_ms: summarize(state.bgAppendHist),
       delivery_latency_ms: summarize(state.deliveryHist),
       alive_subs: subs.filter((s) => s.alive).length,
     },
     server_before: before, server_after: after,
   });
-  console.log(`== phase ${name} done (${Math.round(durMs / 1000)}s) deliveries=${state.deliveries} appends=${state.appends}`);
+  console.log(`== phase ${name} done (${Math.round(durMs / 1000)}s) deliveries=${state.deliveries} (unique ${unique}) scheduled=${state.appendsScheduled} ok=${state.appendOk}`);
 }
 
 // ---- run ------------------------------------------------------------
@@ -368,7 +450,14 @@ const run = async () => {
   await phase("sparse", async () => { await pacedAppends(SPARSE, 1, { small: true }); });
 
   // 6. fanout: target FANOUT_RATE deliveries/s at PAYLOAD bytes.
-  const appendRate = Math.max(1, Math.round(FANOUT_RATE / SUBS_PER));
+  // Review blocker 3: deriving the subscribed write rate from the
+  // delivery target gave all-solo geometries ~6x the write load of
+  // fanout geometries — capacity comparisons across shapes were
+  // confounded. SUBSCRIBED_WPS pins the write axis independently
+  // (residency campaigns hold it constant; delivery-throughput
+  // campaigns set it from the delivery target deliberately).
+  const SUB_WPS = Number(process.env.SUBSCRIBED_WPS || 0);
+  const appendRate = SUB_WPS > 0 ? SUB_WPS : Math.max(1, Math.round(FANOUT_RATE / SUBS_PER));
   // (delivery rate = appendRate x SUBS_PER regardless of breadth)
   await phase("fanout", async () => { await pacedAppends(FANOUT, appendRate); });
 
@@ -421,7 +510,13 @@ const run = async () => {
     return n;
   });
   const recon = {
-    checked: 0, missing: 0, duplicates: 0, duplicate_free: true,
+    // The asserted contract (review: say what is gated, exactly):
+    // every ACKED record observed by every subscriber = zero `missing`;
+    // delivery is exactly-once within a connection and at-least-once
+    // across resume — `resume_overlaps` MEASURES the overlap volume,
+    // it is not a correctness failure and does not gate the verdict.
+    contract: "acked-complete; exactly-once per connection; at-least-once across resume",
+    checked: 0, missing: 0, resume_overlaps: 0,
     appended: perStreamSeq.reduce((a, b) => a + b, 0),
     acked: ackedPerStream.reduce((a, b) => a + b, 0),
   };
@@ -435,14 +530,9 @@ const run = async () => {
       if (sub.bitmap[q >> 3] & (1 << (q & 7))) got++;
     }
     if (got !== owed) recon.missing += owed - got;
-    // received counts every delivery incl. resume overlaps; distinct
-    // acked receipts are `got` — an overlap re-delivery on resume is
-    // NOT a correctness duplicate (at-least-once across reconnects,
-    // exactly-once within a session), but record the overlap volume.
-    recon.duplicates += Math.max(0, sub.received - got);
+    recon.resume_overlaps += Math.max(0, sub.received - got);
   }
-  const verdict =
-    recon.missing === 0 && recon.duplicate_free && state.parseErrors === 0 ? "PASS" : "FAIL";
+  const verdict = recon.missing === 0 && state.parseErrors === 0 ? "PASS" : "FAIL";
   writeFileSync(join(OUT, "run.json"), JSON.stringify({
     shape: { feeds: FEEDS, subscribers: FEEDS * SUBS_PER, subs_per: SUBS_PER },
     config: {

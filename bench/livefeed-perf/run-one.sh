@@ -56,8 +56,8 @@ docker run -d --name "$SERVER" --network "$NET" --platform linux/amd64 \
   ${ENGINE_ENV:+-e "$ENGINE_ENV"} \
   -e MAX_RECORD_PAYLOAD_BYTES=131072 \
   -e SSE_FEED_RING_BYTES=1048576 \
-  -e SSE_FEED_TOTAL_BYTES="${FEED_TOTAL_BYTES:-16777216}" \
-  -e SSE_FEED_PROJECT_BYTES="${FEED_PROJECT_BYTES:-4194304}" \
+  -e SSE_FEED_TOTAL_BYTES="${FEED_TOTAL_BYTES:-67108864}" \
+  -e SSE_FEED_PROJECT_BYTES="${FEED_PROJECT_BYTES:-33554432}" \
   -e SSE_MAX_CONNECTIONS="${SSE_MAX_CONNECTIONS:-0}" \
   -e ABSORB_GATHER_MAX_BYTES=8388608 \
   -e ABSORB_GLOBAL_BUDGET_BYTES=100859904 \
@@ -84,6 +84,11 @@ docker run -d --name "$SERVER" --network "$NET" --platform linux/amd64 \
     SP=$!
     sh /sampler.sh $SP /out/proc.jsonl &
     wait $SP' > /dev/null
+
+# Archive the EXACT env the measured server runs with (review: every
+# capacity claim must name its profile; a script default that drifts
+# from the deploy profile must be visible in the manifest).
+docker inspect -f '{{json .Config.Env}}' "$SERVER" > "$OUTDIR/server-env.json" 2>/dev/null || true
 
 # Gen container (blocks until the run finishes).
 set +e
@@ -119,11 +124,19 @@ if os.path.exists(pp):
         if line:
             try: proc.append(json.loads(line))
             except Exception: pass
+server_env = []
+ep = os.path.join(out, "server-env.json")
+if os.path.exists(ep):
+    try:
+        server_env = sorted(json.load(open(ep)))
+    except Exception:
+        pass
 manifest = {
     "arm": arm,
     "engine": {"a": "legacy", "b": "livefeed", "c": "final"}[arm],
     "commit": {"a": "1834b726", "b": "1834b726", "c": "3a8016e6"}[arm],
     "binary_sha256": sha,
+    "server_env": server_env,
     "store_latency_ms": int(lat),
     "cgroup": {"cpus": 1, "memory_bytes": 1 << 30, "nofile": 32768},
     "tag": tag,

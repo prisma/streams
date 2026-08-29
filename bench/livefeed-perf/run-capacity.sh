@@ -1,26 +1,32 @@
 #!/bin/bash
-# Campaign 2: the per-instance capacity ladder (round 12) on arm C.
+# Campaign 2 (round 12, restructured per review): TWO INDEPENDENT AXES.
+# The first ladder conflated them — the all-solo rungs received ~6x the
+# write rate of the fanout rungs (appendRate = delivery_target/SUBS_PER),
+# so "breadth is the ceiling" was confounded with "breadth got more
+# writes".
 #
-# Worst-case geometry first (N streams x 1 subscriber, max feed count);
-# per-rung gates per the charter: append-shed < 0.1%, delivery p99
-# < 250 ms, zero missing, no RSS-shed, peak RSS below the 500 MB
-# admission line WITH headroom. The ladder stops at the first failing
-# rung; the highest passing rung then reruns at N/2 x 2 and N/100 x 100
-# to attribute the ceiling (feed state vs connection state vs fanout).
+#   AXIS=residency (default)
+#     Fixed write workload at EVERY geometry: 100 subscribed writes/s
+#     + 200 background writes/s = 300 writes/s total, appends confined
+#     to 100 streams. Delivery rate then varies with fanout — at the
+#     product geometry 100x100 this IS the product-throughput receipt
+#     (100 w/s x 100 subscribers = 10,000 deliveries/s + 300 w/s).
+#     Use THIS axis for feed/connection memory capacity claims.
 #
-#   RESULTS=<dir> run-capacity.sh [rungs...]
+#   AXIS=delivery
+#     Fixed delivery load at the product geometry (100x100), ladder
+#     1k -> 2.5k -> 5k -> 10k deliveries/s (SUBSCRIBED_WPS = target/100).
+#     Use for delivery-throughput ceilings ONLY, never feed-memory.
+#
+#   RESULTS=<dir> [AXIS=residency|delivery] run-capacity.sh [rungs...]
 set -euo pipefail
 HERE=$(cd "$(dirname "$0")" && pwd)
 RESULTS=${RESULTS:?set RESULTS dir}
 mkdir -p "$RESULTS"
+AXIS=${AXIS:-residency}
 RUNGS=("$@")
-[ ${#RUNGS[@]} -gt 0 ] || RUNGS=(1000 2500 5000 7500 10000)
-# Constant write workload while subscribers scale: appends confined
-# to 100 streams; the density campaign showed write breadth (absorber
-# state per stream) drives RSS, and it must not ride the rungs.
 export WARMUP_SECS=30 IDLE_SECS=600 SPARSE_SECS=60 FANOUT_SECS=180 MIXED_SECS=180 \
-       SLOW_SECS=60 TEARDOWN_SECS=300 FANOUT_DELIVERY_RATE=${FANOUT_DELIVERY_RATE:-1000} \
-       MIXED_BG_RATE=200 WRITE_BREADTH=100
+       SLOW_SECS=60 TEARDOWN_SECS=300 WRITE_BREADTH=100 MIXED_BG_RATE=200
 
 gate() { # manifest -> PASS/FAIL per the capacity gates
   python3 - "$1" <<'PY'
@@ -31,9 +37,13 @@ fails = []
 if m.get("verdict") != "PASS":
     fails.append("reconciliation")
 mx = ph.get("mixed", {}).get("client", {})
-if mx.get("appends"):
-    if mx["append_errors"] / mx["appends"] > 0.001:
-        fails.append(f"append_shed {mx['append_errors']}/{mx['appends']}")
+# Review blocker 4: the denominator is SCHEDULED intent; errors AND
+# concurrency drops count against it (a drop is offered load the
+# client could not even launch).
+sched = mx.get("appends_scheduled") or mx.get("appends") or 0
+bad = (mx.get("append_errors") or 0) + (mx.get("append_conc_drops") or 0)
+if sched and bad / sched > 0.001:
+    fails.append(f"append_shed {bad}/{sched}")
 p99 = mx.get("delivery_latency_ms", {}).get("p99")
 if p99 is not None and p99 > 250:
     fails.append(f"delivery_p99 {p99}ms")
@@ -48,11 +58,33 @@ sys.exit(1 if fails else 0)
 PY
 }
 
+if [ "$AXIS" = delivery ]; then
+  # ---- delivery-throughput ladder at the product geometry ----------
+  [ ${#RUNGS[@]} -gt 0 ] || RUNGS=(1000 2500 5000 10000)
+  export SSE_MAX_CONNECTIONS=10200
+  for D in "${RUNGS[@]}"; do
+    OUT="$RESULTS/del-${D}ps-100x100"
+    export SUBSCRIBED_WPS=$((D / 100))
+    echo "== delivery rung ${D}/s at 100x100 (SUBSCRIBED_WPS=$SUBSCRIBED_WPS)"
+    [ -s "$OUT/manifest.json" ] || bash "$HERE/run-one.sh" c 100 100 "$OUT" "delivery-${D}ps" || true
+    if ! gate "$OUT/manifest.json"; then
+      echo "== delivery ladder stops at ${D}/s"
+      break
+    fi
+    sleep 20
+  done
+  echo "DELIVERY_LADDER_DONE"
+  exit 0
+fi
+
+# ---- residency/capacity ladder: FIXED 300 w/s at every geometry ----
+[ ${#RUNGS[@]} -gt 0 ] || RUNGS=(1000 2500 5000 7500 10000)
+export SUBSCRIBED_WPS=100
 HIGHEST=""
 for N in "${RUNGS[@]}"; do
   OUT="$RESULTS/rung-${N}x1"
   export SSE_MAX_CONNECTIONS=$((N + 200))
-  echo "== capacity rung ${N}x1 (SSE_MAX_CONNECTIONS=$SSE_MAX_CONNECTIONS)"
+  echo "== capacity rung ${N}x1 (SSE_MAX_CONNECTIONS=$SSE_MAX_CONNECTIONS, 300 w/s fixed)"
   if [ ! -s "$OUT/manifest.json" ]; then
     bash "$HERE/run-one.sh" c "$N" 1 "$OUT" "capacity-${N}x1" || true
   fi
@@ -65,7 +97,7 @@ for N in "${RUNGS[@]}"; do
   sleep 20
 done
 [ -n "$HIGHEST" ] || { echo "CAPACITY_LADDER_FAIL: no rung passed"; exit 1; }
-echo "== highest passing rung: $HIGHEST — attribution geometries"
+echo "== highest passing rung: $HIGHEST — attribution geometries (same 300 w/s)"
 export SSE_MAX_CONNECTIONS=$((HIGHEST + 200))
 for GEO in "$((HIGHEST / 2))x2" "$((HIGHEST / 100))x100"; do
   F=${GEO%x*}; S=${GEO#*x}
