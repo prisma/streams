@@ -73,6 +73,22 @@ if [ "${WC_DIET:-0}" = "1" ]; then
   )
 fi
 
+# Rung-level overrides that must BEAT the compute-1g profile: later
+# --env wins, so anything the profile also pins (round-11.5 added
+# SSE_MAX_CONNECTIONS=1200 and the feed budgets to it) goes here, at
+# the very end of the deploy args. Feed budgets default to the
+# PROFILE (round-12 E4: 64/32 MiB); pass WC_FEED_* only to experiment.
+RUNGFLAGS=(--env SSE_MAX_CONNECTIONS=${WC_SSE_MAX:-2000})
+[ -n "${WC_FEED_RING:-}" ]    && RUNGFLAGS+=(--env SSE_FEED_RING_BYTES=$WC_FEED_RING)
+[ -n "${WC_FEED_TOTAL:-}" ]   && RUNGFLAGS+=(--env SSE_FEED_TOTAL_BYTES=$WC_FEED_TOTAL)
+[ -n "${WC_FEED_PROJECT:-}" ] && RUNGFLAGS+=(--env SSE_FEED_PROJECT_BYTES=$WC_FEED_PROJECT)
+# Cache-posture experiments (round-12 F4/F5: the L1 writes-only diet's
+# full cache trim put WAN store reads on the append path — 137 ms ->
+# 7.3 s p50; tune per rung instead of all-or-nothing).
+[ -n "${WC_SHARED_CACHE:-}" ]   && RUNGFLAGS+=(--env SHARED_CACHE_BYTES=$WC_SHARED_CACHE)
+[ -n "${WC_POSTINGS_CACHE:-}" ] && RUNGFLAGS+=(--env POSTINGS_CACHE_BYTES=$WC_POSTINGS_CACHE)
+[ -n "${WC_HISTORY_CACHE:-}" ]  && RUNGFLAGS+=(--env HISTORY_CACHE_BYTES=$WC_HISTORY_CACHE)
+
 "$HERE/build-upload.sh"
 
 MTDIR="$S/wc-$SOAK_RUN_ID"
@@ -174,10 +190,6 @@ deploy server \
   --env ABSORB_PACE_WINDOW_MS=${WC_PACE_WINDOW:-50} --env ABSORB_PACE_MS=${WC_PACE_MS:-0} \
   --env ABSORB_READ_PAR=${WC_READ_PAR:-8} \
   --env ADMIT_RSS_SHED_MB=${WC_RSS_SHED:-600} \
-  --env SSE_MAX_CONNECTIONS=${WC_SSE_MAX:-10000} \
-  --env SSE_FEED_RING_BYTES=${WC_FEED_RING:-1048576} \
-  --env SSE_FEED_TOTAL_BYTES=${WC_FEED_TOTAL:-16777216} \
-  --env SSE_FEED_PROJECT_BYTES=${WC_FEED_PROJECT:-4194304} \
   --env MAX_RECORD_PAYLOAD_BYTES=${WC_RECORD_CEILING:-131072} \
   --env POOL_IDLE_SECS=4 --env KEEP_AWAKE=1 --env CELL_ID="$CELL" \
   --env PROJECT_ID=proj-mt-deploy \
@@ -190,7 +202,8 @@ deploy server \
   --env STREAMS_AUTH_REFRESH_SECS=60 \
   --env FEEDS_S3_KEY="wc/$SOAK_RUN_ID/feeds.json" \
   ${MEMFLAGS[@]+"${MEMFLAGS[@]}"} \
-  ${DIETFLAGS[@]+"${DIETFLAGS[@]}"}
+  ${DIETFLAGS[@]+"${DIETFLAGS[@]}"} \
+  ${RUNGFLAGS[@]+"${RUNGFLAGS[@]}"}
 verify_server_live
 curl -sf --max-time 20 -H "authorization: Bearer $AUTH" \
   "$(cat "$S/url-server-$R.txt")/v1/debug/load" > "$OUT/server-before-$STAGE.json" || true
@@ -217,15 +230,55 @@ for k in $(seq 0 $((GENS - 1))); do
     --env BENCH_CERT_FANOUT_ACTIVE="$FANOUT" --env BENCH_CERT_WINDOW_MS=5000 \
     --env BENCH_CERT_CONNECT_CONC=${WC_CONNECT_CONC:-48} \
     --env BENCH_CERT_WPS="$WPS" --env BENCH_CERT_SECS="$SECS" \
+    --env BENCH_CERT_SETTLE_SECS="${WC_SETTLE:-60}" \
     --env BENCH_WIDE_SETUP_CONC=64 --env BENCH_RECORD_BYTES=1024 --env BENCH_BATCH=1 \
-    --env BENCH_HOLD=1 --env BENCH_START_GATED=false \
+    --env BENCH_HOLD=1 --env BENCH_START_GATED=true \
     --env AUTH_TOKEN="$AUTH" --env STREAM_KEY="$KEY" \
     --env BENCH_STREAM="wc$STAGE-" --env KEEP_AWAKE=1
 done
 
-GURL=$(cat "$S/url-gen-$(role_region gen).txt")   # the writer gen decides cert_done
+gen_url() { # gen index -> stats URL
+  if [ "$1" = 0 ]; then cat "$S/url-gen-$(role_region gen).txt"
+  else cat "$S/url-gen-$1-$(role_region "gen-$1").txt"; fi
+}
+
+# Barrier: every gen parks its slice ungated, then waits for POST
+# /start. Release ALL gens in one pass only when each reports its
+# slice parked (subsOpen in the "parking" status line) — the release
+# starts every gen's measurement clock, so deadline+settle line up.
+if [ "$SUBS_N" -gt 0 ]; then
+  echo "== barrier: waiting for $SUBS_N subscriptions across $GENS gens"
+  PARK_DEADLINE=$(( $(date +%s) + 2700 ))
+  while :; do
+    TOTAL=0 ALLREADY=1
+    for k in $(seq 0 $((GENS - 1))); do
+      WANT=$SLICE
+      [ $(( k * SLICE + SLICE )) -gt "$SUBS_N" ] && WANT=$(( SUBS_N - k * SLICE ))
+      [ "$WANT" -le 0 ] && continue
+      GOT=$(curl -sf --max-time 10 "$(gen_url "$k")/" 2>/dev/null \
+            | grep -o '"subsOpen":[0-9]*' | tail -1 | cut -d: -f2) || GOT=0
+      GOT=${GOT:-0}
+      TOTAL=$(( TOTAL + GOT ))
+      [ "$GOT" -lt $(( WANT * 98 / 100 )) ] && ALLREADY=0
+    done
+    echo "   parked $TOTAL / $SUBS_N"
+    [ "$ALLREADY" = 1 ] && break
+    if [ "$(date +%s)" -gt "$PARK_DEADLINE" ]; then
+      echo "PARK BARRIER TIMED OUT at $TOTAL/$SUBS_N" >&2
+      exit 1
+    fi
+    sleep 20
+  done
+fi
+echo "== releasing all gens (subscriber gens first, writer last)"
+for k in $(seq $((GENS - 1)) -1 0); do
+  curl -sf --max-time 10 -X POST "$(gen_url "$k")/start" > /dev/null || \
+    { echo "release failed for gen $k" >&2; exit 1; }
+done
+
+GURL=$(gen_url 0)   # the writer gen anchors cert_done
 SURL=$(cat "$S/url-server-$R.txt")
-DEADLINE=$(( $(date +%s) + SECS + 1500 ))
+DEADLINE=$(( $(date +%s) + SECS + 1800 ))
 # RSS timeline: correlate memory peaks with shed windows.
 ( while :; do
     TS=$(date +%s)
@@ -237,14 +290,21 @@ RSSPID=$!
 trap 'kill $RSSPID 2>/dev/null' EXIT
 while [ "$(date +%s)" -lt "$DEADLINE" ]; do
   sleep 30
-  BODY=$(curl -sf --max-time 15 "$GURL/" || true)
-  if [ -n "$BODY" ] && echo "$BODY" | grep -q '"cert_done"'; then
-    echo "$BODY" > "$OUT/stage-$STAGE.json"
-    # Every subscriber-only gen's stats too (subsLive adds up across them).
-    for k in $(seq 1 $((GENS - 1))); do
-      U=$(cat "$S/url-gen-$k-$(role_region "gen-$k").txt" 2>/dev/null) || continue
-      curl -sf --max-time 15 "$U/" > "$OUT/stage-$STAGE-gen$k.json" || true
-    done
+  # EVERY gen must reach cert_done (each carries its slice's exact
+  # reconciliation); collect as they land, finish when all have.
+  ALLDONE=1
+  for k in $(seq 0 $((GENS - 1))); do
+    F="$OUT/stage-$STAGE-gen$k.json"
+    [ -s "$F" ] && grep -q '"cert_done"' "$F" && continue
+    BODY=$(curl -sf --max-time 15 "$(gen_url "$k")/" || true)
+    if [ -n "$BODY" ] && echo "$BODY" | grep -q '"cert_done"'; then
+      echo "$BODY" > "$F"
+    else
+      ALLDONE=0
+    fi
+  done
+  if [ "$ALLDONE" = 1 ]; then
+    cp "$OUT/stage-$STAGE-gen0.json" "$OUT/stage-$STAGE.json"
     curl -sf --max-time 20 -H "authorization: Bearer $AUTH" \
       "$(cat "$S/url-server-$R.txt")/v1/debug/load" > "$OUT/server-after-$STAGE.json" || true
     echo "WC_STAGE_DONE $STAGE"

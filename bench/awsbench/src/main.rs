@@ -22,7 +22,10 @@ use clap::Parser;
 use hdrhistogram::Histogram;
 
 #[derive(Parser, Debug, Clone)]
-#[command(name = "awsbench", about = "Kinesis/SQS/Prisma single-unit benchmark shapes")]
+#[command(
+    name = "awsbench",
+    about = "Kinesis/SQS/Prisma single-unit benchmark shapes"
+)]
 struct Args {
     /// kinesis | sqs | prisma
     #[arg(long, env = "BENCH_SYSTEM")]
@@ -192,7 +195,11 @@ impl Stats {
             .throttled_by_code
             .lock()
             .unwrap()
-            .entry(if code.is_empty() { "unknown".into() } else { code.to_string() })
+            .entry(if code.is_empty() {
+                "unknown".into()
+            } else {
+                code.to_string()
+            })
             .or_insert(0) += 1;
         *self
             .throttled_by_status
@@ -251,7 +258,10 @@ fn incompressible_pad(op: u64, b: usize, len: usize) -> String {
 }
 
 fn now_ms() -> u64 {
-    SystemTime::now().duration_since(UNIX_EPOCH).unwrap().as_millis() as u64
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_millis() as u64
 }
 
 /// Binary payload: 8-byte big-endian producer timestamp + filler.
@@ -265,7 +275,11 @@ enum Outcome {
     /// All records accepted.
     Ok { records: u64 },
     /// Request throttled (possibly partially delivered — Kinesis).
-    Throttle { delivered: u64, status: u16, code: String },
+    Throttle {
+        delivered: u64,
+        status: u16,
+        code: String,
+    },
     /// Definitive refusal or failure: a PARSED server response says the
     /// request did not commit.
     Err(String),
@@ -291,13 +305,21 @@ impl Client {
                 let entries: Vec<_> = (0..batch)
                     .map(|_| {
                         aws_sdk_kinesis::types::PutRecordsRequestEntry::builder()
-                            .data(aws_sdk_kinesis::primitives::Blob::new(payload(record_bytes)))
+                            .data(aws_sdk_kinesis::primitives::Blob::new(payload(
+                                record_bytes,
+                            )))
                             .partition_key("slate-cmp") // one shard, one ordered unit
                             .build()
                             .unwrap()
                     })
                     .collect();
-                match c.put_records().stream_name(stream).set_records(Some(entries)).send().await {
+                match c
+                    .put_records()
+                    .stream_name(stream)
+                    .set_records(Some(entries))
+                    .send()
+                    .await
+                {
                     Ok(out) => {
                         let failed = out.failed_record_count().unwrap_or(0) as u64;
                         if failed > 0 {
@@ -307,7 +329,9 @@ impl Client {
                                 code: "kinesis_partial_throughput".into(),
                             }
                         } else {
-                            Outcome::Ok { records: batch as u64 }
+                            Outcome::Ok {
+                                records: batch as u64,
+                            }
                         }
                     }
                     Err(e) => {
@@ -322,7 +346,11 @@ impl Client {
                             || code.contains("Throttl")
                             || code.contains("LimitExceeded")
                         {
-                            Outcome::Throttle { delivered: 0, status: 0, code }
+                            Outcome::Throttle {
+                                delivered: 0,
+                                status: 0,
+                                code,
+                            }
                         } else {
                             Outcome::Err(format!("{code}: {e}"))
                         }
@@ -346,16 +374,23 @@ impl Client {
                             .unwrap()
                     })
                     .collect();
-                match c.send_message_batch().queue_url(queue_url).set_entries(Some(entries)).send().await {
+                match c
+                    .send_message_batch()
+                    .queue_url(queue_url)
+                    .set_entries(Some(entries))
+                    .send()
+                    .await
+                {
                     Ok(out) => {
                         let failed = out.failed();
                         if failed.is_empty() {
                             Outcome::Ok { records: n as u64 }
                         } else {
                             let delivered = n as u64 - failed.len() as u64;
-                            let throttle = failed
-                                .iter()
-                                .any(|f| f.code().contains("Throttl") || f.code().contains("RequestThrottled"));
+                            let throttle = failed.iter().any(|f| {
+                                f.code().contains("Throttl")
+                                    || f.code().contains("RequestThrottled")
+                            });
                             if throttle {
                                 Outcome::Throttle {
                                     delivered,
@@ -372,7 +407,11 @@ impl Client {
                             .unwrap_or_default()
                             .to_string();
                         if code.contains("Throttl") || code.contains("RequestThrottled") {
-                            Outcome::Throttle { delivered: 0, status: 0, code }
+                            Outcome::Throttle {
+                                delivered: 0,
+                                status: 0,
+                                code,
+                            }
                         } else {
                             Outcome::Err(format!("{code}: {e}"))
                         }
@@ -426,7 +465,9 @@ impl Client {
                         // harness must not assume that in advance.
                         let from_streams = r.headers().contains_key("prisma-streams-origin");
                         if (200..300).contains(&status) {
-                            Outcome::Ok { records: batch as u64 }
+                            Outcome::Ok {
+                                records: batch as u64,
+                            }
                         } else if (status == 429 || status == 503) && from_streams {
                             // The server names WHICH limiter refused
                             // (error.code): limit_records_per_sec vs
@@ -442,7 +483,11 @@ impl Client {
                                         .map(str::to_string)
                                 })
                                 .unwrap_or_default();
-                            Outcome::Throttle { delivered: 0, status, code }
+                            Outcome::Throttle {
+                                delivered: 0,
+                                status,
+                                code,
+                            }
                         } else if !from_streams && (status >= 500 || status == 429 || status == 408)
                         {
                             Outcome::Ambiguous(format!("infrastructure status {status}"))
@@ -483,7 +528,11 @@ async fn run_load(
                         stats.record_ok(t0.elapsed().as_micros() as u64, records);
                         stats.acked_ops.lock().unwrap().push(s);
                     }
-                    Outcome::Throttle { delivered, status, code } => {
+                    Outcome::Throttle {
+                        delivered,
+                        status,
+                        code,
+                    } => {
                         stats.record_throttle(delivered, status, &code);
                         stats.rejected_ops.lock().unwrap().push(s);
                     }
@@ -563,13 +612,21 @@ async fn run_load(
         };
         let dbg_wake_p50 = {
             let mut w = stats.dbg_wake_win.lock().unwrap();
-            let v = if w.is_empty() { None } else { Some(w.value_at_quantile(0.5)) };
+            let v = if w.is_empty() {
+                None
+            } else {
+                Some(w.value_at_quantile(0.5))
+            };
             w.reset();
             v
         };
         let dbg_read_p50 = {
             let mut w = stats.dbg_read_win.lock().unwrap();
-            let v = if w.is_empty() { None } else { Some(w.value_at_quantile(0.5)) };
+            let v = if w.is_empty() {
+                None
+            } else {
+                Some(w.value_at_quantile(0.5))
+            };
             w.reset();
             v
         };
@@ -686,7 +743,13 @@ async fn run_consumer(client: Client, stats: Arc<Stats>, stop: Arc<AtomicU64>) {
             };
             while stop.load(Ordering::Relaxed) == 0 {
                 let Some(it) = iter.clone() else { break };
-                match c.get_records().shard_iterator(it).limit(10_000).send().await {
+                match c
+                    .get_records()
+                    .shard_iterator(it)
+                    .limit(10_000)
+                    .send()
+                    .await
+                {
                     Ok(out) => {
                         let now = now_ms();
                         for rec in out.records() {
@@ -921,7 +984,9 @@ async fn stats_server(stats: Arc<Stats>) {
     };
     eprintln!("awsbench stats on :{port}");
     loop {
-        let Ok((mut sock, _)) = listener.accept().await else { continue };
+        let Ok((mut sock, _)) = listener.accept().await else {
+            continue;
+        };
         let stats = stats.clone();
         tokio::spawn(async move {
             use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -931,11 +996,7 @@ async fn stats_server(stats: Arc<Stats>) {
                 _ => 0,
             };
             let req = String::from_utf8_lossy(&buf[..n]);
-            let path = req
-                .split_whitespace()
-                .nth(1)
-                .unwrap_or("/")
-                .to_string();
+            let path = req.split_whitespace().nth(1).unwrap_or("/").to_string();
             let body = if path.starts_with("/start") {
                 stats.released.store(1, Ordering::Relaxed);
                 "{\"started\":true}".to_string()
@@ -1007,11 +1068,8 @@ async fn main() -> anyhow::Result<()> {
             // AWS_WEB_IDENTITY_TOKEN_FILE into service env, and the default
             // provider chain panics on it. BENCH_AWS_* are ours alone.
             let id = std::env::var("BENCH_AWS_KEY_ID").context("BENCH_AWS_KEY_ID")?;
-            let secret =
-                std::env::var("BENCH_AWS_SECRET").context("BENCH_AWS_SECRET")?;
-            let creds = aws_sdk_kinesis::config::Credentials::new(
-                id, secret, None, None, "static",
-            );
+            let secret = std::env::var("BENCH_AWS_SECRET").context("BENCH_AWS_SECRET")?;
+            let creds = aws_sdk_kinesis::config::Credentials::new(id, secret, None, None, "static");
             let conf = aws_config::defaults(aws_config::BehaviorVersion::latest())
                 .credentials_provider(creds)
                 .region(aws_config::Region::new(
@@ -1067,10 +1125,9 @@ async fn main() -> anyhow::Result<()> {
                             created = true;
                             break;
                         }
-                        Ok(r) => eprintln!(
-                            "stream create attempt {attempt}: status {}",
-                            r.status()
-                        ),
+                        Ok(r) => {
+                            eprintln!("stream create attempt {attempt}: status {}", r.status())
+                        }
                         Err(e) => eprintln!("stream create attempt {attempt}: {e}"),
                     }
                     tokio::time::sleep(Duration::from_secs(2)).await;
@@ -1264,7 +1321,6 @@ fn wide_batch(batch: usize, record_bytes: usize) -> Vec<serde_json::Value> {
         .collect()
 }
 
-
 // ---- workload-cert shape (BENCH_SHAPE=cert, prisma product only) ----------
 // Tenants [0, SUB_TENANTS) are SUBSCRIBER tenants: each owns one hot
 // stream "{prefix}s{t}" carrying its parked :sse subscriptions, and
@@ -1291,6 +1347,11 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
     let window_ms: u64 = wide_env("BENCH_CERT_WINDOW_MS", 5_000);
     let wps: u64 = wide_env("BENCH_CERT_WPS", 1_000);
     let secs: u64 = wide_env("BENCH_CERT_SECS", 300);
+    // Round-12 field mandate: performance results without EXACT
+    // delivery reconciliation are not usable. After the write deadline
+    // the subscriber fleet stays parked for a settle window so owed
+    // deliveries drain before the freeze-and-reconcile snapshot.
+    let settle_secs: u64 = wide_env("BENCH_CERT_SETTLE_SECS", 60);
     let setup_conc: usize = wide_env("BENCH_WIDE_SETUP_CONC", 64);
     anyhow::ensure!(sub_tenants <= tenants && fanout_active <= active);
     anyhow::ensure!(fanout_active == 0 || sub_tenants > 0);
@@ -1298,7 +1359,8 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
 
     let tokens_path =
         std::env::var("BENCH_TOKENS_FILE").context("cert shape requires BENCH_TOKENS_FILE")?;
-    let doc: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(&tokens_path)?)?;
+    let doc: Vec<serde_json::Value> =
+        serde_json::from_str(&std::fs::read_to_string(&tokens_path)?)?;
     let tokens: Arc<Vec<String>> = Arc::new(
         doc.iter()
             .map(|e| e["token"].as_str().unwrap_or_default().to_string())
@@ -1384,7 +1446,9 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                 rlim_max: 0,
             };
             libc::getrlimit(libc::RLIMIT_NOFILE, &mut lim);
-            let open = std::fs::read_dir("/proc/self/fd").map(|d| d.count() as u64).unwrap_or(0);
+            let open = std::fs::read_dir("/proc/self/fd")
+                .map(|d| d.count() as u64)
+                .unwrap_or(0);
             return (lim.rlim_cur as u64, lim.rlim_max as u64, open);
         }
         #[allow(unreachable_code)]
@@ -1434,40 +1498,111 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
     } else {
-    eprintln!("CERT: creating {tenants} streams (conc {setup_conc})");
-    for chunk in (0..tenants).collect::<Vec<_>>().chunks(10_000) {
-        let fails: usize = futures_util::stream::iter(chunk.iter().map(|&t| {
-            let http = http.clone();
-            let url = format!("{base}/v1/streams/{}", stream_of(t));
-            let auth = format!("Bearer {}", tokens[t]);
-            let key = key.clone();
-            async move {
-                for attempt in 0..4u32 {
-                    let r = http
-                        .put(&url)
-                        .timeout(Duration::from_secs(30))
-                        .header("authorization", auth.clone())
-                        .header("prisma-encryption-key", key.clone())
-                        .header("content-type", "application/json")
-                        .json(&serde_json::json!({"format": {"kind": "json"}}))
-                        .send()
-                        .await;
-                    if matches!(&r, Ok(resp) if resp.status().is_success()) {
-                        return 0usize;
+        eprintln!("CERT: creating {tenants} streams (conc {setup_conc})");
+        for chunk in (0..tenants).collect::<Vec<_>>().chunks(10_000) {
+            let fails: usize = futures_util::stream::iter(chunk.iter().map(|&t| {
+                let http = http.clone();
+                let url = format!("{base}/v1/streams/{}", stream_of(t));
+                let auth = format!("Bearer {}", tokens[t]);
+                let key = key.clone();
+                async move {
+                    for attempt in 0..4u32 {
+                        let r = http
+                            .put(&url)
+                            .timeout(Duration::from_secs(30))
+                            .header("authorization", auth.clone())
+                            .header("prisma-encryption-key", key.clone())
+                            .header("content-type", "application/json")
+                            .json(&serde_json::json!({"format": {"kind": "json"}}))
+                            .send()
+                            .await;
+                        if matches!(&r, Ok(resp) if resp.status().is_success()) {
+                            return 0usize;
+                        }
+                        tokio::time::sleep(Duration::from_millis(100 << attempt)).await;
                     }
-                    tokio::time::sleep(Duration::from_millis(100 << attempt)).await;
+                    1usize
                 }
-                1usize
-            }
-        }))
-        .buffer_unordered(setup_conc)
-        .fold(0usize, |a, b| async move { a + b })
-        .await;
-        anyhow::ensure!(fails == 0, "{fails} creates failed");
-    }
+            }))
+            .buffer_unordered(setup_conc)
+            .fold(0usize, |a, b| async move { a + b })
+            .await;
+            anyhow::ensure!(fails == 0, "{fails} creates failed");
+        }
     }
     let create_ms = t_create.elapsed().as_millis();
     eprintln!("CERT: creates done in {create_ms}ms");
+
+    // ---- exact delivery reconciliation state ------------------------
+    // Writers stamp every fanout append with {"q":<per-stream seq>,
+    // "s":<tenant>}; the ledgers below are the exact ownership record.
+    // Range-set (not next-expected) tracking on the subscriber side:
+    // concurrent appends to one stream may COMMIT out of send order,
+    // which is reordering at the ledger, not loss.
+    struct SubState {
+        stream_t: usize,
+        recv: Vec<(u64, u64)>, // merged inclusive ranges of received q
+        dups: u64,
+        wrong_stream: u64,
+        parks: u64,
+        first_park_ms: u64,
+    }
+    // Insert q; returns false when q was already present (a duplicate).
+    fn range_insert(v: &mut Vec<(u64, u64)>, q: u64) -> bool {
+        let i = v.partition_point(|&(lo, _)| lo <= q);
+        if i > 0 && v[i - 1].1 >= q {
+            return false; // contained
+        }
+        let touches_prev = i > 0 && v[i - 1].1 + 1 == q;
+        let touches_next = i < v.len() && v[i].0 == q + 1;
+        match (touches_prev, touches_next) {
+            (true, true) => {
+                v[i - 1].1 = v[i].1;
+                v.remove(i);
+            }
+            (true, false) => v[i - 1].1 = q,
+            (false, true) => v[i].0 = q,
+            (false, false) => v.insert(i, (q, q)),
+        }
+        true
+    }
+    // Holes strictly inside [first..last] of a merged range set.
+    fn range_holes(v: &[(u64, u64)]) -> Vec<(u64, u64)> {
+        v.windows(2)
+            .filter(|w| w[0].1 + 1 < w[1].0)
+            .map(|w| (w[0].1 + 1, w[1].0 - 1))
+            .collect()
+    }
+    fn json_u64_after(text: &str, from: usize, key: &str) -> Option<(u64, usize)> {
+        let at = text[from..].find(key)? + from + key.len();
+        let rest = &text[at..];
+        let end = rest
+            .find(|c: char| !c.is_ascii_digit())
+            .unwrap_or(rest.len());
+        rest[..end].parse::<u64>().ok().map(|v| (v, at + end))
+    }
+    let sub_states: Arc<Vec<Mutex<SubState>>> = Arc::new(
+        (0..subs_n)
+            .map(|j| {
+                Mutex::new(SubState {
+                    stream_t: (j + sub_offset) % sub_tenants.max(1),
+                    recv: Vec::new(),
+                    dups: 0,
+                    wrong_stream: 0,
+                    parks: 0,
+                    first_park_ms: 0,
+                })
+            })
+            .collect(),
+    );
+    let next_q: Arc<Vec<AtomicU64>> =
+        Arc::new((0..sub_tenants).map(|_| AtomicU64::new(0)).collect());
+    let acked_q: Arc<Vec<Mutex<Vec<u64>>>> =
+        Arc::new((0..sub_tenants).map(|_| Mutex::new(Vec::new())).collect());
+    let unacked_q: Arc<Vec<Mutex<Vec<u64>>>> =
+        Arc::new((0..sub_tenants).map(|_| Mutex::new(Vec::new())).collect());
+    let shed_q: Arc<Vec<Mutex<Vec<u64>>>> =
+        Arc::new((0..sub_tenants).map(|_| Mutex::new(Vec::new())).collect());
 
     // Phase 2: park the subscriber swarm (durable-cursor :sse at tail).
     let delivered = Arc::new(AtomicU64::new(0));
@@ -1497,8 +1632,16 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
         let pace_gate = pace_gate.clone();
         let sub_err_connect = sub_err_connect.clone();
         let sub_err_status = sub_err_status.clone();
+        let sub_states = sub_states.clone();
+        let my_t = (j + sub_offset) % sub_tenants.max(1);
         tokio::spawn(async move {
             let mut first = true;
+            // Reconciliation contract: reconnects resume from the LAST
+            // control-block nextCursor, never by re-learning the tail —
+            // tail resume silently skips records appended while
+            // disconnected and turns designed churn into fake loss
+            // (the round-12 local harness burned a full sweep on this).
+            let mut cursor: Option<String> = None;
             // Jittered backoff: 5k tasks on a fixed 500 ms retry are a
             // synchronized handshake storm against the edge limiter.
             let backoff_ms = 1500 + (j as u64).wrapping_mul(2654435761) % 1500;
@@ -1507,27 +1650,31 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                 // establishment; release once parked (or on failure).
                 let permit = connect_sem.clone().acquire_owned().await.unwrap();
                 paced(&pace_gate, connect_pace).await;
-                // (Re)learn the tail, then park.
-                let tail = match http
-                    .get(format!("{base}/v1/streams/{name}/records"))
-                    .timeout(Duration::from_secs(30))
-                    .header("authorization", auth.clone())
-                    .header("prisma-encryption-key", key.clone())
-                    .send()
-                    .await
-                {
-                    Ok(r) => r
-                        .headers()
-                        .get("prisma-next-cursor")
-                        .and_then(|v| v.to_str().ok())
-                        .unwrap_or("")
-                        .to_string(),
-                    Err(e) => {
-                        bump("sub-connect", &sub_err_connect, &e);
-                        drop(permit);
-                        tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
-                        continue;
-                    }
+                // First attach learns the tail; reconnects use the
+                // captured durable cursor.
+                let tail = match &cursor {
+                    Some(c) => c.clone(),
+                    None => match http
+                        .get(format!("{base}/v1/streams/{name}/records"))
+                        .timeout(Duration::from_secs(30))
+                        .header("authorization", auth.clone())
+                        .header("prisma-encryption-key", key.clone())
+                        .send()
+                        .await
+                    {
+                        Ok(r) => r
+                            .headers()
+                            .get("prisma-next-cursor")
+                            .and_then(|v| v.to_str().ok())
+                            .unwrap_or("")
+                            .to_string(),
+                        Err(e) => {
+                            bump("sub-connect", &sub_err_connect, &e);
+                            drop(permit);
+                            tokio::time::sleep(Duration::from_millis(backoff_ms)).await;
+                            continue;
+                        }
+                    },
                 };
                 let resp = http
                     .get(format!(
@@ -1560,8 +1707,19 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                 } else {
                     reconnects.fetch_add(1, Ordering::Relaxed);
                 }
+                {
+                    let mut st = sub_states[j].lock().unwrap();
+                    st.parks += 1;
+                    if st.first_park_ms == 0 {
+                        st.first_park_ms = now_ms();
+                    }
+                }
                 subs_live.fetch_add(1, Ordering::Relaxed);
                 let mut r = r;
+                // Chunk boundaries split JSON mid-number; parse only the
+                // complete portion (through the last newline) and carry
+                // the remainder — a truncated "q" is a false missing.
+                let mut carry = String::new();
                 loop {
                     let b = match tokio::time::timeout(Duration::from_secs(35), r.chunk()).await {
                         Ok(Ok(Some(b))) => b,
@@ -1569,18 +1727,50 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                         // 15 s cadence); Ok(Err)/Ok(None) = closed.
                         _ => break,
                     };
-                    // Delivery lag: writers embed {"t":<unix_ms>}.
-                    let text = String::from_utf8_lossy(&b);
-                    for m in text.match_indices("\"t\":") {
-                        let rest = &text[m.0 + 4..];
-                        let end = rest
-                            .find(|c: char| !c.is_ascii_digit())
-                            .unwrap_or(rest.len());
-                        if let Ok(sent_ms) = rest[..end].parse::<u128>() {
-                            let lag = (now_ms() as u128).saturating_sub(sent_ms) as u64;
+                    carry.push_str(&String::from_utf8_lossy(&b));
+                    let Some(cut) = carry.rfind('\n') else {
+                        if carry.len() > 1 << 20 {
+                            carry.clear(); // runaway line; drop, never OOM
+                        }
+                        continue;
+                    };
+                    let complete = carry[..=cut].to_string();
+                    carry.drain(..=cut);
+                    // Durable resume point: the LAST control nextCursor.
+                    if let Some(cst) = complete.rfind("\"nextCursor\":\"") {
+                        let rest = &complete[cst + 14..];
+                        if let Some(q) = rest.find('"') {
+                            cursor = Some(rest[..q].to_string());
+                        }
+                    }
+                    // Records re-serialize with ALPHABETIZED keys:
+                    // {"pad":...,"q":<seq>,"s":<tenant>,"t":<unix_ms>} —
+                    // anchor on "q" and read s/t from the short tail
+                    // window after it (pad sorts before q, so q/s/t are
+                    // adjacent at the end of every record).
+                    let mut at = 0usize;
+                    while let Some((q, next)) = json_u64_after(&complete, at, "\"q\":") {
+                        let seg_end = complete.len().min(next + 200);
+                        let seg = complete.get(..seg_end).unwrap_or(&complete);
+                        let s_v = json_u64_after(seg, next, "\"s\":");
+                        let t_from = s_v.map(|(_, n2)| n2).unwrap_or(next);
+                        if let Some((sent_ms, _)) = json_u64_after(seg, t_from, "\"t\":") {
+                            let lag = now_ms().saturating_sub(sent_ms);
                             lag_hist.rec(lag * 1000); // hist is in micros
                             delivered.fetch_add(1, Ordering::Relaxed);
                         }
+                        {
+                            let mut st = sub_states[j].lock().unwrap();
+                            match s_v {
+                                Some((s, _)) if s as usize == my_t => {
+                                    if !range_insert(&mut st.recv, q) {
+                                        st.dups += 1;
+                                    }
+                                }
+                                _ => st.wrong_stream += 1,
+                            }
+                        }
+                        at = next;
                     }
                     if stop.load(Ordering::Relaxed) != 0 {
                         break;
@@ -1601,7 +1791,10 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
         }
-        eprintln!("CERT: {} subscriptions parked", subs_open.load(Ordering::Relaxed));
+        eprintln!(
+            "CERT: {} subscriptions parked",
+            subs_open.load(Ordering::Relaxed)
+        );
     }
 
     // Phase 3: rotating writers.
@@ -1611,9 +1804,39 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
     let err = Arc::new(AtomicU64::new(0));
     let ap_hist = WideHist::new();
     let sem = Arc::new(tokio::sync::Semaphore::new(768));
-    let per_tenant_interval =
-        Duration::from_millis((1000 * active as u64 / wps.max(1)).max(1));
+    let per_tenant_interval = Duration::from_millis((1000 * active as u64 / wps.max(1)).max(1));
     let plain = tenants - sub_tenants;
+    // Multi-gen barrier: with BENCH_START_GATED=true every gen parks
+    // ungated but starts its MEASUREMENT CLOCK (and the writer its
+    // load) only on POST /start — the ladder releases all gens
+    // together once each reports its slice parked, so "deadline" and
+    // the settle window mean the same wall-clock everywhere.
+    if args.start_gated {
+        eprintln!("CERT_GATED: parked, waiting for POST /start");
+        while stats.released.load(Ordering::Relaxed) == 0 {
+            let line = serde_json::json!({
+                "phase": "parking",
+                "subsOpen": subs_open.load(Ordering::Relaxed),
+                "subsLive": subs_live.load(Ordering::Relaxed),
+                "subsN": subs_n,
+                "reconnects": reconnects.load(Ordering::Relaxed),
+                "ts": now_ms()/1000,
+            });
+            {
+                let mut lines = stats.lines.lock().unwrap();
+                if lines
+                    .last()
+                    .map(|l| l.contains("\"parking\""))
+                    .unwrap_or(false)
+                {
+                    lines.pop();
+                }
+                lines.push(line.to_string());
+            }
+            tokio::time::sleep(Duration::from_secs(3)).await;
+        }
+        eprintln!("CERT_RELEASED");
+    }
     let deadline = Instant::now() + Duration::from_secs(secs);
     let writer = {
         let (http, base, key, tokens, offered, ok, thr, err, ap_hist, sem, stop) = (
@@ -1628,6 +1851,12 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
             ap_hist.clone(),
             sem.clone(),
             stop.clone(),
+        );
+        let (next_q, acked_q, unacked_q, shed_q) = (
+            next_q.clone(),
+            acked_q.clone(),
+            unacked_q.clone(),
+            shed_q.clone(),
         );
         let (err_connect, err_timeout, err_status, err_other) = (
             err_connect.clone(),
@@ -1681,15 +1910,38 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                             err_status.clone(),
                             err_other.clone(),
                         );
-                        let pad = record_bytes.saturating_sub(40);
                         let permit = sem.clone().acquire_owned().await.unwrap();
+                        // Fanout appends (sub-stream tenants) carry the
+                        // reconciliation stamp; q is assigned at send
+                        // time, its fate recorded exactly by outcome.
+                        let stamp = if t < sub_tenants {
+                            Some(next_q[t].fetch_add(1, Ordering::Relaxed))
+                        } else {
+                            None
+                        };
+                        let (acked_q, unacked_q, shed_q) =
+                            (acked_q.clone(), unacked_q.clone(), shed_q.clone());
                         tokio::spawn(async move {
                             let _p = permit;
-                            let body = format!(
-                                "{{\"t\":{},\"pad\":\"{}\"}}",
-                                now_ms(),
-                                "x".repeat(pad)
-                            );
+                            let body = match stamp {
+                                Some(q) => format!(
+                                    "{{\"t\":{},\"q\":{},\"s\":{},\"pad\":\"{}\"}}",
+                                    now_ms(),
+                                    q,
+                                    t,
+                                    "x".repeat(record_bytes.saturating_sub(64))
+                                ),
+                                None => format!(
+                                    "{{\"t\":{},\"pad\":\"{}\"}}",
+                                    now_ms(),
+                                    "x".repeat(record_bytes.saturating_sub(40))
+                                ),
+                            };
+                            let ledger = |set: &Vec<Mutex<Vec<u64>>>| {
+                                if let Some(q) = stamp {
+                                    set[t].lock().unwrap().push(q);
+                                }
+                            };
                             let t0 = Instant::now();
                             match http
                                 .post(&url)
@@ -1704,13 +1956,18 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                                 Ok(r) if r.status().is_success() => {
                                     ok.fetch_add(1, Ordering::Relaxed);
                                     ap_hist.rec(t0.elapsed().as_micros() as u64);
+                                    ledger(&acked_q);
                                 }
-                                Ok(r) if r.status().as_u16() == 429 || r.status().as_u16() == 503 => {
+                                Ok(r)
+                                    if r.status().as_u16() == 429 || r.status().as_u16() == 503 =>
+                                {
                                     thr.fetch_add(1, Ordering::Relaxed);
+                                    ledger(&shed_q);
                                 }
                                 Ok(r) => {
                                     bump("ap-status", &err_status, r.status());
                                     err.fetch_add(1, Ordering::Relaxed);
+                                    ledger(&unacked_q);
                                 }
                                 Err(e) => {
                                     if e.is_connect() {
@@ -1721,6 +1978,7 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                                         bump("ap-other", &err_other, &e);
                                     }
                                     err.fetch_add(1, Ordering::Relaxed);
+                                    ledger(&unacked_q);
                                 }
                             }
                         });
@@ -1774,12 +2032,143 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
         out.flush()?;
         stats.lines.lock().unwrap().push(line.to_string());
     }
+    // Write deadline: writers stop on their own; drain in-flight
+    // appends COMPLETELY (their acks finalize the ledger — a 30 s
+    // straggler that lands after the snapshot would read as loss),
+    // then hold the subscriber fleet through the settle window so owed
+    // deliveries arrive before the freeze.
+    let _ = tokio::time::timeout(Duration::from_secs(8), writer).await;
+    if writers {
+        let _ = tokio::time::timeout(Duration::from_secs(35), sem.acquire_many(768)).await;
+    }
+    let settle_line = serde_json::json!({
+        "phase": "settling",
+        "settleSecs": settle_secs,
+        "delivered": delivered.load(Ordering::Relaxed),
+        "ts": now_ms()/1000,
+    });
+    eprintln!("{settle_line}");
+    stats.lines.lock().unwrap().push(settle_line.to_string());
+    tokio::time::sleep(Duration::from_secs(settle_secs)).await;
+    let subs_live_at_freeze = subs_live.load(Ordering::Relaxed);
     stop.store(1, Ordering::Relaxed);
-    let _ = tokio::time::timeout(Duration::from_secs(5), writer).await;
+    tokio::time::sleep(Duration::from_secs(2)).await;
+
+    // ---- exact reconciliation snapshot ------------------------------
+    use std::collections::BTreeMap;
+    struct StreamAgg {
+        subs: u64,
+        min_last: u64,
+        max_last: u64,
+        holes: Vec<(u64, u64)>,
+        dups: u64,
+    }
+    let mut per_stream: BTreeMap<usize, StreamAgg> = BTreeMap::new();
+    let (mut received_total, mut dups_total, mut wrong_total) = (0u64, 0u64, 0u64);
+    let (mut idle_subs, mut reconnected_subs) = (0u64, 0u64);
+    for st in sub_states.iter() {
+        let st = st.lock().unwrap();
+        if st.parks > 1 {
+            reconnected_subs += 1;
+        }
+        let Some(&(_, _)) = st.recv.first() else {
+            idle_subs += 1;
+            continue;
+        };
+        received_total += st.recv.iter().map(|&(a, b)| b - a + 1).sum::<u64>();
+        dups_total += st.dups;
+        wrong_total += st.wrong_stream;
+        let last = st.recv.last().unwrap().1;
+        let agg = per_stream.entry(st.stream_t).or_insert(StreamAgg {
+            subs: 0,
+            min_last: u64::MAX,
+            max_last: 0,
+            holes: Vec::new(),
+            dups: 0,
+        });
+        agg.subs += 1;
+        agg.min_last = agg.min_last.min(last);
+        agg.max_last = agg.max_last.max(last);
+        agg.dups += st.dups;
+        agg.holes.extend(range_holes(&st.recv));
+    }
+    let mut holes_total = 0u64;
+    let sub_streams: serde_json::Map<String, serde_json::Value> = per_stream
+        .iter_mut()
+        .map(|(t, a)| {
+            // Per-sub hole quantity (delivery-weighted) AND the merged
+            // union (loss identity): two subs missing the same q are
+            // two lost deliveries but one lost record — the evaluator
+            // gates on the union against the acked ledger.
+            let hole_count: u64 = a.holes.iter().map(|&(x, y)| y - x + 1).sum();
+            holes_total += hole_count;
+            a.holes.sort_unstable();
+            let mut union: Vec<(u64, u64)> = Vec::new();
+            for &(x, y) in a.holes.iter() {
+                match union.last_mut() {
+                    Some((_, e)) if *e + 1 >= x => *e = (*e).max(y),
+                    _ => union.push((x, y)),
+                }
+            }
+            let distinct: u64 = union.iter().map(|&(x, y)| y - x + 1).sum();
+            (
+                t.to_string(),
+                serde_json::json!({
+                    "subs": a.subs,
+                    "minLast": a.min_last,
+                    "maxLast": a.max_last,
+                    "dups": a.dups,
+                    "holeCount": hole_count,
+                    "holeQsDistinct": distinct,
+                    "holes": union.iter().take(200).collect::<Vec<_>>(),
+                }),
+            )
+        })
+        .collect();
+    let writer_streams: serde_json::Map<String, serde_json::Value> = if writers {
+        (0..sub_tenants)
+            .filter_map(|t| {
+                let mut a = acked_q[t].lock().unwrap().clone();
+                let mut u = unacked_q[t].lock().unwrap().clone();
+                let mut s = shed_q[t].lock().unwrap().clone();
+                if a.is_empty() && u.is_empty() && s.is_empty() {
+                    return None;
+                }
+                let (an, un, sn) = (a.len(), u.len(), s.len());
+                Some((
+                    t.to_string(),
+                    serde_json::json!({
+                        "acked": compress_ranges(&mut a),
+                        "ackedCount": an,
+                        "unacked": compress_ranges(&mut u),
+                        "unackedCount": un,
+                        "shed": compress_ranges(&mut s),
+                        "shedCount": sn,
+                    }),
+                ))
+            })
+            .collect()
+    } else {
+        serde_json::Map::new()
+    };
+    let recon = serde_json::json!({
+        "receivedTotal": received_total,
+        "holesTotal": holes_total,
+        "dupsTotal": dups_total,
+        "wrongStreamTotal": wrong_total,
+        "idleSubs": idle_subs,
+        "reconnectedSubs": reconnected_subs,
+        "subsLiveAtFreeze": subs_live_at_freeze,
+        "settleSecs": settle_secs,
+        "subStreams": sub_streams,
+        "writerStreams": writer_streams,
+    });
+
     let offered_v = offered.load(Ordering::Relaxed);
     let thr_v = thr.load(Ordering::Relaxed);
     let done = serde_json::json!({
         "phase": "cert_done",
+        "recon": recon,
         "offered": offered_v,
         "apOk": ok.load(Ordering::Relaxed),
         "apThr": thr_v,
@@ -1799,6 +2188,7 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
         "nofile": { "soft": nofile_now().0, "hard": nofile_now().1, "open": nofile_now().2 },
         "createMs": create_ms,
         "steadySecs": secs,
+        "subOffset": sub_offset,
         "tenants": tenants, "subTenants": sub_tenants, "subsN": subs_n,
         "active": active, "fanoutActive": fanout_active,
         "windowMs": window_ms, "wps": wps, "recordBytes": record_bytes,
@@ -1840,7 +2230,10 @@ async fn run_wide(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
     let interval_ms: u64 = wide_env("BENCH_WIDE_APPEND_INTERVAL_MS", 500);
     let scan_rps: u64 = wide_env("BENCH_WIDE_SCAN_RPS", 2);
     let setup_conc: usize = wide_env("BENCH_WIDE_SETUP_CONC", 64);
-    anyhow::ensure!(active <= n, "BENCH_WIDE_ACTIVE must be <= BENCH_WIDE_STREAMS");
+    anyhow::ensure!(
+        active <= n,
+        "BENCH_WIDE_ACTIVE must be <= BENCH_WIDE_STREAMS"
+    );
     let http = reqwest::Client::builder()
         .pool_max_idle_per_host(4096)
         .pool_idle_timeout(Duration::from_secs(4))
@@ -1871,8 +2264,7 @@ async fn run_wide(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
     };
     let mt_tokens: Vec<String> = if mt {
         let path = std::env::var("BENCH_TOKENS_FILE").context("BENCH_TOKENS_FILE")?;
-        let doc: Vec<serde_json::Value> =
-            serde_json::from_str(&std::fs::read_to_string(&path)?)?;
+        let doc: Vec<serde_json::Value> = serde_json::from_str(&std::fs::read_to_string(&path)?)?;
         let toks: Vec<String> = doc
             .iter()
             .map(|e| e["token"].as_str().unwrap_or_default().to_string())
@@ -1882,7 +2274,10 @@ async fn run_wide(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
             "BENCH_PROJECTS_ACTIVE {mt_active} outside 1..={}",
             toks.len()
         );
-        anyhow::ensure!(args.batch == 1, "MT mode appends single records; set BENCH_BATCH=1");
+        anyhow::ensure!(
+            args.batch == 1,
+            "MT mode appends single records; set BENCH_BATCH=1"
+        );
         toks
     } else {
         Vec::new()
@@ -1894,7 +2289,11 @@ async fn run_wide(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
             auth.clone()
         }
     };
-    let enc_header: &'static str = if mt { "prisma-encryption-key" } else { "stream-encryption-key" };
+    let enc_header: &'static str = if mt {
+        "prisma-encryption-key"
+    } else {
+        "stream-encryption-key"
+    };
     let entry_url = |i: usize| -> String {
         if mt {
             format!("{base}/v1/streams/{prefix}{i}")
@@ -1918,38 +2317,39 @@ async fn run_wide(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
     let t_create = Instant::now();
     for chunk_start in (0..n).step_by(10_000) {
         let chunk_end = (chunk_start + 10_000).min(n);
-        let fails: usize = futures_util::stream::iter(
-            (chunk_start..chunk_end).map(|i| {
-                let http = http.clone();
-                let url = entry_url(i);
-                let auth = auth_for(i);
-                let key = key.clone();
-                // Product create takes the typed creation document.
-                let create_body = mt.then(|| serde_json::json!({"format": {"kind": "json"}}));
-                async move {
-                    for attempt in 0..4u32 {
-                        let mut req = http
-                            .put(&url)
-                            .header("authorization", auth.clone())
-                            .header(enc_header, key.clone())
-                            .header("content-type", "application/json");
-                        if let Some(b) = &create_body {
-                            req = req.json(b);
-                        }
-                        let r = req.send().await;
-                        if matches!(&r, Ok(resp) if resp.status().is_success()) {
-                            return 0usize;
-                        }
-                        tokio::time::sleep(Duration::from_millis(100 << attempt)).await;
+        let fails: usize = futures_util::stream::iter((chunk_start..chunk_end).map(|i| {
+            let http = http.clone();
+            let url = entry_url(i);
+            let auth = auth_for(i);
+            let key = key.clone();
+            // Product create takes the typed creation document.
+            let create_body = mt.then(|| serde_json::json!({"format": {"kind": "json"}}));
+            async move {
+                for attempt in 0..4u32 {
+                    let mut req = http
+                        .put(&url)
+                        .header("authorization", auth.clone())
+                        .header(enc_header, key.clone())
+                        .header("content-type", "application/json");
+                    if let Some(b) = &create_body {
+                        req = req.json(b);
                     }
-                    1usize
+                    let r = req.send().await;
+                    if matches!(&r, Ok(resp) if resp.status().is_success()) {
+                        return 0usize;
+                    }
+                    tokio::time::sleep(Duration::from_millis(100 << attempt)).await;
                 }
-            }),
-        )
+                1usize
+            }
+        }))
         .buffer_unordered(setup_conc)
         .fold(0usize, |a, b| async move { a + b })
         .await;
-        anyhow::ensure!(fails == 0, "{fails} creates failed in chunk at {chunk_start}");
+        anyhow::ensure!(
+            fails == 0,
+            "{fails} creates failed in chunk at {chunk_start}"
+        );
         eprintln!("WIDE: created {chunk_end}/{n}");
     }
     let create_ms = t_create.elapsed().as_millis();
@@ -1959,36 +2359,34 @@ async fn run_wide(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
     let record_bytes = args.record_bytes;
     for chunk_start in (0..n).step_by(10_000) {
         let chunk_end = (chunk_start + 10_000).min(n);
-        let fails: usize = futures_util::stream::iter(
-            (chunk_start..chunk_end).map(|i| {
-                let http = http.clone();
-                let url = append_url(i);
-                let auth = auth_for(i);
-                let key = key.clone();
-                async move {
-                    let body = if mt {
-                        wide_batch(1, record_bytes).pop().unwrap_or_default()
-                    } else {
-                        serde_json::Value::Array(wide_batch(1, record_bytes))
-                    };
-                    for attempt in 0..4u32 {
-                        let r = http
-                            .post(&url)
-                            .header("authorization", auth.clone())
-                            .header(enc_header, key.clone())
-                            .header("content-type", "application/json")
-                            .json(&body)
-                            .send()
-                            .await;
-                        if matches!(&r, Ok(resp) if resp.status().is_success()) {
-                            return 0usize;
-                        }
-                        tokio::time::sleep(Duration::from_millis(100 << attempt)).await;
+        let fails: usize = futures_util::stream::iter((chunk_start..chunk_end).map(|i| {
+            let http = http.clone();
+            let url = append_url(i);
+            let auth = auth_for(i);
+            let key = key.clone();
+            async move {
+                let body = if mt {
+                    wide_batch(1, record_bytes).pop().unwrap_or_default()
+                } else {
+                    serde_json::Value::Array(wide_batch(1, record_bytes))
+                };
+                for attempt in 0..4u32 {
+                    let r = http
+                        .post(&url)
+                        .header("authorization", auth.clone())
+                        .header(enc_header, key.clone())
+                        .header("content-type", "application/json")
+                        .json(&body)
+                        .send()
+                        .await;
+                    if matches!(&r, Ok(resp) if resp.status().is_success()) {
+                        return 0usize;
                     }
-                    1usize
+                    tokio::time::sleep(Duration::from_millis(100 << attempt)).await;
                 }
-            }),
-        )
+                1usize
+            }
+        }))
         .buffer_unordered(setup_conc)
         .fold(0usize, |a, b| async move { a + b })
         .await;
@@ -2027,8 +2425,12 @@ async fn run_wide(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
         let auth = auth_for(j);
         let key = key.clone();
         let stop = stop.clone();
-        let (hist, ok, thr, err) =
-            (ap_hist.clone(), ap_ok.clone(), ap_thr.clone(), ap_err.clone());
+        let (hist, ok, thr, err) = (
+            ap_hist.clone(),
+            ap_ok.clone(),
+            ap_thr.clone(),
+            ap_err.clone(),
+        );
         let batch = args.batch;
         tasks.push(tokio::spawn(async move {
             // Stagger starts so the herd doesn't align on one instant.
@@ -2075,8 +2477,12 @@ async fn run_wide(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
         let key = key.clone();
         let prefix = prefix.clone();
         let stop = stop.clone();
-        let (hist, ok, err, recs) =
-            (sc_hist.clone(), sc_ok.clone(), sc_err.clone(), sc_records.clone());
+        let (hist, ok, err, recs) = (
+            sc_hist.clone(),
+            sc_ok.clone(),
+            sc_err.clone(),
+            sc_records.clone(),
+        );
         tasks.push(tokio::spawn(async move {
             let mut seed = now_ms() as u64 | 1;
             let mut rng = move || {
@@ -2104,9 +2510,7 @@ async fn run_wide(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                         Ok(body) => {
                             ok.fetch_add(1, Ordering::Relaxed);
                             hist.rec(t0.elapsed().as_micros() as u64);
-                            if let Ok(v) =
-                                serde_json::from_slice::<Vec<serde_json::Value>>(&body)
-                            {
+                            if let Ok(v) = serde_json::from_slice::<Vec<serde_json::Value>>(&body) {
                                 recs.fetch_add(v.len() as u64, Ordering::Relaxed);
                             }
                         }

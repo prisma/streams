@@ -770,3 +770,23 @@ Hub budget note: with SSE_HUB_TOTAL_BYTES=16 MiB, 542 hubs, 1,470
 prepared records (rotation geometry: each subscribed stream is written
 once per ~500 s), RSS stayed 354 MB and shed 0 — keep 16 MiB for the
 1-GiB class (now also the binary default).
+
+**WALL RECONFIRMED ON THE LIVEFEED ENGINE (2026-08-29, round-12 field
+campaign, run wc12-20260829T023213Z):** 2,500-sub rung, TWO generators
+(eu-west-3 + us-east-1), server = the round-12 profile (64/32 MiB feed
+budgets) at commit ad4ba1ff. Total parked froze at EXACTLY 1,536 for
+five consecutive 20 s polls — gen1 (us-east) froze at 601 while gen0
+(eu-west-3) kept climbing until the TOTAL hit the budget, so the cap is
+per-ORIGIN, not per-IP (same anatomy as L3d's 619+658+259=1536).
+Third-IP debug queries were refused while the budget was exhausted (the
+historical "sampler refused" artifact, reproduced). Server healthy at
+the freeze: 103 MB RSS, fds 1,492/4,096, zero shed. Consequence
+unchanged: S_server_instance rungs above ~1.4k are unmeasurable through
+this edge; platform ask #3 stands with fresh dated evidence
+($SOAK_HOME/results/wc12-20260829T023213Z/wall-evidence.txt). The
+1,200-sub control rung (F1solo1200) DID certify through the edge with
+EXACT reconciliation: 275,654 deliveries, zero loss/dups, server↔client
+counters agree (Δ4 in-flight at freeze), peak RSS 411 MB — but the
+edge write path costs append p50 152 ms / p99 929 ms with ~1% 30 s
+timeouts (L2i's signature, now typed), while commit→delivery adds only
+~30-45 ms on top. The latency SLO conversation is an edge conversation.

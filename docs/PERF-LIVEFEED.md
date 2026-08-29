@@ -100,12 +100,53 @@ workload), writes confined to 100 streams, subscribers scaling:
   retention depth (§2, config fix); CPU at ~0.4–0.8 core per 1,000
   deliveries/s.
 
-## 4. Status and remaining work
+## 4. Field campaign (2026-08-29, real Compute + real Tigris)
 
-Executed: controlled A/B density + throughput sweep, final-RC
-regression comparison, local 1-GiB capacity ladder + attribution
-geometries, and the retention-budget interventions. Remaining (cloud):
-the in-VPC Compute ladder to certify `S_server_instance` on real
-instances, and the full Tigris combined workload at the highest safe
-rung — both should run AFTER the profile change ships, so they
-certify the config that will actually operate.
+Four rungs on real fra Compute instances against the fra Tigris
+bucket, `ad4ba1ff` binaries, the SHIPPED profile (64/32 MiB budgets),
+out-of-region generators, and the same exact-reconciliation mandate —
+awsbench's cert shape now stamps every fanout append with a
+per-stream sequence, keeps exact acked/unacked/shed ledgers, resumes
+subscribers from the control `nextCursor`, and gates every
+generator's clock on a synchronized release
+(`bench/soak/evaluate-cert.py` is the gate).
+
+| Rung | Shape | Verdict |
+|---|---|---|
+| F1 `1200x1` solo, 15 min | control through the edge | **Integrity + server EXACT-PASS**: 275,654 deliveries, 0 loss / 0 dups, server↔client Δ4 (in-flight at freeze), peak RSS 411 MB, 0 sheds. Edge write path FAILS the latency gates (below). |
+| F2 `2500x1`, 2 gens | edge-wall probe | **Wall reproduced EXACTLY at 1,536** total conns/origin: one gen froze at 601 while the other climbed until the SUM hit 1,536 (per-origin budget, matching L3d's 619+658+259). Server healthy at the freeze (103 MB, 0 shed). 2.5k–10k rungs stay UNMEASURABLE through this edge. |
+| F3 `100x12` combined, 30 min | sustained product mix | Integrity EXACT (547,092 delivered = server count, 0 loss / 0 dups through 18% shed); **found the field bound**: RSS climbs ~20 MB/min at 1,000-stream write breadth on WAN Tigris (cache fill + resident-stream state, NOT retention — reserved peaked 58 MB, 0 uncached, 0 lag-cuts) and crosses the 500 MB shed line at t≈21 min; typed RSS-shed then holds it flat with delivery p50 steady at 159 ms. Protective behavior correct; charter RSS gate exceeded. |
+| F4 = F3 + the L1 writes-only diet | diet falsified for subscriber cells | RSS fixed (peak 286 MB, 0 sheds, integrity exact 232,440 = server count) but the full cache trim (−128 MB) put WAN store reads on the append path: **append p50 137 ms → 7.3 s**. The L1 "subscribers want the ring" caveat, quantified — do NOT ship the writes-only diet on subscriber cells. |
+| F5 = F3 + tuned trim (−80 MB) | the closing arm | Write path healthy (append p50 120–133 ms throughout); the line-crossing moved t≈21→24 min only. Steady state: RSS pinned 492–495 MB by typed shed (2.05%), 156 lag-disconnects ALL resumed by cursor with complete tails, **674,568 delivered = server count, zero loss / zero dups through the whole pressure stack** — §2's resume contract field-proven under real retention pressure (13 uncached publishes at the plateau). |
+
+**The edge is the field bottleneck, twice over.** (1) The per-origin
+connection budget of exactly 1,536 caps any single service at
+~1.2–1.4k subscriptions with write headroom — `S_server_instance`
+certification above that needs an in-VPC path or a platform budget
+change (ask #3, bench/edge-repro/README.md, evidence re-dated
+2026-08-29). (2) The edge write path costs append p50 152 ms /
+p99 929 ms with ~1% 30-second timeouts (L2i's signature, now typed
+exactly), while the server adds only ~30–45 ms commit→delivery on
+top — consistent with the local 54 ms p99. The latency SLO
+conversation is an edge conversation, not a server one.
+
+**The 1-GiB sustained-combined steady state is the plateau, not a
+margin.** At 300 writes/s over 1,000-stream breadth on WAN Tigris,
+RSS grows ~20 MB/min (cache fill + per-stream resident state, NOT
+retention) until the 500 MB shed line, then typed RSS-shed pins it
+there with flat p50s and exact integrity — the R25-H plateau model,
+reproduced at wide breadth. Moderate cache trims only delay the
+crossing (F5: +3 min for −80 MB); the trim big enough to prevent it
+destroys the write path (F4). Consequences: (a) the
+`SSE_MAX_CONNECTIONS=1200` pin in compute-1g.env remains correct for
+edge-fronted deployments — do NOT raise it until the wall moves;
+(b) keep the shipped cache posture — the trims buy nothing worth
+their risk; (c) the genuine optimization item, if sustained
+wide-breadth combined cells become a real workload class, is
+per-stream resident-state cost (absorber/memtable/handle mass), not
+caches and not the livefeed engine — whose retention accounting,
+typed cutoffs, and cursor-resume contract all held exactly at the
+plateau.
+
+Raw manifests: `$SOAK_HOME/results/wc12-20260829T*` (stage JSONs,
+RSS timelines, wall-evidence.txt, eval verdicts).
