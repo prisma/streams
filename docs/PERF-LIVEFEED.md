@@ -24,28 +24,33 @@ alternation + per-cell medians absorb that noise.
 | `1000x1` (breadth) | Dual-commit livefeed dipped (+12% full-run CPU); the final RC recovered it (C ≈ A). Append-p99 leg of this claim **withdrawn** pending the recompare. |
 | `500x2`, `100x10` (many shared feeds) | Delivery p99 3–8× worse on livefeed **under the default retention budgets** — see §2; with adequate retention: parity. |
 
-**Measurement retractions (review 2026-08-29).** Two harness defects
-invalidate specific numbers from this sweep, and they are withdrawn,
-not restated: (1) background appends recorded ~0 ms latency samples
-(an unassigned timer variable), so at `10x100` ~95% of mixed-phase
-append-latency samples were bogus — every cross-arm **append p99**
-comparison from this sweep is untrustworthy; (2) "CPU per delivered
-record" divided WHOLE-RUN CPU (creation, idle, teardown included) by
-four phases' deliveries — it was a full-run cost indicator, not
-µs/delivery, and is relabeled as such. The harness now records
-per-attempt timing with split subscribed/background histograms,
-per-phase CPU windows against the proc series, an open-loop scheduler
-with scheduled-intent denominators, and unique-vs-resume-overlap
-delivery counts; the affected shapes are being re-measured.
+**Re-measured (review 2026-08-29; two harness defects fixed).** The
+original append-p99 numbers were withdrawn — background appends
+recorded ~0 ms samples against an unassigned timer, and CPU/delivery
+divided whole-run CPU by four phases' deliveries. With per-attempt
+timing (split subscribed/background histograms), per-phase CPU
+windows against the proc/cgroup series, an open-loop scheduler with
+scheduled-intent denominators, and unique-delivery counts, the
+affected shapes were re-run (2 runs/arm, alternated):
 
+- `10x100` subscribed append p99: **A 26.0 / B 25.5 / C 25.5 ms**
+  (A→B −1.9%, B→C 0%) — parity re-established on honest data.
+- `1000x1` subscribed append p99: **A 442 / B 610 / C 434 ms** — the
+  dual-commit dip was real and LARGER than first reported (+38%, not
+  +30%), and the final RC fully recovers it (C ≈ A, −1.8%).
+- Per-phase fanout CPU per unique delivery: **~142–152 µs at
+  fanout 100; ~700 µs at breadth 1** (breadth-dominated). A→B −2.3%.
+- New B→C flag at `10x100`: +7.4% CPU/delivery and +6.2% idle RSS
+  (n=2, small absolutes) — joins the noted-not-actioned B→C drift
+  family (plausibly the 11.8 raw-pairing hardening).
+- Idle-phase CPU, now measured per-phase: **~11.6% of a core at
+  1,000 parked subscribers** (~116 µs/sub/s of heartbeat+timer cost),
+  identical across all three arms. The earlier "no measurable idle
+  CPU" claim was an artifact of whole-run accounting and is
+  corrected.
 - Memory per subscriber: **43–60 KB across every shape and arm**
   (matches the workload-cert 55–70 KB estimate). Livefeed ≤ legacy.
-- Full-run CPU (rough indicator only, see retraction 2): livefeed ≤
-  legacy at most shapes; per-phase CPU/delivery numbers will come
-  from the re-measurement.
-- Idle: 1,000 parked subscribers cost no measurable CPU on either
-  engine; RSS flat over the 10-minute idle windows; teardown returns
-  feeds/reserved bytes to zero every run.
+- Teardown returns feeds/reserved bytes to zero every run.
 
 **Reconciliation contract, stated exactly:** every ACKED record was
 observed by every subscriber (zero missing gates the verdict);
@@ -88,52 +93,87 @@ memory headroom exists (10,000 parked subscribers idle at 307 MB).
 Do NOT build a dedicated shared-feed reader: with adequate retention
 the realistic shapes are at parity or better.
 
-**Review caveat (2026-08-29):** the table above measured project caps
-of 4/16/64 MiB — there is no measured point at the SHIPPED 64/32
-combination (the canary proved correctness and survivability under
-64/32, not that the 500x2 latency regression is gone at exactly
-32 MiB). A measured 64/32 `500x2` point is being produced. Note also
-that this local benchmark puts all 500 shared feeds in ONE project —
-an intentionally hostile single-tenant geometry; the multi-project
-field legs (§4 follow-ups) test whether 32 MiB is even the binding
-knob at the product's tenant distribution.
+**Measured 64/32 point (2026-08-29, two runs, review-directed):** at
+the SHIPPED 64/32 combination the hostile `500x2` shape is **NOT at
+parity**: mixed delivery p99 321 ms (vs 137 ms at 64/64 and 134 ms
+legacy; improved from 354 ms at 16/4), ~5.5k typed lag-disconnects and
+~7.3k cursor resumes per run — zero missing records and ZERO resume
+overlaps, peak RSS 511–531 MB. Reading: the 32 MiB per-project
+backstop BINDS when a single tenant holds 500 hot shared feeds — the
+isolation cap doing its declared job against an intentionally hostile
+single-tenant geometry, at the cost of typed churn, never loss. Do
+not retune from this point alone: the product target spreads feeds
+across many projects, where only the 64 MiB global cap is in play —
+the multi-project field legs (§4 follow-ups, legs 3–5) are the
+decisive measurement for whether 32 MiB is the right backstop.
 
-## 3. The 1-GiB envelope (arm C — local container, provisional)
+## 3. The 1-GiB envelope (arm C — local container)
 
-**Scope correction (review 2026-08-29):** these are
-`S_local_container` numbers — linux/amd64 under Rosetta, s3lite at
-2 ms, auth off, effectively one project. `S_server_instance` on real
-Compute is pending (and currently blocked above ~1.4k by the edge
-wall, §4). A second defect: the ladder's write rate was DERIVED from
-the delivery target, so the all-solo rungs received ~6× the write
-load of the fanout rungs — the breadth-vs-fanout attribution is
-strongly suggested, not cleanly established. The ladder is being
-re-run on two independent axes (fixed 300 w/s residency axis; fixed
-delivery-rate throughput axis at the product geometry, whose 10k
-deliveries/s leg is the product-throughput receipt).
+**Scope:** `S_local_container` numbers — linux/amd64 under Rosetta,
+s3lite at 2 ms, auth off, effectively one project. `S_server_instance`
+on real Compute is pending (blocked above ~1.4k by the edge wall,
+§4). The original ladder derived its write rate from the delivery
+target (all-solo rungs got ~6× the fanout rungs' writes) and its
+closed-loop writer could shed offered load silently; it was re-run
+2026-08-29 on two independent axes with the open-loop scheduler, the
+SHIPPED 64/32 MiB budgets, and gates on scheduled intent.
 
-Original ladder (write rates NOT equalized across geometries):
+**Residency axis — fixed 300 w/s (100 subscribed + 200 background) at
+EVERY geometry:**
 
-| Rung | Result | Idle RSS | Peak RSS |
-|---|---|---|---|
-| `1000x1` | PASS | 86 MB | 389 MB |
-| `2500x1` | PASS | 135 MB | 417 MB |
-| `5000x1` | FAIL (peak 498 MB, 440 admission sheds) | 206 MB | 498 MB |
-| `25x100` (2,500 subs) | PASS | 111 MB | 284 MB |
-| **`100x100` (10,000 subs)** | **PASS** | **307 MB** | **399 MB** (p99 54 ms, zero reconnects) |
+| Rung | Result | Idle RSS | Peak RSS | mixed dl p99 |
+|---|---|---|---|---|
+| `1000x1` | PASS | 90 MB | 362 MB | 33 ms |
+| `2500x1` | PASS | 131 MB | 347 MB | 39 ms |
+| **`5000x1`** | **PASS** | 208 MB | 405 MB | 51 ms |
+| `7500x1` | FAIL (RSS 487 MB, 840 typed sheds) | 300 MB | 487 MB | 69 ms |
+| `2500x2` attr | FAIL (RSS 471 MB only; 0 shed) | 193 MB | 471 MB | 52 ms |
+| `50x100` attr (10k del/s) | FAIL (dl p99 1,027 ms — CPU) | 177 MB | 468 MB | 1,027 ms |
+| `100x100` @1k del/s | FAIL (RSS 473 MB only; 0 shed, dl p99 73 ms) | 304 MB | 473 MB | 73 ms |
 
-- Memory model: **base ≈ 46 MB + ~26 KB/connection + ~8–10 KB/feed —
-  provisional.** The density sweep holds subscribers constant at
-  1,000, which makes base and per-subscriber cost mathematically
-  inseparable from those points alone; the ladder points restore
-  identifiability but the published fit did not document its point
-  set. The analyzer now emits the exact fit set, residuals and R²;
-  the re-fit publishes with the two-axis rerun.
-- **`S_local_container`:** ≥ **10,000** at the product fanout
-  geometry; **2,500** at the all-solo worst case (at the ladder's
-  unequal write rates — see the scope correction). The `5000x1`
-  failure at 6× the fanout rungs' write load strongly suggests, but
-  does not cleanly establish, that feed breadth is the binding axis.
+- **The old `5000x1` failure was the write-rate confound**: at equal
+  load it PASSES with 45 MB of gate headroom. The all-solo envelope
+  is **S_local_container(worst-geometry) = 5,000**, double the
+  confounded figure; the binding axis at 7,500 is total resident
+  state (per the model below), not breadth per se.
+- **The shipped 64/32 budgets cost the 10k-conn geometry its
+  450 MB-gate margin**: `100x100` now peaks 473 MB at just 1k del/s
+  (vs 399 MB at the old 16/4 budgets) — zero sheds, under the 500 MB
+  line, delivery p99 73 ms, but no longer inside the conservative
+  gate. Retention headroom and connection headroom trade against the
+  same GiB.
+- **Open-loop artifact receipt** (`results-residency-openloop-1200wps`):
+  `1000x1` at a TRUE sustained 1,200 w/s offer runs 27% typed shed,
+  dl p99 334 ms, peak 512 MB — quantifying exactly what the
+  closed-loop writer used to hide. The original ladder's nominal
+  1,200 w/s PASSes were partly writer self-throttling.
+- Memory model, FINAL (documented fit over 8 independent geometries,
+  1k–10k subscribers × 10–7,500 feeds, both axes varied —
+  identifiable): **RSS ≈ 46.4 MB + 26.28 KB/connection +
+  7.95 KB/feed, R² 0.9987, max residual 5.3 MB.** Point set and
+  residuals in the analyzer output (`analyze.py … --fit-extra`).
+
+**Delivery-throughput axis — fixed delivery targets, RSS-light
+`25x100` geometry (2,500 conns; never a feed-memory claim):**
+
+| Target | fanout dl p99 | mixed dl p99 | CPU/unique delivery | Peak RSS |
+|---|---|---|---|---|
+| 1,000/s | 33 ms | 44 ms | 157 µs | 238 MB |
+| 2,500/s | 36 ms | 56 ms | 74 µs | 274 MB |
+| 5,000/s | 51 ms | 77 ms | 54 µs | 294 MB |
+| **7,500/s** | **72 ms** | **106 ms** | **48 µs** | **338 MB** — PASS |
+
+- **CPU per delivery AMORTIZES DOWN with rate** (batch effects):
+  157 → 48 µs across the ladder; at 7,500 del/s the delivery path
+  uses ~0.4 core. The delivery path is NOT the 1-CPU bottleneck up to
+  at least 7,500 del/s at this geometry.
+- The 10,000 del/s failure at `50x100` (5,000 conns, dl p99
+  1,027 ms) happened with peak RSS 468 MB — tail collapse near the
+  RSS line, where allocator/compaction pressure bites, not raw
+  delivery CPU. **Delivery throughput and resident memory are
+  coupled**; the product-throughput receipt (10k del/s at product
+  distribution) needs either headroom below the line or the
+  admission budget below.
 - **`SSE_MAX_CONNECTIONS`: the 1200 profile pin STANDS.** The earlier
   2500 recommendation is withdrawn: one static cap cannot express
   both envelopes — raised to 10,000 it admits the all-solo geometry
@@ -146,14 +186,19 @@ Original ladder (write rates NOT equalized across geometries):
   Until it exists, the universal cap is whatever the worst-case
   breadth axis certifies.
 - **Fleet sizing for 100k subscriptions is a PLANNING ESTIMATE, not a
-  certified size:** ~15 instances at the product geometry ASSUMES the
-  geometry-aware admission above; with today's single static cap the
-  honest arithmetic is `100k/(0.7×S_universal)` — ~58 instances at
-  the current all-solo figure.
-- Dominant bottleneck, in order: write-transient RSS at high feed
-  breadth (absorber machinery, unchanged by the rewrite); shared-feed
-  retention depth (§2, config fix); CPU (full-run indicator;
-  per-phase numbers pending re-measurement).
+  certified size.** With today's single static cap, `S_universal` by
+  the conservative 450 MB gate is geometry-dependent between 2,500
+  (every geometry passes) and 5,000 (all-solo passes; 5,000-conn
+  SHARED geometries peak 468–473 MB — over the gate, under the line,
+  zero sheds): **29–58 instances** by strict-gate arithmetic. The
+  ~15-instance figure requires the geometry-aware admission budget
+  above.
+- Dominant bottleneck, in order: **total resident state against the
+  1-GiB line** (connections × 26 KB + feeds × 8 KB + retention +
+  write transients — the model above, and what tail-collapsed the
+  10k del/s leg); shared-feed retention depth at hostile
+  single-project geometries (§2); delivery CPU only beyond ~7.5k
+  del/s (and it amortizes down with rate).
 
 ## 4. Field campaign (2026-08-29, real Compute + real Tigris)
 

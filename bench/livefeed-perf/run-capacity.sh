@@ -59,14 +59,20 @@ PY
 }
 
 if [ "$AXIS" = delivery ]; then
-  # ---- delivery-throughput ladder at the product geometry ----------
+  # ---- delivery-throughput ladder at a fanout geometry -------------
+  # DELIVERY_GEO (default 100x100, the product shape) picks the
+  # geometry; at 10k connections the SHIPPED budgets are RSS-bound
+  # before CPU — an RSS-light 25x100 run isolates the delivery-CPU
+  # ceiling. Never use this axis for feed-memory claims.
+  GEO=${DELIVERY_GEO:-100x100}
+  GF=${GEO%x*}; GS=${GEO#*x}
   [ ${#RUNGS[@]} -gt 0 ] || RUNGS=(1000 2500 5000 10000)
-  export SSE_MAX_CONNECTIONS=10200
+  export SSE_MAX_CONNECTIONS=$((GF * GS + 200))
   for D in "${RUNGS[@]}"; do
-    OUT="$RESULTS/del-${D}ps-100x100"
-    export SUBSCRIBED_WPS=$((D / 100))
-    echo "== delivery rung ${D}/s at 100x100 (SUBSCRIBED_WPS=$SUBSCRIBED_WPS)"
-    [ -s "$OUT/manifest.json" ] || bash "$HERE/run-one.sh" c 100 100 "$OUT" "delivery-${D}ps" || true
+    OUT="$RESULTS/del-${D}ps-$GEO"
+    export SUBSCRIBED_WPS=$((D / GS))
+    echo "== delivery rung ${D}/s at $GEO (SUBSCRIBED_WPS=$SUBSCRIBED_WPS)"
+    [ -s "$OUT/manifest.json" ] || bash "$HERE/run-one.sh" c "$GF" "$GS" "$OUT" "delivery-${D}ps-$GEO" || true
     if ! gate "$OUT/manifest.json"; then
       echo "== delivery ladder stops at ${D}/s"
       break

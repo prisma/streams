@@ -105,6 +105,8 @@ docker run --rm --network "$NET" --platform linux/amd64 \
   -e MIXED_BG_RATE="${MIXED_BG_RATE:-200}" \
   -e PAYLOAD_BYTES="${PAYLOAD_BYTES:-1024}" \
   -e WRITE_BREADTH="${WRITE_BREADTH:-}" \
+  -e SUBSCRIBED_WPS="${SUBSCRIBED_WPS:-}" \
+  -e MAX_INFLIGHT_APPENDS="${MAX_INFLIGHT_APPENDS:-}" \
   perf-base:1 node /loadgen.mjs > "$OUTDIR/loadgen.log" 2>&1
 GEN_RC=$?
 set -e
