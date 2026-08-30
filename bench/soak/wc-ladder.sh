@@ -92,7 +92,11 @@ RUNGFLAGS=(--env SSE_MAX_CONNECTIONS=${WC_SSE_MAX:-2000})
 "$HERE/build-upload.sh"
 
 MTDIR="$S/wc-$SOAK_RUN_ID"
-node "$HERE/mtgen.mjs" --projects "$TENANTS" --cell "$CELL" --out "$MTDIR"
+# The noisy-project class (leg 5) owns the LAST project outright, so
+# it needs one project beyond the tenant population.
+MTN=$TENANTS
+[ "${WC_NOISY_FEEDS:-0}" -gt 0 ] && MTN=$((TENANTS + 1))
+node "$HERE/mtgen.mjs" --projects "$MTN" --cell "$CELL" --out "$MTDIR"
 python3 - "$MTDIR/feeds-bundle.json" "wc/$SOAK_RUN_ID/feeds.json" \
           "$MTDIR/tokens.json"       "wc/$SOAK_RUN_ID/tokens.json" <<'PY'
 import boto3, os, sys

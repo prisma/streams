@@ -268,16 +268,38 @@ plateau.
 Raw manifests: `$SOAK_HOME/results/wc12-20260829T*` (stage JSONs,
 RSS timelines, wall-evidence.txt, eval verdicts).
 
-**Directed follow-up legs (review 2026-08-29 — all fit under the
-1,536 wall):** (1) `500x2` one project at the exact 64/32 profile;
-(2) `100x10` one project; (3) `500x2` across 500 projects, one feed
-each; (4) the product distribution, ~one hot subscribed feed per
-project across 100–1,000 projects; (5) noisy-project isolation — one
-project fills its 32 MiB allowance while compliant victims stay
-unaffected; (6) retained bytes driven near the 64 MiB cell cap under
-mixed writes. Each records project-cap vs global-cap uncached
-publications, lag EOFs/reconnects, unique catch-up records, peak
-process RSS and cgroup memory.current, and write shed.
+**The six directed legs (run 2026-08-30 on real fra Compute + Tigris,
+`ae020ad9` harness, 64/32 profile, exact reconciliation throughout —
+zero lost acked records in EVERY leg):**
+
+| Leg | Shape | Retention verdict |
+|---|---|---|
+| 3 | `500x2`, 500 projects | **CLEAN**: zero project-cap hits, zero global uncached, zero lag-cuts, zero reconnects. The isolation model's intended geometry never touches the caps. |
+| 1 | `500x2`, ONE project | Project cap binds as declared: 67 project-cap uncached, 134 typed cuts (~0.2% of 57k deliveries), all cursor-resumed, global cap never binds. |
+| 2 | `100x10`, ONE project | **The decision datum: the 32 MiB cap still binds at ordinary fanout breadth** — 13 project-cap uncached, 130 cuts (0.045% of 287k deliveries), lossless. |
+| 4 | Product distribution, 30 min | Caps effectively clean (0 project-cap hits across 500 projects; 207 global uncached only after the shed storm began). The binding constraint is the KNOWN 1-GiB resident-state plateau: RSS crossed the line at t≈20 min → 49.5% typed shed, integrity exact throughout, p50s steady 166/197 ms. |
+| 6 | Global-cap ceiling | **Exact**: reserved bytes pinned at precisely 64.0 MB, zero accounting drift, project caps correctly bypassed, RSS bounded (401 MB), write shed 0%, teardown to zero. At-cap operation degrades delivery p99 to ~17 s (churn + WAN catch-up) — losslessly. |
+| 5 | Noisy-project isolation | **Retention isolation PERFECT / memory isolation ABSENT.** The noisy project (100 shared feeds, 100 w/s × 8 KB) took every retention consequence itself: ALL 2,971 lag-cuts, ALL 1,488 project-cap uncached, and all 1,106 catch-up-in-progress records at freeze are noisy-class; victims: ZERO cuts, ZERO uncached, tails 100% complete. BUT the noisy write volume drove the INSTANCE to the RSS plateau (506 MB → 18.4% admission shed), and admission shed is instance-global — victim writers shed too. Per-project admission weighting is the missing isolation layer (the MT-TENANTS "10>1" finding, reproduced from the retention side). |
+
+Every leg also reproduces the standing edge write tail (append p99
+~1.0–1.2 s through cv-*), which fails the 250 ms latency gate
+independently of retention behavior.
+
+**Profile decision input (the review's fork).** The product
+distribution NEVER touches the caps (legs 3, 4: zero project-cap hits
+across 500 projects); the caps bind only when ONE project
+concentrates many hot shared feeds — mildly at ordinary breadth
+(leg 2: 0.045% typed churn at `100x10`) and firmly at hoarding scale
+(leg 1). Global-cap accounting is exact to the byte (leg 6). Per the
+review's own branches this is the "normal projects can hit 32 MiB"
+case at concentrated-tenant geometries: the recommendation is a
+DOCUMENTED per-project retained-byte quota (option a) — the behavior
+past it is typed, lossless, resume-exact churn — rather than raising
+the backstop, because legs 4/5 show the global GiB is already
+contended by the resident-state plateau and by noisy-tenant memory
+pressure that no retention knob controls. The decision (and the rc.3
+mint it gates) is the reviewer's call; the leg-5 memory-isolation gap
+feeds the weighted-admission design when that work is scheduled.
 
 **RC note:** v0.2.0-rc.2 predates the profile change; the certified
 system is now server-binary sha + compute-1g profile sha + harness
