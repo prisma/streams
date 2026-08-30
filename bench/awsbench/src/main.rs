@@ -1352,6 +1352,24 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
     // the subscriber fleet stays parked for a settle window so owed
     // deliveries drain before the freeze-and-reconcile snapshot.
     let settle_secs: u64 = wide_env("BENCH_CERT_SETTLE_SECS", 60);
+    // Field-leg geometry (round-12 review): streams are
+    // project-namespaced by the AUTHENTICATING token, so "many feeds
+    // in one project" is purely a token-selection rule — stream t
+    // uses tokens[t / feeds_per_project]. Default 1 keeps the 1:1
+    // tenant model of every earlier campaign.
+    let feeds_per_project: usize = wide_env("BENCH_CERT_FEEDS_PER_PROJECT", 1).max(1);
+    // Noisy-project class (leg 5): ONE dedicated project (the LAST
+    // token) holding NOISY_FEEDS shared feeds ("{prefix}n{j}") with
+    // NOISY_SUBS_PER parked subscribers each and its own writer at
+    // NOISY_WPS / NOISY_RECORD_BYTES — built to fill that project's
+    // retention allowance while the ordinary (victim) class must
+    // stay churn-free. Reconciliation slots for noisy feed j live at
+    // sub_tenants + j.
+    let noisy_feeds: usize = wide_env("BENCH_CERT_NOISY_FEEDS", 0);
+    let noisy_subs_per: usize = wide_env("BENCH_CERT_NOISY_SUBS_PER", 2);
+    let noisy_wps: u64 = wide_env("BENCH_CERT_NOISY_WPS", 100);
+    let noisy_record_bytes: usize = wide_env("BENCH_CERT_NOISY_RECORD_BYTES", 8192);
+    let slots = sub_tenants + noisy_feeds;
     let setup_conc: usize = wide_env("BENCH_WIDE_SETUP_CONC", 64);
     anyhow::ensure!(sub_tenants <= tenants && fanout_active <= active);
     anyhow::ensure!(fanout_active == 0 || sub_tenants > 0);
@@ -1366,7 +1384,16 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
             .map(|e| e["token"].as_str().unwrap_or_default().to_string())
             .collect(),
     );
-    anyhow::ensure!(tokens.len() >= tenants, "need >= {tenants} tokens");
+    let projects_needed =
+        (tenants + feeds_per_project - 1) / feeds_per_project + usize::from(noisy_feeds > 0);
+    anyhow::ensure!(
+        tokens.len() >= projects_needed,
+        "need >= {projects_needed} tokens (tenants {tenants} / fpp {feeds_per_project}, noisy {noisy_feeds})"
+    );
+    // Stream t authenticates as project t / feeds_per_project; the
+    // noisy class owns the LAST project outright.
+    let tok_idx = move |t: usize| t / feeds_per_project;
+    let noisy_tok = tokens.len() - 1;
 
     // NO client-level timeout: reqwest's Client::timeout bounds the WHOLE
     // request INCLUDING a streaming body, so every parked SSE response
@@ -1488,7 +1515,7 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
             let r = http
                 .get(&probe)
                 .timeout(Duration::from_secs(15))
-                .header("authorization", format!("Bearer {}", tokens[t0]))
+                .header("authorization", format!("Bearer {}", tokens[tok_idx(t0)]))
                 .header("prisma-encryption-key", key.clone())
                 .send()
                 .await;
@@ -1498,12 +1525,18 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
             tokio::time::sleep(Duration::from_secs(2)).await;
         }
     } else {
-        eprintln!("CERT: creating {tenants} streams (conc {setup_conc})");
-        for chunk in (0..tenants).collect::<Vec<_>>().chunks(10_000) {
+        eprintln!("CERT: creating {tenants} streams + {noisy_feeds} noisy (conc {setup_conc})");
+        // Slot space: [0, tenants) ordinary; [tenants, tenants+noisy) noisy.
+        for chunk in (0..tenants + noisy_feeds).collect::<Vec<_>>().chunks(10_000) {
             let fails: usize = futures_util::stream::iter(chunk.iter().map(|&t| {
                 let http = http.clone();
-                let url = format!("{base}/v1/streams/{}", stream_of(t));
-                let auth = format!("Bearer {}", tokens[t]);
+                let (url, auth) = if t < tenants {
+                    (format!("{base}/v1/streams/{}", stream_of(t)),
+                     format!("Bearer {}", tokens[tok_idx(t)]))
+                } else {
+                    (format!("{base}/v1/streams/{prefix}n{}", t - tenants),
+                     format!("Bearer {}", tokens[noisy_tok]))
+                };
                 let key = key.clone();
                 async move {
                     for attempt in 0..4u32 {
@@ -1581,11 +1614,26 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
             .unwrap_or(rest.len());
         rest[..end].parse::<u64>().ok().map(|v| (v, at + end))
     }
+    // Subscriber specs: (slot, stream name, token index). Ordinary
+    // subs round-robin the sub-tenant range; noisy subs park on the
+    // dedicated project's feeds at slots >= sub_tenants.
+    let mut sub_specs: Vec<(usize, String, usize)> = (0..subs_n)
+        .map(|j| {
+            let t = (j + sub_offset) % sub_tenants.max(1);
+            (t, stream_of(t), tok_idx(t))
+        })
+        .collect();
+    for j2 in 0..noisy_feeds * noisy_subs_per {
+        let f = j2 % noisy_feeds;
+        sub_specs.push((sub_tenants + f, format!("{prefix}n{f}"), noisy_tok));
+    }
+    let subs_total = sub_specs.len();
     let sub_states: Arc<Vec<Mutex<SubState>>> = Arc::new(
-        (0..subs_n)
-            .map(|j| {
+        sub_specs
+            .iter()
+            .map(|(slot, _, _)| {
                 Mutex::new(SubState {
-                    stream_t: (j + sub_offset) % sub_tenants.max(1),
+                    stream_t: *slot,
                     recv: Vec::new(),
                     dups: 0,
                     wrong_stream: 0,
@@ -1596,13 +1644,13 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
             .collect(),
     );
     let next_q: Arc<Vec<AtomicU64>> =
-        Arc::new((0..sub_tenants).map(|_| AtomicU64::new(0)).collect());
+        Arc::new((0..slots).map(|_| AtomicU64::new(0)).collect());
     let acked_q: Arc<Vec<Mutex<Vec<u64>>>> =
-        Arc::new((0..sub_tenants).map(|_| Mutex::new(Vec::new())).collect());
+        Arc::new((0..slots).map(|_| Mutex::new(Vec::new())).collect());
     let unacked_q: Arc<Vec<Mutex<Vec<u64>>>> =
-        Arc::new((0..sub_tenants).map(|_| Mutex::new(Vec::new())).collect());
+        Arc::new((0..slots).map(|_| Mutex::new(Vec::new())).collect());
     let shed_q: Arc<Vec<Mutex<Vec<u64>>>> =
-        Arc::new((0..sub_tenants).map(|_| Mutex::new(Vec::new())).collect());
+        Arc::new((0..slots).map(|_| Mutex::new(Vec::new())).collect());
 
     // Phase 2: park the subscriber swarm (durable-cursor :sse at tail).
     let delivered = Arc::new(AtomicU64::new(0));
@@ -1612,13 +1660,14 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
     // counts first-parks and can never expose edge zombies.
     let subs_live = Arc::new(AtomicU64::new(0));
     let lag_hist = WideHist::new();
+    let noisy_lag_hist = WideHist::new();
+    let noisy_reconnects = Arc::new(AtomicU64::new(0));
     let stop = Arc::new(AtomicU64::new(0));
-    for j in 0..subs_n {
-        let t = (j + sub_offset) % sub_tenants;
+    for (j, (slot, sname, tidx)) in sub_specs.iter().enumerate() {
         let http = http.clone();
         let base = base.clone();
-        let name = stream_of(t);
-        let auth = format!("Bearer {}", tokens[t]);
+        let name = sname.clone();
+        let auth = format!("Bearer {}", tokens[*tidx]);
         let key = key.clone();
         let (delivered, reconnects, subs_open, subs_live, lag_hist, stop) = (
             delivered.clone(),
@@ -1633,7 +1682,9 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
         let sub_err_connect = sub_err_connect.clone();
         let sub_err_status = sub_err_status.clone();
         let sub_states = sub_states.clone();
-        let my_t = (j + sub_offset) % sub_tenants.max(1);
+        let (noisy_lag_hist, noisy_reconnects) = (noisy_lag_hist.clone(), noisy_reconnects.clone());
+        let my_t = *slot;
+        let is_noisy = my_t >= sub_tenants;
         tokio::spawn(async move {
             let mut first = true;
             // Reconciliation contract: reconnects resume from the LAST
@@ -1704,6 +1755,8 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                 if first {
                     subs_open.fetch_add(1, Ordering::Relaxed);
                     first = false;
+                } else if is_noisy {
+                    noisy_reconnects.fetch_add(1, Ordering::Relaxed);
                 } else {
                     reconnects.fetch_add(1, Ordering::Relaxed);
                 }
@@ -1756,7 +1809,11 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                         let t_from = s_v.map(|(_, n2)| n2).unwrap_or(next);
                         if let Some((sent_ms, _)) = json_u64_after(seg, t_from, "\"t\":") {
                             let lag = now_ms().saturating_sub(sent_ms);
-                            lag_hist.rec(lag * 1000); // hist is in micros
+                            if is_noisy {
+                                noisy_lag_hist.rec(lag * 1000);
+                            } else {
+                                lag_hist.rec(lag * 1000); // hist is in micros
+                            }
                             delivered.fetch_add(1, Ordering::Relaxed);
                         }
                         {
@@ -1783,10 +1840,10 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
             tokio::time::sleep(Duration::from_millis(40)).await;
         }
     }
-    if subs_n > 0 {
+    if subs_total > 0 {
         // Give the swarm a moment to park before offering load.
         for _ in 0..100 {
-            if subs_open.load(Ordering::Relaxed) as usize >= subs_n * 95 / 100 {
+            if subs_open.load(Ordering::Relaxed) as usize >= subs_total * 95 / 100 {
                 break;
             }
             tokio::time::sleep(Duration::from_millis(200)).await;
@@ -1838,6 +1895,7 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
         eprintln!("CERT_RELEASED");
     }
     let deadline = Instant::now() + Duration::from_secs(secs);
+    let noisy_prefix = prefix.clone();
     let writer = {
         let (http, base, key, tokens, offered, ok, thr, err, ap_hist, sem, stop) = (
             http.clone(),
@@ -1900,7 +1958,7 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
                         offered.fetch_add(1, Ordering::Relaxed);
                         let http = http.clone();
                         let url = format!("{base}/v1/streams/{}/records", stream_of(t));
-                        let auth = format!("Bearer {}", tokens[t]);
+                        let auth = format!("Bearer {}", tokens[tok_idx(t)]);
                         let key = key.clone();
                         let (ok, thr, err, ap_hist) =
                             (ok.clone(), thr.clone(), err.clone(), ap_hist.clone());
@@ -1989,6 +2047,86 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
         })
     };
 
+    // Noisy-project writer (leg 5): its OWN pacer, ledger slots at
+    // sub_tenants+f, and its own counters — the victim-class gate
+    // denominators must never blend with the aggressor's.
+    let noisy_offered = Arc::new(AtomicU64::new(0));
+    let noisy_ok = Arc::new(AtomicU64::new(0));
+    let noisy_err = Arc::new(AtomicU64::new(0));
+    let noisy_writer = (writers && noisy_feeds > 0).then(|| {
+        let (http, base, key, tokens) =
+            (http.clone(), base.clone(), key.clone(), tokens.clone());
+        let (next_q, acked_q, unacked_q, shed_q) =
+            (next_q.clone(), acked_q.clone(), unacked_q.clone(), shed_q.clone());
+        let (noisy_offered, noisy_ok, noisy_err, stop) = (
+            noisy_offered.clone(),
+            noisy_ok.clone(),
+            noisy_err.clone(),
+            stop.clone(),
+        );
+        let prefix = noisy_prefix.clone();
+        let sem = Arc::new(tokio::sync::Semaphore::new(128));
+        tokio::spawn(async move {
+            let auth = format!("Bearer {}", tokens[noisy_tok]);
+            let interval = Duration::from_millis((1000 / noisy_wps.max(1)).max(1));
+            let mut next_fire = tokio::time::Instant::now();
+            let mut i = 0usize;
+            while Instant::now() < deadline && stop.load(Ordering::Relaxed) == 0 {
+                tokio::time::sleep_until(next_fire).await;
+                next_fire += interval;
+                let f = i % noisy_feeds;
+                i += 1;
+                let slot = sub_tenants + f;
+                let q = next_q[slot].fetch_add(1, Ordering::Relaxed);
+                noisy_offered.fetch_add(1, Ordering::Relaxed);
+                let Ok(permit) = sem.clone().try_acquire_owned() else {
+                    unacked_q[slot].lock().unwrap().push(q);
+                    noisy_err.fetch_add(1, Ordering::Relaxed);
+                    continue;
+                };
+                let http = http.clone();
+                let url = format!("{base}/v1/streams/{prefix}n{f}/records");
+                let (auth, key) = (auth.clone(), key.clone());
+                let (acked_q, unacked_q, shed_q) =
+                    (acked_q.clone(), unacked_q.clone(), shed_q.clone());
+                let (noisy_ok, noisy_err) = (noisy_ok.clone(), noisy_err.clone());
+                tokio::spawn(async move {
+                    let _p = permit;
+                    let body = format!(
+                        "{{\"t\":{},\"q\":{},\"s\":{},\"pad\":\"{}\"}}",
+                        now_ms(),
+                        q,
+                        slot,
+                        "x".repeat(noisy_record_bytes.saturating_sub(64))
+                    );
+                    match http
+                        .post(&url)
+                        .timeout(Duration::from_secs(30))
+                        .header("authorization", auth)
+                        .header("prisma-encryption-key", key)
+                        .header("content-type", "application/json")
+                        .body(body)
+                        .send()
+                        .await
+                    {
+                        Ok(r) if r.status().is_success() => {
+                            noisy_ok.fetch_add(1, Ordering::Relaxed);
+                            acked_q[slot].lock().unwrap().push(q);
+                        }
+                        Ok(r) if r.status().as_u16() == 429 || r.status().as_u16() == 503 => {
+                            shed_q[slot].lock().unwrap().push(q);
+                            noisy_err.fetch_add(1, Ordering::Relaxed);
+                        }
+                        _ => {
+                            unacked_q[slot].lock().unwrap().push(q);
+                            noisy_err.fetch_add(1, Ordering::Relaxed);
+                        }
+                    }
+                });
+            }
+        })
+    });
+
     // Reporter until the deadline.
     let started = Instant::now();
     while Instant::now() < deadline {
@@ -1996,6 +2134,7 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
         tokio::time::sleep(Duration::from_secs(20).min(left)).await;
         let ap = ap_hist.drain_sorted();
         let lags = lag_hist.drain_sorted();
+        let noisy_lags = noisy_lag_hist.drain_sorted();
         let offered_v = offered.load(Ordering::Relaxed);
         let thr_v = thr.load(Ordering::Relaxed);
         let line = serde_json::json!({
@@ -2021,7 +2160,10 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
             "nofile": { "soft": nofile_now().0, "hard": nofile_now().1, "open": nofile_now().2 },
             "lagWinP50Ms": pctl_ms(&lags, 0.5),
             "lagWinP99Ms": pctl_ms(&lags, 0.99),
-            "tenants": tenants, "subTenants": sub_tenants, "subsN": subs_n,
+            "noisyLagWinP99Ms": pctl_ms(&noisy_lags, 0.99),
+            "noisyReconnects": noisy_reconnects.load(Ordering::Relaxed),
+            "noisyOffered": noisy_offered.load(Ordering::Relaxed),
+            "tenants": tenants, "subTenants": sub_tenants, "subsN": subs_n, "subsTotal": subs_total,
             "active": active, "fanoutActive": fanout_active,
             "windowMs": window_ms, "wps": wps, "recordBytes": record_bytes,
             "elapsedS": started.elapsed().as_secs(),
@@ -2038,6 +2180,10 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
     // then hold the subscriber fleet through the settle window so owed
     // deliveries arrive before the freeze.
     let _ = tokio::time::timeout(Duration::from_secs(8), writer).await;
+    if let Some(nw) = noisy_writer {
+        let _ = tokio::time::timeout(Duration::from_secs(8), nw).await;
+        tokio::time::sleep(Duration::from_secs(2)).await; // noisy in-flight acks
+    }
     if writers {
         let _ = tokio::time::timeout(Duration::from_secs(35), sem.acquire_many(768)).await;
     }
@@ -2126,7 +2272,7 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
         })
         .collect();
     let writer_streams: serde_json::Map<String, serde_json::Value> = if writers {
-        (0..sub_tenants)
+        (0..slots)
             .filter_map(|t| {
                 let mut a = acked_q[t].lock().unwrap().clone();
                 let mut u = unacked_q[t].lock().unwrap().clone();
@@ -2152,6 +2298,8 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
         serde_json::Map::new()
     };
     let recon = serde_json::json!({
+        "noisyFrom": sub_tenants,
+        "noisySubsPer": noisy_subs_per,
         "receivedTotal": received_total,
         "holesTotal": holes_total,
         "dupsTotal": dups_total,
@@ -2189,7 +2337,15 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
         "createMs": create_ms,
         "steadySecs": secs,
         "subOffset": sub_offset,
-        "tenants": tenants, "subTenants": sub_tenants, "subsN": subs_n,
+        "noisy": {
+            "feeds": noisy_feeds, "subsPer": noisy_subs_per, "wps": noisy_wps,
+            "recordBytes": noisy_record_bytes,
+            "offered": noisy_offered.load(Ordering::Relaxed),
+            "ok": noisy_ok.load(Ordering::Relaxed),
+            "err": noisy_err.load(Ordering::Relaxed),
+            "reconnects": noisy_reconnects.load(Ordering::Relaxed),
+        },
+        "tenants": tenants, "subTenants": sub_tenants, "subsN": subs_n, "subsTotal": subs_total,
         "active": active, "fanoutActive": fanout_active,
         "windowMs": window_ms, "wps": wps, "recordBytes": record_bytes,
         "binSha256": std::env::var("APP_BINARY_SHA256").unwrap_or_default(),

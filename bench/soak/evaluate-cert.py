@@ -78,6 +78,11 @@ def main():
         for j in range(n):
             t = (j + off) % max(st_n, 1)
             parked_per_stream[t] = parked_per_stream.get(t, 0) + 1
+        # Noisy-class slots (leg 5) park exactly noisySubsPer each at
+        # slots >= noisyFrom; reconciliation is just as exact there.
+        nz = d.get("noisy") or {}
+        for f in range(nz.get("feeds", 0) or 0):
+            parked_per_stream[st_n + f] = r.get("noisySubsPer", nz.get("subsPer", 0))
         for t_s, wa in writer.items():
             t = int(t_s)
             want = parked_per_stream.get(t, 0)
@@ -172,8 +177,18 @@ def main():
     else:
         notes.append("no rss timeline — server gates not evaluated")
 
+    # Leg-5 victim gate: `reconnects` counts ONLY the ordinary
+    # (victim) class — the noisy aggressor's churn lives in
+    # noisy.reconnects. With --victims-strict, ANY victim reconnect
+    # fails the leg (the isolation contract is per-project).
+    noisy = next((d.get("noisy") for d in dones.values()
+                  if (d.get("noisy") or {}).get("feeds")), None)
+    if noisy and "--victims-strict" in sys.argv and reconnects > 0:
+        fails.append(f"VICTIM RECONNECTS {reconnects} (noisy-project churn leaked)")
+
     verdict = "PASS" if not fails else "FAIL"
     summary = {
+        "noisy": noisy,
         "stage": stage, "verdict": verdict, "fails": fails, "notes": notes,
         "subs": subs_total, "received": received, "realLoss": real_loss,
         "dups": dups, "wrongStream": wrong, "deadSubs": dead_subs,
@@ -191,6 +206,9 @@ def main():
           f"{err_pct if err_pct is None else round(err_pct, 4)}% apP99 {ap_p99} lagP99 {lag_by_gen}")
     print(f"   server: peakRSS {peak_rss} conns {conns_peak} admitSheds {sheds} "
           f"lagCuts {lagcuts} uncached {uncached}")
+    if noisy:
+        print(f"   noisy: feeds {noisy['feeds']} offered {noisy['offered']} ok {noisy['ok']} "
+              f"err {noisy['err']} reconnects {noisy['reconnects']}")
     for f in fails:
         print(f"   FAIL: {f}")
     for n in notes:

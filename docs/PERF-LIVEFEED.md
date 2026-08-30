@@ -17,12 +17,12 @@ alternation + per-cell medians absorb that noise.
 
 ## 1. Legacy versus LiveFeed (density sweep, 1,000 subscribers)
 
-| Shape | Verdict |
+| Shape | Verdict (re-measured 2026-08-29) |
 |---|---|
-| `10x100` (product target) | **Parity** on delivery p99 (±0%) and idle RSS (−10% for livefeed). Append-p99 comparison **withdrawn** pending the recompare (below). |
+| `10x100` (product target) | **Parity**: subscribed append p99 A 26.0 / B 25.5 / C 25.5 ms; delivery p99 ±0%; idle RSS −10% for livefeed. |
 | `1x1000` (max sharing) | Parity (delivery +6%). |
-| `1000x1` (breadth) | Dual-commit livefeed dipped (+12% full-run CPU); the final RC recovered it (C ≈ A). Append-p99 leg of this claim **withdrawn** pending the recompare. |
-| `500x2`, `100x10` (many shared feeds) | Delivery p99 3–8× worse on livefeed **under the default retention budgets** — see §2; with adequate retention: parity. |
+| `1000x1` (breadth) | Dual-commit dip was real and larger than first reported (**+38% append p99**, 442→610 ms); the final RC recovers it fully (C 434 ≈ A 442 ms). |
+| `500x2`, `100x10` (many shared feeds) | Delivery p99 3–8× worse on livefeed **under the old retention budgets** — see §2; retention-bound, not read-path-bound. |
 
 **Re-measured (review 2026-08-29; two harness defects fixed).** The
 original append-p99 numbers were withdrawn — background appends
@@ -47,7 +47,19 @@ affected shapes were re-run (2 runs/arm, alternated):
   1,000 parked subscribers** (~116 µs/sub/s of heartbeat+timer cost),
   identical across all three arms. The earlier "no measurable idle
   CPU" claim was an artifact of whole-run accounting and is
-  corrected.
+  corrected. **This is a first-class capacity dimension:** it is
+  engine-independent (HTTP/socket/heartbeat work, not LiveFeed
+  reading), and IF it scaled linearly, 10,000 parked connections
+  would idle at ~one full core on a 1-vCPU instance. Native Compute
+  may be materially cheaper than this Rosetta container — the native
+  heartbeat CPU slope must be measured before any 10k-connection
+  planning number is used, and `SSE_MAX_CONNECTIONS` stays a
+  CPU/socket safety boundary independent of any memory-based
+  admission.
+- Append-latency labeling: histograms measure LAUNCHED
+  attempts/responses; client-concurrency drops are accounted
+  separately against scheduled intent and never enter the latency
+  distributions.
 - Memory per subscriber: **43–60 KB across every shape and arm**
   (matches the workload-cert 55–70 KB estimate). Livefeed ≤ legacy.
 - Teardown returns feeds/reserved bytes to zero every run.
@@ -92,6 +104,11 @@ realistic shared-feed counts). Retention is exactly accounted; the
 memory headroom exists (10,000 parked subscribers idle at 307 MB).
 Do NOT build a dedicated shared-feed reader: with adequate retention
 the realistic shapes are at parity or better.
+
+**Status: 64/32 is the CURRENT CANDIDATE profile, not a certified
+final** — the six multi-project field legs (§4) are the decisive
+evidence for whether it fits the production tenant distribution; the
+local evidence below is a single-project stress geometry.
 
 **Measured 64/32 point (2026-08-29, two runs, review-directed):** at
 the SHIPPED 64/32 combination the hostile `500x2` shape is **NOT at

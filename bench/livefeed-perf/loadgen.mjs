@@ -94,6 +94,10 @@ const state = {
   appendTimeouts: 0,
   appendTransport: 0,
   appendErrors: 0,
+  maxAppendInflight: 0,
+  inflightAtPhaseEnd: 0,
+  lastDrainMs: 0,
+  drainTimeouts: 0,
   reconnects: 0,
   subEofs: 0,
   parseErrors: 0,
@@ -116,6 +120,9 @@ function resetPhaseCounters() {
   state.appendTimeouts = 0;
   state.appendTransport = 0;
   state.appendErrors = 0;
+  state.maxAppendInflight = 0;
+  state.inflightAtPhaseEnd = 0;
+  state.lastDrainMs = 0;
   state.reconnects = 0;
   state.subEofs = 0;
   state.deliveryHist = mkHist();
@@ -314,6 +321,7 @@ function launch(fn) {
   if (appendInflight >= MAX_INFLIGHT_APPENDS) { state.appendConcDrops++; return; }
   state.appendsLaunched++;
   appendInflight++;
+  if (appendInflight > state.maxAppendInflight) state.maxAppendInflight = appendInflight;
   fn().finally(() => { appendInflight--; });
 }
 // Paced append loop: `rate`/s spread over subscribed streams.
@@ -337,8 +345,16 @@ async function pacedAppends(secs, rate, { bgRate = 0, small = false } = {}) {
     if (rem > 0) await sleep(rem);
   }
   // Drain: phase accounting must attribute every launched attempt.
-  const drainEnd = now() + 16_000;
+  // Requests time out at 15 s, so 16 s normally suffices — but a
+  // wedged path can leak a late completion into the NEXT phase after
+  // counters reset. A non-empty pool at the deadline is recorded and
+  // FAILS the run (review hardening, 2026-08-30).
+  const drainStart = now();
+  const drainEnd = drainStart + 16_000;
   while (appendInflight > 0 && now() < drainEnd) await sleep(100);
+  state.lastDrainMs = now() - drainStart;
+  state.inflightAtPhaseEnd = appendInflight;
+  if (appendInflight > 0) state.drainTimeouts++;
 }
 
 // ---- phase machinery ------------------------------------------------
@@ -373,6 +389,9 @@ async function phase(name, fn) {
       append_timeouts: state.appendTimeouts,
       append_transport: state.appendTransport,
       append_errors: state.appendErrors,
+      max_append_inflight: state.maxAppendInflight,
+      append_inflight_at_phase_end: state.inflightAtPhaseEnd,
+      append_drain_ms: state.lastDrainMs,
       reconnects: state.reconnects,
       sub_eofs: state.subEofs,
       parse_errors: state.parseErrors,
@@ -532,7 +551,9 @@ const run = async () => {
     if (got !== owed) recon.missing += owed - got;
     recon.resume_overlaps += Math.max(0, sub.received - got);
   }
-  const verdict = recon.missing === 0 && state.parseErrors === 0 ? "PASS" : "FAIL";
+  const verdict =
+    recon.missing === 0 && state.parseErrors === 0 && state.drainTimeouts === 0 ? "PASS" : "FAIL";
+  if (state.drainTimeouts > 0) recon.append_drain_timeouts = state.drainTimeouts;
   writeFileSync(join(OUT, "run.json"), JSON.stringify({
     shape: { feeds: FEEDS, subscribers: FEEDS * SUBS_PER, subs_per: SUBS_PER },
     config: {
