@@ -24,6 +24,12 @@ if command -v actionlint > /dev/null 2>&1; then
 else
   echo "actionlint: not installed locally; CI enforces it via workflow-lint.yml" >> "$OUT"
 fi
+# Round-13: the RC evidence verifier must refuse every tampered field
+# — its mutation self-test runs on every commit (sub-second, pure py).
+if ! python3 scripts/verify-rc-evidence.py --self-test --repo . >> "$OUT" 2>&1; then
+  echo GATEFAIL-evidence-verifier >> "$OUT"
+  exit 1
+fi
 if ! cargo fmt --check > /tmp/fmt.out 2>&1; then
   cat /tmp/fmt.out
   echo GATEFAIL-fmt >> "$OUT"

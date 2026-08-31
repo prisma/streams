@@ -136,7 +136,7 @@ pub struct AppState {
     /// latency collapse (runs 7-9: offered load past capacity turned into
     /// multi-second p50 and timeout churn; shedding holds goodput at
     /// capacity with bounded latency). 0 = off. Health/debug are exempt.
-    pub admit_max_inflight: i64,
+    pub admit_max_inflight: std::sync::atomic::AtomicI64,
     /// #267 SSE Phase 1: instance connection budget for live SSE
     /// subscriptions. Subscriber memory and the write path share ONE
     /// RSS shed line, so unbounded subscribers make UNRELATED appends
@@ -187,6 +187,11 @@ pub struct AppState {
     /// These split the SAME increments by source; admit_shed stays the
     /// sum for dashboard continuity.
     pub admit_shed_inflight: std::sync::atomic::AtomicU64,
+    /// Round-13: pre-auth survival refusals (the catastrophic bound at
+    /// 4x the ordinary cap). The ordinary inflight gate moved POST-auth
+    /// (append_core) — the multitenancy contract says authentication
+    /// precedes tarpit work and capacity answers.
+    pub admit_shed_survival: std::sync::atomic::AtomicU64,
     pub admit_shed_rss: std::sync::atomic::AtomicU64,
     /// Per-stream inflight append cap (0 = off): one hot stream cannot
     /// occupy every admission slot of its shard owner. Scoped 429 +
@@ -856,23 +861,31 @@ async fn track_inflight(
         .inflight_peak
         .fetch_max(cur, std::sync::atomic::Ordering::Relaxed);
     let _guard = InflightGuard(state.clone());
+    // Round-13 (review): the ORDINARY inflight admission gate moved
+    // POST-auth into append_core — running it here answered 429 with
+    // capacity information (plus a 25 ms tarpit) to UNAUTHENTICATED
+    // callers, letting a noisy or anonymous flood consume tarpit slots
+    // and learn capacity posture before the project gate ever ran. The
+    // contract: authenticate before tarpit work and capacity answers.
+    // Pre-auth keeps ONLY a cheap absolute survival bound (4x the
+    // ordinary cap): no tarpit, a generic instant refusal, because a
+    // process at 4x its admission cap is defending its sockets, not
+    // answering capacity questions.
+    let cap = state
+        .admit_max_inflight
+        .load(std::sync::atomic::Ordering::Relaxed);
     let path_is_stream = req.uri().path().starts_with("/v1/stream");
-    if state.admit_max_inflight > 0 && cur > state.admit_max_inflight && path_is_stream {
+    if cap > 0 && cur > cap.saturating_mul(4) && path_is_stream {
         state
             .admit_shed
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         state
-            .admit_shed_inflight
+            .admit_shed_survival
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        // Tarpit: a ~25 ms pause before the 429 bounds the reject rate a
-        // non-compliant closed-loop client can generate (an instant 429
-        // invites an instant retry — measured as a CPU-starving reject
-        // storm). Compliant clients never see this path twice in a row.
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         return (
-            StatusCode::TOO_MANY_REQUESTS,
+            StatusCode::SERVICE_UNAVAILABLE,
             [("retry-after", "1"), ("content-type", "application/json")],
-            r#"{"error":{"code":"overloaded","message":"instance at admission capacity; retry"}}"#,
+            r#"{"error":{"code":"overloaded","message":"retry"}}"#,
         )
             .into_response();
     }
@@ -1056,6 +1069,9 @@ async fn debug_load(
             .admit_shed_inflight
             .load(std::sync::atomic::Ordering::Relaxed),
         "admit_shed_rss": state.admit_shed_rss.load(std::sync::atomic::Ordering::Relaxed),
+        "admit_shed_survival": state
+            .admit_shed_survival
+            .load(std::sync::atomic::Ordering::Relaxed),
         "sse_connections": state
             .sse_connections
             .load(std::sync::atomic::Ordering::Relaxed),
@@ -4923,6 +4939,36 @@ async fn append_core(
         }
     };
 
+    // Round-13: the ordinary inflight admission gate, AFTER bearer +
+    // stream-key auth (it lived in pre-auth middleware; see
+    // track_inflight). Writes only — R24-B settled that shedding reads
+    // hides the instance from its own operators.
+    let inflight_cap = state
+        .admit_max_inflight
+        .load(std::sync::atomic::Ordering::Relaxed);
+    if inflight_cap > 0
+        && state.inflight.load(std::sync::atomic::Ordering::Relaxed) > inflight_cap
+    {
+        state
+            .admit_shed
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        state
+            .admit_shed_inflight
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        // Tarpit: a ~25 ms pause before the 429 bounds the reject rate a
+        // non-compliant closed-loop client can generate (an instant 429
+        // invites an instant retry — measured as a CPU-starving reject
+        // storm). Compliant clients never see this path twice in a row.
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+        let mut r = err_resp(
+            StatusCode::TOO_MANY_REQUESTS,
+            "overloaded",
+            "instance at admission capacity; retry",
+        );
+        r.headers_mut()
+            .insert("retry-after", axum::http::HeaderValue::from_static("1"));
+        return r;
+    }
     let mut producer = match parse_producer(&headers) {
         Ok(p) => p,
         Err(m) => return err_resp(StatusCode::BAD_REQUEST, "invalid_producer", &m),

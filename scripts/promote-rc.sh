@@ -102,12 +102,17 @@ LOCAL_SHA=$(shasum -a 256 "$WORKTREE/target/release/streams-slate" | cut -d' ' -
 CERT_MANIFEST="$WORKTREE/target/rc-certify-manifest.json"
 if [ -n "$FIELD_LEGS" ]; then
   # Evidence-manifest mint: the certified identity is the exact
-  # artifact the canary battery ran (never the local macOS rebuild),
-  # and the manifest must attest a passing canary on it.
+  # artifact the canary battery ran (never the local macOS rebuild).
+  # Round-13 fix 2: NOTHING in the manifest is trusted — every claim
+  # is independently recomputed by the verifier (which gate.sh
+  # self-tests with per-field mutations on every commit).
+  : "${RC_ARTIFACT:?field-legs mode needs RC_ARTIFACT (the exact x86_64-musl binary)}"
+  : "${RC_CANARY_LOG:?field-legs mode needs RC_CANARY_LOG}"
+  python3 scripts/verify-rc-evidence.py "$FIELD_LEGS" --sha "$SHA" --repo . \
+    --results "${SOAK_HOME:?field-legs mode needs SOAK_HOME}/results" \
+    --binary "$RC_ARTIFACT" --canary-log "$RC_CANARY_LOG"
   SRV_SHA=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['server_binary_sha256'])" "$FIELD_LEGS")
-  CANARY_OK=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['exact_artifact_canary']['result'])" "$FIELD_LEGS")
-  [ "$CANARY_OK" = "PASS" ] || { echo "FAIL: evidence manifest canary result=$CANARY_OK"; exit 1; }
-  SRV_SHA_NOTE="exact-artifact canary-certified (field-legs evidence manifest)"
+  SRV_SHA_NOTE="exact-artifact canary-certified (evidence independently verified)"
   REPRO_LINE="local rebuild sha256 $LOCAL_SHA differs from the certified x86_64-musl artifact (expected across arch/libc; the certified SHA governs)"
   [ "$LOCAL_SHA" = "$SRV_SHA" ] && REPRO_LINE="local rebuild reproduces the certified artifact byte-for-byte"
 elif [ ${#CAP_ARGS[@]} -gt 0 ]; then

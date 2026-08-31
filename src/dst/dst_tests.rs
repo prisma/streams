@@ -5802,11 +5802,12 @@ async fn http_rig_inner(
         fleet_ops: std::sync::atomic::AtomicU64::new(0),
         inflight: std::sync::atomic::AtomicI64::new(0),
         inflight_peak: std::sync::atomic::AtomicI64::new(0),
-        admit_max_inflight: 0,
+        admit_max_inflight: std::sync::atomic::AtomicI64::new(0),
         admit_rss_shed_mb: 0,
         rss_mb_cached: std::sync::atomic::AtomicU64::new(0),
         admit_shed: std::sync::atomic::AtomicU64::new(0),
         admit_shed_inflight: std::sync::atomic::AtomicU64::new(0),
+        admit_shed_survival: std::sync::atomic::AtomicU64::new(0),
         admit_shed_rss: std::sync::atomic::AtomicU64::new(0),
         sse_max_connections: 0,
         sse_configured_max_connections: 0,
@@ -36329,5 +36330,100 @@ async fn livefeed_cursor_now_uses_the_reconciled_source() {
     assert!(
         acc1.contains("\"i\":1") && acc1.contains("\"i\":2"),
         "the parked subscriber drains the whole lineage:\n{acc1}"
+    );
+}
+
+/// Round-13 review (red): authentication precedes tarpit work and
+/// capacity answers. The ordinary inflight admission gate lived in
+/// PRE-auth middleware — an unauthenticated caller at a saturated
+/// instance burned a 25 ms tarpit slot and received a 429 capacity
+/// answer before auth ever ran, giving an anonymous flood both a
+/// tarpit-slot lever against unrelated projects and free capacity
+/// posture. Contract: unauthenticated => fast 401 with no capacity
+/// information; the typed tarpitted 429 answers only AFTER bearer +
+/// stream-key auth; pre-auth keeps only the catastrophic survival
+/// bound (4x the cap; instant, generic).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn inflight_admission_answers_only_after_authentication() {
+    let store = mem();
+    let (state, addr) = http_rig_auth(store, "tok").await;
+    let auth = ("authorization", "Bearer tok");
+    let ct = ("content-type", "text/plain");
+    let (st, _, b) = hreq(addr, "PUT", "/v1/stream/adm", &[auth, ct], b"seed").await;
+    assert!(st == 200 || st == 201, "seed: {st} {}", String::from_utf8_lossy(&b));
+
+    // Saturate the ordinary cap (over cap, under the 4x survival bound).
+    state
+        .admit_max_inflight
+        .store(4, std::sync::atomic::Ordering::Relaxed);
+    state
+        .inflight
+        .fetch_add(8, std::sync::atomic::Ordering::Relaxed);
+
+    // 1. Unauthenticated at saturation: 401, NO 25 ms tarpit, and no
+    //    capacity vocabulary in the body. (elapsed < 25ms is exclusive
+    //    with the tarpit's guaranteed >= 25ms sleep.)
+    let t0 = std::time::Instant::now();
+    let (st, _, body) = hreq(addr, "POST", "/v1/stream/adm", &[ct], b"x").await;
+    let dt = t0.elapsed();
+    assert_eq!(st, 401, "unauthenticated gets 401, not a capacity answer");
+    assert!(
+        dt < std::time::Duration::from_millis(25),
+        "no pre-auth tarpit: {dt:?}"
+    );
+    let text = String::from_utf8_lossy(&body).to_string();
+    assert!(
+        !text.contains("capacity") && !text.contains("overloaded"),
+        "no capacity posture pre-auth:\n{text}"
+    );
+
+    // 2. Authenticated over-cap append: the typed tarpitted 429.
+    let t0 = std::time::Instant::now();
+    let (st, _, body) = hreq(addr, "POST", "/v1/stream/adm", &[auth, ct], b"x").await;
+    assert_eq!(st, 429, "{}", String::from_utf8_lossy(&body));
+    assert!(
+        String::from_utf8_lossy(&body).contains("admission capacity"),
+        "typed refusal:\n{}",
+        String::from_utf8_lossy(&body)
+    );
+    assert!(
+        t0.elapsed() >= std::time::Duration::from_millis(25),
+        "the authenticated refusal keeps the tarpit"
+    );
+    assert!(
+        state
+            .admit_shed_inflight
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 0
+    );
+
+    // 3. Catastrophic survival bound (>4x cap): pre-auth instant
+    //    generic refusal — sockets are being defended, no tarpit.
+    state
+        .inflight
+        .fetch_add(100, std::sync::atomic::Ordering::Relaxed);
+    let t0 = std::time::Instant::now();
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/adm", &[ct], b"x").await;
+    assert_eq!(st, 503, "survival bound answers even unauthenticated");
+    assert!(
+        t0.elapsed() < std::time::Duration::from_millis(25),
+        "the survival refusal never tarpits"
+    );
+    assert!(
+        state
+            .admit_shed_survival
+            .load(std::sync::atomic::Ordering::Relaxed)
+            > 0
+    );
+
+    // 4. Pressure released: an authenticated append flows again.
+    state
+        .inflight
+        .fetch_sub(108, std::sync::atomic::Ordering::Relaxed);
+    let (st, _, b) = hreq(addr, "POST", "/v1/stream/adm", &[auth, ct], b"y").await;
+    assert!(
+        st == 200 || st == 201 || st == 204,
+        "recovered: {st} {}",
+        String::from_utf8_lossy(&b)
     );
 }

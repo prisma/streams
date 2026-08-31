@@ -142,7 +142,9 @@ pub async fn data(State(state): State<Arc<AppState>>, headers: axum::http::Heade
         "admit_shed": state.admit_shed.load(std::sync::atomic::Ordering::Relaxed),
         "stream_shed": state.stream_shed.load(std::sync::atomic::Ordering::Relaxed),
         "wedge_shed": state.wedge_shed.load(std::sync::atomic::Ordering::Relaxed),
-        "admit_max_inflight": state.admit_max_inflight,
+        "admit_max_inflight": state
+            .admit_max_inflight
+            .load(std::sync::atomic::Ordering::Relaxed),
         "admit_max_inflight_per_stream": state.admit_max_inflight_per_stream,
         "rss_mb": crate::fleet::rss_bytes() as f64 / 1048576.0,
         "rss_shed_mb": state.admit_rss_shed_mb,
