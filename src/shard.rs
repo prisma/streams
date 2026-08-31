@@ -607,6 +607,34 @@ pub struct StreamHandle {
     /// (resident handles previously lived forever; a wide shard held
     /// 100k of them, the largest per-stream memory term).
     pub last_touch_ms: std::sync::atomic::AtomicU64,
+    /// Round-13: this stream incarnation's durable-write pressure
+    /// attribution (per-project memory admission). Bound once per
+    /// resident handle from the tenant-qualified append path; the
+    /// committer attributes group deltas at publish-on-success; Drop
+    /// (idle eviction, shard close, owner movement) releases this
+    /// instance's attribution exactly.
+    pub pressure: std::sync::OnceLock<std::sync::Arc<crate::quota::StreamPressureBinding>>,
+}
+
+impl StreamHandle {
+    /// Bind (idempotently) under the state lock: the seed is the
+    /// APPLIED tail's exact unabsorbed_bytes at this instant, and the
+    /// lock ordering against the committer's publish site guarantees
+    /// the seed and the group-delta attribution never double- or
+    /// under-count a group.
+    pub fn bind_pressure(&self, adm: std::sync::Arc<crate::quota::ProjectAdmission>) {
+        if self.pressure.get().is_some() {
+            return;
+        }
+        let st = self.state.lock().unwrap();
+        let _ = self.pressure.get_or_init(|| {
+            std::sync::Arc::new(crate::quota::StreamPressureBinding::bind(
+                adm,
+                st.applied.unabsorbed_bytes,
+            ))
+        });
+        drop(st);
+    }
 }
 
 /// One durably-committed group's frames for one stream: a contiguous
@@ -2177,6 +2205,7 @@ impl ShardEngine {
             applied_notify: Notify::new(),
             ring: Mutex::new(TailRing::default()),
             last_touch_ms: std::sync::atomic::AtomicU64::new(now_ms() as u64),
+            pressure: std::sync::OnceLock::new(),
         });
         let mut map = self.streams.lock().unwrap();
         Ok(map.entry(hash).or_insert(handle).clone())
@@ -4424,6 +4453,15 @@ impl ShardEngine {
                 for local in locals.values() {
                     let mut st = local.handle.state.lock().unwrap();
                     st.applied = local.fields.clone();
+                    // Round-13: durable-aligned pressure attribution —
+                    // ONLY on write success (a failed group must never
+                    // manufacture project debt), inside the state lock
+                    // so a concurrent bind's seed and this delta
+                    // compose exactly.
+                    if let Some(b) = local.handle.pressure.get() {
+                        b.frames_added(local.appended_frame_bytes);
+                        b.frames_retired(local.retired_frame_bytes);
+                    }
                     for (plane, v) in &local.producers {
                         st.producers.insert(plane.clone(), *v);
                     }

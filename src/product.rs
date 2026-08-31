@@ -763,6 +763,32 @@ pub(crate) fn project_admission(
         .map_err(|r| crate::audit::tag_project(quota_refusal_response(&r), &p.project_id))
 }
 
+/// Round-13: the per-project memory-pressure backstop for a WRITE by
+/// this principal. Some(response) = the typed, project-audited,
+/// retryable refusal; None = admitted. Order (review): after the
+/// ordinary project quotas, before the global RSS emergency gate the
+/// shared append path applies.
+pub(crate) fn project_memory_gate(
+    state: &AppState,
+    principal: Option<&crate::auth::RequestPrincipal>,
+) -> Option<Response> {
+    let high = state
+        .project_memory_pressure_bytes
+        .load(std::sync::atomic::Ordering::Relaxed);
+    if high == 0 {
+        return None;
+    }
+    let p = principal?;
+    let adm = state.quotas.pressure_handle(&p.project_id)?;
+    if adm.memory_gate(&p.project_id, high, state.project_memory_release_pct) {
+        return Some(crate::audit::tag_project(
+            quota_refusal_response(&crate::quota::QuotaRefusal::MemoryPressure),
+            &p.project_id,
+        ));
+    }
+    None
+}
+
 /// Read admission: refuse while the project's read-byte bucket is in
 /// debt from earlier responses (§17.2 post-hoc volume metering).
 fn check_read_quota(
@@ -860,6 +886,18 @@ fn quota_refusal_response(refusal: &crate::quota::QuotaRefusal) -> Response {
             None,
             true,
         ),
+        crate::quota::QuotaRefusal::MemoryPressure => {
+            let mut r = perr(
+                StatusCode::TOO_MANY_REQUESTS,
+                "project_memory_pressure",
+                "the project's estimated memory pressure is over its per-project backstop; retry",
+                None,
+                true,
+            );
+            r.headers_mut()
+                .insert("retry-after", axum::http::HeaderValue::from_static("1"));
+            r
+        }
     };
     crate::audit::tag(
         resp,
@@ -869,6 +907,7 @@ fn quota_refusal_response(refusal: &crate::quota::QuotaRefusal) -> Response {
             crate::quota::QuotaRefusal::TrackerCapacity => "project_tracker_capacity",
             crate::quota::QuotaRefusal::StreamLimit => "project_stream_limit",
             crate::quota::QuotaRefusal::QueuedBytes => "project_queued_bytes",
+            crate::quota::QuotaRefusal::MemoryPressure => "project_memory_pressure",
         },
     )
 }
@@ -3282,6 +3321,12 @@ async fn product_append_inner(
         )
     {
         return crate::audit::tag_project(quota_refusal_response(&refusal), &p.project_id);
+    }
+    // Round-13 admission order step 7: the project memory latch,
+    // after the ordinary quotas above, before the shared append
+    // path's global RSS gate.
+    if let Some(r) = project_memory_gate(&state, principal) {
+        return r;
     }
 
     // Drive the ONE shared append path with internally-constructed

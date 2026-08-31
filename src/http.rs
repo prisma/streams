@@ -178,6 +178,12 @@ pub struct AppState {
     /// RSS 218→1030 MB at full throughput, OOMKilled=true) into graceful
     /// backpressure. 0 = off. Sampled every 500 ms into rss_mb_cached.
     pub admit_rss_shed_mb: u64,
+    /// Round-13 per-project memory-pressure backstop: the high
+    /// watermark for estimated project pressure (0 = off) and the
+    /// hysteresis release percentage. Atomic so campaigns and tests
+    /// can flip the posture without a rebuild.
+    pub project_memory_pressure_bytes: std::sync::atomic::AtomicU64,
+    pub project_memory_release_pct: u64,
     pub rss_mb_cached: std::sync::atomic::AtomicU64,
     /// 429s issued by the admission backstop (observability).
     pub admit_shed: std::sync::atomic::AtomicU64,
@@ -848,6 +854,34 @@ fn maintenance_shards_json(state: &AppState) -> serde_json::Value {
     })
 }
 
+/// Round-13: buffer a request body while charging each arriving chunk
+/// to the project's buffered-body pressure (the queued-byte counter
+/// starts too late — the buffering window itself must be accounted).
+/// Returns the bytes plus the live guard; the caller drops the guard
+/// at the queued-append transfer point so the two charges never
+/// overlap. Err(()) = the limit was exceeded (the caller answers 413).
+pub(crate) async fn buffer_body_charged(
+    body: Body,
+    limit: usize,
+    adm: Option<std::sync::Arc<crate::quota::ProjectAdmission>>,
+) -> Result<(Bytes, Option<crate::quota::BufferedBodyGuard>), ()> {
+    use futures_util::StreamExt;
+    let mut guard = adm.map(|a| crate::quota::BufferedBodyGuard::reserve(a, 0));
+    let mut buf: Vec<u8> = Vec::new();
+    let mut stream = body.into_data_stream();
+    while let Some(chunk) = stream.next().await {
+        let Ok(c) = chunk else { return Err(()) };
+        if buf.len() + c.len() > limit {
+            return Err(());
+        }
+        if let Some(g) = guard.as_mut() {
+            g.grow(c.len() as u64);
+        }
+        buf.extend_from_slice(&c);
+    }
+    Ok((Bytes::from(buf), guard))
+}
+
 async fn track_inflight(
     axum::extract::State(state): axum::extract::State<Arc<AppState>>,
     req: axum::extract::Request,
@@ -1072,6 +1106,13 @@ async fn debug_load(
         "admit_shed_survival": state
             .admit_shed_survival
             .load(std::sync::atomic::Ordering::Relaxed),
+        "project_memory": state.quotas.memory_pressure_json(
+            state
+                .project_memory_pressure_bytes
+                .load(std::sync::atomic::Ordering::Relaxed),
+            32,
+        ),
+        "project_pressure_model": crate::quota::pressure_model_json(),
         "sse_connections": state
             .sse_connections
             .load(std::sync::atomic::Ordering::Relaxed),
@@ -2267,6 +2308,15 @@ async fn product_entry_axum_inner(
         Ok(g) => g,
         Err(r) => return crate::product::with_product_cors(r),
     };
+    // Round-13: the per-project memory-pressure backstop for WRITES on
+    // this surface — after ordinary project admission, before body
+    // work. Reads and established SSE delivery continue while a
+    // project is engaged.
+    if method == Method::POST
+        && let Some(r) = crate::product::project_memory_gate(&state, principal.as_ref())
+    {
+        return crate::product::with_product_cors(r);
+    }
     // System namespace guard (docs/OBSERVABILITY-BILLING.md §8/§15) —
     // same rule as the raw surface: the leading `_` segment belongs to
     // the telemetry planes and no customer credential reaches it. After
@@ -2289,7 +2339,15 @@ async fn product_entry_axum_inner(
         }
         return crate::product::with_product_cors(r);
     }
-    let body = match axum::body::to_bytes(req.into_body(), max_body_bytes()).await {
+    let (body, _body_charge) = match buffer_body_charged(
+        req.into_body(),
+        max_body_bytes(),
+        principal
+            .as_ref()
+            .and_then(|p| state.quotas.pressure_handle(&p.project_id)),
+    )
+    .await
+    {
         Ok(b) => b,
         Err(_) => {
             return crate::product::with_product_cors(crate::product::perr(
@@ -2301,6 +2359,10 @@ async fn product_entry_axum_inner(
             ));
         }
     };
+    // Round-13: this surface's queued/committer accounting takes over
+    // beyond this point (product_append charges queued bytes) — the
+    // buffering charge ends here, no transient double charge.
+    drop(_body_charge);
     // §10.4: fill the VERIFIED principal's project into any tagged
     // denial the handlers produced (fill-only-if-absent), so classifier
     // sites never need identity plumbing of their own.
@@ -5044,9 +5106,15 @@ async fn append_core(
             .insert("retry-after", axum::http::HeaderValue::from_static("2"));
         return r;
     }
-    let body = match axum::body::to_bytes(body, max_body_bytes()).await {
-        Ok(b) => b,
-        Err(_) => return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large"),
+    let (body, _body_charge) = match buffer_body_charged(
+        body,
+        max_body_bytes(),
+        state.quotas.pressure_handle(sref.project_id()),
+    )
+    .await
+    {
+        Ok(v) => v,
+        Err(()) => return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large"),
     };
     let close_only = close && body.is_empty();
     // This request's own seal identity: content hash + routing key, the
@@ -5569,6 +5637,11 @@ async fn append_core(
     } else {
         crate::failpoints::pause_close_before_enqueue(&name).await;
     }
+    // Round-13 transfer point: the parsed entries are the queued
+    // representation from here on — the buffering charge ends so the
+    // queued/committer accounting (and the shard ledger) own the
+    // bytes without a transient double charge.
+    drop(_body_charge);
     let (tx, rx) = oneshot::channel();
     let has_entries = !entries.is_empty();
     let req = AppendReq {
@@ -5619,6 +5692,15 @@ async fn append_core(
         Ok(e) => e,
         Err(r) => return r,
     };
+    // Round-13: bind this SEGMENT's durable-write pressure attribution
+    // to the project's admission entry (once per resident handle
+    // incarnation; seeded from the applied tail's exact
+    // unabsorbed_bytes — never from zero when durable debt exists).
+    if let Some(adm) = state.quotas.pressure_handle(sref.project_id())
+        && let Ok(h) = engine.stream_handle(hash).await
+    {
+        h.bind_pressure(adm);
+    }
     // R25-C: THE maintenance admission point — one, in the shared append
     // core, after `engine_for` resolved ownership. A non-owner already
     // received its Streams-Replay-To above and never reaches this, so a

@@ -95,6 +95,330 @@ pub struct ProjectAdmission {
     streams: Mutex<StreamCount>,
     /// SR2-4 queued_append_bytes: bytes admitted but not yet decided.
     queued_bytes: AtomicU64,
+
+    // ---- round-13: per-project memory-pressure admission ----------
+    // ONE canonical project state (review: never a second project map).
+    // Static subscription footprint:
+    /// Live LiveFeed feeds this project holds on this instance —
+    /// charged exactly once per feed by the feed's own pressure guard,
+    /// never per subscriber.
+    live_feeds: AtomicU64,
+    /// EXACT retained LiveFeed bytes — the same reservation the feed
+    /// budget accounts (budget.rs updates this counter; it is never
+    /// estimated twice).
+    retained_sse_bytes: AtomicU64,
+    // Request/transient footprint:
+    /// Request-body bytes buffered (or reserved from Content-Length)
+    /// after auth, before the queued-append phase takes over.
+    buffered_body_bytes: AtomicU64,
+    // Durable-write pressure:
+    /// Encoded frame bytes committed but not yet absorbed —
+    /// stream-incarnation-safe attribution via StreamPressureBinding,
+    /// seeded from durable debt on open (never from zero).
+    unabsorbed_frame_bytes: AtomicU64,
+    /// Streams currently holding nonzero unabsorbed bytes (0->pos and
+    /// pos->0 transitions only).
+    dirty_streams: AtomicU64,
+    // Admission state:
+    /// 0 = clear, 1 = engaged. Hysteresis latch — engage at the high
+    /// watermark, release below high x release_pct/100. Without it the
+    /// noisy project oscillates accept/refuse on every completion.
+    memory_latch: std::sync::atomic::AtomicU8,
+    memory_shed_count: AtomicU64,
+    memory_engage_count: AtomicU64,
+}
+
+/// Round-13 pressure model v1. The weights are SAFETY ESTIMATES
+/// rounded UP from the round-12 certified memory model (26.28 KiB per
+/// connection, 7.95 KiB per feed, R^2 0.9987) plus the L1 resident-
+/// stream measurement (~45 KiB); they are never billing quantities.
+/// Versioned IN CODE: a calibration campaign bumps the version, not a
+/// profile knob. Exact counters (retained/queued/body/frame bytes)
+/// enter unweighted.
+pub const PROJECT_PRESSURE_MODEL_VERSION: u32 = 1;
+pub const PRESSURE_SUB_WEIGHT_BYTES: u64 = 32 * 1024;
+pub const PRESSURE_FEED_WEIGHT_BYTES: u64 = 16 * 1024;
+pub const PRESSURE_DIRTY_STREAM_WEIGHT_BYTES: u64 = 64 * 1024;
+
+/// Startup + manifest visibility for the model coefficients.
+pub fn pressure_model_json() -> serde_json::Value {
+    serde_json::json!({
+        "version": PROJECT_PRESSURE_MODEL_VERSION,
+        "sub_weight_bytes": PRESSURE_SUB_WEIGHT_BYTES,
+        "feed_weight_bytes": PRESSURE_FEED_WEIGHT_BYTES,
+        "dirty_stream_weight_bytes": PRESSURE_DIRTY_STREAM_WEIGHT_BYTES,
+    })
+}
+
+impl ProjectAdmission {
+    /// `estimated_project_pressure_bytes` — named for what it is: a
+    /// conservative model, not RSS attribution.
+    pub fn estimated_pressure_bytes(&self) -> u64 {
+        self.live_subs.load(Ordering::Relaxed) * PRESSURE_SUB_WEIGHT_BYTES
+            + self.live_feeds.load(Ordering::Relaxed) * PRESSURE_FEED_WEIGHT_BYTES
+            + self.retained_sse_bytes.load(Ordering::Relaxed)
+            + self.buffered_body_bytes.load(Ordering::Relaxed)
+            + self.queued_bytes.load(Ordering::Relaxed)
+            + self.unabsorbed_frame_bytes.load(Ordering::Relaxed)
+            + self.dirty_streams.load(Ordering::Relaxed) * PRESSURE_DIRTY_STREAM_WEIGHT_BYTES
+    }
+
+    /// Any nonzero pressure dimension pins the entry against tracker
+    /// eviction (review: eviction must not orphan outstanding
+    /// pressure).
+    fn has_pressure(&self) -> bool {
+        self.live_feeds.load(Ordering::Relaxed) > 0
+            || self.retained_sse_bytes.load(Ordering::Relaxed) > 0
+            || self.buffered_body_bytes.load(Ordering::Relaxed) > 0
+            || self.queued_bytes.load(Ordering::Relaxed) > 0
+            || self.unabsorbed_frame_bytes.load(Ordering::Relaxed) > 0
+            || self.dirty_streams.load(Ordering::Relaxed) > 0
+    }
+
+    /// Evaluate the memory latch for a WRITE from this project.
+    /// Returns true when the append must receive the typed
+    /// project_memory_pressure refusal. Emits ONE ops event per
+    /// engage and one per release — never per rejected request.
+    pub fn memory_gate(&self, project: &ProjectId, high: u64, release_pct: u64) -> bool {
+        if high == 0 {
+            return false;
+        }
+        let p = self.estimated_pressure_bytes();
+        let engaged = self.memory_latch.load(Ordering::Relaxed) == 1;
+        if !engaged {
+            if p > high
+                && self
+                    .memory_latch
+                    .compare_exchange(0, 1, Ordering::Relaxed, Ordering::Relaxed)
+                    .is_ok()
+            {
+                self.memory_engage_count.fetch_add(1, Ordering::Relaxed);
+                crate::ops::emit(
+                    crate::ops::OpsEvent::new(
+                        "project_memory_pressure_engaged",
+                        format!("pmp-e/{}/{}", project.as_str(), p),
+                    )
+                    .warn()
+                    .fields(serde_json::json!({
+                        "project": project.as_str(),
+                        "estimated_pressure_bytes": p,
+                        "high_water_bytes": high,
+                        "model_version": PROJECT_PRESSURE_MODEL_VERSION,
+                    })),
+                );
+                self.memory_shed_count.fetch_add(1, Ordering::Relaxed);
+                return true;
+            }
+            return false;
+        }
+        let release_below = high.saturating_mul(release_pct.clamp(1, 100)) / 100;
+        if p < release_below {
+            if self
+                .memory_latch
+                .compare_exchange(1, 0, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+            {
+                crate::ops::emit(
+                    crate::ops::OpsEvent::new(
+                        "project_memory_pressure_released",
+                        format!("pmp-r/{}/{}", project.as_str(), p),
+                    )
+                    .fields(serde_json::json!({
+                        "project": project.as_str(),
+                        "estimated_pressure_bytes": p,
+                        "release_below_bytes": release_below,
+                    })),
+                );
+            }
+            return false;
+        }
+        self.memory_shed_count.fetch_add(1, Ordering::Relaxed);
+        true
+    }
+
+    /// Read-only pressure dimensions (observability + tests).
+    pub fn unabsorbed_frame_bytes_now(&self) -> u64 {
+        self.unabsorbed_frame_bytes.load(Ordering::Relaxed)
+    }
+    pub fn dirty_streams_now(&self) -> u64 {
+        self.dirty_streams.load(Ordering::Relaxed)
+    }
+    pub fn buffered_body_bytes_now(&self) -> u64 {
+        self.buffered_body_bytes.load(Ordering::Relaxed)
+    }
+
+    /// EXACT retained-byte mirror for the LiveFeed budget (budget.rs
+    /// calls these on reserve/release — one counter, one truth).
+    pub fn retained_sse_add(&self, bytes: u64) {
+        self.retained_sse_bytes.fetch_add(bytes, Ordering::Relaxed);
+    }
+    pub fn retained_sse_sub(&self, bytes: u64) {
+        let mut cur = self.retained_sse_bytes.load(Ordering::Relaxed);
+        loop {
+            let next = cur.saturating_sub(bytes);
+            match self.retained_sse_bytes.compare_exchange_weak(
+                cur,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(v) => cur = v,
+            }
+        }
+    }
+}
+
+/// One live LiveFeed feed's static charge — held BY the feed object,
+/// so concurrent first subscribers charge the feed exactly once and
+/// the last teardown releases it exactly once.
+pub struct FeedPressureGuard {
+    admission: Arc<ProjectAdmission>,
+}
+
+impl FeedPressureGuard {
+    pub fn acquire(admission: Arc<ProjectAdmission>) -> Self {
+        admission.live_feeds.fetch_add(1, Ordering::Relaxed);
+        FeedPressureGuard { admission }
+    }
+}
+
+impl Drop for FeedPressureGuard {
+    fn drop(&mut self) {
+        self.admission.live_feeds.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+/// Request-body memory charge: reserved from Content-Length (or grown
+/// incrementally for chunked bodies) after auth, released or handed
+/// to the queued-append charge when the body is decided. Never
+/// pessimistically the protocol ceiling.
+pub struct BufferedBodyGuard {
+    admission: Arc<ProjectAdmission>,
+    bytes: u64,
+}
+
+impl BufferedBodyGuard {
+    pub fn reserve(admission: Arc<ProjectAdmission>, bytes: u64) -> Self {
+        admission
+            .buffered_body_bytes
+            .fetch_add(bytes, Ordering::Relaxed);
+        BufferedBodyGuard { admission, bytes }
+    }
+    /// Chunked bodies charge as chunks arrive.
+    pub fn grow(&mut self, more: u64) {
+        self.bytes += more;
+        self.admission
+            .buffered_body_bytes
+            .fetch_add(more, Ordering::Relaxed);
+    }
+}
+
+impl Drop for BufferedBodyGuard {
+    fn drop(&mut self) {
+        self.admission
+            .buffered_body_bytes
+            .fetch_sub(self.bytes, Ordering::Relaxed);
+    }
+}
+
+/// Stream-incarnation-safe durable-write attribution: held by the
+/// stream handle, bound once from the tenant-qualified descriptor.
+/// Frames the committer adds raise the project's unabsorbed debt;
+/// absorption retires it; the 0->pos / pos->0 edges move the
+/// dirty-stream count. On open of a stream with existing durable debt
+/// the binding is SEEDED from the tail — never from zero (a decaying
+/// approximation could clear itself during a real absorber stall).
+/// Drop (close, eviction, owner movement) releases this instance's
+/// attribution exactly.
+pub struct StreamPressureBinding {
+    admission: Arc<ProjectAdmission>,
+    current_unabsorbed: AtomicU64,
+}
+
+impl StreamPressureBinding {
+    pub fn bind(admission: Arc<ProjectAdmission>, seed_unabsorbed: u64) -> Self {
+        if seed_unabsorbed > 0 {
+            admission
+                .unabsorbed_frame_bytes
+                .fetch_add(seed_unabsorbed, Ordering::Relaxed);
+            admission.dirty_streams.fetch_add(1, Ordering::Relaxed);
+        }
+        StreamPressureBinding {
+            admission,
+            current_unabsorbed: AtomicU64::new(seed_unabsorbed),
+        }
+    }
+
+    /// The committer added `bytes` of ACTUAL encoded frame.
+    pub fn frames_added(&self, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        let prev = self.current_unabsorbed.fetch_add(bytes, Ordering::Relaxed);
+        self.admission
+            .unabsorbed_frame_bytes
+            .fetch_add(bytes, Ordering::Relaxed);
+        if prev == 0 {
+            self.admission.dirty_streams.fetch_add(1, Ordering::Relaxed);
+        }
+    }
+
+    /// Absorption retired `bytes` of frame. The pos->0 edge decision
+    /// rides the CAS itself — a later re-read could race a concurrent
+    /// add's 0->pos edge and leak a dirty-stream count.
+    pub fn frames_retired(&self, bytes: u64) {
+        if bytes == 0 {
+            return;
+        }
+        let mut cur = self.current_unabsorbed.load(Ordering::Relaxed);
+        let (taken, went_zero) = loop {
+            let take = bytes.min(cur);
+            match self.current_unabsorbed.compare_exchange_weak(
+                cur,
+                cur - take,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => break (take, take > 0 && cur == take),
+                Err(v) => cur = v,
+            }
+        };
+        if taken > 0 {
+            self.admission.retained_sub_frames(taken);
+            if went_zero {
+                self.admission.dirty_streams.fetch_sub(1, Ordering::Relaxed);
+            }
+        }
+    }
+}
+
+impl ProjectAdmission {
+    fn retained_sub_frames(&self, bytes: u64) {
+        let mut cur = self.unabsorbed_frame_bytes.load(Ordering::Relaxed);
+        loop {
+            let next = cur.saturating_sub(bytes);
+            match self.unabsorbed_frame_bytes.compare_exchange_weak(
+                cur,
+                next,
+                Ordering::Relaxed,
+                Ordering::Relaxed,
+            ) {
+                Ok(_) => return,
+                Err(v) => cur = v,
+            }
+        }
+    }
+}
+
+impl Drop for StreamPressureBinding {
+    fn drop(&mut self) {
+        let left = self.current_unabsorbed.load(Ordering::Relaxed);
+        if left > 0 {
+            self.admission.retained_sub_frames(left);
+            self.admission.dirty_streams.fetch_sub(1, Ordering::Relaxed);
+        }
+    }
 }
 
 #[derive(Default)]
@@ -154,6 +478,9 @@ pub enum QuotaRefusal {
     /// SR2-4: the project's committer-queued append bytes are at the
     /// ceiling; retry after in-flight appends decide.
     QueuedBytes,
+    /// Round-13: the project's estimated memory pressure crossed the
+    /// per-project backstop — typed, project-audited, retryable.
+    MemoryPressure,
 }
 
 /// Releases the inflight slot on drop — hold it for the handler's
@@ -214,6 +541,10 @@ impl QuotaRegistry {
                         m.retain(|_, a| {
                             a.inflight.load(Ordering::Relaxed) > 0
                                 || a.live_subs.load(Ordering::Relaxed) > 0
+                                // Round-13: outstanding memory pressure
+                                // pins the entry — eviction would
+                                // orphan feed/body/frame attribution.
+                                || a.has_pressure()
                                 || now_ms - a.last_seen_ms.load(Ordering::Relaxed) < IDLE_EVICT_MS
                         });
                         if m.len() >= MAX_TRACKED_PROJECTS {
@@ -247,6 +578,14 @@ impl QuotaRegistry {
                         live_subs: AtomicU64::new(0),
                         streams: Mutex::new(StreamCount::default()),
                         queued_bytes: AtomicU64::new(0),
+                        live_feeds: AtomicU64::new(0),
+                        retained_sse_bytes: AtomicU64::new(0),
+                        buffered_body_bytes: AtomicU64::new(0),
+                        unabsorbed_frame_bytes: AtomicU64::new(0),
+                        dirty_streams: AtomicU64::new(0),
+                        memory_latch: std::sync::atomic::AtomicU8::new(0),
+                        memory_shed_count: AtomicU64::new(0),
+                        memory_engage_count: AtomicU64::new(0),
                     });
                     m.insert(project.clone(), a.clone());
                     a
@@ -518,6 +857,60 @@ impl QuotaRegistry {
 
     fn tracked(&self, project: &ProjectId) -> Option<Arc<ProjectAdmission>> {
         self.projects.lock().unwrap().get(project).cloned()
+    }
+
+    /// Round-13: the pressure layers (LiveFeed budget, stream
+    /// bindings, body guards) attach to the ONE canonical project
+    /// entry. admit() runs first on every authenticated request, so
+    /// the entry exists whenever pressure can.
+    pub fn pressure_handle(&self, project: &ProjectId) -> Option<Arc<ProjectAdmission>> {
+        self.tracked(project)
+    }
+
+    /// Bounded per-project pressure rows + process aggregates for
+    /// /v1/debug/load.
+    pub fn memory_pressure_json(&self, high: u64, limit: usize) -> serde_json::Value {
+        let m = self.projects.lock().unwrap();
+        let mut engaged = 0u64;
+        let mut shed_total = 0u64;
+        let mut highest = 0u64;
+        let mut rows: Vec<(u64, serde_json::Value)> = Vec::new();
+        for (id, a) in m.iter() {
+            let p = a.estimated_pressure_bytes();
+            let is_engaged = a.memory_latch.load(Ordering::Relaxed) == 1;
+            engaged += u64::from(is_engaged);
+            shed_total += a.memory_shed_count.load(Ordering::Relaxed);
+            highest = highest.max(p);
+            if p > 0 || is_engaged {
+                rows.push((
+                    p,
+                    serde_json::json!({
+                        "project": id.as_str(),
+                        "pressure_model_version": PROJECT_PRESSURE_MODEL_VERSION,
+                        "estimated_pressure_bytes": p,
+                        "high_water_bytes": high,
+                        "engaged": is_engaged,
+                        "live_subscriptions": a.live_subs.load(Ordering::Relaxed),
+                        "live_feeds": a.live_feeds.load(Ordering::Relaxed),
+                        "retained_sse_bytes": a.retained_sse_bytes.load(Ordering::Relaxed),
+                        "buffered_body_bytes": a.buffered_body_bytes_now(),
+                        "queued_append_bytes": a.queued_bytes.load(Ordering::Relaxed),
+                        "unabsorbed_frame_bytes": a.unabsorbed_frame_bytes_now(),
+                        "dirty_streams": a.dirty_streams_now(),
+                        "engage_count": a.memory_engage_count.load(Ordering::Relaxed),
+                        "shed_count": a.memory_shed_count.load(Ordering::Relaxed),
+                    }),
+                ));
+            }
+        }
+        rows.sort_by(|x, y| y.0.cmp(&x.0));
+        rows.truncate(limit);
+        serde_json::json!({
+            "projects_memory_engaged": engaged,
+            "project_memory_shed_total": shed_total,
+            "highest_project_pressure_bytes": highest,
+            "rows": rows.into_iter().map(|(_, v)| v).collect::<Vec<_>>(),
+        })
     }
 
     /// Operator visibility: (projects tracked, total inflight).
@@ -829,5 +1222,219 @@ mod tests {
         ));
         // Already-tracked projects are untouched by tracker pressure.
         assert!(r.admit(&pid("p0"), &q(0, 0), 1_000).is_ok());
+    }
+}
+
+#[cfg(test)]
+mod pressure_tests {
+    use super::*;
+
+    fn pid(s: &str) -> ProjectId {
+        ProjectId::new(s).unwrap()
+    }
+    fn adm(r: &QuotaRegistry, name: &str) -> Arc<ProjectAdmission> {
+        let p = pid(name);
+        let _ = r.admit(&p, &ProjectQuotas::default(), 1_000).unwrap();
+        r.pressure_handle(&p).unwrap()
+    }
+
+    /// Battery 1: static subscription pressure alone reaches the high
+    /// watermark and engages the latch (reducing append headroom).
+    #[test]
+    fn static_subscription_pressure_engages_the_latch() {
+        let r = QuotaRegistry::default();
+        let a = adm(&r, "p1");
+        for _ in 0..4 {
+            a.live_subs.fetch_add(1, Ordering::Relaxed);
+        }
+        let high = 3 * PRESSURE_SUB_WEIGHT_BYTES; // 4 subs > high
+        assert!(a.memory_gate(&pid("p1"), high, 75), "engages over high");
+        assert_eq!(a.memory_engage_count.load(Ordering::Relaxed), 1);
+    }
+
+    /// Battery 2: a feed is charged once per feed via its guard —
+    /// never per subscriber — and releases exactly once on drop.
+    #[test]
+    fn feed_weight_charges_once_per_feed() {
+        let r = QuotaRegistry::default();
+        let a = adm(&r, "p2");
+        let g1 = FeedPressureGuard::acquire(a.clone());
+        assert_eq!(a.estimated_pressure_bytes(), PRESSURE_FEED_WEIGHT_BYTES);
+        let g2 = FeedPressureGuard::acquire(a.clone());
+        assert_eq!(a.estimated_pressure_bytes(), 2 * PRESSURE_FEED_WEIGHT_BYTES);
+        drop(g1);
+        drop(g2);
+        assert_eq!(a.estimated_pressure_bytes(), 0);
+    }
+
+    /// Battery 3: retained SSE bytes enter the model EXACTLY once,
+    /// unweighted (the budget mirrors its own reservation; the model
+    /// never re-estimates it).
+    #[test]
+    fn retained_bytes_are_not_double_counted() {
+        let r = QuotaRegistry::default();
+        let a = adm(&r, "p3");
+        a.retained_sse_add(100_000);
+        assert_eq!(a.estimated_pressure_bytes(), 100_000);
+        a.retained_sse_sub(40_000);
+        assert_eq!(a.estimated_pressure_bytes(), 60_000);
+        a.retained_sse_sub(1_000_000); // over-release clamps, never wraps
+        assert_eq!(a.estimated_pressure_bytes(), 0);
+    }
+
+    /// Battery 4: the buffered-body guard releases on EVERY exit path
+    /// (parse failure, cancellation, refusal are all drops).
+    #[test]
+    fn body_guard_releases_on_drop() {
+        let r = QuotaRegistry::default();
+        let a = adm(&r, "p4");
+        let mut g = BufferedBodyGuard::reserve(a.clone(), 1_000);
+        g.grow(2_000);
+        assert_eq!(a.estimated_pressure_bytes(), 3_000);
+        drop(g);
+        assert_eq!(a.estimated_pressure_bytes(), 0);
+    }
+
+    /// Battery 5: body -> queued transfer has no transient double
+    /// charge (the body guard ends before the queued charge begins).
+    #[test]
+    fn body_to_queued_transfer_never_double_charges() {
+        let r = QuotaRegistry::default();
+        let p = pid("p5");
+        let a = adm(&r, "p5");
+        let g = BufferedBodyGuard::reserve(a.clone(), 5_000);
+        assert_eq!(a.estimated_pressure_bytes(), 5_000);
+        drop(g); // the transfer point
+        let quotas = ProjectQuotas {
+            queued_append_bytes: 1 << 20,
+            ..Default::default()
+        };
+        let _q = r.charge_queued(&p, &quotas, 5_000).unwrap();
+        assert_eq!(
+            a.estimated_pressure_bytes(),
+            5_000,
+            "queued only — never body+queued at once"
+        );
+    }
+
+    /// Battery 6+7+8: exact frame-debt attribution — adds exact,
+    /// retires exact, dirty-stream count moves ONLY on 0->pos and
+    /// pos->0 edges.
+    #[test]
+    fn frame_debt_attribution_is_exact_with_edge_only_dirty_count() {
+        let r = QuotaRegistry::default();
+        let a = adm(&r, "p6");
+        let b = StreamPressureBinding::bind(a.clone(), 0);
+        b.frames_added(1_000);
+        assert_eq!(a.unabsorbed_frame_bytes.load(Ordering::Relaxed), 1_000);
+        assert_eq!(a.dirty_streams.load(Ordering::Relaxed), 1);
+        b.frames_added(500); // still ONE dirty stream
+        assert_eq!(a.dirty_streams.load(Ordering::Relaxed), 1);
+        b.frames_retired(600); // partial: stays dirty
+        assert_eq!(a.unabsorbed_frame_bytes.load(Ordering::Relaxed), 900);
+        assert_eq!(a.dirty_streams.load(Ordering::Relaxed), 1);
+        b.frames_retired(900); // pos -> 0
+        assert_eq!(a.unabsorbed_frame_bytes.load(Ordering::Relaxed), 0);
+        assert_eq!(a.dirty_streams.load(Ordering::Relaxed), 0);
+        b.frames_added(10); // 0 -> pos again
+        assert_eq!(a.dirty_streams.load(Ordering::Relaxed), 1);
+        drop(b); // release outstanding attribution
+        assert_eq!(a.unabsorbed_frame_bytes.load(Ordering::Relaxed), 0);
+        assert_eq!(a.dirty_streams.load(Ordering::Relaxed), 0);
+    }
+
+    /// Battery 9 (unit leg): binding to a stream with existing durable
+    /// debt seeds from the tail — never from zero — and drop releases
+    /// exactly the seed plus subsequent net.
+    #[test]
+    fn binding_seeds_existing_durable_debt() {
+        let r = QuotaRegistry::default();
+        let a = adm(&r, "p9");
+        let b = StreamPressureBinding::bind(a.clone(), 5_000_000);
+        assert_eq!(a.unabsorbed_frame_bytes.load(Ordering::Relaxed), 5_000_000);
+        assert_eq!(a.dirty_streams.load(Ordering::Relaxed), 1);
+        b.frames_retired(5_000_000);
+        assert_eq!(a.dirty_streams.load(Ordering::Relaxed), 0);
+        drop(b);
+        assert_eq!(a.unabsorbed_frame_bytes.load(Ordering::Relaxed), 0);
+    }
+
+    /// Battery 11: the latch engages at high, HOLDS between the
+    /// release point and high (no flap), and releases only below
+    /// high x release_pct.
+    #[test]
+    fn hysteresis_latch_does_not_flap() {
+        let r = QuotaRegistry::default();
+        let p = pid("p11");
+        let a = adm(&r, "p11");
+        let high = 100 * 1024;
+        a.retained_sse_add(101 * 1024);
+        assert!(a.memory_gate(&p, high, 75), "engage over high");
+        a.retained_sse_sub(21 * 1024); // 80 KiB: between 75 KiB and high
+        assert!(a.memory_gate(&p, high, 75), "held engaged in the band");
+        assert!(a.memory_gate(&p, high, 75), "still engaged (no flap)");
+        a.retained_sse_sub(10 * 1024); // 70 KiB < 75 KiB release point
+        assert!(!a.memory_gate(&p, high, 75), "releases below the point");
+        assert!(!a.memory_gate(&p, high, 75), "stays released");
+        assert_eq!(a.memory_engage_count.load(Ordering::Relaxed), 1);
+    }
+
+    /// Battery 12: tracker eviction can NEVER remove a project holding
+    /// pressure — orphaned attribution would leak forever.
+    #[test]
+    fn eviction_cannot_remove_a_project_with_pressure() {
+        let r = QuotaRegistry::default();
+        let old_ms = 1_000;
+        // Fill the tracker with idle projects at an ancient timestamp.
+        for i in 0..MAX_TRACKED_PROJECTS {
+            let _ = r.admit(&pid(&format!("f{i}")), &ProjectQuotas::default(), old_ms);
+        }
+        // One of them holds pressure (a live feed's static charge).
+        let pinned = r.pressure_handle(&pid("f7")).unwrap();
+        let _feed = FeedPressureGuard::acquire(pinned);
+        // A NEW project far past the idle horizon forces the eviction
+        // sweep; the pressured entry must survive it.
+        let now = old_ms + IDLE_EVICT_MS + 1;
+        let _ = r
+            .admit(&pid("fresh"), &ProjectQuotas::default(), now)
+            .unwrap();
+        assert!(
+            r.pressure_handle(&pid("f7")).is_some(),
+            "pressure pins the entry through eviction"
+        );
+        assert!(
+            r.pressure_handle(&pid("f8")).is_none(),
+            "idle peers evicted"
+        );
+    }
+
+    /// Battery 13: project A engaging its latch never rejects
+    /// project B (isolation is the whole point).
+    #[test]
+    fn engaged_project_does_not_reject_neighbors() {
+        let r = QuotaRegistry::default();
+        let pa = pid("pa");
+        let pb = pid("pb");
+        let a = adm(&r, "pa");
+        let b = adm(&r, "pb");
+        let high = 64 * 1024;
+        a.retained_sse_add(65 * 1024);
+        assert!(a.memory_gate(&pa, high, 75), "A engaged");
+        assert!(!b.memory_gate(&pb, high, 75), "B unaffected");
+    }
+
+    /// Battery 14 (backstop ordering): with the per-project gate OFF
+    /// (high = 0) nothing is refused here — several compliant projects
+    /// reaching the cell ceiling remains the GLOBAL RSS gate's job.
+    #[test]
+    fn per_project_gate_off_defers_to_the_global_gate() {
+        let r = QuotaRegistry::default();
+        let p = pid("p14");
+        let a = adm(&r, "p14");
+        a.retained_sse_add(1 << 30);
+        assert!(
+            !a.memory_gate(&p, 0, 75),
+            "0 = off; the global gate owns it"
+        );
     }
 }

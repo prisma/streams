@@ -521,6 +521,13 @@ struct Args {
     /// slate-codex A/B died at ~750 MB anon RSS on Prisma Compute with the
     /// shed configured at 800 — an unreachable guard protects nothing).
     /// Default 600 for the ~750 MB pilot instance class; 0 = off.
+    /// Round-13: per-project memory-pressure high watermark in bytes
+    /// (0 = the backstop is off; the profile pins a certified value).
+    #[arg(long, env = "PROJECT_MEMORY_PRESSURE_BYTES", default_value_t = 0)]
+    project_memory_pressure_bytes: u64,
+    /// Hysteresis release point as a percentage of the high watermark.
+    #[arg(long, env = "PROJECT_MEMORY_RELEASE_PCT", default_value_t = 75)]
+    project_memory_release_pct: u64,
     #[arg(long, env = "ADMIT_RSS_SHED_MB", default_value_t = 600)]
     admit_rss_shed_mb: u64,
 
@@ -1699,6 +1706,10 @@ fn main() -> anyhow::Result<()> {
         })
         .max(2);
     tracing::info!("tokio runtime: {workers} worker threads");
+    tracing::info!(
+        model = %crate::quota::pressure_model_json(),
+        "project memory-pressure model (round-13; weights are code-versioned)"
+    );
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(workers)
         .enable_all()
@@ -2160,6 +2171,10 @@ async fn async_main() -> anyhow::Result<()> {
         admit_shed: std::sync::atomic::AtomicU64::new(0),
         admit_shed_inflight: std::sync::atomic::AtomicU64::new(0),
         admit_shed_survival: std::sync::atomic::AtomicU64::new(0),
+        project_memory_pressure_bytes: std::sync::atomic::AtomicU64::new(
+            args.project_memory_pressure_bytes,
+        ),
+        project_memory_release_pct: args.project_memory_release_pct.clamp(1, 100),
         admit_shed_rss: std::sync::atomic::AtomicU64::new(0),
         sse_max_connections: args.sse_max_connections,
         sse_configured_max_connections: args.sse_max_connections,

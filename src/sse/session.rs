@@ -202,7 +202,7 @@ pub(crate) async fn serve(
     let subscription = match state.live_feeds.subscribe(
         fkey.clone(),
         || {
-            LiveFeed::new_with_budget(
+            let feed = LiveFeed::new_with_budget(
                 fkey.clone(),
                 src.clone(),
                 state
@@ -210,7 +210,16 @@ pub(crate) async fn serve(
                     .load(std::sync::atomic::Ordering::Relaxed),
                 state.feed_budget.clone(),
                 desc.project_id.clone(),
-            )
+            );
+            // Round-13: bind the project's admission pressure entry —
+            // in the CREATION closure, so the feed charges its static
+            // weight exactly once regardless of racing first
+            // subscribers, and the retention mirror is live before
+            // the first publication reserves bytes.
+            if let Some(adm) = state.quotas.pressure_handle(&desc.project_id) {
+                feed.bind_pressure(adm);
+            }
+            feed
         },
         Some(&src),
     ) {

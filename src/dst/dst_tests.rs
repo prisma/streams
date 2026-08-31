@@ -5808,6 +5808,8 @@ async fn http_rig_inner(
         admit_shed: std::sync::atomic::AtomicU64::new(0),
         admit_shed_inflight: std::sync::atomic::AtomicU64::new(0),
         admit_shed_survival: std::sync::atomic::AtomicU64::new(0),
+        project_memory_pressure_bytes: std::sync::atomic::AtomicU64::new(0),
+        project_memory_release_pct: 75,
         admit_shed_rss: std::sync::atomic::AtomicU64::new(0),
         sse_max_connections: 0,
         sse_configured_max_connections: 0,
@@ -36430,4 +36432,290 @@ async fn inflight_admission_answers_only_after_authentication() {
         "recovered: {st} {}",
         String::from_utf8_lossy(&b)
     );
+}
+
+/// Round-13 enforce-mode rig for the memory-pressure battery: one
+/// project ("proj-pm"), full data scopes, RS256 JWT — returns the
+/// bearer for wire requests.
+async fn pm_enforce_rig(
+    store: Arc<dyn ObjectStore>,
+) -> (
+    Arc<crate::http::AppState>,
+    std::net::SocketAddr,
+    String,
+    crate::tenant::ProjectId,
+) {
+    const PRIV: &str = include_str!("fixtures/mt-test-rsa.pem");
+    const PUB: &str = include_str!("fixtures/mt-test-rsa.pub.pem");
+    const SCOPES: &str =
+        "streams.metadata.read streams.create streams.records.append streams.records.read";
+    let now = crate::shard::now_ms() / 1000;
+    let svc = std::sync::Arc::new(
+        crate::auth::AuthService::new(
+            crate::auth::AuthMode::Enforce,
+            "https://auth.prisma.io".into(),
+            "test-cell",
+        )
+        .unwrap(),
+    );
+    let mut keys = std::collections::HashMap::new();
+    keys.insert(
+        "pm-1".to_string(),
+        crate::auth::JwksKey {
+            alg: jsonwebtoken::Algorithm::RS256,
+            key: jsonwebtoken::DecodingKey::from_rsa_pem(PUB.as_bytes()).unwrap(),
+            fp: crate::auth::key_fp(PUB.as_bytes()),
+        },
+    );
+    svc.publish_jwks(crate::auth::JwksSnapshot {
+        keys,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let pid = crate::tenant::ProjectId::new("proj-pm").unwrap();
+    let mut projects = std::collections::HashMap::new();
+    projects.insert(
+        pid.clone(),
+        crate::project_policy::ProjectPolicy {
+            project_id: pid.clone(),
+            workspace_id: crate::tenant::WorkspaceId::new("ws_pm").unwrap(),
+            cell_id: std::sync::Arc::from("test-cell"),
+            project_policy_version: 1,
+            ownership_version: 1,
+            status: crate::project_policy::ProjectStatus::Active,
+            quotas: crate::project_policy::ProjectQuotas::default(),
+        },
+    );
+    svc.publish_policies(crate::project_policy::PolicySnapshot {
+        projects,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let mut credentials = std::collections::HashMap::new();
+    credentials.insert(
+        std::sync::Arc::from("cpm"),
+        crate::project_policy::CredentialGrant {
+            credential_id: std::sync::Arc::from("cpm"),
+            project_id: pid.clone(),
+            grant_version: 1,
+            status: crate::project_policy::CredentialStatus::Active,
+            scopes: crate::tenant::ScopeSet::parse(SCOPES).0,
+            grant: crate::tenant::StreamGrant::All,
+            expires_at: None,
+        },
+    );
+    svc.publish_grants(crate::project_policy::GrantSnapshot {
+        credentials,
+        fetched_at_unix: now,
+        feed_version: 1,
+    })
+    .unwrap();
+    let (state, addr) = http_rig_with_auth_service(store, svc).await;
+
+    #[derive(serde::Serialize)]
+    struct C<'a> {
+        iss: &'a str,
+        aud: &'a str,
+        sub: &'a str,
+        credential_id: &'a str,
+        project_id: &'a str,
+        workspace_id: &'a str,
+        cell_id: &'a str,
+        ownership_version: u64,
+        grant_version: u64,
+        scope: &'a str,
+        jti: &'a str,
+        iat: i64,
+        exp: i64,
+    }
+    let mut header = jsonwebtoken::Header::new(jsonwebtoken::Algorithm::RS256);
+    header.kid = Some("pm-1".into());
+    let jwt = jsonwebtoken::encode(
+        &header,
+        &C {
+            iss: "https://auth.prisma.io",
+            aud: "prisma-streams-data",
+            sub: "u",
+            credential_id: "cpm",
+            project_id: "proj-pm",
+            workspace_id: "ws_pm",
+            cell_id: "test-cell",
+            ownership_version: 1,
+            grant_version: 1,
+            scope: SCOPES,
+            jti: "tpm",
+            iat: now - 60,
+            exp: now + 600,
+        },
+        &jsonwebtoken::EncodingKey::from_rsa_pem(PRIV.as_bytes()).unwrap(),
+    )
+    .unwrap();
+    (state, addr, format!("Bearer {jwt}"), pid)
+}
+
+/// Round-13 memory-pressure backstop on the wire: a project over its
+/// per-project pressure watermark gets the typed, retryable 429
+/// `project_memory_pressure` on NEW appends ONLY — reads continue,
+/// the refusal is project-scoped, and dropping below the release
+/// point restores appends (hysteresis pinned at the unit level).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn project_memory_pressure_throttles_new_appends_only() {
+    let (state, addr, bearer, pid) = pm_enforce_rig(mem()).await;
+    state
+        .project_memory_pressure_bytes
+        .store(256 * 1024, std::sync::atomic::Ordering::Relaxed);
+    let auth = ("authorization", bearer.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let ct = ("content-type", "application/json");
+
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/pm",
+        &[ekey, auth],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "{}", String::from_utf8_lossy(&b));
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/pm/records",
+        &[ekey, auth, ct],
+        br#"{"i":1}"#,
+    )
+    .await;
+    assert!(
+        st == 200 || st == 201,
+        "under the watermark: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+
+    // Drive the project's EXACT retained pressure over the watermark
+    // (the same counter the LiveFeed budget mirrors into).
+    let adm = state.quotas.pressure_handle(&pid).unwrap();
+    adm.retained_sse_add(300 * 1024);
+
+    let (st, h, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/pm/records",
+        &[ekey, auth, ct],
+        br#"{"i":2}"#,
+    )
+    .await;
+    assert_eq!(st, 429, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "project_memory_pressure");
+    assert_eq!(v["error"]["retryable"], true);
+    assert_eq!(h.get("retry-after").map(String::as_str), Some("1"));
+
+    // Reads continue while the project's writes are throttled.
+    let (st, _, b) = preq(addr, "GET", "/v1/streams/pm/records", &[ekey, auth], b"").await;
+    assert_eq!(st, 200, "reads flow: {}", String::from_utf8_lossy(&b));
+
+    // Below the release point (75% of 256 KiB): appends restore.
+    adm.retained_sse_sub(300 * 1024);
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/pm/records",
+        &[ekey, auth, ct],
+        br#"{"i":3}"#,
+    )
+    .await;
+    assert!(
+        st == 200 || st == 201,
+        "recovered: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    engine_shutdown(&state).await;
+}
+
+/// Round-13 battery 9: durable frame debt SURVIVES a restart via the
+/// tail seed — the new incarnation's binding starts from the tail's
+/// persisted unabsorbed_bytes, never from zero, and absorption then
+/// retires it to zero. (Battery 10's owner-movement release is the
+/// same Drop path, pinned at the unit level; the fleet leg exercises
+/// it in the field.)
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn frame_debt_survives_restart_via_tail_seed() {
+    let _l = gap_lock().lock().await; // global absorb-pause flag
+    let store = mem();
+    let (state, addr, bearer, pid) = pm_enforce_rig(store.clone()).await;
+    crate::history::absorb_pause_flag().store(true, Ordering::Relaxed);
+    let auth = ("authorization", bearer.as_str());
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let ct = ("content-type", "application/json");
+    let (st, _, b) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/debt",
+        &[ekey, auth],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "{}", String::from_utf8_lossy(&b));
+    let payload = format!(r#"{{"pad":"{}"}}"#, "x".repeat(64 * 1024));
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/debt/records",
+        &[ekey, auth, ct],
+        payload.as_bytes(),
+    )
+    .await;
+    assert!(
+        st == 200 || st == 201,
+        "append: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    let adm = state.quotas.pressure_handle(&pid).unwrap();
+    let debt_before = adm.unabsorbed_frame_bytes_now();
+    assert!(
+        debt_before > 64 * 1024,
+        "the paused absorber leaves attributed frame debt: {debt_before}"
+    );
+    engine_shutdown(&state).await;
+    drop(state);
+
+    // New incarnation on the SAME store: the first pressured append
+    // binds and seeds from the durable tail — never from zero.
+    let (state2, addr2, bearer2, pid2) = pm_enforce_rig(store).await;
+    let auth2 = ("authorization", bearer2.as_str());
+    let (st, _, b) = preq(
+        addr2,
+        "POST",
+        "/v1/streams/debt/records",
+        &[ekey, auth2, ct],
+        br#"{"i":"tiny"}"#,
+    )
+    .await;
+    assert!(
+        st == 200 || st == 201,
+        "reopen append: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    let adm2 = state2.quotas.pressure_handle(&pid2).unwrap();
+    let seeded = adm2.unabsorbed_frame_bytes_now();
+    assert!(
+        seeded >= debt_before,
+        "restart seeds durable debt ({seeded} >= {debt_before}), never zero"
+    );
+    assert!(adm2.dirty_streams_now() >= 1);
+
+    // Unpause: absorption retires the debt to exactly zero.
+    crate::history::absorb_pause_flag().store(false, Ordering::Relaxed);
+    let mut zeroed = false;
+    for _ in 0..600 {
+        if adm2.unabsorbed_frame_bytes_now() == 0 && adm2.dirty_streams_now() == 0 {
+            zeroed = true;
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(100)).await;
+    }
+    assert!(zeroed, "absorption retires attributed debt to zero");
+    engine_shutdown(&state2).await;
 }

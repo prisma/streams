@@ -278,6 +278,28 @@ pub(crate) struct ProjectRetention {
     /// ITS OWN allowance (per-project cap-hit observability without
     /// unbounded metric cardinality: rows exist only while feeds do).
     cap_hits: AtomicU64,
+    /// Round-13: the ONE canonical project admission entry. The exact
+    /// reservation above is MIRRORED into its retained_sse_bytes at
+    /// the same mutation sites (final try_replace success + release) —
+    /// one accounting policy, one truth; the pressure model never
+    /// re-estimates retention.
+    admission: std::sync::OnceLock<Arc<crate::quota::ProjectAdmission>>,
+}
+
+impl ProjectRetention {
+    pub(crate) fn bind_admission(&self, adm: Arc<crate::quota::ProjectAdmission>) {
+        let _ = self.admission.set(adm);
+    }
+    fn mirror_add(&self, bytes: u64) {
+        if let Some(a) = self.admission.get() {
+            a.retained_sse_add(bytes);
+        }
+    }
+    fn mirror_sub(&self, bytes: u64) {
+        if let Some(a) = self.admission.get() {
+            a.retained_sse_sub(bytes);
+        }
+    }
 }
 
 /// The project allowance: SSE_FEED_PROJECT_BYTES, defaulting to a
@@ -366,6 +388,7 @@ impl FeedMemoryBudget {
                 Arc::new(ProjectRetention {
                     reserved: AtomicU64::new(0),
                     cap_hits: AtomicU64::new(0),
+                    admission: std::sync::OnceLock::new(),
                 })
             })
             .clone()
@@ -495,7 +518,17 @@ impl FeedMemoryBudget {
                 .reserved
                 .compare_exchange(cur, after, Ordering::SeqCst, Ordering::Relaxed)
             {
-                Ok(_) => return ReserveOutcome::Reserved,
+                Ok(_) => {
+                    // Mirror the settled net delta into the project's
+                    // admission pressure (round-13). Rolled-back and
+                    // refused paths never mirror.
+                    if add > rel {
+                        proj.mirror_add(add - rel);
+                    } else {
+                        proj.mirror_sub(rel - add);
+                    }
+                    return ReserveOutcome::Reserved;
+                }
                 Err(actual) => cur = actual,
             }
         }
@@ -503,6 +536,7 @@ impl FeedMemoryBudget {
 
     fn release(&self, proj: &ProjectRetention, charge: usize) {
         let charge = charge as u64;
+        proj.mirror_sub(charge);
         for counter in [&self.reserved, &proj.reserved] {
             let mut cur = counter.load(Ordering::Relaxed);
             loop {
@@ -548,6 +582,9 @@ pub(crate) struct LiveFeed {
     /// bounded lifetime).
     project: crate::tenant::ProjectId,
     project_reserved: Arc<ProjectRetention>,
+    /// Round-13: the feed's static pressure charge (16 KiB model
+    /// weight), held for the feed's lifetime.
+    pressure_guard: std::sync::OnceLock<crate::quota::FeedPressureGuard>,
     /// Round-11.1: teardown cancellation + the ONE transition-retry
     /// scheduler per feed (never a per-session timer herd).
     pub(crate) cancel: CancelFlag,
@@ -614,6 +651,18 @@ impl Drop for DriverPermit<'_> {
 }
 
 impl LiveFeed {
+    /// Round-13: bind this feed to the project's admission entry —
+    /// charges the static feed weight exactly once (guard held by the
+    /// feed; released at feed drop) and wires the retention mirror.
+    /// Called inside the registry's CREATION closure only, so joiners
+    /// never double-charge.
+    pub(crate) fn bind_pressure(&self, adm: Arc<crate::quota::ProjectAdmission>) {
+        self.project_reserved.bind_admission(adm.clone());
+        let _ = self
+            .pressure_guard
+            .set(crate::quota::FeedPressureGuard::acquire(adm));
+    }
+
     pub(crate) fn new_with_budget(
         _key: FeedKey,
         src: Arc<dyn FeedSourceRead>,
@@ -652,6 +701,7 @@ impl LiveFeed {
             budget,
             project,
             project_reserved,
+            pressure_guard: std::sync::OnceLock::new(),
             cancel: CancelFlag::new(),
             retry_scheduled: AtomicBool::new(false),
             #[cfg(test)]
