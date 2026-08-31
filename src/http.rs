@@ -6132,6 +6132,12 @@ fn decode_frames_into(
 /// that can drift, and drift here means the oracle stops testing what
 /// production does.
 #[allow(clippy::too_many_arguments)]
+/// Round-13 CODE-RED bisect: the repro's stream carries ONLY rk=""
+/// records, so keyed reads must be dense too — armed by the test.
+#[cfg(test)]
+pub(crate) static TEST_ASSERT_KEYED_DENSE: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
 pub(crate) async fn read_merged(
     key: &StreamKey,
     epoch: &[u8; 16],
@@ -6265,6 +6271,22 @@ pub(crate) async fn read_merged(
             if hist_upto > 0 {
                 out.last = Some(out.last.map_or(hist_upto - 1, |o| o.max(hist_upto - 1)));
             }
+            #[cfg(test)]
+            if TEST_ASSERT_KEYED_DENSE.load(std::sync::atomic::Ordering::Relaxed) {
+                let mut expect = scan_from;
+                for r in &out.recs {
+                    assert!(
+                        r.off <= expect,
+                        "HISTORY leg gap: expect {expect} got {} (scan_from {scan_from}, hist_upto {hist_upto}, boundary {boundary}, filter {key_filter:?})",
+                        r.off
+                    );
+                    expect = r.off + 1;
+                }
+                assert!(
+                    hist_upto <= expect,
+                    "HISTORY leg over-claim: hist_upto {hist_upto} beyond served {expect} (scan_from {scan_from}, boundary {boundary}, filter {key_filter:?})"
+                );
+            }
             cursor = hist_upto;
         }
         if budget == 0 || cursor >= end {
@@ -6276,15 +6298,32 @@ pub(crate) async fn read_merged(
         // Revalidate the scan against concurrent absorption before
         // trusting it.
         let raced_boundary = if key_filter.is_none() {
-            // Unfiltered offsets below the durable frontier are dense, so
-            // a missing head IS the trim race (and a dense head rules it
-            // out — ring hits and clean scans skip the tracker read).
-            let head_gap = match part.frames.first().map(|raw| decode_frame(raw)) {
-                Some(Some(f)) => f.header.offset > cursor,
-                Some(None) => return Err("bad frame".into()),
-                None => cursor < end, // nothing at all in a non-empty range
+            // Unfiltered offsets below the durable frontier are dense,
+            // so ANY gap in the page IS the absorb/trim race — head OR
+            // MID-PAGE (round-13 CODE-RED: the 2026-07-27 guard checked
+            // only the head; a mid-scan retire produced {..78, 88..}
+            // pages that were consumed as complete, permanently
+            // skipping the seam for every subscriber and every resume —
+            // 11 durable records lost in field leg A1v2, reproduced
+            // deterministically by cut_resume_never_skips_a_durable_record).
+            let gap = if part.frames.is_empty() {
+                cursor < end // nothing at all in a non-empty range
+            } else {
+                // O(1): dense pages satisfy count == last - first + 1,
+                // so one head decode + the page's own last_offset
+                // detects head AND mid-page gaps without touching the
+                // hot path's per-frame budget (the O(n) version cost
+                // the capacity gate ~2%).
+                let first = match decode_frame(&part.frames[0]) {
+                    Some(f) => f.header.offset,
+                    None => return Err("bad frame".into()),
+                };
+                first > cursor
+                    || part
+                        .last_offset
+                        .is_some_and(|l| l + 1 - first != part.frames.len() as u64)
             };
-            if head_gap {
+            if gap {
                 Some(
                     engine
                         .durable_absorbed(&hash)
@@ -6335,6 +6374,28 @@ pub(crate) async fn read_merged(
     }
     let consumed_next = out.last.map(|o| o + 1).unwrap_or(scan_from);
     out.completed = consumed_next >= end;
+    // Round-13 CODE-RED bisect (test builds): an unfiltered merged read
+    // must NEVER emit a gapped page — any panic here localizes the
+    // durable-skip to THIS layer.
+    #[cfg(test)]
+    if key_filter.is_none() {
+        let mut expect = scan_from;
+        for r in &out.recs {
+            assert!(
+                r.off <= expect,
+                "read_merged emitted a gap: expected <= {expect}, got {} (scan_from {scan_from}, last {:?}, boundary-race?)",
+                r.off,
+                out.last
+            );
+            expect = r.off + 1;
+        }
+        if let Some(l) = out.last {
+            assert!(
+                l < expect,
+                "read_merged over-claimed: last {l} beyond served {expect} (scan_from {scan_from})"
+            );
+        }
+    }
     Ok(out)
 }
 

@@ -79,6 +79,18 @@ impl FeedSourceRead for SingleSource {
         // partial page with no scanned progress is NOT a successful
         // drive (finding 6).
         let scan_to = out.last.map(|x| x + 1).unwrap_or(from);
+        #[cfg(test)]
+        if self.rk_filter.is_none() {
+            let mut expect = from;
+            for r in &out.recs {
+                assert!(
+                    r.off <= expect,
+                    "SingleSource gap: from {from} expect {expect} got {} (scan_to {scan_to})",
+                    r.off
+                );
+                expect = r.off + 1;
+            }
+        }
         Ok(SourceBatch {
             scan_from: from,
             scan_to,
@@ -621,6 +633,18 @@ impl FeedSourceRead for LineageSource {
             // Span drained: hop to the next owner.
             if budget == 0 {
                 break;
+            }
+        }
+        #[cfg(test)]
+        if self.rk_filter.is_none() {
+            let mut expect = from;
+            for r in &recs {
+                assert!(
+                    r.off <= expect,
+                    "LineageSource gap: from {from} expect {expect} got {} (scan_to {cursor})",
+                    r.off
+                );
+                expect = r.off + 1;
             }
         }
         Ok(SourceBatch {

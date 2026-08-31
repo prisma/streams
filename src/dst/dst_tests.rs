@@ -36719,3 +36719,204 @@ async fn frame_debt_survives_restart_via_tail_seed() {
     assert!(zeroed, "absorption retires attributed debt to zero");
     engine_shutdown(&state2).await;
 }
+
+/// Round-13 CODE-RED repro hunt (field A1v2): 11 acked+DURABLE records
+/// were never delivered — one per noisy stream, each at the instant
+/// the feed first hit its project retention cap and cut both parked
+/// subscribers (~0.3% of cut events). This leg drives the same
+/// convergence hard: a shared feed under a tiny retention budget
+/// (constant ProjectOver -> clear_ring + floor=head -> cuts),
+/// continuous appends, the absorb boundary swinging (pause flag
+/// toggles), store latency injected, and two cursor-resuming
+/// subscribers reconciled EXACTLY against the acked set.
+#[tokio::test(flavor = "multi_thread", worker_threads = 8)]
+async fn cut_resume_never_skips_a_durable_record() {
+    let _l = gap_lock().lock().await; // absorb-pause flag is global
+    let store: Arc<dyn ObjectStore> =
+        Arc::new(FaultStore::uniform(mem(), 41, FaultPlan::new(0, 0, 25)));
+    let (state, addr) = http_rig(store).await;
+    // NOTE: TEST_ASSERT_KEYED_DENSE stays DISARMED in-suite — it is a
+    // process-global bisect lever and the parallel suite runs
+    // legitimate sparse keyed lanes concurrently (arming it here
+    // failed five unrelated tests). The leg's protection is the exact
+    // reconciliation below, which is what caught the field loss.
+    state.feed_budget.set_max_for_test(64 * 1024); // project cap 16 KiB
+    let ekey = ("prisma-encryption-key", PRISMA_KEY);
+    let ct = ("content-type", "application/json");
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/race",
+        &[ekey],
+        br#"{"format":{"kind":"json"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+
+    // Two cursor-resuming subscribers with exact q bitmaps.
+    let stopf = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let bitmaps: Vec<Arc<std::sync::Mutex<std::collections::HashSet<u64>>>> = (0..2)
+        .map(|_| Arc::new(std::sync::Mutex::new(Default::default())))
+        .collect();
+    let events: Vec<Arc<std::sync::Mutex<Vec<String>>>> = (0..2)
+        .map(|_| Arc::new(std::sync::Mutex::new(Vec::new())))
+        .collect();
+    let mut subtasks = Vec::new();
+    for (bm, ev) in bitmaps.iter().cloned().zip(events.iter().cloned()) {
+        let stopf = stopf.clone();
+        subtasks.push(tokio::spawn(async move {
+            use tokio::io::AsyncReadExt;
+            let mut cursor: Option<String> = None;
+            let mut reconnects = 0u32;
+            'outer: while !stopf.load(std::sync::atomic::Ordering::Relaxed) {
+                let q = match &cursor {
+                    Some(c) => format!("?cursor={}", c.replace('=', "%3D")),
+                    None => "?cursor=now".to_string(),
+                };
+                ev.lock().unwrap().push(format!("RECONNECT {q}"));
+                let mut sck = lf_connect(addr, "race", &q).await;
+                let mut buf: Vec<u8> = Vec::new();
+                let mut chunk = [0u8; 8192];
+                loop {
+                    let n = match tokio::time::timeout(
+                        std::time::Duration::from_secs(5),
+                        sck.read(&mut chunk),
+                    )
+                    .await
+                    {
+                        Ok(Ok(0)) | Err(_) => break, // EOF or idle
+                        Ok(Ok(n)) => n,
+                        Ok(Err(_)) => break,
+                    };
+                    buf.extend_from_slice(&chunk[..n]);
+                    let cut = match buf.iter().rposition(|&b| b == b'\n') {
+                        Some(i) => i + 1,
+                        None => continue,
+                    };
+                    let complete = String::from_utf8_lossy(&buf[..cut]).to_string();
+                    buf.drain(..cut);
+                    // Log EVERY control cursor in arrival order.
+                    let mut cp = 0usize;
+                    while let Some(p) = complete[cp..].find("\"nextCursor\":\"") {
+                        let s2 = cp + p + 14;
+                        if let Some(e) = complete[s2..].find('"') {
+                            let c = complete[s2..s2 + e].to_string();
+                            ev.lock().unwrap().push(format!("CTL {c}"));
+                            cursor = Some(c);
+                            cp = s2 + e;
+                        } else {
+                            break;
+                        }
+                    }
+                    let mut at = 0usize;
+                    while let Some(p) = complete[at..].find("\"q\":") {
+                        let s2 = at + p + 4;
+                        let digits: String = complete[s2..]
+                            .chars()
+                            .take_while(|c| c.is_ascii_digit())
+                            .collect();
+                        if let Ok(v) = digits.parse::<u64>() {
+                            bm.lock().unwrap().insert(v);
+                            ev.lock().unwrap().push(format!("REC {v}"));
+                        }
+                        at = s2;
+                    }
+                    if stopf.load(std::sync::atomic::Ordering::Relaxed) {
+                        break 'outer;
+                    }
+                }
+                reconnects += 1;
+                if reconnects > 100_000 {
+                    break;
+                }
+            }
+        }));
+    }
+    // Wait for both to park.
+    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+
+    // Absorb-boundary swinger: WAL->history retirement races reads.
+    let stop2 = stopf.clone();
+    let swinger = tokio::spawn(async move {
+        let mut on = false;
+        while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
+            on = !on;
+            crate::history::absorb_pause_flag().store(on, Ordering::Relaxed);
+            tokio::time::sleep(std::time::Duration::from_millis(47)).await;
+        }
+        crate::history::absorb_pause_flag().store(false, Ordering::Relaxed);
+    });
+
+    // Continuous appends: 1 KiB records, serial, as fast as the rig
+    // commits them.
+    let pad = "y".repeat(900);
+    let mut acked: std::collections::HashSet<u64> = Default::default();
+    for q in 0..1_200u64 {
+        let body = format!(r#"{{"q":{q},"pad":"{pad}"}}"#);
+        let (st, _, _) = preq(
+            addr,
+            "POST",
+            "/v1/streams/race/records",
+            &[ekey, ct],
+            body.as_bytes(),
+        )
+        .await;
+        if st == 200 || st == 201 {
+            acked.insert(q);
+        }
+    }
+    // Settle: both subscribers reach the acked frontier.
+    let deadline = std::time::Instant::now() + std::time::Duration::from_secs(60);
+    let maxq = *acked.iter().max().unwrap();
+    while std::time::Instant::now() < deadline {
+        if bitmaps.iter().all(|b| b.lock().unwrap().contains(&maxq)) {
+            break;
+        }
+        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+    }
+    stopf.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = swinger.await;
+    for t in subtasks {
+        let _ = tokio::time::timeout(std::time::Duration::from_secs(10), t).await;
+    }
+    crate::history::absorb_pause_flag().store(false, Ordering::Relaxed);
+
+    let cuts = crate::sse::auth::sse_stats::FEED_LAG_DISCONNECTS
+        .load(std::sync::atomic::Ordering::Relaxed);
+    for (i, bm) in bitmaps.iter().enumerate() {
+        let got = bm.lock().unwrap();
+        let mut missing: Vec<u64> = acked.iter().filter(|q| !got.contains(q)).copied().collect();
+        missing.sort_unstable();
+        if !missing.is_empty() {
+            let evs = events[i].lock().unwrap();
+            let first = missing[0];
+            // The last delivered record BEFORE the gap and the events
+            // around it tell us which cursor the client resumed with.
+            let mut ctx_lines: Vec<&String> = Vec::new();
+            for (j, e) in evs.iter().enumerate() {
+                if e == &format!("REC {}", first.saturating_sub(1))
+                    || e == &format!("REC {}", missing[missing.len() - 1] + 1)
+                {
+                    let lo = j.saturating_sub(6);
+                    let hi = (j + 7).min(evs.len());
+                    ctx_lines.extend(&evs[lo..hi]);
+                    ctx_lines.push(&evs[j]); // marker dup ok
+                }
+            }
+            eprintln!("== sub{i} events around the gap:");
+            for e in ctx_lines.iter().take(40) {
+                eprintln!("  {e}");
+            }
+            // Count reconnects/controls near the end for context.
+            let recon_n = evs.iter().filter(|e| e.starts_with("RECONNECT")).count();
+            eprintln!("  (total events {}, reconnects {recon_n})", evs.len());
+        }
+        assert!(
+            missing.is_empty(),
+            "sub{i}: {} acked records never delivered through {cuts} cuts: {:?}",
+            missing.len(),
+            &missing[..missing.len().min(20)]
+        );
+    }
+    engine_shutdown(&state).await;
+}

@@ -849,6 +849,11 @@ impl LiveFeed {
         self.st.lock().unwrap().floor
     }
 
+    #[cfg(test)]
+    pub(crate) fn floor_for_test(&self) -> u64 {
+        self.st.lock().unwrap().floor
+    }
+
     /// Consume retained records at/after `cursor`. Lagged = below floor
     /// → disconnect-and-resume per the lag contract.
     pub(crate) fn take_visible(&self, cursor: u64) -> Take {

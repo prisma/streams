@@ -301,6 +301,8 @@ pub(crate) async fn serve(
     let task_state = state.clone();
     let task_desc = desc.clone();
     let task_lease = SseLease::of(&params);
+    #[cfg(test)]
+    let task_rk_dbg = rk_filter.clone();
     let task_subscription = subscription;
     tokio::spawn(async move {
         let _subscription = task_subscription; // RAII detach on any exit
@@ -322,6 +324,11 @@ pub(crate) async fn serve(
         // again — connecting from an old cursor is NEVER a lag.
         let mut reached_live = false;
         let mut catchup_bound = join_head;
+        // Round-13 CODE-RED bisect (test builds): every emitted record
+        // offset must be exactly last+1 — a session-level skip panics
+        // HERE with the phase and feed state that produced it.
+        #[cfg(test)]
+        let mut bisect_last_off: Option<u64> = None;
         // Transition retry bound (Stage 6.4): a pending topology change
         // retries briefly; past the bound the session takes the typed
         // disconnect-and-resume fallback.
@@ -374,6 +381,22 @@ pub(crate) async fn serve(
                                 && batch.scan_to.min(catchup_bound) <= next
                                 && next >= csrc.frontier()
                                 && !csrc.closed();
+                            #[cfg(test)]
+                            if crate::http::TEST_ASSERT_KEYED_DENSE
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                            {
+                                if let Some(l) = bisect_last_off {
+                                    assert!(
+                                        r.off <= l + 1,
+                                        "SESSION SKIP in CATCH-UP: last {l} -> {} (cursor {cursor}, bound {catchup_bound}, rk {:?}, scan_from {}, scan_to {})",
+                                        r.off,
+                                        task_rk_dbg,
+                                        batch.scan_from,
+                                        batch.scan_to
+                                    );
+                                }
+                                bisect_last_off = Some(r.off.max(bisect_last_off.unwrap_or(0)));
+                            }
                             let frame = ctx.compose_record_flagged(
                                 &csrc.prepare_data(r),
                                 csrc.locate(next),
@@ -490,6 +513,22 @@ pub(crate) async fn serve(
                         let last_i = batch.records.len();
                         for (i, r) in batch.records[start_index..].iter().enumerate() {
                             let at_head = head_here && start_index + i + 1 == last_i;
+                            #[cfg(test)]
+                            if crate::http::TEST_ASSERT_KEYED_DENSE
+                                .load(std::sync::atomic::Ordering::Relaxed)
+                            {
+                                if let Some(l) = bisect_last_off {
+                                    assert!(
+                                        r.offset <= l + 1,
+                                        "SESSION SKIP in LIVE: last {l} -> {} (cursor {cursor}, batch scan_to {}, start_index {start_index}, floor {}, head {})",
+                                        r.offset,
+                                        batch.scan_to,
+                                        feed.floor_for_test(),
+                                        feed.head()
+                                    );
+                                }
+                                bisect_last_off = Some(r.offset.max(bisect_last_off.unwrap_or(0)));
+                            }
                             let frame = ctx.compose_record_flagged(&r.data_event, r.pos, at_head);
                             #[cfg(test)]
                             crate::failpoints::pause(
