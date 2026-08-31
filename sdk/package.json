@@ -1,6 +1,6 @@
 {
   "name": "@prisma/streams",
-  "version": "0.2.0-rc.2",
+  "version": "0.2.0-rc.4",
   "description": "Prisma Streams product SDK — encrypted, append-only collections with routing keys, consumers, and watches",
   "license": "Apache-2.0",
   "type": "module",
@@ -14,13 +14,20 @@
       "default": "./dist/index.js"
     }
   },
-  "files": ["dist", "README.md"],
-  "engines": { "node": ">=18" },
+  "files": [
+    "dist",
+    "README.md"
+  ],
+  "engines": {
+    "node": ">=18"
+  },
   "sideEffects": false,
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
     "prepack": "npm run build"
   },
-  "devDependencies": { "typescript": "^5.6.0" }
+  "devDependencies": {
+    "typescript": "^5.6.0"
+  }
 }

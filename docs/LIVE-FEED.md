@@ -252,4 +252,79 @@ SSE bytes stay governed by the existing exact budgets. Acceptance:
 rerun leg 5 — noisy must receive typed project-local shed BEFORE
 global RSS shed, victims at zero shed/cuts/reconnects with complete
 tails — plus the 30-minute product-distribution leg to prove normal
-projects are not rejected.
+projects are not rejected. **Status: implemented in round 13 — see
+the next section.**
+
+## Per-project memory-pressure admission (round-13 backstop)
+
+Closes the gap above: a per-project estimate of instance-memory
+occupancy gates NEW APPENDS project-locally before the noisy project
+can push the whole instance to the global RSS shed line.
+
+**Knobs** (the only two; everything else is model-versioned):
+
+| Env | Default | Meaning |
+|---|---|---|
+| `PROJECT_MEMORY_PRESSURE_BYTES` | `0` (disabled) | engage watermark per project |
+| `PROJECT_MEMORY_RELEASE_PCT` | `75` | release when pressure falls below this % of the watermark |
+
+**Pressure model v1** (`PROJECT_PRESSURE_MODEL_VERSION=1`, printed at
+boot and served under `debug/load.project_pressure_model`):
+
+```
+estimated_project_pressure_bytes =
+    live_subs            × 32 KiB
+  + live_feeds           × 16 KiB
+  + retained_sse_bytes           (exact mirror of the retention ledger)
+  + buffered_body_bytes          (exact, chunk-accurate; no ceiling reserve)
+  + queued_bytes                 (exact append-queue occupancy)
+  + unabsorbed_frame_bytes       (exact durable write debt, see below)
+  + dirty_streams        × 64 KiB
+```
+
+Weights are per-unit RESIDENT-state estimates calibrated from the
+round-12 memory model (26.28 KB/conn, 7.95 KB/feed measured; weights
+round up for safety). Retained SSE bytes count as occupancy here but
+are never REFUSED by this gate — retention keeps its own exact
+budgets; the memory gate throttles new appends only. Every dimension
+counts unconditionally, whether or not the corresponding quota is
+configured (round-13.3: quotas are refusal lines, not counting
+gates).
+
+**Exact write-pressure attribution.** Unabsorbed frame bytes ride a
+`StreamPressureBinding` on the stream handle: attribution publishes
+inside the shard state lock on append success and retires on absorb.
+The binding is seeded from the tail's persisted `unabsorbed_bytes`
+at bind time, so durable write debt that survives a restart is
+charged from the first append — it never starts from zero when
+durable debt already exists.
+
+**Admission order.** The gate runs after ordinary per-project quotas
+and before the instance-global RSS gate. Pre-auth requests never see
+it (round-13.1: authentication precedes every tarpit/capacity
+answer; pre-auth keeps only catastrophic survival accounting).
+
+**Behavior at the watermark.** Hysteresis latch: engage at
+`PROJECT_MEMORY_PRESSURE_BYTES`, release below
+`PROJECT_MEMORY_RELEASE_PCT`% of it. While engaged, new appends
+(product and raw adapter) receive a typed, project-audited refusal —
+`429` body error `project_memory_pressure`, `Retry-After: 1` —
+lossless by construction (the record was never accepted). Existing
+subscriptions, reads, and retention are untouched. One ops event per
+engage and per release (never per refusal). A project with any
+nonzero pressure dimension is pinned against admission-tracker
+eviction.
+
+**Sizing the watermark.** Field calibration (2026-08-31, battery v3)
+showed the watermark MUST clear the largest supported single-project
+profile: `subs×32K + feeds×16K + 32 MiB retention allowance + dirty
+margin`. A 1,000-sub + 100-feed project models ~65 MB — a 48 MiB
+watermark throttles it at ordinary load (leg A3), while the
+adversarial noisy profile plateaus at ~46 MB, BELOW 48 MiB (leg A6:
+gate never engages, instance hits the global RSS line — the exact
+failure the backstop must prevent). The watermark is therefore a
+deployment-profile decision sized between the largest legitimate
+tenant and the noisy plateau; `0` (off) remains the default until a
+profile pins it. Pure write-rate cache-fill remains under-attributed
+by the resident-state model (leg A4: 600 w/s peaked at 8.1 MB
+modeled) — the global RSS gate stays the final safety boundary.

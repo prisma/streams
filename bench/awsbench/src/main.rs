@@ -1527,15 +1527,22 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
     } else {
         eprintln!("CERT: creating {tenants} streams + {noisy_feeds} noisy (conc {setup_conc})");
         // Slot space: [0, tenants) ordinary; [tenants, tenants+noisy) noisy.
-        for chunk in (0..tenants + noisy_feeds).collect::<Vec<_>>().chunks(10_000) {
+        for chunk in (0..tenants + noisy_feeds)
+            .collect::<Vec<_>>()
+            .chunks(10_000)
+        {
             let fails: usize = futures_util::stream::iter(chunk.iter().map(|&t| {
                 let http = http.clone();
                 let (url, auth) = if t < tenants {
-                    (format!("{base}/v1/streams/{}", stream_of(t)),
-                     format!("Bearer {}", tokens[tok_idx(t)]))
+                    (
+                        format!("{base}/v1/streams/{}", stream_of(t)),
+                        format!("Bearer {}", tokens[tok_idx(t)]),
+                    )
                 } else {
-                    (format!("{base}/v1/streams/{prefix}n{}", t - tenants),
-                     format!("Bearer {}", tokens[noisy_tok]))
+                    (
+                        format!("{base}/v1/streams/{prefix}n{}", t - tenants),
+                        format!("Bearer {}", tokens[noisy_tok]),
+                    )
                 };
                 let key = key.clone();
                 async move {
@@ -1643,8 +1650,7 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
             })
             .collect(),
     );
-    let next_q: Arc<Vec<AtomicU64>> =
-        Arc::new((0..slots).map(|_| AtomicU64::new(0)).collect());
+    let next_q: Arc<Vec<AtomicU64>> = Arc::new((0..slots).map(|_| AtomicU64::new(0)).collect());
     let acked_q: Arc<Vec<Mutex<Vec<u64>>>> =
         Arc::new((0..slots).map(|_| Mutex::new(Vec::new())).collect());
     let unacked_q: Arc<Vec<Mutex<Vec<u64>>>> =
@@ -2054,10 +2060,13 @@ async fn run_cert(args: &Args, stats: Arc<Stats>) -> anyhow::Result<()> {
     let noisy_ok = Arc::new(AtomicU64::new(0));
     let noisy_err = Arc::new(AtomicU64::new(0));
     let noisy_writer = (writers && noisy_feeds > 0).then(|| {
-        let (http, base, key, tokens) =
-            (http.clone(), base.clone(), key.clone(), tokens.clone());
-        let (next_q, acked_q, unacked_q, shed_q) =
-            (next_q.clone(), acked_q.clone(), unacked_q.clone(), shed_q.clone());
+        let (http, base, key, tokens) = (http.clone(), base.clone(), key.clone(), tokens.clone());
+        let (next_q, acked_q, unacked_q, shed_q) = (
+            next_q.clone(),
+            acked_q.clone(),
+            unacked_q.clone(),
+            shed_q.clone(),
+        );
         let (noisy_offered, noisy_ok, noisy_err, stop) = (
             noisy_offered.clone(),
             noisy_ok.clone(),
