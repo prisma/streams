@@ -328,3 +328,13 @@ tenant and the noisy plateau; `0` (off) remains the default until a
 profile pins it. Pure write-rate cache-fill remains under-attributed
 by the resident-state model (leg A4: 600 w/s peaked at 8.1 MB
 modeled) — the global RSS gate stays the final safety boundary.
+
+**Field certification (2026-08-31, legs A1b/A6b at a 40 MiB
+watermark):** the noisy project engaged project-locally 728 s BEFORE
+the first global RSS shed and owned every typed refusal; victims had
+zero refusals of any kind, zero lag cuts, zero reconnects, complete
+acked tails, and improved append latency. In the dual-mega-project
+geometry the gate discriminated at ~6 MB adjacency (33–34 MB
+legitimate projects untouched, 40.4 MB noisy throttled) and global
+sheds went from 67,414 (un-gated) to ZERO. Full battery:
+docs/PERF-LIVEFEED.md §5.

@@ -305,4 +305,68 @@ feeds the weighted-admission design when that work is scheduled.
 system is now server-binary sha + compute-1g profile sha + harness
 sha. After the follow-up legs, mint **v0.2.0-rc.3** anchored at the
 commit containing the operating profile and harness, with all three
-hashes in every campaign manifest.
+hashes in every campaign manifest. (Done: v0.2.0-rc.3 @ 2039788a,
+2026-08-31, evidence verified by scripts/verify-rc-evidence.py.)
+
+## 5. Round 13: per-project memory-pressure admission (2026-08-31)
+
+Round 13 closed the leg-5 memory-isolation gap. Four gated commits:
+13.1 evidence verifier + pre-auth inflight split (df58de47,
+caf4d2c7), 13.2 the admission backstop with its 16-test red battery
+(541e5b28), 13.3 unconditional pressure counting (7b235c2f), 13.4
+the CODE-RED postings fix (df4deda7). Mechanism reference:
+docs/LIVE-FEED.md "Per-project memory-pressure admission".
+
+**CODE-RED (found BY this battery, first real loss ever recorded).**
+The first acceptance run lost 11 acked records. Forensics on the
+dead field keyspace proved them durable — the loss was in delivery:
+`PostingsCache::install_chunk`'s extend path dropped match-runs
+STRADDLING the extension cut, so a keyed history read served the
+missing tail as provably match-free and the subscriber skipped it
+permanently. Product SSE sessions always read the keyed lane, so
+this affected ordinary product subscribers under absorb/trim timing.
+Fixed red-first (split the straddling run, unknown gap-bytes) with a
+70 s deterministic repro; the rerun of the same leg: zero loss.
+
+**Field acceptance battery (v3, on the fixed binary; 1-GiB Compute
+eu-central-1, gen eu-west-3; exact reconciliation every leg).**
+Watermark for legs A1–A6: 48 MiB; decisive pair A1b/A6b: 40 MiB
+(calibrated to the noisy stable profile ≈ 46 MB).
+
+| Leg | Shape | Verdict |
+|---|---|---|
+| A1 | leg-5 rerun, noisy 100 feeds @ 100 w/s vs 1,000 victims | ZERO loss; victim tails complete; gate un-engaged (noisy plateaus ~46 MB < 48 MiB) |
+| A2 | 30-min product distribution | zero false engages, zero project-memory refusals |
+| A3 | 100×10 one project, ordinary load | gate ENGAGED a legitimate profile: 1,000 subs alone model 32 MB — watermark must clear the largest supported tenant |
+| A4 | write-heavy, no subs, 600 w/s | pressure peaks 8.1 MB — pure cache-fill is under-attributed; global RSS gate remains final boundary |
+| A5 | sub-heavy, write-idle | no false engage at 33.9 MB peak; zero loss |
+| A6 | dual mega-projects + noisy, 48 MiB | negative control: gate CANNOT engage above the noisy plateau → 67,414 global sheds, 3,277 lag cuts, victims hurt (lossless) |
+| **A1b** | A1 shape @ 40 MiB | **PASS, the reviewer's finish line** — see below |
+| **A6b** | A6 shape @ 40 MiB | **PASS** — zero global sheds (was 67,414); legit 33–34 MB projects untouched; noisy owns all 143,420 refusals |
+
+**A1b, every criterion:** the noisy project engaged once (no
+flapping), latched at 41,937,034 bytes against a 41,943,040
+watermark, and owned all 72,249 typed `project_memory_pressure`
+refusals. First engage preceded the first global RSS shed by 728 s.
+Victims: zero project-memory refusals, zero global RSS refusals,
+zero lag cuts, zero reconnects, complete acked tails, append p99
+762 ms vs 822 ms un-gated (improved). Versus the identical un-gated
+leg: global sheds 82,161 → 165 (all landing on noisy traffic),
+victim throttle rate 21.75% → 0.066%, victim append success
+78% → 98.9%.
+
+**A6b attribution:** the 15 "dead subs" are noisy-class subs that
+parked after the engage froze their own project's feeds (each such
+feed's full acked history was verified observed by its pair sub);
+the 368 victim reconnects are the two mega-projects' own 32 MiB
+retention-allowance churn (round-12 contract, lossless, present in
+both A6 variants). Zero global sheds: the instance never reached
+the global line.
+
+**Calibration lessons** (now in the LIVE-FEED.md sizing guidance):
+the watermark is a deployment decision sized BETWEEN the largest
+legitimate tenant profile and the noisy plateau; `0` (off) is the
+default until a profile pins it; the resident-state model does not
+attribute pure write-rate cache-fill (A4), so the global RSS gate
+stays layered behind it. Field services torn down post-battery
+(both projects deleted, verified 404).
