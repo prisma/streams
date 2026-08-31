@@ -4946,8 +4946,7 @@ async fn append_core(
     let inflight_cap = state
         .admit_max_inflight
         .load(std::sync::atomic::Ordering::Relaxed);
-    if inflight_cap > 0
-        && state.inflight.load(std::sync::atomic::Ordering::Relaxed) > inflight_cap
+    if inflight_cap > 0 && state.inflight.load(std::sync::atomic::Ordering::Relaxed) > inflight_cap
     {
         state
             .admit_shed

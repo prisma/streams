@@ -36350,7 +36350,11 @@ async fn inflight_admission_answers_only_after_authentication() {
     let auth = ("authorization", "Bearer tok");
     let ct = ("content-type", "text/plain");
     let (st, _, b) = hreq(addr, "PUT", "/v1/stream/adm", &[auth, ct], b"seed").await;
-    assert!(st == 200 || st == 201, "seed: {st} {}", String::from_utf8_lossy(&b));
+    assert!(
+        st == 200 || st == 201,
+        "seed: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
 
     // Saturate the ordinary cap (over cap, under the 4x survival bound).
     state
