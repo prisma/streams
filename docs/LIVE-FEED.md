@@ -188,3 +188,68 @@ release build; harness `STREAMS_SSE_BENCH=1 cargo test -- bench_sse_`):
 The Stage 7B exclusion table (8 engine-neutral contracts) was fully
 replaced by livefeed legs in round 9c; zero uncovered exclusions
 remained at deletion time. The matrix skip list died with the matrix.
+
+## Per-project retention allowance (round-12 decision, 2026-08-31)
+
+The 1-GiB cell profile pins `SSE_FEED_TOTAL_BYTES=64 MiB` and
+`SSE_FEED_PROJECT_BYTES=32 MiB` — kept at these values by the
+round-12 review decision after the six directed field legs (see
+docs/PERF-LIVEFEED.md §4). Name it exactly:
+
+**a per-project, per-instance LiveFeed retention allowance.**
+
+It is NOT durable stream storage, NOT a billing quota, NOT a
+project-wide value aggregated across the cell, and NOT a maximum
+amount of records a subscriber can receive. The contract:
+
+> Up to 32 MiB of prepared LiveFeed data may be retained for one
+> project on one cell instance. When the allowance is exhausted,
+> appends still remain durable. The affected shared feed may publish
+> without retention, causing subscribers behind its new floor to
+> receive a nonterminal EOF. The SDK reconnects using the last
+> emitted cursor. Delivery is lossless but latency and reconnect
+> frequency are not guaranteed while the project remains over the
+> allowance.
+
+The exact byte value stays in operator and Control Plane integration
+documentation — it is an instance-profile backstop configured through
+the deployment environment, not a permanently fixed public product
+limit. The eventual Control Plane shape is a
+`ProjectQuotas.max_sse_retained_bytes` bounded above by the cell
+profile's 32 MiB maximum (docs/CONTROL-PLANE-INTEGRATION.md §4).
+
+Field evidence (2026-08-30, real Compute + Tigris, zero lost acked
+records in every leg): the intended multitenant distribution NEVER
+touches the caps (500 projects: 0 cap hits, 0 cuts, 0 reconnects);
+concentrated single-project geometries get typed, lossless,
+resume-exact churn (0.045% at 100x10, 0.2% at 500x2); the global cap
+accounts to the byte (pinned at exactly 64.0 MB, zero drift). Do NOT
+raise the project cap: with 64/32 one project can consume at most
+half the process retention allowance, and leg 5 shows the memory the
+raise would spend is already contended by instance-wide pressure.
+
+**Operational thresholds** (hard limits are the final safety
+boundary; alert earlier):
+
+| Signal | Warning | Critical |
+|---|---|---|
+| Project retained bytes | ≥ 24 MiB | any SUSTAINED `project_cap_uncached` growth |
+| Global retained bytes | ≥ 48 MiB | ≥ 58 MiB |
+| Subscription health | — | sustained lag-cut/resume rate > 0.1% |
+
+A transient nonzero counter during an intentionally hostile campaign
+is acceptable; persistent cap hits under the normal multitenant
+distribution are not.
+
+**Known gap (shared-cell GA blocker, next RC after rc.3):**
+retention isolation is perfect but instance MEMORY isolation is
+absent — a noisy project's write volume can push the whole instance
+to the RSS shed line, and admission shed is instance-global (leg 5).
+The admission design needs BOTH static subscription pressure
+(connections, feeds) and dynamic write pressure (queued append
+bytes, write breadth, project-attributable unabsorbed debt); retained
+SSE bytes stay governed by the existing exact budgets. Acceptance:
+rerun leg 5 — noisy must receive typed project-local shed BEFORE
+global RSS shed, victims at zero shed/cuts/reconnects with complete
+tails — plus the 30-minute product-distribution leg to prove normal
+projects are not rejected.

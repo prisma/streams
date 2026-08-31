@@ -120,6 +120,21 @@ status
 quotas
 ```
 
+Planned quota field (round-12 decision, 2026-08-31): the per-project
+LiveFeed retention allowance becomes policy-driven as
+
+```text
+ProjectQuotas {
+    max_sse_retained_bytes: u64,   // bounded above by the cell
+    ...                            // profile's 32 MiB maximum
+}
+```
+
+Until then the allowance is the instance-profile backstop
+(`SSE_FEED_PROJECT_BYTES` in deploy/profiles/compute-1g.env); the
+operator contract and alert thresholds live in docs/LIVE-FEED.md
+("Per-project retention allowance").
+
 Supported status values:
 
 ```text

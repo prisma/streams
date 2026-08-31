@@ -21,10 +21,22 @@
 #     digest, and the explicitly NOT-certified legs.
 set -euo pipefail
 cd "$(dirname "$0")/.."
-COMMIT=${1:?usage: promote-rc.sh <commit-ish> <rc-tag> [--capacity-run id --handoff-run id]}
-TAG=${2:?usage: promote-rc.sh <commit-ish> <rc-tag> [--capacity-run id --handoff-run id]}
+COMMIT=${1:?usage: promote-rc.sh <commit-ish> <rc-tag> [--capacity-run id --handoff-run id | --field-legs manifest.json]}
+TAG=${2:?usage: promote-rc.sh <commit-ish> <rc-tag> [--capacity-run id --handoff-run id | --field-legs manifest.json]}
 shift 2
 CAP_ARGS=()
+FIELD_LEGS=""
+if [ "${1:-}" = "--field-legs" ]; then
+  # rc.3-class evidence (round-12 review): the certification is a set
+  # of directed field legs + an exact-artifact canary run, carried in
+  # a prepared evidence manifest. The manifest names the certified
+  # server binary sha256 (the artifact the canary battery actually
+  # exercised), every field run id with its stage-manifest hash, the
+  # profile and harness hashes, and the tag's explicit exclusions.
+  FIELD_LEGS=$(cd "$(dirname "$2")" && pwd)/$(basename "$2")
+  [ -s "$FIELD_LEGS" ] || { echo "FAIL: --field-legs manifest $2 missing"; exit 1; }
+  shift 2
+fi
 [ $# -gt 0 ] && CAP_ARGS=("$@")
 SHA=$(git rev-parse --verify "$COMMIT^{commit}")
 
@@ -88,7 +100,17 @@ echo "== 4/4 artifact digests =="
 # one, and the tag says which is which.
 LOCAL_SHA=$(shasum -a 256 "$WORKTREE/target/release/streams-slate" | cut -d' ' -f1)
 CERT_MANIFEST="$WORKTREE/target/rc-certify-manifest.json"
-if [ ${#CAP_ARGS[@]} -gt 0 ]; then
+if [ -n "$FIELD_LEGS" ]; then
+  # Evidence-manifest mint: the certified identity is the exact
+  # artifact the canary battery ran (never the local macOS rebuild),
+  # and the manifest must attest a passing canary on it.
+  SRV_SHA=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['server_binary_sha256'])" "$FIELD_LEGS")
+  CANARY_OK=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['exact_artifact_canary']['result'])" "$FIELD_LEGS")
+  [ "$CANARY_OK" = "PASS" ] || { echo "FAIL: evidence manifest canary result=$CANARY_OK"; exit 1; }
+  SRV_SHA_NOTE="exact-artifact canary-certified (field-legs evidence manifest)"
+  REPRO_LINE="local rebuild sha256 $LOCAL_SHA differs from the certified x86_64-musl artifact (expected across arch/libc; the certified SHA governs)"
+  [ "$LOCAL_SHA" = "$SRV_SHA" ] && REPRO_LINE="local rebuild reproduces the certified artifact byte-for-byte"
+elif [ ${#CAP_ARGS[@]} -gt 0 ]; then
   [ -s "$CERT_MANIFEST" ] || { echo "FAIL: rc-certify.sh left no manifest at $CERT_MANIFEST"; exit 1; }
   SRV_SHA=$(python3 -c "import json,sys;print(json.load(open(sys.argv[1]))['server_sha256'])" "$CERT_MANIFEST")
   SRV_SHA_NOTE="field-certified campaign artifact (rc-certify manifest)"
@@ -108,6 +130,42 @@ SDK_SHA=$(shasum -a 256 "$SDK_TGZ" | cut -d' ' -f1)
 
 FIELD_LINE="capacity + handoff manifests verified via rc-certify.sh"
 [ ${#CAP_ARGS[@]} -eq 0 ] && FIELD_LINE="capacity + handoff campaigns: NOT certified by this tag"
+
+if [ -n "$FIELD_LEGS" ]; then
+  MSGFILE=$(mktemp /tmp/rc-tagmsg.XXXXXX)
+  python3 - "$FIELD_LEGS" "$TAG" "$SHA" "$SRV_SHA" "$SDK_SHA" "$(basename "$SDK_TGZ")" "$REPRO_LINE" > "$MSGFILE" <<'PY'
+import json, sys
+m = json.load(open(sys.argv[1]))
+tag, sha, srv, sdk, sdk_name, repro = sys.argv[2:8]
+print(f"release candidate {tag}\n")
+print(f"Certified at {sha} (all gates ran in a clean detached worktree):")
+print("- required check runs green at the SHA")
+print("- local release gate + bare multitenancy audit")
+print("- noisy-neighbor campaign at contract scale (locked thresholds)")
+print("- exact-artifact canary battery on the tagged binary "
+      f"(log sha256 {m['exact_artifact_canary']['log_sha256']})")
+print(f"\nProfile under certification: {m['profile']['file']} "
+      f"sha256 {m['profile']['sha256']}")
+print("  " + " ".join(m["profile"]["pins"]))
+print(f"Harness identity (git tree oids at the tag): "
+      + " ".join(f"{k}={v}" for k, v in m["harness_trees"].items()))
+print("\nDirected field legs (all EXACT reconciliation, zero lost acked records):")
+for leg in m["field_legs"]:
+    print(f"- {leg['leg']}: run {leg['run_id']} stage {leg['stage']} "
+          f"[{leg['finding']}] stage-manifest sha256 {leg['stage_sha256']}")
+print("\nArtifacts:")
+print(f"- server binary sha256: {srv}  [exact-artifact canary-certified]")
+print(f"- reproducibility:      {repro}")
+print(f"- sdk tarball sha256:   {sdk} ({sdk_name})")
+print("\nNOT certified by this tag (schedule before GA):")
+for x in m["not_certified"]:
+    print(f"- {x}")
+PY
+  git tag -a "$TAG" "$SHA" -F "$MSGFILE"
+  rm -f "$MSGFILE"
+  echo "PROMOTE_RC_OK: annotated tag $TAG at $SHA (push with: git push origin $TAG)"
+  exit 0
+fi
 
 git tag -a "$TAG" "$SHA" -m "release candidate $TAG
 
