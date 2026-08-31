@@ -88,6 +88,10 @@ RUNGFLAGS=(--env SSE_MAX_CONNECTIONS=${WC_SSE_MAX:-2000})
 [ -n "${WC_SHARED_CACHE:-}" ]   && RUNGFLAGS+=(--env SHARED_CACHE_BYTES=$WC_SHARED_CACHE)
 [ -n "${WC_POSTINGS_CACHE:-}" ] && RUNGFLAGS+=(--env POSTINGS_CACHE_BYTES=$WC_POSTINGS_CACHE)
 [ -n "${WC_HISTORY_CACHE:-}" ]  && RUNGFLAGS+=(--env HISTORY_CACHE_BYTES=$WC_HISTORY_CACHE)
+# Round-13: the per-project memory-pressure backstop (acceptance legs
+# set it; 0/absent = off, matching the binary default).
+[ -n "${WC_PMP:-}" ] && RUNGFLAGS+=(--env PROJECT_MEMORY_PRESSURE_BYTES=$WC_PMP)
+[ -n "${WC_PMP_RELEASE:-}" ] && RUNGFLAGS+=(--env PROJECT_MEMORY_RELEASE_PCT=$WC_PMP_RELEASE)
 
 "$HERE/build-upload.sh"
 

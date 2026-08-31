@@ -752,14 +752,16 @@ impl QuotaRegistry {
         project: &ProjectId,
         quotas: &ProjectQuotas,
     ) -> Result<Option<SubscriptionGuard>, QuotaRefusal> {
-        if quotas.max_live_subscriptions == 0 {
-            return Ok(None);
-        }
         let Some(admission) = self.tracked(project) else {
             return Ok(None);
         };
+        // Round-13.3 (field A1): the count is UNCONDITIONAL — live
+        // subscriptions are memory pressure whether or not a refusal
+        // quota is configured (a default-quota noisy project held 200
+        // connections the pressure model could not see). The quota,
+        // when configured, stays the refusal line.
         let prev = admission.live_subs.fetch_add(1, Ordering::Relaxed);
-        if prev >= quotas.max_live_subscriptions {
+        if quotas.max_live_subscriptions > 0 && prev >= quotas.max_live_subscriptions {
             admission.live_subs.fetch_sub(1, Ordering::Relaxed);
             return Err(QuotaRefusal::Concurrency);
         }
@@ -841,14 +843,15 @@ impl QuotaRegistry {
         quotas: &ProjectQuotas,
         bytes: u64,
     ) -> Result<Option<QueuedBytesGuard>, QuotaRefusal> {
-        if quotas.queued_append_bytes == 0 {
-            return Ok(None);
-        }
         let Some(admission) = self.tracked(project) else {
             return Ok(None);
         };
+        // Round-13.3 (field A1): queued bytes are the standing
+        // committer-queue memory — charged UNCONDITIONALLY (the noisy
+        // project held ~12 MB of ten-second queue the model could not
+        // see); the configured ceiling stays the refusal line.
         let new = admission.queued_bytes.fetch_add(bytes, Ordering::Relaxed) + bytes;
-        if new > quotas.queued_append_bytes {
+        if quotas.queued_append_bytes > 0 && new > quotas.queued_append_bytes {
             admission.queued_bytes.fetch_sub(bytes, Ordering::Relaxed);
             return Err(QuotaRefusal::QueuedBytes);
         }
@@ -1155,9 +1158,12 @@ mod tests {
         ));
         drop(s1);
         assert!(r.admit_subscription(&p, &quotas).unwrap().is_some());
-        // Unlimited (0) never allocates a guard.
+        // Round-13.3: unlimited (0) still COUNTS — the guard exists so
+        // the subscription is visible as memory pressure; only the
+        // refusal line is gone.
         let unlimited = ProjectQuotas::default();
-        assert!(r.admit_subscription(&p, &unlimited).unwrap().is_none());
+        let g = r.admit_subscription(&p, &unlimited).unwrap();
+        assert!(g.is_some(), "counting guard under an unconfigured quota");
     }
 
     #[test]
@@ -1436,5 +1442,69 @@ mod pressure_tests {
             !a.memory_gate(&p, 0, 75),
             "0 = off; the global gate owns it"
         );
+    }
+}
+
+#[cfg(test)]
+mod pressure_counting_tests {
+    use super::*;
+
+    fn pid(s: &str) -> ProjectId {
+        ProjectId::new(s).unwrap()
+    }
+
+    /// Round-13.3 red (field A1 finding): the pressure model's EXACT
+    /// dimensions must count UNCONDITIONALLY — live subscriptions were
+    /// only counted when max_live_subscriptions was configured as a
+    /// refusal quota, so a default-quota noisy project showed subs=0
+    /// pressure while holding 200 connections.
+    #[test]
+    fn live_subs_count_without_a_configured_quota() {
+        let r = QuotaRegistry::default();
+        let p = pid("c1");
+        let _ = r.admit(&p, &ProjectQuotas::default(), 1_000).unwrap();
+        let g = r.admit_subscription(&p, &ProjectQuotas::default()).unwrap();
+        assert!(
+            g.is_some(),
+            "an unconfigured quota still returns a counting guard"
+        );
+        let a = r.pressure_handle(&p).unwrap();
+        assert_eq!(
+            a.estimated_pressure_bytes(),
+            PRESSURE_SUB_WEIGHT_BYTES,
+            "the subscription is pressure even with no refusal quota"
+        );
+        drop(g);
+        assert_eq!(a.estimated_pressure_bytes(), 0);
+    }
+
+    /// Round-13.3 red (field A1 finding): queued append bytes are the
+    /// standing committer-queue memory — they must charge pressure
+    /// even when queued_append_bytes is not configured as a ceiling
+    /// (the noisy project held ~12 MB of 10-second queue that the
+    /// model could not see).
+    #[test]
+    fn queued_bytes_charge_without_a_configured_ceiling() {
+        let r = QuotaRegistry::default();
+        let p = pid("c2");
+        let _ = r.admit(&p, &ProjectQuotas::default(), 1_000).unwrap();
+        let g = r
+            .charge_queued(&p, &ProjectQuotas::default(), 500_000)
+            .unwrap();
+        assert!(g.is_some(), "an unconfigured ceiling still charges");
+        let a = r.pressure_handle(&p).unwrap();
+        assert_eq!(a.estimated_pressure_bytes(), 500_000);
+        drop(g);
+        assert_eq!(a.estimated_pressure_bytes(), 0);
+        // And the configured ceiling still refuses at its line.
+        let q = ProjectQuotas {
+            queued_append_bytes: 100,
+            ..Default::default()
+        };
+        assert!(matches!(
+            r.charge_queued(&p, &q, 500),
+            Err(QuotaRefusal::QueuedBytes)
+        ));
+        assert_eq!(a.estimated_pressure_bytes(), 0, "refusal rolls back");
     }
 }
