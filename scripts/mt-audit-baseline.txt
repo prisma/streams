@@ -14,7 +14,6 @@ stream-hash	src/crypto.rs RoutingKeyHash(stream_hash(rk))
 stream-hash	src/crypto.rs let hash = stream_hash("s");	
 stream-hash	src/crypto.rs let hash = stream_hash("s1");	
 stream-hash	src/crypto.rs pub fn stream_hash(name: &str) -> [u8; 16] {	
-stream-hash	src/dst.rs key_hash: crate::crypto::stream_hash(rk),	
 stream-hash	src/dst/dst_tests.rs key_hash: crate::crypto::stream_hash(""),	
 stream-hash	src/dst/dst_tests.rs key_hash: crate::crypto::stream_hash("a"),	
 stream-hash	src/dst/dst_tests.rs key_hash: crate::crypto::stream_hash("ck"),	
@@ -30,6 +29,7 @@ stream-hash	src/dst/dst_tests.rs keys_map.insert(1, crate::crypto::stream_hash("
 stream-hash	src/dst/dst_tests.rs let kh = crate::crypto::stream_hash("customer-42");	
 stream-hash	src/dst/dst_tests.rs let kh = crate::crypto::stream_hash("g");	
 stream-hash	src/dst/dst_tests.rs let kh = crate::crypto::stream_hash("s1");	
+stream-hash	src/dst/runtime.rs key_hash: crate::crypto::stream_hash(rk),	
 stream-hash	src/fleet.rs // stream_hash(name) - so it almost never matched and D3 never moved.	
 stream-hash	src/fleet.rs /// stream_hash(name); the two are unrelated, so the derived prefix	
 stream-hash	src/history.rs key_hash: crate::crypto::stream_hash(""),	

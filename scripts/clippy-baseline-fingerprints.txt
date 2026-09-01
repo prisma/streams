@@ -1,16 +1,16 @@
 associated function `decode` is never used :: src/product_cursor.rs
 associated function `from_enabled` is never used :: src/bin/../crypto.rs
 associated function `of` is never used :: src/bin/../crypto.rs
-associated items `clean` and `with_op_class` are never used :: src/dst.rs
+associated items `clean` and `with_op_class` are never used :: src/dst/fault_store.rs
 associated items `shards`, `opening`, and `counters_for_tests` are never used :: src/sharddir.rs
 associated items `snapshot`, `derive_key_ids`, `now_cursor`, and `meta` are never used :: src/touch.rs
-constant `AFTER_DURABLE_BEFORE_ACK` is never used :: src/dst.rs
+constant `AFTER_DURABLE_BEFORE_ACK` is never used :: src/dst/mod.rs
 constant `DURABLE_STREAMS_CLIENT_CONFORMANCE_VERSION` is never used :: src/protocol_pin.rs
 constant `DURABLE_STREAMS_PROTOCOL_COMMIT` is never used :: src/protocol_pin.rs
 constant `DURABLE_STREAMS_SERVER_CONFORMANCE_VERSION` is never used :: src/protocol_pin.rs
 constant `MAX_TEMPLATES_PER_ENTITY` is never used :: src/touch.rs
 constant `MAX_TEMPLATES_PER_STREAM` is never used :: src/touch.rs
-digits of hex, binary or octal literal not in groups of equal size :: src/dst.rs
+digits of hex, binary or octal literal not in groups of equal size :: src/dst/fault_store.rs
 doc list item without indentation :: src/config/cli.rs
 doc list item without indentation :: src/http.rs
 empty line after doc comment :: src/history.rs
