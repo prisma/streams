@@ -721,12 +721,35 @@ impl TraceOutcome {
     }
 }
 
-/// One object-store operation, in dispatch order.
+/// What one trace entry MEANS — the discriminator `operation_counts()`
+/// keys on (PR 3.2: phases were previously hidden in `detail` strings,
+/// which let a diagnostic observation masquerade as an attempted store
+/// operation and double-count deletes).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraceEventKind {
+    /// One attempted store operation (put/get/list/copy/multipart leg).
+    Operation,
+    /// Diagnostic observation: one input item a traced delete stream
+    /// consumed. An `Ok` input IS an attempted delete (the inner store
+    /// received it); an `Err` input is an observation only — the store
+    /// never saw a path.
+    DeleteInput,
+    /// Diagnostic observation: one item the inner delete stream
+    /// returned. Never counted as an operation — the trait does not
+    /// promise results correspond to inputs (batching stores coalesce).
+    DeleteResult,
+}
+
+/// One trace entry, in trace-lock acquisition order.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct StoreTraceEvent {
-    /// Dispatch sequence number, dense from 0. See `TraceStore` for why
-    /// the ordering is dispatch, not completion.
+    /// Monotonic event id, unique for the life of the `TraceStore` and
+    /// allocated under the same lock that inserts the event — so the
+    /// vector order IS id order. NOT dense: `reset()` keeps the id
+    /// space moving, and stream lifetime tokens consume ids without
+    /// producing events.
     pub seq: u64,
+    pub kind: TraceEventKind,
     pub op: StoreOp,
     pub class: ObjClass,
     /// The path as recorded: verbatim only when the store was built with
@@ -784,44 +807,59 @@ fn redact_path(path: &str) -> String {
         .join("/")
 }
 
-/// Shared trace state.
+/// Everything the trace correlates, behind ONE mutex (PR 3.2). The
+/// previous shape allocated ids with relaxed atomics BEFORE taking the
+/// vector lock, so two concurrent starts could insert out of id order
+/// and completion — which derived a vector index from the id — would
+/// silently resolve neither event: both stayed `Pending`, `in_flight`
+/// never drained, and `reset()` panicked forever. Ids are now allocated
+/// and inserted in the same critical section; completion looks events
+/// up through an id→index map, never by arithmetic on insertion order.
+#[derive(Debug, Default)]
+struct TraceLog {
+    /// Monotonic id source. Never rewinds — `reset()` clears the window
+    /// but keeps the id space moving, so a stale completion can never
+    /// land on a younger event.
+    next_seq: u64,
+    /// The current trace window, in id (= lock-acquisition) order.
+    events: Vec<StoreTraceEvent>,
+    /// id → index into `events`, for the CURRENT window only.
+    // mt-lint: allow(name-keyed-map): keyed by trace event id
+    index: HashMap<u64, usize>,
+    /// Ids of operations whose LIFETIME is still open: point operations
+    /// between begin and finish, streams between creation and
+    /// exhaustion/drop. Lifetime is deliberately distinct from outcome —
+    /// a list stream that has already yielded an error is still alive
+    /// (the trait lets it keep serving items), and `reset()` refuses
+    /// while ANY lifetime is open.
+    active: std::collections::HashSet<u64>,
+}
+
+/// Shared trace state: the correlated log plus the two immutable
+/// recording options.
 #[derive(Debug)]
 struct TraceState {
-    events: Mutex<Vec<StoreTraceEvent>>,
-    /// Monotonic event id source. Never resets: `seq` is an ID, not a
-    /// vector index, so a `reset()` mid-flight cannot make a late
-    /// completion land on somebody else's event.
-    next_seq: std::sync::atomic::AtomicU64,
-    /// The seq of `events[0]`, bumped by `reset()`. Lookup is
-    /// `events[(seq - base_seq)]`, so completions that predate a reset
-    /// fall out of range and are ignored rather than misattributed.
-    base_seq: std::sync::atomic::AtomicU64,
-    /// begin-not-yet-finished count; `reset()` refuses to run while
-    /// anything is in flight.
-    in_flight: std::sync::atomic::AtomicU64,
+    log: Mutex<TraceLog>,
     redact: bool,
     content_hashes: bool,
 }
 
 impl TraceState {
-    /// Push the event at DISPATCH and return its monotonic id. The
-    /// outcome is filled later by id (`finish`), never by position.
-    fn begin(
+    #[allow(clippy::too_many_arguments)]
+    fn event(
         &self,
+        seq: u64,
+        kind: TraceEventKind,
         op: StoreOp,
         path: &str,
         bytes: Option<u64>,
+        outcome: TraceOutcome,
         content_hash: Option<String>,
         detail: Option<String>,
-    ) -> u64 {
-        let seq = self
-            .next_seq
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        self.in_flight
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut evs = self.events.lock().unwrap();
-        evs.push(StoreTraceEvent {
+    ) -> StoreTraceEvent {
+        StoreTraceEvent {
             seq,
+            kind,
             op,
             class: ObjClass::of(path),
             path: if self.redact {
@@ -830,50 +868,109 @@ impl TraceState {
                 path.to_string()
             },
             bytes,
-            outcome: TraceOutcome::Pending,
+            outcome,
             content_hash,
             detail,
-        });
+        }
+    }
+
+    /// Open one operation: allocate the id AND insert the Pending event
+    /// in the same critical section, and mark the lifetime active.
+    fn begin(
+        &self,
+        op: StoreOp,
+        path: &str,
+        bytes: Option<u64>,
+        content_hash: Option<String>,
+        detail: Option<String>,
+    ) -> u64 {
+        let ev = |seq| {
+            self.event(
+                seq,
+                TraceEventKind::Operation,
+                op,
+                path,
+                bytes,
+                TraceOutcome::Pending,
+                content_hash.clone(),
+                detail.clone(),
+            )
+        };
+        let mut log = self.log.lock().unwrap();
+        let seq = log.next_seq;
+        log.next_seq += 1;
+        let e = ev(seq);
+        let at = log.events.len();
+        log.events.push(e);
+        log.index.insert(seq, at);
+        log.active.insert(seq);
         seq
     }
 
-    /// Push an already-resolved event (streaming pass-through items are
-    /// complete at observation).
-    fn record(&self, op: StoreOp, path: &str, detail: Option<String>, outcome: TraceOutcome) {
-        let seq = self
-            .next_seq
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        let mut evs = self.events.lock().unwrap();
-        evs.push(StoreTraceEvent {
-            seq,
-            op,
-            class: ObjClass::of(path),
-            path: if self.redact {
-                redact_path(path)
-            } else {
-                path.to_string()
-            },
-            bytes: None,
-            outcome,
-            content_hash: None,
-            detail,
-        });
+    /// Open a lifetime WITHOUT an event of its own: a traced delete
+    /// stream is observed through its per-item `DeleteInput` /
+    /// `DeleteResult` entries, but its lifetime must still hold
+    /// `reset()` off until the stream is exhausted or dropped.
+    fn begin_lifetime(&self) -> u64 {
+        let mut log = self.log.lock().unwrap();
+        let seq = log.next_seq;
+        log.next_seq += 1;
+        log.active.insert(seq);
+        seq
     }
 
-    /// Fill the outcome of an in-flight event, exactly once. A second
-    /// finish for the same seq (or one that predates a `reset()`) is
-    /// ignored — first fact wins.
-    fn finish(&self, seq: u64, outcome: TraceOutcome) {
-        let base = self.base_seq.load(std::sync::atomic::Ordering::Relaxed);
-        let mut evs = self.events.lock().unwrap();
-        if seq >= base && (seq - base) < evs.len() as u64 {
-            let e = &mut evs[(seq - base) as usize];
-            if e.seq == seq && e.outcome == TraceOutcome::Pending {
+    /// Push an already-resolved observation (delete-stream items are
+    /// complete facts at the moment they pass through).
+    fn observe(
+        &self,
+        kind: TraceEventKind,
+        op: StoreOp,
+        path: &str,
+        detail: Option<String>,
+        outcome: TraceOutcome,
+    ) {
+        let mut log = self.log.lock().unwrap();
+        let seq = log.next_seq;
+        log.next_seq += 1;
+        let e = self.event(seq, kind, op, path, None, outcome, None, detail);
+        let at = log.events.len();
+        log.events.push(e);
+        log.index.insert(seq, at);
+    }
+
+    /// Record an observed outcome WITHOUT retiring the lifetime — first
+    /// fact wins. Streaming operations use this for item errors: the
+    /// stream stays alive (and keeps blocking `reset()`) after it.
+    fn note_outcome(&self, seq: u64, outcome: TraceOutcome) {
+        let mut log = self.log.lock().unwrap();
+        Self::note_locked(&mut log, seq, outcome);
+    }
+
+    fn note_locked(log: &mut TraceLog, seq: u64, outcome: TraceOutcome) {
+        if let Some(&at) = log.index.get(&seq) {
+            let e = &mut log.events[at];
+            if e.outcome == TraceOutcome::Pending {
                 e.outcome = outcome;
-                self.in_flight
-                    .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
             }
         }
+    }
+
+    /// Close a lifetime exactly once. `final_outcome` applies only when
+    /// no earlier fact was recorded (a stream that errored and was then
+    /// dropped keeps the error; one that was abandoned untouched records
+    /// `Cancelled`; clean exhaustion records `Ok`).
+    fn retire(&self, seq: u64, final_outcome: TraceOutcome) {
+        let mut log = self.log.lock().unwrap();
+        if log.active.remove(&seq) {
+            Self::note_locked(&mut log, seq, final_outcome);
+        }
+    }
+
+    /// Point operations resolve outcome and lifetime together.
+    fn finish(&self, seq: u64, outcome: TraceOutcome) {
+        let mut log = self.log.lock().unwrap();
+        log.active.remove(&seq);
+        Self::note_locked(&mut log, seq, outcome);
     }
 
     fn finish_with<T>(&self, seq: u64, res: &OsResult<T>) {
@@ -884,19 +981,6 @@ impl TraceState {
                 Err(e) => TraceOutcome::of(e),
             },
         );
-    }
-
-    /// A list stream can serve more items after an error, so clean
-    /// exhaustion only upgrades a never-failed stream to Ok.
-    fn finish_list_ok(&self, seq: u64) {
-        self.finish(seq, TraceOutcome::Ok);
-    }
-
-    /// The consumer dropped the stream before it finished: the event is
-    /// not silently lost — it is marked Cancelled (and released from
-    /// the in-flight count so `reset()` stays usable).
-    fn cancel(&self, seq: u64) {
-        self.finish(seq, TraceOutcome::Cancelled);
     }
 
     fn hash_payload(&self, payload: &PutPayload) -> Option<String> {
@@ -912,9 +996,10 @@ impl TraceState {
     }
 }
 
-/// Drop guard carried inside a traced stream's state: if the consumer
-/// abandons the stream, the operation is recorded Cancelled rather than
-/// left Pending forever.
+/// Owns one streaming operation's lifetime. Dropping it retires the
+/// lifetime exactly once (the `active` set makes retirement idempotent);
+/// the drop-path outcome is `Cancelled`, which only sticks if no real
+/// fact (error, clean exhaustion) was recorded first.
 struct StreamTraceGuard {
     st: Arc<TraceState>,
     seq: u64,
@@ -922,24 +1007,26 @@ struct StreamTraceGuard {
 
 impl Drop for StreamTraceGuard {
     fn drop(&mut self) {
-        self.st.cancel(self.seq);
+        self.st.retire(self.seq, TraceOutcome::Cancelled);
     }
 }
 
 /// Tracing `ObjectStore` decorator for refactor comparisons.
 ///
-/// Records every operation the client dispatches, in dispatch order, so a
-/// refactor PR can assert the exact object-store operation trace is
-/// unchanged by code movement. Behavior is pass-through: nothing is
-/// delayed, altered, or dropped.
+/// Records every operation the client dispatches, so a refactor PR can
+/// assert the exact object-store operation trace is unchanged by code
+/// movement. Behavior is pass-through: nothing is delayed, altered, or
+/// dropped.
 ///
-/// *Ordering choice.* Events are pushed at DISPATCH (before delegating to
-/// the inner store) under the events lock, so `seq` is a dense index into
-/// the vector and the trace order is exactly the client's call order —
-/// deterministic under a single client. Completion order is not (two
-/// in-flight GETs can resolve in either order), so the outcome is filled
-/// in afterwards, indexed by `seq`; a snapshot taken mid-flight shows
-/// `TraceOutcome::Pending`.
+/// *Ordering contract (PR 3.2).* The trace order is the order in which
+/// operations acquired the trace lock at dispatch: id allocation and
+/// event insertion happen in one critical section, so the event vector
+/// is always in id order. Under a single client that is exactly the
+/// call order; under concurrent clients it is a legal serialization of
+/// their dispatches (which is the strongest order that exists for
+/// concurrent starts). Completion order is not recorded — outcomes are
+/// filled in afterwards BY ID through the log's id→index map, and a
+/// snapshot taken mid-flight shows `TraceOutcome::Pending`.
 #[derive(Debug)]
 pub struct TraceStore {
     inner: Arc<dyn ObjectStore>,
@@ -976,46 +1063,60 @@ impl TraceStore {
         Arc::new(Self {
             inner,
             st: Arc::new(TraceState {
-                events: Mutex::new(Vec::new()),
-                next_seq: std::sync::atomic::AtomicU64::new(0),
-                base_seq: std::sync::atomic::AtomicU64::new(0),
-                in_flight: std::sync::atomic::AtomicU64::new(0),
+                log: Mutex::new(TraceLog::default()),
                 redact,
                 content_hashes,
             }),
         })
     }
 
-    /// Snapshot of the trace so far, in dispatch order.
+    /// Snapshot of every trace entry so far — operations AND the
+    /// diagnostic delete observations — in id order. This is the
+    /// observation report; `operation_counts()` is the operation ledger.
     pub fn events(&self) -> Vec<StoreTraceEvent> {
-        self.st.events.lock().unwrap().clone()
+        self.st.log.lock().unwrap().events.clone()
     }
 
     /// Drop everything recorded so far. Refuses (panics) while any
-    /// operation is in flight: silently clearing would otherwise let a
-    /// late completion outlive the wipe and corrupt the comparison this
-    /// type exists to make. Call `events()` and drain pending work
-    /// first; abandoned streams must have been dropped (they record
-    /// Cancelled and release the in-flight count).
+    /// operation's LIFETIME is still open — including a list stream
+    /// that already yielded an error but has not been exhausted or
+    /// dropped, and a delete stream that is still alive. Silently
+    /// clearing under an open lifetime would let a late fact outlive
+    /// the wipe and corrupt the comparison this type exists to make.
     pub fn reset(&self) {
-        assert_eq!(
-            self.st.in_flight.load(std::sync::atomic::Ordering::Relaxed),
-            0,
-            "cannot reset TraceStore while operations are in flight"
-        );
-        self.st.events.lock().unwrap().clear();
-        self.st.base_seq.store(
-            self.st.next_seq.load(std::sync::atomic::Ordering::Relaxed),
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        let mut log = self.st.log.lock().unwrap();
+        if !log.active.is_empty() {
+            let n = log.active.len();
+            // Release the lock BEFORE panicking: a poisoned trace mutex
+            // would turn one refused reset into a wedged harness.
+            drop(log);
+            panic!("cannot reset TraceStore while operations are active ({n} open)");
+        }
+        log.events.clear();
+        log.index.clear();
     }
 
-    /// (op, class) → count, sorted — the same shape FaultStore's ledger
-    /// answers, for whole-trace budget assertions.
-    pub fn counts(&self) -> Vec<(StoreOp, ObjClass, u64)> {
+    /// (op, class) → attempted-operation count, sorted — the same shape
+    /// FaultStore's ledger answers, for whole-trace budget assertions.
+    ///
+    /// The delete accounting is pinned (PR 3.2): an attempted delete is
+    /// each `Ok` INPUT the inner store consumed. Returned results are
+    /// never counted (the trait lets stores batch, reorder, coalesce or
+    /// drop results), and an input ERROR is never counted (the store
+    /// was not handed a path). A cost baseline therefore answers "how
+    /// many store operations were attempted", not "how many diagnostic
+    /// observations happened" — use `events()` for the latter.
+    pub fn operation_counts(&self) -> Vec<(StoreOp, ObjClass, u64)> {
         let mut m: HashMap<(StoreOp, ObjClass), u64> = HashMap::new();
-        for e in self.st.events.lock().unwrap().iter() {
-            *m.entry((e.op, e.class)).or_insert(0) += 1;
+        for e in self.st.log.lock().unwrap().events.iter() {
+            let attempted = match e.kind {
+                TraceEventKind::Operation => true,
+                TraceEventKind::DeleteInput => e.outcome == TraceOutcome::Ok,
+                TraceEventKind::DeleteResult => false,
+            };
+            if attempted {
+                *m.entry((e.op, e.class)).or_insert(0) += 1;
+            }
         }
         let mut v: Vec<_> = m
             .into_iter()
@@ -1090,10 +1191,13 @@ impl ObjectStore for TraceStore {
     }
 
     /// Streaming list. The event is recorded at dispatch; the stream
-    /// itself is pass-through except that its terminal state fills in the
-    /// event outcome (errors recorded as they surface, clean exhaustion
-    /// upgrades a never-failed stream to Ok, an abandoned stream is
-    /// marked Cancelled by the drop guard).
+    /// itself is pass-through. Outcome and LIFETIME are deliberately
+    /// separate (PR 3.2): an item error records the outcome (first fact
+    /// wins) but the stream stays ALIVE — the trait lets it serve more
+    /// items — so `reset()` keeps refusing until clean exhaustion or
+    /// drop retires the lifetime exactly once. Clean exhaustion upgrades
+    /// a never-failed stream to Ok; a stream abandoned before any fact
+    /// records Cancelled.
     fn list(
         &self,
         prefix: Option<&ObjPath>,
@@ -1110,11 +1214,12 @@ impl ObjectStore for TraceStore {
             match inner.next().await {
                 Some(Ok(m)) => Some((Ok(m), (inner, guard))),
                 Some(Err(e)) => {
-                    guard.st.finish(guard.seq, TraceOutcome::of(&e));
+                    // Outcome only: the stream can legally continue.
+                    guard.st.note_outcome(guard.seq, TraceOutcome::of(&e));
                     Some((Err(e), (inner, guard)))
                 }
                 None => {
-                    guard.st.finish_list_ok(guard.seq);
+                    guard.st.retire(guard.seq, TraceOutcome::Ok);
                     None
                 }
             }
@@ -1156,30 +1261,36 @@ impl ObjectStore for TraceStore {
 
     /// Deletes are traced WITHOUT changing the call shape: exactly one
     /// delegated `delete_stream`, with input items and output items
-    /// recorded as they pass through. The trait does not promise that
-    /// results correspond to inputs (an implementation may batch,
-    /// reorder, coalesce, or drop results), so input and output items
-    /// are recorded as separate events (`input` / `result` details) and
-    /// NO outcome is ever fabricated: an empty output stays empty, input
-    /// errors and inner failures pass through untouched.
+    /// recorded as typed observations (`DeleteInput` / `DeleteResult`)
+    /// as they pass through. The trait does not promise that results
+    /// correspond to inputs (an implementation may batch, reorder,
+    /// coalesce, or drop results), so NO outcome is ever fabricated: an
+    /// empty output stays empty, input errors and inner failures pass
+    /// through untouched. The stream also carries a LIFETIME token
+    /// (PR 3.2): while it is alive — consuming inputs, producing
+    /// outputs — `reset()` refuses; exhaustion or drop retires the
+    /// lifetime exactly once.
     fn delete_stream(
         &self,
         locations: futures_util::stream::BoxStream<'static, OsResult<ObjPath>>,
     ) -> futures_util::stream::BoxStream<'static, OsResult<ObjPath>> {
         use futures_util::StreamExt;
+        let lifetime = self.st.begin_lifetime();
         let st_in = self.st.clone();
         let traced_in = locations.map(move |loc| {
             match &loc {
-                Ok(p) => st_in.record(
+                Ok(p) => st_in.observe(
+                    TraceEventKind::DeleteInput,
                     StoreOp::Delete,
                     p.as_ref(),
-                    Some("input".into()),
+                    None,
                     TraceOutcome::Ok,
                 ),
-                Err(e) => st_in.record(
+                Err(e) => st_in.observe(
+                    TraceEventKind::DeleteInput,
                     StoreOp::Delete,
                     "",
-                    Some("input".into()),
+                    None,
                     TraceOutcome::of(e),
                 ),
             }
@@ -1187,22 +1298,41 @@ impl ObjectStore for TraceStore {
         });
         let out = self.inner.delete_stream(Box::pin(traced_in));
         let st_out = self.st.clone();
-        out.map(move |res| {
-            match &res {
-                Ok(p) => st_out.record(
-                    StoreOp::Delete,
-                    p.as_ref(),
-                    Some("result".into()),
-                    TraceOutcome::Ok,
-                ),
-                Err(e) => st_out.record(
-                    StoreOp::Delete,
-                    "",
-                    Some("result".into()),
-                    TraceOutcome::of(e),
-                ),
+        let guard = StreamTraceGuard {
+            st: self.st.clone(),
+            seq: lifetime,
+        };
+        futures_util::stream::unfold((out, guard), move |(mut out, guard)| {
+            let st_out = st_out.clone();
+            async move {
+                match out.next().await {
+                    Some(res) => {
+                        match &res {
+                            Ok(p) => st_out.observe(
+                                TraceEventKind::DeleteResult,
+                                StoreOp::Delete,
+                                p.as_ref(),
+                                None,
+                                TraceOutcome::Ok,
+                            ),
+                            Err(e) => st_out.observe(
+                                TraceEventKind::DeleteResult,
+                                StoreOp::Delete,
+                                "",
+                                None,
+                                TraceOutcome::of(e),
+                            ),
+                        }
+                        Some((res, (out, guard)))
+                    }
+                    None => {
+                        // Clean exhaustion retires the lifetime; the
+                        // guard's later drop is then a no-op.
+                        guard.st.retire(guard.seq, TraceOutcome::Ok);
+                        None
+                    }
+                }
             }
-            res
         })
         .boxed()
     }
@@ -1806,9 +1936,11 @@ mod trace_tests {
         Arc::new(object_store::memory::InMemory::new())
     }
 
-    /// The trace is in dispatch order with dense sequence numbers, so a
+    /// The trace is in id (= trace-lock acquisition) order, so a
     /// before/after refactor diff compares equal iff the client issued the
-    /// same operations in the same order.
+    /// same operations in the same order. For a single sequential client
+    /// with no streams, ids happen to be dense from 0 — but the CONTRACT
+    /// is unique + strictly increasing, not dense (see `StoreTraceEvent`).
     #[tokio::test]
     async fn events_are_ordered_by_dispatch_seq() {
         let s = TraceStore::verbatim(mem());
@@ -1824,8 +1956,8 @@ mod trace_tests {
 
         let evs = s.events();
         assert_eq!(evs.len(), 3);
-        for (i, e) in evs.iter().enumerate() {
-            assert_eq!(e.seq, i as u64, "seq must be a dense dispatch index");
+        for w in evs.windows(2) {
+            assert!(w[0].seq < w[1].seq, "ids strictly increase in trace order");
         }
         assert_eq!(evs[0].op, StoreOp::Put);
         assert_eq!(evs[0].path, pa.as_ref());
@@ -1834,8 +1966,8 @@ mod trace_tests {
         assert_eq!(evs[2].op, StoreOp::Get);
         assert!(evs.iter().all(|e| e.outcome == TraceOutcome::Ok));
 
-        // The summary ledger and reset.
-        let c = s.counts();
+        // The operation ledger and reset.
+        let c = s.operation_counts();
         assert!(c.contains(&(StoreOp::Put, ObjClass::Wal, 2)), "{c:?}");
         assert!(c.contains(&(StoreOp::Get, ObjClass::Wal, 1)), "{c:?}");
         s.reset();
@@ -2145,13 +2277,21 @@ mod trace_tests {
         let evs = s.events();
         let inputs = evs
             .iter()
-            .filter(|e| e.detail.as_deref() == Some("input"))
+            .filter(|e| e.kind == TraceEventKind::DeleteInput)
             .count();
         let results = evs
             .iter()
-            .filter(|e| e.detail.as_deref() == Some("result"))
+            .filter(|e| e.kind == TraceEventKind::DeleteResult)
             .count();
         assert_eq!((inputs, results), (3, 3), "both sides traced: {evs:?}");
+        // PR 3.2: the operation ledger counts ATTEMPTED deletes — the
+        // Ok inputs the inner store consumed — exactly once each, never
+        // the diagnostic result observations on top.
+        let c = s.operation_counts();
+        assert!(
+            c.contains(&(StoreOp::Delete, ObjClass::Sst, 3)),
+            "3 attempted deletes, not 6 observations: {c:?}"
+        );
     }
 
     /// The inner store returns FEWER results than inputs (batching stores
@@ -2210,9 +2350,16 @@ mod trace_tests {
         let evs = s.events();
         let err_inputs = evs
             .iter()
-            .filter(|e| e.detail.as_deref() == Some("input") && e.outcome != TraceOutcome::Ok)
+            .filter(|e| e.kind == TraceEventKind::DeleteInput && e.outcome != TraceOutcome::Ok)
             .count();
         assert_eq!(err_inputs, 1, "the input error is traced: {evs:?}");
+        // PR 3.2: the error input is an observation, NOT an attempted
+        // delete — only the two Ok inputs count in the ledger.
+        let c = s.operation_counts();
+        assert!(
+            c.contains(&(StoreOp::Delete, ObjClass::Sst, 2)),
+            "input errors never count as operations: {c:?}"
+        );
     }
 
     /// Inner failures pass through unchanged (and are traced as such).
@@ -2274,7 +2421,7 @@ mod trace_tests {
     /// reset() refuses to run while an operation is in flight — the
     /// alternative is silent misattribution of the late completion.
     #[tokio::test]
-    #[should_panic(expected = "in flight")]
+    #[should_panic(expected = "while operations are active")]
     async fn reset_refuses_while_in_flight() {
         use futures_util::StreamExt;
         let s = TraceStore::new(mem());
@@ -2312,7 +2459,7 @@ mod trace_tests {
     }
 
     /// A list stream the consumer abandons is recorded Cancelled (and
-    /// released from in-flight, so reset still works) — not left Pending
+    /// its lifetime retired, so reset still works) — not left Pending
     /// forever and not silently treated as successful.
     #[tokio::test]
     async fn abandoned_list_stream_is_marked_cancelled() {
@@ -2324,8 +2471,280 @@ mod trace_tests {
         assert_eq!(evs.len(), 1);
         assert_eq!(evs[0].op, StoreOp::List);
         assert_eq!(evs[0].outcome, TraceOutcome::Cancelled, "{evs:?}");
-        // In-flight was released: reset works.
+        // The lifetime was retired: reset works.
         s.reset();
         assert!(s.events().is_empty());
+    }
+
+    // ---- PR 3.2: one lock owns id/event/lifetime association ----------
+
+    /// Acceptance 1-3: N tasks race `begin` through one barrier, then
+    /// completions land in REVERSE id order. Every event must resolve
+    /// exactly once — completion locates events by id through the log's
+    /// map, never by arithmetic on insertion position. Under the
+    /// pre-3.2 shape (id allocated with an atomic BEFORE the vector
+    /// lock) this interleaving could push events out of id order,
+    /// completions then found the wrong slot, both events stayed
+    /// Pending, and `reset()` panicked forever.
+    #[test]
+    fn concurrent_begins_with_reverse_finishes_resolve_every_event_exactly_once() {
+        let s = TraceStore::verbatim(Arc::new(object_store::memory::InMemory::new()));
+        const N: usize = 8;
+        for round in 0..50 {
+            let barrier = std::sync::Barrier::new(N);
+            let seqs: Vec<u64> = std::thread::scope(|scope| {
+                let handles: Vec<_> = (0..N)
+                    .map(|_| {
+                        let st = s.st.clone();
+                        let b = &barrier;
+                        scope.spawn(move || {
+                            b.wait(); // all N contend for the trace lock at once
+                            st.begin(StoreOp::Put, "shards/x/wal/c.sst", None, None, None)
+                        })
+                    })
+                    .collect();
+                handles.into_iter().map(|h| h.join().unwrap()).collect()
+            });
+            let mut sorted = seqs.clone();
+            sorted.sort_unstable();
+            sorted.dedup();
+            assert_eq!(sorted.len(), N, "round {round}: ids must be unique");
+            for seq in sorted.iter().rev() {
+                s.st.finish(*seq, TraceOutcome::Ok);
+            }
+            let evs = s.events();
+            assert_eq!(evs.len(), N, "round {round}");
+            for w in evs.windows(2) {
+                assert!(
+                    w[0].seq < w[1].seq,
+                    "round {round}: vector must be in id order: {evs:?}"
+                );
+            }
+            assert!(
+                evs.iter().all(|e| e.outcome == TraceOutcome::Ok),
+                "round {round}: every event resolves exactly once, none stay Pending: {evs:?}"
+            );
+            s.reset(); // acceptance 9: nothing leaked a lifetime
+            assert!(s.events().is_empty());
+        }
+    }
+
+    /// Acceptance 4: reset racing `begin` can neither clear an active
+    /// operation out from under its completion nor orphan one. All
+    /// interleavings serialize on the one trace lock: reset either wins
+    /// (clears a quiet window; the op then lands in the fresh window) or
+    /// observes the active lifetime and refuses. After joining, nothing
+    /// is active and nothing is Pending — deterministically, in every
+    /// round.
+    #[test]
+    fn reset_racing_with_begin_cannot_orphan_an_operation() {
+        let s = TraceStore::verbatim(Arc::new(object_store::memory::InMemory::new()));
+        for round in 0..200 {
+            let barrier = std::sync::Barrier::new(2);
+            std::thread::scope(|scope| {
+                let st = s.st.clone();
+                let b = &barrier;
+                scope.spawn(move || {
+                    b.wait();
+                    let seq = st.begin(StoreOp::Put, "shards/x/wal/r.sst", None, None, None);
+                    std::thread::yield_now();
+                    st.finish(seq, TraceOutcome::Ok);
+                });
+                barrier.wait();
+                // A refused reset is a legal outcome of the race; a
+                // poisoned lock or a lost event is not.
+                let _ = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| s.reset()));
+            });
+            let log = s.st.log.lock().unwrap();
+            assert!(log.active.is_empty(), "round {round}: orphaned lifetime");
+            assert!(
+                log.events
+                    .iter()
+                    .all(|e| e.outcome != TraceOutcome::Pending),
+                "round {round}: a completed operation may never stay Pending"
+            );
+            drop(log);
+            s.reset(); // at quiescence reset must always work
+        }
+    }
+
+    // ---- PR 3.2: stream lifetime is distinct from observed outcome ----
+
+    /// A store whose list yields a scripted error FIRST, then delegates
+    /// to the real inner listing — the "stream keeps serving after an
+    /// error" case the ObjectStore trait explicitly allows.
+    #[derive(Debug)]
+    struct ListSpy {
+        inner: Arc<object_store::memory::InMemory>,
+    }
+
+    impl std::fmt::Display for ListSpy {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "ListSpy({})", self.inner)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for ListSpy {
+        async fn put_opts(
+            &self,
+            location: &ObjPath,
+            payload: PutPayload,
+            opts: PutOptions,
+        ) -> OsResult<PutResult> {
+            self.inner.put_opts(location, payload, opts).await
+        }
+        async fn put_multipart_opts(
+            &self,
+            location: &ObjPath,
+            opts: PutMultipartOptions,
+        ) -> OsResult<Box<dyn MultipartUpload>> {
+            self.inner.put_multipart_opts(location, opts).await
+        }
+        async fn get_opts(&self, location: &ObjPath, options: GetOptions) -> OsResult<GetResult> {
+            self.inner.get_opts(location, options).await
+        }
+        fn list(
+            &self,
+            prefix: Option<&ObjPath>,
+        ) -> futures_util::stream::BoxStream<'static, OsResult<ObjectMeta>> {
+            use futures_util::StreamExt;
+            futures_util::stream::iter(vec![Err(object_store::Error::Generic {
+                store: "list-spy",
+                source: "scripted list failure".into(),
+            })])
+            .chain(self.inner.list(prefix))
+            .boxed()
+        }
+        async fn list_with_delimiter(&self, prefix: Option<&ObjPath>) -> OsResult<ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+        async fn copy_opts(&self, from: &ObjPath, to: &ObjPath, opts: CopyOptions) -> OsResult<()> {
+            self.inner.copy_opts(from, to, opts).await
+        }
+        fn delete_stream(
+            &self,
+            locations: futures_util::stream::BoxStream<'static, OsResult<ObjPath>>,
+        ) -> futures_util::stream::BoxStream<'static, OsResult<ObjPath>> {
+            self.inner.delete_stream(locations)
+        }
+    }
+
+    async fn list_spy_with_one_object() -> Arc<ListSpy> {
+        let inner = Arc::new(object_store::memory::InMemory::new());
+        inner
+            .put_opts(
+                &ObjPath::from("a/1.sst"),
+                PutPayload::from(vec![1u8; 4]),
+                PutOptions::default(),
+            )
+            .await
+            .unwrap();
+        Arc::new(ListSpy { inner })
+    }
+
+    /// Acceptance 5-6 / required test 1: a list stream that yielded an
+    /// error is still ALIVE, so reset must refuse. Pre-3.2 the item
+    /// error retired the operation and the documented "refuses while
+    /// anything is in flight" claim was false for exactly this case.
+    #[tokio::test]
+    #[should_panic(expected = "while operations are active")]
+    async fn reset_refuses_while_an_errored_list_stream_is_still_open() {
+        use futures_util::StreamExt;
+        let spy = list_spy_with_one_object().await;
+        let s = TraceStore::verbatim(spy);
+        let mut stream = s.list(Some(&ObjPath::from("a")));
+        let first = stream.next().await;
+        assert!(matches!(first, Some(Err(_))), "scripted error first");
+        // The stream can keep serving items; its lifetime is open.
+        s.reset();
+    }
+
+    /// Required test 2: a list that errors, then serves another item,
+    /// then completes — the first fact (the error) is the recorded
+    /// outcome, exhaustion retires the lifetime exactly once, and reset
+    /// then works.
+    #[tokio::test]
+    async fn errored_list_stream_serves_on_and_retires_at_exhaustion() {
+        use futures_util::StreamExt;
+        let spy = list_spy_with_one_object().await;
+        let s = TraceStore::verbatim(spy);
+        let out: Vec<_> = s.list(Some(&ObjPath::from("a"))).collect().await;
+        assert_eq!(out.len(), 2);
+        assert!(out[0].is_err() && out[1].is_ok(), "error then live item");
+        let evs = s.events();
+        assert_eq!(evs.len(), 1);
+        assert_eq!(
+            evs[0].outcome,
+            TraceOutcome::Error,
+            "first fact wins; exhaustion does not overwrite it: {evs:?}"
+        );
+        s.reset(); // exhaustion retired the lifetime
+        assert!(s.events().is_empty());
+    }
+
+    /// Required test 3: an unconsumed delete stream is an ACTIVE
+    /// operation — reset must refuse while it is alive. Pre-3.2 delete
+    /// streams had no lifetime at all and reset would clear the trace
+    /// under a stream still appending observations.
+    #[tokio::test]
+    #[should_panic(expected = "while operations are active")]
+    async fn reset_refuses_while_a_delete_stream_is_active() {
+        let (sp, _, _) = spy(vec![Ok(ObjPath::from("a/1.sst"))]);
+        let s = TraceStore::verbatim(sp);
+        use futures_util::StreamExt;
+        let _stream =
+            s.delete_stream(futures_util::stream::iter(vec![Ok(ObjPath::from("a/1.sst"))]).boxed());
+        s.reset();
+    }
+
+    /// Required test 4: dropping a delete stream midway retires its
+    /// lifetime exactly once — reset works afterwards, repeatedly.
+    #[tokio::test]
+    async fn dropped_delete_stream_retires_exactly_once() {
+        let (sp, _, _) = spy(vec![
+            Ok(ObjPath::from("a/1.sst")),
+            Ok(ObjPath::from("a/2.sst")),
+        ]);
+        let s = TraceStore::verbatim(sp);
+        use futures_util::StreamExt;
+        let mut stream = s.delete_stream(
+            futures_util::stream::iter(vec![
+                Ok(ObjPath::from("a/1.sst")),
+                Ok(ObjPath::from("a/2.sst")),
+            ])
+            .boxed(),
+        );
+        let first = stream.next().await;
+        assert!(matches!(first, Some(Ok(_))));
+        drop(stream);
+        s.reset();
+        assert!(s.events().is_empty());
+        s.reset(); // idempotent at quiescence: nothing double-retired
+    }
+
+    /// Acceptance 8 (the double-count finding): one ordinary successful
+    /// delete = ONE attempted operation in the ledger, even though the
+    /// diagnostic trace holds both the input and the result observation.
+    #[tokio::test]
+    async fn ordinary_delete_counts_once_in_the_operation_ledger() {
+        let (sp, _, _) = spy(vec![Ok(ObjPath::from("a/1.sst"))]);
+        let s = TraceStore::verbatim(sp);
+        use futures_util::StreamExt;
+        let out: Vec<_> = s
+            .delete_stream(futures_util::stream::iter(vec![Ok(ObjPath::from("a/1.sst"))]).boxed())
+            .collect()
+            .await;
+        assert_eq!(out.len(), 1);
+        let evs = s.events();
+        assert_eq!(evs.len(), 2, "input + result observations: {evs:?}");
+        assert_eq!(evs[0].kind, TraceEventKind::DeleteInput);
+        assert_eq!(evs[1].kind, TraceEventKind::DeleteResult);
+        let c = s.operation_counts();
+        assert_eq!(
+            c,
+            vec![(StoreOp::Delete, ObjClass::Sst, 1)],
+            "one delete attempted, not two: {c:?}"
+        );
     }
 }
