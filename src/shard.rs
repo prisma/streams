@@ -994,6 +994,16 @@ pub struct ShardConfig {
     /// a nominal 512 MiB). main.rs passes the global; tests pass None
     /// for hermetic per-engine caches (counters stay isolated).
     pub shared_postings_cache: Option<Arc<crate::postings_cache::PostingsCache>>,
+    /// Writer-side frame compression policy for this engine (explicit,
+    /// selected at engine construction — the codec does no ambient
+    /// lookup). Readers accept both frame versions unconditionally.
+    pub frame_compression: crate::crypto::FrameCompression,
+    /// History/absorber knobs for the shard's shared history v2
+    /// partition (from the process ServerConfig at construction).
+    pub history: crate::config::HistoryConfig,
+    /// The ONE process-wide compaction profile every SlateDB in this
+    /// process opens with (R27-4/R28), resolved at engine construction.
+    pub compactor_options: slatedb::config::CompactorOptions,
 }
 
 impl Default for ShardConfig {
@@ -1016,6 +1026,9 @@ impl Default for ShardConfig {
             wal_gather_skip_reqs: 32,
             wal_gather_skip_bytes: 1024 * 1024,
             tail_ring_bytes: 0,
+            frame_compression: crate::crypto::FrameCompression::Disabled,
+            history: crate::config::HistoryConfig::default(),
+            compactor_options: crate::config::EngineConfig::default().compactor_options(),
         }
     }
 }
@@ -1100,6 +1113,9 @@ pub struct ShardEngine {
     /// engine; a new shard owner's open fences this one at the slatedb
     /// layer, same dynamics as the per-stream v1 DBs.
     history2: tokio::sync::OnceCell<Arc<Db>>,
+    /// Pre-built SlateDB settings for `history2` (history knobs + the
+    /// ONE process-wide compactor profile, from the engine's ShardConfig).
+    history2_settings: slatedb::config::Settings,
     streams: Mutex<HashMap<[u8; 16], Arc<StreamHandle>>>,
     /// Seal fences by segment identity — ENGINE-level, deliberately
     /// outside the evictable [`StreamHandle`], and deliberately WITHOUT
@@ -1300,6 +1316,11 @@ impl ShardEngine {
         // cycle that used to leave one committer task (and the whole
         // engine allocation) resident per shard move, forever.
         let (close_tx, _) = tokio::sync::watch::channel(false);
+        // Pre-built settings for the shard's shared history v2 partition
+        // (history knobs + the ONE process-wide compactor profile,
+        // resolved from the process configuration at engine construction).
+        let history2_settings =
+            crate::history::history2_settings(&cfg.history, &cfg.compactor_options);
         let engine = Arc::new(ShardEngine {
             prefix,
             db,
@@ -1309,6 +1330,7 @@ impl ShardEngine {
             maintenance_shard_shed: std::sync::atomic::AtomicBool::new(false),
             data_store,
             history2: tokio::sync::OnceCell::new(),
+            history2_settings,
             streams: Mutex::new(HashMap::new()),
             seal_fences: Mutex::new(HashMap::new()),
             #[cfg(test)]
@@ -1887,9 +1909,10 @@ impl ShardEngine {
             .get_or_try_init(|| async {
                 let path = crate::sharddir::history2_path(&self.prefix);
                 let store = self.data_store.clone();
-                let db = crate::on_slatedb_rt(async move {
+                let settings = self.history2_settings.clone();
+                let db = crate::bootstrap::on_slatedb_rt(async move {
                     Db::builder(path.as_str(), store)
-                        .with_settings(crate::history::history2_settings())
+                        .with_settings(settings)
                         .with_db_cache(crate::history::history_cache())
                         .build()
                         .await
@@ -3090,7 +3113,8 @@ impl ShardEngine {
                     let start = local.fields.next;
                     // One key schedule per request, reused across the batch
                     // (was: cipher init + routing-key clone PER RECORD).
-                    let cipher = crate::crypto::FrameCipher::new(&req.subkey);
+                    let cipher =
+                        crate::crypto::FrameCipher::new(&req.subkey, cfg.frame_compression);
                     let usage = req.usage.clone();
                     let (mut pt_sum, mut frame_sum) = (0u64, 0u64);
                     for (i, payload) in req.entries.iter().enumerate() {

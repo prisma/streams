@@ -25,10 +25,23 @@ use crate::shard::{AbsorbSignal, ShardEngine, read_frames_range};
 // ---- block transformer: AES-256-GCM with a random nonce per block ----
 
 /// Operator pause for the whole absorber (fleet runbook).
+static ABSORB_PAUSE_INITIAL: std::sync::atomic::AtomicBool =
+    std::sync::atomic::AtomicBool::new(false);
+
+/// Composition-root seed for the pause flag (WP-01 PR 3.1): the flag
+/// itself stays a process-wide debug control (the /v1/debug endpoint
+/// and DST toggles it live), but its INITIAL value now arrives from the
+/// owned ServerConfig instead of an env read at first use.
+pub fn init_absorb_pause(initial: bool) {
+    ABSORB_PAUSE_INITIAL.store(initial, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn absorb_pause_flag() -> &'static std::sync::atomic::AtomicBool {
     static F: std::sync::OnceLock<std::sync::atomic::AtomicBool> = std::sync::OnceLock::new();
     F.get_or_init(|| {
-        std::sync::atomic::AtomicBool::new(crate::config::current().history.absorb_pause_initial)
+        std::sync::atomic::AtomicBool::new(
+            ABSORB_PAUSE_INITIAL.load(std::sync::atomic::Ordering::Relaxed),
+        )
     })
 }
 
@@ -262,10 +275,37 @@ pub fn floored_budget_capacity(configured: usize) -> usize {
 pub static RESOLVED_MEMORY_CONFIG: std::sync::OnceLock<serde_json::Value> =
     std::sync::OnceLock::new();
 
+static ABSORB_BUDGET_BYTES_INIT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+static ABSORB_GATHERS_INIT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
+
+/// Composition-root seed for the process-global absorber budget (WP-01
+/// PR 3.1): sized once from the owned ServerConfig. Un-seeded callers
+/// (tests) get the same defaults the old env-unset OnceLock produced.
+pub fn init_absorb_budget(cfg: &crate::config::HistoryConfig) {
+    ABSORB_BUDGET_BYTES_INIT.store(
+        cfg.absorb_global_budget_bytes,
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    ABSORB_GATHERS_INIT.store(
+        cfg.absorb_global_gathers.max(1),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
 pub fn absorb_budget() -> &'static AbsorbBudget {
     static B: std::sync::OnceLock<AbsorbBudget> = std::sync::OnceLock::new();
     B.get_or_init(|| {
-        let configured: usize = crate::config::current().history.absorb_global_budget_bytes;
+        let default_bytes: usize = if cfg!(test) {
+            4 * 1024 * 1024 * 1024
+        } else {
+            64 * 1024 * 1024
+        };
+        let default_gathers: usize = if cfg!(test) { 64 } else { 2 };
+        let configured = match ABSORB_BUDGET_BYTES_INIT.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => default_bytes,
+            v => v,
+        };
         // The floor makes the envelope claim TRUE for oversized
         // frames: capacity always covers one worst-case build.
         let bytes = floored_budget_capacity(configured);
@@ -277,10 +317,10 @@ pub fn absorb_budget() -> &'static AbsorbBudget {
                 ABSORB_BUILD_MULTIPLIER,
             );
         }
-        let gathers: usize = crate::config::current()
-            .history
-            .absorb_global_gathers
-            .max(1);
+        let gathers = match ABSORB_GATHERS_INIT.load(std::sync::atomic::Ordering::Relaxed) {
+            0 => default_gathers,
+            v => v,
+        };
         AbsorbBudget::new(bytes, gathers)
     })
 }
@@ -452,12 +492,22 @@ pub static GATHER_LAST_WRITE_MS: AtomicU64 = AtomicU64::new(0);
 pub static GATHER_LAST_FLUSH_MS: AtomicU64 = AtomicU64::new(0);
 pub static HISTORY_FLUSH_WAIT_MS_MAX: AtomicU64 = AtomicU64::new(0);
 
+static HISTORY_CACHE_BYTES_INIT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(32 * 1024 * 1024);
+
+/// Composition-root seed for the shared history cache (WP-01 PR 3.1):
+/// sized once from the owned ServerConfig; un-seeded tests get the
+/// same 32 MiB default the old env-unset OnceLock produced.
+pub fn init_history_cache(bytes: usize) {
+    HISTORY_CACHE_BYTES_INIT.store(bytes, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub(crate) fn history_cache() -> Arc<slatedb::db_cache::foyer::FoyerCache> {
     static CACHE: std::sync::OnceLock<Arc<slatedb::db_cache::foyer::FoyerCache>> =
         std::sync::OnceLock::new();
     CACHE
         .get_or_init(|| {
-            let bytes = crate::config::current().history.cache_bytes as u64;
+            let bytes = HISTORY_CACHE_BYTES_INIT.load(std::sync::atomic::Ordering::Relaxed) as u64;
             Arc::new(slatedb::db_cache::foyer::FoyerCache::new_with_opts(
                 slatedb::db_cache::foyer::FoyerCacheOptions {
                     max_capacity: bytes,
@@ -474,19 +524,25 @@ pub(crate) fn history_cache() -> Arc<slatedb::db_cache::foyer::FoyerCache> {
 /// encryption, and ciphertext does not compress) and NO block
 /// transformer (the frames are the ciphertext; object storage never
 /// sees plaintext either way).
-pub(crate) fn history2_settings() -> Settings {
+pub(crate) fn history2_settings(
+    cfg: &crate::config::HistoryConfig,
+    compactor: &slatedb::config::CompactorOptions,
+) -> Settings {
     Settings {
         compression_codec: None,
-        ..history_settings()
+        ..history_settings(cfg, compactor)
     }
 }
 
-pub(crate) fn history_settings() -> Settings {
+pub(crate) fn history_settings(
+    cfg: &crate::config::HistoryConfig,
+    compactor: &slatedb::config::CompactorOptions,
+) -> Settings {
     // Bench-only escape hatch: HISTORY_COMPACTOR=off disables the embedded
     // compactor (and lifts the L0 caps so flushes never block on it). Used
     // with the s3lite --discard-substr mode, where history SST bodies are
     // dropped and must never be re-read. Production keeps the compactor.
-    let compactor_off = crate::config::current().history.compactor_off;
+    let compactor_off = cfg.compactor_off;
     // History DBs (per-stream v1 AND the shared v2 partitions) are
     // quiet most of the time, and their fixed-cadence LISTs were 79% of
     // v2's residual request cost (docs/HISTORY-V2.md scorecard). The
@@ -497,7 +553,7 @@ pub(crate) fn history_settings() -> Settings {
     // reclamation latency on a busy history DB (bounded, storage-cheap),
     // not steady-state requests. HISTORY_GC_INTERVAL_SECS (default 600;
     // HISTORY_GC_MAX_INTERVAL_SECS accepted as a legacy alias).
-    let gc_interval = crate::config::current().history.gc_interval;
+    let gc_interval = cfg.gc_interval;
     let mut gc = Settings::default()
         .garbage_collector_options
         .unwrap_or_default();
@@ -545,7 +601,7 @@ pub(crate) fn history_settings() -> Settings {
             // defaults the R27-4 posture removes — while
             // MEMPROFILE_CERT reported the process certified. Every
             // production DB uses the ONE resolved profile.
-            Some(crate::resolved_compactor_options().clone())
+            Some(compactor.clone())
         },
         ..Default::default()
     }

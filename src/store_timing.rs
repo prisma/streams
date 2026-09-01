@@ -71,6 +71,23 @@ pub struct StoreStats {
 pub static GET_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub static GET_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+static STORE_MAX_CONCURRENT_INIT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(0);
+static BULK_NOMINAL_GET_BYTES_INIT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(8 * 1024 * 1024);
+static BULK_INFLIGHT_MAX_BYTES_INIT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0);
+
+/// Composition-root seed (WP-01 PR 3.1): the process-global egress
+/// gates (per-instance by design — the egress budget belongs to the
+/// whole process, not to one store) sized once from the owned
+/// ServerConfig; un-seeded tests get the old env-unset defaults.
+pub fn configure(cfg: &crate::config::StorageConfig) {
+    STORE_MAX_CONCURRENT_INIT.store(cfg.store_max_concurrent, Ordering::Relaxed);
+    BULK_NOMINAL_GET_BYTES_INIT.store(cfg.bulk_nominal_get_bytes, Ordering::Relaxed);
+    BULK_INFLIGHT_MAX_BYTES_INIT.store(cfg.bulk_inflight_max_bytes, Ordering::Relaxed);
+}
+
 /// Optional instance-wide cap on concurrent object-store ops
 /// (STORE_MAX_CONCURRENT, 0/unset = off). Run-12 found ack excursions are
 /// broad client-side slowdowns: HTTP/1.1 to Tigris + 4 s pool pruning means
@@ -82,7 +99,7 @@ pub static GET_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 fn sem() -> Option<&'static tokio::sync::Semaphore> {
     static S: OnceLock<Option<tokio::sync::Semaphore>> = OnceLock::new();
     S.get_or_init(|| {
-        let n: usize = crate::config::current().storage.store_max_concurrent;
+        let n: usize = STORE_MAX_CONCURRENT_INIT.load(Ordering::Relaxed);
         if n == 0 {
             None
         } else {
@@ -206,13 +223,13 @@ impl BulkGate {
 /// fixed 8 MiB that understated the certified 32 MiB rolls.
 fn bulk_nominal_get() -> u64 {
     static N: OnceLock<u64> = OnceLock::new();
-    *N.get_or_init(|| crate::config::current().storage.bulk_nominal_get_bytes)
+    *N.get_or_init(|| BULK_NOMINAL_GET_BYTES_INIT.load(Ordering::Relaxed))
 }
 
 fn bulk_gate() -> Option<&'static BulkGate> {
     static G: OnceLock<Option<BulkGate>> = OnceLock::new();
     G.get_or_init(|| {
-        let n: u64 = crate::config::current().storage.bulk_inflight_max_bytes;
+        let n: u64 = BULK_INFLIGHT_MAX_BYTES_INIT.load(Ordering::Relaxed);
         if n == 0 {
             None
         } else {

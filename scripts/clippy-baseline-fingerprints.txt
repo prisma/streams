@@ -1,51 +1,80 @@
+associated function `decode` is never used :: src/product_cursor.rs
+associated function `from_enabled` is never used :: src/bin/../crypto.rs
 associated function `of` is never used :: src/bin/../crypto.rs
 associated items `clean` and `with_op_class` are never used :: src/dst.rs
-associated items `new` and `encrypt` are never used :: src/bin/../crypto.rs
+associated items `shards`, `opening`, and `counters_for_tests` are never used :: src/sharddir.rs
+associated items `snapshot`, `derive_key_ids`, `now_cursor`, and `meta` are never used :: src/touch.rs
 constant `AFTER_DURABLE_BEFORE_ACK` is never used :: src/dst.rs
-constant `COMPRESS_MIN_BYTES` is never used :: src/bin/../crypto.rs
-constant `FRAME_VER_Z` is never used :: src/bin/../crypto.rs
-constant `FRAME_VER` is never used :: src/bin/../crypto.rs
+constant `DURABLE_STREAMS_CLIENT_CONFORMANCE_VERSION` is never used :: src/protocol_pin.rs
+constant `DURABLE_STREAMS_PROTOCOL_COMMIT` is never used :: src/protocol_pin.rs
+constant `DURABLE_STREAMS_SERVER_CONFORMANCE_VERSION` is never used :: src/protocol_pin.rs
+constant `MAX_TEMPLATES_PER_ENTITY` is never used :: src/touch.rs
+constant `MAX_TEMPLATES_PER_STREAM` is never used :: src/touch.rs
 digits of hex, binary or octal literal not in groups of equal size :: src/dst.rs
-doc list item without indentation :: src/bootstrap.rs
+doc list item without indentation :: src/config/cli.rs
 doc list item without indentation :: src/http.rs
 empty line after doc comment :: src/history.rs
 empty line after doc comment :: src/http.rs
+field `cacheable` is never read :: src/touch.rs
+field `deleted_rows` is never read :: src/queue.rs
 field `end_offset` is never read :: src/touch.rs
+field `end` is never read :: src/shard.rs
+field `last_bucket_exclusive` is never read :: src/postings_cache.rs
 field `sig` is never read :: src/http.rs
-field assignment outside of initializer for an instance created with Default::default() :: src/config/mod.rs
 field assignment outside of initializer for an instance created with Default::default() :: src/dst/dst_tests.rs
+fields `batch_puts`, `pass_bytes`, `small_pass_bytes`, and `concurrency` are never read :: src/history.rs
+fields `cold_pct`, `cold_evals`, and `max_segments` are never read :: src/scaler3.rs
 fields `data_store` and `keys` are never read :: src/history.rs
-function `aad` is never used :: src/bin/../crypto.rs
+fields `snapshot` and `template_count` are never read :: src/touch.rs
+function `absorb_lag_all` is never used :: src/usage.rs
+function `absorb_lag` is never used :: src/usage.rs
+function `absorb_pending_summary_for` is never used :: src/usage.rs
 function `arg_string` is never used :: src/bin/../touch_keys.rs
-function `decode_frame` is never used :: src/bin/../crypto.rs
-function `decrypt_frame` is never used :: src/bin/../crypto.rs
+function `arg_string` is never used :: src/touch_keys.rs
+function `decode_dirty_value` is never used :: src/shard.rs
+function `decode_shard_maint` is never used :: src/shard.rs
 function `default_visibility` is never used :: src/http.rs
-function `derive_subkey` is never used :: src/bin/../crypto.rs
-function `encrypt_frame` is never used :: src/bin/../crypto.rs
 function `evict_idle_for_test` is never used :: src/usage.rs
-function `frame_compress_enabled` is never used :: src/bin/../crypto.rs
+function `execute_merge` is never used :: src/scaler3.rs
+function `execute_split` is never used :: src/scaler3.rs
 function `header_bytes` is never used :: src/bin/../crypto.rs
 function `header_bytes` is never used :: src/crypto.rs
+function `history_db_path` is never used :: src/history.rs
+function `hot_key` is never used :: src/scaler3.rs
+function `key_hex` is never used :: src/touch_keys.rs
 function `key_id_of_u64` is never used :: src/bin/../touch_keys.rs
 function `key_id_of` is never used :: src/bin/../touch_keys.rs
+function `key_point` is never used :: src/segmap.rs
+function `load` is never used :: src/segmap.rs
 function `m` is never used :: src/dst/dst_tests.rs
-function `nonce_for_offset` is never used :: src/bin/../crypto.rs
+function `parse_token` is never used :: src/queue.rs
+function `path` is never used :: src/segmap.rs
+function `pinned` is never used :: src/protocol_pin.rs
+function `save` is never used :: src/segmap.rs
 function `seal_descriptor` is never used :: src/product.rs
+function `segmap_path` is never used :: src/segmap.rs
 function `skey2` is never used :: src/dst/dst_tests.rs
 function `stream_hash` is never used :: src/bin/../crypto.rs
+function `table_key` is never used :: src/touch_keys.rs
 function `touch_token` is never used :: src/bin/../crypto.rs
 function `unhex` is never used :: src/bin/../crypto.rs
 function `wait_sig_key` is never used :: src/bin/../crypto.rs
 function `watch_key_hex` is never used :: src/product.rs
 large size difference between variants :: src/registry.rs
 large size difference between variants :: src/shard.rs
+method `instance` is never used :: src/ops.rs
+method `ops_m1` is never used :: src/rollup.rs
+method `persist` is never used :: src/billing.rs
+method `prune` is never used :: src/segmap.rs
+method `reserved_bytes` is never used :: src/history.rs
+method `snapshot_active` is never used :: src/billing.rs
+method `submit_absorbed_v2` is never used :: src/shard.rs
 method `to_b64` is never used :: src/bin/../crypto.rs
+methods `await_terminated`, `submit_absorbed`, `submit_absorbed_v2`, `pump_trim_tick`, and `count_consumer_state_rows` are never used :: src/shard.rs
+methods `route`, `successors`, and `prune` are never used :: src/segmap.rs
+methods `shards` and `opening` are never used :: src/sharddir.rs
 methods `to_b64` and `fingerprint` are never used :: src/bin/../crypto.rs
 replacing text with itself :: src/registry.rs
-struct `DecodedFrame` is never constructed :: src/bin/../crypto.rs
-struct `FrameCipher` is never constructed :: src/bin/../crypto.rs
-struct `FrameHeader` is never constructed :: src/bin/../crypto.rs
-struct `KeyCache` has a public `len` method, but no `is_empty` method :: src/history.rs
 struct `QueueExtendRef` is never constructed :: src/http.rs
 struct `QueueReceiveBody` is never constructed :: src/http.rs
 struct `QueueRetryRef` is never constructed :: src/http.rs
@@ -60,8 +89,6 @@ this `MutexGuard` is held across an await point :: src/dst/dst_tests.rs
 this function has too many arguments (8/7) :: src/history.rs
 this function has too many arguments (8/7) :: src/http.rs
 this function has too many arguments (8/7) :: src/postings_cache.rs
-type `sse::feed::FeedMemoryBudget` is more private than the item `http::AppState::feed_budget` :: src/http.rs
-type `sse::registry::FeedRegistry` is more private than the item `http::AppState::live_feeds` :: src/http.rs
 type `usage::Bucket` is more private than the item `usage::admit_append_in` :: src/usage.rs
 type `usage::StreamUsage` is more private than the item `usage::admit_append_in` :: src/usage.rs
 unnecessary use of `get("access-control-allow-headers").is_some()` :: src/dst/dst_tests.rs
@@ -76,6 +103,7 @@ unnecessary use of `to_string` :: src/dst/dst_tests.rs
 unused import: `object_store::ObjectStoreExt` :: src/billing.rs
 value assigned to `dead_bytes` is never read :: src/shard.rs
 value assigned to `point` is never read :: src/bin/pilot.rs
+variants `NotSealed` and `SingleSegmentStream` are never constructed :: src/segmap.rs
 very complex type used. Consider factoring parts into `type` definitions :: src/billing.rs
 very complex type used. Consider factoring parts into `type` definitions :: src/bin/s3lite.rs
 very complex type used. Consider factoring parts into `type` definitions :: src/http.rs

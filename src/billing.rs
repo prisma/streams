@@ -500,6 +500,20 @@ pub fn usage_month_final_key(hash: &[u8; 16], year: i32, month: u32) -> Vec<u8> 
 mod tests {
     use super::*;
 
+    /// The no-environment knob posture for DB-open plumbing (spool
+    /// settings come from the owned config since WP-01 PR 3.1).
+    fn test_cfg() -> crate::config::ServerConfig {
+        crate::config::ServerConfig::load(
+            <crate::config::CliArgs as clap::Parser>::try_parse_from([
+                "streams-slate",
+                "--s3-endpoint",
+                "http://127.0.0.1:1",
+            ])
+            .unwrap(),
+            &crate::config::MapEnvironment::empty(),
+        )
+    }
+
     #[test]
     fn month_math_round_trips() {
         // Epoch is 1970-01.
@@ -627,7 +641,9 @@ mod tests {
     async fn spool_fault_requeues_the_whole_round() {
         let store: std::sync::Arc<dyn object_store::ObjectStore> =
             std::sync::Arc::new(object_store::memory::InMemory::new());
-        let spool = ReadSpool::open(store, "", "t-remainder").await.unwrap();
+        let spool = ReadSpool::open(store, "", "t-remainder", &test_cfg())
+            .await
+            .unwrap();
         let acc = ReadUsageAccumulator::new(MeterSource {
             cell: "c".into(),
             instance: "i".into(),
@@ -672,7 +688,7 @@ mod tests {
     async fn spool_quarantines_corrupt_rows() {
         let store: std::sync::Arc<dyn object_store::ObjectStore> =
             std::sync::Arc::new(object_store::memory::InMemory::new());
-        let spool = ReadSpool::open(store.clone(), "", "t-quarantine")
+        let spool = ReadSpool::open(store.clone(), "", "t-quarantine", &test_cfg())
             .await
             .unwrap();
         spool.persist(&test_batch(7)).await.unwrap();
@@ -690,7 +706,9 @@ mod tests {
         assert_eq!(spool.quarantined_count(), 1);
         // The alert condition survives a restart.
         drop(spool);
-        let reopened = ReadSpool::open(store, "", "t-quarantine").await.unwrap();
+        let reopened = ReadSpool::open(store, "", "t-quarantine", &test_cfg())
+            .await
+            .unwrap();
         assert_eq!(reopened.quarantined_count(), 1);
         assert_eq!(reopened.pending(10).await.unwrap().len(), 1);
     }
@@ -1050,8 +1068,8 @@ fn encoded_size(e: &UsageEnvelope) -> usize {
 
 /// BILLING_MODE=required: production billing — volatile fallbacks are
 /// refused and billing infrastructure failures are fatal at startup.
-pub fn billing_required() -> bool {
-    crate::config::current().billing.mode_env.as_deref() == Some("required")
+pub fn billing_required(cfg: &crate::config::BillingConfig) -> bool {
+    cfg.mode_env.as_deref() == Some("required")
 }
 
 /// Drain step 1: move sealed batches into the durable spool. On a
@@ -1125,7 +1143,7 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
             envelopes.push(env);
             spooled_keys.push(key);
         }
-    } else if billing_required() {
+    } else if billing_required(&state.config.billing) {
         // Round-22 item 2b: required mode has NO memory-only window.
         // Until the spool is open, drains fail (the meter keeps
         // accumulating; nothing is emitted from volatile state).
@@ -1435,12 +1453,19 @@ pub async fn open_read_spool(state: &std::sync::Arc<crate::http::AppState>) -> a
     if state.read_spool.get().is_some() {
         return Ok(());
     }
-    let prefix = crate::config::current()
+    let prefix = state
+        .config
         .billing
         .path_prefix_env
         .clone()
         .unwrap_or_default();
-    let sp = ReadSpool::open(state.data_store.clone(), &prefix, &state.instance_name).await?;
+    let sp = ReadSpool::open(
+        state.data_store.clone(),
+        &prefix,
+        &state.instance_name,
+        &state.config,
+    )
+    .await?;
     let _ = state.read_spool.set(std::sync::Arc::new(sp));
     Ok(())
 }
@@ -1462,15 +1487,15 @@ pub fn spawn_telemetry(state: std::sync::Arc<crate::http::AppState>) {
                 tracing::error!("read spool open failed: {e}");
             }
             sweep_owned_outboxes(&st).await;
-            let sweep_secs: u64 = crate::config::current().billing.outbox_sweep_secs;
+            let sweep_secs: u64 = st.config.billing.outbox_sweep_secs;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(sweep_secs)).await;
                 sweep_owned_outboxes(&st).await;
             }
         });
     }
-    let secs: u64 = crate::config::current().billing.telemetry_drain_secs;
-    let metrics_secs: u64 = crate::config::current().billing.metrics_interval_secs;
+    let secs: u64 = state.config.billing.telemetry_drain_secs;
+    let metrics_secs: u64 = state.config.billing.metrics_interval_secs;
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(secs.max(1)));
         let mut last_metrics = 0i64;
@@ -1722,7 +1747,8 @@ pub async fn open_rollup(
     if state.rollup.get().is_some() {
         return Ok(());
     }
-    let r = crate::rollup::UsageRollup::open(state.data_store.clone(), prefix).await?;
+    let r =
+        crate::rollup::UsageRollup::open(state.data_store.clone(), prefix, &state.config).await?;
     let _ = state.rollup.set(std::sync::Arc::new(r));
     Ok(())
 }
@@ -1736,7 +1762,7 @@ pub fn spawn_rollup(state: std::sync::Arc<crate::http::AppState>, prefix: String
             return;
         }
         tracing::info!("usage rollup running");
-        let grace_ms: i64 = crate::config::current().billing.month_close_grace_ms;
+        let grace_ms: i64 = state.config.billing.month_close_grace_ms;
         let mut last_close = 0i64;
         loop {
             let usage_n = match rollup_step(&state).await {
@@ -1812,12 +1838,22 @@ pub fn spawn_rollup(state: std::sync::Arc<crate::http::AppState>, prefix: String
 /// bounded shared caches (192 MiB shard + 32 MiB history + 64 MiB
 /// postings). One extra default-cached DB put the process at the
 /// Compute kill line; two (ROLLUP=1) explained the local 1 GiB climb.
+static TELEMETRY_CACHE_BYTES_INIT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(16 * 1024 * 1024);
+
+/// Composition-root seed (WP-01 PR 3.1): sized once from the owned
+/// ServerConfig; un-seeded tests get the old env-unset default (16 MiB).
+pub fn init_telemetry_cache(bytes: usize) {
+    TELEMETRY_CACHE_BYTES_INIT.store(bytes, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub(crate) fn telemetry_cache() -> std::sync::Arc<slatedb::db_cache::foyer::FoyerCache> {
     static CACHE: std::sync::OnceLock<std::sync::Arc<slatedb::db_cache::foyer::FoyerCache>> =
         std::sync::OnceLock::new();
     CACHE
         .get_or_init(|| {
-            let bytes = crate::config::current().billing.telemetry_cache_bytes as u64;
+            let bytes =
+                TELEMETRY_CACHE_BYTES_INIT.load(std::sync::atomic::Ordering::Relaxed) as u64;
             TELEMETRY_CACHE_CAPACITY.store(bytes, std::sync::atomic::Ordering::Relaxed);
             std::sync::Arc::new(slatedb::db_cache::foyer::FoyerCache::new_with_opts(
                 slatedb::db_cache::foyer::FoyerCacheOptions {
@@ -1837,7 +1873,10 @@ pub static TELEMETRY_CACHE_CAPACITY: std::sync::atomic::AtomicU64 =
 /// Telemetry DBs are tiny and quiet next to shard/history DBs: small
 /// memtables, small L0 targets, long metadata polls, and the same slow
 /// GC cadence as history. Never SlateDB defaults.
-pub(crate) fn telemetry_settings() -> slatedb::config::Settings {
+pub(crate) fn telemetry_settings(
+    _cfg: &crate::config::BillingConfig,
+    compactor: &slatedb::config::CompactorOptions,
+) -> slatedb::config::Settings {
     let mut gc = slatedb::config::Settings::default()
         .garbage_collector_options
         .unwrap_or_default();
@@ -1860,7 +1899,7 @@ pub(crate) fn telemetry_settings() -> slatedb::config::Settings {
     // compactor profile; only the poll cadence stays telemetry-slow
     // (compactor polls read the manifest, and telemetry is billed to
     // stay cheap).
-    let mut co = crate::resolved_compactor_options().clone();
+    let mut co = compactor.clone();
     co.poll_interval = std::time::Duration::from_secs(5);
     slatedb::config::Settings {
         wal_enabled: false,
@@ -1901,6 +1940,7 @@ impl ReadSpool {
         store: std::sync::Arc<dyn object_store::ObjectStore>,
         prefix: &str,
         instance: &str,
+        cfg: &crate::config::ServerConfig,
     ) -> anyhow::Result<Self> {
         let inst = if instance.is_empty() {
             "solo"
@@ -1912,9 +1952,10 @@ impl ReadSpool {
         } else {
             format!("{prefix}/telemetry/read-spool/{inst}")
         };
-        let db = crate::on_slatedb_rt(async move {
+        let settings = telemetry_settings(&cfg.billing, &cfg.engine.compactor_options());
+        let db = crate::bootstrap::on_slatedb_rt(async move {
             slatedb::Db::builder(path.as_str(), store)
-                .with_settings(telemetry_settings())
+                .with_settings(settings)
                 .with_db_cache(telemetry_cache())
                 .build()
                 .await
@@ -2212,7 +2253,7 @@ pub fn scheduler_held(state: &std::sync::Arc<crate::http::AppState>) -> usize {
 /// customer engine that raced into the mark window costs one benign
 /// re-open on its next request.
 pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>) {
-    let budget = sweep_resident_budget();
+    let budget = sweep_resident_budget(&state.config.billing);
     let cycle = state
         .sweep_sched
         .cycle
@@ -2267,7 +2308,7 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
             *e += 1;
             *e
         };
-        if debt.any() && retained < budget && cycles <= residence_quantum() {
+        if debt.any() && retained < budget && cycles <= residence_quantum(&state.config.billing) {
             retained += 1;
             continue;
         }
@@ -2291,7 +2332,7 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
     // exists to prevent (R28 review). Peak scheduler-held engines is
     // now retained + the single probe in flight, which never exceeds
     // the budget because discovery stops at the budget line.
-    let discovery_cap: usize = crate::config::current().billing.sweep_discovery_max;
+    let discovery_cap: usize = state.config.billing.sweep_discovery_max;
     let mut discovered = 0usize;
     let mut owned: Vec<String> = state.shard_prefixes.clone();
     let n = owned.len();
@@ -2362,8 +2403,8 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
 /// retention let a `_usage` outage keep every owned shard resident,
 /// bypassing the bound entirely). Validated at startup: zero would
 /// silently starve all cold-debt drain, so it is rejected there.
-pub fn sweep_resident_budget() -> usize {
-    crate::config::current().billing.sweep_maint_resident.max(1)
+pub fn sweep_resident_budget(cfg: &crate::config::BillingConfig) -> usize {
+    cfg.sweep_maint_resident.max(1)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2453,11 +2494,8 @@ fn install_custody(engine: &std::sync::Arc<crate::shard::ShardEngine>) -> Option
     Some(seq)
 }
 
-fn residence_quantum() -> usize {
-    crate::config::current()
-        .billing
-        .sweep_resident_quantum
-        .max(1)
+fn residence_quantum(cfg: &crate::config::BillingConfig) -> usize {
+    cfg.sweep_resident_quantum.max(1)
 }
 
 /// Take scheduler custody of an engine and register it for rotation.
@@ -2696,7 +2734,7 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
                 let route = d.segment_route_by_id(sid);
                 // Foreign routes are skipped — every instance walks the
                 // same registry and closes what IT owns.
-                let budget = sweep_resident_budget();
+                let budget = sweep_resident_budget(&state.config.billing);
                 let Some((engine, ours)) = walk_engine_budgeted(state, &route, budget).await else {
                     // Deferred (budget full) or open-contended: STOP and
                     // resume AT THIS PAGE next sweep — the continuation

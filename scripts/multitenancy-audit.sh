@@ -48,17 +48,17 @@ scan() {
 
 collect() {
   {
-    scan stream-hash 'stream_hash\(' src/*.rs src/dst/*.rs src/bin/*.rs |
+    scan stream-hash 'stream_hash\(' src/*.rs src/config/*.rs src/dst/*.rs src/bin/*.rs |
       grep -v $'\tsrc/crypto.rs\t' || true
     scan registry-bare-name \
       'registry[[:space:]]*\.[[:space:]]*(get|recreate|update|cas_update[a-z_]*|mutate_incarnation|invalidate|list_page)\("' \
-      src/*.rs src/dst/*.rs
+      src/*.rs src/config/*.rs src/dst/*.rs
     scan registry-bare-name \
       'fn (get|recreate|update|cas_update[a-z_]*|mutate_incarnation|invalidate|list_page)[^(]*\([^)]*name[^)]*&str' \
       src/registry.rs
     scan global-name-maps 'HashMap<String' src/scaler3.rs src/registry.rs
-    scan tenant-fallback '(acct_local|proj_local|"ACCOUNT_ID"|"PROJECT_ID")' src/*.rs
-    scan internal-target 'streams-internal-(epoch|seg|identity|project)' src/*.rs
+    scan tenant-fallback '(acct_local|proj_local|"ACCOUNT_ID"|"PROJECT_ID")' src/*.rs src/config/*.rs
+    scan internal-target 'streams-internal-(epoch|seg|identity|project)' src/*.rs src/config/*.rs
   } | LC_ALL=C sort -u
 }
 

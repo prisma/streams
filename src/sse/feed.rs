@@ -305,12 +305,11 @@ impl ProjectRetention {
 /// The project allowance: SSE_FEED_PROJECT_BYTES, defaulting to a
 /// QUARTER of the cell ceiling. Strict form for release validation
 /// (an unparseable value must fail boot, round-10e).
-pub(crate) fn configured_project_cap(global: u64) -> Result<u64, String> {
-    match crate::config::current()
-        .sse
-        .feed_project_bytes_raw
-        .as_deref()
-    {
+pub(crate) fn configured_project_cap(
+    cfg: &crate::config::SseConfig,
+    global: u64,
+) -> Result<u64, String> {
+    match cfg.feed_project_bytes_raw.as_deref() {
         None => Ok(global / 4),
         Some(raw) => raw
             .trim()
@@ -333,15 +332,15 @@ pub(crate) enum ReserveOutcome {
 }
 
 impl FeedMemoryBudget {
-    pub(crate) fn from_env() -> Self {
-        let max = crate::sse::budget::feed_total_cap();
+    pub(crate) fn from_config(cfg: &crate::config::SseConfig) -> Self {
+        let max = crate::sse::budget::feed_total_cap(cfg);
         // One noisy project can never evict every other project's
         // retention, while a handful of busy projects can still fill
         // the cell — a defensible shared-cell contract (round-10
         // review). Release boot validates this STRICTLY (unparseable
         // or isolation-defeating values refuse to boot); the dev
         // fallback warns.
-        let project_cap = match configured_project_cap(max) {
+        let project_cap = match configured_project_cap(cfg, max) {
             Ok(v) => v,
             Err(m) => {
                 tracing::warn!("{m}; falling back to the quarter-of-cell default");

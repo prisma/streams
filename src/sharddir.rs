@@ -158,14 +158,14 @@ pub fn unready_reason() -> Option<String> {
 /// startup canary re-runs against the healed store, and a genuinely
 /// broken deployment crash-loops visibly instead of idling in an
 /// ambiguous state. 0 disables.
-pub fn unready_exit_after() -> Duration {
-    Duration::from_secs(crate::config::current().shard.unready_exit_after_secs)
+pub fn unready_exit_after(cfg: &crate::config::ShardRuntimeConfig) -> Duration {
+    Duration::from_secs(cfg.unready_exit_after_secs)
 }
 
 /// Watchdog: exit if this instance has been unready for too long without
 /// ever having opened a shard.
-pub fn spawn_unready_watchdog() {
-    let limit = unready_exit_after();
+pub fn spawn_unready_watchdog(cfg: &crate::config::ShardRuntimeConfig) {
+    let limit = unready_exit_after(cfg);
     if limit.is_zero() {
         return;
     }
@@ -274,8 +274,11 @@ pub struct OpenGate {
 }
 
 impl OpenGate {
-    pub fn new(shards: Arc<RwLock<HashMap<String, Arc<ShardEngine>>>>, opener: OpenFn) -> Self {
-        let open_deadline = crate::config::current().shard.open_deadline;
+    pub fn new(
+        shards: Arc<RwLock<HashMap<String, Arc<ShardEngine>>>>,
+        opener: OpenFn,
+        open_deadline: Duration,
+    ) -> Self {
         Self::with_deadline(shards, opener, open_deadline)
     }
 

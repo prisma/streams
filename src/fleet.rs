@@ -134,13 +134,8 @@ pub fn pick_move_target(
 /// is mandatory unless FLEET_ALLOW_HTTP_PEERS=1 (local rigs and DST
 /// use plain http against 127.0.0.1). When FLEET_PEER_DOMAINS is set,
 /// the host must equal or be a subdomain of one of its entries.
-pub fn valid_peer_url(url: &str) -> bool {
-    let cfg = crate::config::current();
-    valid_peer_url_with(
-        url,
-        cfg.fleet.allow_http_peers,
-        cfg.fleet.peer_domains_raw.as_deref(),
-    )
+pub fn valid_peer_url(url: &str, cfg: &crate::config::FleetConfig) -> bool {
+    valid_peer_url_with(url, cfg.allow_http_peers, cfg.peer_domains_raw.as_deref())
 }
 
 /// Pure validation core: the env-derived inputs are parameters so tests
@@ -396,8 +391,8 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
         // over threshold, and the churn guard on shard moves.
         let mut lag_hot_ticks: u32 = 0;
         let mut last_move: Option<Instant> = None;
-        let rebalance_lag_secs: u64 = crate::config::current().fleet.rebalance_lag_secs;
-        let rebalance_cooldown: u64 = crate::config::current().fleet.rebalance_move_cooldown_secs;
+        let rebalance_lag_secs: u64 = state.config.fleet.rebalance_lag_secs;
+        let rebalance_cooldown: u64 = state.config.fleet.rebalance_move_cooldown_secs;
         let mut last_cpu = cpu_time_secs();
         let mut ewma_cpu = 0.0f64;
         // (ring_active, overrides) as last observed — the parked-session
@@ -481,7 +476,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 draining: false,
                 absorb_lag_max_secs: crate::usage::absorb_lag_max(),
                 wedge_max_ms,
-                url: crate::config::current().fleet.self_url.clone(),
+                url: state.config.fleet.self_url.clone(),
             };
             let path = ObjPath::from(format!("fleet/{}.json", cfg.instance));
             if let Err(e) = store
@@ -533,7 +528,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                         .max((other.wedge_max_ms / 1000).max(0) as u64);
                     peer_load.insert(other.instance.clone(), (other.cpu_pct, eff_lag));
                     if !other.url.is_empty() {
-                        if valid_peer_url(&other.url) {
+                        if valid_peer_url(&other.url, &state.config.fleet) {
                             peer_urls.insert(other.instance.clone(), other.url.clone());
                         } else {
                             tracing::warn!(
@@ -683,7 +678,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
             let cur_count = cur.as_ref().map(|d| d.count).unwrap_or(1);
             // FLEET_MIN: hard floor on the fleet size (HA / pinned test
             // rings). All dimensions and the shrink target respect it.
-            let fleet_min: u64 = crate::config::current().fleet.fleet_min;
+            let fleet_min: u64 = state.config.fleet.fleet_min;
             let need = need.max(fleet_min);
             let need_shrink = need_shrink.max(fleet_min);
             // Publish the ring's ACTIVE set for the R2 ownership check:
@@ -724,7 +719,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                             .map(|m| {
                                 m.into_iter()
                                     .filter(|(inst, url)| {
-                                        let ok = valid_peer_url(url);
+                                        let ok = valid_peer_url(url, &state.config.fleet);
                                         if !ok {
                                             tracing::warn!(
                                                 instance = %inst,
@@ -877,8 +872,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 // an instance that lagged once is drained forever
                 // (ladder p3: streams-2 owned nothing by D3).
                 {
-                    let return_secs: i64 =
-                        crate::config::current().fleet.rebalance_return_secs as i64;
+                    let return_secs: i64 = state.config.fleet.rebalance_return_secs as i64;
                     let active = state.ring_active.read().unwrap().clone();
                     let mut drop_keys: Vec<String> = Vec::new();
                     let mut pending_returns: std::collections::HashMap<String, usize> =

@@ -381,15 +381,18 @@ impl UsageRollup {
     pub async fn open(
         store: Arc<dyn object_store::ObjectStore>,
         prefix: &str,
+        cfg: &crate::config::ServerConfig,
     ) -> anyhow::Result<Self> {
         let path = if prefix.is_empty() {
             ROLLUP_PATH.to_string()
         } else {
             format!("{prefix}/{ROLLUP_PATH}")
         };
-        let db = crate::on_slatedb_rt(async move {
+        let settings =
+            crate::billing::telemetry_settings(&cfg.billing, &cfg.engine.compactor_options());
+        let db = crate::bootstrap::on_slatedb_rt(async move {
             Db::builder(path.as_str(), store)
-                .with_settings(crate::billing::telemetry_settings())
+                .with_settings(settings)
                 .with_db_cache(crate::billing::telemetry_cache())
                 .build()
                 .await
@@ -1518,6 +1521,20 @@ mod tests {
         Arc::new(object_store::memory::InMemory::new())
     }
 
+    /// The no-environment knob posture for the rollup DB open (settings
+    /// come from the owned config since WP-01 PR 3.1).
+    fn test_cfg() -> crate::config::ServerConfig {
+        crate::config::ServerConfig::load(
+            <crate::config::CliArgs as clap::Parser>::try_parse_from([
+                "streams-slate",
+                "--s3-endpoint",
+                "http://127.0.0.1:1",
+            ])
+            .unwrap(),
+            &crate::config::MapEnvironment::empty(),
+        )
+    }
+
     fn id() -> BillingIdentity {
         BillingIdentity {
             account_id: "acct".into(),
@@ -1576,7 +1593,9 @@ mod tests {
             crate::billing::month_start_ms(2026, 12),
             std::sync::atomic::Ordering::Relaxed,
         );
-        let r = UsageRollup::open(mem_store(), "mseg").await.unwrap();
+        let r = UsageRollup::open(mem_store(), "mseg", &test_cfg())
+            .await
+            .unwrap();
         let jul15 = crate::billing::month_start_ms(2026, 7) + 14 * 86_400_000;
         // Three segments, gauges 100/200/300, all accounted through Jul 15.
         for (seg, gauge) in [(0u32, 100u64), (1, 200), (2, 300)] {
@@ -1649,7 +1668,9 @@ mod tests {
             crate::billing::month_start_ms(2026, 11),
             std::sync::atomic::Ordering::Relaxed,
         );
-        let r = UsageRollup::open(mem_store(), "svtie").await.unwrap();
+        let r = UsageRollup::open(mem_store(), "svtie", &test_cfg())
+            .await
+            .unwrap();
         let aug1 = crate::billing::month_start_ms(2026, 8);
         // Month-FINAL for July at version 5 (accounted through Aug 1,
         // OLD gauge 100), then the LIVE August snapshot at the SAME
@@ -1713,7 +1734,9 @@ mod tests {
     /// across two AND four month spans.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn read_batch_month_split_is_exact() {
-        let r = UsageRollup::open(mem_store(), "split").await.unwrap();
+        let r = UsageRollup::open(mem_store(), "split", &test_cfg())
+            .await
+            .unwrap();
         let aug1 = crate::billing::month_start_ms(2026, 8);
         // One byte, one record, one op split dead-center on a boundary:
         // must land as 0+1 or 1+0, never 1+1.
@@ -1827,7 +1850,9 @@ mod tests {
             crate::billing::month_start_ms(2026, 12),
             std::sync::atomic::Ordering::Relaxed,
         );
-        let r = UsageRollup::open(mem_store(), "catchup").await.unwrap();
+        let r = UsageRollup::open(mem_store(), "catchup", &test_cfg())
+            .await
+            .unwrap();
         let jul15 = crate::billing::month_start_ms(2026, 7) + 14 * 86_400_000;
         let s = SegmentSnapshot {
             identity: id(),
@@ -1905,7 +1930,9 @@ mod tests {
             crate::billing::month_start_ms(2026, 12),
             std::sync::atomic::Ordering::Relaxed,
         );
-        let r = UsageRollup::open(mem_store(), "idle").await.unwrap();
+        let r = UsageRollup::open(mem_store(), "idle", &test_cfg())
+            .await
+            .unwrap();
         let jul15 = crate::billing::month_start_ms(2026, 7) + 14 * 86_400_000;
         // Live snapshot: gauge 100 B, accounted through Jul 15.
         let mut s0 = match snap(1, "2026-07", 500, 0, 100, false).payload.clone() {
@@ -1971,7 +1998,9 @@ mod tests {
     /// stream; a second close is a no-op.
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn rollup_applies_deltas_and_closes_months() {
-        let r = UsageRollup::open(mem_store(), "t1").await.unwrap();
+        let r = UsageRollup::open(mem_store(), "t1", &test_cfg())
+            .await
+            .unwrap();
         // Version 1: 100 bytes, byte-ms 5000. Version 2: 250 bytes,
         // byte-ms 9000 (absolute). Replay of version 2.
         r.apply_page(&[snap(1, "2026-07", 100, 5000, 40, false)], "c1")

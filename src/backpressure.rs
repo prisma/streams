@@ -61,20 +61,17 @@ pub struct Limits {
 }
 
 impl Limits {
-    /// Reads the installed [`crate::config::AppConfig`], not the process
-    /// env, since WP-01 PR 3 (config centralization). The `from_env`
-    /// name stays for the existing bootstrap caller; the caller-visible
-    /// rename lands in a later WP.
-    pub fn from_env() -> Self {
-        let cfg = crate::config::current();
+    /// Reads the owned [`crate::config::AdmissionConfig`] handed down
+    /// from the composition root (WP-01 PR 3.1), not the process env.
+    pub fn from_config(cfg: &crate::config::AdmissionConfig) -> Self {
         Self {
             // Defaults are deliberately generous: this is a safety net
             // against unbounded growth, not a throughput throttle. An
             // instance in a healthy steady state must never touch it.
-            unabsorbed_bytes_instance: cfg.admission.unabsorbed_bytes_instance,
-            unabsorbed_bytes_shard: cfg.admission.unabsorbed_bytes_shard,
-            absorb_lag_secs: cfg.admission.absorb_lag_secs,
-            release_pct: cfg.admission.maint_release_pct.min(100),
+            unabsorbed_bytes_instance: cfg.unabsorbed_bytes_instance,
+            unabsorbed_bytes_shard: cfg.unabsorbed_bytes_shard,
+            absorb_lag_secs: cfg.absorb_lag_secs,
+            release_pct: cfg.maint_release_pct.min(100),
         }
     }
 
@@ -354,12 +351,6 @@ pub fn snapshot(state: &crate::http::AppState) -> Snapshot {
         // permanently old even while absorption keeps up.
         absorb_lag_secs: max_stall,
     }
-}
-
-/// The process's configured limits, resolved once at startup.
-pub fn limits() -> Limits {
-    static L: std::sync::OnceLock<Limits> = std::sync::OnceLock::new();
-    *L.get_or_init(Limits::from_env)
 }
 
 #[cfg(test)]

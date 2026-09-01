@@ -40,20 +40,47 @@ pub struct ScalePolicy {
     pub max_segments: usize,
 }
 
+static POLICY_EVAL_SECS_INIT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(10);
+static POLICY_RATE_WINDOW_SECS_INIT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(120.0f64.to_bits());
+static POLICY_HOT_PCT_INIT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0.75f64.to_bits());
+static POLICY_COLD_PCT_INIT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(0.15f64.to_bits());
+static POLICY_HOT_EVALS_INIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(2);
+static POLICY_COLD_EVALS_INIT: std::sync::atomic::AtomicU32 =
+    std::sync::atomic::AtomicU32::new(180);
+static POLICY_COOLDOWN_SECS_INIT: std::sync::atomic::AtomicI64 =
+    std::sync::atomic::AtomicI64::new(600);
+static POLICY_MAX_SEGMENTS_INIT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(64);
+
+/// Composition-root seed (WP-01 PR 3.1): sized once from the owned
+/// ServerConfig; un-seeded tests get the old env-unset defaults.
+pub fn init_policy(cfg: &crate::config::ScaleConfig) {
+    use std::sync::atomic::Ordering::Relaxed;
+    POLICY_EVAL_SECS_INIT.store(cfg.eval_secs, Relaxed);
+    POLICY_RATE_WINDOW_SECS_INIT.store(cfg.rate_window_secs.to_bits(), Relaxed);
+    POLICY_HOT_PCT_INIT.store(cfg.hot_pct.to_bits(), Relaxed);
+    POLICY_COLD_PCT_INIT.store(cfg.cold_pct.to_bits(), Relaxed);
+    POLICY_HOT_EVALS_INIT.store(cfg.hot_evals, Relaxed);
+    POLICY_COLD_EVALS_INIT.store(cfg.cold_evals, Relaxed);
+    POLICY_COOLDOWN_SECS_INIT.store(cfg.cooldown_secs, Relaxed);
+    POLICY_MAX_SEGMENTS_INIT.store(cfg.max_segments, Relaxed);
+}
+
 pub fn policy() -> &'static ScalePolicy {
+    use std::sync::atomic::Ordering::Relaxed;
     static P: PolicyOnceLock<ScalePolicy> = PolicyOnceLock::new();
-    P.get_or_init(|| {
-        let cfg = crate::config::current();
-        ScalePolicy {
-            eval_secs: cfg.scaler.eval_secs,
-            rate_window_secs: cfg.scaler.rate_window_secs,
-            hot_pct: cfg.scaler.hot_pct,
-            cold_pct: cfg.scaler.cold_pct,
-            hot_evals: cfg.scaler.hot_evals,
-            cold_evals: cfg.scaler.cold_evals,
-            cooldown_secs: cfg.scaler.cooldown_secs,
-            max_segments: cfg.scaler.max_segments,
-        }
+    P.get_or_init(|| ScalePolicy {
+        eval_secs: POLICY_EVAL_SECS_INIT.load(Relaxed),
+        rate_window_secs: f64::from_bits(POLICY_RATE_WINDOW_SECS_INIT.load(Relaxed)),
+        hot_pct: f64::from_bits(POLICY_HOT_PCT_INIT.load(Relaxed)),
+        cold_pct: f64::from_bits(POLICY_COLD_PCT_INIT.load(Relaxed)),
+        hot_evals: POLICY_HOT_EVALS_INIT.load(Relaxed),
+        cold_evals: POLICY_COLD_EVALS_INIT.load(Relaxed),
+        cooldown_secs: POLICY_COOLDOWN_SECS_INIT.load(Relaxed),
+        max_segments: POLICY_MAX_SEGMENTS_INIT.load(Relaxed),
     })
 }
 

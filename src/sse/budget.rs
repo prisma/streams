@@ -8,8 +8,8 @@
 /// value warns there and takes the default — it must never masquerade
 /// as a tuned budget. Release-posture boot validates the whole geometry
 /// strictly (round 10e).
-pub(crate) fn feed_ring_bytes() -> usize {
-    crate::config::current().sse.feed_ring_bytes
+pub(crate) fn feed_ring_bytes(cfg: &crate::config::SseConfig) -> usize {
+    cfg.feed_ring_bytes
 }
 
 /// Process-global shared-mode retention budget. Env
@@ -18,6 +18,6 @@ pub(crate) fn feed_ring_bytes() -> usize {
 /// Zero = singleton-only: a second subscriber to the same
 /// feed is refused with a typed capacity error. A bounded
 /// cache-RETENTION accounting unit, NOT an RSS bound.
-pub(crate) fn feed_total_cap() -> u64 {
-    crate::config::current().sse.feed_total_bytes
+pub(crate) fn feed_total_cap(cfg: &crate::config::SseConfig) -> u64 {
+    cfg.feed_total_bytes
 }

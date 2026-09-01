@@ -1,7 +1,7 @@
 //! `streams-slate` binary — the composition root and nothing more:
-//! allocator, tracing init, pre-runtime fail-closed environment checks,
-//! tokio runtime construction, then `streams_slate::bootstrap::async_main`.
-//! All server logic lives in the library crate (src/lib.rs).
+//! allocator, tracing init, ONE configuration load, tokio runtime
+//! construction, then `streams_slate::run(config)`. All server logic
+//! lives in the library crate (src/lib.rs).
 
 // musl's allocator fragments badly under this workload (docker phase 1:
 // RSS 2x the accounted budgets); mimalloc keeps RSS near actual live set.
@@ -15,22 +15,19 @@ fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| "info,slatedb=warn".into()),
         )
         .init();
-    // WP-01: the process environment is parsed ONCE into AppConfig and
-    // installed before any other check reads it (modules then read
-    // streams_slate::config::current(), never env directly).
-    streams_slate::config::install(streams_slate::config::AppConfig::load());
-    // R28: a certified survival deploy must fail at boot, not OOM at
-    // +28 min, if any memory knob was dropped or overridden.
-    streams_slate::bootstrap::assert_certified_memprofile();
+
+    // WP-01 PR 3.1: the process environment is parsed ONCE, here at the
+    // composition root, into an owned ServerConfig. Nothing reads the
+    // environment at runtime.
+    use clap::Parser;
+    let cli = streams_slate::CliArgs::parse();
+    let config = streams_slate::ServerConfig::load(cli, &streams_slate::ProcessEnvironment);
+
     // R28: SWEEP_MAINT_RESIDENT=0 would silently starve every cold
     // debt class (the rotation would open and immediately close each
     // indebted engine, so no absorber lives long enough to drain). The
     // config stores the raw value; the billing adapter floors at use.
-    if streams_slate::config::current()
-        .billing
-        .sweep_maint_resident
-        == 0
-    {
+    if config.billing.sweep_maint_resident == 0 {
         eprintln!(
             "Error: SWEEP_MAINT_RESIDENT=0 starves all cold-debt drain; \
              set >= 1 or unset (default 2)"
@@ -52,13 +49,9 @@ fn main() -> anyhow::Result<()> {
         })
         .max(2);
     tracing::info!("tokio runtime: {workers} worker threads");
-    tracing::info!(
-        model = %streams_slate::quota::pressure_model_json(),
-        "project memory-pressure model (round-13; weights are code-versioned)"
-    );
     tokio::runtime::Builder::new_multi_thread()
         .worker_threads(workers)
         .enable_all()
         .build()?
-        .block_on(streams_slate::bootstrap::async_main())
+        .block_on(streams_slate::run(config))
 }

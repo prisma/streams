@@ -45,12 +45,21 @@ pub const ENTRY_OVERHEAD_BYTES: usize = 176;
 /// never breaks one already made.
 pub const WARM_MAX_SEGMENTS: usize = 8_192;
 
+static POSTINGS_CACHE_BYTES_INIT: std::sync::atomic::AtomicUsize =
+    std::sync::atomic::AtomicUsize::new(POSTINGS_CACHE_BYTES);
+
+/// Composition-root seed (WP-01 PR 3.1): sized once from the owned
+/// ServerConfig; un-seeded tests get the old env-unset default (64 MiB).
+pub fn init_postings_cache(bytes: usize) {
+    POSTINGS_CACHE_BYTES_INIT.store(bytes, std::sync::atomic::Ordering::Relaxed);
+}
+
 /// The process-shared cache (production wiring). Tests build private
 /// per-engine caches instead so their counters stay hermetic.
 pub fn process_cache() -> Arc<PostingsCache> {
     static C: std::sync::OnceLock<Arc<PostingsCache>> = std::sync::OnceLock::new();
     C.get_or_init(|| {
-        let bytes = crate::config::current().postings.cache_bytes;
+        let bytes = POSTINGS_CACHE_BYTES_INIT.load(std::sync::atomic::Ordering::Relaxed);
         PostingsCache::new(bytes)
     })
     .clone()

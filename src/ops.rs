@@ -542,7 +542,7 @@ pub async fn evaluate_alerts(state: &std::sync::Arc<crate::http::AppState>, snap
     let rules: Vec<(String, bool, String)> = vec![
         (
             "usage_outbox_lag".into(),
-            dirty_total > usage_outbox_alert_threshold(),
+            dirty_total > usage_outbox_alert_threshold(&state.config.billing),
             format!("{dirty_total} unacknowledged usage snapshots"),
         ),
         (
@@ -619,6 +619,6 @@ pub async fn evaluate_alerts(state: &std::sync::Arc<crate::http::AppState>, snap
     }
 }
 
-fn usage_outbox_alert_threshold() -> u64 {
-    crate::config::current().billing.alert_usage_outbox_dirty
+fn usage_outbox_alert_threshold(cfg: &crate::config::BillingConfig) -> u64 {
+    cfg.alert_usage_outbox_dirty
 }

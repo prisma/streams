@@ -912,7 +912,7 @@ async fn a_handoff_with_an_append_in_flight_resolves_safely() {
 /// history tier and reads exercise the production merge.
 ///
 /// Runs multi-threaded on purpose: the absorber reaches
-/// `crate::on_slatedb_rt` (a process-global multi-threaded runtime) and
+/// `crate::bootstrap::on_slatedb_rt` (a process-global multi-threaded runtime) and
 /// `spawn_blocking`, so it cannot be driven from a paused current-thread
 /// test. That is precisely the coupling docs/DST.md's roadmap has to break
 /// before whole-scenario replay is possible.
@@ -2706,6 +2706,7 @@ async fn open_gate_survives_impatient_clients_without_a_storm() {
                 Ok(open_engine(s, &prefix).await)
             })
         }),
+        std::time::Duration::from_secs(180),
     );
 
     // The same twelve impatient clients. Each gets a Wait (503) — and
@@ -2947,6 +2948,7 @@ async fn health_reports_unready_when_no_shard_has_ever_opened() {
                 )
             })
         }),
+        std::time::Duration::from_secs(180),
     );
 
     // Distinct prefixes: this is the whole data plane failing, not one
@@ -3002,6 +3004,7 @@ async fn open_gate_escalates_holdoff_for_engines_that_die_young() {
                 Ok(open_engine(s, &prefix).await)
             })
         }),
+        std::time::Duration::from_secs(180),
     );
 
     // Open, die young, repeat. Holdoffs must grow: 3s, 6s, 12s.
@@ -5791,8 +5794,21 @@ async fn http_rig_inner(
             fut
         })
     };
-    let gate = crate::sharddir::OpenGate::new(shards_map.clone(), opener);
+    // The rig's owned configuration (WP-01 PR 3.1): the no-environment
+    // knob posture — every knob default, no env overlay.
+    let rig_config = Arc::new(crate::config::ServerConfig::load(
+        <crate::config::CliArgs as clap::Parser>::try_parse_from([
+            "streams-slate",
+            "--s3-endpoint",
+            "http://127.0.0.1:1",
+        ])
+        .unwrap(),
+        &crate::config::MapEnvironment::empty(),
+    ));
+    let gate =
+        crate::sharddir::OpenGate::new(shards_map.clone(), opener, rig_config.shard.open_deadline);
     let state = Arc::new(crate::http::AppState {
+        config: rig_config.clone(),
         registry,
         tenant: crate::tenant::ProjectId::new("proj-test").unwrap(),
         shard_prefixes: prefixes,
@@ -5815,8 +5831,12 @@ async fn http_rig_inner(
         sse_configured_max_connections: 0,
         live_feeds: Arc::new(crate::sse::registry::FeedRegistry::new()),
         // Per-rig budget: isolated from every other rig in the process.
-        feed_budget: Arc::new(crate::sse::feed::FeedMemoryBudget::from_env()),
-        feed_ring_bytes: std::sync::atomic::AtomicUsize::new(crate::sse::budget::feed_ring_bytes()),
+        feed_budget: Arc::new(crate::sse::feed::FeedMemoryBudget::from_config(
+            &rig_config.sse,
+        )),
+        feed_ring_bytes: std::sync::atomic::AtomicUsize::new(crate::sse::budget::feed_ring_bytes(
+            &rig_config.sse,
+        )),
         max_record_payload_bytes: std::sync::atomic::AtomicUsize::new(0),
         cert_sealed_publish_delay_ms: std::sync::atomic::AtomicU64::new(0),
         sse_heartbeat_ms: std::sync::atomic::AtomicU64::new(15_000),
@@ -19132,7 +19152,7 @@ async fn same_name_cross_project_usage_attributes_exactly() {
     })
     .unwrap();
     let (state, addr) = http_rig_with_auth_service(mem(), svc).await;
-    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "")
+    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
     let _ = state.rollup.set(std::sync::Arc::new(rollup));
@@ -19350,7 +19370,7 @@ async fn invoice_reconciliation_balances_and_detects_corruption() {
     })
     .unwrap();
     let (state, addr) = http_rig_with_auth_service(mem(), svc).await;
-    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "")
+    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
     let _ = state.rollup.set(std::sync::Arc::new(rollup));
@@ -19905,7 +19925,7 @@ async fn shared_cell_certification_smoke() {
     })
     .unwrap();
     let (state, addr) = http_rig_with_auth_service(mem(), svc.clone()).await;
-    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "")
+    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
     let _ = state.rollup.set(std::sync::Arc::new(rollup));
@@ -25171,7 +25191,7 @@ async fn usage_pipeline_end_to_end_exactly_once() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
     // This rig instance runs the rollup too.
-    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "")
+    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
     let _ = state.rollup.set(std::sync::Arc::new(rollup));
@@ -25406,9 +25426,10 @@ async fn ops_events_journal_end_to_end() {
 async fn ops_metrics_and_alerts_flow() {
     let store = mem();
     let (state, _addr) = http_rig(store).await;
-    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "opsflow")
-        .await
-        .unwrap();
+    let rollup =
+        crate::rollup::UsageRollup::open(state.data_store.clone(), "opsflow", &state.config)
+            .await
+            .unwrap();
     let _ = state.rollup.set(std::sync::Arc::new(rollup));
 
     // Two snapshot emissions land in the same minute bucket.
@@ -25497,7 +25518,7 @@ async fn telemetry_crash_points_and_cost_gates() {
     let _xr = crate::billing::billing_clock_lock().read().await;
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "p6")
+    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "p6", &state.config)
         .await
         .unwrap();
     let _ = state.rollup.set(std::sync::Arc::new(rollup));
@@ -25623,9 +25644,10 @@ async fn telemetry_crash_points_and_cost_gates() {
 async fn read_batches_survive_crash_in_the_spool() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    let spool = crate::billing::ReadSpool::open(state.data_store.clone(), "sp1", "inst")
-        .await
-        .unwrap();
+    let spool =
+        crate::billing::ReadSpool::open(state.data_store.clone(), "sp1", "inst", &state.config)
+            .await
+            .unwrap();
     let _ = state.read_spool.set(std::sync::Arc::new(spool));
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     let (st, _, _) = preq(
@@ -25655,9 +25677,10 @@ async fn read_batches_survive_crash_in_the_spool() {
     sp.persist(&sealed[0]).await.unwrap();
 
     // "Crash": a fresh spool handle over the same store still has it.
-    let recovered = crate::billing::ReadSpool::open(state.data_store.clone(), "sp1", "inst")
-        .await
-        .unwrap();
+    let recovered =
+        crate::billing::ReadSpool::open(state.data_store.clone(), "sp1", "inst", &state.config)
+            .await
+            .unwrap();
     let pending = recovered.pending(16).await.unwrap();
     assert_eq!(pending.len(), 1, "the sealed batch survived the crash");
     assert_eq!(pending[0].1.rows.len(), 1);
@@ -30090,7 +30113,7 @@ async fn identity_of_resolves_the_workspace_at_event() {
 async fn valid_transfer_bills_each_workspace_on_its_own_side() {
     let _xr = crate::billing::billing_clock_lock().read().await;
     let (svc, state, addr) = auth_rig("proj-vtx", "ws_vta", &["c1"], None).await;
-    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "")
+    let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
     let _ = state.rollup.set(std::sync::Arc::new(rollup));

@@ -35,11 +35,30 @@ pub const EPOCH_LEN: usize = 16;
 /// dominates, and the attempt itself costs CPU in the serial committer).
 const COMPRESS_MIN_BYTES: usize = 256;
 
-/// FRAME_COMPRESS=1 turns on compress-then-encrypt for newly written
-/// frames. Read-side support is unconditional, so this can be flipped per
-/// deployment without migration.
-pub fn frame_compress_enabled() -> bool {
-    crate::config::current().crypto.frame_compress
+/// Whether writers attempt compress-then-encrypt for newly written
+/// frames. Read-side support is unconditional (the version byte in the
+/// AAD-bound header decides), so this is a per-engine writer policy, not
+/// a wire capability. Selected explicitly at engine construction from
+/// the process configuration (FRAME_COMPRESS); tools/benches pass their
+/// own choice. No ambient lookup: the flag travels with the cipher.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub enum FrameCompression {
+    #[default]
+    Disabled,
+    /// zstd at a fixed level (deterministic within a deployment),
+    /// attempted only at/above COMPRESS_MIN_BYTES and kept only when it
+    /// actually shrinks the payload.
+    ZstdLevel1,
+}
+
+impl FrameCompression {
+    pub fn from_enabled(enabled: bool) -> Self {
+        if enabled {
+            FrameCompression::ZstdLevel1
+        } else {
+            FrameCompression::Disabled
+        }
+    }
 }
 
 #[derive(Clone)]
@@ -383,14 +402,16 @@ fn aad(stream_hash: &[u8; 16], header: &[u8]) -> Vec<u8> {
 }
 
 /// Encrypt one record into its wire/storage frame. Deterministic: identical
-/// (subkey, header, plaintext) always yields identical bytes.
+/// (subkey, header, plaintext, compression policy) always yields identical
+/// bytes.
 pub fn encrypt_frame(
     subkey: &[u8; KEY_LEN],
     stream_hash: &[u8; 16],
     h: &FrameHeader,
     plaintext: &[u8],
+    compression: FrameCompression,
 ) -> Vec<u8> {
-    FrameCipher::new(subkey).encrypt(
+    FrameCipher::new(subkey, compression).encrypt(
         stream_hash,
         h.offset,
         h.ts_ms,
@@ -406,12 +427,14 @@ pub fn encrypt_frame(
 /// events/s and pure waste inside the serial committer loop.
 pub struct FrameCipher {
     cipher: Aes256Gcm,
+    compression: FrameCompression,
 }
 
 impl FrameCipher {
-    pub fn new(subkey: &[u8; KEY_LEN]) -> FrameCipher {
+    pub fn new(subkey: &[u8; KEY_LEN], compression: FrameCompression) -> FrameCipher {
         FrameCipher {
             cipher: Aes256Gcm::new(subkey.into()),
+            compression,
         }
     }
 
@@ -432,7 +455,7 @@ impl FrameCipher {
         // byte-identical re-encryption property within a deployment.
         let mut ver = FRAME_VER;
         let mut compressed: Option<Vec<u8>> = None;
-        if frame_compress_enabled()
+        if self.compression == FrameCompression::ZstdLevel1
             && plaintext.len() >= COMPRESS_MIN_BYTES
             && let Ok(z) = zstd::bulk::compress(plaintext, 1)
             && z.len() < plaintext.len()
@@ -582,8 +605,8 @@ mod tests {
             key_version: 0,
             routing_key: "chat-42".into(),
         };
-        let f1 = encrypt_frame(&sub, &hash, &h, b"hello world");
-        let f2 = encrypt_frame(&sub, &hash, &h, b"hello world");
+        let f1 = encrypt_frame(&sub, &hash, &h, b"hello world", FrameCompression::Disabled);
+        let f2 = encrypt_frame(&sub, &hash, &h, b"hello world", FrameCompression::Disabled);
         assert_eq!(f1, f2, "deterministic re-encryption must be byte-identical");
 
         let dec = decode_frame(&f1).unwrap();
@@ -627,14 +650,50 @@ mod compress_tests {
 
     #[test]
     fn v3_round_trip_compressible() {
-        // Force-on for the test regardless of env.
         let payload = vec![b'x'; 4096];
-        let cipher = FrameCipher::new(&sub());
         let hash = stream_hash("s");
-        // encrypt() consults the env flag; emulate by calling the parts:
-        // compress + encrypt via a v3-style frame produced with the flag on.
-        // Instead of mutating process env (racy across tests), assert the
-        // decode/decrypt path handles a hand-built v3 frame.
+        // The writer side honors the explicit policy: ZstdLevel1 emits a
+        // v3 frame for a compressible payload, byte-identical across calls
+        // (fixed zstd level), and decodes back to the original.
+        let on = FrameCipher::new(&sub(), FrameCompression::ZstdLevel1);
+        let h = hdr(7);
+        let frame = on.encrypt(
+            &hash,
+            h.offset,
+            h.ts_ms,
+            h.key_version,
+            &h.routing_key,
+            &payload,
+        );
+        let dec = decode_frame(&frame).expect("v3 decodes");
+        assert_eq!(dec.ver, FRAME_VER_Z);
+        let pt = decrypt_frame(&sub(), &hash, &dec, &frame).expect("decrypts");
+        assert_eq!(pt, payload);
+        let frame2 = on.encrypt(
+            &hash,
+            h.offset,
+            h.ts_ms,
+            h.key_version,
+            &h.routing_key,
+            &payload,
+        );
+        assert_eq!(frame, frame2, "fixed-level zstd must be deterministic");
+        // Disabled policy on the same payload stays v2.
+        let off = FrameCipher::new(&sub(), FrameCompression::Disabled);
+        let h2 = hdr(8);
+        let frame3 = off.encrypt(
+            &hash,
+            h2.offset,
+            h2.ts_ms,
+            h2.key_version,
+            &h2.routing_key,
+            &payload,
+        );
+        assert_eq!(decode_frame(&frame3).unwrap().ver, FRAME_VER);
+
+        // The decode/decrypt path also handles a hand-built v3 frame
+        // (wire-shape pin, independent of the writer policy).
+        let cipher = FrameCipher::new(&sub(), FrameCompression::Disabled);
         let z = zstd::bulk::compress(&payload, 1).unwrap();
         assert!(z.len() < payload.len());
         let h = hdr(7);
@@ -669,7 +728,7 @@ mod compress_tests {
 
     #[test]
     fn v2_still_decodes_with_ver_field() {
-        let cipher = FrameCipher::new(&sub());
+        let cipher = FrameCipher::new(&sub(), FrameCompression::Disabled);
         let hash = stream_hash("s");
         let h = hdr(9);
         let frame = cipher.encrypt(
@@ -687,7 +746,7 @@ mod compress_tests {
 
     #[test]
     fn unknown_version_rejected() {
-        let cipher = FrameCipher::new(&sub());
+        let cipher = FrameCipher::new(&sub(), FrameCompression::Disabled);
         let hash = stream_hash("s");
         let mut frame = cipher.encrypt(&hash, 1, 0, 0, "rk", b"data");
         frame[0] = 9;

@@ -1,557 +1,33 @@
-//! Binary bootstrap: CLI arguments, configuration, store opening, service
-//! construction and task startup (WP-01/PR 2: moved out of src/main.rs,
-//! which is now only the composition root). The public surface of this
-//! module is exactly what the binary calls: [`async_main`],
-//! [`assert_certified_memprofile`].
+//! Binary bootstrap: store opening, validation, service construction and
+//! task startup (WP-01/PR 2: moved out of src/main.rs; PR 3.1: takes the
+//! owned [`crate::config::ServerConfig`]). The binary calls exactly one
+//! entry point: [`run`].
 
 use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
 use anyhow::Context;
-use clap::Parser;
 use object_store::aws::{AmazonS3, AmazonS3Builder, S3ConditionalPut};
 use object_store::{ObjectStore, ObjectStoreExt};
 use slatedb::Db;
 use slatedb::config::Settings;
 
+use crate::config::CliArgs;
 use crate::history::{Absorber, AbsorberConfig, KeyCache, absorber_channel};
 use crate::http::AppState;
 use crate::registry::{Registry, load_or_init_topology};
 use crate::shard::{ShardConfig, ShardEngine};
 
-#[derive(Parser, Debug)]
-#[command(name = "streams-slate", about = "Durable Streams server on SlateDB")]
-pub(crate) struct Args {
-    #[arg(long, default_value = "127.0.0.1:8090")]
-    listen: String,
-
-    /// S3-compatible endpoint (e.g. http://127.0.0.1:9500 or Tigris).
-    #[arg(long, env = "SLATE_S3_ENDPOINT")]
-    s3_endpoint: String,
-
-    /// Default bucket; per-role buckets override it.
-    #[arg(long, env = "SLATE_S3_BUCKET", default_value = "streams")]
-    bucket: String,
-    #[arg(long)]
-    ops_bucket: Option<String>,
-    #[arg(long)]
-    shard_bucket: Option<String>,
-    #[arg(long)]
-    data_bucket: Option<String>,
-
-    #[arg(long, env = "SLATE_S3_REGION", default_value = "us-east-1")]
-    region: String,
-    #[arg(long, env = "SLATE_S3_ACCESS_KEY_ID", default_value = "test")]
-    access_key_id: String,
-    #[arg(long, env = "SLATE_S3_SECRET_ACCESS_KEY", default_value = "test")]
-    secret_access_key: String,
-
-    /// Initial shard count (power of two) if no topology exists yet (D3).
-    /// Unset = auto: 1 standalone, next_power_of_two(4 × FLEET_MAX) in
-    /// fleet mode — a topology as coarse as the fleet gives rendezvous a
-    /// permanently uneven draw and turns the rebalancer's override into a
-    /// return-home tug-of-war (FLEET-CAMPAIGN.md: 4 shards over 4
-    /// instances drew 1/1/2/0 and oscillated on a ~300 s period).
-    #[arg(long, env = "INITIAL_SHARDS")]
-    initial_shards: Option<usize>,
-
-    /// Shard-log WAL flush interval (D22, amended). 5 ms minted WAL SSTs
-    /// ~7× faster than SlateDB's WAL GC reaps them; the growing backlog
-    /// degraded the per-DB durable watermark to ~0.3–1 s (EXPERIMENT-PILOT
-    /// run 3). 25 ms keeps the ack floor ≈ flush + Tigris PUT ≈ 40 ms while
-    /// cutting WAL-object churn 5×.
-    #[arg(long, env = "FLUSH_INTERVAL_MS", default_value_t = 25)]
-    flush_interval_ms: u64,
-
-    /// Group-commit WAL flushing (1 = on). A per-shard pump flushes the
-    /// WAL the moment the previous flush completes when commits are
-    /// waiting, so under load the flush cadence self-clocks to the WAL
-    /// PUT RTT instead of adding tick alignment (avg tick/2) on top of
-    /// the serial-PUT queue. flush_interval_ms then only acts as the
-    /// idle mint-rate floor (see --wal-flush-gap-ms) and SlateDB's own
-    /// timer is stretched to a 1 s failsafe.
-    #[arg(long, env = "WAL_GROUP_COMMIT", default_value_t = 0)]
-    wal_group_commit: u8,
-
-    /// Minimum start-to-start gap between pump flushes, ms. Bounds the
-    /// WAL SST mint rate exactly like the old tick did (churn ceiling
-    /// unchanged); irrelevant whenever the PUT RTT exceeds it. 0 = use
-    /// flush_interval_ms.
-    #[arg(long, env = "WAL_FLUSH_GAP_MS", default_value_t = 0)]
-    wal_flush_gap_ms: u64,
-
-    /// Post-ACK gather window, ms (0 = off). After a busy WAL flush the
-    /// pump releases that flush's acknowledgements itself (explicit
-    /// barrier), then waits this long before freezing the next WAL, so
-    /// closed-loop producers' ack-triggered follow-ups join the next WAL
-    /// instead of missing its freeze and paying a full extra PUT. Without
-    /// it, append p50 at concurrency 2 measures ~2x concurrency 1.
-    /// Suggested 4-8. Adds at most this many ms to a busy flush cycle;
-    /// never delays an idle shard's first write.
-    #[arg(long, env = "WAL_POST_ACK_GATHER_MS", default_value_t = 0)]
-    wal_post_ack_gather_ms: u64,
-
-    /// Skip the gather window when the next WAL already holds at least
-    /// this many requests (the window exists for SMALL next generations;
-    /// at saturation it is a tax). 0 = never skip.
-    #[arg(long, env = "WAL_GATHER_SKIP_REQS", default_value_t = 32)]
-    wal_gather_skip_reqs: u32,
-
-    /// Byte-count sibling of --wal-gather-skip-reqs. 0 = never skip.
-    #[arg(long, env = "WAL_GATHER_SKIP_BYTES", default_value_t = 1048576)]
-    wal_gather_skip_bytes: u64,
-
-    /// Durable-tail ring budget per shard engine, bytes (0 = off). Live
-    /// tail reads (long-poll/SSE wakes, catch-up near the head) serve
-    /// from an in-memory ring of recently-durable frames published at
-    /// ack time, instead of scanning SlateDB. Suggested: 33554432 (32
-    /// MiB) — several seconds of a maxed shard's traffic.
-    #[arg(long, env = "TAIL_RING_BYTES", default_value_t = 0)]
-    tail_ring_bytes: usize,
-
-    /// Target L0 SST size per shard DB. MUST stay below
-    /// --max-unflushed-bytes: SlateDB rejects the pair at engine-open
-    /// time, and shard engines open lazily, so an invalid pair used to
-    /// surface only as a permanent 500 per append (CHAOS-2). The old
-    /// default here was 32 MiB against a 16 MiB unflushed cap, which
-    /// made a bare `streams-slate` with no environment unbootable in
-    /// exactly that silent way. 8 MiB is the field-validated 1 GiB
-    /// posture (deploy/profiles/compute-1g.env).
-    #[arg(long, env = "L0_SST_SIZE_BYTES", default_value_t = 8 * 1024 * 1024)]
-    l0_sst_size_bytes: usize,
-
-    /// Byte-backpressure cap per shard DB (§1.1). SlateDB's default is
-    /// 512 MB — a byte-flood on a 1 GB instance OOMs before any request
-    /// backpressure fires (bench finding, 2026-07-14).
-    #[arg(long, env = "MAX_UNFLUSHED_BYTES", default_value_t = 16 * 1024 * 1024)]
-    max_unflushed_bytes: usize,
-
-    /// Effective request-body ceiling. May only LOWER the pinned 32 MiB
-    /// protocol maximum, never raise it.
-    ///
-    /// This is a capacity knob as much as a validator: the absorber
-    /// reserves (limit + overhead) × 3 against the admission shed line
-    /// for every gather, because one legal oversized frame must be able
-    /// to proceed alone. At the 32 MiB pin that is 96.2 MiB — 19% of the
-    /// 1 GiB posture's 500 MB line — held while a gather runs, measured
-    /// in Singapore against gathers averaging 6 MB of actual work
-    /// (CHAOS-3). A deployment whose records are small should say so
-    /// here and get the difference back as admitted traffic.
-    #[arg(long, env = "MAX_REQUEST_BODY_BYTES", default_value_t = 32 * 1024 * 1024)]
-    max_request_body_bytes: usize,
-
-    /// L0 SST count that triggers write backpressure. More L0s = more burst
-    /// headroom before compaction must catch up (throughput tuning).
-    #[arg(long, env = "L0_MAX_SSTS", default_value_t = 8)]
-    l0_max_ssts: usize,
-
-    /// Per-key L0 overlap cap. A totally-ordered stream rewrites its meta
-    /// row in every memtable, so every L0 overlaps on that key and the
-    /// per-key cap — not l0_max_ssts — becomes the real dispatch gate
-    /// (upstream default 8 stalled the flusher; bench finding 2026-07-14).
-    /// 0 = follow l0_max_ssts.
-    #[arg(long, env = "L0_MAX_SSTS_PER_KEY", default_value_t = 0)]
-    l0_max_ssts_per_key: usize,
-
-    /// WAL garbage-collection cadence (seconds). O14a finding: at 50 ms
-    /// flush a loaded shard mints ~20 WAL SSTs/s; the upstream default
-    /// retention (min_age 300 s, sweep 60 s) keeps thousands of objects
-    /// per shard for GC to list and delete while sharing the same object
-    /// store path as the ack-critical WAL PUTs. Tighter reaping keeps the
-    /// WAL prefix small.
-    /// Compactor scheduling poll (ms). Each tick probes the compactions
-    /// log — a live Tigris 404 at ~200-240 ms internal (docs/
-    /// TIGRIS-404-COST.md), so this is the largest idle-probe class:
-    /// 500 ms across 4 shard DBs was 8 probes/s forever. Upstream default
-    /// is 5000; the old deploy pin of 500 dated from double-digit-MB/s
-    /// single-stream pushes, pre-limiter. At the enforced 5 MB/s/shard a
-    /// 2.5 s scheduling gap bounds L0 accumulation to ~12.5 MB (~3 L0
-    /// SSTs against L0_MAX 64) — drain continuity comes from concurrent
-    /// compactions, not scheduling latency. Field-validated in soak10.
-    #[arg(long, env = "COMPACTOR_POLL_MS", default_value_t = crate::DEFAULT_COMPACTOR_POLL_MS)]
-    compactor_poll_ms: u64,
-
-    /// Concurrent compactions (upstream default 4). Merges are object-I/O
-    /// bound on Tigris, so extra concurrency overlaps GET/PUT latency.
-    #[arg(long, env = "COMPACTOR_MAX_CONCURRENT", default_value_t = 4)]
-    compactor_max_concurrent: usize,
-
-    // R27-4 compaction-worker memory knobs (COMPACT_MAX_SUBCOMPACTIONS,
-    // COMPACT_MAX_FETCH_TASKS, COMPACT_BYTES_TO_FETCH,
-    // COMPACT_MAX_SST_SIZE_BYTES) are ENV-ONLY, read by
-    // resolved_compactor_options() — the one source every DB family
-    // shares. R29 review: clap mirrors here parsed but were never read,
-    // so a CLI override silently did nothing; removed rather than
-    // duplicating the plumbing.
-    #[arg(long, env = "WAL_GC_INTERVAL_SECS", default_value_t = 30)]
-    wal_gc_interval_secs: u64,
-
-    /// Static sweep interval (seconds) for the quiet GC directories:
-    /// manifest, compacted, and the WAL fence pass. Under the retired
-    /// fork these backed off adaptively toward this same value as a
-    /// CEILING; upstream SlateDB has no backoff (slatedb#1991 was
-    /// declined for #1993), so the ceiling IS the cadence now. Raising
-    /// it trades reclamation latency (bounded, storage-cheap) for LIST
-    /// steady-state. (--gc-max-interval-secs kept as a flag alias.)
-    #[arg(
-        long,
-        env = "GC_QUIET_INTERVAL_SECS",
-        default_value_t = 600,
-        alias = "gc-max-interval-secs"
-    )]
-    gc_quiet_interval_secs: u64,
-
-    /// Minimum WAL SST age before GC may delete it (seconds). Must cover
-    /// the reopen/replay window (shard moves replay < ~1 s; 60 s is a
-    /// generous safety factor at 5x fewer retained objects than the
-    /// 300 s upstream default).
-    #[arg(long, env = "WAL_GC_MIN_AGE_SECS", default_value_t = 60)]
-    wal_gc_min_age_secs: u64,
-
-    /// Compactions-log GC cadence. The compactions state is a versioned
-    /// transactional object: every compactor state change mints another
-    /// small `.compactions` file, and shard OPEN must page through the
-    /// survivors — at cross-region latency that cost compounds into the
-    /// slow-open class behind the eu-central-1 hang (docs/SOAK-REGIONS.md).
-    /// Upstream defaults (60s interval / 300s min-age) retain minutes of
-    /// churn; we reap harder, like WAL GC.
-    #[arg(long, env = "COMPACTIONS_GC_INTERVAL_SECS", default_value_t = 30)]
-    compactions_gc_interval_secs: u64,
-
-    /// Min age before a superseded `.compactions` version may be reaped.
-    /// Only versions BELOW the GC boundary die, so this is a safety floor
-    /// against clock skew, not a retention feature.
-    #[arg(long, env = "COMPACTIONS_GC_MIN_AGE_SECS", default_value_t = 120)]
-    compactions_gc_min_age_secs: u64,
-
-    /// Manifest poll cadence (ms). This is ALSO how the memtable flusher
-    /// learns that compaction freed L0 slots: with a long poll, dispatch
-    /// stays gated on a stale L0 view for the whole interval while imm
-    /// memtables pile into backpressure (bench finding 2026-07-14: 60 s
-    /// poll → 14 s flush stalls). Idle-shard poll cost is ~1 probe-GET
-    /// (a Tigris 404, ~200-240 ms internal) per interval; loaded shards
-    /// need this at 1-2 s, which is why the idle-cost stretch stops at
-    /// 2 s here instead of going longer (docs/TIGRIS-404-COST.md).
-    #[arg(long, env = "MANIFEST_POLL_MS", default_value_t = crate::DEFAULT_MANIFEST_POLL_MS)]
-    manifest_poll_ms: u64,
-
-    /// Hot-log records deleted per stream per commit group. Trim must
-    /// keep pace with ingest in steady state: at 50k records/s and ~1
-    /// absorb pass per 5 s, the pass has to retire ~250k records or the
-    /// hot DB grows without bound. Tombstones are ~30 B, so even the
-    /// high setting is a few MB per batch. The GLOBAL per-commit bound
-    /// across all streams is TRIM_GLOBAL_BUDGET.
-    #[arg(long, env = "TRIM_PER_OP", default_value_t = 8_192)]
-    trim_per_op: u64,
-
-    /// GLOBAL cap on trim deletes per commit group, shared by every
-    /// boundary advance and maintenance step in the group. This is what
-    /// bounds a mature-fleet second absorption wave: without it one
-    /// gather's AbsorbedBatch × TRIM_PER_OP could expand into tens of
-    /// millions of deletes in a single WriteBatch (multi-GiB). Leftover
-    /// work becomes trim debt, drained a budgeted slice per 5 s tick.
-    #[arg(long, env = "TRIM_GLOBAL_BUDGET", default_value_t = 65_536)]
-    trim_global_budget: u64,
-
-    /// Plaintext bytes buffered per absorber pass (absorb_one holds a pass
-    /// in memory; cap it well below the instance's RAM).
-    #[arg(long, env = "ABSORB_PASS_BYTES", default_value_t = 256 * 1024 * 1024)]
-    absorb_pass_bytes: u64,
-
-    /// Absorber thresholds (§3.6 / D23).
-    #[arg(long, env = "ABSORB_BYTES", default_value_t = 4 * 1024 * 1024)]
-    absorb_bytes: u64,
-    #[arg(long, env = "ABSORB_AGE_SECS", default_value_t = 300)]
-    absorb_age_secs: u64,
-
-    /// Concurrent small-lane absorb passes (1 = fully serial). Streams
-    /// with ≤ absorb_small_bytes pending overlap their latency-bound
-    /// per-stream passes; bigger streams keep the serial full-budget
-    /// lane. The serial grind measured ~4.5 streams/s against wide
-    /// backlogs (docs/COST-WIDE1.md §1); peak added memory is bounded by
-    /// concurrency × absorb_small_bytes of plaintext.
-    #[arg(long, env = "ABSORB_CONCURRENCY", default_value_t = 6)]
-    absorb_concurrency: usize,
-    #[arg(long, env = "ABSORB_SMALL_BYTES", default_value_t = 1024 * 1024)]
-    absorb_small_bytes: u64,
-
-    /// Evict resident per-stream handles idle at least this long
-    /// (seconds; 0 = never). Handles reload from the shard DB on next
-    /// touch; the durable dirty-stream index keeps unabsorbed evictees
-    /// discoverable, so this only trades a tail-row read for memory.
-    #[arg(long, env = "HANDLE_IDLE_EVICT_SECS", default_value_t = 600)]
-    handle_idle_evict_secs: u64,
-
-    /// Capacity cap on resident per-stream handles per shard (0 =
-    /// uncapped). Time-based eviction alone lets a cardinality burst
-    /// accumulate rate × idle-window handles; past this cap the ticker
-    /// evicts oldest-touched unreferenced handles immediately.
-    #[arg(long, env = "HANDLE_MAX_RESIDENT", default_value_t = 65_536)]
-    handle_max_resident: usize,
-
-    /// Aggregate byte budget for one shared-history gather WriteBatch
-    /// (keys + frames, keyed index rows counted twice). Bounds absorber
-    /// peak memory on small instances; streams that do not fit gather on
-    /// later ticks. Default = the history DB's unflushed cap.
-    #[arg(long, env = "ABSORB_GATHER_MAX_BYTES", default_value_t = 32 * 1024 * 1024)]
-    absorb_gather_max_bytes: usize,
-
-    /// Duty-cycle the gather read phase: whenever this much time has
-    /// elapsed since the last park, the gather parks ABSORB_PACE_MS
-    /// after the current read so append WAL writes queued behind the
-    /// reads inside SlateDB drain. Bounds the absorber's append-latency
-    /// impact at sparse-many-stream shapes (#266). ABSORB_PACE_MS=0
-    /// disables; window 0 parks after every read.
-    #[arg(long, env = "ABSORB_PACE_WINDOW_MS", default_value_t = 50)]
-    absorb_pace_window_ms: u64,
-    #[arg(long, env = "ABSORB_PACE_MS", default_value_t = 0)]
-    absorb_pace_ms: u64,
-
-    /// Concurrent per-stream frame reads within one absorber gather.
-    /// Shrinks the read phase's wall time — the window during which
-    /// append service dips (#266). 1 = serial.
-    #[arg(long, env = "ABSORB_READ_PAR", default_value_t = 8)]
-    absorb_read_par: usize,
-
-    /// Conformance/dev only: use this stream key (base64url, 32 bytes) for
-    /// requests that carry no Stream-Encryption-Key header. The upstream
-    /// conformance suite cannot send custom headers.
-    #[arg(long)]
-    conformance_default_key: Option<String>,
-
-    /// Require `Authorization: Bearer <token>` on all /v1/* requests.
-    /// This is the CUSTOMER account token; it never authorizes
-    /// /v1/internal/* (round-19: those routes fence consumer
-    /// generations and read segment state without a stream key).
-    #[arg(long, env = "AUTH_TOKEN")]
-    auth_token: Option<String>,
-    /// MULTITENANCY §7.2: off | shadow | enforce. Shadow verifies every
-    /// product bearer through the customer pipeline and counts the
-    /// outcome without touching responses. Enforce is refused at boot
-    /// until the route-scope matrix lands (Stage 5b).
-    #[arg(long, env = "STREAMS_AUTH_MODE", default_value = "off")]
-    streams_auth_mode: String,
-    #[arg(
-        long,
-        env = "STREAMS_AUTH_ISSUER",
-        default_value = "https://auth.prisma.io"
-    )]
-    streams_auth_issuer: String,
-    /// Operator-authored snapshot files (src/auth_feed.rs wire formats).
-    /// All three are required when STREAMS_AUTH_MODE != off.
-    #[arg(long, env = "STREAMS_AUTH_KEYS_FILE")]
-    streams_auth_keys_file: Option<std::path::PathBuf>,
-    #[arg(long, env = "STREAMS_AUTH_POLICY_FILE")]
-    streams_auth_policy_file: Option<std::path::PathBuf>,
-    #[arg(long, env = "STREAMS_AUTH_GRANTS_FILE")]
-    streams_auth_grants_file: Option<std::path::PathBuf>,
-    #[arg(long, env = "STREAMS_AUTH_REFRESH_SECS", default_value_t = 30)]
-    streams_auth_refresh_secs: u64,
-    /// Base64 32-byte key signing catalog cursors (review item 3).
-    /// Set the SAME value fleet-wide so page walks verify on any
-    /// instance; optional on a single instance.
-    #[arg(long, env = "STREAMS_CURSOR_KEY")]
-    streams_cursor_key: Option<String>,
-
-    /// Fleet-internal credential for /v1/internal/* peer RPCs. REQUIRED
-    /// when fleet mode is on with FLEET_AUTH_MODE=static (startup
-    /// refuses otherwise), MUST differ from --auth-token, and is never
-    /// accepted on a product route.
-    #[arg(long, env = "FLEET_INTERNAL_TOKEN")]
-    fleet_internal_token: Option<String>,
-
-    /// §14.1 (SR2): how this instance authenticates to PEERS.
-    /// "static" = the shared bridge token (NAMED legacy posture;
-    /// refused under STREAMS_RELEASE_POSTURE=1); "workload" =
-    /// short-lived workload JWTs read from WORKLOAD_TOKEN_FILE (the
-    /// platform rotates the file), attached to every relay and
-    /// force-refreshed once on a peer 401.
-    #[arg(long, env = "FLEET_AUTH_MODE", default_value = "static")]
-    fleet_auth_mode: String,
-
-    /// Path to the platform-rotated workload JWT (FLEET_AUTH_MODE=
-    /// workload). Read lazily with an expiry-aware cache.
-    #[arg(long, env = "WORKLOAD_TOKEN_FILE")]
-    workload_token_file: Option<std::path::PathBuf>,
-
-    /// Release posture: refuse boot configurations that are bridges,
-    /// not GA shapes. Accepts 1/0/true/false — every runbook writes
-    /// STREAMS_RELEASE_POSTURE=1 and a posture flag that fails to
-    /// parse the documented form would refuse the SAFE configuration.
-    #[arg(long, env = "STREAMS_RELEASE_POSTURE", default_value = "false", value_parser = parse_bool_flag)]
-    release_posture: bool,
-
-    /// Per-RECORD payload ceiling, independent of the request-body
-    /// ceiling (round-10 review): a request may carry MANY records,
-    /// but ONE record whose prepared SSE frame exceeds the certified
-    /// feed ring turns a valid append into an O(subscribers)
-    /// reconnect herd on a shared feed. Unset = unlimited (dev
-    /// posture); the release posture REQUIRES a ring-consistent value.
-    #[arg(long, env = "MAX_RECORD_PAYLOAD_BYTES")]
-    max_record_payload_bytes: Option<usize>,
-
-    /// Billing tenant boundary: the account every stream created on
-    /// this deployment bills to (docs/OBSERVABILITY-BILLING.md §3.2).
-    #[arg(long, env = "ACCOUNT_ID", default_value = "acct_local")]
-    account_id: String,
-
-    /// Billing tenant boundary: the project.
-    #[arg(long, env = "PROJECT_ID", default_value = "proj_local")]
-    project_id: String,
-
-    /// Telemetry cell identity (one `_usage`/`_ops_*` set per cell).
-    #[arg(long, env = "CELL_ID", default_value = "local")]
-    cell_id: String,
-
-    /// Region tag on telemetry sources (NOT the object-store region).
-    #[arg(long, env = "REGION", default_value = "")]
-    telemetry_region: String,
-
-    /// System encryption key for the `_usage` ledger (§8.1). Unset =
-    /// telemetry pipeline off. BILLING_MODE=required refuses to start
-    /// without it (§14.1).
-    #[arg(long, env = "USAGE_STREAM_KEY")]
-    usage_stream_key: Option<String>,
-
-    /// "required" makes readiness fail without the usage ledger key.
-    #[arg(long, env = "BILLING_MODE", default_value = "off")]
-    billing_mode: String,
-
-    /// Run the usage rollup consumer + month closer on THIS instance.
-    #[arg(long, env = "ROLLUP", default_value = "0")]
-    rollup: String,
-
-    /// Instance tag recorded in metrics records.
-    #[arg(long, env = "INSTANCE_NAME", default_value = "streams")]
-    instance_name: String,
-
-    /// Key prefix inside the bucket(s): lets independent deployments share
-    /// one bucket.
-    #[arg(long, env = "PATH_PREFIX")]
-    path_prefix: Option<String>,
-
-    /// Fleet coordination prefix (COMPUTE-SPEC §2): heartbeats + desired.json
-    /// live here, shared by all instances of the fleet. Enables the
-    /// heartbeat/autoscale loop when set.
-    #[arg(long, env = "FLEET_PREFIX")]
-    fleet_prefix: Option<String>,
-
-    /// Legacy assumed-capacity scaling dimension (req/s per instance).
-    /// 0 disables it: measured CPU utilization (scale_out_cpu_pct) is the
-    /// primary signal — capacity constants go stale whenever the engine
-    /// changes speed (run 5 scaled out at ~5 % actual utilization).
-    #[arg(long, env = "SCALE_RPS_CAPACITY", default_value_t = 0)]
-    scale_rps_capacity: u64,
-
-    /// Scale-out utilization target (percent of fleet maximum). Both the
-    /// capacity dimension (ceil(cores_used/target)) and the hot-instance
-    /// dimension use it: scaling triggers as the fleet nears this level.
-    #[arg(long, env = "SCALE_OUT_CPU_PCT", default_value_t = 75)]
-    scale_out_cpu_pct: u64,
-
-    /// Scale-in utilization ceiling: shrink to N-1 only if projected
-    /// post-shrink utilization stays below this (percent). Must sit well
-    /// under scale_out_cpu_pct or the fleet flaps at the boundary.
-    #[arg(long, env = "SCALE_IN_CPU_PCT", default_value_t = 50)]
-    scale_in_cpu_pct: u64,
-
-    /// How long a hot-instance CPU breach must persist before it scales
-    /// the fleet (shard handoffs spike CPU briefly).
-    #[arg(long, env = "SCALE_CPU_SUSTAIN_SECS", default_value_t = 20)]
-    scale_cpu_sustain_secs: u64,
-
-    /// Router-observed client-latency threshold (ms) for the edge scaling
-    /// dimension; also blocks scale-in while breached.
-    #[arg(long, env = "SCALE_EDGE_LATENCY_MS", default_value_t = 1000)]
-    scale_edge_latency_ms: u64,
-
-    /// RSS shed threshold (MB): 429 writes while RSS exceeds this.
-    /// Docker phase 1: without it a 1 GB cgroup OOM-kills the instance at
-    /// full throughput. MUST sit well below the platform kill line (the
-    /// slate-codex A/B died at ~750 MB anon RSS on Prisma Compute with the
-    /// shed configured at 800 — an unreachable guard protects nothing).
-    /// Default 600 for the ~750 MB pilot instance class; 0 = off.
-    /// Round-13: per-project memory-pressure high watermark in bytes
-    /// (0 = the backstop is off; the profile pins a certified value).
-    #[arg(long, env = "PROJECT_MEMORY_PRESSURE_BYTES", default_value_t = 0)]
-    project_memory_pressure_bytes: u64,
-    /// Hysteresis release point as a percentage of the high watermark.
-    #[arg(long, env = "PROJECT_MEMORY_RELEASE_PCT", default_value_t = 75)]
-    project_memory_release_pct: u64,
-    #[arg(long, env = "ADMIT_RSS_SHED_MB", default_value_t = 600)]
-    admit_rss_shed_mb: u64,
-
-    /// Instance cap on live SSE subscriptions (#267): new subscriptions
-    /// past the cap get a typed 503 subscription_capacity instead of
-    /// subscriber RSS pushing UNRELATED appends over the write shed
-    /// line. 0 = unlimited. Default 10k is the certification rung of
-    /// the per-instance ladder (measured ~44 KB/parked conn after
-    /// #269 => ~440 MB at the cap); raising it is a deliberate
-    /// experimental posture, not part of default certification.
-    #[arg(long, env = "SSE_MAX_CONNECTIONS", default_value_t = 10_000)]
-    sse_max_connections: u64,
-
-    /// Per-stream inflight append cap (0 = off): one hot stream cannot
-    /// occupy every admission slot of its shard owner (scoped 429).
-    #[arg(long, env = "ADMIT_MAX_INFLIGHT_PER_STREAM", default_value_t = 64)]
-    admit_max_inflight_per_stream: i64,
-
-    /// §12-lite admission backstop: shed /v1/stream requests with 429 +
-    /// Retry-After beyond this many in flight (0 = off). Protects the
-    /// durable path from queue collapse when offered load exceeds
-    /// capacity; pairs with closed-loop clients honoring Retry-After.
-    #[arg(long, env = "ADMIT_MAX_INFLIGHT", default_value_t = 0)]
-    admit_max_inflight: i64,
-
-    /// Measured per-instance ingress-concurrency capacity through the
-    /// platform front door. Two-layer model (platform team investigation
-    /// + our 6-source confirmation, 2026-07-15): each SOURCE Compute
-    /// instance is egress-capped at ~48-50 outgoing requests; the
-    /// DESTINATION front door admits ~145-150 concurrent aggregate (the
-    /// earlier 48 calibration was the measuring instance's own egress
-    /// cap). Scale-out begins at scale_out_cpu_pct% of this. 0 disables.
-    #[arg(long, env = "SCALE_EDGE_SLOTS", default_value_t = 140)]
-    scale_edge_slots: u64,
-
-    /// ONE shared block cache across all shard DBs (§1.1). SlateDB's
-    /// per-DB default is 512 MB — 16 shards × 512 MB on a 1 GB instance
-    /// dies by cache fill in tens of minutes (the run 6/8 zombie
-    /// generator; found 2026-07-15).
-    #[arg(long, env = "SHARED_CACHE_BYTES", default_value_t = 192 * 1024 * 1024)]
-    shared_cache_bytes: u64,
-
-    /// Hysteresis: scale-in only after need has been below the current
-    /// desired count for this long (pilot-scaled from the spec's 10 min).
-    #[arg(long, env = "SCALE_IN_SECS", default_value_t = 60)]
-    scale_in_secs: u64,
-
-    /// Second scaling dimension (COMPUTE-SPEC §4.2): if any loaded live
-    /// instance's ack p50 exceeds this, the fleet scales out even when
-    /// rps alone wouldn't ask for it — a congested instance suppresses
-    /// its own throughput signal (run-3 finding).
-    #[arg(long, env = "SCALE_LATENCY_MS", default_value_t = 250)]
-    scale_latency_ms: u64,
-
-    /// The latency breach must persist this long before scaling (damps the
-    /// transition-churn feedback observed in run 4).
-    #[arg(long, env = "SCALE_LAT_SUSTAIN_SECS", default_value_t = 20)]
-    scale_lat_sustain_secs: u64,
-
-    /// Maximum fleet size (pilot: the four deployed services).
-    #[arg(long, env = "FLEET_MAX", default_value_t = 4)]
-    fleet_max: u64,
-}
-
-impl Args {
+impl crate::config::ServerConfig {
     fn raw_store(&self, bucket: &Option<String>) -> anyhow::Result<AmazonS3> {
-        let bucket = bucket.as_deref().unwrap_or(&self.bucket);
+        let bucket = bucket.as_deref().unwrap_or(&self.cli.bucket);
         AmazonS3Builder::new()
-            .with_endpoint(&self.s3_endpoint)
+            .with_endpoint(&self.cli.s3_endpoint)
             .with_bucket_name(bucket)
-            .with_region(&self.region)
-            .with_access_key_id(&self.access_key_id)
-            .with_secret_access_key(&self.secret_access_key)
+            .with_region(&self.cli.region)
+            .with_access_key_id(&self.cli.access_key_id)
+            .with_secret_access_key(&self.cli.secret_access_key)
             .with_allow_http(true)
             .with_conditional_put(S3ConditionalPut::ETagMatch)
             // Idle pooled connections die silently across scale-to-zero
@@ -566,9 +42,7 @@ impl Args {
             .with_client_options(
                 object_store::ClientOptions::new()
                     .with_allow_http(true) // ClientOptions REPLACES the builder's allow_http
-                    .with_pool_idle_timeout(Duration::from_secs(
-                        crate::config::current().storage.pool_idle_secs,
-                    )),
+                    .with_pool_idle_timeout(Duration::from_secs(self.storage.pool_idle_secs)),
             )
             // Records Tigris's Server-Timing (their internal ms) and
             // x-tigris-served-from per response → sp50/sp99 + served_from
@@ -583,7 +57,7 @@ impl Args {
     // share one global gauge — the egress budget is per instance.
     fn store_for(&self, bucket: &Option<String>) -> anyhow::Result<Arc<dyn ObjectStore>> {
         let s3 = crate::store_timing::TimingStore::new(self.raw_store(bucket)?);
-        Ok(match &self.path_prefix {
+        Ok(match &self.cli.path_prefix {
             Some(p) => Arc::new(object_store::prefix::PrefixStore::new(s3, p.as_str())),
             None => Arc::new(s3),
         })
@@ -592,7 +66,7 @@ impl Args {
     /// Fleet-coordination store (heartbeats, desired.json): shared across
     /// instances, so prefixed by --fleet-prefix, not --path-prefix.
     fn fleet_store(&self) -> anyhow::Result<Option<Arc<dyn ObjectStore>>> {
-        let Some(p) = &self.fleet_prefix else {
+        let Some(p) = &self.cli.fleet_prefix else {
             return Ok(None);
         };
         let s3 = crate::store_timing::TimingStore::new(self.raw_store(&None)?);
@@ -620,8 +94,10 @@ impl Args {
 /// rolls) beside the bounded shard DBs. WP-01 PR 3: the knobs live in
 /// `config::EngineConfig`, parsed once at startup; clap args mirror the
 /// same env vars for --help discoverability.
-pub fn resolved_compactor_options() -> slatedb::config::CompactorOptions {
-    crate::config::current().engine.compactor_options()
+pub fn resolved_compactor_options(
+    engine: &crate::config::EngineConfig,
+) -> slatedb::config::CompactorOptions {
+    engine.compactor_options()
 }
 
 /// The resolved worker knobs as JSON (debug/load + startup log) and the
@@ -629,8 +105,7 @@ pub fn resolved_compactor_options() -> slatedb::config::CompactorOptions {
 /// REFUSES to start unless the live resolved configuration matches the
 /// certified survival profile — a deploy that drops one env var must
 /// fail loudly at boot, not OOM at +28 minutes.
-pub fn compactor_profile_json() -> serde_json::Value {
-    let cfg = crate::config::current();
+pub fn compactor_profile_json(cfg: &crate::config::ServerConfig) -> serde_json::Value {
     let co = cfg.engine.compactor_options();
     let w = co.worker.clone().unwrap_or_default();
     serde_json::json!({
@@ -650,30 +125,34 @@ pub fn compactor_profile_json() -> serde_json::Value {
 /// UPSTREAM defaults to every history partition — the process logged
 /// "certified" with the exact unsafe profile running. Certification
 /// (and the structural test) now inspects what the builders receive.
-pub fn production_settings_families()
--> Vec<(&'static str, Option<slatedb::config::CompactorOptions>)> {
+pub fn production_settings_families(
+    cfg: &crate::config::ServerConfig,
+) -> Vec<(&'static str, Option<slatedb::config::CompactorOptions>)> {
     vec![
-        ("shard", Some(resolved_compactor_options())),
+        ("shard", Some(resolved_compactor_options(&cfg.engine))),
         (
             "history_v1",
-            crate::history::history_settings().compactor_options,
+            crate::history::history_settings(&cfg.history, &cfg.engine.compactor_options())
+                .compactor_options,
         ),
         (
             "history_v2",
-            crate::history::history2_settings().compactor_options,
+            crate::history::history2_settings(&cfg.history, &cfg.engine.compactor_options())
+                .compactor_options,
         ),
         (
             "telemetry",
-            crate::billing::telemetry_settings().compactor_options,
+            crate::billing::telemetry_settings(&cfg.billing, &cfg.engine.compactor_options())
+                .compactor_options,
         ),
     ]
 }
 
-pub fn assert_certified_memprofile() {
-    if crate::config::current().runtime.memprofile_cert.as_deref() != Some("compute-1g") {
+pub fn assert_certified_memprofile(cfg: &crate::config::ServerConfig) {
+    if cfg.runtime.memprofile_cert.as_deref() != Some("compute-1g") {
         return;
     }
-    let p = compactor_profile_json();
+    let p = compactor_profile_json(cfg);
     let expect = serde_json::json!({
         "max_concurrent_compactions": 1,
         "worker_max_concurrent_compactions": 1,
@@ -696,11 +175,13 @@ pub fn assert_certified_memprofile() {
     // The env helper matching the certificate is necessary but not
     // sufficient: every DB family's ACTUAL settings must carry the
     // same worker profile.
-    let cert = resolved_compactor_options()
+    let cert = cfg
+        .engine
+        .compactor_options()
         .worker
         .clone()
         .unwrap_or_default();
-    for (family, co) in production_settings_families() {
+    for (family, co) in production_settings_families(cfg) {
         let Some(co) = co else {
             eprintln!("Error: MEMPROFILE_CERT: {family} settings disable the compactor");
             std::process::exit(1);
@@ -724,17 +205,27 @@ pub fn assert_certified_memprofile() {
 
 #[cfg(test)]
 mod memprofile_tests {
+    use clap::Parser;
+
     /// Structural: every production settings family hands its builder
     /// the ONE resolved worker profile — a family that regresses to
     /// `Settings::default().compactor_options` (history, R29) or
     /// `..Default::default()` (telemetry, R28) fails here.
     #[test]
     fn every_db_family_carries_the_resolved_compactor_profile() {
-        let cert = crate::resolved_compactor_options()
+        let cfg = crate::config::ServerConfig::load(
+            crate::config::CliArgs::parse_from([
+                "streams-slate",
+                "--s3-endpoint",
+                "http://127.0.0.1:1",
+            ]),
+            &crate::config::MapEnvironment::empty(),
+        );
+        let cert = super::resolved_compactor_options(&cfg.engine)
             .worker
             .clone()
             .unwrap_or_default();
-        for (family, co) in crate::production_settings_families() {
+        for (family, co) in super::production_settings_families(&cfg) {
             let co = co.unwrap_or_else(|| panic!("{family}: compactor disabled"));
             let w = co.worker.clone().unwrap_or_default();
             assert_eq!(w.max_subcompactions, cert.max_subcompactions, "{family}");
@@ -749,10 +240,19 @@ mod memprofile_tests {
     }
 }
 
+static SLATEDB_RT_THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(2);
+
+/// Composition-root call, before the first SlateDB opens: size the
+/// dedicated runtime from the process configuration. Tests never call
+/// this and get the default (2), matching the old env-unset default.
+pub fn init_slatedb_runtime_threads(threads: usize) {
+    SLATEDB_RT_THREADS.store(threads, std::sync::atomic::Ordering::Relaxed);
+}
+
 pub fn slatedb_runtime() -> &'static tokio::runtime::Runtime {
     static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RT.get_or_init(|| {
-        let threads = crate::config::current().engine.slatedb_rt_threads;
+        let threads = SLATEDB_RT_THREADS.load(std::sync::atomic::Ordering::Relaxed);
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(threads)
             .thread_name("slatedb-rt")
@@ -777,7 +277,7 @@ where
     rx.await.expect("slatedb-rt task dropped")
 }
 
-fn shard_settings(args: &Args) -> Settings {
+fn shard_settings(args: &CliArgs, engine: &crate::config::EngineConfig) -> Settings {
     Settings {
         // With the group-commit pump on, SlateDB's internal timer is only
         // a failsafe for anything the pump misses (it should never fire
@@ -800,7 +300,7 @@ fn shard_settings(args: &Args) -> Settings {
         // engine's periodic explicit memtable->L0 flush (ShardEngine ticker).
         // D23: fencing correctness comes from CAS write failures, not polls.
         manifest_poll_interval: Duration::from_millis(args.manifest_poll_ms),
-        compactor_options: Some(resolved_compactor_options().clone()),
+        compactor_options: Some(resolved_compactor_options(engine)),
         garbage_collector_options: {
             let mut gc = Settings::default()
                 .garbage_collector_options
@@ -845,20 +345,6 @@ fn shard_settings(args: &Args) -> Settings {
     }
 }
 
-/// SR3-1: fleet-auth posture validation, extracted and GLOBAL. The
-/// selected mode determines the runtime credential state (workload
-/// mode discards any configured static token at construction — see
-/// the AppState wiring), and the release posture is validated whether
-/// or not fleet mode is on: a single-instance deployment mounts the
-/// same raw and internal routes, so it gets the same rules.
-fn parse_bool_flag(s: &str) -> Result<bool, String> {
-    match s {
-        "1" | "true" | "yes" => Ok(true),
-        "0" | "false" | "no" => Ok(false),
-        other => Err(format!("expected 1/0/true/false, got {other:?}")),
-    }
-}
-
 /// Round-10 review: the release posture requires an explicit
 /// per-record payload ceiling whose WORST-CASE prepared SSE frame
 /// fits the certified feed ring — otherwise one legal oversized
@@ -869,11 +355,10 @@ fn parse_bool_flag(s: &str) -> Result<bool, String> {
 /// instrument, never a production knob — a nonzero delay without
 /// STREAMS_CERTIFICATION_MODE=1 refuses boot (fail-loud beats a
 /// silently armed canary fault in production).
-fn cert_sealed_publish_delay() -> anyhow::Result<u64> {
-    let cfg = crate::config::current();
+fn cert_sealed_publish_delay(cfg: &crate::config::RuntimeConfig) -> anyhow::Result<u64> {
     let ms = cert_sealed_publish_delay_from(
-        cfg.runtime.cert_sealed_publish_delay_ms_raw.as_deref(),
-        cfg.runtime.certification_mode.as_deref(),
+        cfg.cert_sealed_publish_delay_ms_raw.as_deref(),
+        cfg.certification_mode.as_deref(),
     )?;
     if ms > 0 {
         tracing::warn!(ms, "CERTIFICATION MODE: sealed publication delayed");
@@ -899,7 +384,11 @@ fn cert_sealed_publish_delay_from(delay: Option<&str>, mode: Option<&str>) -> an
     Ok(ms)
 }
 
-fn validate_record_ceiling(release_posture: bool, ceiling: Option<usize>) -> anyhow::Result<()> {
+fn validate_record_ceiling(
+    sse: &crate::config::SseConfig,
+    release_posture: bool,
+    ceiling: Option<usize>,
+) -> anyhow::Result<()> {
     if !release_posture {
         return Ok(());
     }
@@ -919,7 +408,7 @@ fn validate_record_ceiling(release_posture: bool, ceiling: Option<usize>) -> any
              STREAMS_RELEASE_POSTURE=1"
         );
     }
-    let ring = crate::sse::budget::feed_ring_bytes();
+    let ring = crate::sse::budget::feed_ring_bytes(sse);
     // CHECKED true worst-case bound (round-10e: text framing expands
     // ~6x, more than base64's 4/3; an absurd ceiling must fail here,
     // never wrap).
@@ -942,8 +431,8 @@ fn validate_record_ceiling(release_posture: bool, ceiling: Option<usize>) -> any
     // and a project cap at/above the cell ceiling disables the
     // isolation the backstop exists to provide. An unparseable
     // project-cap setting fails boot here (the dev path only warns).
-    let global = crate::sse::budget::feed_total_cap();
-    let project = crate::sse::feed::configured_project_cap(global)
+    let global = crate::sse::budget::feed_total_cap(sse);
+    let project = crate::sse::feed::configured_project_cap(sse, global)
         .map_err(|m| anyhow::anyhow!("{m} (STREAMS_RELEASE_POSTURE=1 refuses the fallback)"))?;
     if project == 0 {
         anyhow::bail!(
@@ -975,7 +464,7 @@ fn validate_record_ceiling(release_posture: bool, ceiling: Option<usize>) -> any
     Ok(())
 }
 
-fn validate_fleet_auth(args: &Args, fleet_mode: bool) -> anyhow::Result<()> {
+fn validate_fleet_auth(args: &CliArgs, fleet_mode: bool) -> anyhow::Result<()> {
     match args.fleet_auth_mode.as_str() {
         "static" => {
             if args.release_posture {
@@ -1187,7 +676,7 @@ mod config_validation_tests {
             v.extend_from_slice(extra);
             // try_parse_from: a parse error must FAIL THE TEST, not
             // process::exit(2) the whole suite binary.
-            Args::try_parse_from(v).expect("test args must parse")
+            CliArgs::try_parse_from(v).expect("test args must parse")
         };
         // Workload + release + a coexisting static token: refused.
         let a = parse(&[
@@ -1286,21 +775,22 @@ mod config_validation_tests {
     /// feed ring.
     #[test]
     fn release_posture_requires_a_ring_consistent_record_ceiling() {
+        let sse = crate::config::SseConfig::default();
         // Off-release: no ceiling required.
-        assert!(validate_record_ceiling(false, None).is_ok());
+        assert!(validate_record_ceiling(&sse, false, None).is_ok());
         // Release without a ceiling: refused.
-        assert!(validate_record_ceiling(true, None).is_err());
+        assert!(validate_record_ceiling(&sse, true, None).is_err());
         // Round-10e: ZERO is the unlimited sentinel — refused.
-        assert!(validate_record_ceiling(true, Some(0)).is_err());
+        assert!(validate_record_ceiling(&sse, true, Some(0)).is_err());
         // Round-10e: an overflow-inducing ceiling is refused, not
         // wrapped.
-        assert!(validate_record_ceiling(true, Some(usize::MAX)).is_err());
+        assert!(validate_record_ceiling(&sse, true, Some(usize::MAX)).is_err());
         // Release with a ceiling whose frame exceeds the ring: refused.
-        let ring = crate::sse::budget::feed_ring_bytes();
-        assert!(validate_record_ceiling(true, Some(ring)).is_err());
+        let ring = crate::sse::budget::feed_ring_bytes(&sse);
+        assert!(validate_record_ceiling(&sse, true, Some(ring)).is_err());
         // Release with a fitting ceiling: accepted (an eighth of the
         // ring leaves headroom under the 6x worst-case text framing).
-        assert!(validate_record_ceiling(true, Some(ring / 8)).is_ok());
+        assert!(validate_record_ceiling(&sse, true, Some(ring / 8)).is_ok());
         // The bound covers the TRUE worst framing (round-10e): a
         // newline-heavy text payload (6 bytes of SSE output per input
         // byte), lossy invalid UTF-8 (3 bytes per byte), JSON and
@@ -1336,11 +826,21 @@ mod config_validation_tests {
 
     #[test]
     fn shipped_defaults_are_a_valid_engine_configuration() {
-        let args = Args::parse_from(["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"]);
-        validate_engine_settings("shard", &shard_settings(&args))
-            .expect("default shard settings must open");
-        validate_engine_settings("history", &crate::history::history_settings())
-            .expect("default history settings must open");
+        let args = CliArgs::parse_from(["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"]);
+        validate_engine_settings(
+            "shard",
+            &shard_settings(&args, &crate::config::EngineConfig::default()),
+        )
+        .expect("default shard settings must open");
+        let cfg = crate::config::ServerConfig::load(
+            CliArgs::parse_from(["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"]),
+            &crate::config::MapEnvironment::empty(),
+        );
+        validate_engine_settings(
+            "history",
+            &crate::history::history_settings(&cfg.history, &cfg.engine.compactor_options()),
+        )
+        .expect("default history settings must open");
     }
 
     /// Follow-up review finding 4 (red): the release-safe hub-budget
@@ -1523,11 +1023,15 @@ mod config_validation_tests {
 
     #[test]
     fn unflushed_at_or_below_l0_is_rejected_before_any_engine_opens() {
-        let mut args = Args::parse_from(["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"]);
+        let mut args =
+            CliArgs::parse_from(["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"]);
         args.l0_sst_size_bytes = 32 * 1024 * 1024;
         args.max_unflushed_bytes = 16 * 1024 * 1024;
-        let err = validate_engine_settings("shard", &shard_settings(&args))
-            .expect_err("l0 above unflushed must be refused at startup");
+        let err = validate_engine_settings(
+            "shard",
+            &shard_settings(&args, &crate::config::EngineConfig::default()),
+        )
+        .expect_err("l0 above unflushed must be refused at startup");
         let msg = format!("{err}");
         assert!(msg.contains("max_unflushed_bytes"), "unhelpful: {msg}");
         assert!(msg.contains("L0_SST_SIZE_BYTES"), "no remedy named: {msg}");
@@ -1535,8 +1039,11 @@ mod config_validation_tests {
         // Equality is just as fatal as inversion — SlateDB requires a
         // strict inequality.
         args.max_unflushed_bytes = args.l0_sst_size_bytes;
-        validate_engine_settings("shard", &shard_settings(&args))
-            .expect_err("equal sizes must be refused too");
+        validate_engine_settings(
+            "shard",
+            &shard_settings(&args, &crate::config::EngineConfig::default()),
+        )
+        .expect_err("equal sizes must be refused too");
     }
 }
 
@@ -1582,33 +1089,54 @@ fn validate_engine_settings(what: &str, s: &Settings) -> anyhow::Result<()> {
     Ok(())
 }
 
-pub async fn async_main() -> anyhow::Result<()> {
-    let mut args = Args::parse();
-
-    // WP-01: one parsed, immutable configuration graph for the whole
-    // process. main() already loaded+installed it before the pre-runtime
-    // checks; re-installing here is idempotent and keeps async_main
-    // self-sufficient. One redacted effective-configuration event after
-    // validation — AppConfig carries no secrets by construction.
-    crate::config::install(crate::config::AppConfig::load());
-    tracing::info!(config = %crate::config::current().redacted_summary(), "effective configuration (redacted)");
+/// The server bootstrap: the composition root hands in ONE owned,
+/// immutable [`crate::config::ServerConfig`]; this function constructs
+/// stores, validates, builds the runtime owners and serves. Called from
+/// the binary's `run` facade; tests drive owners directly, not this.
+pub async fn run(mut config: crate::config::ServerConfig) -> anyhow::Result<()> {
+    // R28: a certified survival deploy must fail at boot, not OOM at
+    // +28 min, if any memory knob was dropped or overridden.
+    assert_certified_memprofile(&config);
+    tracing::info!(config = %config.redacted_summary(), "effective configuration (redacted)");
+    tracing::info!(
+        model = %crate::quota::pressure_model_json(),
+        "project memory-pressure model (round-13; weights are code-versioned)"
+    );
+    init_slatedb_runtime_threads(config.engine.slatedb_rt_threads);
+    // Process-global infrastructure sized once from the owned config
+    // (WP-01 PR 3.1): the absorber budget, the shared caches (history,
+    // telemetry, postings), the usage limits, the scaler policy, the
+    // store egress gates, and the debug pause flag's INITIAL value.
+    // Each holder documents why it is process-global; un-seeded tests
+    // get the old defaults.
+    crate::history::init_absorb_pause(config.history.absorb_pause_initial);
+    crate::history::init_absorb_budget(&config.history);
+    crate::history::init_history_cache(config.history.cache_bytes);
+    crate::billing::init_telemetry_cache(config.billing.telemetry_cache_bytes);
+    crate::postings_cache::init_postings_cache(config.postings.cache_bytes);
+    crate::usage::init_limits(&config.admission);
+    crate::scaler3::init_policy(&config.scaler);
+    crate::store_timing::configure(&config.storage);
 
     // FIRST: the body ceiling sizes the absorber's worst-frame
     // reservation, which floors the process-wide budget. It must be
     // fixed before anything reads either (CHAOS-3).
-    crate::http::set_max_body_bytes(args.max_request_body_bytes)?;
+    crate::http::set_max_body_bytes(config.cli.max_request_body_bytes)?;
 
     // Before anything opens a store: a configuration that SlateDB will
     // reject at open time must stop the process here, not turn into a
     // permanently-500 data plane behind an `ok` health check (CHAOS-2).
     // Both engine tiers go through the same check so a future edit to
     // either one cannot reintroduce the hole.
-    validate_engine_settings("shard", &shard_settings(&args))?;
-    validate_engine_settings("history", &crate::history::history_settings())?;
+    validate_engine_settings("shard", &shard_settings(&config.cli, &config.engine))?;
+    validate_engine_settings(
+        "history",
+        &crate::history::history_settings(&config.history, &config.engine.compactor_options()),
+    )?;
 
-    let ops_store = args.store_for(&args.ops_bucket)?;
-    let shard_store = args.store_for(&args.shard_bucket)?;
-    let data_store = args.store_for(&args.data_bucket)?;
+    let ops_store = config.store_for(&config.cli.ops_bucket)?;
+    let shard_store = config.store_for(&config.cli.shard_bucket)?;
+    let data_store = config.store_for(&config.cli.data_bucket)?;
 
     // R23-5: a synchronous storage canary, BEFORE we bind.
     //
@@ -1623,7 +1151,7 @@ pub async fn async_main() -> anyhow::Result<()> {
     // Credentials that can read but not write are a real and silent
     // failure mode that would otherwise surface as a 500 per append
     // forever — which is the whole CHAOS-2 disease.
-    let canary_prefix = args.path_prefix.clone().unwrap_or_default();
+    let canary_prefix = config.cli.path_prefix.clone().unwrap_or_default();
     for (label, store) in [
         ("ops", ops_store.clone()),
         ("shard", shard_store.clone()),
@@ -1638,7 +1166,7 @@ pub async fn async_main() -> anyhow::Result<()> {
         let probe = object_store::path::Path::from(format!(
             "{}_canary/{}-{}-{}",
             canary_prefix.trim_end_matches('/'),
-            args.instance_name.replace('/', "_"),
+            config.cli.instance_name.replace('/', "_"),
             std::process::id(),
             // A boot-unique nonce. No new dependency: the wall clock in
             // nanos plus the instance name already distinguishes two
@@ -1684,63 +1212,64 @@ pub async fn async_main() -> anyhow::Result<()> {
     tracing::info!("startup canary: ops/shard/data buckets readable and writable");
     // R23-5: and if we ever DO end up unready with no shard ever opened,
     // exit rather than sit in rotation-limbo (see spawn_unready_watchdog).
-    crate::sharddir::spawn_unready_watchdog();
+    crate::sharddir::spawn_unready_watchdog(&config.shard);
 
-    let registry = Registry::new(ops_store.clone(), &args.cell_id);
+    let registry = Registry::new(ops_store.clone(), &config.cli.cell_id);
     // MULTITENANCY transition posture: the deployment tenant is
     // EXPLICIT, validated config — layout-4 paths and hashes derive
     // from it, so an invalid or reserved value refuses boot loudly
     // instead of writing a mis-keyed namespace.
-    let tenant = crate::tenant::ProjectId::new(&args.project_id)
-        .unwrap_or_else(|e| panic!("PROJECT_ID {:?} is invalid: {e}", args.project_id));
+    let tenant = crate::tenant::ProjectId::new(&config.cli.project_id)
+        .unwrap_or_else(|e| panic!("PROJECT_ID {:?} is invalid: {e}", config.cli.project_id));
     if tenant.is_system() {
         panic!("PROJECT_ID may not be the reserved system project");
     }
     // MULTITENANCY Stage 5: the auth service exists in every mode (Off
     // is inert); feeds are wired below once the runtime is up.
-    let auth_mode = crate::auth::AuthMode::from_env(Some(args.streams_auth_mode.as_str()))?;
+    let auth_mode = crate::auth::AuthMode::from_env(Some(config.cli.streams_auth_mode.as_str()))?;
     if auth_mode != crate::auth::AuthMode::Off {
         // Review item: the local placeholder tenant must never reach a
         // shadow/enforce deployment — those are the multi-tenant
         // postures, and proj_local silently naming a real project's
         // data is exactly the accident this refuses.
         anyhow::ensure!(
-            args.project_id != "proj_local",
+            config.cli.project_id != "proj_local",
             "STREAMS_AUTH_MODE={} requires an explicit non-default PROJECT_ID",
-            args.streams_auth_mode
+            config.cli.streams_auth_mode
         );
         anyhow::ensure!(
-            args.streams_auth_keys_file.is_some()
-                && args.streams_auth_policy_file.is_some()
-                && args.streams_auth_grants_file.is_some(),
+            config.cli.streams_auth_keys_file.is_some()
+                && config.cli.streams_auth_policy_file.is_some()
+                && config.cli.streams_auth_grants_file.is_some(),
             "STREAMS_AUTH_MODE={} requires STREAMS_AUTH_KEYS_FILE,              STREAMS_AUTH_POLICY_FILE and STREAMS_AUTH_GRANTS_FILE",
-            args.streams_auth_mode
+            config.cli.streams_auth_mode
         );
         // §10.4: the denial journal drains through the system ledger
         // key. Without one, enforce still refuses correctly but the
         // journal is VOID — denials are only counted, never durably
         // recorded. Loud at boot so a preview cell cannot mistake
         // itself for an audited one.
-        if args.usage_stream_key.is_none() {
+        if config.cli.usage_stream_key.is_none() {
             tracing::warn!(
                 "STREAMS_AUTH_MODE={} without USAGE_STREAM_KEY: the _audit_events \
                  denial journal is DISABLED (denials appear only in \
                  audit_events_dropped_total)",
-                args.streams_auth_mode
+                config.cli.streams_auth_mode
             );
         }
         // The refresher cadence must clear the staleness window with
         // room for a failed fetch or two, or the cell oscillates into
         // fail-closed refusals on schedule.
         anyhow::ensure!(
-            (args.streams_auth_refresh_secs as i64) <= crate::auth::POLICY_STALENESS_MAX_SECS / 3,
+            (config.cli.streams_auth_refresh_secs as i64)
+                <= crate::auth::POLICY_STALENESS_MAX_SECS / 3,
             "STREAMS_AUTH_REFRESH_SECS={} must be <= {} (a third of the              {}s staleness window)",
-            args.streams_auth_refresh_secs,
+            config.cli.streams_auth_refresh_secs,
             crate::auth::POLICY_STALENESS_MAX_SECS / 3,
             crate::auth::POLICY_STALENESS_MAX_SECS
         );
     }
-    let catalog_cursor_key: Option<[u8; 32]> = match &args.streams_cursor_key {
+    let catalog_cursor_key: Option<[u8; 32]> = match &config.cli.streams_cursor_key {
         None => None,
         Some(b64) => {
             use base64::Engine;
@@ -1754,19 +1283,23 @@ pub async fn async_main() -> anyhow::Result<()> {
     };
     let auth_service = std::sync::Arc::new(crate::auth::AuthService::new(
         auth_mode,
-        args.streams_auth_issuer.clone(),
-        &args.cell_id,
+        config.cli.streams_auth_issuer.clone(),
+        &config.cli.cell_id,
     )?);
     // Only relevant when no topology exists yet; an existing topology wins.
-    let fleet_mode = args.fleet_prefix.is_some() && args.fleet_max > 1;
+    let fleet_mode = config.cli.fleet_prefix.is_some() && config.cli.fleet_max > 1;
     // FAIL CLOSED (round-19 security): the /v1/internal/* peer surface
     // can fence consumer generations and read segment state WITHOUT a
     // stream key. It therefore needs its own credential, distinct from
     // the customer account token, and fleet mode must not start without
     // one — a fleet that silently accepted the public bearer on those
     // routes would let any customer token corrupt any consumer.
-    validate_fleet_auth(&args, fleet_mode)?;
-    validate_record_ceiling(args.release_posture, args.max_record_payload_bytes)?;
+    validate_fleet_auth(&config.cli, fleet_mode)?;
+    validate_record_ceiling(
+        &config.sse,
+        config.cli.release_posture,
+        config.cli.max_record_payload_bytes,
+    )?;
     // Round-4 review: validate the capacity posture against the real
     // descriptor ceiling BEFORE any state is built — the SSE cap may
     // be clamped to what nofile_hard can actually carry.
@@ -1774,34 +1307,38 @@ pub async fn async_main() -> anyhow::Result<()> {
     tracing::info!(
         "nofile soft={nofile_soft} hard={nofile_hard} (raised to hard at boot); \
          feed retention budget={}B",
-        crate::sse::budget::feed_total_cap()
+        crate::sse::budget::feed_total_cap(&config.sse)
     );
     validate_release_capacity(
-        args.release_posture,
-        crate::config::current().runtime.memprofile_cert.as_deref(),
-        crate::config::current().sse.feed_total_bytes_raw.as_deref(),
-        &mut args.sse_max_connections,
+        config.cli.release_posture,
+        config.runtime.memprofile_cert.as_deref(),
+        config.sse.feed_total_bytes_raw.as_deref(),
+        &mut config.cli.sse_max_connections,
         nofile_hard,
     )?;
-    let initial_shards = match args.initial_shards {
+    let initial_shards = match config.cli.initial_shards {
         Some(n) => {
-            if fleet_mode && n < 4 * args.fleet_max as usize {
+            if fleet_mode && n < 4 * config.cli.fleet_max as usize {
                 tracing::warn!(
                     "INITIAL_SHARDS={n} < 4×FLEET_MAX={}: a fresh topology this coarse \
                      draws unevenly under rendezvous and the rebalancer flaps against \
                      return-home; use >= {}",
-                    args.fleet_max,
-                    (4 * args.fleet_max as usize).next_power_of_two()
+                    config.cli.fleet_max,
+                    (4 * config.cli.fleet_max as usize).next_power_of_two()
                 );
             }
             n
         }
-        None if fleet_mode => (4 * args.fleet_max as usize).next_power_of_two(),
+        None if fleet_mode => (4 * config.cli.fleet_max as usize).next_power_of_two(),
         None => 1,
     };
-    let topology = load_or_init_topology(&ops_store, initial_shards, args.max_request_body_bytes)
-        .await
-        .context("load topology")?;
+    let topology = load_or_init_topology(
+        &ops_store,
+        initial_shards,
+        config.cli.max_request_body_bytes,
+    )
+    .await
+    .context("load topology")?;
     // R23-2: the body ceiling is a property of the NAMESPACE, not of the
     // process. The absorber sizes its worst-frame reservation from the
     // running setting, so starting against a namespace created with a
@@ -1816,7 +1353,7 @@ pub async fn async_main() -> anyhow::Result<()> {
     let stored_ceiling = topology
         .max_request_body_bytes
         .unwrap_or(crate::http::MAX_BODY_BYTES);
-    if stored_ceiling != args.max_request_body_bytes {
+    if stored_ceiling != config.cli.max_request_body_bytes {
         anyhow::bail!(
             "MAX_REQUEST_BODY_BYTES is {} but this namespace was created with {} — \
              the ceiling sizes the absorber's worst-frame reservation, so changing it \
@@ -1824,7 +1361,7 @@ pub async fn async_main() -> anyhow::Result<()> {
              (or silently move the published product limit). Set \
              MAX_REQUEST_BODY_BYTES={} to start against this namespace, or point \
              PATH_PREFIX at a fresh one.",
-            args.max_request_body_bytes,
+            config.cli.max_request_body_bytes,
             stored_ceiling,
             stored_ceiling,
         );
@@ -1850,25 +1387,25 @@ pub async fn async_main() -> anyhow::Result<()> {
         let data_store = data_store.clone();
         let keys = keys.clone();
         let touch = touch.clone();
-        let settings = shard_settings(&args);
+        let settings = shard_settings(&config.cli, &config.engine);
         // §1.1: one block cache for the whole process, not one per DB
         // (SlateDB default: 512 MB PER DB — a 16-shard 1 GB instance dies
         // by cache fill; the run 6/8 zombie generator).
         let shared_cache: Arc<slatedb::db_cache::foyer::FoyerCache> =
             Arc::new(slatedb::db_cache::foyer::FoyerCache::new_with_opts(
                 slatedb::db_cache::foyer::FoyerCacheOptions {
-                    max_capacity: args.shared_cache_bytes,
+                    max_capacity: config.cli.shared_cache_bytes,
                     ..Default::default()
                 },
             ));
-        let absorb_bytes = args.absorb_bytes;
-        let absorb_age = args.absorb_age_secs;
-        let absorb_pass_bytes = args.absorb_pass_bytes;
-        let absorb_concurrency = args.absorb_concurrency;
-        let absorb_pace_window_ms = args.absorb_pace_window_ms;
-        let absorb_pace_ms = args.absorb_pace_ms;
-        let absorb_read_par = args.absorb_read_par;
-        let absorb_small_bytes = args.absorb_small_bytes;
+        let absorb_bytes = config.cli.absorb_bytes;
+        let absorb_age = config.cli.absorb_age_secs;
+        let absorb_pass_bytes = config.cli.absorb_pass_bytes;
+        let absorb_concurrency = config.cli.absorb_concurrency;
+        let absorb_pace_window_ms = config.cli.absorb_pace_window_ms;
+        let absorb_pace_ms = config.cli.absorb_pace_ms;
+        let absorb_read_par = config.cli.absorb_read_par;
+        let absorb_small_bytes = config.cli.absorb_small_bytes;
         // Startup invariant (OOM disposition 2): the per-gather packing
         // cap must fit the process budget after the build multiplier,
         // or the envelope claim quietly breaks via reservation
@@ -1878,46 +1415,52 @@ pub async fn async_main() -> anyhow::Result<()> {
             let budget = crate::history::absorb_budget().capacity();
             let max_allowed = budget / crate::history::ABSORB_BUILD_MULTIPLIER;
             crate::history::RESOLVED_GATHER_PACKING_BYTES.store(
-                crate::history::resolved_gather_packing_bytes(args.absorb_gather_max_bytes),
+                crate::history::resolved_gather_packing_bytes(config.cli.absorb_gather_max_bytes),
                 std::sync::atomic::Ordering::Relaxed,
             );
-            if args.absorb_gather_max_bytes > max_allowed {
+            if config.cli.absorb_gather_max_bytes > max_allowed {
                 tracing::warn!(
                     "ABSORB_GATHER_MAX_BYTES {} x{} exceeds the process budget {} — \
                      clamping the gather packing limit to {}",
-                    args.absorb_gather_max_bytes,
+                    config.cli.absorb_gather_max_bytes,
                     crate::history::ABSORB_BUILD_MULTIPLIER,
                     budget,
                     max_allowed,
                 );
                 max_allowed
             } else {
-                args.absorb_gather_max_bytes
+                config.cli.absorb_gather_max_bytes
             }
         };
-        let handle_idle_evict_secs = args.handle_idle_evict_secs;
-        let handle_max_resident = args.handle_max_resident;
-        let trim_per_op = args.trim_per_op;
-        let trim_global_budget = args.trim_global_budget;
-        let wal_group_commit = args.wal_group_commit != 0;
-        let wal_flush_gap = Duration::from_millis(if args.wal_flush_gap_ms == 0 {
-            args.flush_interval_ms
+        let handle_idle_evict_secs = config.cli.handle_idle_evict_secs;
+        let handle_max_resident = config.cli.handle_max_resident;
+        let trim_per_op = config.cli.trim_per_op;
+        let trim_global_budget = config.cli.trim_global_budget;
+        let wal_group_commit = config.cli.wal_group_commit != 0;
+        let wal_flush_gap = Duration::from_millis(if config.cli.wal_flush_gap_ms == 0 {
+            config.cli.flush_interval_ms
         } else {
-            args.wal_flush_gap_ms
+            config.cli.wal_flush_gap_ms
         });
-        let wal_post_ack_gather = Duration::from_millis(args.wal_post_ack_gather_ms);
-        let wal_gather_skip_reqs = if args.wal_gather_skip_reqs == 0 {
+        let wal_post_ack_gather = Duration::from_millis(config.cli.wal_post_ack_gather_ms);
+        let wal_gather_skip_reqs = if config.cli.wal_gather_skip_reqs == 0 {
             u32::MAX
         } else {
-            args.wal_gather_skip_reqs
+            config.cli.wal_gather_skip_reqs
         };
-        let wal_gather_skip_bytes = if args.wal_gather_skip_bytes == 0 {
+        let wal_gather_skip_bytes = if config.cli.wal_gather_skip_bytes == 0 {
             u64::MAX
         } else {
-            args.wal_gather_skip_bytes
+            config.cli.wal_gather_skip_bytes
         };
-        let tail_ring_bytes = args.tail_ring_bytes;
+        let tail_ring_bytes = config.cli.tail_ring_bytes;
         let state_slot = state_slot.clone();
+        // Per-open inputs cloned out of the owned config: the Fn opener
+        // runs once per shard open and cannot move fields out of its
+        // captured variables, so it clones from these locals per call.
+        let opener_history = config.history.clone();
+        let opener_compactor = config.engine.compactor_options();
+        let opener_frame_compress = config.crypto.frame_compress;
         crate::http::ShardOpener {
             open: Box::new(move |prefix: String| {
                 let shard_store = shard_store.clone();
@@ -1940,12 +1483,14 @@ pub async fn async_main() -> anyhow::Result<()> {
                     settings.flush_interval = Some(base + Duration::from_millis(h as u64 % spread));
                 }
                 let state_slot = state_slot.clone();
+                let opener_history = opener_history.clone();
+                let opener_compactor = opener_compactor.clone();
                 Box::pin(async move {
                     let path = crate::sharddir::shard_db_path(&prefix);
                     tracing::info!("opening shard log {path} (lazy; fences prior owner)");
                     let db = {
                         let p2 = path.clone();
-                        crate::on_slatedb_rt(async move {
+                        crate::bootstrap::on_slatedb_rt(async move {
                             Db::builder(p2.as_str(), shard_store)
                                 .with_settings(settings)
                                 .with_db_cache(shared_cache)
@@ -1993,6 +1538,11 @@ pub async fn async_main() -> anyhow::Result<()> {
                             handle_idle_evict: Duration::from_secs(handle_idle_evict_secs),
                             handle_max_resident,
                             shared_postings_cache: Some(crate::postings_cache::process_cache()),
+                            frame_compression: crate::crypto::FrameCompression::from_enabled(
+                                opener_frame_compress,
+                            ),
+                            history: opener_history,
+                            compactor_options: opener_compactor,
                             ..Default::default()
                         },
                         absorb_tx,
@@ -2023,12 +1573,15 @@ pub async fn async_main() -> anyhow::Result<()> {
         }
     };
 
-    let fleet_store_opt = args.fleet_store()?;
+    let fleet_store_opt = config.fleet_store()?;
     let shards_map: std::sync::Arc<
         std::sync::RwLock<HashMap<String, Arc<crate::shard::ShardEngine>>>,
     > = std::sync::Arc::new(std::sync::RwLock::new(HashMap::new()));
-    let gate = crate::sharddir::OpenGate::new(shards_map.clone(), opener.open);
+    let gate =
+        crate::sharddir::OpenGate::new(shards_map.clone(), opener.open, config.shard.open_deadline);
+    let config = Arc::new(config);
     let state = Arc::new(AppState {
+        config: config.clone(),
         registry,
         tenant,
         shard_prefixes: topology.shards.clone(),
@@ -2038,68 +1591,70 @@ pub async fn async_main() -> anyhow::Result<()> {
         fleet_ops: std::sync::atomic::AtomicU64::new(0),
         inflight: std::sync::atomic::AtomicI64::new(0),
         inflight_peak: std::sync::atomic::AtomicI64::new(0),
-        admit_max_inflight: std::sync::atomic::AtomicI64::new(args.admit_max_inflight),
-        admit_rss_shed_mb: args.admit_rss_shed_mb,
+        admit_max_inflight: std::sync::atomic::AtomicI64::new(config.cli.admit_max_inflight),
+        admit_rss_shed_mb: config.cli.admit_rss_shed_mb,
         rss_mb_cached: std::sync::atomic::AtomicU64::new(0),
         admit_shed: std::sync::atomic::AtomicU64::new(0),
         admit_shed_inflight: std::sync::atomic::AtomicU64::new(0),
         admit_shed_survival: std::sync::atomic::AtomicU64::new(0),
         project_memory_pressure_bytes: std::sync::atomic::AtomicU64::new(
-            args.project_memory_pressure_bytes,
+            config.cli.project_memory_pressure_bytes,
         ),
-        project_memory_release_pct: args.project_memory_release_pct.clamp(1, 100),
+        project_memory_release_pct: config.cli.project_memory_release_pct.clamp(1, 100),
         admit_shed_rss: std::sync::atomic::AtomicU64::new(0),
-        sse_max_connections: args.sse_max_connections,
-        sse_configured_max_connections: args.sse_max_connections,
+        sse_max_connections: config.cli.sse_max_connections,
+        sse_configured_max_connections: config.cli.sse_max_connections,
         live_feeds: Arc::new(crate::sse::registry::FeedRegistry::new()),
-        feed_budget: Arc::new(crate::sse::feed::FeedMemoryBudget::from_env()),
-        feed_ring_bytes: std::sync::atomic::AtomicUsize::new(crate::sse::budget::feed_ring_bytes()),
+        feed_budget: Arc::new(crate::sse::feed::FeedMemoryBudget::from_config(&config.sse)),
+        feed_ring_bytes: std::sync::atomic::AtomicUsize::new(crate::sse::budget::feed_ring_bytes(
+            &config.sse,
+        )),
         max_record_payload_bytes: std::sync::atomic::AtomicUsize::new(
-            args.max_record_payload_bytes.unwrap_or(0),
+            config.cli.max_record_payload_bytes.unwrap_or(0),
         ),
         cert_sealed_publish_delay_ms: std::sync::atomic::AtomicU64::new(
-            cert_sealed_publish_delay().unwrap_or_else(|e| panic!("{e}")),
+            cert_sealed_publish_delay(&config.runtime).unwrap_or_else(|e| panic!("{e}")),
         ),
         sse_heartbeat_ms: std::sync::atomic::AtomicU64::new(
             // Operational cadence knob (fleet certification runs it at
             // 500ms to observe keep-alives inside short stall windows);
             // GatedSseBody clamps to its 50ms floor.
-            crate::config::current().sse.heartbeat_ms,
+            config.sse.heartbeat_ms,
         ),
         sse_connections: std::sync::atomic::AtomicU64::new(0),
-        admit_max_inflight_per_stream: args.admit_max_inflight_per_stream,
+        admit_max_inflight_per_stream: config.cli.admit_max_inflight_per_stream,
         stream_inflight: std::sync::Mutex::new(HashMap::new()),
         stream_shed: std::sync::atomic::AtomicU64::new(0),
         wedge_shed: std::sync::atomic::AtomicU64::new(0),
         maint_latch: crate::backpressure::GlobalLatch::new(),
         sweep_sched: crate::billing::SweepSched::default(),
-        instance_name: args.instance_name.clone(),
+        instance_name: config.cli.instance_name.clone(),
         ring_active: std::sync::RwLock::new(Vec::new()),
         ring_overrides: std::sync::RwLock::new(std::collections::HashMap::new()),
         peer_urls: std::sync::RwLock::new(std::collections::HashMap::new()),
         data_store,
         keys,
         touch,
-        default_key: args.conformance_default_key.clone(),
-        auth_token: args.auth_token.clone(),
+        default_key: config.cli.conformance_default_key.clone(),
+        auth_token: config.cli.auth_token.clone(),
         // Never empty: a standalone server still must be
         // distinguishable from the platform edge (round-19 MF4).
-        origin_marker: if args.instance_name.is_empty() {
+        origin_marker: if config.cli.instance_name.is_empty() {
             format!("streams/{}", env!("CARGO_PKG_VERSION"))
         } else {
-            args.instance_name.clone()
+            config.cli.instance_name.clone()
         },
         // SR3-1: the MODE determines the runtime credential state — in
         // workload mode the static token does not exist at runtime,
         // whatever the environment carried; in static mode no source
         // exists and relays use the bridge token.
-        fleet_internal_token: if args.fleet_auth_mode == "workload" {
+        fleet_internal_token: if config.cli.fleet_auth_mode == "workload" {
             None
         } else {
-            args.fleet_internal_token.clone()
+            config.cli.fleet_internal_token.clone()
         },
-        fleet_token_source: (args.fleet_auth_mode == "workload")
-            .then_some(args.workload_token_file.as_ref())
+        fleet_token_source: (config.cli.fleet_auth_mode == "workload")
+            .then_some(config.cli.workload_token_file.as_ref())
             .flatten()
             .map(|path| {
                 // Expiry-aware file cache: the platform rotates the file;
@@ -2123,20 +1678,20 @@ pub async fn async_main() -> anyhow::Result<()> {
                     Some(tok)
                 }) as crate::http::FleetTokenSource
             }),
-        usage_key: args.usage_stream_key.clone(),
+        usage_key: config.cli.usage_stream_key.clone(),
         rollup: std::sync::OnceLock::new(),
         read_spool: std::sync::OnceLock::new(),
         billing_reads: Arc::new(crate::billing::ReadUsageAccumulator::new(
             crate::billing::MeterSource {
-                cell: args.cell_id.clone(),
-                instance: args.instance_name.clone(),
+                cell: config.cli.cell_id.clone(),
+                instance: config.cli.instance_name.clone(),
                 boot: crate::billing::boot_id().to_string(),
             },
         )),
-        account_id: args.account_id.clone(),
+        account_id: config.cli.account_id.clone(),
         auth: auth_service.clone(),
-        cell_id: args.cell_id.clone(),
-        region: args.telemetry_region.clone(),
+        cell_id: config.cli.cell_id.clone(),
+        region: config.cli.telemetry_region.clone(),
         quotas: crate::quota::QuotaRegistry::default(),
         catalog_cursor_key,
     });
@@ -2147,15 +1702,15 @@ pub async fn async_main() -> anyhow::Result<()> {
         crate::auth_feed::spawn_refresher(
             auth_service.clone(),
             Box::new(crate::auth_feed::FileKeySource(
-                args.streams_auth_keys_file.clone().unwrap(),
+                config.cli.streams_auth_keys_file.clone().unwrap(),
             )),
             Box::new(crate::auth_feed::FilePolicySource(
-                args.streams_auth_policy_file.clone().unwrap(),
+                config.cli.streams_auth_policy_file.clone().unwrap(),
             )),
             Box::new(crate::auth_feed::FileGrantSource(
-                args.streams_auth_grants_file.clone().unwrap(),
+                config.cli.streams_auth_grants_file.clone().unwrap(),
             )),
-            std::time::Duration::from_secs(args.streams_auth_refresh_secs.max(1)),
+            std::time::Duration::from_secs(config.cli.streams_auth_refresh_secs.max(1)),
         );
     }
     // Unified scaler (ROUTING-V3 §5): sketch-driven splits/merges.
@@ -2179,8 +1734,8 @@ pub async fn async_main() -> anyhow::Result<()> {
         // memory can't masquerade as live pressure. Rate-limited; the
         // instance is already shedding writes when this runs.
         let st = state.clone();
-        let shed_line_mb = args.admit_rss_shed_mb;
-        let bp_limits = crate::backpressure::Limits::from_env();
+        let shed_line_mb = config.cli.admit_rss_shed_mb;
+        let bp_limits = crate::backpressure::Limits::from_config(&config.admission);
         tracing::info!(
             unabsorbed_instance = bp_limits.unabsorbed_bytes_instance,
             unabsorbed_shard = bp_limits.unabsorbed_bytes_shard,
@@ -2227,30 +1782,30 @@ pub async fn async_main() -> anyhow::Result<()> {
             state.clone(),
             fleet_store,
             crate::fleet::FleetCfg {
-                instance: args.instance_name.clone(),
-                capacity_rps: args.scale_rps_capacity,
-                edge_slots: args.scale_edge_slots,
-                target_util: (args.scale_out_cpu_pct as f64 / 100.0).clamp(0.05, 0.95),
-                scale_in_util: (args.scale_in_cpu_pct as f64 / 100.0).clamp(0.05, 0.90),
-                hot_cpu_pct: args.scale_out_cpu_pct as f64,
-                cpu_sustain: Duration::from_secs(args.scale_cpu_sustain_secs),
-                scale_in: Duration::from_secs(args.scale_in_secs),
-                latency_ms: args.scale_latency_ms,
-                edge_latency_ms: args.scale_edge_latency_ms,
-                latency_sustain: Duration::from_secs(args.scale_lat_sustain_secs),
-                max: args.fleet_max,
+                instance: config.cli.instance_name.clone(),
+                capacity_rps: config.cli.scale_rps_capacity,
+                edge_slots: config.cli.scale_edge_slots,
+                target_util: (config.cli.scale_out_cpu_pct as f64 / 100.0).clamp(0.05, 0.95),
+                scale_in_util: (config.cli.scale_in_cpu_pct as f64 / 100.0).clamp(0.05, 0.90),
+                hot_cpu_pct: config.cli.scale_out_cpu_pct as f64,
+                cpu_sustain: Duration::from_secs(config.cli.scale_cpu_sustain_secs),
+                scale_in: Duration::from_secs(config.cli.scale_in_secs),
+                latency_ms: config.cli.scale_latency_ms,
+                edge_latency_ms: config.cli.scale_edge_latency_ms,
+                latency_sustain: Duration::from_secs(config.cli.scale_lat_sustain_secs),
+                max: config.cli.fleet_max,
             },
         );
         tracing::info!(
             "fleet coordination on (prefix={}, cap={} rps)",
-            args.fleet_prefix.as_deref().unwrap_or(""),
-            args.scale_rps_capacity
+            config.cli.fleet_prefix.as_deref().unwrap_or(""),
+            config.cli.scale_rps_capacity
         );
     }
     // Telemetry pipeline (docs/OBSERVABILITY-BILLING.md): the drainer on
     // every instance; the rollup consumer where ROLLUP=1.
-    if args.billing_mode == "required" {
-        if args.usage_stream_key.is_none() {
+    if config.cli.billing_mode == "required" {
+        if config.cli.usage_stream_key.is_none() {
             anyhow::bail!(
                 "BILLING_MODE=required needs USAGE_STREAM_KEY — production \
                  billing refuses to run without the usage ledger (§14.1)"
@@ -2258,9 +1813,9 @@ pub async fn async_main() -> anyhow::Result<()> {
         }
         // Round-21: production billing must never silently attribute a
         // customer's traffic to the placeholder tenant.
-        if args.account_id == "acct_local"
-            || args.project_id == "proj_local"
-            || args.cell_id == "local"
+        if config.cli.account_id == "acct_local"
+            || config.cli.project_id == "proj_local"
+            || config.cli.cell_id == "local"
         {
             anyhow::bail!(
                 "BILLING_MODE=required needs explicit ACCOUNT_ID, PROJECT_ID \
@@ -2277,14 +1832,15 @@ pub async fn async_main() -> anyhow::Result<()> {
         })?;
         // ...and the rollup instance's database likewise: a rollup
         // owner that cannot open its DB must not serve (item 10).
-        if args.rollup == "1" {
-            crate::billing::open_rollup(&state, &args.path_prefix.clone().unwrap_or_default())
-                .await
-                .map_err(|e| {
-                    anyhow::anyhow!(
-                        "BILLING_MODE=required: rollup DB must open before serving: {e}"
-                    )
-                })?;
+        if config.cli.rollup == "1" {
+            crate::billing::open_rollup(
+                &state,
+                &config.cli.path_prefix.clone().unwrap_or_default(),
+            )
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!("BILLING_MODE=required: rollup DB must open before serving: {e}")
+            })?;
         }
     }
     // ONE startup budget summary (OOM review): every fixed memory
@@ -2293,8 +1849,8 @@ pub async fn async_main() -> anyhow::Result<()> {
     // mistakes surface at boot, not at the kill line. WP-01: values come
     // from the installed AppConfig (identical parsing, once).
     {
-        let cfg = crate::config::current();
-        let shared = args.shared_cache_bytes as usize;
+        let cfg = &config;
+        let shared = config.cli.shared_cache_bytes as usize;
         let history = cfg.history.cache_bytes;
         let postings = cfg.postings.cache_bytes;
         let telemetry = cfg.billing.telemetry_cache_bytes;
@@ -2310,7 +1866,7 @@ pub async fn async_main() -> anyhow::Result<()> {
         // gather reserves max(packing x multiplier, worst_frame), not
         // the worst frame alone.
         crate::history::RESOLVED_GATHER_PACKING_BYTES.store(
-            crate::history::resolved_gather_packing_bytes(args.absorb_gather_max_bytes),
+            crate::history::resolved_gather_packing_bytes(config.cli.absorb_gather_max_bytes),
             std::sync::atomic::Ordering::Relaxed,
         );
         let per_gather = crate::history::per_gather_reservation_bytes();
@@ -2323,17 +1879,17 @@ pub async fn async_main() -> anyhow::Result<()> {
             mib(history),
             mib(postings),
             mib(telemetry),
-            mib(args.max_unflushed_bytes),
+            mib(config.cli.max_unflushed_bytes),
             mib(absorb_budget),
             mib(crate::history::absorb_worst_frame_transient()),
             mib(per_gather),
             gathers,
             effective_gathers,
             rt_threads,
-            args.admit_rss_shed_mb,
+            config.cli.admit_rss_shed_mb,
         );
         let _ = crate::history::RESOLVED_MEMORY_CONFIG.set(serde_json::json!({
-            "gatherPackingLimitBytes": args
+            "gatherPackingLimitBytes": config.cli
                 .absorb_gather_max_bytes
                 .min(absorb_budget / crate::history::ABSORB_BUILD_MULTIPLIER),
             "absorbBudgetBytes": absorb_budget,
@@ -2344,33 +1900,36 @@ pub async fn async_main() -> anyhow::Result<()> {
             "historyCacheBytes": history,
             "postingsCacheBytes": postings,
             "telemetryCacheBytes": telemetry,
-            "maxUnflushedBytes": args.max_unflushed_bytes,
-            "l0SstSizeBytes": args.l0_sst_size_bytes,
-            "l0MaxSsts": args.l0_max_ssts,
-            "shedLineMb": args.admit_rss_shed_mb,
+            "maxUnflushedBytes": config.cli.max_unflushed_bytes,
+            "l0SstSizeBytes": config.cli.l0_sst_size_bytes,
+            "l0MaxSsts": config.cli.l0_max_ssts,
+            "shedLineMb": config.cli.admit_rss_shed_mb,
         }));
         let fixed_mb = mib(shared + history + postings + telemetry + absorb_budget) as u64;
-        if args.admit_rss_shed_mb > 0 && fixed_mb + 100 > args.admit_rss_shed_mb {
+        if config.cli.admit_rss_shed_mb > 0 && fixed_mb + 100 > config.cli.admit_rss_shed_mb {
             tracing::warn!(
                 "fixed memory budgets ({fixed_mb} MiB) leave <100 MiB below the shed line                  ({} MB) — this posture does not fit the instance class",
-                args.admit_rss_shed_mb,
+                config.cli.admit_rss_shed_mb,
             );
         }
     }
     crate::billing::spawn_telemetry(state.clone());
-    if args.rollup == "1" {
-        crate::billing::spawn_rollup(state.clone(), args.path_prefix.clone().unwrap_or_default());
+    if config.cli.rollup == "1" {
+        crate::billing::spawn_rollup(
+            state.clone(),
+            config.cli.path_prefix.clone().unwrap_or_default(),
+        );
     }
     let app = crate::http::router(state);
 
     crate::store_timing::spawn_sentinels();
 
-    let listener = tokio::net::TcpListener::bind(&args.listen)
+    let listener = tokio::net::TcpListener::bind(&config.cli.listen)
         .await
-        .with_context(|| format!("bind {}", args.listen))?;
-    tracing::info!("streams-slate listening on {}", args.listen);
+        .with_context(|| format!("bind {}", config.cli.listen))?;
+    tracing::info!("streams-slate listening on {}", config.cli.listen);
     // #269: bounded h1 buffers — see http::serve_h1.
-    let max_buf = crate::config::current().http.h1_max_buf;
+    let max_buf = config.http.h1_max_buf;
     crate::http::serve_h1(listener, app, max_buf).await?;
     Ok(())
 }

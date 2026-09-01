@@ -138,16 +138,33 @@ pub struct Limits {
     pub burst_secs: f64,
 }
 
+static LIMIT_BYTES_PER_SEC_INIT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(5_000_000.0f64.to_bits());
+static LIMIT_REQS_PER_SEC_INIT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(1_000.0f64.to_bits());
+static LIMIT_RECS_PER_SEC_INIT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(5_000.0f64.to_bits());
+static LIMIT_BURST_SECS_INIT: std::sync::atomic::AtomicU64 =
+    std::sync::atomic::AtomicU64::new(2.0f64.to_bits());
+
+/// Composition-root seed (WP-01 PR 3.1): sized once from the owned
+/// ServerConfig; un-seeded tests get the old env-unset defaults.
+pub fn init_limits(cfg: &crate::config::AdmissionConfig) {
+    use std::sync::atomic::Ordering;
+    LIMIT_BYTES_PER_SEC_INIT.store(cfg.limit_bytes_per_sec.to_bits(), Ordering::Relaxed);
+    LIMIT_REQS_PER_SEC_INIT.store(cfg.limit_reqs_per_sec.to_bits(), Ordering::Relaxed);
+    LIMIT_RECS_PER_SEC_INIT.store(cfg.limit_recs_per_sec.to_bits(), Ordering::Relaxed);
+    LIMIT_BURST_SECS_INIT.store(cfg.limit_burst_secs.to_bits(), Ordering::Relaxed);
+}
+
 pub fn limits() -> &'static Limits {
+    use std::sync::atomic::Ordering;
     static L: OnceLock<Limits> = OnceLock::new();
-    L.get_or_init(|| {
-        let cfg = crate::config::current();
-        Limits {
-            bytes_per_sec: cfg.admission.limit_bytes_per_sec,
-            reqs_per_sec: cfg.admission.limit_reqs_per_sec,
-            recs_per_sec: cfg.admission.limit_recs_per_sec,
-            burst_secs: cfg.admission.limit_burst_secs,
-        }
+    L.get_or_init(|| Limits {
+        bytes_per_sec: f64::from_bits(LIMIT_BYTES_PER_SEC_INIT.load(Ordering::Relaxed)),
+        reqs_per_sec: f64::from_bits(LIMIT_REQS_PER_SEC_INIT.load(Ordering::Relaxed)),
+        recs_per_sec: f64::from_bits(LIMIT_RECS_PER_SEC_INIT.load(Ordering::Relaxed)),
+        burst_secs: f64::from_bits(LIMIT_BURST_SECS_INIT.load(Ordering::Relaxed)),
     })
 }
 

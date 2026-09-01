@@ -78,12 +78,12 @@ const MAX_READ_BYTES: usize = 8 * 1024 * 1024;
 /// woken long-poll responses carry `Streams-Debug-Wait: waited=<0|1>
 /// arm_us=<arm->wake> read_us=<wake->records-built>`, splitting the
 /// remaining roundtrip-minus-append interval into its server-side stages.
-fn debug_timing() -> bool {
-    crate::config::current().http.debug_timing
+pub fn debug_timing(cfg: &crate::config::HttpConfig) -> bool {
+    cfg.debug_timing
 }
 
-fn tail_max_bytes() -> usize {
-    crate::config::current().http.tail_max_bytes
+pub fn tail_max_bytes(cfg: &crate::config::HttpConfig) -> usize {
+    cfg.tail_max_bytes
 }
 const APPEND_TIMEOUT: Duration = Duration::from_secs(10);
 // The platform front door kills any request at ~30 s with a 502 (measured
@@ -103,6 +103,10 @@ pub struct ShardOpener {
 }
 
 pub struct AppState {
+    /// The one parsed, immutable process configuration (WP-01 PR 3.1).
+    /// Owners read their knobs from here; nothing reads the process
+    /// environment at runtime.
+    pub config: Arc<crate::config::ServerConfig>,
     pub registry: Registry,
     /// Single-flight, cancellation-proof history DbReader service — one
     /// per process/store (history.rs).
@@ -644,7 +648,7 @@ impl AppState {
         // continues in its own task regardless of what this request does —
         // the caller only ever gets a retryable 503, never the power to
         // abandon or duplicate an open (the eu-central-1 storm).
-        let wait = std::time::Duration::from_millis(crate::config::current().shard.open_wait_ms);
+        let wait = std::time::Duration::from_millis(self.config.shard.open_wait_ms);
         match self.gate.get_or_open(&prefix, wait).await {
             crate::sharddir::OpenOutcome::Ready(engine) => {
                 // R29: a customer who coalesced into (or raced) an open
@@ -1161,13 +1165,13 @@ async fn debug_load(
         // actually downloaded and passes the digest in; verify-running
         // compares it to the campaign's upload manifest. "unknown"
         // outside wrapper-managed deployments.
-        "binary_sha256": crate::config::current().http.binary_sha256.clone(),
+        "binary_sha256": state.config.http.binary_sha256.clone(),
         // R28: full build/boot identity — the campaign verifier compares
         // ALL of these against its manifest (stale-build platform trap).
         "git_commit": env!("STREAMS_GIT_COMMIT"),
         "build_unix": env!("STREAMS_BUILD_UNIX"),
         "boot_id": crate::billing::boot_id(),
-        "compactor_profile": crate::compactor_profile_json(),
+        "compactor_profile": crate::bootstrap::compactor_profile_json(&state.config),
         // R29: the KERNEL's high-water mark, not sampled RSS — sampled
         // peaks missed the 5 s kill waves entirely. cgroup v2 first,
         // v1 fallback; null off-Linux.
@@ -1636,7 +1640,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                             "bearer token required",
                         );
                     }
-                    if !crate::config::current().http.debug_exit {
+                    if !state.config.http.debug_exit {
                         return err_resp(
                             StatusCode::FORBIDDEN,
                             "disabled",
@@ -2083,10 +2087,10 @@ async fn health_axum(State(state): State<Arc<AppState>>) -> Response {
         )
             .into_response();
     }
-    if crate::billing::billing_required() {
+    if crate::billing::billing_required(&state.config.billing) {
         let spool_ok = state.read_spool.get().is_some();
-        let rollup_ok = crate::config::current().billing.rollup_env.as_deref() != Some("1")
-            || state.rollup.get().is_some();
+        let rollup_ok =
+            state.config.billing.rollup_env.as_deref() != Some("1") || state.rollup.get().is_some();
         if !spool_ok || !rollup_ok {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -2161,17 +2165,13 @@ async fn billing_readiness_axum(
             "pendingCorrectionArtifacts": pending_corr,
         });
     }
-    let ready = !crate::billing::billing_required()
+    let ready = !crate::billing::billing_required(&state.config.billing)
         || (state.usage_key.is_some()
             && spool_open
-            && (crate::config::current().billing.rollup_env.as_deref() != Some("1")
+            && (state.config.billing.rollup_env.as_deref() != Some("1")
                 || state.rollup.get().is_some()));
     axum::Json(serde_json::json!({
-        "mode": crate::config::current()
-            .billing
-            .mode_env
-            .clone()
-            .unwrap_or_else(|| "off".into()),
+        "mode": state.config.billing.mode_env.clone().unwrap_or_else(|| "off".into()),
         "ready": ready,
         "usageLedgerConfigured": state.usage_key.is_some(),
         "spool": { "open": spool_open, "depth": depth, "quarantined": quarantined },
@@ -5667,7 +5667,7 @@ async fn append_core(
         // drainer would feed back forever. BILLING_METER=off exists for
         // A/B isolation in benchmarks only.
         billing: (!crate::billing::is_reserved_stream(&desc.name)
-            && crate::config::current().billing.meter_enabled)
+            && state.config.billing.meter_enabled)
             .then(|| {
                 std::sync::Arc::new(crate::billing::BillingRef {
                     identity: crate::billing::identity_of(&state, &desc),
@@ -5703,7 +5703,7 @@ async fn append_core(
     // and reserved system streams stay admitted because overload
     // recovery must not deadlock on its own system-of-record writes.
     if !close_only && has_entries && !crate::billing::is_reserved_stream(&name) {
-        let limits = crate::backpressure::limits();
+        let limits = crate::backpressure::Limits::from_config(&state.config.admission);
         if let Some(cause) = crate::backpressure::admit(&engine, &state.maint_latch, &limits) {
             state.maint_latch.note_shed();
             let mut r = err_resp(
@@ -6388,7 +6388,15 @@ pub(crate) async fn read_merged(
 }
 
 pub(crate) fn interval_cursor(req_cursor: Option<&str>) -> String {
-    let interval = (now_ms() as u64) / 20_000;
+    interval_cursor_at(now_ms() as u64, req_cursor)
+}
+
+/// The explicit-time core of `interval_cursor` (WP-15 seam): a
+/// 20-second interval counter; a request cursor at or beyond the
+/// current interval echoes `r + 1`, anything else yields the current
+/// interval. Pure — tests pin exact outputs for fixed instants.
+pub(crate) fn interval_cursor_at(now_ms: u64, req_cursor: Option<&str>) -> String {
+    let interval = now_ms / 20_000;
     let req: Option<u64> = req_cursor.and_then(|c| c.parse().ok());
     match req {
         Some(r) if r >= interval => (r + 1).to_string(),
@@ -6970,7 +6978,7 @@ pub(crate) async fn read_inner(
         // Woken live reads carry a fresh commit group, not a backlog:
         // keep the response (and the client's rearm) proportional to it.
         params.max_bytes.unwrap_or(if live_wake {
-            tail_max_bytes()
+            tail_max_bytes(&state.config.http)
         } else {
             MAX_READ_BYTES
         }),
@@ -7038,6 +7046,7 @@ pub(crate) async fn read_inner(
                     routing_key: params.key.clone().unwrap_or_default(),
                 },
                 &r.payload,
+                crate::crypto::FrameCompression::from_enabled(state.config.crypto.frame_compress),
             );
             buf.extend_from_slice(&frame);
         }
@@ -7096,7 +7105,7 @@ pub(crate) async fn read_inner(
             .header("Stream-Cursor", interval_cursor(params.cursor.as_deref()))
             .header(header::CACHE_CONTROL, "no-store");
     }
-    if debug_timing() {
+    if debug_timing(&state.config.http) {
         r = r.header(
             "Streams-Debug-Wait",
             format!(
@@ -8182,7 +8191,7 @@ async fn read_v3_lineage_inner(
             scan_from,
             params.key.as_deref(),
             params.max_bytes.unwrap_or(if live_wake {
-                tail_max_bytes()
+                tail_max_bytes(&state.config.http)
             } else {
                 MAX_READ_BYTES
             }),
@@ -8320,6 +8329,25 @@ struct QueueReceiveBody {
 
 #[cfg(test)]
 mod tests {
+
+    /// interval_cursor_at is a pure function of (now, request cursor):
+    /// exact outputs for fixed instants, both arms and both fallbacks.
+    #[test]
+    fn interval_cursor_at_is_exact() {
+        let now = 90_000_000 * 20_000; // interval 90_000_000 exactly
+        assert_eq!(interval_cursor_at(now, None), "90000000");
+        // request cursor at/above the current interval echoes r + 1:
+        assert_eq!(interval_cursor_at(now, Some("90000000")), "90000001");
+        assert_eq!(interval_cursor_at(now, Some("95000000")), "95000001");
+        // long-past request cursor yields the current interval:
+        assert_eq!(interval_cursor_at(now, Some("5")), "90000000");
+        // unparseable request cursor likewise:
+        assert_eq!(interval_cursor_at(now, Some("junk")), "90000000");
+        // epoch boundary:
+        assert_eq!(interval_cursor_at(0, None), "0");
+        assert_eq!(interval_cursor_at(19_999, None), "0");
+        assert_eq!(interval_cursor_at(20_000, None), "1");
+    }
 
     // Round-19 fleet-contract: hierarchical names with characters that
     // are structural in a URL must survive a relay intact.

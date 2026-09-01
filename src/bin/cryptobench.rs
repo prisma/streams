@@ -6,13 +6,15 @@ mod crypto;
 #[path = "../tenant.rs"]
 #[allow(dead_code)] // shared identity module; side bins use only crypto
 mod tenant;
-// crypto.rs reads FRAME_COMPRESS via crate::config (WP-01); standalone
-// bins get the env-parse shim instead of the lib's AppConfig.
-#[path = "shared/config_shim.rs"]
-#[allow(dead_code)] // used only on bins whose crypto paths encrypt
-mod config;
+use crypto::{
+    FrameCompression, FrameHeader, StreamKey, decode_frame, decrypt_frame, derive_subkey,
+    encrypt_frame,
+};
 
-use crypto::{FrameHeader, StreamKey, decode_frame, decrypt_frame, derive_subkey, encrypt_frame};
+// This tool measures the v2 (uncompressed) encrypt hook; compression is
+// an explicit choice of the caller, so pin it here rather than reading
+// any ambient configuration.
+const COMPRESSION: FrameCompression = FrameCompression::Disabled;
 
 fn main() {
     use base64::Engine;
@@ -38,7 +40,7 @@ fn main() {
                 key_version: 0,
                 routing_key: "rk".into(),
             };
-            let _ = encrypt_frame(&sub, &hash, &h, &plain);
+            let _ = encrypt_frame(&sub, &hash, &h, &plain, COMPRESSION);
         }
         let t0 = Instant::now();
         let mut sink = 0usize;
@@ -49,7 +51,7 @@ fn main() {
                 key_version: 0,
                 routing_key: "rk".into(),
             };
-            let f = encrypt_frame(&sub, &hash, &h, &plain);
+            let f = encrypt_frame(&sub, &hash, &h, &plain, COMPRESSION);
             sink += f.len();
         }
         let dt = t0.elapsed().as_secs_f64();
@@ -67,7 +69,7 @@ fn main() {
             key_version: 0,
             routing_key: "rk".into(),
         };
-        let frame = encrypt_frame(&sub, &hash, &h, &plain);
+        let frame = encrypt_frame(&sub, &hash, &h, &plain, COMPRESSION);
         let t0 = Instant::now();
         let mut sink2 = 0usize;
         for _ in 0..n {
