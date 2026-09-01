@@ -410,17 +410,34 @@ def _norm_ws(s: str) -> str:
 
 def item_keys(report: dict) -> dict[str, set]:
     """Stable per-category item keys for baseline diffing (line numbers
-    deliberately absent — they move under any edit)."""
+    deliberately absent — they move under any edit).
+
+    PR 3.2: coarse identities carry their COUNT, so growth inside an
+    already-flagged item is a visible diff (a count change reads as one
+    NEW + one RESOLVED pair). Previously another forbidden reference in
+    a flagged file, another Axum leak in a flagged file, a second
+    mutable static of the same type, or a second over-budget function
+    with a colliding name produced NO diff item at all."""
+    from collections import Counter
+
+    fn_names = Counter(
+        f"{f['file']}::{f['function']}" for f in report["functions_over_budget"]
+    )
+    static_types = Counter(
+        f"{e['file']}|{e['type']}" for e in report["mutable_statics"]
+    )
     return {
         "files_over_budget": {f["file"] for f in report["files_over_budget"]},
-        "functions_over_budget": {
-            f"{f['file']}::{f['function']}" for f in report["functions_over_budget"]
+        "functions_over_budget": {f"{k}|x{n}" for k, n in fn_names.items()},
+        "forbidden_edges": {
+            f"{e['file']}|refs={e['count']}" for e in report["forbidden_edges"]
         },
-        "forbidden_edges": {e["file"] for e in report["forbidden_edges"]},
         "env_reads": {f"{e['file']}|{_norm_ws(e['src'])}" for e in report["env_reads"]},
-        "axum_outside_transport": {e["file"] for e in report["axum_outside_transport"]},
+        "axum_outside_transport": {
+            f"{e['file']}|refs={e['count']}" for e in report["axum_outside_transport"]
+        },
         "keytag_sites": {f"{e['file']}|{_norm_ws(e['src'])}" for e in report["keytag_sites"]},
-        "mutable_statics": {f"{e['file']}|{e['type']}" for e in report["mutable_statics"]},
+        "mutable_statics": {f"{k}|x{n}" for k, n in static_types.items()},
     }
 
 

@@ -530,6 +530,108 @@ pub struct CliArgs {
     pub(crate) fleet_max: u64,
 }
 
+#[cfg(test)]
+impl CliArgs {
+    /// Hermetic test fixture (PR 3.2). Clap's `env = "..."` attributes
+    /// make every `try_parse_from` observe the AMBIENT process
+    /// environment for absent flags — a developer or CI variable could
+    /// silently change what ordinary config tests parse. This value is
+    /// every field written explicitly, equal to what
+    /// `["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"]`
+    /// parses to in a SCRUBBED environment;
+    /// `config::tests::cli_fixture_matches_scrubbed_parse` proves that
+    /// equality in a cleared-environment subprocess, so a default
+    /// change in the clap attributes cannot drift past this fixture.
+    pub(crate) fn deterministic() -> Self {
+        Self {
+            listen: "127.0.0.1:8090".into(),
+            s3_endpoint: "http://127.0.0.1:1".into(),
+            bucket: "streams".into(),
+            ops_bucket: None,
+            shard_bucket: None,
+            data_bucket: None,
+            region: "us-east-1".into(),
+            access_key_id: "test".into(),
+            secret_access_key: "test".into(),
+            initial_shards: None,
+            flush_interval_ms: 25,
+            wal_group_commit: 0,
+            wal_flush_gap_ms: 0,
+            wal_post_ack_gather_ms: 0,
+            wal_gather_skip_reqs: 32,
+            wal_gather_skip_bytes: 1_048_576,
+            tail_ring_bytes: 0,
+            l0_sst_size_bytes: 8 * 1024 * 1024,
+            max_unflushed_bytes: 16 * 1024 * 1024,
+            max_request_body_bytes: 32 * 1024 * 1024,
+            l0_max_ssts: 8,
+            l0_max_ssts_per_key: 0,
+            compactor_poll_ms: crate::DEFAULT_COMPACTOR_POLL_MS,
+            compactor_max_concurrent: 4,
+            wal_gc_interval_secs: 30,
+            gc_quiet_interval_secs: 600,
+            wal_gc_min_age_secs: 60,
+            compactions_gc_interval_secs: 30,
+            compactions_gc_min_age_secs: 120,
+            manifest_poll_ms: crate::DEFAULT_MANIFEST_POLL_MS,
+            trim_per_op: 8_192,
+            trim_global_budget: 65_536,
+            absorb_pass_bytes: 256 * 1024 * 1024,
+            absorb_bytes: 4 * 1024 * 1024,
+            absorb_age_secs: 300,
+            absorb_concurrency: 6,
+            absorb_small_bytes: 1024 * 1024,
+            handle_idle_evict_secs: 600,
+            handle_max_resident: 65_536,
+            absorb_gather_max_bytes: 32 * 1024 * 1024,
+            absorb_pace_window_ms: 50,
+            absorb_pace_ms: 0,
+            absorb_read_par: 8,
+            conformance_default_key: None,
+            auth_token: None,
+            streams_auth_mode: "off".into(),
+            streams_auth_issuer: "https://auth.prisma.io".into(),
+            streams_auth_keys_file: None,
+            streams_auth_policy_file: None,
+            streams_auth_grants_file: None,
+            streams_auth_refresh_secs: 30,
+            streams_cursor_key: None,
+            fleet_internal_token: None,
+            fleet_auth_mode: "static".into(),
+            workload_token_file: None,
+            release_posture: false,
+            max_record_payload_bytes: None,
+            account_id: "acct_local".into(),
+            project_id: "proj_local".into(),
+            cell_id: "local".into(),
+            telemetry_region: "".into(),
+            usage_stream_key: None,
+            billing_mode: "off".into(),
+            rollup: "0".into(),
+            instance_name: "streams".into(),
+            path_prefix: None,
+            fleet_prefix: None,
+            scale_rps_capacity: 0,
+            scale_out_cpu_pct: 75,
+            scale_in_cpu_pct: 50,
+            scale_cpu_sustain_secs: 20,
+            scale_edge_latency_ms: 1000,
+            project_memory_pressure_bytes: 0,
+            project_memory_release_pct: 75,
+            admit_rss_shed_mb: 600,
+            sse_max_connections: 10_000,
+            admit_max_inflight_per_stream: 64,
+            admit_max_inflight: 0,
+            scale_edge_slots: 140,
+            shared_cache_bytes: 192 * 1024 * 1024,
+            scale_in_secs: 60,
+            scale_latency_ms: 250,
+            scale_lat_sustain_secs: 20,
+            fleet_max: 4,
+        }
+    }
+}
+
 /// SR3-1: fleet-auth posture validation, extracted and GLOBAL. The
 /// selected mode determines the runtime credential state (workload
 /// mode discards any configured static token at construction — see

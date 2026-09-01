@@ -1,9 +1,12 @@
-//! Explicit environment source (WP-01 PR 3.1).
+//! Explicit environment source (WP-01 PR 3.1, hermetic since PR 3.2).
 //!
 //! Configuration parsing reads from an [`Environment`] value, never from
 //! the ambient process environment directly. Production uses
 //! [`ProcessEnvironment`] exactly once at the composition root; tests use
-//! [`MapEnvironment`], so no test mutates process-wide environment state.
+//! [`MapEnvironment`]. No test mutates process-wide environment state:
+//! the one smoke test that exercises the real environment runs its
+//! subject in a subprocess whose environment is established before it
+//! starts (`config::tests::process_environment_smoke_test`).
 
 #[cfg(test)]
 use std::collections::BTreeMap;

@@ -148,10 +148,14 @@ pub fn production_settings_families(
     ]
 }
 
-pub fn assert_certified_memprofile(cfg: &crate::config::ServerConfig) {
+/// PR 3.2: pure — returns every certification mismatch instead of
+/// calling `process::exit` from library code (the binary decides how to
+/// terminate). Empty vec = certified (or certification not requested).
+pub(crate) fn certified_memprofile_errors(cfg: &crate::config::ServerConfig) -> Vec<String> {
     if cfg.runtime.memprofile_cert.as_deref() != Some("compute-1g") {
-        return;
+        return Vec::new();
     }
+    let mut errors = Vec::new();
     let p = compactor_profile_json(cfg);
     let expect = serde_json::json!({
         "max_concurrent_compactions": 1,
@@ -165,11 +169,10 @@ pub fn assert_certified_memprofile(cfg: &crate::config::ServerConfig) {
     for (k, want) in expect.as_object().unwrap() {
         let got = &p[k];
         if got != want {
-            eprintln!(
-                "Error: MEMPROFILE_CERT=compute-1g but {k}={got} (certified {want}) — \
+            errors.push(format!(
+                "MEMPROFILE_CERT=compute-1g but {k}={got} (certified {want}) — \
                  the deploy dropped or overrode a survival knob; refusing to start"
-            );
-            std::process::exit(1);
+            ));
         }
     }
     // The env helper matching the certificate is necessary but not
@@ -183,8 +186,10 @@ pub fn assert_certified_memprofile(cfg: &crate::config::ServerConfig) {
         .unwrap_or_default();
     for (family, co) in production_settings_families(cfg) {
         let Some(co) = co else {
-            eprintln!("Error: MEMPROFILE_CERT: {family} settings disable the compactor");
-            std::process::exit(1);
+            errors.push(format!(
+                "MEMPROFILE_CERT: {family} settings disable the compactor"
+            ));
+            continue;
         };
         let w = co.worker.clone().unwrap_or_default();
         if w.max_subcompactions != cert.max_subcompactions
@@ -193,14 +198,16 @@ pub fn assert_certified_memprofile(cfg: &crate::config::ServerConfig) {
             || w.max_sst_size != cert.max_sst_size
             || w.max_concurrent_compactions != cert.max_concurrent_compactions
         {
-            eprintln!(
-                "Error: MEMPROFILE_CERT: {family} settings carry a different \
+            errors.push(format!(
+                "MEMPROFILE_CERT: {family} settings carry a different \
                  compaction worker profile than the certified one; refusing to start"
-            );
-            std::process::exit(1);
+            ));
         }
     }
-    tracing::info!(profile = %p, "memory profile certified: compute-1g (all DB families)");
+    if errors.is_empty() {
+        tracing::info!(profile = %p, "memory profile certified: compute-1g (all DB families)");
+    }
+    errors
 }
 
 #[cfg(test)]
@@ -354,20 +361,12 @@ fn shard_settings(args: &CliArgs, engine: &crate::config::EngineConfig) -> Setti
 /// Round-11.6: the seal-publication delay is a CERTIFICATION
 /// instrument, never a production knob — a nonzero delay without
 /// STREAMS_CERTIFICATION_MODE=1 refuses boot (fail-loud beats a
-/// silently armed canary fault in production).
-fn cert_sealed_publish_delay(cfg: &crate::config::RuntimeConfig) -> anyhow::Result<u64> {
-    let ms = cert_sealed_publish_delay_from(
-        cfg.cert_sealed_publish_delay_ms_raw.as_deref(),
-        cfg.certification_mode.as_deref(),
-    )?;
-    if ms > 0 {
-        tracing::warn!(ms, "CERTIFICATION MODE: sealed publication delayed");
-    }
-    Ok(ms)
-}
-
-/// Pure core of `cert_sealed_publish_delay` (unit-testable without
-/// process-global env mutation).
+/// silently armed canary fault in production). PR 3.2: called from
+/// `ServerConfig::validate`; the boot warning for a nonzero delay is
+/// emitted by `run()`'s preflight.
+///
+/// Pure over its inputs (unit-testable without process-global env
+/// mutation).
 fn cert_sealed_publish_delay_from(delay: Option<&str>, mode: Option<&str>) -> anyhow::Result<u64> {
     let ms: u64 = match delay {
         Some(v) => v.parse().map_err(|_| {
@@ -1089,14 +1088,293 @@ fn validate_engine_settings(what: &str, s: &Settings) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Every configuration problem found by [`crate::config::ServerConfig::validate`]
+/// — all of them, not just the first, so one boot attempt reports one
+/// complete list (PR 3.2). Library code returns this; the binary decides
+/// how to print it and what exit status to use.
+#[derive(Debug)]
+pub struct ConfigError {
+    errors: Vec<String>,
+}
+
+impl std::fmt::Display for ConfigError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        writeln!(
+            f,
+            "configuration invalid ({} problem(s)):",
+            self.errors.len()
+        )?;
+        for e in &self.errors {
+            writeln!(f, "  - {e}")?;
+        }
+        Ok(())
+    }
+}
+
+impl std::error::Error for ConfigError {}
+
+/// A [`crate::config::ServerConfig`] whose invariants have been proven
+/// (PR 3.2): the only way to construct one is
+/// [`crate::config::ServerConfig::validate`], and [`run`] accepts only
+/// this type — so validation is complete before any process-global
+/// initialization, store opening, canary write, or task spawn, by
+/// construction rather than by call-site discipline. Carries the values
+/// validation had to derive anyway, so bootstrap never re-parses (and
+/// can never disagree with what was validated).
+pub struct ValidatedServerConfig {
+    pub(crate) config: crate::config::ServerConfig,
+    pub(crate) tenant: crate::tenant::ProjectId,
+    pub(crate) auth_mode: crate::auth::AuthMode,
+    pub(crate) catalog_cursor_key: Option<[u8; 32]>,
+    pub(crate) cert_sealed_publish_delay_ms: u64,
+}
+
+impl ValidatedServerConfig {
+    /// The proven configuration graph (read-only).
+    pub fn config(&self) -> &crate::config::ServerConfig {
+        &self.config
+    }
+}
+
+impl crate::config::ServerConfig {
+    /// Prove the parsed configuration internally consistent (PR 3.2).
+    /// Pure over the configuration value: no environment reads, no
+    /// stores, no spawns, no process termination — every problem is
+    /// collected and returned. OS-resource checks that need a live
+    /// probe (the `nofile` descriptor clamp) run in [`run`]'s preflight
+    /// stage instead, before any process-global initialization.
+    pub fn validate(self) -> Result<ValidatedServerConfig, ConfigError> {
+        let mut errors = Vec::new();
+
+        // R28: SWEEP_MAINT_RESIDENT=0 would silently starve every cold
+        // debt class (the rotation would open and immediately close
+        // each indebted engine, so no absorber lives long enough to
+        // drain). The config stores the raw value; the billing adapter
+        // floors at use.
+        if self.billing.sweep_maint_resident == 0 {
+            errors.push(
+                "SWEEP_MAINT_RESIDENT=0 starves all cold-debt drain; \
+                 set >= 1 or unset (default 2)"
+                    .to_string(),
+            );
+        }
+        // R28: a certified survival deploy must fail at boot, not OOM
+        // at +28 min, if any memory knob was dropped or overridden.
+        errors.extend(certified_memprofile_errors(&self));
+        // A configuration SlateDB will reject at open time must stop
+        // here, not turn into a permanently-500 data plane behind an
+        // `ok` health check (CHAOS-2). Both engine tiers go through the
+        // same check so a future edit to either cannot reintroduce the
+        // hole.
+        for (what, settings) in [
+            ("shard", shard_settings(&self.cli, &self.engine)),
+            (
+                "history",
+                crate::history::history_settings(&self.history, &self.engine.compactor_options()),
+            ),
+        ] {
+            if let Err(e) = validate_engine_settings(what, &settings) {
+                errors.push(format!("{e}"));
+            }
+        }
+        // MULTITENANCY transition posture: the deployment tenant is
+        // EXPLICIT, validated config — layout-4 paths and hashes derive
+        // from it, so an invalid or reserved value refuses boot loudly
+        // instead of writing a mis-keyed namespace.
+        let tenant = match crate::tenant::ProjectId::new(&self.cli.project_id) {
+            Ok(t) if t.is_system() => {
+                errors.push("PROJECT_ID may not be the reserved system project".to_string());
+                None
+            }
+            Ok(t) => Some(t),
+            Err(e) => {
+                errors.push(format!(
+                    "PROJECT_ID {:?} is invalid: {e}",
+                    self.cli.project_id
+                ));
+                None
+            }
+        };
+        // MULTITENANCY Stage 5: the auth service exists in every mode
+        // (Off is inert).
+        let auth_mode =
+            match crate::auth::AuthMode::from_env(Some(self.cli.streams_auth_mode.as_str())) {
+                Ok(m) => Some(m),
+                Err(e) => {
+                    errors.push(format!("{e}"));
+                    None
+                }
+            };
+        if auth_mode.is_some_and(|m| m != crate::auth::AuthMode::Off) {
+            // Review item: the local placeholder tenant must never
+            // reach a shadow/enforce deployment — proj_local silently
+            // naming a real project's data is exactly the accident
+            // this refuses.
+            if self.cli.project_id == "proj_local" {
+                errors.push(format!(
+                    "STREAMS_AUTH_MODE={} requires an explicit non-default PROJECT_ID",
+                    self.cli.streams_auth_mode
+                ));
+            }
+            if !(self.cli.streams_auth_keys_file.is_some()
+                && self.cli.streams_auth_policy_file.is_some()
+                && self.cli.streams_auth_grants_file.is_some())
+            {
+                errors.push(format!(
+                    "STREAMS_AUTH_MODE={} requires STREAMS_AUTH_KEYS_FILE, \
+                     STREAMS_AUTH_POLICY_FILE and STREAMS_AUTH_GRANTS_FILE",
+                    self.cli.streams_auth_mode
+                ));
+            }
+            // The refresher cadence must clear the staleness window
+            // with room for a failed fetch or two, or the cell
+            // oscillates into fail-closed refusals on schedule.
+            if (self.cli.streams_auth_refresh_secs as i64)
+                > crate::auth::POLICY_STALENESS_MAX_SECS / 3
+            {
+                errors.push(format!(
+                    "STREAMS_AUTH_REFRESH_SECS={} must be <= {} (a third of the \
+                     {}s staleness window)",
+                    self.cli.streams_auth_refresh_secs,
+                    crate::auth::POLICY_STALENESS_MAX_SECS / 3,
+                    crate::auth::POLICY_STALENESS_MAX_SECS
+                ));
+            }
+        }
+        let catalog_cursor_key: Option<[u8; 32]> = match &self.cli.streams_cursor_key {
+            None => None,
+            Some(b64) => {
+                use base64::Engine;
+                match base64::engine::general_purpose::STANDARD.decode(b64) {
+                    Err(e) => {
+                        errors.push(format!("STREAMS_CURSOR_KEY is not base64: {e}"));
+                        None
+                    }
+                    Ok(raw) => match <[u8; 32]>::try_from(raw.as_slice()) {
+                        Ok(k) => Some(k),
+                        Err(_) => {
+                            errors.push(
+                                "STREAMS_CURSOR_KEY must decode to exactly 32 bytes".to_string(),
+                            );
+                            None
+                        }
+                    },
+                }
+            }
+        };
+        // FAIL CLOSED (round-19 security): fleet mode must not start
+        // without its own internal credential.
+        let fleet_mode = self.cli.fleet_prefix.is_some() && self.cli.fleet_max > 1;
+        if let Err(e) = validate_fleet_auth(&self.cli, fleet_mode) {
+            errors.push(format!("{e}"));
+        }
+        if let Err(e) = validate_record_ceiling(
+            &self.sse,
+            self.cli.release_posture,
+            self.cli.max_record_payload_bytes,
+        ) {
+            errors.push(format!("{e}"));
+        }
+        // The pure half of the release-capacity posture: nofile_hard=0
+        // means "no descriptor probe", so only the feed-budget and
+        // bounded-cap checks run here. The live descriptor clamp is
+        // run()'s preflight.
+        {
+            let mut cap_probe = self.cli.sse_max_connections;
+            if let Err(e) = validate_release_capacity(
+                self.cli.release_posture,
+                self.runtime.memprofile_cert.as_deref(),
+                self.sse.feed_total_bytes_raw.as_deref(),
+                &mut cap_probe,
+                0,
+            ) {
+                errors.push(format!("{e}"));
+            }
+        }
+        // Round-11.6: the seal-publication delay is a CERTIFICATION
+        // instrument, never a production knob.
+        let cert_sealed_publish_delay_ms = match cert_sealed_publish_delay_from(
+            self.runtime.cert_sealed_publish_delay_ms_raw.as_deref(),
+            self.runtime.certification_mode.as_deref(),
+        ) {
+            Ok(ms) => Some(ms),
+            Err(e) => {
+                errors.push(format!("{e}"));
+                None
+            }
+        };
+
+        if !errors.is_empty() {
+            return Err(ConfigError { errors });
+        }
+        Ok(ValidatedServerConfig {
+            tenant: tenant.expect("no errors implies tenant parsed"),
+            auth_mode: auth_mode.expect("no errors implies auth mode parsed"),
+            catalog_cursor_key,
+            cert_sealed_publish_delay_ms: cert_sealed_publish_delay_ms
+                .expect("no errors implies delay parsed"),
+            config: self,
+        })
+    }
+}
+
 /// The server bootstrap: the composition root hands in ONE owned,
-/// immutable [`crate::config::ServerConfig`]; this function constructs
-/// stores, validates, builds the runtime owners and serves. Called from
-/// the binary's `run` facade; tests drive owners directly, not this.
-pub async fn run(mut config: crate::config::ServerConfig) -> anyhow::Result<()> {
-    // R28: a certified survival deploy must fail at boot, not OOM at
-    // +28 min, if any memory knob was dropped or overridden.
-    assert_certified_memprofile(&config);
+/// PROVEN [`ValidatedServerConfig`] (PR 3.2: validation is complete
+/// before this function runs — the type is the evidence); this function
+/// runs the OS preflight, then constructs stores, builds the runtime
+/// owners and serves. Called from the binary's `run` facade; tests
+/// drive owners directly, not this.
+pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
+    // Transitional posture (WP-01 PR 3.2, pending WP-02): several
+    // subsystems still read process-global init-once holders (absorb
+    // budget/pause, history/telemetry/postings caches, usage limits,
+    // scaler policy, store gates), seeded once below. Two ServerConfig
+    // VALUES coexist fine, but a second running server in this process
+    // would silently observe the first one's seeds — so run() enforces
+    // its process-singleton contract loudly until WP-02 moves those
+    // policies into per-runtime owners.
+    static RUNNING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+    if RUNNING.swap(true, std::sync::atomic::Ordering::SeqCst) {
+        anyhow::bail!(
+            "run() is process-singleton in the current transitional posture: \
+             process-global policy holders (caches, budgets, limits, scaler) are \
+             seeded once per process; a second runtime would observe the first \
+             one's seeds (WP-02 replaces these with per-runtime owners)"
+        );
+    }
+    let ValidatedServerConfig {
+        mut config,
+        tenant,
+        auth_mode,
+        catalog_cursor_key,
+        cert_sealed_publish_delay_ms,
+    } = validated;
+
+    // ---- preflight: the one OS-resource probe, BEFORE any process-
+    // global initialization or remote I/O (PR 3.2). Round-4 review: the
+    // capacity posture is validated against the real descriptor
+    // ceiling; the SSE cap may be clamped to what nofile_hard can
+    // actually carry.
+    let (nofile_soft, nofile_hard) = crate::http::raise_nofile();
+    validate_release_capacity(
+        config.cli.release_posture,
+        config.runtime.memprofile_cert.as_deref(),
+        config.sse.feed_total_bytes_raw.as_deref(),
+        &mut config.cli.sse_max_connections,
+        nofile_hard,
+    )?;
+    tracing::info!(
+        "nofile soft={nofile_soft} hard={nofile_hard} (raised to hard at boot); \
+         feed retention budget={}B",
+        crate::sse::budget::feed_total_cap(&config.sse)
+    );
+    if cert_sealed_publish_delay_ms > 0 {
+        tracing::warn!(
+            ms = cert_sealed_publish_delay_ms,
+            "CERTIFICATION MODE: sealed publication delayed"
+        );
+    }
+
     tracing::info!(config = %config.redacted_summary(), "effective configuration (redacted)");
     tracing::info!(
         model = %crate::quota::pressure_model_json(),
@@ -1120,19 +1398,9 @@ pub async fn run(mut config: crate::config::ServerConfig) -> anyhow::Result<()> 
 
     // FIRST: the body ceiling sizes the absorber's worst-frame
     // reservation, which floors the process-wide budget. It must be
-    // fixed before anything reads either (CHAOS-3).
+    // fixed before anything reads either (CHAOS-3). Engine-settings
+    // validity (CHAOS-2) was proven by `validate()` before run().
     crate::http::set_max_body_bytes(config.cli.max_request_body_bytes)?;
-
-    // Before anything opens a store: a configuration that SlateDB will
-    // reject at open time must stop the process here, not turn into a
-    // permanently-500 data plane behind an `ok` health check (CHAOS-2).
-    // Both engine tiers go through the same check so a future edit to
-    // either one cannot reintroduce the hole.
-    validate_engine_settings("shard", &shard_settings(&config.cli, &config.engine))?;
-    validate_engine_settings(
-        "history",
-        &crate::history::history_settings(&config.history, &config.engine.compactor_options()),
-    )?;
 
     let ops_store = config.store_for(&config.cli.ops_bucket)?;
     let shard_store = config.store_for(&config.cli.shard_bucket)?;
@@ -1215,72 +1483,22 @@ pub async fn run(mut config: crate::config::ServerConfig) -> anyhow::Result<()> 
     crate::sharddir::spawn_unready_watchdog(&config.shard);
 
     let registry = Registry::new(ops_store.clone(), &config.cli.cell_id);
-    // MULTITENANCY transition posture: the deployment tenant is
-    // EXPLICIT, validated config — layout-4 paths and hashes derive
-    // from it, so an invalid or reserved value refuses boot loudly
-    // instead of writing a mis-keyed namespace.
-    let tenant = crate::tenant::ProjectId::new(&config.cli.project_id)
-        .unwrap_or_else(|e| panic!("PROJECT_ID {:?} is invalid: {e}", config.cli.project_id));
-    if tenant.is_system() {
-        panic!("PROJECT_ID may not be the reserved system project");
-    }
-    // MULTITENANCY Stage 5: the auth service exists in every mode (Off
-    // is inert); feeds are wired below once the runtime is up.
-    let auth_mode = crate::auth::AuthMode::from_env(Some(config.cli.streams_auth_mode.as_str()))?;
-    if auth_mode != crate::auth::AuthMode::Off {
-        // Review item: the local placeholder tenant must never reach a
-        // shadow/enforce deployment — those are the multi-tenant
-        // postures, and proj_local silently naming a real project's
-        // data is exactly the accident this refuses.
-        anyhow::ensure!(
-            config.cli.project_id != "proj_local",
-            "STREAMS_AUTH_MODE={} requires an explicit non-default PROJECT_ID",
+    // PR 3.2: tenant, auth mode, cursor key and the certification delay
+    // were proven (and derived) by `validate()` — bootstrap only
+    // consumes them. The auth service itself is constructed here
+    // because it is a runtime owner, not a configuration fact.
+    // §10.4: the denial journal drains through the system ledger key.
+    // Without one, enforce still refuses correctly but the journal is
+    // VOID — denials are only counted, never durably recorded. Loud at
+    // boot so a preview cell cannot mistake itself for an audited one.
+    if auth_mode != crate::auth::AuthMode::Off && config.cli.usage_stream_key.is_none() {
+        tracing::warn!(
+            "STREAMS_AUTH_MODE={} without USAGE_STREAM_KEY: the _audit_events \
+             denial journal is DISABLED (denials appear only in \
+             audit_events_dropped_total)",
             config.cli.streams_auth_mode
         );
-        anyhow::ensure!(
-            config.cli.streams_auth_keys_file.is_some()
-                && config.cli.streams_auth_policy_file.is_some()
-                && config.cli.streams_auth_grants_file.is_some(),
-            "STREAMS_AUTH_MODE={} requires STREAMS_AUTH_KEYS_FILE,              STREAMS_AUTH_POLICY_FILE and STREAMS_AUTH_GRANTS_FILE",
-            config.cli.streams_auth_mode
-        );
-        // §10.4: the denial journal drains through the system ledger
-        // key. Without one, enforce still refuses correctly but the
-        // journal is VOID — denials are only counted, never durably
-        // recorded. Loud at boot so a preview cell cannot mistake
-        // itself for an audited one.
-        if config.cli.usage_stream_key.is_none() {
-            tracing::warn!(
-                "STREAMS_AUTH_MODE={} without USAGE_STREAM_KEY: the _audit_events \
-                 denial journal is DISABLED (denials appear only in \
-                 audit_events_dropped_total)",
-                config.cli.streams_auth_mode
-            );
-        }
-        // The refresher cadence must clear the staleness window with
-        // room for a failed fetch or two, or the cell oscillates into
-        // fail-closed refusals on schedule.
-        anyhow::ensure!(
-            (config.cli.streams_auth_refresh_secs as i64)
-                <= crate::auth::POLICY_STALENESS_MAX_SECS / 3,
-            "STREAMS_AUTH_REFRESH_SECS={} must be <= {} (a third of the              {}s staleness window)",
-            config.cli.streams_auth_refresh_secs,
-            crate::auth::POLICY_STALENESS_MAX_SECS / 3,
-            crate::auth::POLICY_STALENESS_MAX_SECS
-        );
     }
-    let catalog_cursor_key: Option<[u8; 32]> = match &config.cli.streams_cursor_key {
-        None => None,
-        Some(b64) => {
-            use base64::Engine;
-            let raw = base64::engine::general_purpose::STANDARD
-                .decode(b64)
-                .map_err(|e| anyhow::anyhow!("STREAMS_CURSOR_KEY is not base64: {e}"))?;
-            Some(<[u8; 32]>::try_from(raw.as_slice()).map_err(|_| {
-                anyhow::anyhow!("STREAMS_CURSOR_KEY must decode to exactly 32 bytes")
-            })?)
-        }
-    };
     let auth_service = std::sync::Arc::new(crate::auth::AuthService::new(
         auth_mode,
         config.cli.streams_auth_issuer.clone(),
@@ -1288,34 +1506,6 @@ pub async fn run(mut config: crate::config::ServerConfig) -> anyhow::Result<()> 
     )?);
     // Only relevant when no topology exists yet; an existing topology wins.
     let fleet_mode = config.cli.fleet_prefix.is_some() && config.cli.fleet_max > 1;
-    // FAIL CLOSED (round-19 security): the /v1/internal/* peer surface
-    // can fence consumer generations and read segment state WITHOUT a
-    // stream key. It therefore needs its own credential, distinct from
-    // the customer account token, and fleet mode must not start without
-    // one — a fleet that silently accepted the public bearer on those
-    // routes would let any customer token corrupt any consumer.
-    validate_fleet_auth(&config.cli, fleet_mode)?;
-    validate_record_ceiling(
-        &config.sse,
-        config.cli.release_posture,
-        config.cli.max_record_payload_bytes,
-    )?;
-    // Round-4 review: validate the capacity posture against the real
-    // descriptor ceiling BEFORE any state is built — the SSE cap may
-    // be clamped to what nofile_hard can actually carry.
-    let (nofile_soft, nofile_hard) = crate::http::raise_nofile();
-    tracing::info!(
-        "nofile soft={nofile_soft} hard={nofile_hard} (raised to hard at boot); \
-         feed retention budget={}B",
-        crate::sse::budget::feed_total_cap(&config.sse)
-    );
-    validate_release_capacity(
-        config.cli.release_posture,
-        config.runtime.memprofile_cert.as_deref(),
-        config.sse.feed_total_bytes_raw.as_deref(),
-        &mut config.cli.sse_max_connections,
-        nofile_hard,
-    )?;
     let initial_shards = match config.cli.initial_shards {
         Some(n) => {
             if fleet_mode && n < 4 * config.cli.fleet_max as usize {
@@ -1613,7 +1803,8 @@ pub async fn run(mut config: crate::config::ServerConfig) -> anyhow::Result<()> 
             config.cli.max_record_payload_bytes.unwrap_or(0),
         ),
         cert_sealed_publish_delay_ms: std::sync::atomic::AtomicU64::new(
-            cert_sealed_publish_delay(&config.runtime).unwrap_or_else(|e| panic!("{e}")),
+            // PR 3.2: proven by validate(); no panic path in bootstrap.
+            cert_sealed_publish_delay_ms,
         ),
         sse_heartbeat_ms: std::sync::atomic::AtomicU64::new(
             // Operational cadence knob (fleet certification runs it at

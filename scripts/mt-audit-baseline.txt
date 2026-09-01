@@ -61,11 +61,13 @@ stream-hash	src/sketch.rs let k = crate::crypto::stream_hash("only");
 stream-hash	src/sketch.rs one.note(1000, 6399, crate::crypto::stream_hash("z"), 100, 1);	
 stream-hash	src/usage.rs /// Usage counters are keyed by the NAME hash (`stream_hash(&desc.name)`,	
 stream-hash	src/usage.rs /// chosen by stream_hash(name), so that mapping is simply wrong (ladder	
-tenant-fallback	src/bootstrap.rs // postures, and proj_local silently naming a real project's	
-tenant-fallback	src/bootstrap.rs config.cli.project_id != "proj_local",	
+tenant-fallback	src/bootstrap.rs // reach a shadow/enforce deployment — proj_local silently	
 tenant-fallback	src/bootstrap.rs if config.cli.account_id == "acct_local"	
+tenant-fallback	src/bootstrap.rs if self.cli.project_id == "proj_local" {	
 tenant-fallback	src/bootstrap.rs || config.cli.project_id == "proj_local"	
 tenant-fallback	src/config/cli.rs #[arg(long, env = "ACCOUNT_ID", default_value = "acct_local")]	
 tenant-fallback	src/config/cli.rs #[arg(long, env = "PROJECT_ID", default_value = "proj_local")]	
+tenant-fallback	src/config/cli.rs account_id: "acct_local".into(),	
+tenant-fallback	src/config/cli.rs project_id: "proj_local".into(),	
 tenant-fallback	src/config/tests.rs ("account-id", "ACCOUNT_ID", "acct_local"),	
 tenant-fallback	src/config/tests.rs ("project-id", "PROJECT_ID", "proj_local"),	

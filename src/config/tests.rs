@@ -1,13 +1,77 @@
-//! Config-parser tests. These are the ONLY tests allowed near process
-//! environment state, and only `process_environment_smoke_test` touches
-//! it — behind an RAII restoration guard. Everything else parses from a
-//! [`MapEnvironment`].
+//! Config-parser tests. PR 3.2: NO test mutates process-wide
+//! environment state, in-process `set_var`/`remove_var` are gone, and
+//! ordinary tests cannot observe ambient Clap environment variables
+//! either — `test_cli()` is the explicit [`CliArgs::deterministic`]
+//! fixture, not a clap parse. The two tests that need the REAL
+//! process environment (`process_environment_smoke_test`,
+//! `cli_fixture_matches_scrubbed_parse`) run their subject in a
+//! SUBPROCESS whose environment is established before it starts; the
+//! `*_helper` tests are those subjects, gated on marker variables so
+//! they are inert in the ordinary suite.
 
 use super::*;
 use clap::{CommandFactory, Parser};
 
 pub(crate) fn test_cli() -> CliArgs {
-    CliArgs::try_parse_from(["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"]).unwrap()
+    CliArgs::deterministic()
+}
+
+/// Spawn THIS test binary running exactly one helper test, with the
+/// child's environment fully scrubbed and then seeded from `envs`.
+/// `--test-threads=1`: the child runs ONE filtered test — it must not
+/// spin up a full worker pool inside an already-parallel parent suite.
+fn run_helper_test(test_filter: &str, envs: &[(&str, &str)]) -> std::process::Output {
+    let exe = std::env::current_exe().expect("test binary path");
+    let mut cmd = std::process::Command::new(exe);
+    cmd.arg(test_filter)
+        .arg("--exact")
+        .arg("--nocapture")
+        .arg("--test-threads=1")
+        .env_clear();
+    for (k, v) in envs {
+        cmd.env(k, v);
+    }
+    cmd.output().expect("spawn helper test subprocess")
+}
+
+/// Subject of `cli_fixture_matches_scrubbed_parse` — inert unless the
+/// parent set the marker (an ordinary suite run must not compare the
+/// fixture against a parse that can see arbitrary developer/CI env).
+#[test]
+fn cli_fixture_drift_helper() {
+    if std::env::var("STREAMS_CLI_FIXTURE_DRIFT_CHECK").is_err() {
+        return;
+    }
+    let parsed =
+        CliArgs::try_parse_from(["streams-slate", "--s3-endpoint", "http://127.0.0.1:1"]).unwrap();
+    assert_eq!(
+        parsed,
+        CliArgs::deterministic(),
+        "CliArgs::deterministic() drifted from the scrubbed-environment parse — \
+         update the fixture to match the clap defaults"
+    );
+}
+
+/// The deterministic fixture IS the scrubbed parse: proven in a
+/// subprocess whose environment is cleared before clap runs, so no
+/// ambient variable can leak into the comparison in either direction.
+#[test]
+fn cli_fixture_matches_scrubbed_parse() {
+    let out = run_helper_test(
+        "config::tests::cli_fixture_drift_helper",
+        &[("STREAMS_CLI_FIXTURE_DRIFT_CHECK", "1")],
+    );
+    assert!(
+        out.status.success(),
+        "scrubbed parse != deterministic fixture:\n{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(
+        stdout.contains("1 passed"),
+        "helper did not run (filter typo would pass vacuously): {stdout}"
+    );
 }
 
 fn load_with(entries: &[(&str, &str)]) -> ServerConfig {
@@ -353,25 +417,40 @@ fn two_configurations_coexist_in_one_process() {
     assert_eq!(a.fleet.fleet_min, 3);
 }
 
+/// Subject of `process_environment_smoke_test` — inert unless the
+/// parent set the marker AND the value under test.
+#[test]
+fn process_environment_smoke_helper() {
+    if std::env::var("STREAMS_PROCESS_ENV_SMOKE").is_err() {
+        return;
+    }
+    let cfg = ServerConfig::load(test_cli(), &ProcessEnvironment);
+    assert_eq!(
+        cfg.fleet.fleet_min, 7,
+        "ProcessEnvironment must observe the FLEET_MIN the parent set"
+    );
+}
+
 /// The single process-environment smoke test: the loader really reads
-/// the ambient environment through `ProcessEnvironment`. RAII-restores
-/// the prior value even on panic. Every other test uses MapEnvironment.
+/// the ambient environment through `ProcessEnvironment`. PR 3.2: the
+/// subject runs in a SUBPROCESS whose environment is established
+/// before it starts — the 2024-edition `set_var` unsafety is real (the
+/// test runner's other threads may read the environment concurrently),
+/// and RAII restoration never made in-process mutation safe, only
+/// tidy. No in-process `set_var`/`remove_var` remains anywhere.
 #[test]
 fn process_environment_smoke_test() {
-    struct Restore(&'static str, Option<String>);
-    impl Drop for Restore {
-        fn drop(&mut self) {
-            unsafe {
-                match &self.1 {
-                    Some(v) => std::env::set_var(self.0, v),
-                    None => std::env::remove_var(self.0),
-                }
-            }
-        }
-    }
-    const K: &str = "FLEET_MIN";
-    let _restore = Restore(K, std::env::var(K).ok());
-    unsafe { std::env::set_var(K, "7") };
-    let cfg = ServerConfig::load(test_cli(), &ProcessEnvironment);
-    assert_eq!(cfg.fleet.fleet_min, 7);
+    let out = run_helper_test(
+        "config::tests::process_environment_smoke_helper",
+        &[("STREAMS_PROCESS_ENV_SMOKE", "1"), ("FLEET_MIN", "7")],
+    );
+    assert!(
+        out.status.success(),
+        "subprocess smoke failed:\n{}\n{}",
+        String::from_utf8_lossy(&out.stdout),
+        String::from_utf8_lossy(&out.stderr)
+    );
+    // And the helper really ran (a filter typo would pass vacuously).
+    let stdout = String::from_utf8_lossy(&out.stdout);
+    assert!(stdout.contains("1 passed"), "helper did not run: {stdout}");
 }

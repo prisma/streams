@@ -641,6 +641,37 @@ P0 does not mean “rewrite all P0 work before merging anything.” Each workstr
 > the WP-00 baseline instead of just re-printing known debt.
 > WIRE-MATRIX.md is an inventory of current behavior, not a pin; routes
 > gain executable characterization as they move (PR rule 4).
+> **Corrected (PR 3.2, Commit A):** the review found `TraceStore`'s
+> state model concurrency-unsafe — seq allocation used relaxed atomics
+> BEFORE the vector lock, so concurrent starts could insert out of id
+> order, completion (which derived a vector index from the id) resolved
+> neither event, `in_flight` never drained, and `reset()` panicked
+> forever; `reset()` itself was racy against `begin()`. Fixed: ONE
+> mutex (`TraceLog`) owns id allocation, event insertion, an id→index
+> map, active-lifetime tracking, completion, and reset — no
+> position-from-id arithmetic remains, and ids are unique/monotonic
+> (not dense; the ordering contract is trace-lock acquisition order at
+> dispatch). Stream LIFETIME is now distinct from observed OUTCOME: a
+> list item error records the outcome (first fact wins) but the stream
+> stays active — reset refuses until exhaustion or drop retires it
+> exactly once; delete streams carry the same lifetime token. Delete
+> accounting is typed (`TraceEventKind::{Operation,DeleteInput,
+> DeleteResult}`) instead of `detail`-string phases: `operation_counts()`
+> counts an attempted delete as each Ok INPUT the inner store consumed —
+> never the result observation (no more double-counted deletes) and
+> never an input error; `events()` remains the full observation report.
+> New battery: barrier-forced concurrent begins with reverse-order
+> completions (exactly-once resolution), reset-vs-begin race soak
+> (no orphan, no poisoned lock — reset releases the lock before its
+> refusal panic), errored-list-still-open refusal, errored-list
+> completion coherence, active-delete-stream refusal, dropped-stream
+> exactly-once retirement, delete single-count ledger pins.
+> Scenario-map validation is now IN the commit gate and CI
+> (`scenario-map-report.py --check`), the validator checks JSON status
+> equality against the catalogue and matches test symbols exactly
+> (`\bfn NAME\b`, not substring), the baseline-diff keys carry counts
+> (growth inside an already-flagged file/function/static is a visible
+> diff), and the accepted baseline was refreshed at the PR 3.2 tree.
 
 ### Objective
 
@@ -725,10 +756,11 @@ expected:
 
 ## 8. WP-01 — Library crate, configuration model and thin bootstrap
 
-> **Status: DONE** (PRs 2, 3 and corrective PR 3.1, 2026-09-01).
+> **Status: DONE** (PRs 2, 3, corrective PR 3.1, and corrective
+> PR 3.2, 2026-09-01).
 > PR 2: `src/lib.rs` is the crate root for all production modules;
-> `src/main.rs` is a 64-line composition root (ordinary line count;
-> allocator, tracing, pre-runtime env checks, runtime construction);
+> `src/main.rs` is a thin composition root (55 physical lines after
+> PR 3.2: allocator, tracing, parse → validate → runtime → run);
 > bootstrap/config live in `src/bootstrap.rs`. Gate scripts and CI now
 > test the stable `--lib` target. Clippy fingerprint baseline refreshed:
 > 54 dead-code entries dropped — note this was NOT a pure move: making
@@ -773,6 +805,46 @@ expected:
 > `std::env` reads remain by design — main.rs TOKIO_WORKERS, the three
 > cfg(test) DST_DRAIN_TRACE debug flags, dst_tests' MT_CERT_PROJECTS.
 > Clippy baseline: refreshed once more for intentional visibility.
+> **PR 3.2 (corrective, review-driven — Commit B):** the review found
+> WP-01 incomplete: `load` returned an unvalidated `Self`, validation
+> was distributed through main.rs and bootstrap AFTER process-global
+> init, store opens, remote canaries and a spawned watchdog, some
+> invalid paths called `process::exit`/`panic!` from library code, and
+> the smoke test still mutated the process environment in-process.
+> Fixed: the boundary is two typed stages —
+> `ServerConfig::load(cli, env)` parses (infallible BY the pinned
+> legacy-lenient parse contract: bad values fall back to defaults;
+> this is the one deliberate deviation from the review's
+> `load -> Result` sketch, recorded here rather than a can't-fail
+> Result), then `ServerConfig::validate(self) ->
+> Result<ValidatedServerConfig, ConfigError>` proves the graph pure-ly
+> and returns EVERY problem (sweep residency, memprofile
+> certification, both engine-settings tiers, project-id/reserved
+> tenant, auth mode + files + refresh cadence, cursor-key decode,
+> fleet-auth posture, record ceiling, the descriptor-free half of
+> release capacity, certification delay) and carries the derived
+> values (tenant, auth mode, cursor key, delay) so bootstrap cannot
+> re-derive differently. `run()` accepts ONLY `ValidatedServerConfig`
+> — validation precedes every startup side effect by type; its first
+> act is the one OS preflight (raise_nofile + descriptor clamp), then
+> the effective-config log, then process-global init/stores/canaries.
+> No `process::exit` or config `panic!` remains in library code (the
+> binary prints `ConfigError` and chooses the exit status).
+> `run()` now ENFORCES its transitional process-singleton contract
+> loudly (second invocation errors, naming the WP-02 fix) instead of
+> the config-mod comment overclaiming independent instances — the
+> comment now claims value-coexistence only.
+> Hermeticity: NO in-process `set_var`/`remove_var` anywhere; the
+> process-environment smoke test and the new CLI-fixture drift guard
+> run their subjects in subprocesses whose environments are
+> established (or cleared) before start; ordinary config tests use the
+> explicit `CliArgs::deterministic()` fixture, so ambient Clap `env=`
+> variables cannot leak into them (the drift guard proves the fixture
+> equals a scrubbed-environment parse).
+> Doc corrections: main.rs line count, lib.rs facade example
+> (by-value + validate), TraceStore ordering contract, seq
+> non-density, and the environment module's no-mutation claim (true
+> again).
 
 ### Objective
 
@@ -2520,6 +2592,12 @@ Introduce `AppConfig` and its owned sub-configurations. Preserve every existing 
 Do not rename user-facing flags while moving them. Flag cleanup is a separate semantic change.
 
 #### PR 4 — Inject clock, entropy and runtime identity
+
+> **Status: UNBLOCKED by PR 3.2** (was blocked on the TraceStore
+> concurrency findings and the unfinished configuration boundary).
+> Constraint carried forward from the review: PR 4 must NOT reproduce
+> the seed-atomic-plus-`OnceLock` pattern for clock, entropy, or
+> runtime identity — those are per-runtime capabilities.
 
 **Implements:** the foundational part of WP-15.
 

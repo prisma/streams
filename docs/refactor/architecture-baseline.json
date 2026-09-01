@@ -11,7 +11,7 @@
     },
     {
       "file": "src/billing.rs",
-      "lines": 2984,
+      "lines": 2997,
       "test_only": false
     },
     {
@@ -20,38 +20,38 @@
       "test_only": false
     },
     {
+      "file": "src/bootstrap.rs",
+      "lines": 2122,
+      "test_only": false
+    },
+    {
       "file": "src/dst/dst_tests.rs",
-      "lines": 36922,
+      "lines": 36945,
       "test_only": true
     },
     {
       "file": "src/dst.rs",
-      "lines": 1211,
+      "lines": 2750,
       "test_only": true
     },
     {
       "file": "src/fleet.rs",
-      "lines": 1372,
+      "lines": 1364,
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "lines": 2685,
+      "lines": 2708,
       "test_only": false
     },
     {
       "file": "src/http.rs",
-      "lines": 8374,
-      "test_only": false
-    },
-    {
-      "file": "src/main.rs",
-      "lines": 2515,
+      "lines": 8390,
       "test_only": false
     },
     {
       "file": "src/postings_cache.rs",
-      "lines": 1187,
+      "lines": 1193,
       "test_only": false
     },
     {
@@ -71,22 +71,22 @@
     },
     {
       "file": "src/rollup.rs",
-      "lines": 2385,
+      "lines": 2414,
       "test_only": false
     },
     {
       "file": "src/scaler3.rs",
-      "lines": 1039,
+      "lines": 1062,
       "test_only": false
     },
     {
       "file": "src/shard.rs",
-      "lines": 5472,
+      "lines": 5510,
       "test_only": false
     },
     {
       "file": "src/sse/feed.rs",
-      "lines": 2265,
+      "lines": 2268,
       "test_only": false
     },
     {
@@ -96,7 +96,7 @@
     },
     {
       "file": "src/store_timing.rs",
-      "lines": 1370,
+      "lines": 1376,
       "test_only": false
     },
     {
@@ -109,8 +109,8 @@
     {
       "file": "src/billing.rs",
       "function": "drain_once",
-      "start": 1101,
-      "end": 1429,
+      "start": 1117,
+      "end": 1445,
       "lines": 329
     },
     {
@@ -149,151 +149,151 @@
       "lines": 355
     },
     {
+      "file": "src/bootstrap.rs",
+      "function": "run",
+      "start": 1323,
+      "end": 2122,
+      "lines": 800
+    },
+    {
       "file": "src/dst/dst_tests.rs",
       "function": "product_watch_wakes_on_matching_append",
-      "start": 9908,
-      "end": 10110,
+      "start": 9928,
+      "end": 10130,
       "lines": 203
     },
     {
       "file": "src/dst/dst_tests.rs",
       "function": "a_split_consumers_deletion_fails_one_segment_then_retries_clean",
-      "start": 16839,
-      "end": 17039,
+      "start": 16859,
+      "end": 17059,
       "lines": 201
     },
     {
       "file": "src/dst/dst_tests.rs",
       "function": "enforce_mode_gates_the_product_surface",
-      "start": 17647,
-      "end": 18250,
+      "start": 17667,
+      "end": 18270,
       "lines": 604
     },
     {
       "file": "src/dst/dst_tests.rs",
       "function": "noisy_neighbor_cannot_degrade_a_compliant_project",
-      "start": 18809,
-      "end": 19048,
+      "start": 18829,
+      "end": 19068,
       "lines": 240
     },
     {
       "file": "src/dst/dst_tests.rs",
       "function": "same_name_cross_project_usage_attributes_exactly",
-      "start": 19059,
-      "end": 19269,
+      "start": 19079,
+      "end": 19289,
       "lines": 211
     },
     {
       "file": "src/dst/dst_tests.rs",
       "function": "invoice_reconciliation_balances_and_detects_corruption",
-      "start": 19278,
-      "end": 19523,
+      "start": 19298,
+      "end": 19543,
       "lines": 246
     },
     {
       "file": "src/dst/dst_tests.rs",
       "function": "enforce_denials_journal_to_audit_events",
-      "start": 19531,
-      "end": 19809,
+      "start": 19551,
+      "end": 19829,
       "lines": 279
     },
     {
       "file": "src/dst/dst_tests.rs",
       "function": "shared_cell_certification_smoke",
-      "start": 19820,
-      "end": 20099,
+      "start": 19840,
+      "end": 20119,
       "lines": 280
     },
     {
       "file": "src/dst/dst_tests.rs",
       "function": "dual_surface_equivalence_corpus",
-      "start": 22042,
-      "end": 22242,
+      "start": 22062,
+      "end": 22262,
       "lines": 201
     },
     {
       "file": "src/dst/dst_tests.rs",
       "function": "a_applied_read_and_long_poll_serve_the_tail_before_durability",
-      "start": 23105,
-      "end": 23313,
+      "start": 23125,
+      "end": 23333,
       "lines": 209
     },
     {
       "file": "src/fleet.rs",
       "function": "start",
-      "start": 376,
-      "end": 1137,
-      "lines": 762
+      "start": 381,
+      "end": 1129,
+      "lines": 749
     },
     {
       "file": "src/history.rs",
       "function": "start",
-      "start": 894,
-      "end": 1298,
+      "start": 917,
+      "end": 1321,
       "lines": 405
     },
     {
       "file": "src/history.rs",
       "function": "absorb_gather_v2_with",
-      "start": 1415,
-      "end": 1733,
+      "start": 1438,
+      "end": 1756,
       "lines": 319
     },
     {
       "file": "src/http.rs",
       "function": "debug_load",
-      "start": 1040,
-      "end": 1266,
-      "lines": 227
+      "start": 1031,
+      "end": 1256,
+      "lines": 226
     },
     {
       "file": "src/http.rs",
       "function": "router",
-      "start": 1552,
-      "end": 1856,
+      "start": 1542,
+      "end": 1846,
       "lines": 305
     },
     {
       "file": "src/http.rs",
       "function": "create_stream",
-      "start": 3235,
-      "end": 4279,
+      "start": 3225,
+      "end": 4269,
       "lines": 1045
     },
     {
       "file": "src/http.rs",
       "function": "append_core",
-      "start": 4942,
-      "end": 6049,
-      "lines": 1108
+      "start": 4932,
+      "end": 6037,
+      "lines": 1106
     },
     {
       "file": "src/http.rs",
       "function": "read_merged",
-      "start": 6141,
-      "end": 6400,
+      "start": 6129,
+      "end": 6388,
       "lines": 260
     },
     {
       "file": "src/http.rs",
       "function": "read_inner",
-      "start": 6684,
-      "end": 7133,
-      "lines": 450
+      "start": 6680,
+      "end": 7130,
+      "lines": 451
     },
     {
       "file": "src/http.rs",
       "function": "read_v3_lineage_inner",
-      "start": 7711,
-      "end": 8276,
+      "start": 7708,
+      "end": 8273,
       "lines": 566
-    },
-    {
-      "file": "src/main.rs",
-      "function": "async_main",
-      "start": 1720,
-      "end": 2515,
-      "lines": 796
     },
     {
       "file": "src/ops.rs",
@@ -396,30 +396,30 @@
     {
       "file": "src/rollup.rs",
       "function": "close_month",
-      "start": 1293,
-      "end": 1509,
+      "start": 1296,
+      "end": 1512,
       "lines": 217
     },
     {
       "file": "src/rollup.rs",
       "function": "rollup_applies_deltas_and_closes_months",
-      "start": 1973,
-      "end": 2274,
-      "lines": 302
+      "start": 2000,
+      "end": 2303,
+      "lines": 304
     },
     {
       "file": "src/shard.rs",
       "function": "start",
-      "start": 1273,
-      "end": 1649,
-      "lines": 377
+      "start": 1303,
+      "end": 1685,
+      "lines": 383
     },
     {
       "file": "src/shard.rs",
       "function": "commit_group",
-      "start": 2422,
-      "end": 4527,
-      "lines": 2106
+      "start": 2459,
+      "end": 4565,
+      "lines": 2107
     },
     {
       "file": "src/sse/session.rs",
@@ -449,6 +449,12 @@
       "test_only": false
     },
     {
+      "file": "src/bootstrap.rs",
+      "references": "crate::http",
+      "count": 13,
+      "test_only": false
+    },
+    {
       "file": "src/dst/dst_tests.rs",
       "references": "crate::http",
       "count": 67,
@@ -470,12 +476,6 @@
       "file": "src/history.rs",
       "references": "crate::http",
       "count": 3,
-      "test_only": false
-    },
-    {
-      "file": "src/main.rs",
-      "references": "crate::http",
-      "count": 11,
       "test_only": false
     },
     {
@@ -541,83 +541,6 @@
   ],
   "env_reads": [
     {
-      "file": "src/backpressure.rs",
-      "line": 66,
-      "src": "std::env::var(k)",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/billing.rs",
-      "line": 1054,
-      "src": "std::env::var(\"BILLING_MODE\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/billing.rs",
-      "line": 1442,
-      "src": "&std::env::var(\"PATH_PREFIX\").unwrap_or_default(),",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/billing.rs",
-      "line": 1467,
-      "src": "let sweep_secs: u64 = std::env::var(\"OUTBOX_SWEEP_SECS\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/billing.rs",
-      "line": 1477,
-      "src": "let secs: u64 = std::env::var(\"TELEMETRY_DRAIN_SECS\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/billing.rs",
-      "line": 1481,
-      "src": "let metrics_secs: u64 = std::env::var(\"METRICS_INTERVAL_SECS\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/billing.rs",
-      "line": 1750,
-      "src": "let grace_ms: i64 = std::env::var(\"MONTH_CLOSE_GRACE_MS\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/billing.rs",
-      "line": 1834,
-      "src": "let bytes = std::env::var(\"TELEMETRY_CACHE_BYTES\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/billing.rs",
-      "line": 2311,
-      "src": "let discovery_cap: usize = std::env::var(\"SWEEP_DISCOVERY_MAX\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/billing.rs",
-      "line": 2386,
-      "src": "std::env::var(\"SWEEP_MAINT_RESIDENT\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/billing.rs",
-      "line": 2481,
-      "src": "std::env::var(\"SWEEP_RESIDENT_QUANTUM\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
       "file": "src/bin/pilot.rs",
       "line": 27,
       "src": "std::env::var(k).ok().filter(|v| !v.is_empty())",
@@ -646,394 +569,65 @@
       "allowed": true
     },
     {
-      "file": "src/crypto.rs",
-      "line": 44,
-      "src": "std::env::var(\"FRAME_COMPRESS\")",
+      "file": "src/config/environment.rs",
+      "line": 25,
+      "src": "std::env::var(key).ok()",
       "test_only": false,
-      "allowed": false
+      "allowed": true
+    },
+    {
+      "file": "src/config/tests.rs",
+      "line": 36,
+      "src": "if std::env::var(\"STREAMS_CLI_FIXTURE_DRIFT_CHECK\").is_err() {",
+      "test_only": false,
+      "allowed": true
+    },
+    {
+      "file": "src/config/tests.rs",
+      "line": 418,
+      "src": "if std::env::var(\"STREAMS_PROCESS_ENV_SMOKE\").is_err() {",
+      "test_only": false,
+      "allowed": true
     },
     {
       "file": "src/dst/dst_tests.rs",
-      "line": 19828,
+      "line": 19848,
       "src": "let N: usize = std::env::var(\"MT_CERT_PROJECTS\")",
       "test_only": true,
       "allowed": false
     },
     {
       "file": "src/dst.rs",
-      "line": 1170,
+      "line": 1888,
       "src": "if std::env::var(\"DST_DRAIN_TRACE\").is_ok() {",
       "test_only": true,
       "allowed": false
     },
     {
-      "file": "src/fleet.rs",
-      "line": 138,
-      "src": "let allow_http = std::env::var(\"FLEET_ALLOW_HTTP_PEERS\").ok().as_deref() == Some(\"1\");",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/fleet.rs",
-      "line": 166,
-      "src": "match std::env::var(\"FLEET_PEER_DOMAINS\") {",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/fleet.rs",
-      "line": 389,
-      "src": "let rebalance_lag_secs: u64 = std::env::var(\"REBALANCE_LAG_SECS\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/fleet.rs",
-      "line": 393,
-      "src": "let rebalance_cooldown: u64 = std::env::var(\"REBALANCE_MOVE_COOLDOWN_SECS\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/fleet.rs",
-      "line": 480,
-      "src": "url: std::env::var(\"SELF_URL\").unwrap_or_default(),",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/fleet.rs",
-      "line": 682,
-      "src": "let fleet_min: u64 = std::env::var(\"FLEET_MIN\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/fleet.rs",
-      "line": 880,
-      "src": "let return_secs: i64 = std::env::var(\"REBALANCE_RETURN_SECS\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
       "file": "src/history.rs",
-      "line": 32,
-      "src": "std::env::var(\"ABSORB_PAUSE\").ok().as_deref() == Some(\"1\"),",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/history.rs",
-      "line": 285,
-      "src": "let configured: usize = std::env::var(\"ABSORB_GLOBAL_BUDGET_BYTES\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/history.rs",
-      "line": 300,
-      "src": "let gathers: usize = std::env::var(\"ABSORB_GLOBAL_GATHERS\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/history.rs",
-      "line": 481,
-      "src": "let bytes = std::env::var(\"HISTORY_CACHE_BYTES\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/history.rs",
-      "line": 513,
-      "src": "let compactor_off = std::env::var(\"HISTORY_COMPACTOR\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/history.rs",
-      "line": 527,
-      "src": "let secs: u64 = std::env::var(\"HISTORY_GC_INTERVAL_SECS\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/history.rs",
-      "line": 529,
-      "src": ".or_else(|| std::env::var(\"HISTORY_GC_MAX_INTERVAL_SECS\").ok())",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/history.rs",
-      "line": 1165,
+      "line": 1188,
       "src": "if std::env::var(\"DST_DRAIN_TRACE\").is_ok() {",
       "test_only": false,
       "allowed": false
     },
     {
       "file": "src/history.rs",
-      "line": 1581,
+      "line": 1604,
       "src": "if std::env::var(\"DST_DRAIN_TRACE\").is_ok() {",
       "test_only": false,
       "allowed": false
     },
     {
-      "file": "src/http.rs",
-      "line": 83,
-      "src": "*V.get_or_init(|| std::env::var(\"STREAMS_DEBUG_TIMING\").as_deref() == Ok(\"1\"))",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/http.rs",
-      "line": 89,
-      "src": "std::env::var(\"TAIL_MAX_BYTES\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/http.rs",
-      "line": 656,
-      "src": "std::env::var(\"SHARD_OPEN_WAIT_MS\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/http.rs",
-      "line": 1177,
-      "src": "\"binary_sha256\": std::env::var(\"APP_BINARY_SHA256\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/http.rs",
-      "line": 1653,
-      "src": "if std::env::var(\"STREAMS_DEBUG_EXIT\").as_deref() != Ok(\"1\") {",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/http.rs",
-      "line": 2102,
-      "src": "let rollup_ok = std::env::var(\"ROLLUP\").map(|v| v != \"1\").unwrap_or(true)",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/http.rs",
-      "line": 2181,
-      "src": "&& (std::env::var(\"ROLLUP\").map(|v| v != \"1\").unwrap_or(true)",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/http.rs",
-      "line": 2184,
-      "src": "\"mode\": std::env::var(\"BILLING_MODE\").unwrap_or_else(|_| \"off\".into()),",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/http.rs",
-      "line": 5680,
-      "src": "&& std::env::var(\"BILLING_METER\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
       "file": "src/main.rs",
-      "line": 619,
-      "src": "std::env::var(\"POOL_IDLE_SECS\")",
-      "test_only": false,
-      "allowed": true
-    },
-    {
-      "file": "src/main.rs",
-      "line": 679,
-      "src": "std::env::var(k)",
-      "test_only": false,
-      "allowed": true
-    },
-    {
-      "file": "src/main.rs",
-      "line": 685,
-      "src": "std::env::var(k)",
-      "test_only": false,
-      "allowed": true
-    },
-    {
-      "file": "src/main.rs",
-      "line": 723,
-      "src": "\"store_bulk_inflight_max_bytes\": std::env::var(\"STORE_BULK_INFLIGHT_MAX_BYTES\")",
-      "test_only": false,
-      "allowed": true
-    },
-    {
-      "file": "src/main.rs",
-      "line": 754,
-      "src": "if std::env::var(\"MEMPROFILE_CERT\").as_deref() != Ok(\"compute-1g\") {",
-      "test_only": false,
-      "allowed": true
-    },
-    {
-      "file": "src/main.rs",
-      "line": 836,
-      "src": "let threads: usize = std::env::var(\"SLATEDB_RT_THREADS\")",
-      "test_only": false,
-      "allowed": true
-    },
-    {
-      "file": "src/main.rs",
-      "line": 958,
-      "src": "std::env::var(\"STREAMS_CERT_SEALED_PUBLISH_DELAY_MS\")",
-      "test_only": false,
-      "allowed": true
-    },
-    {
-      "file": "src/main.rs",
-      "line": 961,
-      "src": "std::env::var(\"STREAMS_CERTIFICATION_MODE\").ok().as_deref(),",
-      "test_only": false,
-      "allowed": true
-    },
-    {
-      "file": "src/main.rs",
-      "line": 1683,
-      "src": "if std::env::var(\"SWEEP_MAINT_RESIDENT\")",
-      "test_only": false,
-      "allowed": true
-    },
-    {
-      "file": "src/main.rs",
-      "line": 1699,
+      "line": 40,
       "src": "let workers: usize = std::env::var(\"TOKIO_WORKERS\")",
       "test_only": false,
       "allowed": true
     },
     {
-      "file": "src/main.rs",
-      "line": 1908,
-      "src": "std::env::var(\"MEMPROFILE_CERT\").ok().as_deref(),",
-      "test_only": false,
-      "allowed": true
-    },
-    {
-      "file": "src/main.rs",
-      "line": 1909,
-      "src": "std::env::var(\"SSE_FEED_TOTAL_BYTES\").ok().as_deref(),",
-      "test_only": false,
-      "allowed": true
-    },
-    {
-      "file": "src/main.rs",
-      "line": 2194,
-      "src": "std::env::var(\"SSE_HEARTBEAT_MS\")",
-      "test_only": false,
-      "allowed": true
-    },
-    {
-      "file": "src/main.rs",
-      "line": 2428,
-      "src": "std::env::var(k)",
-      "test_only": false,
-      "allowed": true
-    },
-    {
-      "file": "src/main.rs",
-      "line": 2509,
-      "src": "let max_buf: usize = std::env::var(\"SSE_H1_MAX_BUF\")",
-      "test_only": false,
-      "allowed": true
-    },
-    {
-      "file": "src/ops.rs",
-      "line": 623,
-      "src": "std::env::var(\"ALERT_USAGE_OUTBOX_DIRTY\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/postings_cache.rs",
-      "line": 53,
-      "src": "let bytes = std::env::var(\"POSTINGS_CACHE_BYTES\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/scaler3.rs",
-      "line": 58,
-      "src": "std::env::var(k)",
-      "test_only": false,
-      "allowed": false
-    },
-    {
       "file": "src/shard.rs",
-      "line": 3206,
+      "line": 3244,
       "src": "if std::env::var(\"DST_DRAIN_TRACE\").is_ok() {",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/sharddir.rs",
-      "line": 163,
-      "src": "std::env::var(\"UNREADY_EXIT_AFTER_SECS\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/sharddir.rs",
-      "line": 283,
-      "src": "let open_deadline = std::env::var(\"SHARD_OPEN_DEADLINE_MS\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/sse/budget.rs",
-      "line": 12,
-      "src": "*V.get_or_init(|| match std::env::var(\"SSE_FEED_RING_BYTES\") {",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/sse/budget.rs",
-      "line": 34,
-      "src": "*V.get_or_init(|| match std::env::var(\"SSE_FEED_TOTAL_BYTES\") {",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/sse/feed.rs",
-      "line": 309,
-      "src": "match std::env::var(\"SSE_FEED_PROJECT_BYTES\") {",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/store_timing.rs",
-      "line": 85,
-      "src": "let n: usize = std::env::var(\"STORE_MAX_CONCURRENT\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/store_timing.rs",
-      "line": 213,
-      "src": "std::env::var(\"COMPACT_MAX_SST_SIZE_BYTES\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/store_timing.rs",
-      "line": 223,
-      "src": "let n: u64 = std::env::var(\"STORE_BULK_INFLIGHT_MAX_BYTES\")",
-      "test_only": false,
-      "allowed": false
-    },
-    {
-      "file": "src/usage.rs",
-      "line": 142,
-      "src": "std::env::var(k)",
       "test_only": false,
       "allowed": false
     }
@@ -1153,7 +747,7 @@
     },
     {
       "file": "src/crypto.rs",
-      "line": 636,
+      "line": 653,
       "src": "let payload = vec![b'x'; 4096];"
     },
     {
@@ -1163,17 +757,17 @@
     },
     {
       "file": "src/history.rs",
-      "line": 81,
+      "line": 92,
       "src": "k.push(b'r');"
     },
     {
       "file": "src/history.rs",
-      "line": 2571,
+      "line": 2594,
       "src": "entries: vec![bytes::Bytes::from(vec![b'x'; 1024])],"
     },
     {
       "file": "src/history.rs",
-      "line": 2646,
+      "line": 2669,
       "src": "entries: vec![bytes::Bytes::from(vec![b'y'; 512])],"
     },
     {
@@ -1203,47 +797,47 @@
     },
     {
       "file": "src/shard.rs",
-      "line": 146,
+      "line": 153,
       "src": "k.push(b's');"
     },
     {
       "file": "src/shard.rs",
-      "line": 159,
+      "line": 166,
       "src": "k.push(b'q');"
     },
     {
       "file": "src/shard.rs",
-      "line": 188,
+      "line": 195,
       "src": "k.push(b'D');"
     },
     {
       "file": "src/shard.rs",
-      "line": 260,
+      "line": 274,
       "src": "k.push(b'M');"
     },
     {
       "file": "src/shard.rs",
-      "line": 445,
+      "line": 459,
       "src": "pfx.push(b'D');"
     },
     {
       "file": "src/shard.rs",
-      "line": 2028,
+      "line": 2065,
       "src": "pfx.push(b'D');"
     },
     {
       "file": "src/shard.rs",
-      "line": 4860,
+      "line": 4898,
       "src": "pfx.push(b'U');"
     },
     {
       "file": "src/shard.rs",
-      "line": 4895,
+      "line": 4933,
       "src": "pfx.push(b'V');"
     },
     {
       "file": "src/sse/feed.rs",
-      "line": 1485,
+      "line": 1488,
       "src": "payload: Bytes::from(vec![b'x'; self.payload]),"
     }
   ],
@@ -1273,12 +867,6 @@
       "test_only": false
     },
     {
-      "file": "src/backpressure.rs",
-      "line": 362,
-      "type": "std::sync::OnceLock<Limits>",
-      "test_only": false
-    },
-    {
       "file": "src/billing.rs",
       "line": 93,
       "type": "std::sync::atomic::AtomicI64",
@@ -1298,67 +886,73 @@
     },
     {
       "file": "src/billing.rs",
-      "line": 934,
+      "line": 952,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/billing.rs",
-      "line": 943,
+      "line": 961,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/billing.rs",
-      "line": 1601,
+      "line": 1615,
       "type": "std::sync::atomic::AtomicI64",
       "test_only": false
     },
     {
       "file": "src/billing.rs",
-      "line": 1602,
+      "line": 1616,
       "type": "std::sync::atomic::AtomicI64",
       "test_only": false
     },
     {
       "file": "src/billing.rs",
-      "line": 1604,
+      "line": 1618,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/billing.rs",
-      "line": 1606,
+      "line": 1620,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/billing.rs",
-      "line": 1612,
+      "line": 1626,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/billing.rs",
-      "line": 1830,
-      "type": "std::sync::OnceLock<std::sync::Arc<slatedb::db_cache::foyer::FoyerCache>>",
+      "line": 1841,
+      "type": "std::sync::atomic::AtomicUsize",
       "test_only": false
     },
     {
       "file": "src/billing.rs",
       "line": 1851,
+      "type": "std::sync::OnceLock<std::sync::Arc<slatedb::db_cache::foyer::FoyerCache>>",
+      "test_only": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 1870,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/billing.rs",
-      "line": 2438,
+      "line": 2455,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/billing.rs",
-      "line": 2673,
+      "line": 2686,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
@@ -1369,9 +963,21 @@
       "test_only": false
     },
     {
-      "file": "src/crypto.rs",
-      "line": 42,
-      "type": "std::sync::OnceLock<bool>",
+      "file": "src/bootstrap.rs",
+      "line": 249,
+      "type": "std::sync::atomic::AtomicUsize",
+      "test_only": false
+    },
+    {
+      "file": "src/bootstrap.rs",
+      "line": 260,
+      "type": "std::sync::OnceLock<tokio::runtime::Runtime>",
+      "test_only": false
+    },
+    {
+      "file": "src/bootstrap.rs",
+      "line": 1332,
+      "type": "std::sync::atomic::AtomicBool",
       "test_only": false
     },
     {
@@ -1382,13 +988,13 @@
     },
     {
       "file": "src/dst/dst_tests.rs",
-      "line": 6061,
+      "line": 6081,
       "type": "std::sync::OnceLock<tokio::sync::Mutex<()>>",
       "test_only": true
     },
     {
       "file": "src/dst/dst_tests.rs",
-      "line": 27061,
+      "line": 27084,
       "type": "std::sync::OnceLock<tokio::sync::Mutex<()>>",
       "test_only": true
     },
@@ -1412,157 +1018,181 @@
     },
     {
       "file": "src/fleet.rs",
-      "line": 183,
+      "line": 188,
       "type": "OnceLock<Mutex<std::collections::HashMap<String, String>>>",
       "test_only": false
     },
     {
       "file": "src/fleet.rs",
-      "line": 368,
+      "line": 373,
       "type": "OnceLock<Mutex<Option<Arc<dyn ObjectStore>>>>",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 29,
+      "line": 28,
+      "type": "std::sync::atomic::AtomicBool",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 40,
       "type": "std::sync::OnceLock<std::sync::atomic::AtomicBool>",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 213,
+      "line": 224,
       "type": "std::sync::atomic::AtomicUsize",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 251,
+      "line": 262,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 264,
+      "line": 275,
       "type": "std::sync::OnceLock<serde_json::Value>",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 268,
+      "line": 277,
+      "type": "std::sync::atomic::AtomicUsize",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 280,
+      "type": "std::sync::atomic::AtomicUsize",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 297,
       "type": "std::sync::OnceLock<AbsorbBudget>",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 463,
+      "line": 482,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 464,
+      "line": 483,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 465,
+      "line": 484,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 466,
+      "line": 485,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 467,
+      "line": 486,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 471,
+      "line": 490,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 472,
+      "line": 491,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 473,
+      "line": 492,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 474,
+      "line": 493,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 477,
+      "line": 494,
+      "type": "std::sync::atomic::AtomicUsize",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 506,
       "type": "std::sync::OnceLock<Arc<slatedb::db_cache::foyer::FoyerCache>>",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 1740,
+      "line": 1763,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 1741,
+      "line": 1764,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 1742,
+      "line": 1765,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 1743,
+      "line": 1766,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 1744,
+      "line": 1767,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 1745,
+      "line": 1768,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 1746,
+      "line": 1769,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 1747,
+      "line": 1770,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/history.rs",
-      "line": 1748,
+      "line": 1771,
       "type": "AtomicU64",
       "test_only": false
     },
@@ -1574,68 +1204,44 @@
     },
     {
       "file": "src/http.rs",
-      "line": 82,
-      "type": "std::sync::OnceLock<bool>",
-      "test_only": false
-    },
-    {
-      "file": "src/http.rs",
-      "line": 87,
-      "type": "std::sync::OnceLock<usize>",
-      "test_only": false
-    },
-    {
-      "file": "src/http.rs",
-      "line": 2986,
+      "line": 2976,
       "type": "std::sync::OnceLock<\n            std::sync::Mutex<std::collections::HashSet<crate::tenant::TenantStreamRef>>,\n        >",
       "test_only": false
     },
     {
       "file": "src/http.rs",
-      "line": 6138,
+      "line": 6126,
       "type": "std::sync::atomic::AtomicBool",
       "test_only": false
     },
     {
       "file": "src/http.rs",
-      "line": 7259,
+      "line": 7256,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/http.rs",
-      "line": 7261,
+      "line": 7258,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/http.rs",
-      "line": 7275,
+      "line": 7272,
       "type": "std::sync::atomic::AtomicI64",
       "test_only": false
     },
     {
       "file": "src/http.rs",
-      "line": 7277,
+      "line": 7274,
       "type": "std::sync::atomic::AtomicI64",
       "test_only": false
     },
     {
       "file": "src/http.rs",
-      "line": 7390,
+      "line": 7387,
       "type": "std::sync::OnceLock<reqwest::Client>",
-      "test_only": false
-    },
-    {
-      "file": "src/main.rs",
-      "line": 676,
-      "type": "std::sync::OnceLock<slatedb::config::CompactorOptions>",
-      "test_only": false
-    },
-    {
-      "file": "src/main.rs",
-      "line": 834,
-      "type": "std::sync::OnceLock<tokio::runtime::Runtime>",
       "test_only": false
     },
     {
@@ -1670,7 +1276,13 @@
     },
     {
       "file": "src/postings_cache.rs",
-      "line": 51,
+      "line": 47,
+      "type": "std::sync::atomic::AtomicUsize",
+      "test_only": false
+    },
+    {
+      "file": "src/postings_cache.rs",
+      "line": 60,
       "type": "std::sync::OnceLock<Arc<PostingsCache>>",
       "test_only": false
     },
@@ -1682,74 +1294,128 @@
     },
     {
       "file": "src/scaler3.rs",
+      "line": 42,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/scaler3.rs",
       "line": 44,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/scaler3.rs",
+      "line": 46,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/scaler3.rs",
+      "line": 48,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/scaler3.rs",
+      "line": 50,
+      "type": "std::sync::atomic::AtomicU32",
+      "test_only": false
+    },
+    {
+      "file": "src/scaler3.rs",
+      "line": 51,
+      "type": "std::sync::atomic::AtomicU32",
+      "test_only": false
+    },
+    {
+      "file": "src/scaler3.rs",
+      "line": 53,
+      "type": "std::sync::atomic::AtomicI64",
+      "test_only": false
+    },
+    {
+      "file": "src/scaler3.rs",
+      "line": 55,
+      "type": "std::sync::atomic::AtomicUsize",
+      "test_only": false
+    },
+    {
+      "file": "src/scaler3.rs",
+      "line": 74,
       "type": "PolicyOnceLock<ScalePolicy>",
       "test_only": false
     },
     {
       "file": "src/scaler3.rs",
-      "line": 65,
+      "line": 88,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/scaler3.rs",
-      "line": 66,
+      "line": 89,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/scaler3.rs",
-      "line": 67,
+      "line": 90,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/scaler3.rs",
-      "line": 69,
+      "line": 92,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/scaler3.rs",
-      "line": 71,
+      "line": 94,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/scaler3.rs",
-      "line": 72,
+      "line": 95,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/scaler3.rs",
-      "line": 100,
+      "line": 123,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/scaler3.rs",
-      "line": 112,
+      "line": 135,
       "type": "OnceLock<Mutex<State>>",
       "test_only": false
     },
     {
       "file": "src/shard.rs",
-      "line": 252,
+      "line": 266,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/shard.rs",
-      "line": 254,
+      "line": 268,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/shard.rs",
-      "line": 1259,
+      "line": 1289,
       "type": "std::sync::OnceLock<Mutex<HashMap<String, u32>>>",
+      "test_only": false
+    },
+    {
+      "file": "src/sharddir.rs",
+      "line": 64,
+      "type": "AtomicU64",
       "test_only": false
     },
     {
@@ -1773,36 +1439,30 @@
     {
       "file": "src/sharddir.rs",
       "line": 68,
-      "type": "AtomicU64",
-      "test_only": false
-    },
-    {
-      "file": "src/sharddir.rs",
-      "line": 69,
       "type": "AtomicI64",
       "test_only": false
     },
     {
       "file": "src/sharddir.rs",
-      "line": 70,
+      "line": 69,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/sharddir.rs",
-      "line": 73,
+      "line": 72,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/sharddir.rs",
-      "line": 76,
+      "line": 75,
       "type": "Mutex<Option<String>>",
       "test_only": false
     },
     {
       "file": "src/sharddir.rs",
-      "line": 88,
+      "line": 87,
       "type": "Mutex<Option<std::collections::BTreeSet<String>>>",
       "test_only": false
     },
@@ -1933,18 +1593,6 @@
       "test_only": false
     },
     {
-      "file": "src/sse/budget.rs",
-      "line": 11,
-      "type": "std::sync::OnceLock<usize>",
-      "test_only": false
-    },
-    {
-      "file": "src/sse/budget.rs",
-      "line": 33,
-      "type": "std::sync::OnceLock<u64>",
-      "test_only": false
-    },
-    {
       "file": "src/store_timing.rs",
       "line": 71,
       "type": "std::sync::atomic::AtomicU64",
@@ -1958,37 +1606,55 @@
     },
     {
       "file": "src/store_timing.rs",
-      "line": 83,
+      "line": 73,
+      "type": "std::sync::atomic::AtomicUsize",
+      "test_only": false
+    },
+    {
+      "file": "src/store_timing.rs",
+      "line": 76,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/store_timing.rs",
+      "line": 78,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/store_timing.rs",
+      "line": 100,
       "type": "OnceLock<Option<tokio::sync::Semaphore>>",
       "test_only": false
     },
     {
       "file": "src/store_timing.rs",
-      "line": 211,
+      "line": 225,
       "type": "OnceLock<u64>",
       "test_only": false
     },
     {
       "file": "src/store_timing.rs",
-      "line": 221,
+      "line": 230,
       "type": "OnceLock<Option<BulkGate>>",
       "test_only": false
     },
     {
       "file": "src/store_timing.rs",
-      "line": 272,
+      "line": 278,
       "type": "OnceLock<StoreStats>",
       "test_only": false
     },
     {
       "file": "src/store_timing.rs",
-      "line": 296,
+      "line": 302,
       "type": "OnceLock<DriftRings>",
       "test_only": false
     },
     {
       "file": "src/store_timing.rs",
-      "line": 988,
+      "line": 994,
       "type": "OnceLock<HttpStats>",
       "test_only": false
     },
@@ -2018,76 +1684,100 @@
     },
     {
       "file": "src/usage.rs",
-      "line": 149,
+      "line": 140,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/usage.rs",
+      "line": 143,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/usage.rs",
+      "line": 145,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/usage.rs",
+      "line": 147,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/usage.rs",
+      "line": 162,
       "type": "OnceLock<Limits>",
       "test_only": false
     },
     {
       "file": "src/usage.rs",
-      "line": 188,
+      "line": 201,
       "type": "AtomicU64",
       "test_only": false
     },
     {
       "file": "src/usage.rs",
-      "line": 202,
+      "line": 215,
       "type": "OnceLock<Mutex<HashMap<[u8",
       "test_only": false
     },
     {
       "file": "src/usage.rs",
-      "line": 211,
+      "line": 224,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/usage.rs",
-      "line": 213,
+      "line": 226,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/usage.rs",
-      "line": 215,
+      "line": 228,
       "type": "std::sync::atomic::AtomicU64",
       "test_only": false
     },
     {
       "file": "src/usage.rs",
-      "line": 405,
+      "line": 418,
       "type": "OnceLock<Mutex<HashMap<SegmentHash, u64>>>",
       "test_only": false
     },
     {
       "file": "src/usage.rs",
-      "line": 427,
+      "line": 440,
       "type": "OnceLock<Mutex<HashMap<RouteHash, std::collections::HashSet<SegmentHash>>>>",
       "test_only": false
     },
     {
       "file": "src/usage.rs",
-      "line": 473,
+      "line": 486,
       "type": "OnceLock<Mutex<HashMap<String, (u64, u64)>>>",
       "test_only": false
     },
     {
       "file": "src/usage.rs",
-      "line": 537,
+      "line": 550,
       "type": "OnceLock<Mutex<HashMap<String, u64>>>",
       "test_only": false
     }
   ],
   "totals": {
-    "rust_files": 53,
-    "rust_lines": 100890,
+    "rust_files": 63,
+    "rust_lines": 105302,
     "files_over_budget": 20,
     "production_files_over_budget": 18,
     "functions_over_budget": 46,
-    "env_reads": 71,
-    "env_reads_disallowed": 52,
-    "forbidden_edge_refs": 296,
+    "env_reads": 13,
+    "env_reads_disallowed": 5,
+    "forbidden_edge_refs": 298,
     "axum_refs_outside_transport": 363,
     "keytag_sites": 27,
-    "mutable_statics": 138
+    "mutable_statics": 154
   }
 }

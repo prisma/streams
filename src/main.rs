@@ -18,22 +18,20 @@ fn main() -> anyhow::Result<()> {
 
     // WP-01 PR 3.1: the process environment is parsed ONCE, here at the
     // composition root, into an owned ServerConfig. Nothing reads the
-    // environment at runtime.
+    // environment at runtime. PR 3.2: parsing and validation are two
+    // typed stages — `run` accepts only the validated value, and the
+    // BINARY decides how invalid configuration terminates the process
+    // (library code returns errors, it never exits).
     use clap::Parser;
     let cli = streams_slate::CliArgs::parse();
-    let config = streams_slate::ServerConfig::load(cli, &streams_slate::ProcessEnvironment);
-
-    // R28: SWEEP_MAINT_RESIDENT=0 would silently starve every cold
-    // debt class (the rotation would open and immediately close each
-    // indebted engine, so no absorber lives long enough to drain). The
-    // config stores the raw value; the billing adapter floors at use.
-    if config.billing.sweep_maint_resident == 0 {
-        eprintln!(
-            "Error: SWEEP_MAINT_RESIDENT=0 starves all cold-debt drain; \
-             set >= 1 or unset (default 2)"
-        );
-        std::process::exit(1);
-    }
+    let parsed = streams_slate::ServerConfig::load(cli, &streams_slate::ProcessEnvironment);
+    let config = match parsed.validate() {
+        Ok(config) => config,
+        Err(e) => {
+            eprintln!("Error: {e}");
+            std::process::exit(1);
+        }
+    };
     // Run 13: tokio timer drift of ~230 ms p50 (vs 4 ms for a raw thread)
     // proved the event loop is starved by inline blocking work. On a 1-vCPU
     // box #[tokio::main] means ONE worker — a single blocking poll freezes

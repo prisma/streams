@@ -7,12 +7,14 @@ mapping DST scenario IDs to concrete tests. This script:
   1. validates the map against `docs/dst/SCENARIO-CATALOG.md`:
      - exactly the same scenario IDs as the catalogue (no missing, no extras);
      - unique IDs;
+     - each entry's `status` EQUALS the catalogue's parsed status label
+       (PR 3.2: the summary previously counted the JSON's own claim);
      - `mapped` is true iff the entry lists at least one test;
      - coverage is one of full/partial/external (mapped) — unmapped
        entries carry no coverage claim;
-     - every referenced test symbol exists in the referenced file
-       (`async fn NAME` / `fn NAME` for src files; file existence for
-       external harnesses);
+     - every referenced test symbol exists in the referenced file as an
+       exact lexical `fn NAME` word match (PR 3.2: substring matching
+       could be satisfied by a comment or a longer name);
   2. regenerates `docs/refactor/SCENARIO-MAP.md` from the JSON so the
      human-readable summary can never drift from the machine-readable
      map again.
@@ -91,6 +93,11 @@ def main() -> int:
         tests = s.get("tests", [])
         mapped = bool(s.get("mapped"))
         cov = s.get("coverage")
+        if s["id"] in catalog and s.get("status", "") != catalog[s["id"]]:
+            problems.append(
+                f"{s['id']}: status {s.get('status')!r} != catalogue "
+                f"{catalog[s['id']]!r} (the catalogue is authoritative)"
+            )
         if mapped != bool(tests):
             problems.append(
                 f"{s['id']}: mapped={mapped} but {len(tests)} test reference(s)"
@@ -107,7 +114,10 @@ def main() -> int:
             if t["file"].startswith("src/"):
                 body = file_text(f)
                 name = t["name"]
-                if f"fn {name}" not in body:
+                # Exact lexical match: `fn` then the whole identifier —
+                # a comment mentioning the name, or a longer identifier
+                # sharing the prefix, must not satisfy the reference.
+                if not re.search(rf"\bfn\s+{re.escape(name)}\b", body):
                     problems.append(
                         f"{s['id']}: test symbol not found: {t['file']}::{name}"
                     )

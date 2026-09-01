@@ -11,9 +11,10 @@
 //! The facade is the whole supported surface:
 //!
 //! ```text
-//! let cli = CliArgs::parse();                       // clap
-//! let config = ServerConfig::load(&cli, &ProcessEnvironment);
-//! run(config).await                                 // build owners, serve
+//! let cli = CliArgs::parse();                        // clap
+//! let parsed = ServerConfig::load(cli, &ProcessEnvironment);
+//! let config = parsed.validate()?;                   // ValidatedServerConfig
+//! run(config).await                                  // preflight, owners, serve
 //! ```
 
 mod audit;
@@ -59,13 +60,20 @@ mod touch_keys;
 mod usage;
 
 /// The deliberate library facade: the CLI surface, the environment
-/// source, the owned configuration graph, and the one runtime entry
-/// point. Nothing else is public API.
+/// source, the owned configuration graph (parsed and validated as two
+/// distinct types), and the one runtime entry point. Nothing else is
+/// public API.
+pub use bootstrap::{ConfigError, ValidatedServerConfig};
 pub use config::{CliArgs, Environment, ProcessEnvironment, ServerConfig};
 
-/// Build the runtime owners and serve until shutdown. Called once by the
-/// binary composition root with the loaded [`ServerConfig`].
-pub async fn run(config: ServerConfig) -> anyhow::Result<()> {
+/// Build the runtime owners and serve until shutdown. Called once by
+/// the binary composition root with the PROVEN configuration —
+/// [`ServerConfig::validate`] is the only way to construct the
+/// argument, so validation precedes every startup side effect by type,
+/// not by convention. `run` is process-singleton in the current
+/// transitional posture (see `bootstrap::run`); a second invocation in
+/// one process fails loudly.
+pub async fn run(config: ValidatedServerConfig) -> anyhow::Result<()> {
     bootstrap::run(config).await
 }
 
