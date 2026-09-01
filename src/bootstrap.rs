@@ -159,6 +159,15 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     // capacity posture is validated against the real descriptor
     // ceiling; the SSE cap may be clamped to what nofile_hard can
     // actually carry.
+    // WP-15/PR 4: this runtime's capabilities — clock, entropy, boot
+    // identity — minted HERE, owned by this runtime, handed to owners
+    // at construction. No process-global once-cell is involved.
+    let runtime_caps = crate::runtime::RuntimeCaps::production(&config.cli.instance_name);
+    tracing::info!(
+        boot_id = %runtime_caps.identity.boot_id,
+        instance = %runtime_caps.identity.instance,
+        "runtime identity minted"
+    );
     let (nofile_soft, nofile_hard) = crate::http::raise_nofile();
     validate_release_capacity(
         config.cli.release_posture,
@@ -284,7 +293,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     tracing::info!("startup canary: ops/shard/data buckets readable and writable");
     // R23-5: and if we ever DO end up unready with no shard ever opened,
     // exit rather than sit in rotation-limbo (see spawn_unready_watchdog).
-    crate::sharddir::spawn_unready_watchdog(&config.shard);
+    crate::sharddir::spawn_unready_watchdog(&config.shard, runtime_caps.clock.clone());
 
     let registry = Registry::new(ops_store.clone(), &cell_id);
     // PR 3.2: tenant, auth mode, cursor key and the certification delay
@@ -352,7 +361,9 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     );
 
     let keys = Arc::new(KeyCache::default());
-    let touch = Arc::new(crate::touch::TouchRegistry::default());
+    let touch = Arc::new(crate::touch::TouchRegistry::with_entropy(
+        runtime_caps.entropy.clone(),
+    ));
 
     // Shards open lazily on first routed request (COMPUTE-SPEC §5.1):
     // opening fences the previous owner, so ownership follows routing.
@@ -559,6 +570,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         crate::sharddir::OpenGate::new(shards_map.clone(), opener.open, config.shard.open_deadline);
     let config = Arc::new(config);
     let state = Arc::new(AppState {
+        runtime: runtime_caps.clone(),
         config: config.clone(),
         registry,
         tenant,
@@ -664,7 +676,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
             crate::billing::MeterSource {
                 cell: config.cli.cell_id.clone(),
                 instance: config.cli.instance_name.clone(),
-                boot: crate::billing::boot_id().to_string(),
+                boot: runtime_caps.identity.boot_id.clone(),
             },
         )),
         account_id: config.cli.account_id.clone(),

@@ -165,7 +165,7 @@ pub async fn drain_ops_once(
         batch.push(
             OpsEvent::new(
                 "telemetry_gap",
-                format!("gap/{}/{}", crate::billing::boot_id(), gap),
+                format!("gap/{}/{}", state.runtime.identity.boot_id, gap),
             )
             .warn()
             .fields(serde_json::json!({"dropped": gap})),

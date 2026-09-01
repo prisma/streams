@@ -101,12 +101,6 @@ pub fn billing_clock_lock() -> &'static tokio::sync::RwLock<()> {
     L.get_or_init(|| tokio::sync::RwLock::new(()))
 }
 
-/// This process's boot id: 16 random bytes, hex, minted once.
-pub fn boot_id() -> &'static str {
-    static B: std::sync::OnceLock<String> = std::sync::OnceLock::new();
-    B.get_or_init(|| crate::crypto::hex(&crate::http::rand_epoch()))
-}
-
 // ---------------------------------------------------------------------
 // UTC month math (no chrono dependency; Hinnant civil-date algorithm)
 // ---------------------------------------------------------------------

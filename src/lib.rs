@@ -47,6 +47,7 @@ mod queue;
 mod quota;
 mod registry;
 mod rollup;
+mod runtime;
 mod scaler3;
 mod segmap;
 mod shard;

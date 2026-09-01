@@ -5810,7 +5810,9 @@ async fn http_rig_inner(
     ));
     let gate =
         crate::sharddir::OpenGate::new(shards_map.clone(), opener, rig_config.shard.open_deadline);
+    let rig_runtime = crate::runtime::RuntimeCaps::production("dst-instance");
     let state = Arc::new(crate::http::AppState {
+        runtime: rig_runtime.clone(),
         config: rig_config.clone(),
         registry,
         tenant: crate::tenant::ProjectId::new("proj-test").unwrap(),
@@ -5872,7 +5874,7 @@ async fn http_rig_inner(
             crate::billing::MeterSource {
                 cell: "cell_test".to_string(),
                 instance: "dst-instance".to_string(),
-                boot: crate::billing::boot_id().to_string(),
+                boot: rig_runtime.identity.boot_id.clone(),
             },
         )),
         account_id: "acct_test".to_string(),
@@ -24989,7 +24991,7 @@ async fn read_meter_covers_the_matrix_exactly() {
     state.billing_reads.seal_if_aged(0);
     let batches = state.billing_reads.drain_sealed(8);
     assert_eq!(batches.len(), 1);
-    assert_eq!(batches[0].source.boot, crate::billing::boot_id());
+    assert_eq!(batches[0].source.boot, state.runtime.identity.boot_id);
     assert!(
         batches[0]
             .rows

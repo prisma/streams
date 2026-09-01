@@ -128,7 +128,7 @@ pub fn observe_denial(
         v: 1,
         event_id: format!(
             "deny/{}/{}",
-            crate::billing::boot_id(),
+            state.runtime.identity.boot_id,
             SEQ.fetch_add(1, Ordering::Relaxed)
         ),
         event_time_ms: crate::shard::now_ms(),
@@ -172,7 +172,7 @@ pub async fn drain_audit_once(
             v: 1,
             event_id: format!(
                 "deny-gap/{}/{}",
-                crate::billing::boot_id(),
+                state.runtime.identity.boot_id,
                 SEQ.fetch_add(1, Ordering::Relaxed)
             ),
             event_time_ms: crate::shard::now_ms(),

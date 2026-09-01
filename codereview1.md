@@ -2655,11 +2655,35 @@ Do not rename user-facing flags while moving them. Flag cleanup is a separate se
 
 #### PR 4 — Inject clock, entropy and runtime identity
 
-> **Status: UNBLOCKED by PR 3.2** (was blocked on the TraceStore
-> concurrency findings and the unfinished configuration boundary).
-> Constraint carried forward from the review: PR 4 must NOT reproduce
-> the seed-atomic-plus-`OnceLock` pattern for clock, entropy, or
-> runtime identity — those are per-runtime capabilities.
+> **Status: DONE (foundational slice, 2026-09-01, after PR 3.2.1).**
+> `src/runtime.rs` defines the per-runtime capabilities — `Clock`
+> (→ `TrustedNow`, a type DISTINCT from customer timestamps),
+> `Entropy`, `RuntimeIdentity`, bundled as `RuntimeCaps` — with ZERO
+> statics: no seed atomics, no `OnceLock` (the review constraint).
+> `bootstrap::run` mints `RuntimeCaps::production` (OS clock, OS
+> CSPRNG, boot id from that CSPRNG) and hands it to owners;
+> `AppState.runtime` carries it. Migrated and RETIRED ambient state:
+> `billing::boot_id()`'s process-global `OnceLock` is DELETED (six
+> call sites — audit deny/deny-gap ids, debug/load, the
+> x-streams-boot-id header, ops gap keys, the billing MeterSource —
+> now read the runtime's identity); `http::rand_epoch()`'s ambient
+> RNG is DELETED (epoch minting goes through `RuntimeCaps::epoch`);
+> `TouchJournal` template-id entropy comes from the registry's
+> injected capability; the unready watchdog is the retry-timing
+> exemplar (cadence + elapsed through the injected clock).
+> Proof tests: two runtimes in one process share no boot identity and
+> no timing state (independent `ManualClock`s); production runtimes
+> mint distinct unpredictable ids; a `ManualClock` sleep completes
+> exactly on advance with no process-global clock lock; seeded
+> entropy reproduces byte-for-byte. `SeededEntropy`/`ManualClock` are
+> `cfg(test)`-only — release builds cannot NAME a predictable entropy
+> source, so token/security code cannot accidentally receive one.
+> Deferred to later WP-15 slices, recorded honestly: the ~124 direct
+> `shard::now_ms` reads and remaining timer loops migrate as their
+> owners are extracted (WP-02) — each migration retires its ambient
+> read; the watchdog's survival `process::exit` awaits WP-15 task
+> supervision (result policy), and crypto key generation keeps the OS
+> CSPRNG directly until its owner moves.
 
 **Implements:** the foundational part of WP-15.
 

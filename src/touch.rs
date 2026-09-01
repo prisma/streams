@@ -108,10 +108,12 @@ pub enum WaitOutcome {
 
 impl TouchJournal {
     /// `pinned` = (entity, fields) template list from the stream descriptor.
-    pub fn start(pinned: &[(String, Vec<String>)]) -> Arc<TouchJournal> {
-        use rand::RngCore;
+    pub fn start(
+        entropy: &dyn crate::runtime::Entropy,
+        pinned: &[(String, Vec<String>)],
+    ) -> Arc<TouchJournal> {
         let mut e = [0u8; 8];
-        rand::rng().fill_bytes(&mut e);
+        entropy.fill(&mut e);
         let mut map: HashMap<String, Vec<(u64, Vec<String>)>> = HashMap::new();
         for (entity, fields) in pinned {
             let mut sorted = fields.clone();
@@ -484,12 +486,30 @@ fn remove_waiter(inner: &mut Inner, id: u64) -> Option<Waiter> {
 /// matching) alongside its journal.
 type JournalSlot = (crate::crypto::RouteHash, Arc<TouchJournal>);
 
-#[derive(Default)]
 pub struct TouchRegistry {
     map: Mutex<HashMap<[u8; 16], JournalSlot>>,
+    /// WP-15/PR 4: template-id discriminators draw from the runtime's
+    /// entropy capability, not the ambient process RNG.
+    entropy: Arc<dyn crate::runtime::Entropy>,
+}
+
+impl Default for TouchRegistry {
+    /// Test rigs: OS entropy (a deterministic rig passes its own via
+    /// [`TouchRegistry::with_entropy`]). Production hands in the
+    /// runtime's capability.
+    fn default() -> Self {
+        Self::with_entropy(Arc::new(crate::runtime::OsEntropy))
+    }
 }
 
 impl TouchRegistry {
+    pub fn with_entropy(entropy: Arc<dyn crate::runtime::Entropy>) -> Self {
+        Self {
+            map: Mutex::new(HashMap::new()),
+            entropy,
+        }
+    }
+
     pub fn journal(
         &self,
         hash: [u8; 16],
@@ -498,7 +518,7 @@ impl TouchRegistry {
     ) -> Arc<TouchJournal> {
         let mut map = self.map.lock().unwrap();
         map.entry(hash)
-            .or_insert_with(|| (route, TouchJournal::start(pinned)))
+            .or_insert_with(|| (route, TouchJournal::start(&*self.entropy, pinned)))
             .1
             .clone()
     }

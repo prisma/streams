@@ -98,6 +98,9 @@ pub struct AppState {
     /// Owners read their knobs from here; nothing reads the process
     /// environment at runtime.
     pub config: Arc<crate::config::ServerConfig>,
+    /// Per-runtime capabilities (WP-15/PR 4): clock, entropy, and this
+    /// runtime's identity. Owned here, never process-global.
+    pub runtime: crate::runtime::RuntimeCaps,
     pub registry: Registry,
     /// Single-flight, cancellation-proof history DbReader service — one
     /// per process/store (history.rs).
@@ -1161,7 +1164,7 @@ async fn debug_load(
         // ALL of these against its manifest (stale-build platform trap).
         "git_commit": env!("STREAMS_GIT_COMMIT"),
         "build_unix": env!("STREAMS_BUILD_UNIX"),
-        "boot_id": crate::billing::boot_id(),
+        "boot_id": state.runtime.identity.boot_id.as_str(),
         "compactor_profile": crate::bootstrap::compactor_profile_json(&state.config),
         // R29: the KERNEL's high-water mark, not sampled RSS — sampled
         // peaks missed the 5 s kill waves entirely. cgroup v2 first,
@@ -2097,7 +2100,7 @@ async fn health_axum(State(state): State<Arc<AppState>>) -> Response {
         [
             ("x-streams-git", env!("STREAMS_GIT_COMMIT")),
             ("x-streams-build-unix", env!("STREAMS_BUILD_UNIX")),
-            ("x-streams-boot-id", crate::billing::boot_id()),
+            ("x-streams-boot-id", state.runtime.identity.boot_id.as_str()),
         ],
         "ok",
     )
@@ -2934,13 +2937,6 @@ async fn handle_of(
     Ok((engine, handle))
 }
 
-pub(crate) fn rand_epoch() -> [u8; 16] {
-    use rand::RngCore;
-    let mut e = [0u8; 16];
-    rand::rng().fill_bytes(&mut e);
-    e
-}
-
 /// Sliding idle expiry (protocol Stream-TTL): origin reads and writes
 /// reset the window. Lazy — a slide fires only once at least a quarter
 /// of the window has elapsed, bounding registry CAS traffic; an active
@@ -3127,7 +3123,7 @@ fn fresh_desc(
     ttl_secs: Option<u64>,
     expires_at_ms: Option<i64>,
 ) -> StreamDesc {
-    let epoch = rand_epoch();
+    let epoch = state.runtime.epoch();
     StreamDesc {
         name: name.to_string(),
         account_id: Some(state.account_id.clone()),

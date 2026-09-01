@@ -164,25 +164,34 @@ pub fn unready_exit_after(cfg: &crate::config::ShardRuntimeConfig) -> Duration {
 
 /// Watchdog: exit if this instance has been unready for too long without
 /// ever having opened a shard.
-pub fn spawn_unready_watchdog(cfg: &crate::config::ShardRuntimeConfig) {
+/// WP-15/PR 4 (retry-timing exemplar): the watchdog's cadence and
+/// elapsed measurement go through the injected [`crate::runtime::Clock`]
+/// — a deterministic test can drive the unready window without wall
+/// time. The survival `process::exit` stays until WP-15's task
+/// supervision gives critical tasks a result policy.
+pub fn spawn_unready_watchdog(
+    cfg: &crate::config::ShardRuntimeConfig,
+    clock: std::sync::Arc<dyn crate::runtime::Clock>,
+) {
     let limit = unready_exit_after(cfg);
     if limit.is_zero() {
         return;
     }
     tokio::spawn(async move {
-        let mut since: Option<Instant> = None;
+        let mut since_ms: Option<i64> = None;
         loop {
-            tokio::time::sleep(Duration::from_secs(10)).await;
+            clock.sleep(Duration::from_secs(10)).await;
             match unready_reason() {
-                None => since = None,
+                None => since_ms = None,
                 Some(reason) => {
-                    let t = *since.get_or_insert_with(Instant::now);
-                    if t.elapsed() >= limit {
+                    let t0 = *since_ms.get_or_insert_with(|| clock.now().ms());
+                    let elapsed = Duration::from_millis((clock.now().ms() - t0).max(0) as u64);
+                    if elapsed >= limit {
                         tracing::error!(
                             "unready for {:?} and no shard has ever opened ({reason}); \
                              exiting so the platform restarts this instance rather than \
                              leaving it in rotation-limbo",
-                            t.elapsed(),
+                            elapsed,
                         );
                         std::process::exit(1);
                     }
