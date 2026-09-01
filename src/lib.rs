@@ -63,7 +63,7 @@ mod usage;
 /// source, the owned configuration graph (parsed and validated as two
 /// distinct types), and the one runtime entry point. Nothing else is
 /// public API.
-pub use bootstrap::{ConfigError, ValidatedServerConfig};
+pub use config::validation::{ConfigError, ValidatedServerConfig};
 pub use config::{CliArgs, Environment, ProcessEnvironment, ServerConfig};
 
 /// Build the runtime owners and serve until shutdown. Called once by

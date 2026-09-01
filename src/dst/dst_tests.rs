@@ -5724,7 +5724,10 @@ async fn http_rig_inner(
     // static-bridge rig posture.
     fleet_auth: Option<(Option<String>, Option<crate::http::FleetTokenSource>)>,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
-    let registry = crate::registry::Registry::new(store.clone(), "test-cell");
+    let registry = crate::registry::Registry::new(
+        store.clone(),
+        &crate::tenant::CellId::new("test-cell").unwrap(),
+    );
     let keys = Arc::new(crate::history::KeyCache::default());
     let touch = Arc::new(crate::touch::TouchRegistry::default());
     let shards_map: Arc<

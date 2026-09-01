@@ -464,6 +464,39 @@ def baseline_diff(current: dict, baseline_path: Path) -> int:
             print(f"  NEW      {k}")
         for k in resolved:
             print(f"  RESOLVED {k}")
+    # PR 3.2.1: growth INSIDE already-flagged offenders was invisible —
+    # an over-budget file's identity is its filename, so +419 lines in
+    # a known offender produced no diff item. Report line-count deltas
+    # for over-budget files/functions present on both sides.
+    growth: list[str] = []
+
+    def spans(report: dict, cat: str, keyf, sizef):
+        return {keyf(e): sizef(e) for e in report.get(cat, [])}
+
+    cur_files = spans(current, "files_over_budget", lambda e: e["file"], lambda e: e["lines"])
+    base_files = spans(baseline, "files_over_budget", lambda e: e["file"], lambda e: e["lines"])
+    for f in sorted(set(cur_files) & set(base_files)):
+        d = cur_files[f] - base_files[f]
+        if d != 0:
+            growth.append(f"  {f:<40} {d:+} lines ({base_files[f]} -> {cur_files[f]})")
+    cur_fns = spans(
+        current, "functions_over_budget",
+        lambda e: f"{e['file']}::{e['function']}", lambda e: e["lines"],
+    )
+    base_fns = spans(
+        baseline, "functions_over_budget",
+        lambda e: f"{e['file']}::{e['function']}", lambda e: e["lines"],
+    )
+    for f in sorted(set(cur_fns) & set(base_fns)):
+        d = cur_fns[f] - base_fns[f]
+        if d != 0:
+            growth.append(f"  {f:<40} {d:+} lines ({base_fns[f]} -> {cur_fns[f]})")
+    if growth:
+        print("GROWTH (inside already-flagged offenders):")
+        for g in growth:
+            print(g)
+    else:
+        print("GROWTH: none inside already-flagged offenders")
     print("baseline-diff:", "REGRESSIONS PRESENT" if any_new else "no new regressions")
     return 0
 

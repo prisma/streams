@@ -22,6 +22,7 @@ mapping DST scenario IDs to concrete tests. This script:
 Usage:
   python3 scripts/scenario-map-report.py            # validate + rewrite SCENARIO-MAP.md
   python3 scripts/scenario-map-report.py --check    # validate only, exit 1 on any finding
+  python3 scripts/scenario-map-report.py --self-test  # masker/matcher self-tests
 """
 
 from __future__ import annotations
@@ -39,6 +40,103 @@ OUT_MD = REPO / "docs/refactor/SCENARIO-MAP.md"
 
 ID_RE = re.compile(r"^###\s+([A-Z]{2,4}-\d{3})\b.*?$")
 STATUS_RE = re.compile(r"\*\*Status:\*\*\s*(.+?)\s*$")
+
+
+def mask_noncode(src: str) -> str:
+    """Blank line comments, block comments (nested), strings, raw
+    strings and char literals so symbol matching is lexical (PR 3.2.1:
+    a commented-out `fn name` or a name inside a string must not
+    satisfy a scenario's test reference). Same masking discipline as
+    architecture-report's strip_noncode, scoped to what fn-matching
+    needs."""
+    out = list(src)
+    i, n = 0, len(src)
+    while i < n:
+        if src.startswith("//", i):
+            j = src.find("\n", i)
+            j = n if j == -1 else j
+            for k in range(i, j):
+                out[k] = " "
+            i = j
+        elif src.startswith("/*", i):
+            depth, j = 1, i + 2
+            while j < n and depth:
+                if src.startswith("/*", j):
+                    depth += 1
+                    j += 2
+                elif src.startswith("*/", j):
+                    depth -= 1
+                    j += 2
+                else:
+                    j += 1
+            for k in range(i, min(j, n)):
+                if out[k] != "\n":
+                    out[k] = " "
+            i = j
+        elif src[i] == '"' or (src[i] == "r" and re.match(r'r#*"', src[i:])):
+            if src[i] == "r":
+                m = re.match(r'r(#*)"', src[i:])
+                closer = '"' + "#" * len(m.group(1))
+                j = src.find(closer, i + m.end())
+                j = n if j == -1 else j + len(closer)
+            else:
+                j = i + 1
+                while j < n:
+                    if src[j] == "\\":
+                        j += 2
+                        continue
+                    if src[j] == '"':
+                        j += 1
+                        break
+                    j += 1
+            for k in range(i, min(j, n)):
+                if out[k] != "\n":
+                    out[k] = " "
+            i = j
+        elif src[i] == "'" and (m := re.match(r"'(\\.|[^\\'])'", src[i:])):
+            j = i + m.end()
+            for k in range(i, j):
+                out[k] = " "
+            i = j
+        else:
+            i += 1
+    return "".join(out)
+
+
+def symbol_defined(body_masked: str, name: str) -> bool:
+    """Exact lexical `fn NAME` word match over MASKED source."""
+    return re.search(rf"\bfn\s+{re.escape(name)}\b", body_masked) is not None
+
+
+def self_test() -> int:
+    cases = [
+        ("// fn commented_out() {}", "commented_out", False,
+         "commented-out function must not satisfy"),
+        ('let s = "fn in_a_string()";', "in_a_string", False,
+         "name inside a string must not satisfy"),
+        ("fn prefix_name_longer() {}", "prefix_name", False,
+         "prefix collision must not satisfy"),
+        ("async fn real_async_case() {}", "real_async_case", True,
+         "real async fn must satisfy"),
+        ("#[tokio::test]\nasync fn attributed_test() {}", "attributed_test", True,
+         "attributed test must satisfy"),
+        ("/* fn in_block_comment() */ fn real_one() {}", "in_block_comment", False,
+         "block-commented fn must not satisfy"),
+        ("/* fn masked() */ fn real_one() {}", "real_one", True,
+         "code after a block comment must still match"),
+    ]
+    failures = []
+    for src, name, want, why in cases:
+        got = symbol_defined(mask_noncode(src), name)
+        if got != want:
+            failures.append(f"{why}: {src!r} -> {got}")
+    if failures:
+        print("scenario-map self-test: FAILED")
+        for f in failures:
+            print(f"  - {f}")
+        return 1
+    print(f"scenario-map self-test: OK ({len(cases)} cases)")
+    return 0
 
 
 def catalog_scenarios() -> dict[str, str]:
@@ -60,6 +158,8 @@ def catalog_scenarios() -> dict[str, str]:
 
 
 def main() -> int:
+    if "--self-test" in sys.argv:
+        return self_test()
     check_only = "--check" in sys.argv
     problems: list[str] = []
 
@@ -84,7 +184,7 @@ def main() -> int:
         key = str(p)
         if key not in symbol_cache:
             try:
-                symbol_cache[key] = p.read_text(errors="replace")
+                symbol_cache[key] = mask_noncode(p.read_text(errors="replace"))
             except OSError:
                 symbol_cache[key] = ""
         return symbol_cache[key]
@@ -114,10 +214,10 @@ def main() -> int:
             if t["file"].startswith("src/"):
                 body = file_text(f)
                 name = t["name"]
-                # Exact lexical match: `fn` then the whole identifier —
-                # a comment mentioning the name, or a longer identifier
-                # sharing the prefix, must not satisfy the reference.
-                if not re.search(rf"\bfn\s+{re.escape(name)}\b", body):
+                # Lexical match over MASKED source (PR 3.2.1): comments
+                # and strings are blanked first, then `fn` + the whole
+                # identifier must appear.
+                if not symbol_defined(body, name):
                     problems.append(
                         f"{s['id']}: test symbol not found: {t['file']}::{name}"
                     )

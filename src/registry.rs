@@ -683,11 +683,13 @@ fn name_from_desc_path(p: &ObjPath) -> Option<String> {
 }
 
 impl Registry {
-    pub fn new(store: Arc<dyn ObjectStore>, cell: &str) -> Registry {
-        crate::tenant::validate_cell_id(cell).expect("valid cell id (checked at startup)");
+    /// PR 3.2.1: takes the PROVEN [`crate::tenant::CellId`] — the old
+    /// `&str` signature re-validated here and `expect`-ed, contradicting
+    /// the validated-configuration boundary.
+    pub fn new(store: Arc<dyn ObjectStore>, cell: &crate::tenant::CellId) -> Registry {
         Registry {
             store,
-            cell: Arc::from(cell),
+            cell: Arc::from(cell.as_str()),
             cache: Mutex::new(HashMap::new()),
             cache_ttl: Duration::from_secs(5),
             #[cfg(test)]
@@ -1388,9 +1390,10 @@ const TOPOLOGY_PATH: &str = "topology.json";
 
 pub async fn load_or_init_topology(
     store: &Arc<dyn ObjectStore>,
-    initial_shards: usize,
+    initial_shards: crate::config::validation::InitialShards,
     body_ceiling: usize,
 ) -> Result<Topology, object_store::Error> {
+    let initial_shards = initial_shards.get();
     let path = ObjPath::from(TOPOLOGY_PATH);
     match store.get(&path).await {
         Ok(r) => {
@@ -1406,12 +1409,9 @@ pub async fn load_or_init_topology(
         Err(object_store::Error::NotFound { .. }) => {}
         Err(e) => return Err(e),
     }
-    let bits = (initial_shards.max(1) as f64).log2() as usize;
-    assert_eq!(
-        1 << bits,
-        initial_shards.max(1),
-        "initial shards must be a power of two"
-    );
+    // PR 3.2.1: nonzero power-of-two is proven by the InitialShards
+    // type; no assertion is repeated here.
+    let bits = (initial_shards as f64).log2() as usize;
     let shards: Vec<String> = if bits == 0 {
         vec![String::new()]
     } else {
@@ -1563,7 +1563,10 @@ mod tests {
     #[tokio::test]
     async fn layout_gate_refuses_foreign_namespaces() {
         let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-        let reg = Registry::new(store.clone(), "test-cell");
+        let reg = Registry::new(
+            store.clone(),
+            &crate::tenant::CellId::new("test-cell").unwrap(),
+        );
         // Old-shape descriptor: valid JSON, no layout_version field.
         let old = serde_json::json!({
             "name": "legacy",
@@ -1692,7 +1695,10 @@ mod tests {
             armed: std::sync::atomic::AtomicBool::new(false),
             inject: std::sync::Mutex::new(None),
         });
-        let reg = Registry::new(conflict.clone(), "test-cell");
+        let reg = Registry::new(
+            conflict.clone(),
+            &crate::tenant::CellId::new("test-cell").unwrap(),
+        );
         let mut src = desc("src", "e1", false);
         src.soft_deleted = true;
         src.fork_children = vec!["C".into()];
@@ -1840,7 +1846,10 @@ mod tests {
             conditional: Default::default(),
             not_modified: Default::default(),
         });
-        let reg = Registry::new(counting.clone(), "test-cell");
+        let reg = Registry::new(
+            counting.clone(),
+            &crate::tenant::CellId::new("test-cell").unwrap(),
+        );
         let (created, _) = reg.create(desc("s", "e1", false)).await.unwrap();
         assert!(created);
 
@@ -1893,7 +1902,10 @@ mod tests {
     #[tokio::test]
     async fn tombstone_stamp_persists_and_raw_page_sees_terminals() {
         let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-        let reg = Registry::new(store.clone(), "test-cell");
+        let reg = Registry::new(
+            store.clone(),
+            &crate::tenant::CellId::new("test-cell").unwrap(),
+        );
         reg.create(desc("alive", "e1", false)).await.unwrap();
         reg.create(desc("gone", "e2", false)).await.unwrap();
         let mut ex = desc("expired", "e3", false);
@@ -1935,7 +1947,10 @@ mod tests {
     #[tokio::test]
     async fn corrupt_descriptor_fails_closed() {
         let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-        let reg = Registry::new(store.clone(), "test-cell");
+        let reg = Registry::new(
+            store.clone(),
+            &crate::tenant::CellId::new("test-cell").unwrap(),
+        );
         put_raw(&store, "s1", b"{ not json").await;
         assert!(
             reg.get(&ts("s1")).await.is_err(),
@@ -1958,9 +1973,13 @@ mod tests {
             .await
             .unwrap();
         assert!(
-            load_or_init_topology(&store, 4, crate::http::MAX_BODY_BYTES)
-                .await
-                .is_err()
+            load_or_init_topology(
+                &store,
+                crate::config::validation::InitialShards::new(4).unwrap(),
+                crate::protocol_pin::MAX_BODY_BYTES,
+            )
+            .await
+            .is_err()
         );
         // The corrupt object must still be there — not replaced by a fresh
         // initialization.
@@ -1979,7 +1998,10 @@ mod tests {
     #[tokio::test]
     async fn recreate_race_has_one_winner() {
         let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
-        let reg = Registry::new(store.clone(), "test-cell");
+        let reg = Registry::new(
+            store.clone(),
+            &crate::tenant::CellId::new("test-cell").unwrap(),
+        );
         let (created, _) = reg.create(desc("s", "dead", true)).await.unwrap();
         assert!(created);
 

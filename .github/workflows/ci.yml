@@ -31,7 +31,9 @@ jobs:
       - name: Architecture delta vs WP-00 baseline (warning-only)
         run: python3 scripts/architecture-report.py --baseline-diff
       - name: Scenario-map validation (hard gate, PR 3.2)
-        run: python3 scripts/scenario-map-report.py --check
+        run: |
+          python3 scripts/scenario-map-report.py --self-test
+          python3 scripts/scenario-map-report.py --check
   # Job: rust build + full suite (product conformance, dual-surface
   # equivalence corpus, DST safety/liveness, request-cost budgets).
   rust:

@@ -33,6 +33,10 @@ fi
 # WP-00/PR 3.2: the scenario map must stay valid against the catalogue
 # (IDs, statuses, coverage, test symbols) — generated artifacts that can
 # drift without failing the gate are not guardrails.
+if ! python3 scripts/scenario-map-report.py --self-test >> "$OUT" 2>&1; then
+  echo GATEFAIL-scenario-map-selftest >> "$OUT"
+  exit 1
+fi
 if ! python3 scripts/scenario-map-report.py --check >> "$OUT" 2>&1; then
   echo GATEFAIL-scenario-map >> "$OUT"
   exit 1

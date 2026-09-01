@@ -25,3 +25,12 @@ pub fn pinned() -> bool {
     .iter()
     .any(|v| v.contains("UNPINNED"))
 }
+
+/// Protocol ceiling on a request body (wire pin). A deployment may
+/// LOWER its effective limit (`MAX_REQUEST_BODY_BYTES`, proven by
+/// `config::validation`) but never raise it above this.
+pub const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
+
+/// Floor under the effective body ceiling — below this the product
+/// surface stops being usable.
+pub const MIN_BODY_BYTES: usize = 64 * 1024;

@@ -26,10 +26,11 @@ use crate::offsets::Offset;
 use crate::registry::{Registry, StreamDesc, shard_for_hash};
 use crate::shard::{AppendErr, AppendReq, ShardEngine, now_ms, read_frames};
 
-/// Protocol ceiling on a request body. This is the pinned maximum — a
-/// deployment may lower its effective limit (see [`max_body_bytes`]) but
-/// never raise it above this.
-pub(crate) const MAX_BODY_BYTES: usize = 32 * 1024 * 1024;
+/// Protocol ceiling on a request body — the wire pin, re-exported from
+/// [`crate::protocol_pin`] (PR 3.2.1: the pin moved beside the other
+/// protocol constants so configuration validation can reference it
+/// without a transport edge).
+pub(crate) use crate::protocol_pin::MAX_BODY_BYTES;
 
 /// Effective request-body ceiling, set once at startup from
 /// MAX_REQUEST_BODY_BYTES.
@@ -50,22 +51,12 @@ pub(crate) fn max_body_bytes() -> usize {
     MAX_BODY_LIMIT.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Lower the effective body ceiling. Rejects anything above the pinned
-/// protocol maximum (the limit may only be tightened) or below a floor
-/// that keeps the product surface usable.
-pub(crate) fn set_max_body_bytes(v: usize) -> anyhow::Result<()> {
-    const FLOOR: usize = 64 * 1024;
-    if v > MAX_BODY_BYTES {
-        anyhow::bail!(
-            "MAX_REQUEST_BODY_BYTES ({v}) exceeds the pinned protocol ceiling \
-             ({MAX_BODY_BYTES}); the limit may only be lowered"
-        );
-    }
-    if v < FLOOR {
-        anyhow::bail!("MAX_REQUEST_BODY_BYTES ({v}) is below the {FLOOR}-byte floor");
-    }
+/// Install the effective body ceiling. Infallible by design (PR 3.2.1):
+/// the bounds (pin ceiling, usable floor) are PROVEN by
+/// `config::validation::validate_body_ceiling` before a
+/// `ValidatedServerConfig` can exist, so no assertion is repeated here.
+pub(crate) fn install_max_body_bytes(v: usize) {
     MAX_BODY_LIMIT.store(v, std::sync::atomic::Ordering::Relaxed);
-    Ok(())
 }
 
 const MAX_READ_BYTES: usize = 8 * 1024 * 1024;

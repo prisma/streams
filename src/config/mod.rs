@@ -25,6 +25,7 @@ pub mod environment;
 pub mod load;
 pub mod model;
 pub mod summary;
+pub mod validation;
 
 #[cfg(test)]
 mod tests;

@@ -205,6 +205,30 @@ pub fn validate_cell_id(raw: &str) -> Result<(), IdentityError> {
     validate_id(raw, ID_MAX_BYTES)
 }
 
+/// A PROVEN cell id (PR 3.2.1): the only constructor validates, so an
+/// API taking `&CellId` needs no downstream assertion — the type is
+/// the evidence. `config::validation` mints one for the deployment;
+/// tests mint their own.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct CellId(String);
+
+impl CellId {
+    pub fn new(raw: &str) -> Result<Self, IdentityError> {
+        validate_cell_id(raw)?;
+        Ok(Self(raw.to_string()))
+    }
+
+    pub fn as_str(&self) -> &str {
+        &self.0
+    }
+}
+
+impl fmt::Display for CellId {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&self.0)
+    }
+}
+
 /// Stream-name length bound (matches `product::canonical_name`).
 pub const NAME_MAX_BYTES: usize = 512;
 /// The reserved system namespace root. Owned here (identity layer);

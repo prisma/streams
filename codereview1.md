@@ -672,6 +672,35 @@ P0 does not mean “rewrite all P0 work before merging anything.” Each workstr
 > (`\bfn NAME\b`, not substring), the baseline-diff keys carry counts
 > (growth inside an already-flagged file/function/static is a visible
 > diff), and the accepted baseline was refreshed at the PR 3.2 tree.
+> **Corrected (PR 3.2.1, Commit A):** the review found async
+> CANCELLATION could still poison the trace — point-operation and
+> multipart futures used a plain id, so a future dropped mid-await
+> never reached `finish()`, leaving a permanent Pending event and a
+> stuck active entry (reset refused forever). Every begin now returns
+> an owning RAII `TraceOperation` guard: `finish` consumes it exactly
+> once, `note` records stream facts without retiring, and Drop retires
+> with `Cancelled` as the fallback; multipart `put_part` begins at
+> dispatch and moves the guard INTO the returned future so even an
+> unpolled drop records Cancelled (an unpolled `async fn` records
+> nothing — documented: the trace records operations that STARTED).
+> Battery: poll-to-Pending-then-drop for get/put/list_with_delimiter/
+> copy against a permanently-pending store, unpolled + polled
+> multipart drops, reset after every cancellation, completed outcomes
+> never overwritten. And the 2,750-line dst.rs catch-all is decomposed:
+> `src/dst/{mod,fault_store,trace_store,trace_store_tests,runtime}.rs`
+> (pure moves, mt-audit/clippy baselines regenerated for the 3 path
+> moves each). Scenario symbol matching is now LEXICAL — comments,
+> block comments, strings, raw strings and char literals are masked
+> before the `\bfn NAME\b` match — with a 7-case `--self-test`
+> (commented-out fn, fn-in-string, prefix collision, real async fn,
+> attributed test, block-comment cases) run by the gate and CI. The
+> architecture baseline-diff gained a GROWTH section: line-count
+> deltas for over-budget files and functions present on both sides,
+> so growth inside a known offender is now visible; the accepted
+> baseline was deliberately NOT refreshed in PR 3.2.1 — the printed
+> delta against the pre-3.2.1 snapshot (bootstrap.rs and dst.rs
+> RESOLVED; validation.rs and the relocated trace tests appear; every
+> move visible) is the review artifact, to be refreshed on acceptance.
 
 ### Objective
 
@@ -845,6 +874,39 @@ expected:
 > (by-value + validate), TraceStore ordering contract, seq
 > non-density, and the environment module's no-mutation claim (true
 > again).
+> **PR 3.2.1 (Commit B) — the validated boundary is complete:** the
+> review found `ValidatedServerConfig` meant "some major validations
+> ran", not "startup cannot hit another configuration failure". Now:
+> CELL_ID is proven by `validate()` into a typed
+> `tenant::CellId` that `Registry::new` CONSUMES (the
+> `expect("valid cell id (checked at startup)")` is deleted, not
+> softened); the effective INITIAL_SHARDS count is resolved (incl.
+> the fleet-mode default) and proven nonzero-power-of-two as
+> `InitialShards` — `load_or_init_topology` takes the type and its
+> assert is gone; MAX_REQUEST_BODY_BYTES bounds are proven by
+> `validate_body_ceiling` (the 32-MiB wire pin moved to
+> `protocol_pin.rs` beside the other pins) and
+> `http::install_max_body_bytes` is INFALLIBLE; the pure
+> BILLING_MODE=required prerequisites (usage key, no placeholder
+> identities) are proven before any store opens (the spool/rollup
+> OPENS remain store I/O in bootstrap). Validation itself moved to
+> `src/config/validation.rs` (+`validation_tests.rs`) — bootstrap
+> consumes `ValidatedServerConfig`, it no longer defines it, and
+> bootstrap.rs dropped from 2,126 to ~915 lines (under budget for the
+> first time). A 17-test central-validator matrix drives
+> `ServerConfig::validate()` itself: every rejection category (cell
+> id, shards, body limit, billing identity, project id, auth files,
+> refresh cadence, sweep residency, cursor key, record ceiling, fleet
+> auth, cert delay, memprofile, engine settings), the multi-error
+> collection contract, the fleet-shard-default resolution, and
+> deterministic-defaults-are-valid. The singleton latch is renamed
+> `RUN_WAS_INVOKED` and documented as a once-EVER process latch (a
+> failed first run consumes the right to call run() again; no
+> reset-on-error — WP-02 removes the holders instead). Behavioral
+> note, recorded: a non-power-of-two INITIAL_SHARDS previously
+> asserted only on the FRESH-topology path; it now refuses at
+> validation even when a topology exists — the stricter posture is
+> deliberate (a malformed value should never boot).
 
 ### Objective
 
