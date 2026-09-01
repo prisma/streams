@@ -36,7 +36,7 @@ if ! cargo fmt --check > /tmp/fmt.out 2>&1; then
   exit 1
 fi
 set +e
-cargo test --release --bin streams-slate -- --skip post_split_throughput_scales 2>&1 \
+cargo test --release --lib -- --skip post_split_throughput_scales 2>&1 \
   | tee /tmp/gate-full.log \
   | grep -E "^test result|^test .* FAILED|^failures:$" >> "$OUT"
 TEST_STATUS=${PIPESTATUS[0]}
@@ -52,7 +52,7 @@ fi
 # against 1.8x, with healthy baselines. External host load still
 # depresses it — the test's own failure text says how to distinguish.
 set +e
-cargo test --release --bin streams-slate post_split_throughput_scales -- \
+cargo test --release --lib post_split_throughput_scales -- \
   --exact dst::dst_tests::post_split_throughput_scales 2>&1 \
   | tee /tmp/gate-capacity.log \
   | grep -E "^test result|^failures:$" >> "$OUT"

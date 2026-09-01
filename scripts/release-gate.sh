@@ -61,10 +61,10 @@ else
 fi
 
 echo "== tests =="
-cargo test --bin streams-slate -- --skip post_split_throughput_scales
+cargo test --lib -- --skip post_split_throughput_scales
 
 echo "== capacity mechanism gate (owns the machine) =="
-cargo test --bin streams-slate post_split_throughput_scales -- --exact dst::dst_tests::post_split_throughput_scales
+cargo test --lib post_split_throughput_scales -- --exact dst::dst_tests::post_split_throughput_scales
 
 echo "== livefeed engine matrix =="
 echo "== supply chain =="

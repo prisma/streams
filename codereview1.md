@@ -710,6 +710,19 @@ expected:
 
 ## 8. WP-01 — Library crate, configuration model and thin bootstrap
 
+> **Status: IN PROGRESS.** PR 2 DONE (2026-09-01): `src/lib.rs` is the
+> crate root for all production modules; `src/main.rs` is a 59-line
+> composition root (allocator, tracing, pre-runtime env checks, runtime
+> construction); bootstrap/config live in `src/bootstrap.rs`
+> (`async_main`, `Args`). Gate scripts and CI now test the stable `--lib`
+> target. Clippy fingerprint baseline refreshed for the move: 54
+> dead-code entries dropped (lib `pub` items are reachable API, not dead
+> code), 2 entries moved `main.rs`→`bootstrap.rs`, 3 newly visible
+> (KeyCache len/is_empty; two private_interfaces on AppState fields —
+> pre-existing issues the lib surface exposes; WP-02 deletes AppState).
+> MT audit baseline regenerated for the same six moved sites.
+> PR 3 (config model) pending.
+
 ### Objective
 
 Turn the server into a library-driven application with a thin binary composition root, and make configuration a parsed, validated value rather than ambient process state.

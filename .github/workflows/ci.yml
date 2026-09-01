@@ -50,7 +50,7 @@ jobs:
       - name: Multitenancy audit (bare, never piped)
         run: bash scripts/multitenancy-audit.sh
       - name: Multitenancy identity lint (exemption inventory)
-        run: cargo test --release --bin streams-slate multitenancy_identity_lint -- --nocapture
+        run: cargo test --release --lib multitenancy_identity_lint -- --nocapture
       - name: Test (product conformance + dual-surface + DST + cost budgets)
         run: |
           # pipefail: Cargo's own exit status must fail this step even
@@ -70,7 +70,7 @@ jobs:
       # understates the ratio (observed 1.73-1.80 in-suite vs the 1.8x
       # gate, with healthy single-segment baselines).
       - name: Capacity mechanism gate (owns the runner)
-        run: cargo test --release --bin streams-slate post_split_throughput_scales -- --exact dst::dst_tests::post_split_throughput_scales
+        run: cargo test --release --lib post_split_throughput_scales -- --exact dst::dst_tests::post_split_throughput_scales
   # Job: the LiveFeed engine's focused legs (unit + HTTP) on every
   # push — fast signal for the engine's own files ahead of the full
   # suite (livefeed IS the one engine since round 11.8).
@@ -81,9 +81,9 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: LiveFeed unit legs (feed + registry lifecycle/budget)
-        run: 'cargo test --release --bin streams-slate sse::'
+        run: 'cargo test --release --lib sse::'
       - name: LiveFeed HTTP legs (wire equivalence, fanout, framing)
-        run: cargo test --release --bin streams-slate livefeed_
+        run: cargo test --release --lib livefeed_
 
   # Job: the REAL enforce-mode noisy-neighbor campaign (SR2-5),
   # nightly. Reduced herd for the 4-core runner (24 noisy, 100 idle)
@@ -157,7 +157,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Certification smoke at 1,000 projects
-        run: MT_CERT_PROJECTS=1000 cargo test --release --bin streams-slate shared_cell_certification_smoke -- --nocapture
+        run: MT_CERT_PROJECTS=1000 cargo test --release --lib shared_cell_certification_smoke -- --nocapture
 
   # Job: the SDK ships as an npm package, so CI validates the PACKAGE,
   # not the source tree: build, pack, install the tarball into a clean
