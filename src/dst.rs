@@ -680,6 +680,487 @@ impl ObjectStore for FaultStore {
     }
 }
 
+// ---- the tracing store -----------------------------------------------
+
+/// Outcome of one traced operation, coarse enough that traces stay
+/// comparable across runs and stores.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum TraceOutcome {
+    /// Dispatched but not yet resolved — only ever visible in a snapshot
+    /// taken while the operation is in flight.
+    Pending,
+    Ok,
+    NotFound,
+    AlreadyExists,
+    Precondition,
+    NotModified,
+    NotSupported,
+    NotImplemented,
+    InvalidPath,
+    /// Everything else (Generic, JoinError, …): the trace records THAT it
+    /// failed, not the store's prose.
+    Error,
+}
+
+impl TraceOutcome {
+    fn of(e: &object_store::Error) -> Self {
+        use object_store::Error as E;
+        match e {
+            E::NotFound { .. } => Self::NotFound,
+            E::AlreadyExists { .. } => Self::AlreadyExists,
+            E::Precondition { .. } => Self::Precondition,
+            E::NotModified { .. } => Self::NotModified,
+            E::NotSupported { .. } => Self::NotSupported,
+            E::NotImplemented { .. } => Self::NotImplemented,
+            E::InvalidPath { .. } => Self::InvalidPath,
+            _ => Self::Error,
+        }
+    }
+}
+
+/// One object-store operation, in dispatch order.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct StoreTraceEvent {
+    /// Dispatch sequence number, dense from 0. See `TraceStore` for why
+    /// the ordering is dispatch, not completion.
+    pub seq: u64,
+    pub op: StoreOp,
+    pub class: ObjClass,
+    /// The path as recorded: verbatim only when the store was built with
+    /// `verbatim`, segment-redacted otherwise. Credentials and headers
+    /// are never recorded — the `ObjectStore` interface never exposes
+    /// them to a decorator.
+    pub path: String,
+    /// Payload length for puts, requested span for bounded/suffix ranged
+    /// gets. `None` when not applicable or unknowable at dispatch
+    /// (offset ranges, full gets, deletes, lists, copies).
+    pub bytes: Option<u64>,
+    pub outcome: TraceOutcome,
+    /// First 16 hex chars of the payload sha256 — recorded ONLY when the
+    /// store was built with `content_hashes: true`. Payload bytes
+    /// themselves are never retained either way.
+    pub content_hash: Option<String>,
+    /// Free-form qualifier: copy destination, `head` marker, multipart
+    /// markers (`multipart-open` / `part` / `complete parts=N` / `abort`).
+    pub detail: Option<String>,
+}
+
+/// First 16 hex chars of sha256 — enough to distinguish payloads or path
+/// segments in a trace without retaining them.
+fn sha16(bytes: &[u8]) -> String {
+    use sha2::Digest;
+    let d = sha2::Sha256::digest(bytes);
+    crate::crypto::hex(&d[..8])
+}
+
+/// Segment-preserving redaction. Tenant- and stream-derived segments are
+/// replaced by a 16-hex-char sha256 prefix; the structural tokens the
+/// `ObjClass` classifier keys on (`wal`, `compacted`, `fleet`, `routers`,
+/// `shards`) survive verbatim, as does the `manifest` marker and the file
+/// extension (`.sst` is itself a classification signal). The redacted
+/// path therefore classifies identically to the original while leaking no
+/// tenant material.
+fn redact_path(path: &str) -> String {
+    path.split('/')
+        .map(|seg| {
+            if matches!(seg, "wal" | "compacted" | "fleet" | "routers" | "shards") {
+                return seg.to_string();
+            }
+            let h = sha16(seg.as_bytes());
+            let stem = if seg.contains("manifest") {
+                format!("manifest-{h}")
+            } else {
+                h
+            };
+            match seg.rsplit_once('.') {
+                Some((_, ext)) if !ext.is_empty() => format!("{stem}.{ext}"),
+                _ => stem,
+            }
+        })
+        .collect::<Vec<_>>()
+        .join("/")
+}
+
+/// Shared trace state.
+#[derive(Debug)]
+struct TraceState {
+    events: Mutex<Vec<StoreTraceEvent>>,
+    redact: bool,
+    content_hashes: bool,
+}
+
+impl TraceState {
+    /// Push the event at DISPATCH and return its sequence number, which is
+    /// also its index in the vector — the lock makes `seq` dense, so the
+    /// later outcome fill is a plain indexed write.
+    fn begin(
+        &self,
+        op: StoreOp,
+        path: &str,
+        bytes: Option<u64>,
+        content_hash: Option<String>,
+        detail: Option<String>,
+    ) -> u64 {
+        let mut evs = self.events.lock().unwrap();
+        let seq = evs.len() as u64;
+        evs.push(StoreTraceEvent {
+            seq,
+            op,
+            class: ObjClass::of(path),
+            path: if self.redact {
+                redact_path(path)
+            } else {
+                path.to_string()
+            },
+            bytes,
+            outcome: TraceOutcome::Pending,
+            content_hash,
+            detail,
+        });
+        seq
+    }
+
+    fn finish(&self, seq: u64, outcome: TraceOutcome) {
+        let mut evs = self.events.lock().unwrap();
+        if let Some(e) = evs.get_mut(seq as usize) {
+            e.outcome = outcome;
+        }
+    }
+
+    fn finish_with<T>(&self, seq: u64, res: &OsResult<T>) {
+        self.finish(
+            seq,
+            match res {
+                Ok(_) => TraceOutcome::Ok,
+                Err(e) => TraceOutcome::of(e),
+            },
+        );
+    }
+
+    /// A list stream can serve more items after an error, so clean
+    /// exhaustion only upgrades a never-failed stream to Ok.
+    fn finish_list_ok(&self, seq: u64) {
+        let mut evs = self.events.lock().unwrap();
+        if let Some(e) = evs.get_mut(seq as usize)
+            && e.outcome == TraceOutcome::Pending
+        {
+            e.outcome = TraceOutcome::Ok;
+        }
+    }
+
+    fn hash_payload(&self, payload: &PutPayload) -> Option<String> {
+        if !self.content_hashes {
+            return None;
+        }
+        use sha2::Digest;
+        let mut h = sha2::Sha256::new();
+        for b in payload.iter() {
+            h.update(b);
+        }
+        Some(crate::crypto::hex(&h.finalize()[..8]))
+    }
+}
+
+/// Tracing `ObjectStore` decorator for refactor comparisons.
+///
+/// Records every operation the client dispatches, in dispatch order, so a
+/// refactor PR can assert the exact object-store operation trace is
+/// unchanged by code movement. Behavior is pass-through: nothing is
+/// delayed, altered, or dropped.
+///
+/// *Ordering choice.* Events are pushed at DISPATCH (before delegating to
+/// the inner store) under the events lock, so `seq` is a dense index into
+/// the vector and the trace order is exactly the client's call order —
+/// deterministic under a single client. Completion order is not (two
+/// in-flight GETs can resolve in either order), so the outcome is filled
+/// in afterwards, indexed by `seq`; a snapshot taken mid-flight shows
+/// `TraceOutcome::Pending`.
+#[derive(Debug)]
+pub struct TraceStore {
+    inner: Arc<dyn ObjectStore>,
+    st: Arc<TraceState>,
+}
+
+impl std::fmt::Display for TraceStore {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(f, "TraceStore({})", self.inner)
+    }
+}
+
+impl TraceStore {
+    /// Safe default: paths redacted, payload hashes off.
+    pub fn new(inner: Arc<dyn ObjectStore>) -> Arc<Self> {
+        Self::with_options(inner, true, false)
+    }
+
+    /// Verbatim paths. Only for fixtures whose paths carry no tenant or
+    /// stream material — redaction is the default precisely because real
+    /// paths embed both.
+    pub fn verbatim(inner: Arc<dyn ObjectStore>) -> Arc<Self> {
+        Self::with_options(inner, false, false)
+    }
+
+    /// Explicit knobs. `content_hashes` opts into retaining a 16-hex-char
+    /// sha256 prefix of each put payload; payload bytes themselves are
+    /// never retained either way.
+    pub fn with_options(
+        inner: Arc<dyn ObjectStore>,
+        redact: bool,
+        content_hashes: bool,
+    ) -> Arc<Self> {
+        Arc::new(Self {
+            inner,
+            st: Arc::new(TraceState {
+                events: Mutex::new(Vec::new()),
+                redact,
+                content_hashes,
+            }),
+        })
+    }
+
+    /// Snapshot of the trace so far, in dispatch order.
+    pub fn events(&self) -> Vec<StoreTraceEvent> {
+        self.st.events.lock().unwrap().clone()
+    }
+
+    /// Drop everything recorded so far.
+    pub fn reset(&self) {
+        self.st.events.lock().unwrap().clear();
+    }
+
+    /// (op, class) → count, sorted — the same shape FaultStore's ledger
+    /// answers, for whole-trace budget assertions.
+    pub fn counts(&self) -> Vec<(StoreOp, ObjClass, u64)> {
+        let mut m: HashMap<(StoreOp, ObjClass), u64> = HashMap::new();
+        for e in self.st.events.lock().unwrap().iter() {
+            *m.entry((e.op, e.class)).or_insert(0) += 1;
+        }
+        let mut v: Vec<_> = m
+            .into_iter()
+            .map(|((op, class), n)| (op, class, n))
+            .collect();
+        v.sort_by_key(|(op, class, _)| (*op as u8, *class as u8));
+        v
+    }
+}
+
+#[async_trait::async_trait]
+impl ObjectStore for TraceStore {
+    async fn put_opts(
+        &self,
+        location: &ObjPath,
+        payload: PutPayload,
+        opts: PutOptions,
+    ) -> OsResult<PutResult> {
+        let seq = self.st.begin(
+            StoreOp::Put,
+            location.as_ref(),
+            Some(payload.content_length() as u64),
+            self.st.hash_payload(&payload),
+            None,
+        );
+        let res = self.inner.put_opts(location, payload, opts).await;
+        self.st.finish_with(seq, &res);
+        res
+    }
+
+    async fn put_multipart_opts(
+        &self,
+        location: &ObjPath,
+        opts: PutMultipartOptions,
+    ) -> OsResult<Box<dyn MultipartUpload>> {
+        let seq = self.st.begin(
+            StoreOp::Put,
+            location.as_ref(),
+            None,
+            None,
+            Some("multipart-open".to_string()),
+        );
+        let res = self.inner.put_multipart_opts(location, opts).await;
+        self.st.finish_with(seq, &res);
+        res.map(|up| {
+            Box::new(TracedMultipart {
+                inner: up,
+                st: self.st.clone(),
+                path: location.as_ref().to_string(),
+                parts: 0,
+            }) as Box<dyn MultipartUpload>
+        })
+    }
+
+    async fn get_opts(&self, location: &ObjPath, options: GetOptions) -> OsResult<GetResult> {
+        // Span of a ranged read, when the request itself fixes one. An
+        // `Offset` span depends on the object size, unknowable at
+        // dispatch. HEAD arrives as a Get (`ObjectStoreExt::head` is built
+        // on get_opts), marked in `detail` so traces stay comparable.
+        let bytes = options.range.as_ref().and_then(|r| match r {
+            object_store::GetRange::Bounded(b) => Some(b.end.saturating_sub(b.start)),
+            object_store::GetRange::Suffix(n) => Some(*n),
+            object_store::GetRange::Offset(_) => None,
+        });
+        let detail = options.head.then(|| "head".to_string());
+        let seq = self
+            .st
+            .begin(StoreOp::Get, location.as_ref(), bytes, None, detail);
+        let res = self.inner.get_opts(location, options).await;
+        self.st.finish_with(seq, &res);
+        res
+    }
+
+    /// Streaming list. The event is recorded at dispatch; the stream
+    /// itself is pass-through except that its terminal state fills in the
+    /// event outcome (errors recorded as they surface, clean exhaustion
+    /// upgrades a never-failed stream to Ok).
+    fn list(
+        &self,
+        prefix: Option<&ObjPath>,
+    ) -> futures_util::stream::BoxStream<'static, OsResult<ObjectMeta>> {
+        use futures_util::StreamExt;
+        let p = prefix.map(|p| p.as_ref().to_string()).unwrap_or_default();
+        let seq = self.st.begin(StoreOp::List, &p, None, None, None);
+        let inner = self.inner.list(prefix);
+        let st = self.st.clone();
+        futures_util::stream::unfold((inner, st, seq), |(mut inner, st, seq)| async move {
+            match inner.next().await {
+                Some(Ok(m)) => Some((Ok(m), (inner, st, seq))),
+                Some(Err(e)) => {
+                    st.finish(seq, TraceOutcome::of(&e));
+                    Some((Err(e), (inner, st, seq)))
+                }
+                None => {
+                    st.finish_list_ok(seq);
+                    None
+                }
+            }
+        })
+        .boxed()
+    }
+
+    async fn list_with_delimiter(&self, prefix: Option<&ObjPath>) -> OsResult<ListResult> {
+        let p = prefix.map(|p| p.as_ref().to_string()).unwrap_or_default();
+        let seq = self.st.begin(
+            StoreOp::List,
+            &p,
+            None,
+            None,
+            Some("with-delimiter".to_string()),
+        );
+        let res = self.inner.list_with_delimiter(prefix).await;
+        self.st.finish_with(seq, &res);
+        res
+    }
+
+    async fn copy_opts(&self, from: &ObjPath, to: &ObjPath, opts: CopyOptions) -> OsResult<()> {
+        let dst = if self.st.redact {
+            redact_path(to.as_ref())
+        } else {
+            to.as_ref().to_string()
+        };
+        let seq = self.st.begin(
+            StoreOp::Copy,
+            from.as_ref(),
+            None,
+            None,
+            Some(format!("to={dst}")),
+        );
+        let res = self.inner.copy_opts(from, to, opts).await;
+        self.st.finish_with(seq, &res);
+        res
+    }
+
+    /// One event per deleted path. `ObjectStore::delete` is a provided
+    /// method built on `delete_stream`, so single deletes arrive here too.
+    fn delete_stream(
+        &self,
+        locations: futures_util::stream::BoxStream<'static, OsResult<ObjPath>>,
+    ) -> futures_util::stream::BoxStream<'static, OsResult<ObjPath>> {
+        use futures_util::StreamExt;
+        let inner = self.inner.clone();
+        let st = self.st.clone();
+        locations
+            .then(move |loc| {
+                let inner = inner.clone();
+                let st = st.clone();
+                async move {
+                    let p = loc?;
+                    let seq = st.begin(StoreOp::Delete, p.as_ref(), None, None, None);
+                    let one = {
+                        let p = p.clone();
+                        futures_util::stream::once(async move { Ok(p) }).boxed()
+                    };
+                    let mut s = inner.delete_stream(one);
+                    let res = match s.next().await {
+                        Some(r) => r,
+                        None => Ok(p),
+                    };
+                    st.finish_with(seq, &res);
+                    res
+                }
+            })
+            .boxed()
+    }
+}
+
+/// Multipart session wrapper. `StoreOp` has no part variant, so the whole
+/// session traces as `Put` events distinguished by `detail`:
+/// `multipart-open` at creation (bytes=None), `part` per part (with the
+/// part's byte count), `complete parts=N`, `abort`.
+#[derive(Debug)]
+struct TracedMultipart {
+    inner: Box<dyn MultipartUpload>,
+    st: Arc<TraceState>,
+    /// Raw path, for classification and redaction on each event.
+    path: String,
+    parts: u64,
+}
+
+#[async_trait::async_trait]
+impl MultipartUpload for TracedMultipart {
+    fn put_part(&mut self, data: PutPayload) -> object_store::UploadPart {
+        let seq = self.st.begin(
+            StoreOp::Put,
+            &self.path,
+            Some(data.content_length() as u64),
+            self.st.hash_payload(&data),
+            Some("part".to_string()),
+        );
+        self.parts += 1;
+        let st = self.st.clone();
+        let fut = self.inner.put_part(data);
+        Box::pin(async move {
+            let res = fut.await;
+            st.finish_with(seq, &res);
+            res
+        })
+    }
+
+    async fn complete(&mut self) -> OsResult<PutResult> {
+        let seq = self.st.begin(
+            StoreOp::Put,
+            &self.path,
+            None,
+            None,
+            Some(format!("complete parts={}", self.parts)),
+        );
+        let res = self.inner.complete().await;
+        self.st.finish_with(seq, &res);
+        res
+    }
+
+    async fn abort(&mut self) -> OsResult<()> {
+        let seq = self.st.begin(
+            StoreOp::Put,
+            &self.path,
+            None,
+            None,
+            Some("abort".to_string()),
+        );
+        let res = self.inner.abort().await;
+        self.st.finish_with(seq, &res);
+        res
+    }
+}
+
 // ---- the reference model --------------------------------------------
 
 /// Identity of one *attempt* at one logical client operation.
@@ -1209,3 +1690,195 @@ pub async fn drain_observed(
 
 #[cfg(test)]
 mod dst_tests;
+
+#[cfg(test)]
+mod trace_tests {
+    use super::*;
+
+    fn mem() -> Arc<dyn ObjectStore> {
+        Arc::new(object_store::memory::InMemory::new())
+    }
+
+    /// The trace is in dispatch order with dense sequence numbers, so a
+    /// before/after refactor diff compares equal iff the client issued the
+    /// same operations in the same order.
+    #[tokio::test]
+    async fn events_are_ordered_by_dispatch_seq() {
+        let s = TraceStore::verbatim(mem());
+        let pa = ObjPath::from("shards/x/wal/1.sst");
+        let pb = ObjPath::from("shards/x/wal/2.sst");
+        s.put_opts(&pa, PutPayload::from(vec![1u8; 4]), PutOptions::default())
+            .await
+            .unwrap();
+        s.put_opts(&pb, PutPayload::from(vec![2u8; 4]), PutOptions::default())
+            .await
+            .unwrap();
+        s.get_opts(&pa, GetOptions::default()).await.unwrap();
+
+        let evs = s.events();
+        assert_eq!(evs.len(), 3);
+        for (i, e) in evs.iter().enumerate() {
+            assert_eq!(e.seq, i as u64, "seq must be a dense dispatch index");
+        }
+        assert_eq!(evs[0].op, StoreOp::Put);
+        assert_eq!(evs[0].path, pa.as_ref());
+        assert_eq!(evs[1].op, StoreOp::Put);
+        assert_eq!(evs[1].path, pb.as_ref());
+        assert_eq!(evs[2].op, StoreOp::Get);
+        assert!(evs.iter().all(|e| e.outcome == TraceOutcome::Ok));
+
+        // The summary ledger and reset.
+        let c = s.counts();
+        assert!(c.contains(&(StoreOp::Put, ObjClass::Wal, 2)), "{c:?}");
+        assert!(c.contains(&(StoreOp::Get, ObjClass::Wal, 1)), "{c:?}");
+        s.reset();
+        assert!(s.events().is_empty());
+    }
+
+    #[tokio::test]
+    async fn put_records_byte_count() {
+        let s = TraceStore::new(mem());
+        let p = ObjPath::from("shards/x/wal/1.sst");
+        s.put_opts(&p, PutPayload::from(vec![7u8; 1234]), PutOptions::default())
+            .await
+            .unwrap();
+        let evs = s.events();
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0].op, StoreOp::Put);
+        assert_eq!(evs[0].class, ObjClass::Wal);
+        assert_eq!(evs[0].bytes, Some(1234));
+    }
+
+    #[tokio::test]
+    async fn ranged_get_records_span() {
+        let inner = mem();
+        let p = ObjPath::from("a/b/1.sst");
+        inner
+            .put_opts(&p, PutPayload::from(vec![0u8; 16]), PutOptions::default())
+            .await
+            .unwrap();
+        let s = TraceStore::new(inner);
+
+        let bounded = GetOptions {
+            range: Some(object_store::GetRange::Bounded(2..7)),
+            ..Default::default()
+        };
+        s.get_opts(&p, bounded).await.unwrap();
+        let suffix = GetOptions {
+            range: Some(object_store::GetRange::Suffix(4)),
+            ..Default::default()
+        };
+        s.get_opts(&p, suffix).await.unwrap();
+        s.get_opts(&p, GetOptions::default()).await.unwrap();
+
+        let evs = s.events();
+        assert_eq!(evs.len(), 3);
+        assert_eq!(evs[0].bytes, Some(5), "bounded range records its span");
+        assert_eq!(evs[1].bytes, Some(4), "suffix range records its span");
+        assert_eq!(evs[2].bytes, None, "a full get has no span");
+    }
+
+    /// Redaction is the default: no tenant-derived segment survives, the
+    /// path still classifies identically, and payload bytes are never
+    /// retained.
+    #[tokio::test]
+    async fn redaction_hashes_paths_and_never_stores_payload_bytes_by_default() {
+        let s = TraceStore::new(mem());
+        let p = ObjPath::from("acme-corp/shards/secret-stream-name/wal/00000042.sst");
+        s.put_opts(&p, PutPayload::from(vec![0xabu8; 8]), PutOptions::default())
+            .await
+            .unwrap();
+        let evs = s.events();
+        let e = &evs[0];
+        assert_ne!(e.path, p.as_ref());
+        for leaked in ["acme-corp", "secret-stream-name", "00000042"] {
+            assert!(
+                !e.path.contains(leaked),
+                "redacted path must not contain {leaked}: {}",
+                e.path
+            );
+        }
+        // Classification is preserved, both in the event and on re-classify.
+        assert_eq!(e.class, ObjClass::Wal);
+        assert_eq!(ObjClass::of(&e.path), ObjClass::Wal, "{}", e.path);
+        assert!(e.path.ends_with(".sst"), "extension survives: {}", e.path);
+        assert!(
+            e.path.contains("/wal/"),
+            "structural segments survive: {}",
+            e.path
+        );
+        // Payload bytes are never retained by default.
+        assert_eq!(e.content_hash, None);
+
+        // The manifest marker survives redaction too.
+        let s2 = TraceStore::new(mem());
+        let mp = ObjPath::from("tenant9/shards/root-3/manifest-00001.json");
+        s2.put_opts(&mp, PutPayload::from(vec![0u8; 1]), PutOptions::default())
+            .await
+            .unwrap();
+        let e2 = &s2.events()[0];
+        assert_eq!(e2.class, ObjClass::Manifest);
+        assert_eq!(ObjClass::of(&e2.path), ObjClass::Manifest, "{}", e2.path);
+        assert!(!e2.path.contains("tenant9"));
+        assert!(!e2.path.contains("root-3"));
+    }
+
+    #[tokio::test]
+    async fn hash_on_mode_records_content_hashes() {
+        let s = TraceStore::with_options(mem(), true, true);
+        let payload = b"stream-payload-bytes".to_vec();
+        let p = ObjPath::from("shards/x/wal/9.sst");
+        s.put_opts(&p, PutPayload::from(payload.clone()), PutOptions::default())
+            .await
+            .unwrap();
+        let want = {
+            use sha2::Digest;
+            let d = sha2::Sha256::digest(&payload);
+            crate::crypto::hex(&d[..8])
+        };
+        assert_eq!(want.len(), 16, "16 hex chars, not payload bytes");
+        let e = &s.events()[0];
+        assert_eq!(e.content_hash.as_deref(), Some(want.as_str()));
+    }
+
+    #[tokio::test]
+    async fn outcome_is_recorded_on_error() {
+        let s = TraceStore::new(mem());
+        let p = ObjPath::from("shards/x/wal/nope.sst");
+        let res = s.get_opts(&p, GetOptions::default()).await;
+        assert!(res.is_err(), "get of a nonexistent object must fail");
+        let evs = s.events();
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0].op, StoreOp::Get);
+        assert_eq!(evs[0].outcome, TraceOutcome::NotFound);
+    }
+
+    /// The session is Put events all the way down: open, one per part
+    /// with byte counts, and a complete that notes how many parts landed.
+    #[tokio::test]
+    async fn multipart_session_is_traced() {
+        let s = TraceStore::verbatim(mem());
+        let p = ObjPath::from("shards/x/wal/big.sst");
+        let mut up = s
+            .put_multipart_opts(&p, PutMultipartOptions::default())
+            .await
+            .unwrap();
+        up.put_part(PutPayload::from(vec![1u8; 10])).await.unwrap();
+        up.put_part(PutPayload::from(vec![2u8; 20])).await.unwrap();
+        up.complete().await.unwrap();
+
+        let evs = s.events();
+        assert_eq!(evs.len(), 4);
+        assert_eq!(evs[0].detail.as_deref(), Some("multipart-open"));
+        assert_eq!(evs[0].bytes, None);
+        assert_eq!(evs[1].detail.as_deref(), Some("part"));
+        assert_eq!(evs[1].bytes, Some(10));
+        assert_eq!(evs[2].detail.as_deref(), Some("part"));
+        assert_eq!(evs[2].bytes, Some(20));
+        assert_eq!(evs[3].detail.as_deref(), Some("complete parts=2"));
+        assert!(
+            evs.iter()
+                .all(|e| e.op == StoreOp::Put && e.outcome == TraceOutcome::Ok)
+        );
+    }
+}

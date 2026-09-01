@@ -1,0 +1,389 @@
+#!/usr/bin/env python3
+"""Architecture report (WP-00, docs/refactor/BASELINE.md).
+
+Warning-only structural scanner. Reports, never fails (unless --fail is
+passed; reserved for WP-17 hard gates):
+
+  - Rust files over the file budget (default 1,000 lines)
+  - functions over the function budget (default 200 lines)
+  - forbidden module edges (crate::http references outside transport)
+  - direct std::env reads outside the configuration allowlist
+  - Axum transport types outside transport adapters
+  - raw storage key-tag construction outside storage::keyspace
+  - mutable process statics (static mut / atomic / Mutex / OnceLock ...)
+
+Function spans are computed with a small Rust lexer (line comments,
+nested block comments, strings, raw strings, char literals are stripped
+before brace matching), so spans track the source faithfully enough to
+reproduce the review's cited spans (e.g. commit_group ~2,106 lines).
+
+Usage:
+  python3 scripts/architecture-report.py            # human report
+  python3 scripts/architecture-report.py --json     # machine-readable
+Exit status is always 0 unless --fail is given.
+"""
+
+from __future__ import annotations
+
+import argparse
+import json
+import re
+import sys
+from pathlib import Path
+
+REPO = Path(__file__).resolve().parent.parent
+SRC = REPO / "src"
+
+FILE_BUDGET = 1000
+FUNCTION_BUDGET = 200
+
+# WP-01 allowlist: modules permitted to read the process environment once
+# the config boundary exists. Today this is aspirational; every hit is
+# reported either way, classified as allowed vs violation.
+ENV_ALLOWED_PREFIXES = (
+    "src/config/",
+    "src/bin/",
+)
+
+# Forbidden-edge rules: (importer file predicate, imported module, why).
+# The target architecture (codereview1.md section 5.1) forbids anything
+# outside transport adapters from depending on the HTTP transport.
+TRANSPORT_FILES = ("src/http.rs",)
+FORBIDDEN_EDGE_MODULES = ("crate::http",)
+
+AXUM_RE = re.compile(
+    r"\b(axum::(?:response::)?(?:Response|Json|body::Body)|HeaderMap|StatusCode|http::StatusCode)\b"
+)
+
+ENV_RE = re.compile(r"\b(?:std::)?env::var(?:_os)?\s*\(")
+
+# Raw key-tag assembly heuristics: byte-literal tag pushes / constants.
+KEYTAG_RE = re.compile(
+    r"(\.push\(\s*b'[A-Za-z]'\s*\)|vec!\[\s*b'[A-Za-z]'|=\s*b'[A-Za-z]'\s*;)"
+)
+KEYSPACE_PREFIXES = ("src/storage/keyspace",)  # does not exist yet
+
+STATIC_RE = re.compile(
+    r"^\s*(?:pub(?:\([^)]*\))?\s+)?static(?:\s+mut)?\s+[A-Z_][A-Z0-9_]*\s*:\s*"
+    r"([^=;]+)",
+    re.MULTILINE,
+)
+MUTABLE_STATIC_KINDS = (
+    "Atomic",
+    "Mutex",
+    "RwLock",
+    "OnceLock",
+    "LazyLock",
+    "OnceCell",
+    "Lazy",
+)
+
+FN_RE = re.compile(
+    r"\b(?:pub(?:\([^)]*\))?\s+)?(?:async\s+)?(?:unsafe\s+)?fn\s+([A-Za-z_][A-Za-z0-9_]*)"
+)
+
+
+RAW_STR_RE = re.compile(r"r(#*)\"")
+CHAR_RE = re.compile(r"'(\\.|[^\\'])'")
+
+
+def strip_noncode(src: str) -> str:
+    """Replace comments/strings/chars with spaces, preserving newlines.
+
+    Handles Rust's nested block comments and raw strings so brace
+    matching in the cleaned output is not fooled by text content.
+    All scans index in place (no tail slicing), so this stays O(n).
+    """
+    out = list(src)
+    i, n = 0, len(src)
+    while i < n:
+        c = src[i]
+        if src.startswith("//", i):
+            j = src.find("\n", i)
+            j = n if j == -1 else j
+            for k in range(i, j):
+                out[k] = " "
+            i = j
+        elif src.startswith("/*", i):
+            depth = 1
+            j = i + 2
+            while j < n and depth:
+                if src.startswith("/*", j):
+                    depth += 1
+                    j += 2
+                elif src.startswith("*/", j):
+                    depth -= 1
+                    j += 2
+                else:
+                    j += 1
+            for k in range(i, min(j, n)):
+                if out[k] != "\n":
+                    out[k] = " "
+            i = j
+        elif c == '"':
+            j = i + 1
+            while j < n:
+                if src[j] == "\\":
+                    j += 2
+                    continue
+                if src[j] == '"':
+                    j += 1
+                    break
+                j += 1
+            for k in range(i, min(j, n)):
+                if out[k] != "\n":
+                    out[k] = " "
+            i = j
+        elif c == "r" and (m := RAW_STR_RE.match(src, i)):
+            hashes = len(m.group(1))
+            start = m.end()
+            closer = '"' + "#" * hashes
+            j = src.find(closer, start)
+            j = n if j == -1 else j + len(closer)
+            for k in range(i, min(j, n)):
+                if out[k] != "\n":
+                    out[k] = " "
+            i = j
+        elif c == "'" and (m := CHAR_RE.match(src, i)):
+            j = m.end()
+            for k in range(i, j):
+                out[k] = " "
+            i = j
+        else:
+            i += 1
+    return "".join(out)
+
+
+def find_functions(clean: str) -> list[tuple[str, int, int]]:
+    """Return (name, start_line, end_line) 1-based spans for fn bodies."""
+    spans: list[tuple[str, int, int]] = []
+    line_starts = [0]
+    for m in re.finditer("\n", clean):
+        line_starts.append(m.end())
+
+    def line_of(pos: int) -> int:
+        lo, hi = 0, len(line_starts)
+        while lo + 1 < hi:
+            mid = (lo + hi) // 2
+            if line_starts[mid] <= pos:
+                lo = mid
+            else:
+                hi = mid
+        return lo + 1
+
+    for m in FN_RE.finditer(clean):
+        name = m.group(1)
+        i = m.end()
+        depth_paren = depth_angle = depth_bracket = 0
+        body = -1
+        while i < len(clean):
+            ch = clean[i]
+            if ch == ";" and depth_paren == depth_angle == depth_bracket == 0:
+                break  # declaration without body (trait method)
+            if ch == "{" and depth_paren == depth_angle == depth_bracket == 0:
+                body = i
+                break
+            if ch == "(":
+                depth_paren += 1
+            elif ch == ")":
+                depth_paren -= 1
+            elif ch == "[":
+                depth_bracket += 1
+            elif ch == "]":
+                depth_bracket -= 1
+            elif ch == "<":
+                depth_angle += 1
+            elif ch == ">":
+                depth_angle = max(0, depth_angle - 1)
+            i += 1
+        if body == -1:
+            continue
+        depth = 1
+        j = body + 1
+        while j < len(clean) and depth:
+            if clean[j] == "{":
+                depth += 1
+            elif clean[j] == "}":
+                depth -= 1
+            j += 1
+        spans.append((name, line_of(m.start()), line_of(j - 1)))
+    return spans
+
+
+def rel(p: Path) -> str:
+    return str(p.relative_to(REPO))
+
+
+def is_test_only(path: Path, text: str) -> bool:
+    """Whole-file test modules (dst/) or files under a cfg(test) gate."""
+    r = rel(path)
+    return r.startswith("src/dst/") or r == "src/dst.rs"
+
+
+def main() -> int:
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--json", action="store_true", help="machine-readable output")
+    ap.add_argument("--fail", action="store_true", help="exit 1 on any violation (WP-17)")
+    args = ap.parse_args()
+
+    files = sorted(p for p in SRC.rglob("*.rs") if p.is_file())
+    report: dict = {
+        "budgets": {"file_lines": FILE_BUDGET, "function_lines": FUNCTION_BUDGET},
+        "files_over_budget": [],
+        "functions_over_budget": [],
+        "forbidden_edges": [],
+        "env_reads": [],
+        "axum_outside_transport": [],
+        "keytag_sites": [],
+        "mutable_statics": [],
+        "totals": {},
+    }
+
+    total_lines = 0
+    for path in files:
+        r = rel(path)
+        text = path.read_text(encoding="utf-8", errors="replace")
+        lines = text.splitlines()
+        n_lines = len(lines)
+        total_lines += n_lines
+        test_only = is_test_only(path, text)
+
+        if n_lines > FILE_BUDGET:
+            report["files_over_budget"].append(
+                {"file": r, "lines": n_lines, "test_only": test_only}
+            )
+
+        clean = strip_noncode(text)
+        for name, start, end in find_functions(clean):
+            span = end - start + 1
+            if span > FUNCTION_BUDGET:
+                report["functions_over_budget"].append(
+                    {"file": r, "function": name, "start": start, "end": end, "lines": span}
+                )
+
+        if r not in TRANSPORT_FILES:
+            for mod in FORBIDDEN_EDGE_MODULES:
+                hits = [i + 1 for i, ln in enumerate(lines) if mod in ln]
+                if hits:
+                    report["forbidden_edges"].append(
+                        {
+                            "file": r,
+                            "references": mod,
+                            "count": len(hits),
+                            "test_only": test_only,
+                        }
+                    )
+
+        for i, ln in enumerate(lines):
+            if ENV_RE.search(ln):
+                report["env_reads"].append(
+                    {
+                        "file": r,
+                        "line": i + 1,
+                        "src": ln.strip(),
+                        "test_only": test_only,
+                        # WP-01 target rule: env reads belong in the config
+                        # loader, binaries, or marked config-parser tests.
+                        "allowed": r.startswith(ENV_ALLOWED_PREFIXES) or r == "src/main.rs",
+                    }
+                )
+
+        if r != "src/http.rs" and not r.startswith("src/transport/"):
+            count = sum(len(AXUM_RE.findall(ln)) for ln in lines)
+            if count:
+                report["axum_outside_transport"].append(
+                    {"file": r, "count": count, "test_only": test_only}
+                )
+
+        if not r.startswith(KEYSPACE_PREFIXES):
+            for i, ln in enumerate(lines):
+                if KEYTAG_RE.search(ln):
+                    report["keytag_sites"].append({"file": r, "line": i + 1, "src": ln.strip()})
+
+        for m in STATIC_RE.finditer(text):
+            ty = m.group(1)
+            if any(k in ty for k in MUTABLE_STATIC_KINDS):
+                ln_no = text[: m.start()].count("\n") + 1
+                report["mutable_statics"].append(
+                    {"file": r, "line": ln_no, "type": ty.strip(), "test_only": test_only}
+                )
+
+    report["totals"] = {
+        "rust_files": len(files),
+        "rust_lines": total_lines,
+        "files_over_budget": len(report["files_over_budget"]),
+        "production_files_over_budget": sum(
+            1 for f in report["files_over_budget"] if not f["test_only"]
+        ),
+        "functions_over_budget": len(report["functions_over_budget"]),
+        "env_reads": len(report["env_reads"]),
+        "env_reads_disallowed": sum(1 for e in report["env_reads"] if not e["allowed"]),
+        "forbidden_edge_refs": sum(e["count"] for e in report["forbidden_edges"]),
+        "axum_refs_outside_transport": sum(
+            e["count"] for e in report["axum_outside_transport"]
+        ),
+        "keytag_sites": len(report["keytag_sites"]),
+        "mutable_statics": len(report["mutable_statics"]),
+    }
+
+    if args.json:
+        json.dump(report, sys.stdout, indent=2)
+        print()
+    else:
+        t = report["totals"]
+        print("== architecture report (warning-only until WP-17) ==")
+        print(f"rust files: {t['rust_files']}  lines: {t['rust_lines']}")
+        print(
+            f"files over {FILE_BUDGET} lines: {t['files_over_budget']} "
+            f"(production: {t['production_files_over_budget']})"
+        )
+        for f in report["files_over_budget"]:
+            tag = " [test]" if f["test_only"] else ""
+            print(f"  {f['file']}: {f['lines']}{tag}")
+        print(f"functions over {FUNCTION_BUDGET} lines: {t['functions_over_budget']}")
+        for f in sorted(report["functions_over_budget"], key=lambda x: -x["lines"]):
+            print(f"  {f['file']}:{f['start']}-{f['end']} {f['function']} ({f['lines']} lines)")
+        print(f"crate::http references outside http.rs: {t['forbidden_edge_refs']}")
+        for e in report["forbidden_edges"]:
+            tag = " [test]" if e["test_only"] else ""
+            print(f"  {e['file']}: {e['count']} refs{tag}")
+        print(
+            f"direct env reads: {t['env_reads']} "
+            f"(outside config/binaries: {t['env_reads_disallowed']})"
+        )
+        by_file: dict[str, int] = {}
+        for e in report["env_reads"]:
+            if not e["allowed"]:
+                by_file[e["file"]] = by_file.get(e["file"], 0) + 1
+        for f, c in sorted(by_file.items(), key=lambda kv: -kv[1]):
+            print(f"  {f}: {c}")
+        print(f"axum type refs outside transport: {t['axum_refs_outside_transport']}")
+        for e in report["axum_outside_transport"]:
+            tag = " [test]" if e["test_only"] else ""
+            print(f"  {e['file']}: {e['count']}{tag}")
+        print(f"raw key-tag construction sites: {t['keytag_sites']}")
+        by_file = {}
+        for e in report["keytag_sites"]:
+            by_file[e["file"]] = by_file.get(e["file"], 0) + 1
+        for f, c in sorted(by_file.items(), key=lambda kv: -kv[1]):
+            print(f"  {f}: {c}")
+        print(f"mutable process statics: {t['mutable_statics']}")
+        by_file = {}
+        for e in report["mutable_statics"]:
+            by_file[e["file"]] = by_file.get(e["file"], 0) + 1
+        for f, c in sorted(by_file.items(), key=lambda kv: -kv[1]):
+            print(f"  {f}: {c}")
+
+    violations = (
+        report["totals"]["functions_over_budget"]
+        + report["totals"]["files_over_budget"]
+        + report["totals"]["env_reads_disallowed"]
+        + report["totals"]["forbidden_edge_refs"]
+    )
+    if args.fail and violations:
+        return 1
+    return 0
+
+
+if __name__ == "__main__":
+    sys.exit(main())

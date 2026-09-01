@@ -10,6 +10,7 @@ mod crypto;
 mod dst;
 mod failpoints;
 mod fleet;
+mod golden_tests;
 mod history;
 mod http;
 #[cfg(test)]

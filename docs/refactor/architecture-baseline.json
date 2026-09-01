@@ -1,0 +1,2093 @@
+{
+  "budgets": {
+    "file_lines": 1000,
+    "function_lines": 200
+  },
+  "files_over_budget": [
+    {
+      "file": "src/auth.rs",
+      "lines": 2148,
+      "test_only": false
+    },
+    {
+      "file": "src/billing.rs",
+      "lines": 2984,
+      "test_only": false
+    },
+    {
+      "file": "src/bin/pilot.rs",
+      "lines": 1697,
+      "test_only": false
+    },
+    {
+      "file": "src/dst/dst_tests.rs",
+      "lines": 36922,
+      "test_only": true
+    },
+    {
+      "file": "src/dst.rs",
+      "lines": 1211,
+      "test_only": true
+    },
+    {
+      "file": "src/fleet.rs",
+      "lines": 1372,
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "lines": 2685,
+      "test_only": false
+    },
+    {
+      "file": "src/http.rs",
+      "lines": 8374,
+      "test_only": false
+    },
+    {
+      "file": "src/main.rs",
+      "lines": 2515,
+      "test_only": false
+    },
+    {
+      "file": "src/postings_cache.rs",
+      "lines": 1187,
+      "test_only": false
+    },
+    {
+      "file": "src/product.rs",
+      "lines": 8132,
+      "test_only": false
+    },
+    {
+      "file": "src/quota.rs",
+      "lines": 1510,
+      "test_only": false
+    },
+    {
+      "file": "src/registry.rs",
+      "lines": 2131,
+      "test_only": false
+    },
+    {
+      "file": "src/rollup.rs",
+      "lines": 2385,
+      "test_only": false
+    },
+    {
+      "file": "src/scaler3.rs",
+      "lines": 1039,
+      "test_only": false
+    },
+    {
+      "file": "src/shard.rs",
+      "lines": 5472,
+      "test_only": false
+    },
+    {
+      "file": "src/sse/feed.rs",
+      "lines": 2265,
+      "test_only": false
+    },
+    {
+      "file": "src/sse/session.rs",
+      "lines": 1071,
+      "test_only": false
+    },
+    {
+      "file": "src/store_timing.rs",
+      "lines": 1370,
+      "test_only": false
+    },
+    {
+      "file": "src/tenant.rs",
+      "lines": 1041,
+      "test_only": false
+    }
+  ],
+  "functions_over_budget": [
+    {
+      "file": "src/billing.rs",
+      "function": "drain_once",
+      "start": 1101,
+      "end": 1429,
+      "lines": 329
+    },
+    {
+      "file": "src/bin/livebench.rs",
+      "function": "main",
+      "start": 129,
+      "end": 473,
+      "lines": 345
+    },
+    {
+      "file": "src/bin/pilot.rs",
+      "function": "lb",
+      "start": 298,
+      "end": 638,
+      "lines": 341
+    },
+    {
+      "file": "src/bin/pilot.rs",
+      "function": "proxy",
+      "start": 640,
+      "end": 877,
+      "lines": 238
+    },
+    {
+      "file": "src/bin/pilot.rs",
+      "function": "generator",
+      "start": 925,
+      "end": 1270,
+      "lines": 346
+    },
+    {
+      "file": "src/bin/pilot.rs",
+      "function": "bench",
+      "start": 1343,
+      "end": 1697,
+      "lines": 355
+    },
+    {
+      "file": "src/dst/dst_tests.rs",
+      "function": "product_watch_wakes_on_matching_append",
+      "start": 9908,
+      "end": 10110,
+      "lines": 203
+    },
+    {
+      "file": "src/dst/dst_tests.rs",
+      "function": "a_split_consumers_deletion_fails_one_segment_then_retries_clean",
+      "start": 16839,
+      "end": 17039,
+      "lines": 201
+    },
+    {
+      "file": "src/dst/dst_tests.rs",
+      "function": "enforce_mode_gates_the_product_surface",
+      "start": 17647,
+      "end": 18250,
+      "lines": 604
+    },
+    {
+      "file": "src/dst/dst_tests.rs",
+      "function": "noisy_neighbor_cannot_degrade_a_compliant_project",
+      "start": 18809,
+      "end": 19048,
+      "lines": 240
+    },
+    {
+      "file": "src/dst/dst_tests.rs",
+      "function": "same_name_cross_project_usage_attributes_exactly",
+      "start": 19059,
+      "end": 19269,
+      "lines": 211
+    },
+    {
+      "file": "src/dst/dst_tests.rs",
+      "function": "invoice_reconciliation_balances_and_detects_corruption",
+      "start": 19278,
+      "end": 19523,
+      "lines": 246
+    },
+    {
+      "file": "src/dst/dst_tests.rs",
+      "function": "enforce_denials_journal_to_audit_events",
+      "start": 19531,
+      "end": 19809,
+      "lines": 279
+    },
+    {
+      "file": "src/dst/dst_tests.rs",
+      "function": "shared_cell_certification_smoke",
+      "start": 19820,
+      "end": 20099,
+      "lines": 280
+    },
+    {
+      "file": "src/dst/dst_tests.rs",
+      "function": "dual_surface_equivalence_corpus",
+      "start": 22042,
+      "end": 22242,
+      "lines": 201
+    },
+    {
+      "file": "src/dst/dst_tests.rs",
+      "function": "a_applied_read_and_long_poll_serve_the_tail_before_durability",
+      "start": 23105,
+      "end": 23313,
+      "lines": 209
+    },
+    {
+      "file": "src/fleet.rs",
+      "function": "start",
+      "start": 376,
+      "end": 1137,
+      "lines": 762
+    },
+    {
+      "file": "src/history.rs",
+      "function": "start",
+      "start": 894,
+      "end": 1298,
+      "lines": 405
+    },
+    {
+      "file": "src/history.rs",
+      "function": "absorb_gather_v2_with",
+      "start": 1415,
+      "end": 1733,
+      "lines": 319
+    },
+    {
+      "file": "src/http.rs",
+      "function": "debug_load",
+      "start": 1040,
+      "end": 1266,
+      "lines": 227
+    },
+    {
+      "file": "src/http.rs",
+      "function": "router",
+      "start": 1552,
+      "end": 1856,
+      "lines": 305
+    },
+    {
+      "file": "src/http.rs",
+      "function": "create_stream",
+      "start": 3235,
+      "end": 4279,
+      "lines": 1045
+    },
+    {
+      "file": "src/http.rs",
+      "function": "append_core",
+      "start": 4942,
+      "end": 6049,
+      "lines": 1108
+    },
+    {
+      "file": "src/http.rs",
+      "function": "read_merged",
+      "start": 6141,
+      "end": 6400,
+      "lines": 260
+    },
+    {
+      "file": "src/http.rs",
+      "function": "read_inner",
+      "start": 6684,
+      "end": 7133,
+      "lines": 450
+    },
+    {
+      "file": "src/http.rs",
+      "function": "read_v3_lineage_inner",
+      "start": 7711,
+      "end": 8276,
+      "lines": 566
+    },
+    {
+      "file": "src/main.rs",
+      "function": "async_main",
+      "start": 1720,
+      "end": 2515,
+      "lines": 796
+    },
+    {
+      "file": "src/ops.rs",
+      "function": "collect_snapshot",
+      "start": 262,
+      "end": 473,
+      "lines": 212
+    },
+    {
+      "file": "src/product.rs",
+      "function": "product_entry",
+      "start": 1017,
+      "end": 1308,
+      "lines": 292
+    },
+    {
+      "file": "src/product.rs",
+      "function": "product_create",
+      "start": 1372,
+      "end": 1604,
+      "lines": 233
+    },
+    {
+      "file": "src/product.rs",
+      "function": "product_seal",
+      "start": 1714,
+      "end": 2074,
+      "lines": 361
+    },
+    {
+      "file": "src/product.rs",
+      "function": "run_seal",
+      "start": 2824,
+      "end": 3060,
+      "lines": 237
+    },
+    {
+      "file": "src/product.rs",
+      "function": "product_append_inner",
+      "start": 3144,
+      "end": 3394,
+      "lines": 251
+    },
+    {
+      "file": "src/product.rs",
+      "function": "translate_append_response",
+      "start": 3400,
+      "end": 3605,
+      "lines": 206
+    },
+    {
+      "file": "src/product.rs",
+      "function": "product_read",
+      "start": 3832,
+      "end": 4155,
+      "lines": 324
+    },
+    {
+      "file": "src/product.rs",
+      "function": "product_scan",
+      "start": 4184,
+      "end": 4576,
+      "lines": 393
+    },
+    {
+      "file": "src/product.rs",
+      "function": "product_consumer_put",
+      "start": 4730,
+      "end": 4957,
+      "lines": 228
+    },
+    {
+      "file": "src/product.rs",
+      "function": "product_consumer_delete",
+      "start": 5848,
+      "end": 6251,
+      "lines": 404
+    },
+    {
+      "file": "src/product.rs",
+      "function": "product_consumer_pull",
+      "start": 6455,
+      "end": 6725,
+      "lines": 271
+    },
+    {
+      "file": "src/product.rs",
+      "function": "product_consumer_settle",
+      "start": 6727,
+      "end": 6939,
+      "lines": 213
+    },
+    {
+      "file": "src/product.rs",
+      "function": "product_watch_wait",
+      "start": 7157,
+      "end": 7479,
+      "lines": 323
+    },
+    {
+      "file": "src/rollup.rs",
+      "function": "close_month",
+      "start": 1293,
+      "end": 1509,
+      "lines": 217
+    },
+    {
+      "file": "src/rollup.rs",
+      "function": "rollup_applies_deltas_and_closes_months",
+      "start": 1973,
+      "end": 2274,
+      "lines": 302
+    },
+    {
+      "file": "src/shard.rs",
+      "function": "start",
+      "start": 1273,
+      "end": 1649,
+      "lines": 377
+    },
+    {
+      "file": "src/shard.rs",
+      "function": "commit_group",
+      "start": 2422,
+      "end": 4527,
+      "lines": 2106
+    },
+    {
+      "file": "src/sse/session.rs",
+      "function": "serve",
+      "start": 159,
+      "end": 884,
+      "lines": 726
+    }
+  ],
+  "forbidden_edges": [
+    {
+      "file": "src/audit.rs",
+      "references": "crate::http",
+      "count": 2,
+      "test_only": false
+    },
+    {
+      "file": "src/backpressure.rs",
+      "references": "crate::http",
+      "count": 1,
+      "test_only": false
+    },
+    {
+      "file": "src/billing.rs",
+      "references": "crate::http",
+      "count": 47,
+      "test_only": false
+    },
+    {
+      "file": "src/dst/dst_tests.rs",
+      "references": "crate::http",
+      "count": 67,
+      "test_only": true
+    },
+    {
+      "file": "src/dst.rs",
+      "references": "crate::http",
+      "count": 1,
+      "test_only": true
+    },
+    {
+      "file": "src/fleet.rs",
+      "references": "crate::http",
+      "count": 3,
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "references": "crate::http",
+      "count": 3,
+      "test_only": false
+    },
+    {
+      "file": "src/main.rs",
+      "references": "crate::http",
+      "count": 11,
+      "test_only": false
+    },
+    {
+      "file": "src/operator.rs",
+      "references": "crate::http",
+      "count": 5,
+      "test_only": false
+    },
+    {
+      "file": "src/ops.rs",
+      "references": "crate::http",
+      "count": 6,
+      "test_only": false
+    },
+    {
+      "file": "src/product.rs",
+      "references": "crate::http",
+      "count": 104,
+      "test_only": false
+    },
+    {
+      "file": "src/registry.rs",
+      "references": "crate::http",
+      "count": 1,
+      "test_only": false
+    },
+    {
+      "file": "src/scaler3.rs",
+      "references": "crate::http",
+      "count": 14,
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "references": "crate::http",
+      "count": 2,
+      "test_only": false
+    },
+    {
+      "file": "src/sse/feed.rs",
+      "references": "crate::http",
+      "count": 4,
+      "test_only": false
+    },
+    {
+      "file": "src/sse/session.rs",
+      "references": "crate::http",
+      "count": 10,
+      "test_only": false
+    },
+    {
+      "file": "src/sse/source.rs",
+      "references": "crate::http",
+      "count": 14,
+      "test_only": false
+    },
+    {
+      "file": "src/sse/wire.rs",
+      "references": "crate::http",
+      "count": 1,
+      "test_only": false
+    }
+  ],
+  "env_reads": [
+    {
+      "file": "src/backpressure.rs",
+      "line": 66,
+      "src": "std::env::var(k)",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 1054,
+      "src": "std::env::var(\"BILLING_MODE\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 1442,
+      "src": "&std::env::var(\"PATH_PREFIX\").unwrap_or_default(),",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 1467,
+      "src": "let sweep_secs: u64 = std::env::var(\"OUTBOX_SWEEP_SECS\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 1477,
+      "src": "let secs: u64 = std::env::var(\"TELEMETRY_DRAIN_SECS\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 1481,
+      "src": "let metrics_secs: u64 = std::env::var(\"METRICS_INTERVAL_SECS\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 1750,
+      "src": "let grace_ms: i64 = std::env::var(\"MONTH_CLOSE_GRACE_MS\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 1834,
+      "src": "let bytes = std::env::var(\"TELEMETRY_CACHE_BYTES\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 2311,
+      "src": "let discovery_cap: usize = std::env::var(\"SWEEP_DISCOVERY_MAX\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 2386,
+      "src": "std::env::var(\"SWEEP_MAINT_RESIDENT\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 2481,
+      "src": "std::env::var(\"SWEEP_RESIDENT_QUANTUM\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/bin/pilot.rs",
+      "line": 27,
+      "src": "std::env::var(k).ok().filter(|v| !v.is_empty())",
+      "test_only": false,
+      "allowed": true
+    },
+    {
+      "file": "src/bin/pilot.rs",
+      "line": 1497,
+      "src": "let verb = std::env::var(\"BENCH_VERB\").unwrap_or_default();",
+      "test_only": false,
+      "allowed": true
+    },
+    {
+      "file": "src/bin/pilot.rs",
+      "line": 1507,
+      "src": "let ms = std::env::var(\"SLEEP_MS\").unwrap_or_else(|_| \"100\".into());",
+      "test_only": false,
+      "allowed": true
+    },
+    {
+      "file": "src/bin/pilot.rs",
+      "line": 1570,
+      "src": "let probe = std::env::var(\"BENCH_VERB\").ok().filter(|v| v != \"append\");",
+      "test_only": false,
+      "allowed": true
+    },
+    {
+      "file": "src/crypto.rs",
+      "line": 44,
+      "src": "std::env::var(\"FRAME_COMPRESS\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/dst/dst_tests.rs",
+      "line": 19828,
+      "src": "let N: usize = std::env::var(\"MT_CERT_PROJECTS\")",
+      "test_only": true,
+      "allowed": false
+    },
+    {
+      "file": "src/dst.rs",
+      "line": 1170,
+      "src": "if std::env::var(\"DST_DRAIN_TRACE\").is_ok() {",
+      "test_only": true,
+      "allowed": false
+    },
+    {
+      "file": "src/fleet.rs",
+      "line": 138,
+      "src": "let allow_http = std::env::var(\"FLEET_ALLOW_HTTP_PEERS\").ok().as_deref() == Some(\"1\");",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/fleet.rs",
+      "line": 166,
+      "src": "match std::env::var(\"FLEET_PEER_DOMAINS\") {",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/fleet.rs",
+      "line": 389,
+      "src": "let rebalance_lag_secs: u64 = std::env::var(\"REBALANCE_LAG_SECS\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/fleet.rs",
+      "line": 393,
+      "src": "let rebalance_cooldown: u64 = std::env::var(\"REBALANCE_MOVE_COOLDOWN_SECS\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/fleet.rs",
+      "line": 480,
+      "src": "url: std::env::var(\"SELF_URL\").unwrap_or_default(),",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/fleet.rs",
+      "line": 682,
+      "src": "let fleet_min: u64 = std::env::var(\"FLEET_MIN\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/fleet.rs",
+      "line": 880,
+      "src": "let return_secs: i64 = std::env::var(\"REBALANCE_RETURN_SECS\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 32,
+      "src": "std::env::var(\"ABSORB_PAUSE\").ok().as_deref() == Some(\"1\"),",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 285,
+      "src": "let configured: usize = std::env::var(\"ABSORB_GLOBAL_BUDGET_BYTES\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 300,
+      "src": "let gathers: usize = std::env::var(\"ABSORB_GLOBAL_GATHERS\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 481,
+      "src": "let bytes = std::env::var(\"HISTORY_CACHE_BYTES\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 513,
+      "src": "let compactor_off = std::env::var(\"HISTORY_COMPACTOR\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 527,
+      "src": "let secs: u64 = std::env::var(\"HISTORY_GC_INTERVAL_SECS\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 529,
+      "src": ".or_else(|| std::env::var(\"HISTORY_GC_MAX_INTERVAL_SECS\").ok())",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 1165,
+      "src": "if std::env::var(\"DST_DRAIN_TRACE\").is_ok() {",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 1581,
+      "src": "if std::env::var(\"DST_DRAIN_TRACE\").is_ok() {",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/http.rs",
+      "line": 83,
+      "src": "*V.get_or_init(|| std::env::var(\"STREAMS_DEBUG_TIMING\").as_deref() == Ok(\"1\"))",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/http.rs",
+      "line": 89,
+      "src": "std::env::var(\"TAIL_MAX_BYTES\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/http.rs",
+      "line": 656,
+      "src": "std::env::var(\"SHARD_OPEN_WAIT_MS\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/http.rs",
+      "line": 1177,
+      "src": "\"binary_sha256\": std::env::var(\"APP_BINARY_SHA256\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/http.rs",
+      "line": 1653,
+      "src": "if std::env::var(\"STREAMS_DEBUG_EXIT\").as_deref() != Ok(\"1\") {",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/http.rs",
+      "line": 2102,
+      "src": "let rollup_ok = std::env::var(\"ROLLUP\").map(|v| v != \"1\").unwrap_or(true)",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/http.rs",
+      "line": 2181,
+      "src": "&& (std::env::var(\"ROLLUP\").map(|v| v != \"1\").unwrap_or(true)",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/http.rs",
+      "line": 2184,
+      "src": "\"mode\": std::env::var(\"BILLING_MODE\").unwrap_or_else(|_| \"off\".into()),",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/http.rs",
+      "line": 5680,
+      "src": "&& std::env::var(\"BILLING_METER\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/main.rs",
+      "line": 619,
+      "src": "std::env::var(\"POOL_IDLE_SECS\")",
+      "test_only": false,
+      "allowed": true
+    },
+    {
+      "file": "src/main.rs",
+      "line": 679,
+      "src": "std::env::var(k)",
+      "test_only": false,
+      "allowed": true
+    },
+    {
+      "file": "src/main.rs",
+      "line": 685,
+      "src": "std::env::var(k)",
+      "test_only": false,
+      "allowed": true
+    },
+    {
+      "file": "src/main.rs",
+      "line": 723,
+      "src": "\"store_bulk_inflight_max_bytes\": std::env::var(\"STORE_BULK_INFLIGHT_MAX_BYTES\")",
+      "test_only": false,
+      "allowed": true
+    },
+    {
+      "file": "src/main.rs",
+      "line": 754,
+      "src": "if std::env::var(\"MEMPROFILE_CERT\").as_deref() != Ok(\"compute-1g\") {",
+      "test_only": false,
+      "allowed": true
+    },
+    {
+      "file": "src/main.rs",
+      "line": 836,
+      "src": "let threads: usize = std::env::var(\"SLATEDB_RT_THREADS\")",
+      "test_only": false,
+      "allowed": true
+    },
+    {
+      "file": "src/main.rs",
+      "line": 958,
+      "src": "std::env::var(\"STREAMS_CERT_SEALED_PUBLISH_DELAY_MS\")",
+      "test_only": false,
+      "allowed": true
+    },
+    {
+      "file": "src/main.rs",
+      "line": 961,
+      "src": "std::env::var(\"STREAMS_CERTIFICATION_MODE\").ok().as_deref(),",
+      "test_only": false,
+      "allowed": true
+    },
+    {
+      "file": "src/main.rs",
+      "line": 1683,
+      "src": "if std::env::var(\"SWEEP_MAINT_RESIDENT\")",
+      "test_only": false,
+      "allowed": true
+    },
+    {
+      "file": "src/main.rs",
+      "line": 1699,
+      "src": "let workers: usize = std::env::var(\"TOKIO_WORKERS\")",
+      "test_only": false,
+      "allowed": true
+    },
+    {
+      "file": "src/main.rs",
+      "line": 1908,
+      "src": "std::env::var(\"MEMPROFILE_CERT\").ok().as_deref(),",
+      "test_only": false,
+      "allowed": true
+    },
+    {
+      "file": "src/main.rs",
+      "line": 1909,
+      "src": "std::env::var(\"SSE_FEED_TOTAL_BYTES\").ok().as_deref(),",
+      "test_only": false,
+      "allowed": true
+    },
+    {
+      "file": "src/main.rs",
+      "line": 2194,
+      "src": "std::env::var(\"SSE_HEARTBEAT_MS\")",
+      "test_only": false,
+      "allowed": true
+    },
+    {
+      "file": "src/main.rs",
+      "line": 2428,
+      "src": "std::env::var(k)",
+      "test_only": false,
+      "allowed": true
+    },
+    {
+      "file": "src/main.rs",
+      "line": 2509,
+      "src": "let max_buf: usize = std::env::var(\"SSE_H1_MAX_BUF\")",
+      "test_only": false,
+      "allowed": true
+    },
+    {
+      "file": "src/ops.rs",
+      "line": 623,
+      "src": "std::env::var(\"ALERT_USAGE_OUTBOX_DIRTY\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/postings_cache.rs",
+      "line": 53,
+      "src": "let bytes = std::env::var(\"POSTINGS_CACHE_BYTES\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/scaler3.rs",
+      "line": 58,
+      "src": "std::env::var(k)",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/shard.rs",
+      "line": 3206,
+      "src": "if std::env::var(\"DST_DRAIN_TRACE\").is_ok() {",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/sharddir.rs",
+      "line": 163,
+      "src": "std::env::var(\"UNREADY_EXIT_AFTER_SECS\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/sharddir.rs",
+      "line": 283,
+      "src": "let open_deadline = std::env::var(\"SHARD_OPEN_DEADLINE_MS\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/sse/budget.rs",
+      "line": 12,
+      "src": "*V.get_or_init(|| match std::env::var(\"SSE_FEED_RING_BYTES\") {",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/sse/budget.rs",
+      "line": 34,
+      "src": "*V.get_or_init(|| match std::env::var(\"SSE_FEED_TOTAL_BYTES\") {",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/sse/feed.rs",
+      "line": 309,
+      "src": "match std::env::var(\"SSE_FEED_PROJECT_BYTES\") {",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/store_timing.rs",
+      "line": 85,
+      "src": "let n: usize = std::env::var(\"STORE_MAX_CONCURRENT\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/store_timing.rs",
+      "line": 213,
+      "src": "std::env::var(\"COMPACT_MAX_SST_SIZE_BYTES\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/store_timing.rs",
+      "line": 223,
+      "src": "let n: u64 = std::env::var(\"STORE_BULK_INFLIGHT_MAX_BYTES\")",
+      "test_only": false,
+      "allowed": false
+    },
+    {
+      "file": "src/usage.rs",
+      "line": 142,
+      "src": "std::env::var(k)",
+      "test_only": false,
+      "allowed": false
+    }
+  ],
+  "axum_outside_transport": [
+    {
+      "file": "src/audit.rs",
+      "count": 5,
+      "test_only": false
+    },
+    {
+      "file": "src/billing.rs",
+      "count": 12,
+      "test_only": false
+    },
+    {
+      "file": "src/bin/bench.rs",
+      "count": 1,
+      "test_only": false
+    },
+    {
+      "file": "src/bin/edgesim.rs",
+      "count": 6,
+      "test_only": false
+    },
+    {
+      "file": "src/bin/livebench.rs",
+      "count": 1,
+      "test_only": false
+    },
+    {
+      "file": "src/bin/pilot.rs",
+      "count": 12,
+      "test_only": false
+    },
+    {
+      "file": "src/bin/s3lite.rs",
+      "count": 27,
+      "test_only": false
+    },
+    {
+      "file": "src/dst/dst_tests.rs",
+      "count": 4,
+      "test_only": true
+    },
+    {
+      "file": "src/operator.rs",
+      "count": 6,
+      "test_only": false
+    },
+    {
+      "file": "src/product.rs",
+      "count": 272,
+      "test_only": false
+    },
+    {
+      "file": "src/scaler3.rs",
+      "count": 4,
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "count": 5,
+      "test_only": false
+    },
+    {
+      "file": "src/sse/session.rs",
+      "count": 6,
+      "test_only": false
+    },
+    {
+      "file": "src/sse/source.rs",
+      "count": 2,
+      "test_only": false
+    }
+  ],
+  "keytag_sites": [
+    {
+      "file": "src/billing.rs",
+      "line": 467,
+      "src": "k.push(b'B');"
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 481,
+      "src": "k.push(b'U');"
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 493,
+      "src": "k.push(b'V');"
+    },
+    {
+      "file": "src/bin/bench.rs",
+      "line": 106,
+      "src": "(vec![b'x'; bytes], \"application/octet-stream\")"
+    },
+    {
+      "file": "src/bin/bench.rs",
+      "line": 311,
+      "src": ".body(vec![b'x'; args.payload_bytes])"
+    },
+    {
+      "file": "src/bin/verify.rs",
+      "line": 148,
+      "src": "let payload = Bytes::from(vec![b'x'; 10 * 1024]);"
+    },
+    {
+      "file": "src/bin/verify.rs",
+      "line": 380,
+      "src": "db.put(format!(\"a{:04}\", i).as_bytes(), vec![b'x'; 256])"
+    },
+    {
+      "file": "src/bin/verify.rs",
+      "line": 382,
+      "src": "db.put(format!(\"q{:04}\", i).as_bytes(), vec![b'y'; 256])"
+    },
+    {
+      "file": "src/crypto.rs",
+      "line": 636,
+      "src": "let payload = vec![b'x'; 4096];"
+    },
+    {
+      "file": "src/dst/dst_tests.rs",
+      "line": 1246,
+      "src": ".map(|i| bytes::Bytes::from(vec![b'a' + i as u8; SIZE]))"
+    },
+    {
+      "file": "src/history.rs",
+      "line": 81,
+      "src": "k.push(b'r');"
+    },
+    {
+      "file": "src/history.rs",
+      "line": 2571,
+      "src": "entries: vec![bytes::Bytes::from(vec![b'x'; 1024])],"
+    },
+    {
+      "file": "src/history.rs",
+      "line": 2646,
+      "src": "entries: vec![bytes::Bytes::from(vec![b'y'; 512])],"
+    },
+    {
+      "file": "src/postings.rs",
+      "line": 60,
+      "src": "k.push(b'p');"
+    },
+    {
+      "file": "src/queue.rs",
+      "line": 176,
+      "src": "k.push(b'C');"
+    },
+    {
+      "file": "src/queue.rs",
+      "line": 198,
+      "src": "k.push(b'F');"
+    },
+    {
+      "file": "src/shard.rs",
+      "line": 25,
+      "src": "k.push(b't');"
+    },
+    {
+      "file": "src/shard.rs",
+      "line": 32,
+      "src": "k.push(b'r');"
+    },
+    {
+      "file": "src/shard.rs",
+      "line": 146,
+      "src": "k.push(b's');"
+    },
+    {
+      "file": "src/shard.rs",
+      "line": 159,
+      "src": "k.push(b'q');"
+    },
+    {
+      "file": "src/shard.rs",
+      "line": 188,
+      "src": "k.push(b'D');"
+    },
+    {
+      "file": "src/shard.rs",
+      "line": 260,
+      "src": "k.push(b'M');"
+    },
+    {
+      "file": "src/shard.rs",
+      "line": 445,
+      "src": "pfx.push(b'D');"
+    },
+    {
+      "file": "src/shard.rs",
+      "line": 2028,
+      "src": "pfx.push(b'D');"
+    },
+    {
+      "file": "src/shard.rs",
+      "line": 4860,
+      "src": "pfx.push(b'U');"
+    },
+    {
+      "file": "src/shard.rs",
+      "line": 4895,
+      "src": "pfx.push(b'V');"
+    },
+    {
+      "file": "src/sse/feed.rs",
+      "line": 1485,
+      "src": "payload: Bytes::from(vec![b'x'; self.payload]),"
+    }
+  ],
+  "mutable_statics": [
+    {
+      "file": "src/audit.rs",
+      "line": 95,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/audit.rs",
+      "line": 97,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/audit.rs",
+      "line": 98,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/audit.rs",
+      "line": 101,
+      "type": "std::sync::OnceLock<Mutex<VecDeque<AuditEvent>>>",
+      "test_only": false
+    },
+    {
+      "file": "src/backpressure.rs",
+      "line": 362,
+      "type": "std::sync::OnceLock<Limits>",
+      "test_only": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 93,
+      "type": "std::sync::atomic::AtomicI64",
+      "test_only": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 100,
+      "type": "std::sync::OnceLock<tokio::sync::RwLock<()>>",
+      "test_only": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 106,
+      "type": "std::sync::OnceLock<String>",
+      "test_only": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 934,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 943,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 1601,
+      "type": "std::sync::atomic::AtomicI64",
+      "test_only": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 1602,
+      "type": "std::sync::atomic::AtomicI64",
+      "test_only": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 1604,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 1606,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 1612,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 1830,
+      "type": "std::sync::OnceLock<std::sync::Arc<slatedb::db_cache::foyer::FoyerCache>>",
+      "test_only": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 1851,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 2438,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/billing.rs",
+      "line": 2673,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/bin/pilot.rs",
+      "line": 49,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/crypto.rs",
+      "line": 42,
+      "type": "std::sync::OnceLock<bool>",
+      "test_only": false
+    },
+    {
+      "file": "src/dst/dst_tests.rs",
+      "line": 2673,
+      "type": "std::sync::OnceLock<tokio::sync::Mutex<()>>",
+      "test_only": true
+    },
+    {
+      "file": "src/dst/dst_tests.rs",
+      "line": 6061,
+      "type": "std::sync::OnceLock<tokio::sync::Mutex<()>>",
+      "test_only": true
+    },
+    {
+      "file": "src/dst/dst_tests.rs",
+      "line": 27061,
+      "type": "std::sync::OnceLock<tokio::sync::Mutex<()>>",
+      "test_only": true
+    },
+    {
+      "file": "src/failpoints.rs",
+      "line": 229,
+      "type": "[std::sync::atomic::AtomicUsize",
+      "test_only": false
+    },
+    {
+      "file": "src/failpoints.rs",
+      "line": 237,
+      "type": "std::sync::OnceLock<Mutex<HashMap<(Fp, String), FpState>>>",
+      "test_only": false
+    },
+    {
+      "file": "src/failpoints.rs",
+      "line": 243,
+      "type": "std::sync::OnceLock<tokio::sync::Notify>",
+      "test_only": false
+    },
+    {
+      "file": "src/fleet.rs",
+      "line": 183,
+      "type": "OnceLock<Mutex<std::collections::HashMap<String, String>>>",
+      "test_only": false
+    },
+    {
+      "file": "src/fleet.rs",
+      "line": 368,
+      "type": "OnceLock<Mutex<Option<Arc<dyn ObjectStore>>>>",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 29,
+      "type": "std::sync::OnceLock<std::sync::atomic::AtomicBool>",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 213,
+      "type": "std::sync::atomic::AtomicUsize",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 251,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 264,
+      "type": "std::sync::OnceLock<serde_json::Value>",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 268,
+      "type": "std::sync::OnceLock<AbsorbBudget>",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 463,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 464,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 465,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 466,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 467,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 471,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 472,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 473,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 474,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 477,
+      "type": "std::sync::OnceLock<Arc<slatedb::db_cache::foyer::FoyerCache>>",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 1740,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 1741,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 1742,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 1743,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 1744,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 1745,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 1746,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 1747,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/history.rs",
+      "line": 1748,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/http.rs",
+      "line": 46,
+      "type": "std::sync::atomic::AtomicUsize",
+      "test_only": false
+    },
+    {
+      "file": "src/http.rs",
+      "line": 82,
+      "type": "std::sync::OnceLock<bool>",
+      "test_only": false
+    },
+    {
+      "file": "src/http.rs",
+      "line": 87,
+      "type": "std::sync::OnceLock<usize>",
+      "test_only": false
+    },
+    {
+      "file": "src/http.rs",
+      "line": 2986,
+      "type": "std::sync::OnceLock<\n            std::sync::Mutex<std::collections::HashSet<crate::tenant::TenantStreamRef>>,\n        >",
+      "test_only": false
+    },
+    {
+      "file": "src/http.rs",
+      "line": 6138,
+      "type": "std::sync::atomic::AtomicBool",
+      "test_only": false
+    },
+    {
+      "file": "src/http.rs",
+      "line": 7259,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/http.rs",
+      "line": 7261,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/http.rs",
+      "line": 7275,
+      "type": "std::sync::atomic::AtomicI64",
+      "test_only": false
+    },
+    {
+      "file": "src/http.rs",
+      "line": 7277,
+      "type": "std::sync::atomic::AtomicI64",
+      "test_only": false
+    },
+    {
+      "file": "src/http.rs",
+      "line": 7390,
+      "type": "std::sync::OnceLock<reqwest::Client>",
+      "test_only": false
+    },
+    {
+      "file": "src/main.rs",
+      "line": 676,
+      "type": "std::sync::OnceLock<slatedb::config::CompactorOptions>",
+      "test_only": false
+    },
+    {
+      "file": "src/main.rs",
+      "line": 834,
+      "type": "std::sync::OnceLock<tokio::runtime::Runtime>",
+      "test_only": false
+    },
+    {
+      "file": "src/ops.rs",
+      "line": 114,
+      "type": "std::sync::OnceLock<Mutex<OpsQueue>>",
+      "test_only": false
+    },
+    {
+      "file": "src/ops.rs",
+      "line": 122,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/ops.rs",
+      "line": 124,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/ops.rs",
+      "line": 259,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/ops.rs",
+      "line": 511,
+      "type": "std::sync::OnceLock<Mutex<std::collections::HashMap<String, AlertState>>>",
+      "test_only": false
+    },
+    {
+      "file": "src/postings_cache.rs",
+      "line": 51,
+      "type": "std::sync::OnceLock<Arc<PostingsCache>>",
+      "test_only": false
+    },
+    {
+      "file": "src/product.rs",
+      "line": 7140,
+      "type": "std::sync::OnceLock<std::sync::Mutex<(f64, i64)>>",
+      "test_only": false
+    },
+    {
+      "file": "src/scaler3.rs",
+      "line": 44,
+      "type": "PolicyOnceLock<ScalePolicy>",
+      "test_only": false
+    },
+    {
+      "file": "src/scaler3.rs",
+      "line": 65,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/scaler3.rs",
+      "line": 66,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/scaler3.rs",
+      "line": 67,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/scaler3.rs",
+      "line": 69,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/scaler3.rs",
+      "line": 71,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/scaler3.rs",
+      "line": 72,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/scaler3.rs",
+      "line": 100,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/scaler3.rs",
+      "line": 112,
+      "type": "OnceLock<Mutex<State>>",
+      "test_only": false
+    },
+    {
+      "file": "src/shard.rs",
+      "line": 252,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/shard.rs",
+      "line": 254,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/shard.rs",
+      "line": 1259,
+      "type": "std::sync::OnceLock<Mutex<HashMap<String, u32>>>",
+      "test_only": false
+    },
+    {
+      "file": "src/sharddir.rs",
+      "line": 65,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sharddir.rs",
+      "line": 66,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sharddir.rs",
+      "line": 67,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sharddir.rs",
+      "line": 68,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sharddir.rs",
+      "line": 69,
+      "type": "AtomicI64",
+      "test_only": false
+    },
+    {
+      "file": "src/sharddir.rs",
+      "line": 70,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sharddir.rs",
+      "line": 73,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sharddir.rs",
+      "line": 76,
+      "type": "Mutex<Option<String>>",
+      "test_only": false
+    },
+    {
+      "file": "src/sharddir.rs",
+      "line": 88,
+      "type": "Mutex<Option<std::collections::BTreeSet<String>>>",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 17,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 18,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 19,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 20,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 23,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 25,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 27,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 29,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 31,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 35,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 38,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 43,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 45,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 46,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 47,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 48,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 49,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 50,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 53,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 55,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/auth.rs",
+      "line": 59,
+      "type": "[std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/budget.rs",
+      "line": 11,
+      "type": "std::sync::OnceLock<usize>",
+      "test_only": false
+    },
+    {
+      "file": "src/sse/budget.rs",
+      "line": 33,
+      "type": "std::sync::OnceLock<u64>",
+      "test_only": false
+    },
+    {
+      "file": "src/store_timing.rs",
+      "line": 71,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/store_timing.rs",
+      "line": 72,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/store_timing.rs",
+      "line": 83,
+      "type": "OnceLock<Option<tokio::sync::Semaphore>>",
+      "test_only": false
+    },
+    {
+      "file": "src/store_timing.rs",
+      "line": 211,
+      "type": "OnceLock<u64>",
+      "test_only": false
+    },
+    {
+      "file": "src/store_timing.rs",
+      "line": 221,
+      "type": "OnceLock<Option<BulkGate>>",
+      "test_only": false
+    },
+    {
+      "file": "src/store_timing.rs",
+      "line": 272,
+      "type": "OnceLock<StoreStats>",
+      "test_only": false
+    },
+    {
+      "file": "src/store_timing.rs",
+      "line": 296,
+      "type": "OnceLock<DriftRings>",
+      "test_only": false
+    },
+    {
+      "file": "src/store_timing.rs",
+      "line": 988,
+      "type": "OnceLock<HttpStats>",
+      "test_only": false
+    },
+    {
+      "file": "src/usage.rs",
+      "line": 43,
+      "type": "OnceLock<Mutex<Bucket>>",
+      "test_only": false
+    },
+    {
+      "file": "src/usage.rs",
+      "line": 60,
+      "type": "OnceLock<std::sync::Arc<Counters>>",
+      "test_only": false
+    },
+    {
+      "file": "src/usage.rs",
+      "line": 63,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/usage.rs",
+      "line": 65,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/usage.rs",
+      "line": 149,
+      "type": "OnceLock<Limits>",
+      "test_only": false
+    },
+    {
+      "file": "src/usage.rs",
+      "line": 188,
+      "type": "AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/usage.rs",
+      "line": 202,
+      "type": "OnceLock<Mutex<HashMap<[u8",
+      "test_only": false
+    },
+    {
+      "file": "src/usage.rs",
+      "line": 211,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/usage.rs",
+      "line": 213,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/usage.rs",
+      "line": 215,
+      "type": "std::sync::atomic::AtomicU64",
+      "test_only": false
+    },
+    {
+      "file": "src/usage.rs",
+      "line": 405,
+      "type": "OnceLock<Mutex<HashMap<SegmentHash, u64>>>",
+      "test_only": false
+    },
+    {
+      "file": "src/usage.rs",
+      "line": 427,
+      "type": "OnceLock<Mutex<HashMap<RouteHash, std::collections::HashSet<SegmentHash>>>>",
+      "test_only": false
+    },
+    {
+      "file": "src/usage.rs",
+      "line": 473,
+      "type": "OnceLock<Mutex<HashMap<String, (u64, u64)>>>",
+      "test_only": false
+    },
+    {
+      "file": "src/usage.rs",
+      "line": 537,
+      "type": "OnceLock<Mutex<HashMap<String, u64>>>",
+      "test_only": false
+    }
+  ],
+  "totals": {
+    "rust_files": 53,
+    "rust_lines": 100890,
+    "files_over_budget": 20,
+    "production_files_over_budget": 18,
+    "functions_over_budget": 46,
+    "env_reads": 71,
+    "env_reads_disallowed": 52,
+    "forbidden_edge_refs": 296,
+    "axum_refs_outside_transport": 363,
+    "keytag_sites": 27,
+    "mutable_statics": 138
+  }
+}

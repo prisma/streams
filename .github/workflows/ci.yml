@@ -18,6 +18,14 @@ on:
 # its own job against a fresh namespace.
 
 jobs:
+  # Temporary WP-00 job: structural report only. Never fails the push;
+  # WP-17 turns the same script into a hard gate (--fail).
+  architecture-report:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Architecture report (warning-only)
+        run: python3 scripts/architecture-report.py
   # Job: rust build + full suite (product conformance, dual-surface
   # equivalence corpus, DST safety/liveness, request-cost budgets).
   rust:

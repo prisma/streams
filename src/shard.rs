@@ -138,6 +138,13 @@ pub fn decode_tail_for_tests(v: &[u8]) -> Option<TailFields> {
     decode_tail(v)
 }
 
+/// Test-only: the production tail encoder, exposed so golden tests can
+/// pin the exact v3 byte layout without going through a shard engine.
+#[cfg(test)]
+pub fn encode_tail_for_tests(t: &TailFields) -> Vec<u8> {
+    encode_tail(t)
+}
+
 /// Per-routing-key Stream-Seq row (ROUTING-V3 §3.6): seq is scoped to
 /// the KEY, not the segment — a segment carries many keys' lanes.
 pub fn seq_key(hash: &[u8; 16], key_hash: &[u8; 16]) -> Vec<u8> {
@@ -237,6 +244,13 @@ fn dirty_value(m: &StreamMaintenance) -> [u8; 32] {
     v[16..24].copy_from_slice(&m.unabsorbed_bytes.to_le_bytes());
     v[24..].copy_from_slice(&m.oldest_unabsorbed_ms.to_le_bytes());
     v
+}
+
+/// Test-only: the production dirty-row encoder, exposed so golden tests
+/// can pin the exact 32-byte LE layout.
+#[cfg(test)]
+pub fn dirty_value_for_tests(m: &StreamMaintenance) -> [u8; 32] {
+    dirty_value(m)
 }
 
 /// The one durable maintenance row per physical shard.

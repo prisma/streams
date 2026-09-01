@@ -1,0 +1,2867 @@
+[
+  {
+    "id": "DUR-001",
+    "title": "Ordinary success waits for remote durability",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "the_gather_window_waits_for_ack_dispatch",
+        "file": "src/dst/dst_tests.rs",
+        "line": 1728
+      },
+      {
+        "name": "a_handoff_with_an_append_in_flight_resolves_safely",
+        "file": "src/dst/dst_tests.rs",
+        "line": 844
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "844 parks the WAL PUT after db.write staging, before durability, and asserts no ack; 1728 holds the post-durability dispatch gate and asserts no ack on the wire. Both require() coverage counters."
+  },
+  {
+    "id": "DUR-002",
+    "title": "Same-group producer duplicate waits for the original group",
+    "status": "L1-now",
+    "tests": [
+      {
+        "name": "a_failed_group_write_fails_its_duplicate_too",
+        "file": "src/dst/dst_tests.rs",
+        "line": 14832
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Explicit 'DUR-002' comment at line 14825. IMPLEMENTED since catalogue (STATUS.md workstream 2, 'forced'). Entered-proof: hold-commit gate + appends_enqueued + group_failures_tripped."
+  },
+  {
+    "id": "DUR-003",
+    "title": "Applied-but-not-durable producer duplicate waits",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "idempotent_successes_wait_for_durability",
+        "file": "src/dst/dst_tests.rs",
+        "line": 14422
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Dispatch-gate form: duplicate of applied-but-unreleased write stays pending."
+  },
+  {
+    "id": "DUR-004",
+    "title": "Same-group idempotent close waits for durability",
+    "status": "L1-now",
+    "tests": [
+      {
+        "name": "a_failed_group_fails_the_close_and_its_retry_together",
+        "file": "src/dst/dst_tests.rs",
+        "line": 15039
+      },
+      {
+        "name": "a_fence_in_a_failed_group_reports_failure_not_closed",
+        "file": "src/dst/dst_tests.rs",
+        "line": 15162
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Explicit 'DUR-004' comments at 15035 and 15156. IMPLEMENTED since catalogue (STATUS.md 'forced')."
+  },
+  {
+    "id": "DUR-005",
+    "title": "Applied-but-not-durable close retry waits",
+    "status": "Strengthen",
+    "tests": [
+      {
+        "name": "idempotent_successes_wait_for_durability",
+        "file": "src/dst/dst_tests.rs",
+        "line": 14422
+      },
+      {
+        "name": "a_failed_group_fails_the_close_and_its_retry_together",
+        "file": "src/dst/dst_tests.rs",
+        "line": 15039
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "STATUS.md: 'landed (R11) \u2014 idempotent_successes_wait_for_durability (dispatch gate)'. Dispatch-gate form only; no remote-watermark pause."
+  },
+  {
+    "id": "DUR-006",
+    "title": "Producer sequence reuse rejection is barriered",
+    "status": "L1-now",
+    "tests": [
+      {
+        "name": "a_reuse_verdict_dies_with_its_failed_group",
+        "file": "src/dst/dst_tests.rs",
+        "line": 14926
+      },
+      {
+        "name": "state_dependent_conflicts_wait_for_durability",
+        "file": "src/dst/dst_tests.rs",
+        "line": 14547
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Explicit 'DUR-006' comment at 14921. IMPLEMENTED since catalogue (STATUS.md 'forced'). 14547 is the earlier dispatch-gate form."
+  },
+  {
+    "id": "DUR-007",
+    "title": "Producer gap with admitted predecessor",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_transient_producer_gap_does_not_lose_the_promised_record",
+        "file": "src/dst/dst_tests.rs",
+        "line": 12997
+      },
+      {
+        "name": "an_ordering_verdict_keeps_its_intent_until_the_claim_is_abandoned",
+        "file": "src/dst/dst_tests.rs",
+        "line": 12673
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "12997 parks the predecessor via Fp::AppendBeforeEnqueue, lets N+1 observe a gap, then commits N and retries \u2014 exact DUR-007 procedure, but exercised on final-intent closes (shared committer path), not plain appends."
+  },
+  {
+    "id": "DUR-008",
+    "title": "Stream-Seq conflict is barriered",
+    "status": "L1-now",
+    "tests": [
+      {
+        "name": "a_stream_seq_verdict_is_grounded_in_durable_state",
+        "file": "src/dst/dst_tests.rs",
+        "line": 15314
+      },
+      {
+        "name": "state_dependent_conflicts_wait_for_durability",
+        "file": "src/dst/dst_tests.rs",
+        "line": 14547
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Explicit 'DUR-008' comment at 15309. IMPLEMENTED since catalogue (STATUS.md 'invariant' + R11 barrier reverts)."
+  },
+  {
+    "id": "DUR-009",
+    "title": "Lost object-store response is internal latency",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_lost_response_still_wrote_the_object",
+        "file": "src/dst/dst_tests.rs",
+        "line": 87
+      },
+      {
+        "name": "store_errors_surface_as_latency_not_as_failed_appends",
+        "file": "src/dst/dst_tests.rs",
+        "line": 307
+      },
+      {
+        "name": "acked_records_survive_store_faults",
+        "file": "src/dst/dst_tests.rs",
+        "line": 260
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "DUR-010",
+    "title": "Client deadline creates public ambiguity",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "storage_latency_creates_client_ambiguity_resolved_by_idempotence",
+        "file": "src/dst/dst_tests.rs",
+        "line": 676
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Deadline-bound caller under WAL latency; retry with idempotence resolves to one copy. require() coverage-gated."
+  },
+  {
+    "id": "DUR-011",
+    "title": "Response lost after durable dispatch",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "ambiguous_commit_survives_handoff_and_dedupes",
+        "file": "src/dst/dst_tests.rs",
+        "line": 540
+      },
+      {
+        "name": "product_append_producer_duplicate",
+        "file": "src/dst/dst_tests.rs",
+        "line": 8089
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "540 is the composite (commit durable + response lost + handoff + exact retry dedupes); 8089 is the plain duplicate leg on the product route."
+  },
+  {
+    "id": "DUR-012",
+    "title": "Handoff during in-flight append",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_handoff_with_an_append_in_flight_resolves_safely",
+        "file": "src/dst/dst_tests.rs",
+        "line": 844
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Store gate parks WAL PUT after staging, before durability; new owner opens; result durable-success-or-retryable. require(mech::IN_FLIGHT_AT_FENCE) entered-proof at line 904."
+  },
+  {
+    "id": "DUR-013",
+    "title": "Fenced owner acknowledges nothing",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_fenced_owner_acknowledges_nothing",
+        "file": "src/dst/dst_tests.rs",
+        "line": 785
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "'I4, asserted' \u2014 ghost ledger is asserted empty; task termination checked."
+  },
+  {
+    "id": "DUR-014",
+    "title": "Acknowledged-set equality, not count equality",
+    "status": "L2-sim",
+    "tests": [],
+    "mapped": false,
+    "note": "The exact-set oracle exists (oracle_catches_loss:2404, oracle_catches_duplicates:2416) but the count-preserving loss+duplicate swap leg is not a test; needs the simulator."
+  },
+  {
+    "id": "DUR-015",
+    "title": "Unknown non-idempotent retry may commit twice",
+    "status": "Existing oracle control",
+    "tests": [
+      {
+        "name": "oracle_permits_a_non_idempotent_retry_committing_twice",
+        "file": "src/dst/dst_tests.rs",
+        "line": 2476
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "CRT-001",
+    "title": "Descriptor before initial body never becomes Ready",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "create_replay_never_loses_the_initial_body",
+        "file": "src/dst/dst_tests.rs",
+        "line": 22445
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Plants an initializing incarnation (crashed creator) at 22488; reads/appends return retryable 503 (22507-22509) until recovery completes."
+  },
+  {
+    "id": "CRT-002",
+    "title": "Exact create replay joins initialization",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "create_replay_never_loses_the_initial_body",
+        "file": "src/dst/dst_tests.rs",
+        "line": 22445
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Two racing identical PUTs join one initialization; initial body lands exactly once."
+  },
+  {
+    "id": "CRT-003",
+    "title": "Wrong-key replay cannot resume",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "an_initialization_cannot_be_resumed_with_another_key",
+        "file": "src/dst/dst_tests.rs",
+        "line": 11013
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "CRT-004",
+    "title": "Claim age does not imply readiness",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_stale_initialization_never_becomes_visible",
+        "file": "src/dst/dst_tests.rs",
+        "line": 10955
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "CRT-005",
+    "title": "Old creator cannot publish Ready after recreate",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_parked_create_never_publishes_readiness_for_a_later_incarnation",
+        "file": "src/dst/dst_tests.rs",
+        "line": 21526
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "ABA section; Fp::CreateBeforeReady park with entered-proof (21533-21542)."
+  },
+  {
+    "id": "CRT-006",
+    "title": "Concurrent delete after source reference but before Ready",
+    "status": "Strengthen",
+    "tests": [
+      {
+        "name": "creation_does_not_report_success_after_a_concurrent_delete",
+        "file": "src/dst/dst_tests.rs",
+        "line": 21959
+      },
+      {
+        "name": "a_child_deleted_before_the_source_ref_cannot_pin_the_source",
+        "file": "src/dst/dst_tests.rs",
+        "line": 15707
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "21959: readiness CAS refuses deleted descriptors \u2014 no 201, no source pin; 15707 is the FRK-013 shape of the same window."
+  },
+  {
+    "id": "CRT-007",
+    "title": "Initial content duplicate waits for durability",
+    "status": "L1-now",
+    "tests": [
+      {
+        "name": "create_replay_recovers_from_a_failed_initial_write",
+        "file": "src/dst/dst_tests.rs",
+        "line": 15382
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "Explicit 'CRT-007' comment at 15378. IMPLEMENTED since catalogue but single-creator only; STATUS.md: 'the two-joiner same-group variant remains open (#108)'. Uses Fp::InitBeforeSeed entered-proof."
+  },
+  {
+    "id": "CRT-008",
+    "title": "Create-and-close crash matrix",
+    "status": "L1-now",
+    "tests": [],
+    "mapped": false,
+    "note": "GAP: no create-with-close crash-boundary matrix found (no test combines create and close lifecycle phases)."
+  },
+  {
+    "id": "CRT-009",
+    "title": "Initialization takeover is cancellation-proof",
+    "status": "L2-sim",
+    "tests": [],
+    "mapped": false
+  },
+  {
+    "id": "CRT-010",
+    "title": "Catalog excludes initializing descriptors",
+    "status": "Existing/strengthen",
+    "tests": [
+      {
+        "name": "catalog_paging_survives_dense_dead_entries",
+        "file": "src/dst/dst_tests.rs",
+        "line": 11097
+      },
+      {
+        "name": "catalog_pages_without_scanning_the_world",
+        "file": "src/dst/dst_tests.rs",
+        "line": 22973
+      },
+      {
+        "name": "product_seal_final_append_and_catalog",
+        "file": "src/dst/dst_tests.rs",
+        "line": 10347
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "Catalog paging/continuation over dead entries is pinned; the 'initializing descriptors excluded from pages' leg is not separately asserted."
+  },
+  {
+    "id": "CRT-011",
+    "title": "Deterministic create validation before mutation",
+    "status": "L1-now",
+    "tests": [
+      {
+        "name": "record_ceiling_refuses_one_oversized_record_not_the_batch",
+        "file": "src/dst/dst_tests.rs",
+        "line": 34663
+      },
+      {
+        "name": "max_streams_is_enforced_at_create",
+        "file": "src/dst/dst_tests.rs",
+        "line": 29232
+      },
+      {
+        "name": "product_create_metadata_roundtrip",
+        "file": "src/dst/dst_tests.rs",
+        "line": 7730
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "Validation legs exist (record/body ceiling on create-with-content, impossible capacity, config conflict) but no dedicated test asserts the full matrix leaves NO descriptor object."
+  },
+  {
+    "id": "CRT-012",
+    "title": "Creation request identity is complete",
+    "status": "L1-now",
+    "tests": [
+      {
+        "name": "typed_creation_dual_contract",
+        "file": "src/dst/dst_tests.rs",
+        "line": 10184
+      },
+      {
+        "name": "a_fork_initialization_is_bound_to_its_source_incarnation",
+        "file": "src/dst/dst_tests.rs",
+        "line": 11675
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "Config-comparison and source-epoch identity legs exist; no vary-one-field identity-completeness matrix."
+  },
+  {
+    "id": "SEL-001",
+    "title": "Deterministic validation precedes intent",
+    "status": "Existing/strengthen",
+    "tests": [
+      {
+        "name": "an_impossible_final_never_publishes_an_intent",
+        "file": "src/dst/dst_tests.rs",
+        "line": 12407
+      },
+      {
+        "name": "seal_requests_are_identified_and_validated_exactly",
+        "file": "src/dst/dst_tests.rs",
+        "line": 11899
+      },
+      {
+        "name": "record_ceiling_refuses_one_oversized_record_not_the_batch",
+        "file": "src/dst/dst_tests.rs",
+        "line": 34663
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "12407 loops refusal cases asserting '{label} published a lifecycle intent' never happens (12434)."
+  },
+  {
+    "id": "SEL-002",
+    "title": "Final null is a real record",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "seal_requests_are_identified_and_validated_exactly",
+        "file": "src/dst/dst_tests.rs",
+        "line": 11899
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Null-final leg inside this three-defect test."
+  },
+  {
+    "id": "SEL-003",
+    "title": "Semantic operation ID has no concatenation collision",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "seal_requests_are_identified_and_validated_exactly",
+        "file": "src/dst/dst_tests.rs",
+        "line": 11899
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Length-framed identity leg."
+  },
+  {
+    "id": "SEL-004",
+    "title": "Identity includes content type and key version",
+    "status": "Existing/strengthen",
+    "tests": [
+      {
+        "name": "a_wrong_content_type_close_cannot_join_the_valid_intent",
+        "file": "src/dst/dst_tests.rs",
+        "line": 13516
+      },
+      {
+        "name": "seal_requests_are_identified_and_validated_exactly",
+        "file": "src/dst/dst_tests.rs",
+        "line": 11899
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "Content-type leg covered (13516); key-version-in-identity leg not separately asserted."
+  },
+  {
+    "id": "SEL-005",
+    "title": "Plain seal cannot finish owed final",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_plain_seal_cannot_finish_someone_elses_final",
+        "file": "src/dst/dst_tests.rs",
+        "line": 11150
+      },
+      {
+        "name": "seal_only_takes_over_an_abandoned_final_claim",
+        "file": "src/dst/dst_tests.rs",
+        "line": 13623
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "13623 adds the correctly-fenced recovery-policy leg (takeover protocol)."
+  },
+  {
+    "id": "SEL-006",
+    "title": "New producer sequence rejected during sealing, duplicate allowed",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "producers_cannot_write_new_records_while_sealing",
+        "file": "src/dst/dst_tests.rs",
+        "line": 11255
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "SEL-007",
+    "title": "Raw close publishes intent only after validation",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_raw_close_with_content_owes_its_records",
+        "file": "src/dst/dst_tests.rs",
+        "line": 12015
+      },
+      {
+        "name": "an_impossible_final_never_publishes_an_intent",
+        "file": "src/dst/dst_tests.rs",
+        "line": 12407
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "12015 line 12022: 'A malformed close must not touch the lifecycle.'"
+  },
+  {
+    "id": "SEL-008",
+    "title": "Raw close crash after intent, before enqueue",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_crashed_raw_final_close_is_resumed_by_an_ordinary_retry",
+        "file": "src/dst/dst_tests.rs",
+        "line": 12088
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "SEL-009",
+    "title": "Raw close crash after final durability, before mark",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_raw_final_close_resumes_after_its_records_are_durable",
+        "file": "src/dst/dst_tests.rs",
+        "line": 12500
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "SEL-010",
+    "title": "Raw definitive rejection releases exact uncommitted intent",
+    "status": "Existing/strengthen",
+    "tests": [
+      {
+        "name": "a_refused_raw_close_does_not_strand_the_collection",
+        "file": "src/dst/dst_tests.rs",
+        "line": 12911
+      },
+      {
+        "name": "a_stale_epoch_final_releases_its_intent_on_both_surfaces",
+        "file": "src/dst/dst_tests.rs",
+        "line": 15806
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "15806 (round 12) adds the stale-epoch leg on both surfaces."
+  },
+  {
+    "id": "SEL-011",
+    "title": "Producer gap retains intent",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "an_ordering_verdict_keeps_its_intent_until_the_claim_is_abandoned",
+        "file": "src/dst/dst_tests.rs",
+        "line": 12673
+      },
+      {
+        "name": "a_transient_producer_gap_does_not_lose_the_promised_record",
+        "file": "src/dst/dst_tests.rs",
+        "line": 12997
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "SEL-012",
+    "title": "Non-closing duplicate cannot satisfy final",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_non_closing_duplicate_releases_its_own_intent",
+        "file": "src/dst/dst_tests.rs",
+        "line": 14256
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "SEL-013",
+    "title": "Internal idempotence namespace is unreachable",
+    "status": "Existing/strengthen",
+    "tests": [
+      {
+        "name": "internal_producer_identities_are_unreachable_from_the_wire",
+        "file": "src/dst/dst_tests.rs",
+        "line": 12798
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "SEL-014",
+    "title": "Seal claim bound to validated incarnation",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_product_seal_never_binds_to_a_recreated_incarnation",
+        "file": "src/dst/dst_tests.rs",
+        "line": 14169
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Fp::ProductSealBeforeClaim park with entered-proof (14185-14199)."
+  },
+  {
+    "id": "SEL-015",
+    "title": "Seal final append bound to claim incarnation/generation",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_product_final_never_writes_into_a_recreated_incarnation",
+        "file": "src/dst/dst_tests.rs",
+        "line": 14708
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Fp::ProductFinalBeforeAppend park (14725-14739)."
+  },
+  {
+    "id": "SEL-016",
+    "title": "Mark/abandon/run-seal bound end to end",
+    "status": "Existing/strengthen",
+    "tests": [
+      {
+        "name": "a_resumed_mark_never_seals_a_later_incarnation",
+        "file": "src/dst/dst_tests.rs",
+        "line": 13435
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Fp::CloseBeforeMark park (13445-13462)."
+  },
+  {
+    "id": "SEL-017",
+    "title": "Seal serializes with pending split",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_seal_never_installs_over_a_pending_transition",
+        "file": "src/dst/dst_tests.rs",
+        "line": 12202
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "SEL-018",
+    "title": "Phase-B split cannot publish after sealing",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_parked_split_cannot_publish_under_a_sealed_collection",
+        "file": "src/dst/dst_tests.rs",
+        "line": 11530
+      },
+      {
+        "name": "topology_transitions_are_fenced_by_sealing",
+        "file": "src/dst/dst_tests.rs",
+        "line": 11318
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "SEL-019",
+    "title": "Phase-B merge cannot publish after sealing",
+    "status": "L1-now",
+    "tests": [
+      {
+        "name": "merge_phase_b_declines_under_sealing",
+        "file": "src/dst/dst_tests.rs",
+        "line": 15465
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Explicit 'SEL-019' comment at 15460. IMPLEMENTED since catalogue (STATUS.md 'entered-proof': publish_parked_count proves phase B reached, 15524-15532)."
+  },
+  {
+    "id": "SEL-020",
+    "title": "Fence raise is immediate",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_fenced_owner_acknowledges_nothing",
+        "file": "src/dst/dst_tests.rs",
+        "line": 785
+      },
+      {
+        "name": "a_superseded_close_cannot_write_or_close",
+        "file": "src/dst/dst_tests.rs",
+        "line": 13128
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "13128: committer refuses a superseded (lower-generation) close BEFORE writing (Fp::CloseBeforeEnqueue). Plain-append late-write leg is covered via the fenced-owner form in 785 rather than a dedicated staging-gate assertion."
+  },
+  {
+    "id": "SEL-021",
+    "title": "Fence response waits for current-group durability",
+    "status": "Strengthen",
+    "tests": [
+      {
+        "name": "a_fence_in_a_failed_group_reports_failure_not_closed",
+        "file": "src/dst/dst_tests.rs",
+        "line": 15162
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Explicit 'SEL-021' comments at 15156 and 15222. STATUS.md 'forced': close+fence composed into ONE failed group; fence answers Err/false, never closed=true."
+  },
+  {
+    "id": "SEL-022",
+    "title": "Fence response waits for prior-group remote durability",
+    "status": "Strengthen",
+    "tests": [
+      {
+        "name": "a_fence_waits_for_durability_before_reporting_closed",
+        "file": "src/dst/dst_tests.rs",
+        "line": 13798
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "STATUS.md: 'partial \u2014 dispatch-gate form only. A true remote-watermark pause needs the simulator substrate (#108) \u2014 relabeled, not claimed.'"
+  },
+  {
+    "id": "SEL-023",
+    "title": "Lower takeover reservation cannot install",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_lower_takeover_reservation_cannot_install",
+        "file": "src/dst/dst_tests.rs",
+        "line": 13938
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "SEL-024",
+    "title": "Exact retry renews generation",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "an_exact_retry_renews_its_lease",
+        "file": "src/dst/dst_tests.rs",
+        "line": 13345
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "SEL-025",
+    "title": "Fence survives handle eviction",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_fence_survives_handle_eviction",
+        "file": "src/dst/dst_tests.rs",
+        "line": 14085
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "SEL-026",
+    "title": "Fence is not expired while stale requests remain queued",
+    "status": "L1-now",
+    "tests": [
+      {
+        "name": "a_fence_outlives_the_maintenance_sweep",
+        "file": "src/dst/dst_tests.rs",
+        "line": 14632
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "STATUS.md: 'landed (R11) \u2014 expiry code removed; a_fence_outlives_the_maintenance_sweep'. IMPLEMENTED since catalogue."
+  },
+  {
+    "id": "SEL-027",
+    "title": "Concurrent exact final attempts cannot abandon each other",
+    "status": "L1-now/L2-sim",
+    "tests": [
+      {
+        "name": "concurrent_finals_with_different_coordination_do_not_share_a_claim",
+        "file": "src/dst/dst_tests.rs",
+        "line": 15606
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Explicit 'SEL-027' comment at 15602. STATUS.md 'landed'. L1 leg implemented; L2 sim leg not."
+  },
+  {
+    "id": "SEL-028",
+    "title": "Terminal proof is exact",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "scaler_heat_and_terminal_proof_are_incarnation_scoped",
+        "file": "src/dst/dst_tests.rs",
+        "line": 14321
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Terminal-proof leg: run_seal refuses to bless a different operation's terminal state."
+  },
+  {
+    "id": "FRK-001",
+    "title": "Basic fork prefix and suffix",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "fork_lifecycle_and_stitched_reads",
+        "file": "src/dst/dst_tests.rs",
+        "line": 22248
+      },
+      {
+        "name": "livefeed_fork_subscriptions_stitch_the_ancestor_chain",
+        "file": "src/dst/dst_tests.rs",
+        "line": 32486
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "FRK-002",
+    "title": "Binary sub-offset materialization",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "fork_lifecycle_and_stitched_reads",
+        "file": "src/dst/dst_tests.rs",
+        "line": 22248
+      },
+      {
+        "name": "fork_materialized_partial_respects_the_record_ceiling",
+        "file": "src/dst/dst_tests.rs",
+        "line": 33762
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "22248 covers sub-offset materialization (JSON sub-offset leg, 'regression net for the conformance suite'); 33762 materializes a binary partial but asserts the record ceiling, not exact-once suffix semantics."
+  },
+  {
+    "id": "FRK-003",
+    "title": "Per-hop epoch/decryption validation",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "fork_lifecycle_is_idempotent_and_epoch_checked",
+        "file": "src/dst/dst_tests.rs",
+        "line": 22687
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "Covers stale-source-epoch integrity error (22770-22795); multi-hop chain with DISTINCT epochs decrypting per hop is not exercised."
+  },
+  {
+    "id": "FRK-004",
+    "title": "Cycle and depth defense",
+    "status": "Existing",
+    "tests": [],
+    "mapped": false,
+    "note": "GAP (Existing with no test): MAX_FORK_DEPTH=64 exists in src/http.rs:2727 but no test builds a cycle or over-depth chain."
+  },
+  {
+    "id": "FRK-005",
+    "title": "Raw fork filters to default key",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "raw_forks_show_only_the_default_key",
+        "file": "src/dst/dst_tests.rs",
+        "line": 11388
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "FRK-006",
+    "title": "Source soft-delete with child",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "fork_lifecycle_and_stitched_reads",
+        "file": "src/dst/dst_tests.rs",
+        "line": 22248
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "410 leg, child-still-readable leg, and 're-creation blocked while forks live' (409) leg all present."
+  },
+  {
+    "id": "FRK-007",
+    "title": "Last child triggers source hard delete",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "fork_lifecycle_and_stitched_reads",
+        "file": "src/dst/dst_tests.rs",
+        "line": 22248
+      },
+      {
+        "name": "fork_cascade_hard_delete_releases_the_stream_slot",
+        "file": "src/dst/dst_tests.rs",
+        "line": 29635
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "FRK-008",
+    "title": "Child init crash after tail seed",
+    "status": "L1-now",
+    "tests": [],
+    "mapped": false,
+    "note": "GAP: Fp::InitBeforeSeed park exists but is only used by the CRT-007 test (create seed); no fork-child crash-after-tail-seed resume test found."
+  },
+  {
+    "id": "FRK-009",
+    "title": "Child init crash after source ref before Ready",
+    "status": "Existing/strengthen",
+    "tests": [
+      {
+        "name": "a_fork_initialization_resumes_against_a_retained_source",
+        "file": "src/dst/dst_tests.rs",
+        "line": 12573
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "FRK-010",
+    "title": "Source incarnation changes during child init",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_fork_initialization_is_bound_to_its_source_incarnation",
+        "file": "src/dst/dst_tests.rs",
+        "line": 11675
+      },
+      {
+        "name": "fork_lifecycle_is_idempotent_and_epoch_checked",
+        "file": "src/dst/dst_tests.rs",
+        "line": 22687
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "FRK-011",
+    "title": "Concurrent first fork versus source delete",
+    "status": "Existing but strengthen handshake",
+    "tests": [
+      {
+        "name": "fork_creation_and_source_deletion_serialize",
+        "file": "src/dst/dst_tests.rs",
+        "line": 12341
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Handshake strengthened per STATUS.md: now awaits parked_delete_count (Fp::DeleteBeforeDecision, 12353-12356), no sleeps. Covers the fork-installs-first ordering only."
+  },
+  {
+    "id": "FRK-012",
+    "title": "Delete wins before fork reference",
+    "status": "L1-now",
+    "tests": [],
+    "mapped": false,
+    "note": "GAP: opposite ordering (delete decides first, fork CAS sees dead source) not implemented; fork_creation_and_source_deletion_serialize has only the one ordering."
+  },
+  {
+    "id": "FRK-013",
+    "title": "Child deleted before source reference install",
+    "status": "L1-now",
+    "tests": [
+      {
+        "name": "a_child_deleted_before_the_source_ref_cannot_pin_the_source",
+        "file": "src/dst/dst_tests.rs",
+        "line": 15707
+      },
+      {
+        "name": "a_crashed_creators_late_reference_is_repaired_by_delete_retry",
+        "file": "src/dst/dst_tests.rs",
+        "line": 16045
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Explicit 'FRK-013' comments at 15702 and 16037; also src/http.rs:3947/3954/4319 reference FRK-013. IMPLEMENTED since catalogue (non-crash + crash variants)."
+  },
+  {
+    "id": "FRK-014",
+    "title": "Direct deletion debt retry",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_half_deleted_fork_finishes_its_cleanup",
+        "file": "src/dst/dst_tests.rs",
+        "line": 11449
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "FRK-015",
+    "title": "Three-generation cascade crash",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_crashed_fork_cascade_can_be_resumed",
+        "file": "src/dst/dst_tests.rs",
+        "line": 11797
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "FRK-016",
+    "title": "Cascade concurrent new child",
+    "status": "L1-now",
+    "tests": [
+      {
+        "name": "fork_creation_and_source_deletion_serialize",
+        "file": "src/dst/dst_tests.rs",
+        "line": 12341
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "STATUS.md: 'covered by construction \u2014 release+decide in ONE CAS (release_fork_ref)'. No dedicated two-ordering test; the mechanism is structural."
+  },
+  {
+    "id": "FRK-017",
+    "title": "Ready fork idempotent PUT after source soft-delete",
+    "status": "L1-now",
+    "tests": [],
+    "mapped": false,
+    "note": "GAP: idempotent fork PUT leg exists (22687) but BEFORE soft-delete; the 'exact target PUT returns existing fork after source soft-delete' leg is not tested."
+  },
+  {
+    "id": "FRK-018",
+    "title": "Fork participant cannot split unexpectedly",
+    "status": "Existing/strengthen",
+    "tests": [
+      {
+        "name": "fork_lifecycle_is_idempotent_and_epoch_checked",
+        "file": "src/dst/dst_tests.rs",
+        "line": 22687
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Asserts execute_split refuses both directions: 'a stream with live forks must not split' (22749), 'a fork must not split' (22759)."
+  },
+  {
+    "id": "FRK-019",
+    "title": "Expiry with fork references",
+    "status": "L1-now",
+    "tests": [],
+    "mapped": false,
+    "note": "GAP: no test for TTL-expiry of a source with live fork references."
+  },
+  {
+    "id": "FRK-020",
+    "title": "Fork object reachability under GC",
+    "status": "L2-sim",
+    "tests": [],
+    "mapped": false
+  },
+  {
+    "id": "TOP-001",
+    "title": "Segment-map partition invariant",
+    "status": "Existing/property",
+    "tests": [
+      {
+        "name": "initial_routes_everything",
+        "file": "src/segmap.rs",
+        "line": 315
+      },
+      {
+        "name": "split_then_route_then_successors",
+        "file": "src/segmap.rs",
+        "line": 324
+      },
+      {
+        "name": "recursive_splits_keep_partition",
+        "file": "src/segmap.rs",
+        "line": 344
+      },
+      {
+        "name": "merge_adjacent_only",
+        "file": "src/segmap.rs",
+        "line": 359
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Unit-level property tests on the segment map."
+  },
+  {
+    "id": "TOP-002",
+    "title": "Crash after pending split intent",
+    "status": "L1-now",
+    "tests": [
+      {
+        "name": "nondeployment_pending_split_resumes",
+        "file": "src/dst/dst_tests.rs",
+        "line": 20925
+      },
+      {
+        "name": "livefeed_pending_transition_connect_drives_resume",
+        "file": "src/dst/dst_tests.rs",
+        "line": 34318
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "Resume-completes legs exist (34318: executor died between durable intent and publication; connect drives resume). No crash-restart publish-or-abort matrix at the registry level."
+  },
+  {
+    "id": "TOP-003",
+    "title": "Crash after parent seal before child publication",
+    "status": "Existing family",
+    "tests": [
+      {
+        "name": "seal_gap_get_never_reports_closure",
+        "file": "src/dst/dst_tests.rs",
+        "line": 6210
+      },
+      {
+        "name": "seal_gap_head_no_closure",
+        "file": "src/dst/dst_tests.rs",
+        "line": 6258
+      },
+      {
+        "name": "seal_gap_long_poll_wakes_without_closure",
+        "file": "src/dst/dst_tests.rs",
+        "line": 6278
+      },
+      {
+        "name": "seal_gap_cold_read_mid_gap",
+        "file": "src/dst/dst_tests.rs",
+        "line": 6351
+      },
+      {
+        "name": "seal_gap_cancel_then_retry",
+        "file": "src/dst/dst_tests.rs",
+        "line": 6371
+      },
+      {
+        "name": "seal_gap_stale_descriptor_redispatches",
+        "file": "src/dst/dst_tests.rs",
+        "line": 6407
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "The seal-gap family (rig at rig_in_seal_gap:6077; Fp::ScalerBeforePublish holds phase B). GET/HEAD/long-poll/cold-read/cancel-retry/stale-descriptor legs."
+  },
+  {
+    "id": "TOP-004",
+    "title": "Crash after child seed before phase B",
+    "status": "L1-now",
+    "tests": [
+      {
+        "name": "livefeed_pending_transition_connect_drives_resume",
+        "file": "src/dst/dst_tests.rs",
+        "line": 34318
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "Orphaned-transition resume exists; repeated-resume idempotence / no-duplicate-child-state leg not separately asserted."
+  },
+  {
+    "id": "TOP-005",
+    "title": "Crash after phase-B publication before parent retirement",
+    "status": "L2-sim",
+    "tests": [],
+    "mapped": false
+  },
+  {
+    "id": "TOP-006",
+    "title": "Split children use distinct physical routes",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "split_children_land_on_distinct_engines",
+        "file": "src/dst/dst_tests.rs",
+        "line": 7064
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "TOP-007",
+    "title": "Post-split capacity increase",
+    "status": "Existing mechanism gate",
+    "tests": [
+      {
+        "name": "post_split_throughput_scales",
+        "file": "src/dst/dst_tests.rs",
+        "line": 7179
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Mechanism gate: >= 1.8x throughput on two engines with controlled store latency."
+  },
+  {
+    "id": "TOP-008",
+    "title": "Dominant key refuses split",
+    "status": "Existing",
+    "tests": [],
+    "mapped": false,
+    "note": "GAP (Existing with no test): scaler3.rs implements hot-key suppression (scaler3.rs:238 '\u00a75.2') and hot_key() surfacing (scaler3.rs:124), and dst_tests.rs:14335 deliberately avoids tripping it \u2014 but no test asserts a dominant key refuses split and surfaces hot_key. Nearest mechanism unit test: src/sketch.rs:290 spacesaving_finds_the_dominant_key (detection only)."
+  },
+  {
+    "id": "TOP-009",
+    "title": "Stream-Seq through predecessors",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "stream_seq_resolves_through_predecessors",
+        "file": "src/dst/dst_tests.rs",
+        "line": 6727
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "TOP-010",
+    "title": "Producer lane through predecessors",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "producer_retries_across_a_split_commit_once",
+        "file": "src/dst/dst_tests.rs",
+        "line": 5431
+      },
+      {
+        "name": "product_producer_hash_survives_split",
+        "file": "src/dst/dst_tests.rs",
+        "line": 9156
+      },
+      {
+        "name": "producer_lanes_scoped_per_routing_key",
+        "file": "src/dst/dst_tests.rs",
+        "line": 6824
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "TOP-011",
+    "title": "Merge exact lineage",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "merge_rejoins_cold_children_with_exact_lineage",
+        "file": "src/dst/dst_tests.rs",
+        "line": 7339
+      },
+      {
+        "name": "livefeed_merge_continuation_in_place",
+        "file": "src/dst/dst_tests.rs",
+        "line": 36155
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "TOP-012",
+    "title": "Stale scaler decision after recreate",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "stale_scaler_and_ttl_decisions_decline_after_recreate",
+        "file": "src/dst/dst_tests.rs",
+        "line": 13703
+      },
+      {
+        "name": "scaler_heat_and_terminal_proof_are_incarnation_scoped",
+        "file": "src/dst/dst_tests.rs",
+        "line": 14321
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "TOP-013",
+    "title": "Phase-B CAS uses pending-read epoch",
+    "status": "Existing/strengthen",
+    "tests": [],
+    "mapped": false,
+    "note": "GAP (Existing/strengthen with no direct test): no test recreates the name between pending-read and phase B. Adjacent: stale_scaler_and_ttl_decisions_decline_after_recreate:13703 (decision epoch fencing), but not the phase-B CAS epoch leg."
+  },
+  {
+    "id": "TOP-014",
+    "title": "Stale router replay",
+    "status": "L2-sim",
+    "tests": [],
+    "mapped": false
+  },
+  {
+    "id": "TOP-015",
+    "title": "Ring preference versus possession",
+    "status": "L2-sim",
+    "tests": [],
+    "mapped": false
+  },
+  {
+    "id": "TOP-016",
+    "title": "Two owners race to open",
+    "status": "Existing/L2",
+    "tests": [
+      {
+        "name": "a_fenced_owner_acknowledges_nothing",
+        "file": "src/dst/dst_tests.rs",
+        "line": 785
+      },
+      {
+        "name": "producer_state_survives_a_handoff_and_suppresses_duplicates",
+        "file": "src/dst/dst_tests.rs",
+        "line": 363
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "Single-process two-engine form: exactly one owner acknowledges, loser fenced and tasks terminate. True two-process race is the L2 leg."
+  },
+  {
+    "id": "TOP-017",
+    "title": "Split under load with response loss",
+    "status": "Existing field/focused",
+    "tests": [],
+    "mapped": false,
+    "note": "Campaign-level: bench/costab/run-split.sh + split-driver.py. In-suite nearest (no fault injection): split_children_land_on_distinct_engines:7064."
+  },
+  {
+    "id": "TOP-018",
+    "title": "SSE across split",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "sse_follows_lineage_across_split",
+        "file": "src/dst/dst_tests.rs",
+        "line": 7484
+      },
+      {
+        "name": "livefeed_split_parked_subscriber_continues_in_place",
+        "file": "src/dst/dst_tests.rs",
+        "line": 33321
+      },
+      {
+        "name": "livefeed_keyed_lane_survives_split",
+        "file": "src/dst/dst_tests.rs",
+        "line": 35012
+      },
+      {
+        "name": "livefeed_split_during_initial_catchup_delivers_everything",
+        "file": "src/dst/dst_tests.rs",
+        "line": 34963
+      },
+      {
+        "name": "livefeed_split_shared_subscribers_swap_once_deliver_twice",
+        "file": "src/dst/dst_tests.rs",
+        "line": 35351
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "TOP-019",
+    "title": "Snapshot scan across split/merge",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "product_scan_is_snapshot_exact",
+        "file": "src/dst/dst_tests.rs",
+        "line": 8627
+      },
+      {
+        "name": "product_scan_traverses_split_lineage",
+        "file": "src/dst/dst_tests.rs",
+        "line": 8823
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "TOP-020",
+    "title": "Repeated split/merge does not leak parents/tasks",
+    "status": "L2-sim",
+    "tests": [],
+    "mapped": false
+  },
+  {
+    "id": "HIS-001",
+    "title": "Acknowledged data survives absorption",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "acked_records_survive_absorption_into_history",
+        "file": "src/dst/dst_tests.rs",
+        "line": 985
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "require(mech::READ_FROM_HISTORY) entered-proof at 1021."
+  },
+  {
+    "id": "HIS-002",
+    "title": "V2 absorption needs no customer key",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "v2_absorbs_without_customer_keys",
+        "file": "src/dst/dst_tests.rs",
+        "line": 1304
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "HIS-003",
+    "title": "History survives owner handoff",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "v2_history_survives_engine_handoff",
+        "file": "src/dst/dst_tests.rs",
+        "line": 1402
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "HIS-004",
+    "title": "Aggregate gather byte bound",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "v2_gather_packs_to_the_aggregate_budget",
+        "file": "src/dst/dst_tests.rs",
+        "line": 3656
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "HIS-005",
+    "title": "Oversized chunk makes progress alone",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "an_oversized_chunk_gathers_alone",
+        "file": "src/dst/dst_tests.rs",
+        "line": 3734
+      },
+      {
+        "name": "worst_frame_floor_serializes_oversized_gathers_without_starvation",
+        "file": "src/history.rs",
+        "line": 2432
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "HIS-006",
+    "title": "Budget-deferred streams remain pending",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "budget_deferred_streams_absorb_on_the_next_tick",
+        "file": "src/dst/dst_tests.rs",
+        "line": 4307
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "HIS-007",
+    "title": "Dirty restart discovery without touch",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "untouched_streams_absorb_after_restart",
+        "file": "src/dst/dst_tests.rs",
+        "line": 3870
+      },
+      {
+        "name": "absorber_sweep_recovers_streams_whose_signals_were_lost",
+        "file": "src/dst/dst_tests.rs",
+        "line": 1080
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "HIS-008",
+    "title": "Large single record restart accounting",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_large_record_absorbs_after_restart_under_default_policy",
+        "file": "src/dst/dst_tests.rs",
+        "line": 4393
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "HIS-009",
+    "title": "Dirty scan retries after failure",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "dirty_scan_retries_until_it_succeeds",
+        "file": "src/dst/dst_tests.rs",
+        "line": 4493
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "HIS-010",
+    "title": "Sparse intentional deferral remains visible",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "sparse_records_rediscovered_after_restart_are_absorbed",
+        "file": "src/dst/dst_tests.rs",
+        "line": 4606
+      },
+      {
+        "name": "tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch",
+        "file": "src/dst/dst_tests.rs",
+        "line": 1464
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "CATALOGUE IS STALE HERE: R26-1 deleted the sparse floor; 4606's doc says the old 'stays deferred' assertion 'is the exact behavior R26-1 deleted'. Tests now pin visibility + age-absorption."
+  },
+  {
+    "id": "HIS-011",
+    "title": "Pending summary clears on close/move",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "pending_summary_clears_on_shard_close",
+        "file": "src/dst/dst_tests.rs",
+        "line": 4714
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "HIS-012",
+    "title": "Global trim budget on mature second wave",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_second_absorption_wave_trims_under_a_global_budget",
+        "file": "src/dst/dst_tests.rs",
+        "line": 4126
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "HIS-013",
+    "title": "Duplicate absorbed update does not advance trim",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_duplicate_absorbed_op_does_not_advance_the_trim",
+        "file": "src/dst/dst_tests.rs",
+        "line": 2306
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "HIS-014",
+    "title": "History partition close race",
+    "status": "Existing/strengthen",
+    "tests": [
+      {
+        "name": "a_fenced_owners_absorber_exits",
+        "file": "src/dst/dst_tests.rs",
+        "line": 1595
+      },
+      {
+        "name": "absorber_exits_when_shard_engine_is_fenced",
+        "file": "src/history.rs",
+        "line": 2188
+      },
+      {
+        "name": "fence_class_errors_are_recognized",
+        "file": "src/history.rs",
+        "line": 2174
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "Zombie-absorber/fence-class coverage exists; the exact 'engine closes while partition OnceCell open is in progress' race leg is not explicitly driven."
+  },
+  {
+    "id": "HIS-015",
+    "title": "Empty-root shard history path",
+    "status": "L1-now",
+    "tests": [
+      {
+        "name": "history2_lives_under_the_shard_db_path",
+        "file": "src/sharddir.rs",
+        "line": 577
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "IMPLEMENTED (unit-level path pin against /history2 drift). The empty-prefix one-shard end-to-end read leg is not separate."
+  },
+  {
+    "id": "HIS-016",
+    "title": "Postings storage ratio",
+    "status": "Existing campaign/property",
+    "tests": [],
+    "mapped": false,
+    "note": "Campaign-level: bench/costab keyed drivers (run-keyed.sh, keyed-compare.py). In-suite mechanism pins: keyed_frames_no_longer_count_twice_against_the_budget:3800."
+  },
+  {
+    "id": "HIS-017",
+    "title": "Sparse postings bounded spans",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "sparse_key_reads_page_with_bounded_spans",
+        "file": "src/dst/dst_tests.rs",
+        "line": 4982
+      },
+      {
+        "name": "fragmented_key_stays_exact_and_bounded",
+        "file": "src/postings.rs",
+        "line": 578
+      },
+      {
+        "name": "planner_coalesces_cheap_gaps_and_bounds_spans",
+        "file": "src/postings.rs",
+        "line": 778
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "HIS-018",
+    "title": "Hard amplification bound",
+    "status": "L1-now",
+    "tests": [
+      {
+        "name": "amplification_bound_refuses_expensive_gaps",
+        "file": "src/postings.rs",
+        "line": 550
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "IMPLEMENTED as a planner unit test (plus contiguous_runs_coalesce_regardless_of_amp:600 as control)."
+  },
+  {
+    "id": "HIS-019",
+    "title": "Corrupt postings fallback",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "corrupt_postings_fall_back_to_the_envelope",
+        "file": "src/dst/dst_tests.rs",
+        "line": 5093
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "HIS-020",
+    "title": "Large keyed record pages through",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "oversized_keyed_record_pages_through",
+        "file": "src/dst/dst_tests.rs",
+        "line": 6552
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "HIS-021",
+    "title": "Long keyed run pages with consumed progress",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "long_keyed_run_pages_with_progress",
+        "file": "src/dst/dst_tests.rs",
+        "line": 6633
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "HIS-022",
+    "title": "Reader cache cold stampede",
+    "status": "Existing",
+    "tests": [],
+    "mapped": false,
+    "note": "MECHANISM REPLACED: no history-reader-cache module exists in current src/ (superseded by LiveFeed + postings cache). Nearest equivalents: livefeed_two_subscribers_share_one_feed_and_one_source_read:32317, src/sse/registry.rs:221 last_subscriber_evicts_and_reconnect_does_not_grow, src/postings_cache.rs:929 warm_install_serves_from_zero_without_index_load."
+  },
+  {
+    "id": "HIS-023",
+    "title": "Reader cache stale stampede",
+    "status": "Existing",
+    "tests": [],
+    "mapped": false,
+    "note": "MECHANISM REPLACED (see HIS-022). Nearest: src/postings_cache.rs:948 warm_extension_stitches_chunks / 1096 eviction_poisons_fresh_claims."
+  },
+  {
+    "id": "HIS-024",
+    "title": "All callers cancel, open still lands",
+    "status": "Existing",
+    "tests": [],
+    "mapped": false,
+    "note": "MECHANISM REPLACED (see HIS-022). Nearest engine-open equivalents: open_gate_survives_impatient_clients_without_a_storm:2683 (clients give up, open completes), a_hung_open_is_deadlined_and_its_late_engine_reaped:3055."
+  },
+  {
+    "id": "HIS-025",
+    "title": "Probe error does not evict healthy reader",
+    "status": "Existing",
+    "tests": [],
+    "mapped": false,
+    "note": "MECHANISM REPLACED (see HIS-022). Nearest: src/sse/feed.rs:1789 source_failure_is_typed_and_recoverable."
+  },
+  {
+    "id": "HIS-026",
+    "title": "Independent node/store caches",
+    "status": "Existing",
+    "tests": [],
+    "mapped": false,
+    "note": "MECHANISM REPLACED (see HIS-022). No per-store reader-cache isolation test remains."
+  },
+  {
+    "id": "HIS-027",
+    "title": "Process-wide postings cache budget",
+    "status": "L2-sim/performance",
+    "tests": [
+      {
+        "name": "million_key_shape_holds_process_budget",
+        "file": "src/postings_cache.rs",
+        "line": 1033
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "Unit-level process-budget pin exists; the warm-active hit-rate gate is campaign-level."
+  },
+  {
+    "id": "HIS-028",
+    "title": "GC cached inventory cannot suppress work",
+    "status": "Existing fork/campaign gate",
+    "tests": [],
+    "mapped": false,
+    "note": "Campaign/fork-level per the label; no src test found for stale boot inventory + obsolete object rediscovery before TTL dead zone."
+  },
+  {
+    "id": "HIS-029",
+    "title": "Latest-version probe gap fallback",
+    "status": "L1-now/fork",
+    "tests": [],
+    "mapped": false,
+    "note": "GAP: no test for the N known / N+1 missing / N+2 present probe-gap fallback."
+  },
+  {
+    "id": "HIS-030",
+    "title": "GC concurrent delete throughput and partial failure",
+    "status": "L2-sim/performance",
+    "tests": [],
+    "mapped": false
+  },
+  {
+    "id": "QUE-001",
+    "title": "FIFO per routing key",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "product_consumer_per_key_fifo",
+        "file": "src/dst/dst_tests.rs",
+        "line": 9312
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "QUE-002",
+    "title": "Lease generation fences stale ack",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "product_consumer_expiry_and_stale_fencing",
+        "file": "src/dst/dst_tests.rs",
+        "line": 9409
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "QUE-003",
+    "title": "Ack durability before settlement response",
+    "status": "L1-now",
+    "tests": [
+      {
+        "name": "a_failed_queue_write_leaves_no_phantom_leases",
+        "file": "src/dst/dst_tests.rs",
+        "line": 15938
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "STATUS.md 'forced': failed group write leaves no phantom lease; exact retry re-leases exactly once. IMPLEMENTED since catalogue."
+  },
+  {
+    "id": "QUE-004",
+    "title": "Crash after lease durability before response",
+    "status": "L1-now",
+    "tests": [
+      {
+        "name": "a_failed_settle_leaves_no_phantom_acks",
+        "file": "src/dst/dst_tests.rs",
+        "line": 16160
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Explicit 'QUE-004' comment at 16156. STATUS.md 'forced': same tokens settle on retry (acked == 3)."
+  },
+  {
+    "id": "QUE-005",
+    "title": "Visibility timeout redelivery",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "product_consumer_expiry_and_stale_fencing",
+        "file": "src/dst/dst_tests.rs",
+        "line": 9409
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Visibility expiry redelivers with attempts+1."
+  },
+  {
+    "id": "QUE-006",
+    "title": "Retry and extend race",
+    "status": "L1-now",
+    "tests": [],
+    "mapped": false,
+    "note": "GAP: the settle API carries acks/retries/extends (src/product.rs:6763) but no test forces stale retry/ack/extend orderings; only settle-side stale fencing exists (9409, 24621)."
+  },
+  {
+    "id": "QUE-007",
+    "title": "DLQ transition atomicity",
+    "status": "Existing/strengthen",
+    "tests": [
+      {
+        "name": "product_consumer_dlq_flow",
+        "file": "src/dst/dst_tests.rs",
+        "line": 9503
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "DLQ append durable before source settle is asserted; crash-around-poison-settle legs are not driven."
+  },
+  {
+    "id": "QUE-008",
+    "title": "DLQ target recreation",
+    "status": "L1-now",
+    "tests": [],
+    "mapped": false,
+    "note": "GAP: no test for delete/recreate of the DLQ target with pinned epoch. Adjacent: dead_letter_link_requires_a_shared_key:10561 (config-time gate only)."
+  },
+  {
+    "id": "QUE-009",
+    "title": "Consumer split lineage",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "product_consumer_drains_lineage_across_split",
+        "file": "src/dst/dst_tests.rs",
+        "line": 9604
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "QUE-010",
+    "title": "Consumer merge lineage",
+    "status": "L1-now",
+    "tests": [],
+    "mapped": false,
+    "note": "GAP: only split lineage (9604) exists; no consumer-across-merge test."
+  },
+  {
+    "id": "QUE-011",
+    "title": "Consumer delete with active leases",
+    "status": "L1-now",
+    "tests": [
+      {
+        "name": "a_stale_delete_retry_cannot_delete_the_replacement_consumer",
+        "file": "src/dst/dst_tests.rs",
+        "line": 23749
+      },
+      {
+        "name": "a_parked_pull_cannot_lease_after_its_generation_was_deleted",
+        "file": "src/dst/dst_tests.rs",
+        "line": 17048
+      },
+      {
+        "name": "consumer_fence_survives_ownership_move",
+        "file": "src/dst/dst_tests.rs",
+        "line": 24621
+      },
+      {
+        "name": "queue_config_delete_is_group_local",
+        "file": "src/dst/dst_tests.rs",
+        "line": 16271
+      },
+      {
+        "name": "receive_then_delete_in_one_group_leaves_no_stale_lease",
+        "file": "src/dst/dst_tests.rs",
+        "line": 16424
+      },
+      {
+        "name": "settle_then_delete_in_one_group_leaves_no_stale_rows",
+        "file": "src/dst/dst_tests.rs",
+        "line": 16543
+      },
+      {
+        "name": "a_receive_after_delete_in_the_same_group_is_refused",
+        "file": "src/dst/dst_tests.rs",
+        "line": 16681
+      },
+      {
+        "name": "a_split_consumers_deletion_fails_one_segment_then_retries_clean",
+        "file": "src/dst/dst_tests.rs",
+        "line": 16839
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "IMPLEMENTED since catalogue across rounds 14-19: delete/recreate incarnation fencing (23749), parked pull vs delete (17048), group-local delete semantics (16271-16681), split cleanup retry (16839), fence across ownership move (24621)."
+  },
+  {
+    "id": "QUE-012",
+    "title": "Bounded queue-state loading",
+    "status": "L2-sim/performance",
+    "tests": [],
+    "mapped": false
+  },
+  {
+    "id": "WAT-001",
+    "title": "Watch only after durable readable append",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "touch_close_shard_matches_route_hash_not_storage_hash",
+        "file": "src/dst/dst_tests.rs",
+        "line": 9736
+      },
+      {
+        "name": "product_watch_wakes_on_matching_append",
+        "file": "src/dst/dst_tests.rs",
+        "line": 9908
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "Wakes ride post-durability acker ingest ('TouchFeed -> post-durability acker ingest', ~9770) and 9736 asserts no spurious wake before fence; the explicit 'pause durability, waiter must not wake' hold is not driven."
+  },
+  {
+    "id": "WAT-002",
+    "title": "Watch resync after missed journal",
+    "status": "Existing/strengthen",
+    "tests": [
+      {
+        "name": "touch_close_shard_matches_route_hash_not_storage_hash",
+        "file": "src/dst/dst_tests.rs",
+        "line": 9736
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Stale cursor resolves as explicit resync (Stale) or proven-change invalidation."
+  },
+  {
+    "id": "WAT-003",
+    "title": "Signed capability survives restart",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "watch_urls_verify_on_a_process_that_never_saw_the_key",
+        "file": "src/dst/dst_tests.rs",
+        "line": 10487
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "WAT-004",
+    "title": "Exact signed route only",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "only_the_exact_signed_watch_route_skips_the_token",
+        "file": "src/dst/dst_tests.rs",
+        "line": 10774
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "WAT-005",
+    "title": "Watch split lineage",
+    "status": "L1-now",
+    "tests": [],
+    "mapped": false,
+    "note": "GAP: no watch-definition-across-split test (SSE/livefeed lineage is covered; watches are not)."
+  },
+  {
+    "id": "WAT-006",
+    "title": "Watch definition lifecycle ABA",
+    "status": "L1-now",
+    "tests": [],
+    "mapped": false,
+    "note": "GAP: no delete/recreate-during-parked-watch-update test."
+  },
+  {
+    "id": "SEC-001",
+    "title": "Product bearer matrix",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "product_requires_the_account_token",
+        "file": "src/dst/dst_tests.rs",
+        "line": 22329
+      },
+      {
+        "name": "only_the_exact_signed_watch_route_skips_the_token",
+        "file": "src/dst/dst_tests.rs",
+        "line": 10774
+      },
+      {
+        "name": "negative_matrix_tokens",
+        "file": "src/auth.rs",
+        "line": 1573
+      },
+      {
+        "name": "negative_matrix_policy_and_credential",
+        "file": "src/auth.rs",
+        "line": 1676
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "SEC-002",
+    "title": "Auth before body buffering",
+    "status": "Existing/static + L3",
+    "tests": [],
+    "mapped": false,
+    "note": "GAP in test code: no test sends an unauthenticated oversize (32 MiB) request and asserts rejection before body read. Nearest: inflight_admission_answers_only_after_authentication:36349 (auth precedes admission/tarpit, round-13) and the 401 legs of 22329."
+  },
+  {
+    "id": "SEC-003",
+    "title": "CORS preflight and actual responses",
+    "status": "Existing/outer-loop",
+    "tests": [
+      {
+        "name": "product_responses_carry_cors_not_just_preflights",
+        "file": "src/dst/dst_tests.rs",
+        "line": 10888
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "SEC-004",
+    "title": "Wrong key cannot mutate lifecycle",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "an_initialization_cannot_be_resumed_with_another_key",
+        "file": "src/dst/dst_tests.rs",
+        "line": 11013
+      },
+      {
+        "name": "dead_letter_link_requires_a_shared_key",
+        "file": "src/dst/dst_tests.rs",
+        "line": 10561
+      },
+      {
+        "name": "seal_requests_are_identified_and_validated_exactly",
+        "file": "src/dst/dst_tests.rs",
+        "line": 11899
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "Create-resume, DLQ-config, and seal key-check-before-intent legs covered; wrong-key fork and consumer-config legs not separately driven. (11899 line 11955: 'A wrong key must not move the lifecycle at all.')"
+  },
+  {
+    "id": "SEC-005",
+    "title": "Raw default-key isolation under split",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "raw_route_is_the_default_key_view_across_splits",
+        "file": "src/dst/dst_tests.rs",
+        "line": 22834
+      },
+      {
+        "name": "raw_forks_show_only_the_default_key",
+        "file": "src/dst/dst_tests.rs",
+        "line": 11388
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "SEC-006",
+    "title": "Cursor binding and tamper resistance",
+    "status": "Existing/strengthen",
+    "tests": [
+      {
+        "name": "cursors_never_cross_projects",
+        "file": "src/product_cursor.rs",
+        "line": 478
+      },
+      {
+        "name": "key_cursor_roundtrip_and_binding",
+        "file": "src/product_cursor.rs",
+        "line": 542
+      },
+      {
+        "name": "scan_cursor_roundtrip_expiry_and_kind",
+        "file": "src/product_cursor.rs",
+        "line": 567
+      },
+      {
+        "name": "message_and_lease_tokens_roundtrip_and_fence",
+        "file": "src/product_cursor.rs",
+        "line": 605
+      },
+      {
+        "name": "product_read_pages_and_binds_cursors",
+        "file": "src/dst/dst_tests.rs",
+        "line": 8149
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "SEC-007",
+    "title": "Catalog dense tombstones and vanished objects",
+    "status": "Existing/strengthen",
+    "tests": [
+      {
+        "name": "catalog_paging_survives_dense_dead_entries",
+        "file": "src/dst/dst_tests.rs",
+        "line": 11097
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "Dense tombstone run + underfull-page continuation covered; 'vanished object' (descriptor GET failure mid-page) leg not driven."
+  },
+  {
+    "id": "SEC-008",
+    "title": "Catalog transient GET failure",
+    "status": "L1-now",
+    "tests": [],
+    "mapped": false,
+    "note": "GAP: registry failpoints fail_next_get/fail_next_list exist but are used by the consumer-saga (24317) and quota-seed (29601) tests, not by a catalog page-walk test."
+  },
+  {
+    "id": "SEC-009",
+    "title": "Clean-switch rejections",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "product_clean_switch_rejections",
+        "file": "src/dst/dst_tests.rs",
+        "line": 7809
+      },
+      {
+        "name": "profiles_are_removed_from_every_surface",
+        "file": "src/dst/dst_tests.rs",
+        "line": 10117
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "SEC-010",
+    "title": "Dual-surface equivalence under keyed load and split",
+    "status": "Existing/strengthen",
+    "tests": [
+      {
+        "name": "dual_surface_equivalence_corpus",
+        "file": "src/dst/dst_tests.rs",
+        "line": 22042
+      },
+      {
+        "name": "typed_creation_dual_contract",
+        "file": "src/dst/dst_tests.rs",
+        "line": 10184
+      },
+      {
+        "name": "raw_route_is_the_default_key_view_across_splits",
+        "file": "src/dst/dst_tests.rs",
+        "line": 22834
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "22042 is the 12-case Appendix \u00a78 corpus."
+  },
+  {
+    "id": "SEC-011",
+    "title": "Official conformance exact outcome",
+    "status": "Existing CI",
+    "tests": [
+      {
+        "name": "conformance suite (node --test)",
+        "file": "conformance/conformance.test.mjs",
+        "line": 1
+      },
+      {
+        "name": "conformance checker",
+        "file": "conformance/check.mjs",
+        "line": 1
+      }
+    ],
+    "mapped": true,
+    "coverage": "external",
+    "note": "Pinned expected.json in conformance/; runs outside the Rust suite."
+  },
+  {
+    "id": "SDK-001",
+    "title": "Pipelined subscribe partial-body safety",
+    "status": "Existing benchmark test",
+    "tests": [
+      {
+        "name": "pipelined long-poll chaser (speculative response discard)",
+        "file": "bench/awsbench/src/main.rs",
+        "line": 835
+      }
+    ],
+    "mapped": true,
+    "coverage": "external",
+    "note": "Benchmark-harness client logic (bench/awsbench/src/main.rs:835-904): truncated/failed body drains and DISCARDS the speculative response, re-polls from the committed cursor. Not a #[test]."
+  },
+  {
+    "id": "SDK-002",
+    "title": "Abort in-flight long poll and retry backoff",
+    "status": "Existing/strengthen",
+    "tests": [
+      {
+        "name": "abort leg of smoke.mjs",
+        "file": "sdk/smoke.mjs",
+        "line": 147
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "Abort-during-fetch leg exists ('abort ends the long poll promptly', smoke.mjs:147-156); abort-during-Retry-After-sleep leg not found."
+  },
+  {
+    "id": "SDK-003",
+    "title": "Producer operation chain bounded",
+    "status": "L1/SDK",
+    "tests": [],
+    "mapped": false,
+    "note": "GAP: no eviction/boundedness test for the SDK producer operation chain (sdk/src/index.ts has no test harness; package.json has no test script)."
+  },
+  {
+    "id": "SDK-004",
+    "title": "Producer-backed seal serialized with appends",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "product_seal_final_append_and_catalog",
+        "file": "src/dst/dst_tests.rs",
+        "line": 10347
+      },
+      {
+        "name": "product_seal_final_needs_no_caller_producer",
+        "file": "src/dst/dst_tests.rs",
+        "line": 10438
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "FLT-001",
+    "title": "OpenGate cancellation storm",
+    "status": "Existing single-node",
+    "tests": [
+      {
+        "name": "open_gate_survives_impatient_clients_without_a_storm",
+        "file": "src/dst/dst_tests.rs",
+        "line": 2683
+      },
+      {
+        "name": "reopen_storm_reproduces_the_eu_central_wedge",
+        "file": "src/dst/dst_tests.rs",
+        "line": 2619
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "2619 reproduces the storm (red shape), 2683 pins the fix (one open, 648 coalesced waiters)."
+  },
+  {
+    "id": "FLT-002",
+    "title": "Late open reaped after deadline",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "a_hung_open_is_deadlined_and_its_late_engine_reaped",
+        "file": "src/dst/dst_tests.rs",
+        "line": 3055
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "FLT-003",
+    "title": "Engine dies young and holdoff escalates",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "open_gate_escalates_holdoff_for_engines_that_die_young",
+        "file": "src/dst/dst_tests.rs",
+        "line": 2989
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "FLT-004",
+    "title": "Ring convergence under staggered cold starts",
+    "status": "L2-sim",
+    "tests": [],
+    "mapped": false,
+    "note": "The 371,900-record loss shape is referenced; single-node wedge repro (2619) is the nearest analogue, not the fleet scenario."
+  },
+  {
+    "id": "FLT-005",
+    "title": "Stale router replay bound",
+    "status": "L2-sim",
+    "tests": [],
+    "mapped": false
+  },
+  {
+    "id": "FLT-006",
+    "title": "Ownership handoff with unabsorbed data",
+    "status": "L2-sim",
+    "tests": [],
+    "mapped": false,
+    "note": "Single-node analogue exists (untouched_streams_absorb_after_restart:3870); fleet leg needs the simulator."
+  },
+  {
+    "id": "FLT-007",
+    "title": "Old owner tasks terminate after movement",
+    "status": "Existing/L2",
+    "tests": [
+      {
+        "name": "closing_an_engine_answers_queued_appends_and_ends_every_task",
+        "file": "src/dst/dst_tests.rs",
+        "line": 1667
+      },
+      {
+        "name": "a_fenced_owners_absorber_exits",
+        "file": "src/dst/dst_tests.rs",
+        "line": 1595
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Single-node form: committer/pump/acker/absorber join, panics distinguished."
+  },
+  {
+    "id": "FLT-008",
+    "title": "Pending summaries do not double count after move",
+    "status": "Existing/L2",
+    "tests": [
+      {
+        "name": "pending_summary_clears_on_shard_close",
+        "file": "src/dst/dst_tests.rs",
+        "line": 4714
+      },
+      {
+        "name": "ownership_handoff_moves_backlog_without_aba",
+        "file": "src/dst/dst_tests.rs",
+        "line": 26399
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "FLT-009",
+    "title": "Node crash versus pause",
+    "status": "L2-sim",
+    "tests": [],
+    "mapped": false
+  },
+  {
+    "id": "FLT-010",
+    "title": "Fleet desired-state CAS conflict",
+    "status": "L2-sim",
+    "tests": [],
+    "mapped": false
+  },
+  {
+    "id": "FLT-011",
+    "title": "Scale out/in with shard movement",
+    "status": "L2-sim/L3-field",
+    "tests": [],
+    "mapped": false
+  },
+  {
+    "id": "FLT-012",
+    "title": "Half-fleet loss under peak load",
+    "status": "L2-sim/L3-field",
+    "tests": [],
+    "mapped": false
+  },
+  {
+    "id": "FLT-013",
+    "title": "Stable fleet request-cost bound",
+    "status": "L2 performance",
+    "tests": [],
+    "mapped": false
+  },
+  {
+    "id": "FLT-014",
+    "title": "Router and server disagree on map version during split",
+    "status": "L2-sim",
+    "tests": [],
+    "mapped": false,
+    "note": "Nearest single-node leg: seal_gap_stale_descriptor_redispatches:6407 (stale map refresh + redispatch)."
+  },
+  {
+    "id": "FLT-015",
+    "title": "Heal phase convergence",
+    "status": "L2-sim",
+    "tests": [],
+    "mapped": false
+  },
+  {
+    "id": "RES-001",
+    "title": "Every engine task joins",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "closing_an_engine_answers_queued_appends_and_ends_every_task",
+        "file": "src/dst/dst_tests.rs",
+        "line": 1667
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "RES-002",
+    "title": "Handle eviction preserves safety state",
+    "status": "Existing/strengthen",
+    "tests": [
+      {
+        "name": "a_fence_survives_handle_eviction",
+        "file": "src/dst/dst_tests.rs",
+        "line": 14085
+      },
+      {
+        "name": "idle_stream_handles_evict_and_reload",
+        "file": "src/dst/dst_tests.rs",
+        "line": 4014
+      },
+      {
+        "name": "consumer_fence_survives_ownership_move",
+        "file": "src/dst/dst_tests.rs",
+        "line": 24621
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Fence (engine-resident), durable handle state reload, and consumer-generation fence across move. Dirty-marker leg covered via 3870/4714 family."
+  },
+  {
+    "id": "RES-003",
+    "title": "65,536 tracking overflow is fail-closed",
+    "status": "Existing campaign/test",
+    "tests": [
+      {
+        "name": "past_the_cap_limits_still_apply_and_counters_aggregate",
+        "file": "src/usage.rs",
+        "line": 728
+      },
+      {
+        "name": "overflow_counts_and_reports",
+        "file": "src/ops.rs",
+        "line": 216
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "Unit-level: conservative bucket + aggregate counters past the tracking cap."
+  },
+  {
+    "id": "RES-004",
+    "title": "Billing checkpoint after successful emit only",
+    "status": "Existing/strengthen",
+    "tests": [
+      {
+        "name": "spool_fault_requeues_the_whole_round",
+        "file": "src/billing.rs",
+        "line": 627
+      },
+      {
+        "name": "telemetry_crash_points_and_cost_gates",
+        "file": "src/dst/dst_tests.rs",
+        "line": 25494
+      },
+      {
+        "name": "usage_pipeline_end_to_end_exactly_once",
+        "file": "src/dst/dst_tests.rs",
+        "line": 25167
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "25494: 'emit succeeds, ack lost' re-emits an IDENTICAL snapshot the rollup dedups to zero; 25167: replaying drain/rollup changes nothing."
+  },
+  {
+    "id": "RES-005",
+    "title": "Counter eviction generation",
+    "status": "L1-now",
+    "tests": [
+      {
+        "name": "counter_generations_are_unique_per_incarnation",
+        "file": "src/usage.rs",
+        "line": 708
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "IMPLEMENTED at unit level (generation-per-incarnation prevents undercount after evict/recreate)."
+  },
+  {
+    "id": "RES-006",
+    "title": "Overload shed and recover",
+    "status": "Existing local/liveness",
+    "tests": [
+      {
+        "name": "engages_on_any_bound_and_releases_only_when_all_are_clear",
+        "file": "src/backpressure.rs",
+        "line": 380
+      },
+      {
+        "name": "shard_pressure_cannot_mask_a_global_violation",
+        "file": "src/backpressure.rs",
+        "line": 478
+      },
+      {
+        "name": "overloaded_engine_sheds_while_sibling_admits",
+        "file": "src/dst/dst_tests.rs",
+        "line": 26457
+      },
+      {
+        "name": "raw_hierarchical_append_sheds_typed_503_under_backlog",
+        "file": "src/dst/dst_tests.rs",
+        "line": 26610
+      },
+      {
+        "name": "project_memory_pressure_throttles_new_appends_only",
+        "file": "src/dst/dst_tests.rs",
+        "line": 36564
+      }
+    ],
+    "mapped": true,
+    "coverage": "full"
+  },
+  {
+    "id": "RES-007",
+    "title": "Reject storm protection",
+    "status": "L2 performance",
+    "tests": [],
+    "mapped": false
+  },
+  {
+    "id": "RES-008",
+    "title": "Event-loop starvation model",
+    "status": "L2 CPU model/L3 benchmark",
+    "tests": [],
+    "mapped": false
+  },
+  {
+    "id": "COST-001",
+    "title": "WAL request amortization",
+    "status": "Existing performance gate",
+    "tests": [],
+    "mapped": false,
+    "note": "Campaign-level: bench/costab (run-soak.sh/run-wide.sh). In-suite supporting pin only: object_classes_match_production_telemetry:198 (classifier matches production telemetry)."
+  },
+  {
+    "id": "COST-002",
+    "title": "No LIST steady state",
+    "status": "Existing campaign/fork",
+    "tests": [
+      {
+        "name": "idle_engine_store_traffic_is_bounded_by_the_poll_cadence",
+        "file": "src/dst/dst_tests.rs",
+        "line": 2793
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "In-suite: idle engine's store traffic is exactly the manifest/compactions poll cadence, op-class counted (require(mech::STORE_LATENCY) at 2922). The 30-virtual-minute LIST gate itself is campaign-level."
+  },
+  {
+    "id": "COST-003",
+    "title": "Shared history cardinality slope",
+    "status": "Existing campaign",
+    "tests": [],
+    "mapped": false,
+    "note": "Campaign-level: bench/costab (run-mature.sh/run-wide.sh)."
+  },
+  {
+    "id": "COST-004",
+    "title": "Routing-key postings do not shift cost to GETs",
+    "status": "Existing/strengthen",
+    "tests": [
+      {
+        "name": "repeated_keyed_reads_hit_the_postings_cache",
+        "file": "src/dst/dst_tests.rs",
+        "line": 5216
+      },
+      {
+        "name": "sparse_key_reads_page_with_bounded_spans",
+        "file": "src/dst/dst_tests.rs",
+        "line": 4982
+      }
+    ],
+    "mapped": true,
+    "coverage": "full",
+    "note": "5216: second read served from decoded slice cache, no new physical index load; 4982 asserts no per-offset GET pattern."
+  },
+  {
+    "id": "COST-005",
+    "title": "Cache stampede request budget",
+    "status": "Existing",
+    "tests": [
+      {
+        "name": "livefeed_two_subscribers_share_one_feed_and_one_source_read",
+        "file": "src/dst/dst_tests.rs",
+        "line": 32317
+      },
+      {
+        "name": "last_subscriber_evicts_and_reconnect_does_not_grow",
+        "file": "src/sse/registry.rs",
+        "line": 221
+      },
+      {
+        "name": "shared_subscribers_cost_nothing_until_retention",
+        "file": "src/sse/registry.rs",
+        "line": 244
+      }
+    ],
+    "mapped": true,
+    "coverage": "partial",
+    "note": "MECHANISM REPLACED: the 64-callers/one-open reader-cache gate has no exact successor; LiveFeed feed-sharing (one feed, one source read) and sse/registry budget tests pin the equivalent economics."
+  },
+  {
+    "id": "COST-006",
+    "title": "Sparse L0 timer/recovery budget",
+    "status": "Future implementation gate",
+    "tests": [],
+    "mapped": false,
+    "note": "Future gate; src/main.rs:1610 unflushed_at_or_below_l0_is_rejected_before_any_engine_opens is a config guard, not the budget."
+  },
+  {
+    "id": "COST-007",
+    "title": "Physical attempt ledger",
+    "status": "L2/L3",
+    "tests": [],
+    "mapped": false
+  },
+  {
+    "id": "COST-008",
+    "title": "Read fanout does not multiply origin GETs linearly",
+    "status": "L2 performance",
+    "tests": [],
+    "mapped": false,
+    "note": "Nearest in-suite fanout economics: 32317 (two subscribers, one source read) and livefeed_seal_retry_is_one_task_per_feed_at_fanout:34585; the 1/100/10k Class B bound is L2."
+  }
+]
