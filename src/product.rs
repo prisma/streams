@@ -56,68 +56,135 @@ pub fn perr(
         .unwrap()
 }
 
+/// A PRODUCT-ADDRESSABLE stream name (WP-03/PR 5): the structural
+/// identity ([`crate::tenant::CanonicalStreamName`] — validated there,
+/// nowhere else) plus the product route's extra addressability rules
+/// (reserved subresource final segments; names that already read as a
+/// subresource path). The previous shape duplicated the structural
+/// checks here and pinned agreement with a debug assertion; now the
+/// identity layer is THE validator and this type adds only what is
+/// product-specific.
+pub struct ProductStreamName(crate::tenant::CanonicalStreamName);
+
+/// Why a name is not product-addressable. Wire messages are pinned to
+/// the exact pre-WP-03 strings (characterization rule: same wire).
+pub enum ProductNameError {
+    Structural(crate::tenant::NameError),
+    ReservedSubresourceName,
+    SubresourceShapedName,
+}
+
+impl ProductNameError {
+    fn message(&self) -> &'static str {
+        use crate::tenant::NameError as N;
+        match self {
+            // The product surface collapses length problems into one
+            // message and reports positions never — exactly as before.
+            Self::Structural(N::Empty | N::TooLong { .. }) => {
+                "stream name must be 1-512 UTF-8 bytes"
+            }
+            Self::Structural(N::ControlChar { .. }) => "control characters are not allowed",
+            Self::Structural(N::EmptyComponent) => "empty path segments are not allowed",
+            Self::Structural(N::DotComponent) => "'.' and '..' segments are not allowed",
+            Self::Structural(N::ReservedRoot) => "the __ds namespace is reserved",
+            Self::ReservedSubresourceName => {
+                "'records', 'consumers' and 'watches' are reserved subresource names"
+            }
+            Self::SubresourceShapedName => {
+                "this name is already a subresource path (…/records, …/consumers/{name}, …/watches/…)"
+            }
+        }
+    }
+}
+
+impl TryFrom<&str> for ProductStreamName {
+    type Error = ProductNameError;
+
+    fn try_from(raw: &str) -> Result<Self, ProductNameError> {
+        let canonical = crate::tenant::CanonicalStreamName::new(raw).map_err(|e| {
+            // Precedence fixup for ONE corner: the identity validator
+            // reports the reserved root on the FIRST component, while
+            // the product surface historically finished the segment
+            // scan first — so `__ds/..` reports the dot segment. Keep
+            // the historical wire message.
+            if matches!(e, crate::tenant::NameError::ReservedRoot) {
+                for seg in raw.split('/') {
+                    if seg.is_empty() {
+                        return ProductNameError::Structural(
+                            crate::tenant::NameError::EmptyComponent,
+                        );
+                    }
+                    if seg == "." || seg == ".." {
+                        return ProductNameError::Structural(
+                            crate::tenant::NameError::DotComponent,
+                        );
+                    }
+                }
+            }
+            ProductNameError::Structural(e)
+        })?;
+        let segments: Vec<&str> = raw.split('/').collect();
+        if let Some(last) = segments.last()
+            && RESERVED_FINAL_SEGMENTS.contains(last)
+        {
+            return Err(ProductNameError::ReservedSubresourceName);
+        }
+        // A name that itself reads as a subresource path would be
+        // unaddressable: `x/consumers/records` as a COLLECTION can never
+        // be written, because that URL already means consumer "records"
+        // on collection `x`. Refuse it at creation rather than hand out
+        // a name whose own URL points somewhere else.
+        if split_subresource(raw).is_some() {
+            return Err(ProductNameError::SubresourceShapedName);
+        }
+        Ok(Self(canonical))
+    }
+}
+
+impl ProductStreamName {
+    pub fn as_str(&self) -> &str {
+        self.0.as_str()
+    }
+
+    pub fn into_canonical(self) -> crate::tenant::CanonicalStreamName {
+        self.0
+    }
+}
+
 /// Canonical stream-name validation (spec Stage 8 §4.1). The wildcard
 /// path arrives percent-decoded exactly once by the router; this
-/// validates the DECODED form.
+/// validates the DECODED form. Thin wire adapter over
+/// [`ProductStreamName`] — the String return is the legacy shape; call
+/// sites migrate to the typed value as WP-03 proceeds.
 pub fn canonical_name(raw: &str) -> Result<String, Response> {
-    let bad = |code: &str, msg: &str| Err(perr(StatusCode::BAD_REQUEST, code, msg, None, false));
-    if raw.is_empty() || raw.len() > 512 {
-        return bad("invalid_name", "stream name must be 1-512 UTF-8 bytes");
-    }
-    if raw.chars().any(|c| c.is_control()) {
-        return bad("invalid_name", "control characters are not allowed");
-    }
-    let segments: Vec<&str> = raw.split('/').collect();
-    for seg in &segments {
-        if seg.is_empty() {
-            return bad("invalid_name", "empty path segments are not allowed");
-        }
-        if *seg == "." || *seg == ".." {
-            return bad("invalid_name", "'.' and '..' segments are not allowed");
-        }
-    }
-    if segments[0] == RESERVED_ROOT {
-        return bad("invalid_name", "the __ds namespace is reserved");
-    }
-    if let Some(last) = segments.last()
-        && RESERVED_FINAL_SEGMENTS.contains(last)
-    {
-        return bad(
+    match ProductStreamName::try_from(raw) {
+        Ok(p) => Ok(p.as_str().to_string()),
+        Err(e) => Err(perr(
+            StatusCode::BAD_REQUEST,
             "invalid_name",
-            "'records', 'consumers' and 'watches' are reserved subresource names",
-        );
+            e.message(),
+            None,
+            false,
+        )),
     }
-    // A name that itself reads as a subresource path would be
-    // unaddressable: `x/consumers/records` as a COLLECTION can never be
-    // written, because that URL already means consumer "records" on
-    // collection `x`. Refuse it at creation rather than hand out a name
-    // whose own URL points somewhere else.
-    if split_subresource(raw).is_some() {
-        return bad(
-            "invalid_name",
-            "this name is already a subresource path (…/records, …/consumers/{name}, …/watches/…)",
-        );
-    }
-    // The structural half of these rules also lives in
-    // tenant::CanonicalStreamName (the identity-layer type). This
-    // assertion pins the two validators together at every call in
-    // debug/test builds; `validators_agree` in tenant_name_tests pins
-    // them in CI.
-    debug_assert!(
-        crate::tenant::CanonicalStreamName::new(raw).is_ok(),
-        "canonical_name accepted a name CanonicalStreamName rejects: {raw:?}"
-    );
-    Ok(raw.to_string())
 }
 
 /// Typed variant of [`canonical_name`] for tenant-qualified call sites
 /// (Stage 4): same rules, same error responses, returns the checked
-/// identity type instead of a bare String.
+/// identity type. No reconstruction, no expect (WP-03/PR 5): the value
+/// IS the one validation produced.
 #[allow(dead_code)] // consumed from MT Stage 4 surface conversion on
 pub fn canonical_stream_name(raw: &str) -> Result<crate::tenant::CanonicalStreamName, Response> {
-    canonical_name(raw)?;
-    Ok(crate::tenant::CanonicalStreamName::new(raw)
-        .expect("canonical_name and CanonicalStreamName agree"))
+    match ProductStreamName::try_from(raw) {
+        Ok(p) => Ok(p.into_canonical()),
+        Err(e) => Err(perr(
+            StatusCode::BAD_REQUEST,
+            "invalid_name",
+            e.message(),
+            None,
+            false,
+        )),
+    }
 }
 
 /// The experimental product names this route REJECTS instead of
@@ -7898,6 +7965,39 @@ pub async fn project_usage(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// WP-03/PR 5: the wire error MESSAGES are pinned across the
+    /// single-sourcing — same code, same body text per case, including
+    /// the multi-violation precedence corner (`__ds/..` reports the
+    /// dot segment, exactly as the pre-WP-03 segment-scan order did).
+    #[test]
+    fn name_error_messages_are_wire_pinned() {
+        let msg = |raw: &str| match ProductStreamName::try_from(raw) {
+            Ok(_) => panic!("{raw:?} must be rejected"),
+            Err(e) => e.message(),
+        };
+        assert_eq!(msg(""), "stream name must be 1-512 UTF-8 bytes");
+        assert_eq!(
+            msg(&"x".repeat(513)),
+            "stream name must be 1-512 UTF-8 bytes"
+        );
+        assert_eq!(msg("has\u{7}bell"), "control characters are not allowed");
+        assert_eq!(msg("a//b"), "empty path segments are not allowed");
+        assert_eq!(msg("a/./b"), "'.' and '..' segments are not allowed");
+        assert_eq!(msg("__ds/x"), "the __ds namespace is reserved");
+        assert_eq!(
+            msg("a/records"),
+            "'records', 'consumers' and 'watches' are reserved subresource names"
+        );
+        assert_eq!(
+            msg("a/consumers/b"),
+            "this name is already a subresource path (…/records, …/consumers/{name}, …/watches/…)"
+        );
+        // The precedence corner: reserved root AND a dot segment —
+        // the segment message wins, as the old scan order dictated.
+        assert_eq!(msg("__ds/.."), "'.' and '..' segments are not allowed");
+        assert_eq!(msg("__ds//x"), "empty path segments are not allowed");
+    }
 
     #[test]
     fn name_rules() {

@@ -415,6 +415,48 @@ pub(crate) fn decode_desc(
             .into(),
         });
     }
+    // WP-03/PR 5 (descriptor conversion rules): stored-REFERENCE
+    // invariants the typed reconstructions rely on. Corruption REFUSES
+    // here — never a downstream panic, never a silent repair.
+    // (stream_epoch width stays Option-tolerated at decode — the
+    // epoch_bytes() contract today; the width rule lands with the
+    // persisted-DTO/domain split.)
+    if let Some(f) = &d.forked_from {
+        if crate::tenant::CanonicalStreamName::new(&f.source).is_err() {
+            return Err(object_store::Error::Generic {
+                store: "registry",
+                source: format!(
+                    "descriptor '{}' fork source {:?} is not canonical — corruption \
+                     (stored references are project-relative canonical names by contract)",
+                    d.name, f.source
+                )
+                .into(),
+            });
+        }
+        if crate::crypto::unhex(&f.source_epoch).map(|b| b.len()) != Some(16) {
+            return Err(object_store::Error::Generic {
+                store: "registry",
+                source: format!(
+                    "descriptor '{}' fork source_epoch {:?} does not decode to 16 bytes \
+                     — corruption",
+                    d.name, f.source_epoch
+                )
+                .into(),
+            });
+        }
+    }
+    for child in &d.fork_children {
+        if crate::tenant::CanonicalStreamName::new(child).is_err() {
+            return Err(object_store::Error::Generic {
+                store: "registry",
+                source: format!(
+                    "descriptor '{}' fork child {:?} is not canonical — corruption",
+                    d.name, child
+                )
+                .into(),
+            });
+        }
+    }
     Ok(d)
 }
 
@@ -1958,6 +2000,90 @@ mod tests {
         );
         // update() must also refuse (was: Ok(None), i.e. missing).
         assert!(reg.update(&ts("s1"), |_| {}).await.is_err());
+    }
+
+    /// WP-03/PR 5 decode invariants: a descriptor whose stored
+    /// identities do not decode REFUSES at the boundary — never a
+    /// downstream `expect` panic, never a silent repair. Each case
+    /// starts from a VALID descriptor and corrupts one field, so the
+    /// refusal is attributable to that invariant alone.
+    #[tokio::test]
+    async fn corrupt_stored_identities_fail_closed_at_decode() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let reg = Registry::new(
+            store.clone(),
+            &crate::tenant::CellId::new("test-cell").unwrap(),
+        );
+        reg.create(desc("base", "e1", false)).await.unwrap();
+        let raw = store
+            .get(&desc_path("test-cell", &ts("base")))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap();
+        let valid: serde_json::Value = serde_json::from_slice(&raw).unwrap();
+
+        type Corruption = (&'static str, Box<dyn Fn(&mut serde_json::Value)>);
+        let cases: Vec<Corruption> = vec![
+            (
+                "fork source not canonical",
+                Box::new(|d| {
+                    d["forked_from"] = serde_json::json!({
+                        "source": "__ds/reserved",
+                        "source_epoch": "00".repeat(16),
+                        "fork_offset": 0,
+                        "fork_sub": 0,
+                        "fork_id": "f1",
+                    });
+                }),
+            ),
+            (
+                "fork source_epoch short",
+                Box::new(|d| {
+                    d["forked_from"] = serde_json::json!({
+                        "source": "ok-name",
+                        "source_epoch": "0000",
+                        "fork_offset": 0,
+                        "fork_sub": 0,
+                        "fork_id": "f1",
+                    });
+                }),
+            ),
+            (
+                "fork child not canonical",
+                Box::new(|d| {
+                    d["fork_children"] = serde_json::json!(["bad//child"]);
+                }),
+            ),
+        ];
+        for (why, mutate) in cases {
+            let mut c = valid.clone();
+            mutate(&mut c);
+            put_raw(&store, "base", c.to_string().as_bytes()).await;
+            // A FRESH registry per case: the writer registry's 5s
+            // descriptor cache would otherwise serve the pre-corruption
+            // value and mask the decode check.
+            let fresh = Registry::new(
+                store.clone(),
+                &crate::tenant::CellId::new("test-cell").unwrap(),
+            );
+            let err = fresh.get(&ts("base")).await;
+            assert!(err.is_err(), "{why}: corrupt descriptor must refuse");
+            let msg = format!("{}", err.err().unwrap());
+            assert!(
+                msg.contains("corruption"),
+                "{why}: refusal must name corruption: {msg}"
+            );
+        }
+        // And the untouched valid form still decodes (the checks refuse
+        // corruption, not legitimate descriptors).
+        put_raw(&store, "base", valid.to_string().as_bytes()).await;
+        let fresh = Registry::new(
+            store.clone(),
+            &crate::tenant::CellId::new("test-cell").unwrap(),
+        );
+        assert!(fresh.get(&ts("base")).await.is_ok());
     }
 
     /// A corrupt topology must abort boot, never panic and NEVER be treated

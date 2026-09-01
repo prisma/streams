@@ -2699,6 +2699,40 @@ Required proof:
 
 #### PR 5 — Canonical identity and descriptor conversion boundary
 
+> **Status: FIRST SLICE DONE (2026-09-01).** Landed:
+> (1) `product::ProductStreamName(CanonicalStreamName)` per the WP-03
+> target types — the identity layer is THE structural validator and
+> the product type adds only the addressability extras (reserved
+> final segments, subresource-shaped names). The duplicated
+> structural validation block, the `debug_assert!` agreement pin, and
+> `canonical_stream_name`'s `expect` are DELETED;
+> `canonical_name` is a thin wire adapter over the type. Wire error
+> messages are test-pinned per case, including the multi-violation
+> precedence corner (`__ds/..` reports the dot segment, preserving
+> the historical segment-scan order via an explicit fixup).
+> (2) Descriptor decode-boundary completion: stored REFERENCES are
+> proven at decode — fork `source` canonical, fork `source_epoch`
+> 16 bytes, every `fork_children` entry canonical — refusing with the
+> existing fail-closed corruption class (never a downstream panic,
+> never a silent repair); red-tested by corrupting one field at a
+> time from a valid descriptor (fresh-registry reads, since the 5s
+> descriptor cache masks decode). With decode proving name, identity
+> match, layout, and stored references, `StreamDesc::sref`/
+> `ref_in_project`'s reconstructions are invariant-backed at ONE
+> boundary.
+> Deferred to the next WP-03 slices, recorded honestly:
+> the persisted-DTO/domain-descriptor split (§5.4) — until it lands
+> the two reconstruction `expect`s remain (backed by decode, no
+> longer by convention); `ProjectId::stream_ref(&str)`'s ~51 request-
+> flow call sites migrate to the typed parameter with WP-04's
+> transport/application split (the name will be typed end-to-end
+> there); `stream_epoch` WIDTH stays Option-tolerated at decode (the
+> current `epoch_bytes()` contract — registry test descriptors mint
+> short epochs today); consumer-config `dead_letter_stream`
+> references validate where consumer configs decode (their boundary,
+> not the stream descriptor's); lifecycle state modeling and typed
+> use-case errors are their own WP-03 slices.
+
 **Implements:** WP-03.
 
 Introduce checked `ProjectId`, `StreamName`, `StreamRef`, segment and consumer identities as the only accepted application/domain inputs. Add an explicit conversion between the unchanged persisted descriptor DTO and a domain descriptor. Delete duplicate name validation and panic-based typed reconstruction as each caller migrates.
