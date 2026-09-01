@@ -807,21 +807,6 @@ mod cursors {
             (3, Offset(Some(5)))
         );
     }
-
-    /// The SSE `Stream-Cursor` header is wall-clock derived
-    /// (`now_ms / 20s` intervals), so its fallback arm cannot be pinned
-    /// byte-exactly. The deterministic arm — a request cursor at or
-    /// beyond the current interval echoes `r + 1` — is pinned; the
-    /// fallback is pinned structurally (decimal, monotonically large).
-    #[test]
-    fn golden_layout4_interval_cursor_deterministic_arm() {
-        let future = "20000000000"; // interval count far above any real clock
-        assert_eq!(crate::http::interval_cursor(Some(future)), "20000000001");
-        let fallback = crate::http::interval_cursor(Some("5")); // long-past cursor
-        let n: u64 = fallback.parse().expect("interval cursor is decimal");
-        assert!(n >= 89_000_000, "interval count past 2026-09: {n}");
-        assert_eq!(fallback, n.to_string(), "bare decimal, no padding");
-    }
 }
 
 mod capability {

@@ -622,10 +622,25 @@ P0 does not mean “rewrite all P0 work before merging anything.” Each workstr
 > (warning-only CI job `architecture-report`),
 > `docs/refactor/architecture-baseline.json`, `docs/refactor/WIRE-MATRIX.md`,
 > `docs/refactor/test-scenario-map.json` + `docs/refactor/SCENARIO-MAP.md`,
-> `docs/refactor/COMMIT-ORDER.md`, 38 layout-4 golden tests
+> `docs/refactor/COMMIT-ORDER.md`, 37 layout-4 golden tests
 > (`src/golden_tests.rs`), and the `TraceStore` object-store trace adapter
 > (`src/dst.rs`, 7 tests). No production behavior changed.
 > Recorded gaps owned by the catalogue: DUR-005, SEL-022, SEC-002 legs.
+> **Corrected (PR 3.1):** scenario-map counts are generated, not
+> hand-written — 189 inventoried, **138 mapped** (111 full, 25 partial,
+> 2 external), **51 unmapped** (`scripts/scenario-map-report.py --check`
+> validates IDs/consistency/symbols against the catalogue); the scenario
+> summary is generated from the JSON. The interval-cursor test moved out
+> of the golden suite into an exact deterministic pin on
+> `http::interval_cursor_at` (it was never byte-exact). TraceStore's
+> `delete_stream` was rewritten to delegate exactly once (its first
+> implementation fanned calls out per item and could fabricate a
+> success), and `reset()` now refuses while operations are in flight.
+> The architecture report distinguishes test-only files via
+> `#![cfg(test)]`, gained `--self-test`, and CI now prints the delta vs
+> the WP-00 baseline instead of just re-printing known debt.
+> WIRE-MATRIX.md is an inventory of current behavior, not a pin; routes
+> gain executable characterization as they move (PR rule 4).
 
 ### Objective
 
@@ -710,36 +725,54 @@ expected:
 
 ## 8. WP-01 — Library crate, configuration model and thin bootstrap
 
-> **Status: DONE** (PRs 2-3, 2026-09-01).
+> **Status: DONE** (PRs 2, 3 and corrective PR 3.1, 2026-09-01).
 > PR 2: `src/lib.rs` is the crate root for all production modules;
-> `src/main.rs` is a 59-line composition root (allocator, tracing,
-> pre-runtime env checks, runtime construction); bootstrap/config live in
-> `src/bootstrap.rs` (`async_main`, `Args`). Gate scripts and CI now test
-> the stable `--lib` target. Clippy fingerprint baseline refreshed for the
-> move: 54 dead-code entries dropped (lib `pub` items are reachable API,
-> not dead code), 2 entries moved `main.rs`→`bootstrap.rs`, 3 newly
-> visible (KeyCache len/is_empty; two private_interfaces on AppState
-> fields — pre-existing issues the lib surface exposes; WP-02 deletes
-> AppState). MT audit baseline regenerated for the same six moved sites.
-> PR 3 DONE (2026-09-01): `src/config/mod.rs` owns every environment
-> read — `AppConfig` (13 sub-configs) parses all 71 knobs once at
-> startup (`load()` = `default()` + env overlay, so the no-env value is
-> provably the default); modules read `config::current()` fields. The
-> binary installs the config before the pre-runtime checks; one redacted
-> effective-config event is logged at bootstrap. Pinned by
-> `config::tests`: default snapshot (every knob), legacy parse semantics
-> (filters/clamps/casts/warn-and-default), the COMPACT_MAX_SST_SIZE_BYTES
+> `src/main.rs` is a 64-line composition root (ordinary line count;
+> allocator, tracing, pre-runtime env checks, runtime construction);
+> bootstrap/config live in `src/bootstrap.rs`. Gate scripts and CI now
+> test the stable `--lib` target. Clippy fingerprint baseline refreshed:
+> 54 dead-code entries dropped — note this was NOT a pure move: making
+> every module `pub` suppressed the dead-code class via public
+> reachability (PR 3.1 narrowed the boundary intentionally; see below);
+> 2 entries moved `main.rs`→`bootstrap.rs`; 3 newly visible
+> (KeyCache len/is_empty; two private_interfaces on AppState fields).
+> MT audit baseline regenerated for the six moved sites.
+> PR 3: `src/config/` owns every environment read — 71 baseline read
+> sites centralized into **69 distinct knob names** in `ServerConfig`
+> (13 sub-configs + the 84-flag `CliArgs`), parsed ONCE at startup
+> (`load()` = knob-defaults + overlay). Pinned by `config::tests`:
+> default snapshot, legacy parse semantics, the COMPACT_MAX_SST_SIZE_BYTES
 > divergent dual-reader, the BILLING_MODE/ROLLUP/PATH_PREFIX dual-channel
-> quirks, `default()` == `load()` under a clean env, redacted-summary
-> secret scan, and the full 84-flag CLI surface (name/env/default) via
+> quirks, redacted-summary secret scan, and the full CLI surface via
 > clap's own registry. Fleet's two env-mutating tests now drive the pure
-> `valid_peer_url_with`; no `set_var` remains in the tree.
-> Residual: `backpressure::Limits::from_env()` keeps its name (bootstrap
-> caller); `Args` still lives in bootstrap.rs (moves to config/cli.rs in
-> WP-17); five `std::env` reads remain by design — main.rs
-> TOKIO_WORKERS, the three cfg(test) DST_DRAIN_TRACE debug flags,
-> dst_tests' MT_CERT_PROJECTS. Clippy baseline: one fingerprint moved
-> bootstrap.rs → config/mod.rs (same moved code).
+> `valid_peer_url_with`.
+> **PR 3.1 (corrective, review-driven):** the first WP-01 cut had made
+> configuration ambient in a new way and opened the whole crate. Fixed:
+> (a) lib exposes ONLY the facade (`CliArgs`, `ServerConfig`,
+> `Environment`, `ProcessEnvironment`, `run`) — every module is private
+> again, so dead-code analysis works and the boundary is deliberate;
+> (b) `config::CURRENT/install/current()` are deleted — `run(config:
+> ServerConfig)` takes the owned graph, AppState carries it, and the
+> only init-once holders left are documented process-wide infrastructure
+> (slatedb runtime, absorb budget/pause, history/telemetry/postings
+> caches, store gates, usage limits, scaler policy), seeded once from
+> the composition root with the old defaults for un-seeded tests;
+> (c) config parsing reads an explicit `Environment` source — tests use
+> `MapEnvironment`, and exactly ONE RAII-guarded smoke test touches the
+> real process environment (the earlier "no set_var in tests" claim was
+> wrong; it is now true except that one smoke test);
+> (d) crypto takes an explicit `FrameCompression` policy — no codec
+> dependency on application config, and the duplicated
+> `src/bin/shared/config_shim.rs` is deleted;
+> (e) the redacted summary is an explicit projection, not a derived
+> serialization, with a sentinel-secret test;
+> (f) two ServerConfigs coexist in one process (test-pinned), and the
+> DST rig builds its state from `ServerConfig::load`.
+> Residual: `Args`→`CliArgs` moved to `config/cli.rs` as planned;
+> `backpressure::Limits::from_env` renamed `from_config`; five
+> `std::env` reads remain by design — main.rs TOKIO_WORKERS, the three
+> cfg(test) DST_DRAIN_TRACE debug flags, dst_tests' MT_CERT_PROJECTS.
+> Clippy baseline: refreshed once more for intentional visibility.
 
 ### Objective
 

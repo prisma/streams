@@ -697,6 +697,9 @@ pub enum TraceOutcome {
     NotSupported,
     NotImplemented,
     InvalidPath,
+    /// The consumer abandoned a streaming operation before it finished
+    /// (dropped the list stream mid-page). Recorded, not hidden.
+    Cancelled,
     /// Everything else (Generic, JoinError, …): the trace records THAT it
     /// failed, not the store's prose.
     Error,
@@ -785,14 +788,24 @@ fn redact_path(path: &str) -> String {
 #[derive(Debug)]
 struct TraceState {
     events: Mutex<Vec<StoreTraceEvent>>,
+    /// Monotonic event id source. Never resets: `seq` is an ID, not a
+    /// vector index, so a `reset()` mid-flight cannot make a late
+    /// completion land on somebody else's event.
+    next_seq: std::sync::atomic::AtomicU64,
+    /// The seq of `events[0]`, bumped by `reset()`. Lookup is
+    /// `events[(seq - base_seq)]`, so completions that predate a reset
+    /// fall out of range and are ignored rather than misattributed.
+    base_seq: std::sync::atomic::AtomicU64,
+    /// begin-not-yet-finished count; `reset()` refuses to run while
+    /// anything is in flight.
+    in_flight: std::sync::atomic::AtomicU64,
     redact: bool,
     content_hashes: bool,
 }
 
 impl TraceState {
-    /// Push the event at DISPATCH and return its sequence number, which is
-    /// also its index in the vector — the lock makes `seq` dense, so the
-    /// later outcome fill is a plain indexed write.
+    /// Push the event at DISPATCH and return its monotonic id. The
+    /// outcome is filled later by id (`finish`), never by position.
     fn begin(
         &self,
         op: StoreOp,
@@ -801,8 +814,12 @@ impl TraceState {
         content_hash: Option<String>,
         detail: Option<String>,
     ) -> u64 {
+        let seq = self
+            .next_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        self.in_flight
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut evs = self.events.lock().unwrap();
-        let seq = evs.len() as u64;
         evs.push(StoreTraceEvent {
             seq,
             op,
@@ -820,10 +837,42 @@ impl TraceState {
         seq
     }
 
-    fn finish(&self, seq: u64, outcome: TraceOutcome) {
+    /// Push an already-resolved event (streaming pass-through items are
+    /// complete at observation).
+    fn record(&self, op: StoreOp, path: &str, detail: Option<String>, outcome: TraceOutcome) {
+        let seq = self
+            .next_seq
+            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         let mut evs = self.events.lock().unwrap();
-        if let Some(e) = evs.get_mut(seq as usize) {
-            e.outcome = outcome;
+        evs.push(StoreTraceEvent {
+            seq,
+            op,
+            class: ObjClass::of(path),
+            path: if self.redact {
+                redact_path(path)
+            } else {
+                path.to_string()
+            },
+            bytes: None,
+            outcome,
+            content_hash: None,
+            detail,
+        });
+    }
+
+    /// Fill the outcome of an in-flight event, exactly once. A second
+    /// finish for the same seq (or one that predates a `reset()`) is
+    /// ignored — first fact wins.
+    fn finish(&self, seq: u64, outcome: TraceOutcome) {
+        let base = self.base_seq.load(std::sync::atomic::Ordering::Relaxed);
+        let mut evs = self.events.lock().unwrap();
+        if seq >= base && (seq - base) < evs.len() as u64 {
+            let e = &mut evs[(seq - base) as usize];
+            if e.seq == seq && e.outcome == TraceOutcome::Pending {
+                e.outcome = outcome;
+                self.in_flight
+                    .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
+            }
         }
     }
 
@@ -840,12 +889,14 @@ impl TraceState {
     /// A list stream can serve more items after an error, so clean
     /// exhaustion only upgrades a never-failed stream to Ok.
     fn finish_list_ok(&self, seq: u64) {
-        let mut evs = self.events.lock().unwrap();
-        if let Some(e) = evs.get_mut(seq as usize)
-            && e.outcome == TraceOutcome::Pending
-        {
-            e.outcome = TraceOutcome::Ok;
-        }
+        self.finish(seq, TraceOutcome::Ok);
+    }
+
+    /// The consumer dropped the stream before it finished: the event is
+    /// not silently lost — it is marked Cancelled (and released from
+    /// the in-flight count so `reset()` stays usable).
+    fn cancel(&self, seq: u64) {
+        self.finish(seq, TraceOutcome::Cancelled);
     }
 
     fn hash_payload(&self, payload: &PutPayload) -> Option<String> {
@@ -858,6 +909,20 @@ impl TraceState {
             h.update(b);
         }
         Some(crate::crypto::hex(&h.finalize()[..8]))
+    }
+}
+
+/// Drop guard carried inside a traced stream's state: if the consumer
+/// abandons the stream, the operation is recorded Cancelled rather than
+/// left Pending forever.
+struct StreamTraceGuard {
+    st: Arc<TraceState>,
+    seq: u64,
+}
+
+impl Drop for StreamTraceGuard {
+    fn drop(&mut self) {
+        self.st.cancel(self.seq);
     }
 }
 
@@ -912,6 +977,9 @@ impl TraceStore {
             inner,
             st: Arc::new(TraceState {
                 events: Mutex::new(Vec::new()),
+                next_seq: std::sync::atomic::AtomicU64::new(0),
+                base_seq: std::sync::atomic::AtomicU64::new(0),
+                in_flight: std::sync::atomic::AtomicU64::new(0),
                 redact,
                 content_hashes,
             }),
@@ -923,9 +991,23 @@ impl TraceStore {
         self.st.events.lock().unwrap().clone()
     }
 
-    /// Drop everything recorded so far.
+    /// Drop everything recorded so far. Refuses (panics) while any
+    /// operation is in flight: silently clearing would otherwise let a
+    /// late completion outlive the wipe and corrupt the comparison this
+    /// type exists to make. Call `events()` and drain pending work
+    /// first; abandoned streams must have been dropped (they record
+    /// Cancelled and release the in-flight count).
     pub fn reset(&self) {
+        assert_eq!(
+            self.st.in_flight.load(std::sync::atomic::Ordering::Relaxed),
+            0,
+            "cannot reset TraceStore while operations are in flight"
+        );
         self.st.events.lock().unwrap().clear();
+        self.st.base_seq.store(
+            self.st.next_seq.load(std::sync::atomic::Ordering::Relaxed),
+            std::sync::atomic::Ordering::Relaxed,
+        );
     }
 
     /// (op, class) → count, sorted — the same shape FaultStore's ledger
@@ -1010,7 +1092,8 @@ impl ObjectStore for TraceStore {
     /// Streaming list. The event is recorded at dispatch; the stream
     /// itself is pass-through except that its terminal state fills in the
     /// event outcome (errors recorded as they surface, clean exhaustion
-    /// upgrades a never-failed stream to Ok).
+    /// upgrades a never-failed stream to Ok, an abandoned stream is
+    /// marked Cancelled by the drop guard).
     fn list(
         &self,
         prefix: Option<&ObjPath>,
@@ -1019,16 +1102,19 @@ impl ObjectStore for TraceStore {
         let p = prefix.map(|p| p.as_ref().to_string()).unwrap_or_default();
         let seq = self.st.begin(StoreOp::List, &p, None, None, None);
         let inner = self.inner.list(prefix);
-        let st = self.st.clone();
-        futures_util::stream::unfold((inner, st, seq), |(mut inner, st, seq)| async move {
+        let guard = StreamTraceGuard {
+            st: self.st.clone(),
+            seq,
+        };
+        futures_util::stream::unfold((inner, guard), |(mut inner, guard)| async move {
             match inner.next().await {
-                Some(Ok(m)) => Some((Ok(m), (inner, st, seq))),
+                Some(Ok(m)) => Some((Ok(m), (inner, guard))),
                 Some(Err(e)) => {
-                    st.finish(seq, TraceOutcome::of(&e));
-                    Some((Err(e), (inner, st, seq)))
+                    guard.st.finish(guard.seq, TraceOutcome::of(&e));
+                    Some((Err(e), (inner, guard)))
                 }
                 None => {
-                    st.finish_list_ok(seq);
+                    guard.st.finish_list_ok(guard.seq);
                     None
                 }
             }
@@ -1068,36 +1154,57 @@ impl ObjectStore for TraceStore {
         res
     }
 
-    /// One event per deleted path. `ObjectStore::delete` is a provided
-    /// method built on `delete_stream`, so single deletes arrive here too.
+    /// Deletes are traced WITHOUT changing the call shape: exactly one
+    /// delegated `delete_stream`, with input items and output items
+    /// recorded as they pass through. The trait does not promise that
+    /// results correspond to inputs (an implementation may batch,
+    /// reorder, coalesce, or drop results), so input and output items
+    /// are recorded as separate events (`input` / `result` details) and
+    /// NO outcome is ever fabricated: an empty output stays empty, input
+    /// errors and inner failures pass through untouched.
     fn delete_stream(
         &self,
         locations: futures_util::stream::BoxStream<'static, OsResult<ObjPath>>,
     ) -> futures_util::stream::BoxStream<'static, OsResult<ObjPath>> {
         use futures_util::StreamExt;
-        let inner = self.inner.clone();
-        let st = self.st.clone();
-        locations
-            .then(move |loc| {
-                let inner = inner.clone();
-                let st = st.clone();
-                async move {
-                    let p = loc?;
-                    let seq = st.begin(StoreOp::Delete, p.as_ref(), None, None, None);
-                    let one = {
-                        let p = p.clone();
-                        futures_util::stream::once(async move { Ok(p) }).boxed()
-                    };
-                    let mut s = inner.delete_stream(one);
-                    let res = match s.next().await {
-                        Some(r) => r,
-                        None => Ok(p),
-                    };
-                    st.finish_with(seq, &res);
-                    res
-                }
-            })
-            .boxed()
+        let st_in = self.st.clone();
+        let traced_in = locations.map(move |loc| {
+            match &loc {
+                Ok(p) => st_in.record(
+                    StoreOp::Delete,
+                    p.as_ref(),
+                    Some("input".into()),
+                    TraceOutcome::Ok,
+                ),
+                Err(e) => st_in.record(
+                    StoreOp::Delete,
+                    "",
+                    Some("input".into()),
+                    TraceOutcome::of(e),
+                ),
+            }
+            loc
+        });
+        let out = self.inner.delete_stream(Box::pin(traced_in));
+        let st_out = self.st.clone();
+        out.map(move |res| {
+            match &res {
+                Ok(p) => st_out.record(
+                    StoreOp::Delete,
+                    p.as_ref(),
+                    Some("result".into()),
+                    TraceOutcome::Ok,
+                ),
+                Err(e) => st_out.record(
+                    StoreOp::Delete,
+                    "",
+                    Some("result".into()),
+                    TraceOutcome::of(e),
+                ),
+            }
+            res
+        })
+        .boxed()
     }
 }
 
@@ -1880,5 +1987,345 @@ mod trace_tests {
             evs.iter()
                 .all(|e| e.op == StoreOp::Put && e.outcome == TraceOutcome::Ok)
         );
+    }
+
+    // ---- delete_stream: pass-through with EXACTLY ONE delegated call ----
+
+    /// A scripted delete_stream store: counts invocations and consumed
+    /// inputs, returns a canned output stream. Used to prove the trace
+    /// layer neither fans the call out nor manufactures results.
+    #[derive(Debug)]
+    struct DeleteSpy {
+        inner: object_store::memory::InMemory,
+        calls: std::sync::Arc<std::sync::atomic::AtomicU64>,
+        consumed_inputs: std::sync::Arc<std::sync::atomic::AtomicU64>,
+        // object_store::Error is not Clone, so scripted failures are
+        // stored as their message and rebuilt at stream time.
+        scripted_output: Vec<Result<ObjPath, String>>,
+    }
+
+    impl std::fmt::Display for DeleteSpy {
+        fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+            write!(f, "DeleteSpy({})", self.inner)
+        }
+    }
+
+    #[async_trait::async_trait]
+    impl ObjectStore for DeleteSpy {
+        async fn put_opts(
+            &self,
+            location: &ObjPath,
+            payload: PutPayload,
+            opts: PutOptions,
+        ) -> OsResult<PutResult> {
+            self.inner.put_opts(location, payload, opts).await
+        }
+        async fn put_multipart_opts(
+            &self,
+            location: &ObjPath,
+            opts: PutMultipartOptions,
+        ) -> OsResult<Box<dyn MultipartUpload>> {
+            self.inner.put_multipart_opts(location, opts).await
+        }
+        async fn get_opts(&self, location: &ObjPath, options: GetOptions) -> OsResult<GetResult> {
+            self.inner.get_opts(location, options).await
+        }
+        fn list(
+            &self,
+            prefix: Option<&ObjPath>,
+        ) -> futures_util::stream::BoxStream<'static, OsResult<ObjectMeta>> {
+            self.inner.list(prefix)
+        }
+        async fn list_with_delimiter(&self, prefix: Option<&ObjPath>) -> OsResult<ListResult> {
+            self.inner.list_with_delimiter(prefix).await
+        }
+        async fn copy_opts(&self, from: &ObjPath, to: &ObjPath, opts: CopyOptions) -> OsResult<()> {
+            self.inner.copy_opts(from, to, opts).await
+        }
+        fn delete_stream(
+            &self,
+            locations: futures_util::stream::BoxStream<'static, OsResult<ObjPath>>,
+        ) -> futures_util::stream::BoxStream<'static, OsResult<ObjPath>> {
+            use futures_util::StreamExt;
+            self.calls
+                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+            let consumed = self.consumed_inputs.clone();
+            // Lazy pass-through, one pull of the input per output item:
+            // each consumed Ok input counts and releases the next
+            // scripted result (fewer scripted results than inputs = the
+            // coalescing-store shape); an input error surfaces in place,
+            // untouched; a dropped consumer stops driving the input.
+            let scripted = self.scripted_output.clone().into_iter();
+            futures_util::stream::unfold(
+                (locations, scripted, consumed),
+                |(mut locations, mut scripted, consumed)| async move {
+                    loop {
+                        match locations.next().await {
+                            Some(Ok(_)) => {
+                                consumed.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                                if let Some(r) = scripted.next() {
+                                    let r = r.map_err(|msg| object_store::Error::Generic {
+                                        store: "spy",
+                                        source: msg.into(),
+                                    });
+                                    return Some((r, (locations, scripted, consumed)));
+                                }
+                                // Scripted output exhausted: drain on.
+                            }
+                            Some(Err(e)) => return Some((Err(e), (locations, scripted, consumed))),
+                            None => return None,
+                        }
+                    }
+                },
+            )
+            .boxed()
+        }
+    }
+
+    fn spy(
+        scripted: Vec<OsResult<ObjPath>>,
+    ) -> (
+        Arc<DeleteSpy>,
+        std::sync::Arc<std::sync::atomic::AtomicU64>,
+        std::sync::Arc<std::sync::atomic::AtomicU64>,
+    ) {
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        let consumed = std::sync::Arc::new(std::sync::atomic::AtomicU64::new(0));
+        (
+            Arc::new(DeleteSpy {
+                inner: object_store::memory::InMemory::new(),
+                calls: calls.clone(),
+                consumed_inputs: consumed.clone(),
+                scripted_output: scripted
+                    .into_iter()
+                    .map(|r| r.map_err(|e| e.to_string()))
+                    .collect(),
+            }),
+            calls,
+            consumed,
+        )
+    }
+
+    fn delete_err() -> object_store::Error {
+        object_store::Error::Generic {
+            store: "spy",
+            source: "scripted delete failure".into(),
+        }
+    }
+
+    /// Three inputs, three scripted results: one inner call, everything
+    /// passes through, input and result both traced.
+    #[tokio::test]
+    async fn delete_stream_delegates_exactly_once_and_traces_both_sides() {
+        let (sp, calls, _consumed) = spy(vec![
+            Ok(ObjPath::from("a/1.sst")),
+            Ok(ObjPath::from("a/2.sst")),
+            Ok(ObjPath::from("a/3.sst")),
+        ]);
+        let s = TraceStore::verbatim(sp);
+        use futures_util::StreamExt;
+        let out: Vec<_> = s
+            .delete_stream(
+                futures_util::stream::iter(vec![
+                    Ok(ObjPath::from("a/1.sst")),
+                    Ok(ObjPath::from("a/2.sst")),
+                    Ok(ObjPath::from("a/3.sst")),
+                ])
+                .boxed(),
+            )
+            .collect()
+            .await;
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "exactly one inner delete_stream"
+        );
+        assert_eq!(out.len(), 3, "every scripted result passes through");
+        assert!(out.iter().all(|r| r.is_ok()));
+        let evs = s.events();
+        let inputs = evs
+            .iter()
+            .filter(|e| e.detail.as_deref() == Some("input"))
+            .count();
+        let results = evs
+            .iter()
+            .filter(|e| e.detail.as_deref() == Some("result"))
+            .count();
+        assert_eq!((inputs, results), (3, 3), "both sides traced: {evs:?}");
+    }
+
+    /// The inner store returns FEWER results than inputs (batching stores
+    /// coalesce): the client sees exactly what the store returned — the
+    /// trace layer must not invent completions.
+    #[tokio::test]
+    async fn delete_stream_never_fabricates_results() {
+        let (sp, calls, _) = spy(vec![Ok(ObjPath::from("a/1.sst"))]);
+        let s = TraceStore::verbatim(sp);
+        use futures_util::StreamExt;
+        let out: Vec<_> = s
+            .delete_stream(
+                futures_util::stream::iter(vec![
+                    Ok(ObjPath::from("a/1.sst")),
+                    Ok(ObjPath::from("a/2.sst")),
+                    Ok(ObjPath::from("a/3.sst")),
+                ])
+                .boxed(),
+            )
+            .collect()
+            .await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(out.len(), 1, "no manufactured Ok for unreturned inputs");
+
+        // And the extreme: empty output stays empty.
+        let (sp2, _, _) = spy(vec![]);
+        let s2 = TraceStore::verbatim(sp2);
+        let out2: Vec<_> = s2
+            .delete_stream(futures_util::stream::iter(vec![Ok(ObjPath::from("a/1.sst"))]).boxed())
+            .collect()
+            .await;
+        assert!(out2.is_empty(), "empty output must remain empty");
+    }
+
+    /// Input errors pass through untouched (and are traced as such).
+    #[tokio::test]
+    async fn delete_stream_preserves_input_errors() {
+        let (sp, calls, _) = spy(vec![Ok(ObjPath::from("a/2.sst"))]);
+        let s = TraceStore::verbatim(sp);
+        use futures_util::StreamExt;
+        let out: Vec<_> = s
+            .delete_stream(
+                futures_util::stream::iter(vec![
+                    Ok(ObjPath::from("a/1.sst")),
+                    Err(delete_err()),
+                    Ok(ObjPath::from("a/3.sst")),
+                ])
+                .boxed(),
+            )
+            .collect()
+            .await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(out.len(), 2);
+        assert!(out[0].is_ok());
+        assert!(out[1].is_err(), "the input error must surface unchanged");
+        let evs = s.events();
+        let err_inputs = evs
+            .iter()
+            .filter(|e| e.detail.as_deref() == Some("input") && e.outcome != TraceOutcome::Ok)
+            .count();
+        assert_eq!(err_inputs, 1, "the input error is traced: {evs:?}");
+    }
+
+    /// Inner failures pass through unchanged (and are traced as such).
+    #[tokio::test]
+    async fn delete_stream_preserves_inner_failures() {
+        let (sp, calls, _) = spy(vec![Ok(ObjPath::from("a/1.sst")), Err(delete_err())]);
+        let s = TraceStore::verbatim(sp);
+        use futures_util::StreamExt;
+        let out: Vec<_> = s
+            .delete_stream(
+                futures_util::stream::iter(vec![
+                    Ok(ObjPath::from("a/1.sst")),
+                    Ok(ObjPath::from("a/2.sst")),
+                ])
+                .boxed(),
+            )
+            .collect()
+            .await;
+        assert_eq!(calls.load(std::sync::atomic::Ordering::Relaxed), 1);
+        assert_eq!(out.len(), 2);
+        assert!(out[0].is_ok());
+        assert!(out[1].is_err(), "the inner failure must surface unchanged");
+    }
+
+    /// Dropping the consumer mid-stream does not trigger extra delegated
+    /// calls — the one invocation happened at dispatch, and nothing
+    /// retries or replays behind the client's back.
+    #[tokio::test]
+    async fn delete_stream_dropped_consumer_triggers_no_extra_calls() {
+        let (sp, calls, consumed) = spy(vec![
+            Ok(ObjPath::from("a/1.sst")),
+            Ok(ObjPath::from("a/2.sst")),
+            Ok(ObjPath::from("a/3.sst")),
+        ]);
+        let s = TraceStore::verbatim(sp);
+        use futures_util::StreamExt;
+        let mut stream = s.delete_stream(
+            futures_util::stream::iter(vec![
+                Ok(ObjPath::from("a/1.sst")),
+                Ok(ObjPath::from("a/2.sst")),
+                Ok(ObjPath::from("a/3.sst")),
+            ])
+            .boxed(),
+        );
+        let first = stream.next().await;
+        assert!(matches!(first, Some(Ok(_))));
+        drop(stream);
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::Relaxed),
+            1,
+            "no replay on drop"
+        );
+        assert!(
+            consumed.load(std::sync::atomic::Ordering::Relaxed) < 3,
+            "the abandoned input stream stops being consumed"
+        );
+    }
+
+    /// reset() refuses to run while an operation is in flight — the
+    /// alternative is silent misattribution of the late completion.
+    #[tokio::test]
+    #[should_panic(expected = "in flight")]
+    async fn reset_refuses_while_in_flight() {
+        use futures_util::StreamExt;
+        let s = TraceStore::new(mem());
+        let mut stream = s.list(Some(&ObjPath::from("anything")));
+        drop(stream.next());
+        // The list event is still Pending (stream abandoned but not dropped),
+        // so in_flight > 0 and reset must refuse.
+        let _ = stream;
+        // Force the guard NOT to run: leak the stream.
+        std::mem::forget(stream);
+        s.reset();
+    }
+
+    /// After completions land, reset is clean and the id space keeps
+    /// moving: a later event cannot be mistaken for an earlier one.
+    #[tokio::test]
+    async fn reset_after_completion_is_clean_and_ids_stay_monotonic() {
+        let s = TraceStore::new(mem());
+        let p = ObjPath::from("shards/x/wal/1.sst");
+        s.put_opts(&p, PutPayload::from(vec![1u8; 4]), PutOptions::default())
+            .await
+            .unwrap();
+        s.reset();
+        assert!(s.events().is_empty());
+        s.put_opts(&p, PutPayload::from(vec![2u8; 4]), PutOptions::default())
+            .await
+            .unwrap();
+        let evs = s.events();
+        assert_eq!(evs.len(), 1);
+        assert!(
+            evs[0].seq > 0,
+            "ids are monotonic across reset, not re-based: {:?}",
+            evs[0].seq
+        );
+    }
+
+    /// A list stream the consumer abandons is recorded Cancelled (and
+    /// released from in-flight, so reset still works) — not left Pending
+    /// forever and not silently treated as successful.
+    #[tokio::test]
+    async fn abandoned_list_stream_is_marked_cancelled() {
+        let s = TraceStore::new(mem());
+        {
+            let _stream = s.list(Some(&ObjPath::from("nothing-here")));
+        }
+        let evs = s.events();
+        assert_eq!(evs.len(), 1);
+        assert_eq!(evs[0].op, StoreOp::List);
+        assert_eq!(evs[0].outcome, TraceOutcome::Cancelled, "{evs:?}");
+        // In-flight was released: reset works.
+        s.reset();
+        assert!(s.events().is_empty());
     }
 }

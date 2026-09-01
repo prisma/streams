@@ -24,8 +24,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+      - name: Scanner self-test
+        run: python3 scripts/architecture-report.py --self-test
       - name: Architecture report (warning-only)
         run: python3 scripts/architecture-report.py
+      - name: Architecture delta vs WP-00 baseline (warning-only)
+        run: python3 scripts/architecture-report.py --baseline-diff
   # Job: rust build + full suite (product conformance, dual-surface
   # equivalence corpus, DST safety/liveness, request-cost budgets).
   rust:

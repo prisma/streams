@@ -215,9 +215,25 @@ def rel(p: Path) -> str:
 
 
 def is_test_only(path: Path, text: str) -> bool:
-    """Whole-file test modules (dst/) or files under a cfg(test) gate."""
+    """Whole-file test code: dst/ modules, or any file gated by an inner
+    `#![cfg(test)]` attribute (the file-split form of `#[cfg(test)] mod`,
+    e.g. src/golden_tests.rs) anywhere in its leading attribute block."""
     r = rel(path)
-    return r.startswith("src/dst/") or r == "src/dst.rs"
+    if r.startswith("src/dst/") or r == "src/dst.rs":
+        return True
+    for line in text.splitlines()[:12]:
+        stripped = line.strip()
+        if stripped.startswith("#![cfg(test)]"):
+            return True
+        # Leading doc comments and inner attributes may precede it.
+        if stripped and not (
+            stripped.startswith("//!")
+            or stripped.startswith("///")
+            or stripped.startswith("#![")
+            or stripped.startswith("//")
+        ):
+            break
+    return False
 
 
 def main() -> int:
@@ -379,11 +395,129 @@ def main() -> int:
         + report["totals"]["files_over_budget"]
         + report["totals"]["env_reads_disallowed"]
         + report["totals"]["forbidden_edge_refs"]
+        + sum(1 for e in report["axum_outside_transport"] if not e["test_only"])
+        + report["totals"]["keytag_sites"]
+        + sum(1 for e in report["mutable_statics"] if not e["test_only"])
     )
     if args.fail and violations:
         return 1
     return 0
 
 
+def _norm_ws(s: str) -> str:
+    return " ".join(s.split())
+
+
+def item_keys(report: dict) -> dict[str, set]:
+    """Stable per-category item keys for baseline diffing (line numbers
+    deliberately absent — they move under any edit)."""
+    return {
+        "files_over_budget": {f["file"] for f in report["files_over_budget"]},
+        "functions_over_budget": {
+            f"{f['file']}::{f['function']}" for f in report["functions_over_budget"]
+        },
+        "forbidden_edges": {e["file"] for e in report["forbidden_edges"]},
+        "env_reads": {f"{e['file']}|{_norm_ws(e['src'])}" for e in report["env_reads"]},
+        "axum_outside_transport": {e["file"] for e in report["axum_outside_transport"]},
+        "keytag_sites": {f"{e['file']}|{_norm_ws(e['src'])}" for e in report["keytag_sites"]},
+        "mutable_statics": {f"{e['file']}|{e['type']}" for e in report["mutable_statics"]},
+    }
+
+
+def baseline_diff(current: dict, baseline_path: Path) -> int:
+    """Compare the current report against the checked-in baseline JSON and
+    print per-category NEW regressions and RESOLVED debt. This is the
+    warning-only signal CI should surface: not 'how big is the debt',
+    but 'did THIS change add to it'."""
+    try:
+        baseline = json.loads(baseline_path.read_text())
+    except OSError:
+        print(f"baseline-diff: cannot read {baseline_path}", file=sys.stderr)
+        return 1
+    cur = item_keys(current)
+    base = item_keys(baseline)
+    any_new = False
+    for cat in cur:
+        new = sorted(cur[cat] - base[cat])
+        resolved = sorted(base[cat] - cur[cat])
+        if new:
+            any_new = True
+        print(f"[{cat}] new: {len(new)}  resolved: {len(resolved)}")
+        for k in new:
+            print(f"  NEW      {k}")
+        for k in resolved:
+            print(f"  RESOLVED {k}")
+    print("baseline-diff:", "REGRESSIONS PRESENT" if any_new else "no new regressions")
+    return 0
+
+
+def self_test() -> int:
+    """Scanner self-tests: the lexer and classifier on tricky inputs.
+    Runs in the commit gate (same role as verify-rc-evidence's self-test)."""
+    failures = []
+
+    # 1. Braces inside strings/raw strings/comments must not break spans.
+    tricky = '''
+fn a() {
+    let s = "}";
+    let r = r#"}{"#;
+    /* nested /* comment with { and } */ */
+    let c = '}';
+}
+fn b() { let x = 1; }
+'''
+    clean = strip_noncode(tricky)
+    spans = find_functions(clean)
+    if [n for n, _, _ in spans] != ["a", "b"]:
+        failures.append(f"string/comment braces broke fn detection: {spans}")
+
+    # 2. A trait method declaration without a body is not a body.
+    decl = "trait T { fn decl(&self) -> u64; fn has_body(&self) -> u64 { 1 } }"
+    spans = find_functions(strip_noncode(decl))
+    if [n for n, _, _ in spans] != ["has_body"]:
+        failures.append(f"trait declaration misdetected: {spans}")
+
+    # 3. cfg(test)-gated file classification.
+    gated = "#![cfg(test)]\n\nfn helper() {}\n"
+    if not is_test_only(Path(REPO / "src" / "golden_tests.rs"), gated):
+        failures.append("#![cfg(test)] inner attribute not classified as test-only")
+    prod = "//! production module\n\npub fn f() {}\n"
+    if is_test_only(Path(REPO / "src" / "anything.rs"), prod):
+        failures.append("production file misclassified as test-only")
+
+    # 4. Span math: a 5-line function measures 5 lines.
+    five = "fn five() {\n\n\n\n}\n"
+    spans = find_functions(strip_noncode(five))
+    if len(spans) != 1 or spans[0][2] - spans[0][1] + 1 != 5:
+        failures.append(f"span math wrong: {spans}")
+
+    if failures:
+        for f in failures:
+            print(f"self-test FAIL: {f}")
+        return 1
+    print("architecture-report self-test: OK (4 checks)")
+    return 0
+
+
 if __name__ == "__main__":
-    sys.exit(main())
+    import sys as _sys
+
+    if "--self-test" in _sys.argv:
+        _sys.exit(self_test())
+    if "--baseline-diff" in _sys.argv:
+        # Reuse main()'s scan, then diff against the checked-in baseline.
+        class _Args:
+            json = False
+            fail = False
+
+        _sys.argv = [a for a in _sys.argv if a != "--baseline-diff"]
+        import io, contextlib
+
+        buf = io.StringIO()
+        with contextlib.redirect_stdout(buf):
+            # main() prints; we need the structured report — call it via json.
+            _sys.argv.append("--json")
+            main_rc = main()
+        report = json.loads(buf.getvalue())
+        _sys.exit(baseline_diff(report, REPO / "docs" / "refactor" / "architecture-baseline.json"))
+    _sys.exit(main())

@@ -121,9 +121,25 @@ Selected as the reference for refactor PRs (WP-11 performance gates):
 
 - `scripts/architecture-report.py` — warning-only structural report
   (this baseline's generator); runs in CI without failing until WP-17.
+  PR 3.1 added `--self-test` and `--baseline-diff` (NEW/RESOLVED vs the
+  snapshot below), both run in CI on every push.
 - `docs/refactor/architecture-baseline.json` — machine-readable snapshot.
 - `docs/refactor/WIRE-MATRIX.md` — wire characterization matrix for both
-  HTTP surfaces.
-- `docs/refactor/test-scenario-map.json` — scenario-ID ↔ test inventory.
-- Storage layout-4 golden tests and the object-store trace adapter live in
-  the test tree (see the WP-00 commit series).
+  HTTP surfaces. NOTE (PR 3.1): this is an *inventory* of current
+  behavior, not a pin — routes gain executable characterization tests as
+  they move (PR rule 4), pinned against this matrix.
+- `docs/refactor/test-scenario-map.json` — scenario-ID ↔ test inventory
+  (authoritative). `docs/refactor/SCENARIO-MAP.md` is GENERATED from it
+  by `scripts/scenario-map-report.py` (validation: same IDs as the
+  catalogue, unique, mapped-iff-tests, coverage values, test-symbol
+  existence). Current counts: 189 inventoried, 138 mapped (111 full,
+  25 partial, 2 external), 51 unmapped.
+- Storage layout-4 golden tests (37, `src/golden_tests.rs`) and the
+  `TraceStore` object-store trace adapter (`src/dst.rs`) live in the
+  test tree. PR 3.1 removed one ambient-time cursor test from the
+  golden suite (now an exact pin on `http::interval_cursor_at`) and
+  rewrote `TraceStore::delete_stream` to delegate exactly once (its
+  first version fanned calls out per item and could fabricate a
+  success); `reset()` refuses while operations are in flight.
+- `docs/refactor/COMMIT-ORDER.md` — the five commit-order properties
+  mapped to their pinning tests.
