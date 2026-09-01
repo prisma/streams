@@ -138,20 +138,16 @@ pub struct Limits {
     pub burst_secs: f64,
 }
 
-fn envf(k: &str, d: f64) -> f64 {
-    std::env::var(k)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(d)
-}
-
 pub fn limits() -> &'static Limits {
     static L: OnceLock<Limits> = OnceLock::new();
-    L.get_or_init(|| Limits {
-        bytes_per_sec: envf("LIMIT_BYTES_PER_SEC", 5_000_000.0),
-        reqs_per_sec: envf("LIMIT_REQS_PER_SEC", 1_000.0),
-        recs_per_sec: envf("LIMIT_RECS_PER_SEC", 5_000.0),
-        burst_secs: envf("LIMIT_BURST_SECS", 2.0),
+    L.get_or_init(|| {
+        let cfg = crate::config::current();
+        Limits {
+            bytes_per_sec: cfg.admission.limit_bytes_per_sec,
+            reqs_per_sec: cfg.admission.limit_reqs_per_sec,
+            recs_per_sec: cfg.admission.limit_recs_per_sec,
+            burst_secs: cfg.admission.limit_burst_secs,
+        }
     })
 }
 

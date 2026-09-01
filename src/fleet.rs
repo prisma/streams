@@ -135,7 +135,17 @@ pub fn pick_move_target(
 /// use plain http against 127.0.0.1). When FLEET_PEER_DOMAINS is set,
 /// the host must equal or be a subdomain of one of its entries.
 pub fn valid_peer_url(url: &str) -> bool {
-    let allow_http = std::env::var("FLEET_ALLOW_HTTP_PEERS").ok().as_deref() == Some("1");
+    let cfg = crate::config::current();
+    valid_peer_url_with(
+        url,
+        cfg.fleet.allow_http_peers,
+        cfg.fleet.peer_domains_raw.as_deref(),
+    )
+}
+
+/// Pure validation core: the env-derived inputs are parameters so tests
+/// can drive every combination without mutating process env (WP-01).
+pub fn valid_peer_url_with(url: &str, allow_http: bool, peer_domains: Option<&str>) -> bool {
     let rest = match url.strip_prefix("https://") {
         Some(r) => r,
         None => match url.strip_prefix("http://") {
@@ -163,8 +173,8 @@ pub fn valid_peer_url(url: &str) -> bool {
     {
         return false;
     }
-    match std::env::var("FLEET_PEER_DOMAINS") {
-        Ok(list) if !list.trim().is_empty() => list
+    match peer_domains {
+        Some(list) if !list.trim().is_empty() => list
             .split(',')
             .map(str::trim)
             .filter(|d| !d.is_empty())
@@ -386,14 +396,8 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
         // over threshold, and the churn guard on shard moves.
         let mut lag_hot_ticks: u32 = 0;
         let mut last_move: Option<Instant> = None;
-        let rebalance_lag_secs: u64 = std::env::var("REBALANCE_LAG_SECS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(60);
-        let rebalance_cooldown: u64 = std::env::var("REBALANCE_MOVE_COOLDOWN_SECS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(60);
+        let rebalance_lag_secs: u64 = crate::config::current().fleet.rebalance_lag_secs;
+        let rebalance_cooldown: u64 = crate::config::current().fleet.rebalance_move_cooldown_secs;
         let mut last_cpu = cpu_time_secs();
         let mut ewma_cpu = 0.0f64;
         // (ring_active, overrides) as last observed — the parked-session
@@ -477,7 +481,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 draining: false,
                 absorb_lag_max_secs: crate::usage::absorb_lag_max(),
                 wedge_max_ms,
-                url: std::env::var("SELF_URL").unwrap_or_default(),
+                url: crate::config::current().fleet.self_url.clone(),
             };
             let path = ObjPath::from(format!("fleet/{}.json", cfg.instance));
             if let Err(e) = store
@@ -679,11 +683,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
             let cur_count = cur.as_ref().map(|d| d.count).unwrap_or(1);
             // FLEET_MIN: hard floor on the fleet size (HA / pinned test
             // rings). All dimensions and the shrink target respect it.
-            let fleet_min: u64 = std::env::var("FLEET_MIN")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(1)
-                .max(1);
+            let fleet_min: u64 = crate::config::current().fleet.fleet_min;
             let need = need.max(fleet_min);
             let need_shrink = need_shrink.max(fleet_min);
             // Publish the ring's ACTIVE set for the R2 ownership check:
@@ -877,10 +877,8 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 // an instance that lagged once is drained forever
                 // (ladder p3: streams-2 owned nothing by D3).
                 {
-                    let return_secs: i64 = std::env::var("REBALANCE_RETURN_SECS")
-                        .ok()
-                        .and_then(|v| v.parse().ok())
-                        .unwrap_or(300);
+                    let return_secs: i64 =
+                        crate::config::current().fleet.rebalance_return_secs as i64;
                     let active = state.ring_active.read().unwrap().clone();
                     let mut drop_keys: Vec<String> = Vec::new();
                     let mut pending_returns: std::collections::HashMap<String, usize> =
@@ -1266,37 +1264,37 @@ mod tests {
     // bare origin must be refused before it is stored.
     #[test]
     fn peer_urls_must_be_bare_origins() {
-        unsafe { std::env::set_var("FLEET_ALLOW_HTTP_PEERS", "1") };
-        assert!(valid_peer_url("https://cv-abc.fra.prisma.build"));
-        assert!(valid_peer_url("http://127.0.0.1:8091"));
+        // Dev escape hatch on: plain http loopback is a valid origin.
+        let allow = |u: &str| valid_peer_url_with(u, true, None);
+        assert!(allow("https://cv-abc.fra.prisma.build"));
+        assert!(allow("http://127.0.0.1:8091"));
         // userinfo, path, query, fragment, backslash, whitespace
-        assert!(!valid_peer_url("https://evil@attacker.example"));
-        assert!(!valid_peer_url("https://host.example/path"));
-        assert!(!valid_peer_url("https://host.example?x=1"));
-        assert!(!valid_peer_url("https://host.example#f"));
-        assert!(!valid_peer_url("https://host.example\\@evil"));
-        assert!(!valid_peer_url("https://host .example"));
+        assert!(!allow("https://evil@attacker.example"));
+        assert!(!allow("https://host.example/path"));
+        assert!(!allow("https://host.example?x=1"));
+        assert!(!allow("https://host.example#f"));
+        assert!(!allow("https://host.example\\@evil"));
+        assert!(!allow("https://host .example"));
         // non-http schemes and bare hosts
-        assert!(!valid_peer_url("file:///etc/passwd"));
-        assert!(!valid_peer_url("host.example"));
-        assert!(!valid_peer_url(""));
+        assert!(!allow("file:///etc/passwd"));
+        assert!(!allow("host.example"));
+        assert!(!allow(""));
         // non-numeric port
-        assert!(!valid_peer_url("http://host.example:evil"));
-        unsafe { std::env::remove_var("FLEET_ALLOW_HTTP_PEERS") };
+        assert!(!allow("http://host.example:evil"));
         // TLS mandatory once the dev escape hatch is off
-        assert!(!valid_peer_url("http://127.0.0.1:8091"));
-        assert!(valid_peer_url("https://cv-abc.fra.prisma.build"));
+        let strict = |u: &str| valid_peer_url_with(u, false, None);
+        assert!(!strict("http://127.0.0.1:8091"));
+        assert!(strict("https://cv-abc.fra.prisma.build"));
     }
 
     #[test]
     fn peer_domain_allowlist_is_enforced_when_set() {
-        unsafe { std::env::set_var("FLEET_PEER_DOMAINS", "prisma.build") };
-        assert!(valid_peer_url("https://cv-abc.fra.prisma.build"));
-        assert!(valid_peer_url("https://prisma.build"));
-        assert!(!valid_peer_url("https://attacker.example"));
+        let v = |u: &str| valid_peer_url_with(u, false, Some("prisma.build"));
+        assert!(v("https://cv-abc.fra.prisma.build"));
+        assert!(v("https://prisma.build"));
+        assert!(!v("https://attacker.example"));
         // suffix-matching must not accept a lookalike domain
-        assert!(!valid_peer_url("https://evilprisma.build"));
-        unsafe { std::env::remove_var("FLEET_PEER_DOMAINS") };
+        assert!(!v("https://evilprisma.build"));
     }
 
     #[test]

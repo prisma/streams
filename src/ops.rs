@@ -620,8 +620,5 @@ pub async fn evaluate_alerts(state: &std::sync::Arc<crate::http::AppState>, snap
 }
 
 fn usage_outbox_alert_threshold() -> u64 {
-    std::env::var("ALERT_USAGE_OUTBOX_DIRTY")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(1000)
+    crate::config::current().billing.alert_usage_outbox_dirty
 }

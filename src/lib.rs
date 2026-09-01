@@ -13,6 +13,7 @@ pub mod auth_feed;
 pub mod backpressure;
 pub mod billing;
 pub mod bootstrap;
+pub mod config;
 pub mod crypto;
 #[cfg(test)]
 mod dst;

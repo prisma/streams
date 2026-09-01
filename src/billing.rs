@@ -1051,9 +1051,7 @@ fn encoded_size(e: &UsageEnvelope) -> usize {
 /// BILLING_MODE=required: production billing — volatile fallbacks are
 /// refused and billing infrastructure failures are fatal at startup.
 pub fn billing_required() -> bool {
-    std::env::var("BILLING_MODE")
-        .map(|v| v == "required")
-        .unwrap_or(false)
+    crate::config::current().billing.mode_env.as_deref() == Some("required")
 }
 
 /// Drain step 1: move sealed batches into the durable spool. On a
@@ -1437,12 +1435,12 @@ pub async fn open_read_spool(state: &std::sync::Arc<crate::http::AppState>) -> a
     if state.read_spool.get().is_some() {
         return Ok(());
     }
-    let sp = ReadSpool::open(
-        state.data_store.clone(),
-        &std::env::var("PATH_PREFIX").unwrap_or_default(),
-        &state.instance_name,
-    )
-    .await?;
+    let prefix = crate::config::current()
+        .billing
+        .path_prefix_env
+        .clone()
+        .unwrap_or_default();
+    let sp = ReadSpool::open(state.data_store.clone(), &prefix, &state.instance_name).await?;
     let _ = state.read_spool.set(std::sync::Arc::new(sp));
     Ok(())
 }
@@ -1464,24 +1462,15 @@ pub fn spawn_telemetry(state: std::sync::Arc<crate::http::AppState>) {
                 tracing::error!("read spool open failed: {e}");
             }
             sweep_owned_outboxes(&st).await;
-            let sweep_secs: u64 = std::env::var("OUTBOX_SWEEP_SECS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(300);
+            let sweep_secs: u64 = crate::config::current().billing.outbox_sweep_secs;
             loop {
                 tokio::time::sleep(std::time::Duration::from_secs(sweep_secs)).await;
                 sweep_owned_outboxes(&st).await;
             }
         });
     }
-    let secs: u64 = std::env::var("TELEMETRY_DRAIN_SECS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2);
-    let metrics_secs: u64 = std::env::var("METRICS_INTERVAL_SECS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(15);
+    let secs: u64 = crate::config::current().billing.telemetry_drain_secs;
+    let metrics_secs: u64 = crate::config::current().billing.metrics_interval_secs;
     tokio::spawn(async move {
         let mut tick = tokio::time::interval(std::time::Duration::from_secs(secs.max(1)));
         let mut last_metrics = 0i64;
@@ -1747,10 +1736,7 @@ pub fn spawn_rollup(state: std::sync::Arc<crate::http::AppState>, prefix: String
             return;
         }
         tracing::info!("usage rollup running");
-        let grace_ms: i64 = std::env::var("MONTH_CLOSE_GRACE_MS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(24 * 3_600_000);
+        let grace_ms: i64 = crate::config::current().billing.month_close_grace_ms;
         let mut last_close = 0i64;
         loop {
             let usage_n = match rollup_step(&state).await {
@@ -1831,10 +1817,7 @@ pub(crate) fn telemetry_cache() -> std::sync::Arc<slatedb::db_cache::foyer::Foye
         std::sync::OnceLock::new();
     CACHE
         .get_or_init(|| {
-            let bytes = std::env::var("TELEMETRY_CACHE_BYTES")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(16 * 1024 * 1024);
+            let bytes = crate::config::current().billing.telemetry_cache_bytes as u64;
             TELEMETRY_CACHE_CAPACITY.store(bytes, std::sync::atomic::Ordering::Relaxed);
             std::sync::Arc::new(slatedb::db_cache::foyer::FoyerCache::new_with_opts(
                 slatedb::db_cache::foyer::FoyerCacheOptions {
@@ -2308,10 +2291,7 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
     // exists to prevent (R28 review). Peak scheduler-held engines is
     // now retained + the single probe in flight, which never exceeds
     // the budget because discovery stops at the budget line.
-    let discovery_cap: usize = std::env::var("SWEEP_DISCOVERY_MAX")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(8);
+    let discovery_cap: usize = crate::config::current().billing.sweep_discovery_max;
     let mut discovered = 0usize;
     let mut owned: Vec<String> = state.shard_prefixes.clone();
     let n = owned.len();
@@ -2383,11 +2363,7 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
 /// bypassing the bound entirely). Validated at startup: zero would
 /// silently starve all cold-debt drain, so it is rejected there.
 pub fn sweep_resident_budget() -> usize {
-    std::env::var("SWEEP_MAINT_RESIDENT")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(2)
-        .max(1)
+    crate::config::current().billing.sweep_maint_resident.max(1)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -2478,10 +2454,9 @@ fn install_custody(engine: &std::sync::Arc<crate::shard::ShardEngine>) -> Option
 }
 
 fn residence_quantum() -> usize {
-    std::env::var("SWEEP_RESIDENT_QUANTUM")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(4)
+    crate::config::current()
+        .billing
+        .sweep_resident_quantum
         .max(1)
 }
 

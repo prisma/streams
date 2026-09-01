@@ -50,10 +50,7 @@ pub const WARM_MAX_SEGMENTS: usize = 8_192;
 pub fn process_cache() -> Arc<PostingsCache> {
     static C: std::sync::OnceLock<Arc<PostingsCache>> = std::sync::OnceLock::new();
     C.get_or_init(|| {
-        let bytes = std::env::var("POSTINGS_CACHE_BYTES")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(POSTINGS_CACHE_BYTES);
+        let bytes = crate::config::current().postings.cache_bytes;
         PostingsCache::new(bytes)
     })
     .clone()

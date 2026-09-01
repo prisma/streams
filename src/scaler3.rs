@@ -42,23 +42,19 @@ pub struct ScalePolicy {
 
 pub fn policy() -> &'static ScalePolicy {
     static P: PolicyOnceLock<ScalePolicy> = PolicyOnceLock::new();
-    P.get_or_init(|| ScalePolicy {
-        eval_secs: envf("SCALE_EVAL_SECS", 10.0) as u64,
-        rate_window_secs: envf("SCALE_RATE_WINDOW_SECS", 120.0),
-        hot_pct: envf("SCALE_HOT_PCT", 75.0) / 100.0,
-        cold_pct: envf("SCALE_COLD_PCT", 15.0) / 100.0,
-        hot_evals: envf("SCALE_HOT_EVALS", 2.0) as u32,
-        cold_evals: envf("SCALE_COLD_EVALS", 180.0) as u32,
-        cooldown_secs: envf("SCALE_COOLDOWN_SECS", 600.0) as i64,
-        max_segments: envf("MAX_SEGMENTS_PER_STREAM", 64.0) as usize,
+    P.get_or_init(|| {
+        let cfg = crate::config::current();
+        ScalePolicy {
+            eval_secs: cfg.scaler.eval_secs,
+            rate_window_secs: cfg.scaler.rate_window_secs,
+            hot_pct: cfg.scaler.hot_pct,
+            cold_pct: cfg.scaler.cold_pct,
+            hot_evals: cfg.scaler.hot_evals,
+            cold_evals: cfg.scaler.cold_evals,
+            cooldown_secs: cfg.scaler.cooldown_secs,
+            max_segments: cfg.scaler.max_segments,
+        }
     })
-}
-
-fn envf(k: &str, d: f64) -> f64 {
-    std::env::var(k)
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(d)
 }
 
 /// Counters (spec §14).

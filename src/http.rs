@@ -79,19 +79,11 @@ const MAX_READ_BYTES: usize = 8 * 1024 * 1024;
 /// arm_us=<arm->wake> read_us=<wake->records-built>`, splitting the
 /// remaining roundtrip-minus-append interval into its server-side stages.
 fn debug_timing() -> bool {
-    static V: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *V.get_or_init(|| std::env::var("STREAMS_DEBUG_TIMING").as_deref() == Ok("1"))
+    crate::config::current().http.debug_timing
 }
 
 fn tail_max_bytes() -> usize {
-    static V: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-    *V.get_or_init(|| {
-        std::env::var("TAIL_MAX_BYTES")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .filter(|v| *v > 0)
-            .unwrap_or(1024 * 1024)
-    })
+    crate::config::current().http.tail_max_bytes
 }
 const APPEND_TIMEOUT: Duration = Duration::from_secs(10);
 // The platform front door kills any request at ~30 s with a 502 (measured
@@ -652,12 +644,7 @@ impl AppState {
         // continues in its own task regardless of what this request does —
         // the caller only ever gets a retryable 503, never the power to
         // abandon or duplicate an open (the eu-central-1 storm).
-        let wait = std::time::Duration::from_millis(
-            std::env::var("SHARD_OPEN_WAIT_MS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(10_000),
-        );
+        let wait = std::time::Duration::from_millis(crate::config::current().shard.open_wait_ms);
         match self.gate.get_or_open(&prefix, wait).await {
             crate::sharddir::OpenOutcome::Ready(engine) => {
                 // R29: a customer who coalesced into (or raced) an open
@@ -1174,8 +1161,7 @@ async fn debug_load(
         // actually downloaded and passes the digest in; verify-running
         // compares it to the campaign's upload manifest. "unknown"
         // outside wrapper-managed deployments.
-        "binary_sha256": std::env::var("APP_BINARY_SHA256")
-            .unwrap_or_else(|_| "unknown".into()),
+        "binary_sha256": crate::config::current().http.binary_sha256.clone(),
         // R28: full build/boot identity — the campaign verifier compares
         // ALL of these against its manifest (stale-build platform trap).
         "git_commit": env!("STREAMS_GIT_COMMIT"),
@@ -1650,7 +1636,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                             "bearer token required",
                         );
                     }
-                    if std::env::var("STREAMS_DEBUG_EXIT").as_deref() != Ok("1") {
+                    if !crate::config::current().http.debug_exit {
                         return err_resp(
                             StatusCode::FORBIDDEN,
                             "disabled",
@@ -2099,7 +2085,7 @@ async fn health_axum(State(state): State<Arc<AppState>>) -> Response {
     }
     if crate::billing::billing_required() {
         let spool_ok = state.read_spool.get().is_some();
-        let rollup_ok = std::env::var("ROLLUP").map(|v| v != "1").unwrap_or(true)
+        let rollup_ok = crate::config::current().billing.rollup_env.as_deref() != Some("1")
             || state.rollup.get().is_some();
         if !spool_ok || !rollup_ok {
             return (
@@ -2178,10 +2164,14 @@ async fn billing_readiness_axum(
     let ready = !crate::billing::billing_required()
         || (state.usage_key.is_some()
             && spool_open
-            && (std::env::var("ROLLUP").map(|v| v != "1").unwrap_or(true)
+            && (crate::config::current().billing.rollup_env.as_deref() != Some("1")
                 || state.rollup.get().is_some()));
     axum::Json(serde_json::json!({
-        "mode": std::env::var("BILLING_MODE").unwrap_or_else(|_| "off".into()),
+        "mode": crate::config::current()
+            .billing
+            .mode_env
+            .clone()
+            .unwrap_or_else(|| "off".into()),
         "ready": ready,
         "usageLedgerConfigured": state.usage_key.is_some(),
         "spool": { "open": spool_open, "depth": depth, "quarantined": quarantined },
@@ -5677,15 +5667,13 @@ async fn append_core(
         // drainer would feed back forever. BILLING_METER=off exists for
         // A/B isolation in benchmarks only.
         billing: (!crate::billing::is_reserved_stream(&desc.name)
-            && std::env::var("BILLING_METER")
-                .map(|v| v != "off")
-                .unwrap_or(true))
-        .then(|| {
-            std::sync::Arc::new(crate::billing::BillingRef {
-                identity: crate::billing::identity_of(&state, &desc),
-                segment_id: seg.seg_id,
-            })
-        }),
+            && crate::config::current().billing.meter_enabled)
+            .then(|| {
+                std::sync::Arc::new(crate::billing::BillingRef {
+                    identity: crate::billing::identity_of(&state, &desc),
+                    segment_id: seg.seg_id,
+                })
+            }),
         resp: tx,
     };
     let engine = match state.engine_for(&seg.shard_route).await {

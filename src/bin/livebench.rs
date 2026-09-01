@@ -38,6 +38,11 @@ mod crypto;
 mod tenant;
 #[path = "../touch_keys.rs"]
 mod touch_keys;
+// crypto.rs reads FRAME_COMPRESS via crate::config (WP-01); standalone
+// bins get the env-parse shim instead of the lib's AppConfig.
+#[path = "shared/config_shim.rs"]
+#[allow(dead_code)] // used only on bins whose crypto paths encrypt
+mod config;
 
 #[derive(Parser, Debug, Clone)]
 #[command(name = "livebench")]

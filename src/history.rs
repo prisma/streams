@@ -28,9 +28,7 @@ use crate::shard::{AbsorbSignal, ShardEngine, read_frames_range};
 pub fn absorb_pause_flag() -> &'static std::sync::atomic::AtomicBool {
     static F: std::sync::OnceLock<std::sync::atomic::AtomicBool> = std::sync::OnceLock::new();
     F.get_or_init(|| {
-        std::sync::atomic::AtomicBool::new(
-            std::env::var("ABSORB_PAUSE").ok().as_deref() == Some("1"),
-        )
+        std::sync::atomic::AtomicBool::new(crate::config::current().history.absorb_pause_initial)
     })
 }
 
@@ -267,25 +265,7 @@ pub static RESOLVED_MEMORY_CONFIG: std::sync::OnceLock<serde_json::Value> =
 pub fn absorb_budget() -> &'static AbsorbBudget {
     static B: std::sync::OnceLock<AbsorbBudget> = std::sync::OnceLock::new();
     B.get_or_init(|| {
-        // The test binary runs MANY independent DST engines in one
-        // process; a production-sized global budget would serialize
-        // their gathers ACROSS TESTS and turn timing-sensitive
-        // scenarios flaky. Budget semantics are pinned by dedicated
-        // unit tests on local AbsorbBudget instances; the global gets
-        // ample capacity under cfg(test) unless a test opts in via
-        // env.
-        #[cfg(test)]
-        let default_bytes: usize = 4 * 1024 * 1024 * 1024;
-        #[cfg(not(test))]
-        let default_bytes: usize = 64 * 1024 * 1024;
-        #[cfg(test)]
-        let default_gathers: usize = 64;
-        #[cfg(not(test))]
-        let default_gathers: usize = 2;
-        let configured: usize = std::env::var("ABSORB_GLOBAL_BUDGET_BYTES")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(default_bytes);
+        let configured: usize = crate::config::current().history.absorb_global_budget_bytes;
         // The floor makes the envelope claim TRUE for oversized
         // frames: capacity always covers one worst-case build.
         let bytes = floored_budget_capacity(configured);
@@ -297,10 +277,9 @@ pub fn absorb_budget() -> &'static AbsorbBudget {
                 ABSORB_BUILD_MULTIPLIER,
             );
         }
-        let gathers: usize = std::env::var("ABSORB_GLOBAL_GATHERS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(default_gathers)
+        let gathers: usize = crate::config::current()
+            .history
+            .absorb_global_gathers
             .max(1);
         AbsorbBudget::new(bytes, gathers)
     })
@@ -478,10 +457,7 @@ pub(crate) fn history_cache() -> Arc<slatedb::db_cache::foyer::FoyerCache> {
         std::sync::OnceLock::new();
     CACHE
         .get_or_init(|| {
-            let bytes = std::env::var("HISTORY_CACHE_BYTES")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(32 * 1024 * 1024);
+            let bytes = crate::config::current().history.cache_bytes as u64;
             Arc::new(slatedb::db_cache::foyer::FoyerCache::new_with_opts(
                 slatedb::db_cache::foyer::FoyerCacheOptions {
                     max_capacity: bytes,
@@ -510,9 +486,7 @@ pub(crate) fn history_settings() -> Settings {
     // compactor (and lifts the L0 caps so flushes never block on it). Used
     // with the s3lite --discard-substr mode, where history SST bodies are
     // dropped and must never be re-read. Production keeps the compactor.
-    let compactor_off = std::env::var("HISTORY_COMPACTOR")
-        .map(|v| v == "off")
-        .unwrap_or(false);
+    let compactor_off = crate::config::current().history.compactor_off;
     // History DBs (per-stream v1 AND the shared v2 partitions) are
     // quiet most of the time, and their fixed-cadence LISTs were 79% of
     // v2's residual request cost (docs/HISTORY-V2.md scorecard). The
@@ -523,14 +497,7 @@ pub(crate) fn history_settings() -> Settings {
     // reclamation latency on a busy history DB (bounded, storage-cheap),
     // not steady-state requests. HISTORY_GC_INTERVAL_SECS (default 600;
     // HISTORY_GC_MAX_INTERVAL_SECS accepted as a legacy alias).
-    let gc_interval = {
-        let secs: u64 = std::env::var("HISTORY_GC_INTERVAL_SECS")
-            .ok()
-            .or_else(|| std::env::var("HISTORY_GC_MAX_INTERVAL_SECS").ok())
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(600);
-        (secs > 0).then(|| Duration::from_secs(secs))
-    };
+    let gc_interval = crate::config::current().history.gc_interval;
     let mut gc = Settings::default()
         .garbage_collector_options
         .unwrap_or_default();

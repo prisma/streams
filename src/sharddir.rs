@@ -50,14 +50,13 @@ const HOLDOFF_CAP: Duration = Duration::from_secs(60);
 /// longer resets the escalation.
 const SHORT_LIVED: Duration = Duration::from_secs(30);
 
-/// Default ceiling on one open attempt. A WAL replay is legitimately
-/// minutes long on a bad day, but *unbounded* is not a budget: the
-/// soak2 campaign's final run left eu-central-1 with an open that looped
-/// in slatedb's compactions-log recovery for 20+ minutes — the gate
-/// contained it (one open, 648 coalesced waiters, zero storm), but the
-/// shard was unavailable the whole time. Overridable via
-/// SHARD_OPEN_DEADLINE_MS.
-const OPEN_DEADLINE_DEFAULT: Duration = Duration::from_secs(180);
+// Default ceiling on one open attempt: SHARD_OPEN_DEADLINE_MS, default
+// 180 s (crate::config ShardRuntimeConfig::open_deadline). A WAL replay
+// is legitimately minutes long on a bad day, but *unbounded* is not a
+// budget: the soak2 campaign's final run left eu-central-1 with an open
+// that looped in slatedb's compactions-log recovery for 20+ minutes —
+// the gate contained it (one open, 648 coalesced waiters, zero storm),
+// but the shard was unavailable the whole time.
 
 // Process-global counters for /v1/debug/store: the cloud-run detector for
 // this failure mode is "opens_started climbing while the serving map stays
@@ -160,11 +159,7 @@ pub fn unready_reason() -> Option<String> {
 /// broken deployment crash-loops visibly instead of idling in an
 /// ambiguous state. 0 disables.
 pub fn unready_exit_after() -> Duration {
-    std::env::var("UNREADY_EXIT_AFTER_SECS")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .map(Duration::from_secs)
-        .unwrap_or(Duration::from_secs(300))
+    Duration::from_secs(crate::config::current().shard.unready_exit_after_secs)
 }
 
 /// Watchdog: exit if this instance has been unready for too long without
@@ -242,7 +237,7 @@ struct GateInner {
     opener: OpenFn,
     // mt-lint: allow(name-keyed-map): shard prefix -> open/park gate
     st: Mutex<HashMap<String, PrefixGate>>,
-    /// Ceiling on one open attempt (see OPEN_DEADLINE_DEFAULT).
+    /// Ceiling on one open attempt (SHARD_OPEN_DEADLINE_MS via config).
     open_deadline: Duration,
     /// Per-INSTANCE mirrors of the global counters, for tests. The
     /// statics feed process metrics and are shared with every other
@@ -280,11 +275,7 @@ pub struct OpenGate {
 
 impl OpenGate {
     pub fn new(shards: Arc<RwLock<HashMap<String, Arc<ShardEngine>>>>, opener: OpenFn) -> Self {
-        let open_deadline = std::env::var("SHARD_OPEN_DEADLINE_MS")
-            .ok()
-            .and_then(|v| v.parse::<u64>().ok())
-            .map(Duration::from_millis)
-            .unwrap_or(OPEN_DEADLINE_DEFAULT);
+        let open_deadline = crate::config::current().shard.open_deadline;
         Self::with_deadline(shards, opener, open_deadline)
     }
 

@@ -15,16 +15,21 @@ fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|_| "info,slatedb=warn".into()),
         )
         .init();
+    // WP-01: the process environment is parsed ONCE into AppConfig and
+    // installed before any other check reads it (modules then read
+    // streams_slate::config::current(), never env directly).
+    streams_slate::config::install(streams_slate::config::AppConfig::load());
     // R28: a certified survival deploy must fail at boot, not OOM at
     // +28 min, if any memory knob was dropped or overridden.
     streams_slate::bootstrap::assert_certified_memprofile();
     // R28: SWEEP_MAINT_RESIDENT=0 would silently starve every cold
     // debt class (the rotation would open and immediately close each
-    // indebted engine, so no absorber lives long enough to drain).
-    if std::env::var("SWEEP_MAINT_RESIDENT")
-        .ok()
-        .and_then(|v| v.parse::<usize>().ok())
-        == Some(0)
+    // indebted engine, so no absorber lives long enough to drain). The
+    // config stores the raw value; the billing adapter floors at use.
+    if streams_slate::config::current()
+        .billing
+        .sweep_maint_resident
+        == 0
     {
         eprintln!(
             "Error: SWEEP_MAINT_RESIDENT=0 starves all cold-debt drain; \

@@ -39,12 +39,7 @@ const COMPRESS_MIN_BYTES: usize = 256;
 /// frames. Read-side support is unconditional, so this can be flipped per
 /// deployment without migration.
 pub fn frame_compress_enabled() -> bool {
-    static ON: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
-    *ON.get_or_init(|| {
-        std::env::var("FRAME_COMPRESS")
-            .map(|v| v == "1" || v.eq_ignore_ascii_case("true"))
-            .unwrap_or(false)
-    })
+    crate::config::current().crypto.frame_compress
 }
 
 #[derive(Clone)]

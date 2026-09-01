@@ -12,7 +12,7 @@ empty line after doc comment :: src/history.rs
 empty line after doc comment :: src/http.rs
 field `end_offset` is never read :: src/touch.rs
 field `sig` is never read :: src/http.rs
-field assignment outside of initializer for an instance created with Default::default() :: src/bootstrap.rs
+field assignment outside of initializer for an instance created with Default::default() :: src/config/mod.rs
 field assignment outside of initializer for an instance created with Default::default() :: src/dst/dst_tests.rs
 fields `data_store` and `keys` are never read :: src/history.rs
 function `aad` is never used :: src/bin/../crypto.rs

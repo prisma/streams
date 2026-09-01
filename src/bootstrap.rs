@@ -22,7 +22,7 @@ use crate::shard::{ShardConfig, ShardEngine};
 
 #[derive(Parser, Debug)]
 #[command(name = "streams-slate", about = "Durable Streams server on SlateDB")]
-struct Args {
+pub(crate) struct Args {
     #[arg(long, default_value = "127.0.0.1:8090")]
     listen: String,
 
@@ -567,10 +567,7 @@ impl Args {
                 object_store::ClientOptions::new()
                     .with_allow_http(true) // ClientOptions REPLACES the builder's allow_http
                     .with_pool_idle_timeout(Duration::from_secs(
-                        std::env::var("POOL_IDLE_SECS")
-                            .ok()
-                            .and_then(|v| v.parse().ok())
-                            .unwrap_or(4),
+                        crate::config::current().storage.pool_idle_secs,
                     )),
             )
             // Records Tigris's Server-Timing (their internal ms) and
@@ -620,40 +617,11 @@ impl Args {
 /// SIN fix missed the telemetry DBs because their Settings used
 /// `..Default::default()`, silently reinstating the upstream worker
 /// (concurrency 4, 4 subcompactions, 4x2 MiB read-ahead, 256 MiB
-/// rolls) beside the bounded shard DBs. Env-derived so the value is
-/// identical however the process is driven; clap args mirror the same
-/// env vars for --help discoverability.
-pub fn resolved_compactor_options() -> &'static slatedb::config::CompactorOptions {
-    static CO: std::sync::OnceLock<slatedb::config::CompactorOptions> = std::sync::OnceLock::new();
-    CO.get_or_init(|| {
-        fn env_usize(k: &str, d: usize) -> usize {
-            std::env::var(k)
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(d)
-        }
-        fn env_u64(k: &str, d: u64) -> u64 {
-            std::env::var(k)
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(d)
-        }
-        let conc = env_usize("COMPACTOR_MAX_CONCURRENT", 4);
-        let mut co = slatedb::config::CompactorOptions::default();
-        co.poll_interval = Duration::from_millis(env_u64(
-            "COMPACTOR_POLL_MS",
-            crate::DEFAULT_COMPACTOR_POLL_MS,
-        ));
-        co.max_concurrent_compactions = conc;
-        let mut w = co.worker.take().unwrap_or_default();
-        w.max_concurrent_compactions = conc;
-        w.max_subcompactions = env_usize("COMPACT_MAX_SUBCOMPACTIONS", 4);
-        w.max_fetch_tasks = env_usize("COMPACT_MAX_FETCH_TASKS", 4);
-        w.bytes_to_fetch = env_usize("COMPACT_BYTES_TO_FETCH", 2 * 1024 * 1024);
-        w.max_sst_size = env_usize("COMPACT_MAX_SST_SIZE_BYTES", 256 * 1024 * 1024);
-        co.worker = Some(w);
-        co
-    })
+/// rolls) beside the bounded shard DBs. WP-01 PR 3: the knobs live in
+/// `config::EngineConfig`, parsed once at startup; clap args mirror the
+/// same env vars for --help discoverability.
+pub fn resolved_compactor_options() -> slatedb::config::CompactorOptions {
+    crate::config::current().engine.compactor_options()
 }
 
 /// The resolved worker knobs as JSON (debug/load + startup log) and the
@@ -662,7 +630,8 @@ pub fn resolved_compactor_options() -> &'static slatedb::config::CompactorOption
 /// certified survival profile — a deploy that drops one env var must
 /// fail loudly at boot, not OOM at +28 minutes.
 pub fn compactor_profile_json() -> serde_json::Value {
-    let co = resolved_compactor_options();
+    let cfg = crate::config::current();
+    let co = cfg.engine.compactor_options();
     let w = co.worker.clone().unwrap_or_default();
     serde_json::json!({
         "max_concurrent_compactions": co.max_concurrent_compactions,
@@ -671,8 +640,7 @@ pub fn compactor_profile_json() -> serde_json::Value {
         "max_fetch_tasks": w.max_fetch_tasks,
         "bytes_to_fetch": w.bytes_to_fetch,
         "max_sst_size": w.max_sst_size,
-        "store_bulk_inflight_max_bytes": std::env::var("STORE_BULK_INFLIGHT_MAX_BYTES")
-            .ok().and_then(|v| v.parse::<u64>().ok()).unwrap_or(0),
+        "store_bulk_inflight_max_bytes": cfg.storage.bulk_inflight_max_bytes,
     })
 }
 
@@ -685,7 +653,7 @@ pub fn compactor_profile_json() -> serde_json::Value {
 pub fn production_settings_families()
 -> Vec<(&'static str, Option<slatedb::config::CompactorOptions>)> {
     vec![
-        ("shard", Some(resolved_compactor_options().clone())),
+        ("shard", Some(resolved_compactor_options())),
         (
             "history_v1",
             crate::history::history_settings().compactor_options,
@@ -702,7 +670,7 @@ pub fn production_settings_families()
 }
 
 pub fn assert_certified_memprofile() {
-    if std::env::var("MEMPROFILE_CERT").as_deref() != Ok("compute-1g") {
+    if crate::config::current().runtime.memprofile_cert.as_deref() != Some("compute-1g") {
         return;
     }
     let p = compactor_profile_json();
@@ -784,10 +752,7 @@ mod memprofile_tests {
 pub fn slatedb_runtime() -> &'static tokio::runtime::Runtime {
     static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
     RT.get_or_init(|| {
-        let threads: usize = std::env::var("SLATEDB_RT_THREADS")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(2);
+        let threads = crate::config::current().engine.slatedb_rt_threads;
         tokio::runtime::Builder::new_multi_thread()
             .worker_threads(threads)
             .thread_name("slatedb-rt")
@@ -905,11 +870,10 @@ fn parse_bool_flag(s: &str) -> Result<bool, String> {
 /// STREAMS_CERTIFICATION_MODE=1 refuses boot (fail-loud beats a
 /// silently armed canary fault in production).
 fn cert_sealed_publish_delay() -> anyhow::Result<u64> {
+    let cfg = crate::config::current();
     let ms = cert_sealed_publish_delay_from(
-        std::env::var("STREAMS_CERT_SEALED_PUBLISH_DELAY_MS")
-            .ok()
-            .as_deref(),
-        std::env::var("STREAMS_CERTIFICATION_MODE").ok().as_deref(),
+        cfg.runtime.cert_sealed_publish_delay_ms_raw.as_deref(),
+        cfg.runtime.certification_mode.as_deref(),
     )?;
     if ms > 0 {
         tracing::warn!(ms, "CERTIFICATION MODE: sealed publication delayed");
@@ -1621,6 +1585,14 @@ fn validate_engine_settings(what: &str, s: &Settings) -> anyhow::Result<()> {
 pub async fn async_main() -> anyhow::Result<()> {
     let mut args = Args::parse();
 
+    // WP-01: one parsed, immutable configuration graph for the whole
+    // process. main() already loaded+installed it before the pre-runtime
+    // checks; re-installing here is idempotent and keeps async_main
+    // self-sufficient. One redacted effective-configuration event after
+    // validation — AppConfig carries no secrets by construction.
+    crate::config::install(crate::config::AppConfig::load());
+    tracing::info!(config = %crate::config::current().redacted_summary(), "effective configuration (redacted)");
+
     // FIRST: the body ceiling sizes the absorber's worst-frame
     // reservation, which floors the process-wide budget. It must be
     // fixed before anything reads either (CHAOS-3).
@@ -1806,8 +1778,8 @@ pub async fn async_main() -> anyhow::Result<()> {
     );
     validate_release_capacity(
         args.release_posture,
-        std::env::var("MEMPROFILE_CERT").ok().as_deref(),
-        std::env::var("SSE_FEED_TOTAL_BYTES").ok().as_deref(),
+        crate::config::current().runtime.memprofile_cert.as_deref(),
+        crate::config::current().sse.feed_total_bytes_raw.as_deref(),
         &mut args.sse_max_connections,
         nofile_hard,
     )?;
@@ -2092,11 +2064,7 @@ pub async fn async_main() -> anyhow::Result<()> {
             // Operational cadence knob (fleet certification runs it at
             // 500ms to observe keep-alives inside short stall windows);
             // GatedSseBody clamps to its 50ms floor.
-            std::env::var("SSE_HEARTBEAT_MS")
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .filter(|v| *v > 0)
-                .unwrap_or(15_000),
+            crate::config::current().sse.heartbeat_ms,
         ),
         sse_connections: std::sync::atomic::AtomicU64::new(0),
         admit_max_inflight_per_stream: args.admit_max_inflight_per_stream,
@@ -2322,19 +2290,14 @@ pub async fn async_main() -> anyhow::Result<()> {
     // ONE startup budget summary (OOM review): every fixed memory
     // bound in a single log line, plus a headroom warning when their
     // sum leaves less than 100 MiB below the shed line — posture
-    // mistakes surface at boot, not at the kill line. Env reads mirror
-    // each knob's own default.
+    // mistakes surface at boot, not at the kill line. WP-01: values come
+    // from the installed AppConfig (identical parsing, once).
     {
-        let genv = |k: &str, d: usize| -> usize {
-            std::env::var(k)
-                .ok()
-                .and_then(|v| v.parse().ok())
-                .unwrap_or(d)
-        };
+        let cfg = crate::config::current();
         let shared = args.shared_cache_bytes as usize;
-        let history = genv("HISTORY_CACHE_BYTES", 32 * 1024 * 1024);
-        let postings = genv("POSTINGS_CACHE_BYTES", 64 * 1024 * 1024);
-        let telemetry = genv("TELEMETRY_CACHE_BYTES", 16 * 1024 * 1024);
+        let history = cfg.history.cache_bytes;
+        let postings = cfg.postings.cache_bytes;
+        let telemetry = cfg.billing.telemetry_cache_bytes;
         let budget = crate::history::absorb_budget();
         let absorb_budget = budget.capacity();
         let gathers = budget.gather_slots();
@@ -2352,7 +2315,7 @@ pub async fn async_main() -> anyhow::Result<()> {
         );
         let per_gather = crate::history::per_gather_reservation_bytes();
         let effective_gathers = crate::history::effective_gather_concurrency();
-        let rt_threads = genv("SLATEDB_RT_THREADS", 2);
+        let rt_threads = cfg.engine.slatedb_rt_threads;
         let mib = |b: usize| b / (1024 * 1024);
         tracing::info!(
             "memory budget: caches shared={}MiB history={}MiB postings={}MiB telemetry={}MiB; unflushed/db={}MiB; absorb budget={}MiB (worst-frame build={}MiB, per-gather reservation={}MiB, configured gather slots={}, EFFECTIVE gather concurrency={}); slatedb rt threads={}; shed line={}MB (RSS + reserved absorber bytes)",
@@ -2407,10 +2370,7 @@ pub async fn async_main() -> anyhow::Result<()> {
         .with_context(|| format!("bind {}", args.listen))?;
     tracing::info!("streams-slate listening on {}", args.listen);
     // #269: bounded h1 buffers — see http::serve_h1.
-    let max_buf: usize = std::env::var("SSE_H1_MAX_BUF")
-        .ok()
-        .and_then(|v| v.parse().ok())
-        .unwrap_or(64 * 1024);
+    let max_buf = crate::config::current().http.h1_max_buf;
     crate::http::serve_h1(listener, app, max_buf).await?;
     Ok(())
 }

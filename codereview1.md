@@ -710,18 +710,36 @@ expected:
 
 ## 8. WP-01 — Library crate, configuration model and thin bootstrap
 
-> **Status: IN PROGRESS.** PR 2 DONE (2026-09-01): `src/lib.rs` is the
-> crate root for all production modules; `src/main.rs` is a 59-line
-> composition root (allocator, tracing, pre-runtime env checks, runtime
-> construction); bootstrap/config live in `src/bootstrap.rs`
-> (`async_main`, `Args`). Gate scripts and CI now test the stable `--lib`
-> target. Clippy fingerprint baseline refreshed for the move: 54
-> dead-code entries dropped (lib `pub` items are reachable API, not dead
-> code), 2 entries moved `main.rs`→`bootstrap.rs`, 3 newly visible
-> (KeyCache len/is_empty; two private_interfaces on AppState fields —
-> pre-existing issues the lib surface exposes; WP-02 deletes AppState).
-> MT audit baseline regenerated for the same six moved sites.
-> PR 3 (config model) pending.
+> **Status: DONE** (PRs 2-3, 2026-09-01).
+> PR 2: `src/lib.rs` is the crate root for all production modules;
+> `src/main.rs` is a 59-line composition root (allocator, tracing,
+> pre-runtime env checks, runtime construction); bootstrap/config live in
+> `src/bootstrap.rs` (`async_main`, `Args`). Gate scripts and CI now test
+> the stable `--lib` target. Clippy fingerprint baseline refreshed for the
+> move: 54 dead-code entries dropped (lib `pub` items are reachable API,
+> not dead code), 2 entries moved `main.rs`→`bootstrap.rs`, 3 newly
+> visible (KeyCache len/is_empty; two private_interfaces on AppState
+> fields — pre-existing issues the lib surface exposes; WP-02 deletes
+> AppState). MT audit baseline regenerated for the same six moved sites.
+> PR 3 DONE (2026-09-01): `src/config/mod.rs` owns every environment
+> read — `AppConfig` (13 sub-configs) parses all 71 knobs once at
+> startup (`load()` = `default()` + env overlay, so the no-env value is
+> provably the default); modules read `config::current()` fields. The
+> binary installs the config before the pre-runtime checks; one redacted
+> effective-config event is logged at bootstrap. Pinned by
+> `config::tests`: default snapshot (every knob), legacy parse semantics
+> (filters/clamps/casts/warn-and-default), the COMPACT_MAX_SST_SIZE_BYTES
+> divergent dual-reader, the BILLING_MODE/ROLLUP/PATH_PREFIX dual-channel
+> quirks, `default()` == `load()` under a clean env, redacted-summary
+> secret scan, and the full 84-flag CLI surface (name/env/default) via
+> clap's own registry. Fleet's two env-mutating tests now drive the pure
+> `valid_peer_url_with`; no `set_var` remains in the tree.
+> Residual: `backpressure::Limits::from_env()` keeps its name (bootstrap
+> caller); `Args` still lives in bootstrap.rs (moves to config/cli.rs in
+> WP-17); five `std::env` reads remain by design — main.rs
+> TOKIO_WORKERS, the three cfg(test) DST_DRAIN_TRACE debug flags,
+> dst_tests' MT_CERT_PROJECTS. Clippy baseline: one fingerprint moved
+> bootstrap.rs → config/mod.rs (same moved code).
 
 ### Objective
 

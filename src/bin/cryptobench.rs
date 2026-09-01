@@ -6,6 +6,11 @@ mod crypto;
 #[path = "../tenant.rs"]
 #[allow(dead_code)] // shared identity module; side bins use only crypto
 mod tenant;
+// crypto.rs reads FRAME_COMPRESS via crate::config (WP-01); standalone
+// bins get the env-parse shim instead of the lib's AppConfig.
+#[path = "shared/config_shim.rs"]
+#[allow(dead_code)] // used only on bins whose crypto paths encrypt
+mod config;
 
 use crypto::{FrameHeader, StreamKey, decode_frame, decrypt_frame, derive_subkey, encrypt_frame};
 

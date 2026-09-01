@@ -306,9 +306,13 @@ impl ProjectRetention {
 /// QUARTER of the cell ceiling. Strict form for release validation
 /// (an unparseable value must fail boot, round-10e).
 pub(crate) fn configured_project_cap(global: u64) -> Result<u64, String> {
-    match std::env::var("SSE_FEED_PROJECT_BYTES") {
-        Err(_) => Ok(global / 4),
-        Ok(raw) => raw
+    match crate::config::current()
+        .sse
+        .feed_project_bytes_raw
+        .as_deref()
+    {
+        None => Ok(global / 4),
+        Some(raw) => raw
             .trim()
             .parse()
             .map_err(|_| format!("SSE_FEED_PROJECT_BYTES={raw:?} does not parse as a byte count")),

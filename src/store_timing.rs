@@ -82,10 +82,7 @@ pub static GET_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU6
 fn sem() -> Option<&'static tokio::sync::Semaphore> {
     static S: OnceLock<Option<tokio::sync::Semaphore>> = OnceLock::new();
     S.get_or_init(|| {
-        let n: usize = std::env::var("STORE_MAX_CONCURRENT")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
+        let n: usize = crate::config::current().storage.store_max_concurrent;
         if n == 0 {
             None
         } else {
@@ -209,21 +206,13 @@ impl BulkGate {
 /// fixed 8 MiB that understated the certified 32 MiB rolls.
 fn bulk_nominal_get() -> u64 {
     static N: OnceLock<u64> = OnceLock::new();
-    *N.get_or_init(|| {
-        std::env::var("COMPACT_MAX_SST_SIZE_BYTES")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(8 * 1024 * 1024)
-    })
+    *N.get_or_init(|| crate::config::current().storage.bulk_nominal_get_bytes)
 }
 
 fn bulk_gate() -> Option<&'static BulkGate> {
     static G: OnceLock<Option<BulkGate>> = OnceLock::new();
     G.get_or_init(|| {
-        let n: u64 = std::env::var("STORE_BULK_INFLIGHT_MAX_BYTES")
-            .ok()
-            .and_then(|v| v.parse().ok())
-            .unwrap_or(0);
+        let n: u64 = crate::config::current().storage.bulk_inflight_max_bytes;
         if n == 0 {
             None
         } else {
