@@ -5750,7 +5750,9 @@ struct HttpRig {
     addr: std::net::SocketAddr,
     clock: crate::runtime::ManualClock,
     /// PR 6-F: the simulated process's supervisor — a restart test
-    /// TERMINATES the old process through it before starting the next.
+    /// terminates the old SERVER SURFACE and its supervised runtime
+    /// loops through it before the replacement starts (engine-internal
+    /// and open-gate helper tasks join the supervisor with WP-15).
     tasks: crate::tasks::TaskSupervisor,
 }
 
@@ -6282,8 +6284,9 @@ async fn restart_invalidates_process_local_touch_cursors() {
     let v = wait(addr_a, cursor.clone()).await;
     assert_eq!(v["invalidated"], false, "{v}");
 
-    // Restart: the old process is TERMINATED through its supervisor
-    // (PR 6-F), then a NEW incarnation starts over the same store.
+    // Restart: the old server surface and its supervised runtime loops
+    // are terminated through the supervisor (PR 6-F), then a NEW
+    // incarnation starts over the same store.
     let report = rig_a
         .tasks
         .shutdown(std::time::Duration::from_secs(2))
@@ -6329,8 +6332,9 @@ async fn stream_epoch_survives_restart_but_not_recreation() {
     assert_eq!(st, 200);
     let e1 = epoch_of(&b);
 
-    // Restart: terminate the old process, then the persisted epoch is
-    // what the new incarnation serves.
+    // Restart: terminate the old server surface and its supervised
+    // loops, then the persisted epoch is what the new incarnation
+    // serves.
     let report = rig_a
         .tasks
         .shutdown(std::time::Duration::from_secs(2))

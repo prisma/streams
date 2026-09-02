@@ -108,9 +108,12 @@ pub enum TaskOutcome {
     Panicked(String),
 }
 
-/// The outcome of an ordered shutdown, by task name, in registration
-/// order. Every task listed has been JOINED: none of them is running
-/// when the report exists.
+/// The outcome of an ordered shutdown, by task name, in REGISTRATION
+/// order (PR 6.1.1-A: keyed by `TaskId` and sorted once at completion,
+/// so an immediate finisher no longer jumps ahead of a task that had to
+/// be aborted). Every task listed has been JOINED: none of them is
+/// running when the report exists, and every caller of `shutdown`
+/// receives this same report.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ShutdownReport {
     pub outcomes: Vec<(&'static str, TaskOutcome)>,
@@ -151,7 +154,15 @@ struct Supervised {
 struct SupervisorState {
     phase: Phase,
     next_id: u64,
+    /// Only ever non-empty while `Running`: the shutdown driver takes
+    /// the whole map in one step and owns it from then on.
     tasks: BTreeMap<TaskId, Supervised>,
+    /// Present once a shutdown driver exists. Waiting on this is how
+    /// EVERY caller observes the one shutdown — including callers that
+    /// arrive after the driver started.
+    completion: Option<tokio::sync::watch::Receiver<Option<Arc<ShutdownReport>>>>,
+    /// The terminal report, once the driver has joined everything.
+    report: Option<Arc<ShutdownReport>>,
 }
 
 struct Inner {
@@ -256,6 +267,8 @@ impl TaskSupervisor {
                     phase: Phase::Running,
                     next_id: 0,
                     tasks: BTreeMap::new(),
+                    completion: None,
+                    report: None,
                 }),
                 cancel_tx,
                 cancel: Cancellation { rx },
@@ -338,38 +351,101 @@ impl TaskSupervisor {
     /// cancellation, give every task until one shared deadline, abort
     /// the survivors, then JOIN every task — aborted ones included — and
     /// record how each ended. When this returns, no supervised task is
-    /// running. Idempotent; a second call finds nothing to stop.
+    /// running.
+    ///
+    /// PR 6.1.1-A: shutdown is SINGLE-FLIGHT and CANCELLATION-SAFE. The
+    /// first caller moves the task handles into one internally spawned
+    /// driver whose lifetime does not depend on any caller; every caller
+    /// (including this one) then awaits that driver's completion and
+    /// receives the SAME terminal report. Dropping a waiting caller
+    /// cannot detach the tasks, because the caller never owned them, and
+    /// only the driver may declare the runtime `Stopped`.
     pub async fn shutdown(&self, grace: Duration) -> ShutdownReport {
-        let tasks: BTreeMap<TaskId, Supervised> = {
+        let mut rx = {
             let mut st = self.inner.state.lock().unwrap();
-            if st.phase == Phase::Stopped {
-                return ShutdownReport::default();
+            if let Some(report) = st.report.clone() {
+                return (*report).clone();
             }
-            st.phase = Phase::ShuttingDown;
-            std::mem::take(&mut st.tasks)
-        };
-        let _ = self.inner.cancel_tx.send(true);
-        let deadline = tokio::time::Instant::now() + grace;
-        let mut report = ShutdownReport::default();
-        let mut survivors: Vec<Supervised> = Vec::new();
-        for (_, mut t) in tasks {
-            match tokio::time::timeout_at(deadline, &mut t.handle).await {
-                Ok(joined) => report.outcomes.push((t.name, classify(joined))),
-                Err(_elapsed) => {
-                    t.handle.abort();
-                    survivors.push(t);
+            match st.completion.clone() {
+                // A driver is already running: wait for it, do not start
+                // a second one and never declare Stopped ourselves.
+                Some(rx) => rx,
+                None => {
+                    st.phase = Phase::ShuttingDown;
+                    let tasks = std::mem::take(&mut st.tasks);
+                    let (tx, rx) = tokio::sync::watch::channel(None);
+                    st.completion = Some(rx.clone());
+                    let inner = self.inner.clone();
+                    // The DRIVER owns the handles from here. Spawned, so
+                    // cancelling any waiting caller cannot strand them.
+                    tokio::spawn(async move {
+                        let report = Arc::new(drive_shutdown(&inner, tasks, grace).await);
+                        {
+                            let mut st = inner.state.lock().unwrap();
+                            st.phase = Phase::Stopped;
+                            st.report = Some(report.clone());
+                        }
+                        let _ = tx.send(Some(report));
+                    });
+                    rx
                 }
             }
+        };
+        let _ = self.inner.cancel_tx.send(true);
+        loop {
+            if let Some(report) = rx.borrow().clone() {
+                return (*report).clone();
+            }
+            if rx.changed().await.is_err() {
+                // The driver's sender is gone without a report only if
+                // the runtime is tearing down; report what state holds.
+                return self
+                    .inner
+                    .state
+                    .lock()
+                    .unwrap()
+                    .report
+                    .clone()
+                    .map(|r| (*r).clone())
+                    .unwrap_or_default();
+            }
         }
-        for mut t in survivors {
-            report.aborted.push(t.name);
-            // Abort only REQUESTS cancellation; joining proves the future
-            // was dropped, its destructors ran and its resources are gone.
-            let joined = (&mut t.handle).await;
-            report.outcomes.push((t.name, classify(joined)));
+    }
+}
+
+/// The one shutdown sequence, owned by the driver task.
+async fn drive_shutdown(
+    inner: &Arc<Inner>,
+    tasks: BTreeMap<TaskId, Supervised>,
+    grace: Duration,
+) -> ShutdownReport {
+    let _ = inner.cancel_tx.send(true);
+    let deadline = tokio::time::Instant::now() + grace;
+    let mut outcomes: BTreeMap<TaskId, (&'static str, TaskOutcome)> = BTreeMap::new();
+    let mut survivors: Vec<(TaskId, Supervised)> = Vec::new();
+    for (id, mut t) in tasks {
+        match tokio::time::timeout_at(deadline, &mut t.handle).await {
+            Ok(joined) => {
+                outcomes.insert(id, (t.name, classify(joined)));
+            }
+            Err(_elapsed) => {
+                t.handle.abort();
+                survivors.push((id, t));
+            }
         }
-        self.inner.state.lock().unwrap().phase = Phase::Stopped;
-        report
+    }
+    let mut aborted: Vec<(TaskId, &'static str)> = Vec::new();
+    for (id, mut t) in survivors {
+        aborted.push((id, t.name));
+        // Abort only REQUESTS cancellation; joining proves the future
+        // was dropped, its destructors ran and its resources are gone.
+        let joined = (&mut t.handle).await;
+        outcomes.insert(id, (t.name, classify(joined)));
+    }
+    aborted.sort_by_key(|(id, _)| *id);
+    ShutdownReport {
+        outcomes: outcomes.into_values().collect(),
+        aborted: aborted.into_iter().map(|(_, name)| name).collect(),
     }
 }
 
@@ -440,10 +516,8 @@ mod tests {
         let after = ticks.load(Ordering::Relaxed);
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert_eq!(ticks.load(Ordering::Relaxed), after, "the loop is gone");
-        assert_eq!(
-            sup.shutdown(Duration::from_millis(10)).await,
-            ShutdownReport::default()
-        );
+        let again = sup.shutdown(Duration::from_millis(10)).await;
+        assert_eq!(again, report, "every caller sees the same terminal report");
         assert_eq!(
             sup.spawn("late", Policy::Noncritical, |_| async { TaskResult::Done }),
             Err(SpawnRejected::Stopped)
@@ -600,5 +674,134 @@ mod tests {
         let report = sup.shutdown(Duration::from_millis(100)).await;
         assert!(seen.load(Ordering::SeqCst));
         assert_eq!(report.finished(), vec!["loop"]);
+    }
+
+    /// PR 6.1.1-A: shutdown is SINGLE-FLIGHT. Two callers race it while
+    /// a stubborn task is alive: both stay pending until that task has
+    /// been aborted AND joined, both get the same report, and neither
+    /// can declare the runtime stopped early.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn concurrent_shutdowns_share_one_run_and_one_report() {
+        let sup = TaskSupervisor::new();
+        let alive = Arc::new(AtomicUsize::new(0));
+        let a2 = alive.clone();
+        sup.spawn("stubborn", Policy::Critical, move |_cancel| async move {
+            a2.fetch_add(1, Ordering::SeqCst);
+            let _guard = scopeguard(a2.clone());
+            loop {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            }
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        assert_eq!(alive.load(Ordering::SeqCst), 1);
+        let s1 = sup.clone();
+        let s2 = sup.clone();
+        let mon = sup.monitor();
+        let h1 = tokio::spawn(async move { s1.shutdown(Duration::from_millis(150)).await });
+        let h2 = tokio::spawn(async move { s2.shutdown(Duration::from_millis(150)).await });
+        // While the grace period runs, neither caller may have returned
+        // and the monitor must NOT claim the runtime is stopped.
+        tokio::time::sleep(Duration::from_millis(40)).await;
+        assert!(
+            !h1.is_finished() && !h2.is_finished(),
+            "callers wait for the drain"
+        );
+        assert_eq!(mon.phase(), Some(Phase::ShuttingDown));
+        assert_eq!(alive.load(Ordering::SeqCst), 1, "the task is still running");
+        let (r1, r2) = (h1.await.unwrap(), h2.await.unwrap());
+        assert_eq!(r1, r2, "both callers receive the same terminal report");
+        assert_eq!(r1.aborted, vec!["stubborn"]);
+        assert_eq!(
+            alive.load(Ordering::SeqCst),
+            0,
+            "joined, not merely aborted"
+        );
+        assert_eq!(mon.phase(), Some(Phase::Stopped));
+    }
+
+    /// PR 6.1.1-A: shutdown is CANCELLATION-SAFE. The first caller is
+    /// dropped after the drain has begun; the handles belong to the
+    /// driver, not to that future, so a later caller still waits for
+    /// real termination and the task's resources are gone.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn dropping_a_waiting_shutdown_cannot_detach_the_tasks() {
+        struct Probe(Arc<AtomicBool>);
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let sup = TaskSupervisor::new();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let probe = Probe(dropped.clone());
+        sup.spawn("holder", Policy::Critical, move |_cancel| async move {
+            let _probe = probe;
+            loop {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            }
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        // Poll the first shutdown just long enough to start the drain,
+        // then DROP it.
+        let first = sup.shutdown(Duration::from_millis(120));
+        assert!(
+            tokio::time::timeout(Duration::from_millis(10), first)
+                .await
+                .is_err(),
+            "the drain is under way"
+        );
+        assert!(!dropped.load(Ordering::SeqCst), "still running");
+        assert_eq!(sup.monitor().phase(), Some(Phase::ShuttingDown));
+        // A later caller must still observe REAL termination.
+        let report = sup.shutdown(Duration::from_millis(120)).await;
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "the task was joined, not detached"
+        );
+        assert_eq!(report.aborted, vec!["holder"]);
+        assert_eq!(sup.monitor().phase(), Some(Phase::Stopped));
+    }
+
+    /// PR 6.1.1-A: outcomes are in REGISTRATION order, whatever order
+    /// the tasks happen to end in.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn outcomes_are_reported_in_registration_order() {
+        let sup = TaskSupervisor::new();
+        sup.spawn("first-stubborn", Policy::Noncritical, |_| async {
+            loop {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            }
+        })
+        .unwrap();
+        sup.spawn("second-immediate", Policy::Noncritical, |_| async {
+            TaskResult::Done
+        })
+        .unwrap();
+        sup.spawn("third-polite", Policy::Noncritical, |cancel| async move {
+            cancel.cancelled().await;
+            TaskResult::Done
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(20)).await;
+        let report = sup.shutdown(Duration::from_millis(80)).await;
+        assert_eq!(
+            report.outcomes.iter().map(|(n, _)| *n).collect::<Vec<_>>(),
+            vec!["first-stubborn", "second-immediate", "third-polite"],
+        );
+        assert_eq!(report.aborted, vec!["first-stubborn"]);
+    }
+
+    /// A live counter guard: decrements when the task's future is
+    /// dropped, so "joined" is distinguishable from "abort requested".
+    fn scopeguard(alive: Arc<AtomicUsize>) -> impl Drop {
+        struct G(Arc<AtomicUsize>);
+        impl Drop for G {
+            fn drop(&mut self) {
+                self.0.fetch_sub(1, Ordering::SeqCst);
+            }
+        }
+        G(alive)
     }
 }

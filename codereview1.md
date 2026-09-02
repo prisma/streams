@@ -2991,6 +2991,33 @@ Do not rename user-facing flags while moving them. Flag cleanup is a separate se
 > stores; A's drainer emits nothing from B's outbox and does not clear
 > B's document; a runtime without fleet coordination has no repository
 > and drains nothing.
+>
+> **PR 6.1.1-A (Oracle corrective on PR 6.1): shutdown is single-flight
+> and cancellation-safe.** One internally spawned DRIVER owns the
+> drained task handles: the first caller transitions
+> `Running → ShuttingDown` under the state lock, moves the task map into
+> the driver, starts it once, and then awaits its completion like every
+> other caller. Later callers only await that same completion — they
+> never drain, never re-run the sequence and never declare `Stopped`;
+> only the driver does, after every handle is joined, and it stores the
+> terminal report so a caller arriving later receives that report rather
+> than an empty one. Because the driver is a spawned task, dropping or
+> cancelling a waiting caller cannot detach the tasks: the caller never
+> owned them. Outcomes are keyed by `TaskId`, so the report is in
+> REGISTRATION order rather than completion order. Proofs: two
+> concurrent callers stay pending while a stubborn task lives, both
+> return only after it is aborted AND joined with the same report, and
+> the monitor reads `ShuttingDown` throughout; polling the first
+> shutdown until the drain begins and then dropping it still leaves a
+> later caller waiting for real termination (drop probe fired);
+> outcomes come back in registration order. Two review follow-ups land
+> here too: the SIGTERM source is installed as a fallible preflight and
+> the prepared listener handed to a Critical task (a registration
+> failure used to panic a noncritical child and silently cost the
+> runtime its graceful-shutdown input), and the restart proofs now say
+> the old SERVER SURFACE and its supervised loops are terminated before
+> the replacement starts — engine-internal and open-gate helper tasks
+> join the supervisor with WP-15.
 
 **Implements:** the foundational part of WP-15.
 

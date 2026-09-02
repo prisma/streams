@@ -727,15 +727,21 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     crate::sharddir::spawn_unready_watchdog(&config.shard, state.runtime.clock.clone(), &tasks);
     // PR 6.1-A: SIGTERM / Ctrl-C request the ordered shutdown — the
     // accept loop returns once cancelled, then every loop is joined.
+    // PR 6.1.1-A: the platform signal source is installed HERE, as a
+    // fallible preflight, and the prepared listener is handed to the
+    // task. Registering it inside the task made a failure a panic in a
+    // noncritical child — the runtime would then silently lose its one
+    // graceful-shutdown input.
     {
+        let mut terminate = termination_source()?;
         let request = tasks.shutdown_request();
         let _ = tasks.spawn(
             "signal",
-            crate::tasks::Policy::Noncritical,
+            crate::tasks::Policy::Critical,
             move |cancel| async move {
                 tokio::select! {
                     _ = cancel.cancelled() => {}
-                    _ = shutdown_signal() => {
+                    _ = terminate.recv() => {
                         tracing::info!("termination signal: shutting down");
                         request.request();
                     }
@@ -959,20 +965,39 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     Ok(())
 }
 
-/// PR 6.1-A: the process's termination request (SIGTERM or Ctrl-C).
-async fn shutdown_signal() {
-    let ctrl_c = tokio::signal::ctrl_c();
+/// PR 6.1.1-A: the process's termination sources, installed BEFORE the
+/// signal task starts so a registration failure fails the boot instead
+/// of panicking a child task. Yields once per termination request.
+struct TerminationSource {
+    #[cfg(unix)]
+    term: tokio::signal::unix::Signal,
+}
+
+impl TerminationSource {
+    async fn recv(&mut self) {
+        #[cfg(unix)]
+        {
+            tokio::select! {
+                _ = tokio::signal::ctrl_c() => {}
+                _ = self.term.recv() => {}
+            }
+        }
+        #[cfg(not(unix))]
+        {
+            let _ = tokio::signal::ctrl_c().await;
+        }
+    }
+}
+
+fn termination_source() -> anyhow::Result<TerminationSource> {
     #[cfg(unix)]
     {
-        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
-            .expect("SIGTERM handler");
-        tokio::select! {
-            _ = ctrl_c => {}
-            _ = term.recv() => {}
-        }
+        let term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .context("install SIGTERM handler")?;
+        Ok(TerminationSource { term })
     }
     #[cfg(not(unix))]
     {
-        let _ = ctrl_c.await;
+        Ok(TerminationSource {})
     }
 }
