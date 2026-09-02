@@ -5548,86 +5548,159 @@ async fn producer_retries_across_a_split_commit_once() {
 // ---- seal-gap read semantics (review blocker: a topology transition
 // may delay a reader, but it must NEVER look like permanent closure) --
 
-/// Full-fidelity HTTP rig: real AppState + axum server on a loopback
-/// port, one shard prefix, fast absorber. The gap tests need the exact
-/// header behavior clients see, not engine-level approximations.
-/// The principal rig's fixed seed and wall-clock start (PR 4.1):
-/// deterministic by DEFAULT — two rigs built from the same seed and
-/// request schedule reproduce every migrated identity.
+/// A logical PROCESS incarnation of the deterministic rig (PR 4.1.1).
+/// Every simulated process — a restart over the same store, a second
+/// fleet instance, a token-refresh peer — carries its OWN incarnation:
+/// same base seed + same incarnation reproduces every migrated
+/// identity exactly; same base seed + a new incarnation is
+/// deterministic but DISTINCT (boot id, first stream epoch, first
+/// touch-journal epoch). Explicit by construction, never a
+/// process-global counter — that would make identity depend on test
+/// scheduling and parallelism.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+struct RigIncarnation(u64);
+
+/// The suite's base seed and wall-clock start.
 const RIG_SEED: u64 = 0x5eed_0000_0000_0001;
 const RIG_START_MS: i64 = 1_700_000_000_000;
 
-/// Domain-separated deterministic capabilities for one rig: the boot
-/// id draws from "runtime-identity", epochs from "stream-epoch", and
-/// the touch registry from "touch-journal".
-fn rig_runtime_caps(
-    seed: u64,
-) -> (
-    crate::runtime::RuntimeCaps,
-    Arc<dyn crate::runtime::Entropy>,
-) {
+/// One process's runtime capabilities: the domain-separated entropy
+/// streams ("runtime-identity", "stream-epoch", "touch-journal") and
+/// the manual clock the test drives.
+struct RigRuntime {
+    caps: crate::runtime::RuntimeCaps,
+    clock: crate::runtime::ManualClock,
+    touch_entropy: Arc<dyn crate::runtime::Entropy>,
+}
+
+/// Fold the incarnation into the base seed (splitmix64 finalizer over
+/// `base ^ incarnation·φ`): a pure function of (base, incarnation)
+/// whose distinct incarnations land on unrelated seeds.
+fn derive_rig_seed(base: u64, incarnation: RigIncarnation) -> u64 {
+    let mut z = base ^ incarnation.0.wrapping_mul(0x9e37_79b9_7f4a_7c15);
+    z = (z ^ (z >> 30)).wrapping_mul(0xbf58_476d_1ce4_e5b9);
+    z = (z ^ (z >> 27)).wrapping_mul(0x94d0_49bb_1331_11eb);
+    z ^ (z >> 31)
+}
+
+fn rig_runtime(base_seed: u64, incarnation: RigIncarnation) -> RigRuntime {
     use crate::runtime::{ManualClock, RuntimeCaps, SeededEntropy};
+    let seed = derive_rig_seed(base_seed, incarnation);
+    let clock = ManualClock::at(RIG_START_MS);
     let caps = RuntimeCaps::with_sources(
-        Arc::new(ManualClock::at(RIG_START_MS)),
+        Arc::new(clock.clone()),
         &SeededEntropy::domain(seed, "runtime-identity"),
         Arc::new(SeededEntropy::domain(seed, "stream-epoch")),
         "dst-instance",
     );
-    (caps, Arc::new(SeededEntropy::domain(seed, "touch-journal")))
-}
-
-/// PR 4.1 reproducibility proof: given the same seed, fixed clock and
-/// request schedule, two FRESH rigs produce the same boot id, the same
-/// generated stream epoch, and the same registry-class store trace
-/// (whose paths embed the epoch). The registry class is compared
-/// rather than the whole trace because WAL/manifest object counts
-/// depend on flush timing, which is not a migrated input yet.
-#[tokio::test]
-async fn same_seed_rigs_reproduce_identities_epochs_and_registry_trace() {
-    async fn run_once() -> (String, String, Vec<(crate::dst::StoreOp, String)>) {
-        let trace = crate::dst::trace_store::TraceStore::verbatim(mem());
-        let store: Arc<dyn ObjectStore> = trace.clone();
-        let (state, addr) = http_rig(store).await;
-        let ct = [("content-type", "application/json")];
-        let (st, _, _) = hreq(addr, "PUT", "/v1/stream/repro/s", &ct, b"").await;
-        assert!(st == 200 || st == 201, "create: {st}");
-        let (st, _, _) = hreq(addr, "POST", "/v1/stream/repro/s", &ct, br#"[{"n":1}]"#).await;
-        assert!(st == 200 || st == 204, "append: {st}");
-        let desc = state
-            .registry
-            .get(&state.raw_adapter_sref("repro/s"))
-            .await
-            .unwrap()
-            .expect("created");
-        let registry_ops = trace
-            .events()
-            .into_iter()
-            .filter(|e| e.path.starts_with("registry/"))
-            .map(|e| (e.op, e.path))
-            .collect();
-        (
-            state.runtime.identity.boot_id.clone(),
-            desc.stream_epoch.clone(),
-            registry_ops,
-        )
+    RigRuntime {
+        caps,
+        clock,
+        touch_entropy: Arc::new(SeededEntropy::domain(seed, "touch-journal")),
     }
-    let a = run_once().await;
-    let b = run_once().await;
-    assert_eq!(a.0, b.0, "boot id reproduces under the same seed");
-    assert_eq!(a.1, b.1, "stream epoch reproduces under the same seed");
-    assert!(!a.2.is_empty(), "the registry trace must not be vacuous");
-    assert_eq!(a.2, b.2, "registry-class store trace reproduces");
 }
 
+impl RigRuntime {
+    /// The first (and, for single-process tests, only) incarnation.
+    fn first() -> Self {
+        Self::incarnation(0)
+    }
+    /// An explicit incarnation under the suite's base seed — restart
+    /// and multi-instance tests name each simulated process this way.
+    fn incarnation(n: u64) -> Self {
+        rig_runtime(RIG_SEED, RigIncarnation(n))
+    }
+}
+
+/// The FOCUSED rig knobs a test may turn. The runtime (process
+/// incarnation + clock) is deliberately NOT one of them: it is a
+/// separate required capability of [`http_rig_build`], so every
+/// restart / multi-instance call site names its incarnation.
+struct HttpRigOptions {
+    prefixes: Vec<String>,
+    shard: crate::shard::ShardConfig,
+    per_segment_slots: i64,
+    /// Static account bearer (the negative authorization matrix).
+    auth: Option<String>,
+    /// A NAMED instance makes ring ownership real: setting
+    /// `state.ring_active` afterward makes rendezvous routing live, and
+    /// shards the ring assigns elsewhere answer 409 + Streams-Replay-To.
+    instance: Option<String>,
+    /// The shard OPENER parks on this lock right before maintenance
+    /// restoration (R26-5): the test holds the lock, fires a request,
+    /// proves nothing is answered from unrestored state, then releases.
+    open_park: Option<Arc<tokio::sync::Mutex<()>>>,
+    absorber: Option<crate::history::AbsorberConfig>,
+    /// An explicit auth service (MT Stage 5 shadow tests).
+    auth_service: Option<Arc<crate::auth::AuthService>>,
+    /// (static fleet token, workload token source); None = the default
+    /// static-bridge rig posture.
+    fleet_auth: Option<(Option<String>, Option<crate::http::FleetTokenSource>)>,
+}
+
+impl Default for HttpRigOptions {
+    fn default() -> Self {
+        Self {
+            prefixes: vec!["00".to_string()],
+            shard: crate::shard::ShardConfig::default(),
+            per_segment_slots: 0,
+            auth: None,
+            instance: None,
+            open_park: None,
+            absorber: None,
+            auth_service: None,
+            fleet_auth: None,
+        }
+    }
+}
+
+/// Absorbers that are NEVER DUE (huge byte + age thresholds): durable
+/// maintenance backlog stays put, which is what the R27-2 sweep-policy
+/// tests need — the subject is the sweep's retention decision, not
+/// absorber timing.
+fn cold_absorber() -> crate::history::AbsorberConfig {
+    crate::history::AbsorberConfig {
+        threshold_bytes: u64::MAX,
+        threshold_age: std::time::Duration::from_secs(1_000_000),
+        tick: std::time::Duration::from_millis(50),
+        sweep_every: u32::MAX,
+        ..Default::default()
+    }
+}
+
+/// A running rig: the composition root, its loopback address, and the
+/// manual clock the test drives (the SAME clock the runtime reads —
+/// proven by `rig_clock_is_the_runtime_clock`).
+struct HttpRig {
+    state: Arc<crate::http::AppState>,
+    addr: std::net::SocketAddr,
+    clock: crate::runtime::ManualClock,
+}
+
+impl HttpRig {
+    fn parts(self) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+        (self.state, self.addr)
+    }
+}
+
+/// Full-fidelity HTTP rig: real AppState + axum server on a loopback
+/// port, one shard prefix, fast absorber. The gap tests need the exact
+/// header behavior clients see, not engine-level approximations.
 async fn http_rig(
     store: Arc<dyn ObjectStore>,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
-    http_rig_opts(
-        store,
-        vec!["00".to_string()],
-        crate::shard::ShardConfig::default(),
-    )
-    .await
+    http_rig_at(store, RigRuntime::first()).await
+}
+
+/// A rig under an EXPLICIT process incarnation: the second cold server
+/// over the same store, a restart phase, a peer instance.
+async fn http_rig_at(
+    store: Arc<dyn ObjectStore>,
+    runtime: RigRuntime,
+) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+    http_rig_build(store, runtime, HttpRigOptions::default())
+        .await
+        .parts()
 }
 
 /// http_rig with explicit shard prefixes (multi-engine capacity tests)
@@ -5646,19 +5719,16 @@ async fn http_rig_auth(
     store: Arc<dyn ObjectStore>,
     token: &str,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
-    http_rig_inner(
+    http_rig_build(
         store,
-        vec!["00".to_string()],
-        crate::shard::ShardConfig::default(),
-        0,
-        Some(token.to_string()),
-        None,
-        None,
-        None,
-        None,
-        None,
+        RigRuntime::first(),
+        HttpRigOptions {
+            auth: Some(token.to_string()),
+            ..Default::default()
+        },
     )
     .await
+    .parts()
 }
 
 async fn http_rig_full(
@@ -5667,94 +5737,82 @@ async fn http_rig_full(
     shard_cfg: crate::shard::ShardConfig,
     per_segment_slots: i64,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
-    http_rig_inner(
+    http_rig_build(
         store,
-        prefixes,
-        shard_cfg,
-        per_segment_slots,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
+        RigRuntime::first(),
+        HttpRigOptions {
+            prefixes,
+            shard: shard_cfg,
+            per_segment_slots,
+            ..Default::default()
+        },
     )
     .await
+    .parts()
 }
 
-/// A rig with a NAMED instance so ring ownership is real: setting
-/// `state.ring_active` afterward makes rendezvous routing live, and
-/// shards the ring assigns elsewhere answer 409 + Streams-Replay-To.
+/// A rig with a NAMED instance so ring ownership is real (the first
+/// incarnation; a peer instance names its own via `http_rig_named_at`).
 async fn http_rig_named(
     store: Arc<dyn ObjectStore>,
     instance: &str,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
-    http_rig_inner(
+    http_rig_named_at(store, instance, RigRuntime::first()).await
+}
+
+async fn http_rig_named_at(
+    store: Arc<dyn ObjectStore>,
+    instance: &str,
+    runtime: RigRuntime,
+) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+    http_rig_build(
         store,
-        vec!["00".to_string()],
-        crate::shard::ShardConfig::default(),
-        0,
-        None,
-        Some(instance.to_string()),
-        None,
-        None,
-        None,
-        None,
+        runtime,
+        HttpRigOptions {
+            instance: Some(instance.to_string()),
+            ..Default::default()
+        },
     )
     .await
+    .parts()
 }
 
 /// A rig whose shard OPENER parks on the given lock right before
-/// maintenance restoration (R26-5): the test holds the lock, fires a
-/// request, proves nothing is answered from unrestored state, then
-/// releases. Mirrors the production open order exactly — db build →
-/// load_or_rebuild_maintenance → engine start.
+/// maintenance restoration (R26-5). Its only use is a RESTART phase
+/// over a store another rig wrote, so the incarnation is explicit.
 async fn http_rig_park(
     store: Arc<dyn ObjectStore>,
     park: Arc<tokio::sync::Mutex<()>>,
+    runtime: RigRuntime,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
-    http_rig_inner(
+    http_rig_build(
         store,
-        vec!["00".to_string()],
-        crate::shard::ShardConfig::default(),
-        0,
-        None,
-        None,
-        Some(park),
-        None,
-        None,
-        None,
+        runtime,
+        HttpRigOptions {
+            open_park: Some(park),
+            ..Default::default()
+        },
     )
     .await
+    .parts()
 }
 
-/// A rig whose absorbers are NEVER DUE (huge byte + age thresholds):
-/// durable maintenance backlog stays put, which is what the R27-2
-/// sweep-policy tests need — the subject is the sweep's retention
-/// decision, not absorber timing.
+/// A rig whose absorbers are never due (see [`cold_absorber`]).
 async fn http_rig_cold_absorb(
     store: Arc<dyn ObjectStore>,
     prefixes: Vec<String>,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
-    http_rig_inner(
+    http_rig_build(
         store,
-        prefixes,
-        crate::shard::ShardConfig::default(),
-        0,
-        None,
-        None,
-        None,
-        Some(crate::history::AbsorberConfig {
-            threshold_bytes: u64::MAX,
-            threshold_age: std::time::Duration::from_secs(1_000_000),
-            tick: std::time::Duration::from_millis(50),
-            sweep_every: u32::MAX,
+        RigRuntime::first(),
+        HttpRigOptions {
+            prefixes,
+            absorber: Some(cold_absorber()),
             ..Default::default()
-        }),
-        None,
-        None,
+        },
     )
     .await
+    .parts()
 }
 
 /// A rig with an explicit auth service (MT Stage 5 shadow tests).
@@ -5762,36 +5820,287 @@ async fn http_rig_with_auth_service(
     store: Arc<dyn ObjectStore>,
     svc: Arc<crate::auth::AuthService>,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
-    http_rig_inner(
+    http_rig_build(
         store,
-        vec!["00".to_string()],
-        crate::shard::ShardConfig::default(),
-        0,
-        None,
-        None,
-        None,
-        None,
-        Some(svc),
-        None,
+        RigRuntime::first(),
+        HttpRigOptions {
+            auth_service: Some(svc),
+            ..Default::default()
+        },
     )
     .await
+    .parts()
 }
 
-#[allow(clippy::too_many_arguments)] // test-rig option plumbing
-async fn http_rig_inner(
+/// PR 4.1.1 proof: the fixture's clock IS the runtime's clock — a test
+/// drives deterministic time through the returned handle, in both
+/// domains.
+#[tokio::test]
+async fn rig_clock_is_the_runtime_clock() {
+    let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
+    assert_eq!(rig.state.runtime.clock.now().ms(), RIG_START_MS);
+    let t0 = rig.state.runtime.clock.monotonic();
+    rig.clock.advance(std::time::Duration::from_secs(90));
+    assert_eq!(rig.state.runtime.clock.now().ms(), RIG_START_MS + 90_000);
+    assert_eq!(
+        rig.state.runtime.clock.monotonic().since(t0),
+        std::time::Duration::from_secs(90)
+    );
+    rig.clock.jump_wall(-3_600_000);
+    assert_eq!(
+        rig.state.runtime.clock.now().ms(),
+        RIG_START_MS + 90_000 - 3_600_000
+    );
+    assert_eq!(
+        rig.state.runtime.clock.monotonic().since(t0),
+        std::time::Duration::from_secs(90),
+        "a wall step never moves the runtime's monotonic domain"
+    );
+}
+
+/// The identities one rig incarnation exhibits after a fixed request
+/// schedule: boot id, the generated stream epoch, the FIRST
+/// touch-journal epoch (process-local: the first draw from this
+/// incarnation's "touch-journal" stream), and the registry-class
+/// store trace (whose paths embed the epoch). The registry class is
+/// compared rather than the whole trace because WAL/manifest object
+/// counts depend on flush timing, which is not a migrated input yet.
+struct RigIdentities {
+    boot_id: String,
+    stream_epoch: String,
+    touch_epoch: String,
+    registry_ops: Vec<(crate::dst::StoreOp, String)>,
+}
+
+async fn observe_rig_identities(runtime: RigRuntime) -> RigIdentities {
+    let trace = crate::dst::trace_store::TraceStore::verbatim(mem());
+    let store: Arc<dyn ObjectStore> = trace.clone();
+    let (state, addr) = http_rig_at(store, runtime).await;
+    let ct = [("content-type", "application/json")];
+    let (st, _, _) = hreq(addr, "PUT", "/v1/stream/repro/s", &ct, b"").await;
+    assert!(st == 200 || st == 201, "create: {st}");
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/repro/s", &ct, br#"[{"n":1}]"#).await;
+    assert!(st == 200 || st == 204, "append: {st}");
+    let desc = state
+        .registry
+        .get(&state.raw_adapter_sref("repro/s"))
+        .await
+        .unwrap()
+        .expect("created");
+    let journal = state.touch.journal(
+        desc.storage_hash(),
+        crate::crypto::RouteHash::for_stream(&desc.sref()),
+        &crate::product::watch_pinned(&desc),
+    );
+    let registry_ops = trace
+        .events()
+        .into_iter()
+        .filter(|e| e.path.starts_with("registry/"))
+        .map(|e| (e.op, e.path))
+        .collect();
+    RigIdentities {
+        boot_id: state.runtime.identity.boot_id.clone(),
+        stream_epoch: desc.stream_epoch.clone(),
+        touch_epoch: journal.epoch.clone(),
+        registry_ops,
+    }
+}
+
+/// PR 4.1.1 proof (a): the same base seed and the same incarnation,
+/// on separate stores under the same schedule, reproduce every
+/// migrated identity — boot id, stream epoch, touch-journal epoch —
+/// and the registry-class store trace.
+#[tokio::test]
+async fn same_incarnation_reproduces_identities_epochs_and_registry_trace() {
+    let a = observe_rig_identities(RigRuntime::incarnation(0)).await;
+    let b = observe_rig_identities(RigRuntime::incarnation(0)).await;
+    assert_eq!(a.boot_id, b.boot_id, "boot id reproduces");
+    assert_eq!(a.stream_epoch, b.stream_epoch, "stream epoch reproduces");
+    assert_eq!(
+        a.touch_epoch, b.touch_epoch,
+        "touch-journal epoch reproduces"
+    );
+    assert!(
+        !a.registry_ops.is_empty(),
+        "the registry trace must not be vacuous"
+    );
+    assert_eq!(
+        a.registry_ops, b.registry_ops,
+        "registry-class store trace reproduces"
+    );
+}
+
+/// PR 4.1.1 proof (b): the same base seed under DIFFERENT incarnations
+/// yields distinct process identities — and the values are PINNED, so
+/// a change to the seed derivation or the draw order shows up here
+/// instead of silently re-keying every restart test.
+#[tokio::test]
+async fn distinct_incarnations_have_distinct_pinned_identities() {
+    let a = observe_rig_identities(RigRuntime::incarnation(0)).await;
+    let b = observe_rig_identities(RigRuntime::incarnation(1)).await;
+    let b_again = observe_rig_identities(RigRuntime::incarnation(1)).await;
+    assert_ne!(a.boot_id, b.boot_id, "distinct boot ids");
+    assert_ne!(
+        a.stream_epoch, b.stream_epoch,
+        "distinct first stream epochs"
+    );
+    assert_ne!(
+        a.touch_epoch, b.touch_epoch,
+        "distinct first touch-journal epochs"
+    );
+    assert_eq!(
+        b.boot_id, b_again.boot_id,
+        "an incarnation reproduces itself"
+    );
+    assert_eq!(b.touch_epoch, b_again.touch_epoch);
+    assert_eq!(
+        (a.boot_id.as_str(), a.touch_epoch.as_str()),
+        ("5faa1cef78f5d4b5cd55004166359f76", "01f56451db1eaf18"),
+        "incarnation 0 is pinned"
+    );
+    assert_eq!(
+        (b.boot_id.as_str(), b.touch_epoch.as_str()),
+        ("50646a49dd1f31431aee147661543e10", "f83e80b818978a16"),
+        "incarnation 1 is pinned"
+    );
+}
+
+/// PR 4.1.1 proof (c): a touch cursor is PROCESS-LOCAL — its epoch
+/// names the journal incarnation that issued it. A restarted server (a
+/// new rig incarnation over the same persisted store) recreates the
+/// in-memory journal under a new epoch, so the old cursor gets the
+/// existing stale answer: an explicit RESYNC, never a silent false.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn restart_invalidates_process_local_touch_cursors() {
+    let store = mem();
+    let (_state_a, addr_a) = http_rig(store.clone()).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let (st, _, b) = preq(
+        addr_a,
+        "PUT",
+        "/v1/streams/wres",
+        &key,
+        br#"{"format":{"kind":"json"},"watches":[{"name":"by-customer","fields":["/customerId"]}]}"#,
+    )
+    .await;
+    assert_eq!(st, 201, "{}", String::from_utf8_lossy(&b));
+    let khex = crate::product::watch_key_hex(
+        "by-customer",
+        &["/customerId".to_string()],
+        &["\"c1\"".to_string()],
+    );
+    // A matching append plants the journal through the real writer path.
+    let (st, _, _) = preq(
+        addr_a,
+        "POST",
+        "/v1/streams/wres/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", "c1"),
+        ],
+        br#"{"customerId":"c1","total":1}"#,
+    )
+    .await;
+    assert_eq!(st, 200);
+    let path = |cursor: &str| {
+        format!("/v1/streams/wres/watches/by-customer/keys/{khex}?cursor={cursor}&timeoutMs=200")
+    };
+    let wait = |addr: std::net::SocketAddr, cursor: String| async move {
+        let (st, _, b) = preq(addr, "GET", &path(&cursor), &key, b"").await;
+        assert_eq!(st, 200, "{}", String::from_utf8_lossy(&b));
+        serde_json::from_slice::<serde_json::Value>(&b).unwrap()
+    };
+    // The append's touch is ingested after durability, so a waiter
+    // parked at "now" may observe it ("changed") or time out; either
+    // answer carries a cursor of THIS journal incarnation.
+    let v = wait(addr_a, "now".to_string()).await;
+    assert_ne!(v["reason"], "resync", "{v}");
+    let cursor = v["cursor"].as_str().unwrap().to_string();
+    let epoch_of = |c: &str| c.split(':').next().unwrap().to_string();
+    assert!(
+        cursor.contains(':'),
+        "a journal cursor is <epoch>:<generation>: {cursor}"
+    );
+    // Valid where it was issued: waiting at the cursor's own generation
+    // times out rather than resyncing.
+    let v = wait(addr_a, cursor.clone()).await;
+    assert_eq!(v["invalidated"], false, "{v}");
+
+    // Restart: a NEW process incarnation over the same store.
+    let (_state_b, addr_b) = http_rig_at(store, RigRuntime::incarnation(1)).await;
+    let v = wait(addr_b, cursor.clone()).await;
+    assert_eq!(v["invalidated"], true, "{v}");
+    assert_eq!(v["reason"], "resync", "{v}");
+    assert_ne!(
+        epoch_of(v["cursor"].as_str().unwrap()),
+        epoch_of(&cursor),
+        "the restarted journal carries a NEW epoch"
+    );
+}
+
+/// PR 4.1.1 proof (d): a stream epoch is PERSISTED resource identity.
+/// An ordinary restart (new incarnation, same store) serves the same
+/// epoch; hard deletion followed by recreation is a new resource, and
+/// under the new incarnation its epoch differs from the old one.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn stream_epoch_survives_restart_but_not_recreation() {
+    let store = mem();
+    let (_state_a, addr_a) = http_rig(store.clone()).await;
+    let key = [("prisma-encryption-key", PRISMA_KEY)];
+    let body = br#"{"format":{"kind":"json"},"watches":[{"name":"by-customer","fields":["/customerId"]}]}"#;
+    let epoch_of = |b: &[u8]| {
+        serde_json::from_slice::<serde_json::Value>(b).unwrap()["epoch"]
+            .as_str()
+            .expect("epoch exposed for watches")
+            .to_string()
+    };
+    let (st, _, b) = preq(addr_a, "PUT", "/v1/streams/inc", &key, body).await;
+    assert_eq!(st, 201, "{}", String::from_utf8_lossy(&b));
+    let (st, _, b) = preq(addr_a, "GET", "/v1/streams/inc", &[], b"").await;
+    assert_eq!(st, 200);
+    let e1 = epoch_of(&b);
+
+    // Restart: the persisted epoch is what the new incarnation serves.
+    let (_state_b, addr_b) = http_rig_at(store, RigRuntime::incarnation(1)).await;
+    let (st, _, b) = preq(addr_b, "GET", "/v1/streams/inc", &[], b"").await;
+    assert_eq!(st, 200);
+    assert_eq!(
+        epoch_of(&b),
+        e1,
+        "an ordinary restart preserves the descriptor's persisted stream epoch"
+    );
+
+    // Hard delete + recreate under the new incarnation: a new resource.
+    let (st, _, b) = preq(addr_b, "DELETE", "/v1/streams/inc", &key, b"").await;
+    assert!(
+        st == 200 || st == 202 || st == 204,
+        "delete: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    let (st, _, b) = preq(addr_b, "PUT", "/v1/streams/inc", &key, body).await;
+    assert_eq!(st, 201, "{}", String::from_utf8_lossy(&b));
+    let (st, _, b) = preq(addr_b, "GET", "/v1/streams/inc", &[], b"").await;
+    assert_eq!(st, 200);
+    assert_ne!(epoch_of(&b), e1, "recreation mints a new stream epoch");
+}
+
+/// Build a rig from ONE process runtime and the focused options.
+async fn http_rig_build(
     store: Arc<dyn ObjectStore>,
-    prefixes: Vec<String>,
-    shard_cfg: crate::shard::ShardConfig,
-    per_segment_slots: i64,
-    auth: Option<String>,
-    instance_name: Option<String>,
-    open_park: Option<Arc<tokio::sync::Mutex<()>>>,
-    absorber_cfg: Option<crate::history::AbsorberConfig>,
-    auth_service: Option<Arc<crate::auth::AuthService>>,
-    // (static fleet token, workload token source); None = the default
-    // static-bridge rig posture.
-    fleet_auth: Option<(Option<String>, Option<crate::http::FleetTokenSource>)>,
-) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+    runtime: RigRuntime,
+    opts: HttpRigOptions,
+) -> HttpRig {
+    let HttpRigOptions {
+        prefixes,
+        shard: shard_cfg,
+        per_segment_slots,
+        auth,
+        instance: instance_name,
+        open_park,
+        absorber: absorber_cfg,
+        auth_service,
+        fleet_auth,
+    } = opts;
     let registry = crate::registry::Registry::new(
         store.clone(),
         &crate::tenant::CellId::new("test-cell").unwrap(),
@@ -5801,8 +6110,13 @@ async fn http_rig_inner(
     // clock — every migrated ambient input (boot id, stream/consumer
     // epochs, touch-journal epochs, trusted time) is under rig control,
     // with domain-separated seeded streams so concurrent draw order
-    // cannot couple unrelated ids.
-    let (rig_runtime, touch_entropy) = rig_runtime_caps(RIG_SEED);
+    // cannot couple unrelated ids. PR 4.1.1: the process incarnation
+    // is the caller's, never fixed here.
+    let RigRuntime {
+        caps: rig_runtime,
+        clock,
+        touch_entropy,
+    } = runtime;
     let touch = Arc::new(crate::touch::TouchRegistry::with_entropy(touch_entropy));
     let shards_map: Arc<
         std::sync::RwLock<std::collections::HashMap<String, Arc<crate::shard::ShardEngine>>>,
@@ -5975,7 +6289,7 @@ async fn http_rig_inner(
         // connection path tested only by out-of-tree probes).
         crate::http::serve_h1(listener, app, 64 * 1024).await.ok();
     });
-    (state, addr)
+    HttpRig { state, addr, clock }
 }
 
 const RIG_KEY_B64: &str = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="; // skey() = [7u8; 32]
@@ -10612,8 +10926,8 @@ async fn watch_urls_verify_on_a_process_that_never_saw_the_key() {
     let exp = crate::shard::now_ms() / 1000 + 120;
 
     // A second server over the same store: never saw the key, never
-    // absorbed a record, never issued this URL.
-    let (state2, addr2) = http_rig(store).await;
+    // absorbed a record, never issued this URL — its OWN incarnation.
+    let (state2, addr2) = http_rig_at(store, RigRuntime::incarnation(1)).await;
     let cap = format!(
         "proj-test.{exp}.{}",
         crate::crypto::watch_capability_sig(
@@ -17610,19 +17924,17 @@ async fn shadow_mode_observes_without_enforcing() {
     })
     .unwrap();
 
-    let (state, addr) = http_rig_inner(
+    let (state, addr) = http_rig_build(
         mem(),
-        vec!["00".to_string()],
-        crate::shard::ShardConfig::default(),
-        0,
-        Some("shadow-bearer".to_string()),
-        None,
-        None,
-        None,
-        Some(svc.clone()),
-        None,
+        RigRuntime::first(),
+        HttpRigOptions {
+            auth: Some("shadow-bearer".to_string()),
+            auth_service: Some(svc.clone()),
+            ..Default::default()
+        },
     )
-    .await;
+    .await
+    .parts();
 
     #[derive(serde::Serialize)]
     struct Claims<'a> {
@@ -23580,7 +23892,7 @@ async fn a_stale_applied_cursor_is_refused_after_crash_restart() {
 
     // Phase 2: reopen the live store, hold dispatch, apply r2, mint the
     // applied-session cursor (position 2 — past the snapshot's tail).
-    let (state2, addr2) = http_rig(store.clone()).await;
+    let (state2, addr2) = http_rig_at(store.clone(), RigRuntime::incarnation(1)).await;
     state2.registry.invalidate(&state2.raw_adapter_sref("sc"));
     let desc = state2
         .registry
@@ -27016,7 +27328,7 @@ async fn first_request_waits_for_restoration_then_sees_the_restored_ledger() {
     // Rig 2: fresh gate over the same store, restoration parked.
     let park = Arc::new(tokio::sync::Mutex::new(()));
     let held = park.clone().lock_owned().await;
-    let (_state2, addr2) = http_rig_park(store, park.clone()).await;
+    let (_state2, addr2) = http_rig_park(store, park.clone(), RigRuntime::incarnation(1)).await;
     let req = tokio::spawn(async move {
         hreq(addr2, "POST", "/v1/stream/restore-x", &ct, br#"[{"n":2}]"#).await
     });
@@ -29013,19 +29325,17 @@ async fn jwt_only_fleet_relay_succeeds() {
     // Receiver A: owns its shard, static bridge token configured (the
     // receiving posture is irrelevant to the claim — the SENDER is
     // token-free).
-    let (state_a, addr_a) = http_rig_inner(
+    let (state_a, addr_a) = http_rig_build(
         store.clone(),
-        vec!["00".to_string()],
-        crate::shard::ShardConfig::default(),
-        0,
-        None,
-        Some("rig-a".to_string()),
-        None,
-        None,
-        Some(svc.clone()),
-        None,
+        RigRuntime::first(),
+        HttpRigOptions {
+            instance: Some("rig-a".to_string()),
+            auth_service: Some(svc.clone()),
+            ..Default::default()
+        },
     )
-    .await;
+    .await
+    .parts();
     // Sender B: NO static fleet token; its outbound identity is a
     // workload JWT minted by the source with EXACTLY telemetry-append.
     let src_calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
@@ -29038,19 +29348,18 @@ async fn jwt_only_fleet_relay_succeeds() {
             crate::shard::now_ms() / 1000,
         ))
     });
-    let (state_b, _addr_b) = http_rig_inner(
+    let (state_b, _addr_b) = http_rig_build(
         store.clone(),
-        vec!["00".to_string()],
-        crate::shard::ShardConfig::default(),
-        0,
-        None,
-        Some("rig-b".to_string()),
-        None,
-        None,
-        Some(svc.clone()),
-        Some((None, Some(src))),
+        RigRuntime::incarnation(1),
+        HttpRigOptions {
+            instance: Some("rig-b".to_string()),
+            auth_service: Some(svc.clone()),
+            fleet_auth: Some((None, Some(src))),
+            ..Default::default()
+        },
     )
-    .await;
+    .await
+    .parts();
     // B's ring says A owns the shard; B's peer map resolves A's URL.
     *state_b.ring_active.write().unwrap() = vec!["rig-a".to_string(), "rig-b".to_string()];
     state_b
@@ -29123,19 +29432,17 @@ async fn rotated_workload_jwt_refreshes_and_retries() {
     })
     .unwrap();
     let store = mem();
-    let (state_a, addr_a) = http_rig_inner(
+    let (state_a, addr_a) = http_rig_build(
         store.clone(),
-        vec!["00".to_string()],
-        crate::shard::ShardConfig::default(),
-        0,
-        None,
-        Some("rig-a".to_string()),
-        None,
-        None,
-        Some(svc.clone()),
-        None,
+        RigRuntime::first(),
+        HttpRigOptions {
+            instance: Some("rig-a".to_string()),
+            auth_service: Some(svc.clone()),
+            ..Default::default()
+        },
     )
-    .await;
+    .await
+    .parts();
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let forced = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let (c2, f2) = (calls.clone(), forced.clone());
@@ -29150,19 +29457,18 @@ async fn rotated_workload_jwt_refreshes_and_retries() {
             Some(sr2_workload_jwt("wl-1", &["telemetry-append"], now - 700))
         }
     });
-    let (state_b, _addr_b) = http_rig_inner(
+    let (state_b, _addr_b) = http_rig_build(
         store.clone(),
-        vec!["00".to_string()],
-        crate::shard::ShardConfig::default(),
-        0,
-        None,
-        Some("rig-b".to_string()),
-        None,
-        None,
-        Some(svc.clone()),
-        Some((None, Some(src))),
+        RigRuntime::incarnation(1),
+        HttpRigOptions {
+            instance: Some("rig-b".to_string()),
+            auth_service: Some(svc.clone()),
+            fleet_auth: Some((None, Some(src))),
+            ..Default::default()
+        },
     )
-    .await;
+    .await
+    .parts();
     *state_b.ring_active.write().unwrap() = vec!["rig-a".to_string(), "rig-b".to_string()];
     state_b
         .ring_overrides
@@ -29600,19 +29906,18 @@ async fn static_token_is_dead_in_workload_mode() {
             crate::shard::now_ms() / 1000,
         ))
     });
-    let (state, addr) = http_rig_inner(
+    let (state, addr) = http_rig_build(
         mem(),
-        vec!["00".to_string()],
-        crate::shard::ShardConfig::default(),
-        0,
-        None,
-        Some("rig-wm".to_string()),
-        None,
-        None,
-        Some(svc),
-        Some((Some("dst-internal-token".to_string()), Some(src.clone()))),
+        RigRuntime::first(),
+        HttpRigOptions {
+            instance: Some("rig-wm".to_string()),
+            auth_service: Some(svc),
+            fleet_auth: Some((Some("dst-internal-token".to_string()), Some(src.clone()))),
+            ..Default::default()
+        },
     )
-    .await;
+    .await
+    .parts();
     let ct = ("content-type", "application/json");
     let stat = ("authorization", "Bearer dst-internal-token");
     let (st, _, _) = hreq(
@@ -32264,7 +32569,7 @@ async fn segment_close_receiver_scopes_authorizes_and_is_idempotent() {
 async fn collection_seal_relays_segment_closes_to_the_foreign_owner() {
     let store = mem();
     let (state_a, _addr_a) = http_rig_named(store.clone(), "inst-a").await;
-    let (state_b, addr_b) = http_rig_named(store, "inst-b").await;
+    let (state_b, addr_b) = http_rig_named_at(store, "inst-b", RigRuntime::incarnation(1)).await;
     let (st, _, _) = preq(
         _addr_a,
         "PUT",
@@ -33918,22 +34223,28 @@ async fn http_rig_owner(
     store: Arc<dyn ObjectStore>,
     instance: &str,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
-    http_rig_inner(
+    http_rig_owner_at(store, instance, RigRuntime::first()).await
+}
+
+async fn http_rig_owner_at(
+    store: Arc<dyn ObjectStore>,
+    instance: &str,
+    runtime: RigRuntime,
+) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
+    http_rig_build(
         store,
-        ["00", "01", "10", "11"]
-            .iter()
-            .map(|s| s.to_string())
-            .collect(),
-        crate::shard::ShardConfig::default(),
-        0,
-        None,
-        Some(instance.to_string()),
-        None,
-        None,
-        None,
-        None,
+        runtime,
+        HttpRigOptions {
+            prefixes: ["00", "01", "10", "11"]
+                .iter()
+                .map(|s| s.to_string())
+                .collect(),
+            instance: Some(instance.to_string()),
+            ..Default::default()
+        },
     )
     .await
+    .parts()
 }
 
 /// Round-10 two-instance groundwork (red): a subscriber landing on
@@ -33948,7 +34259,7 @@ async fn http_rig_owner(
 async fn livefeed_remote_sealed_predecessor_streams_through_owner() {
     let store = mem();
     let (state_a, addr_a) = http_rig_owner(store.clone(), "inst-a").await;
-    let (state_b, addr_b) = http_rig_owner(store, "inst-b").await;
+    let (state_b, addr_b) = http_rig_owner_at(store, "inst-b", RigRuntime::incarnation(1)).await;
     // History on A, then a split (parent seg0 seals, the child opens).
     let (st, _, _) = preq(
         addr_a,
@@ -34167,8 +34478,9 @@ async fn livefeed_rawkey_records_sse_survives_split() {
 async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
     let store = mem();
     let (state_a, addr_a) = http_rig_owner(store.clone(), "inst-a").await;
-    let (state_b, addr_b) = http_rig_owner(store.clone(), "inst-b").await;
-    let (_state_c, addr_c) = http_rig_owner(store, "inst-c").await;
+    let (state_b, addr_b) =
+        http_rig_owner_at(store.clone(), "inst-b", RigRuntime::incarnation(1)).await;
+    let (_state_c, addr_c) = http_rig_owner_at(store, "inst-c", RigRuntime::incarnation(2)).await;
     let (st, _, _) = preq(
         addr_a,
         "PUT",
@@ -34559,7 +34871,7 @@ async fn livefeed_parked_live_session_is_cut_off_by_engine_close() {
 async fn livefeed_blackholed_peer_never_suppresses_heartbeats() {
     let store = mem();
     let (state_a, addr_a) = http_rig_owner(store.clone(), "inst-a").await;
-    let (state_b, addr_b) = http_rig_owner(store, "inst-b").await;
+    let (state_b, addr_b) = http_rig_owner_at(store, "inst-b", RigRuntime::incarnation(1)).await;
     // Fast keep-alives so the leg proves cadence in seconds.
     state_b
         .sse_heartbeat_ms
@@ -36540,6 +36852,7 @@ async fn inflight_admission_answers_only_after_authentication() {
 /// bearer for wire requests.
 async fn pm_enforce_rig(
     store: Arc<dyn ObjectStore>,
+    runtime: RigRuntime,
 ) -> (
     Arc<crate::http::AppState>,
     std::net::SocketAddr,
@@ -36613,7 +36926,16 @@ async fn pm_enforce_rig(
         feed_version: 1,
     })
     .unwrap();
-    let (state, addr) = http_rig_with_auth_service(store, svc).await;
+    let (state, addr) = http_rig_build(
+        store,
+        runtime,
+        HttpRigOptions {
+            auth_service: Some(svc),
+            ..Default::default()
+        },
+    )
+    .await
+    .parts();
 
     #[derive(serde::Serialize)]
     struct C<'a> {
@@ -36663,7 +36985,7 @@ async fn pm_enforce_rig(
 /// point restores appends (hysteresis pinned at the unit level).
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn project_memory_pressure_throttles_new_appends_only() {
-    let (state, addr, bearer, pid) = pm_enforce_rig(mem()).await;
+    let (state, addr, bearer, pid) = pm_enforce_rig(mem(), RigRuntime::first()).await;
     state
         .project_memory_pressure_bytes
         .store(256 * 1024, std::sync::atomic::Ordering::Relaxed);
@@ -36745,7 +37067,7 @@ async fn project_memory_pressure_throttles_new_appends_only() {
 async fn frame_debt_survives_restart_via_tail_seed() {
     let _l = gap_lock().lock().await; // global absorb-pause flag
     let store = mem();
-    let (state, addr, bearer, pid) = pm_enforce_rig(store.clone()).await;
+    let (state, addr, bearer, pid) = pm_enforce_rig(store.clone(), RigRuntime::first()).await;
     crate::history::absorb_pause_flag().store(true, Ordering::Relaxed);
     let auth = ("authorization", bearer.as_str());
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
@@ -36784,7 +37106,7 @@ async fn frame_debt_survives_restart_via_tail_seed() {
 
     // New incarnation on the SAME store: the first pressured append
     // binds and seeds from the durable tail — never from zero.
-    let (state2, addr2, bearer2, pid2) = pm_enforce_rig(store).await;
+    let (state2, addr2, bearer2, pid2) = pm_enforce_rig(store, RigRuntime::incarnation(1)).await;
     let auth2 = ("authorization", bearer2.as_str());
     let (st, _, b) = preq(
         addr2,
