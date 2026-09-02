@@ -3103,6 +3103,28 @@ Do not rename user-facing flags while moving them. Flag cleanup is a separate se
 > whatever the test called it, which is precisely the divergence a
 > config-derived assembly exposes.
 
+> **PR 6.1.2-C (Oracle corrective on PR 6.1.1): complete signal preflight,
+> and bootstrap back inside its boundary.** 6.1.1-A claimed no long-lived
+> loop starts before every fallible startup step has passed, but the
+> SIGTERM install ran AFTER `spawn_unready_watchdog`, so a registration
+> failure returned from `run` with a task already running behind it. And
+> Ctrl-C was never preflighted at all: `tokio::signal::ctrl_c()` was
+> constructed INSIDE the wait and its `Result` discarded, so a failed
+> registration was indistinguishable from a delivered signal — the
+> runtime could believe it had been asked to stop. `TerminationSource`
+> now installs every supported source together, fallibly, as the last
+> preflight before the first supervised task exists; the task only waits
+> on already-installed sources, so it has no registration step that can
+> fail inside a child. Proved by raising BOTH SIGINT and SIGTERM against
+> one prepared source, having first shown that an unsignalled source
+> keeps waiting — in ONE test, because a raised signal reaches every
+> prepared source in the process, so a second signal test running in
+> parallel observes the first one's raises (which is exactly how the
+> split version failed in the full suite while passing in isolation).
+> The lifecycle unit moved to `src/tasks/signal.rs`, taking
+> `src/bootstrap.rs` from 1,006 to 957 lines — back under the 1,000-line
+> boundary the review treats as a decomposition trigger.
+
 **Implements:** the foundational part of WP-15.
 
 Replace HTTP-owned randomness and process-time lookups in core/background paths with explicit `Clock`, `Entropy` and `RuntimeIdentity` values. Migrate boot IDs, epochs, retry timing and test time first. Keep cryptographic randomness behind an appropriately strong production implementation; deterministic entropy is test-only.

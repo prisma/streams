@@ -14,6 +14,9 @@
 //! state, and a strong edge from the state back to the supervisor would
 //! make a runtime that failed to start immortal.
 
+/// The runtime's termination input, prepared before any task starts.
+pub mod signal;
+
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
