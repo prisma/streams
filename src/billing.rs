@@ -957,7 +957,7 @@ pub fn meter_read(
     bytes: u64,
     records: u64,
 ) {
-    state.billing.reads().meter(
+    state.billing.meter_read(
         &identity_of(state, desc),
         RowDelta {
             read_payload_bytes: bytes,
@@ -993,7 +993,7 @@ pub fn meter_pull(
     bytes: u64,
     records: u64,
 ) {
-    state.billing.reads().meter(
+    state.billing.meter_read(
         &identity_of(state, desc),
         RowDelta {
             read_payload_bytes: bytes,
@@ -1006,7 +1006,7 @@ pub fn meter_pull(
 
 /// Meter a zero-data queue operation (settle/extend/config).
 pub fn meter_queue_op(state: &crate::http::AppState, desc: &crate::registry::StreamDesc) {
-    state.billing.reads().meter(
+    state.billing.meter_read(
         &identity_of(state, desc),
         RowDelta {
             queue_operations: 1,
@@ -1018,7 +1018,7 @@ pub fn meter_queue_op(state: &crate::http::AppState, desc: &crate::registry::Str
 /// Count an accepted append request (informational dimension §4.5; the
 /// BILLED ingest bytes come from the committer, not this counter).
 pub fn meter_append_request(state: &crate::http::AppState, desc: &crate::registry::StreamDesc) {
-    state.billing.reads().meter(
+    state.billing.meter_read(
         &identity_of(state, desc),
         RowDelta {
             append_requests: 1,
@@ -1115,13 +1115,13 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
     // spool, and a spooled batch is deleted only after `_usage`
     // acknowledged — a ledger outage accumulates on disk while the
     // in-memory accumulator keeps rotating normally.
-    state.billing.reads().seal_if_aged(READ_FLUSH_INTERVAL_MS);
+    state.billing.seal_aged_reads(READ_FLUSH_INTERVAL_MS);
     let mut spooled_keys: Vec<Vec<u8>> = Vec::new();
     let mut memless: Vec<ReadBatch> = Vec::new();
     let mut body_bytes = 0usize;
-    if let Some(spool) = state.billing.read_spool() {
-        spool_sealed(state.billing.reads(), spool, 64).await?;
-        for (key, rb) in spool.pending(64).await.map_err(|e| e.to_string())? {
+    if state.billing.read_spool_open() {
+        state.billing.spool_sealed_reads(64).await?;
+        for (key, rb) in state.billing.pending_spooled(64).await? {
             let env = envelope(
                 &cell,
                 UsagePayload::ReadBatch(rb.clone()),
@@ -1141,7 +1141,7 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
         );
     } else {
         // No spool configured (bare test rigs): the pre-spool path.
-        memless = state.billing.reads().drain_sealed(16);
+        memless = state.billing.drain_sealed_reads(16);
         for rb in &memless {
             let env = envelope(
                 &cell,
@@ -1410,12 +1410,7 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
         Ok(()) => {
             // Spooled batches leave the spool ONLY now, after the
             // ledger acknowledged durably.
-            if let Some(spool) = state.billing.read_spool() {
-                spool
-                    .remove(&spooled_keys)
-                    .await
-                    .map_err(|e| e.to_string())?;
-            }
+            state.billing.remove_spooled(&spooled_keys).await?;
             for (engine, hash, ver, finals) in acks {
                 engine.submit_usage_ack(hash, ver, finals);
             }
@@ -1424,7 +1419,7 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
         Err(e) => {
             // Spooled batches stay durable in the spool; memless ones
             // requeue at the accumulator's front.
-            state.billing.reads().requeue(memless);
+            state.billing.requeue_reads(memless);
             Err(e)
         }
     }
@@ -1436,7 +1431,7 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
 /// (round-22 items 2b/10): there is no memory-only window in which a
 /// crash could lose metered reads.
 pub async fn open_read_spool(state: &std::sync::Arc<crate::http::AppState>) -> anyhow::Result<()> {
-    if state.billing.read_spool().is_some() {
+    if state.billing.read_spool_open() {
         return Ok(());
     }
     let prefix = state
@@ -1539,7 +1534,7 @@ pub fn spawn_telemetry(
 /// through the normal in-process read path, apply it transactionally,
 /// advance. Returns envelopes applied (0 = caught up).
 pub async fn rollup_step(state: &std::sync::Arc<crate::http::AppState>) -> Result<usize, String> {
-    let Some(rollup) = state.billing.rollup() else {
+    let Some(rollup) = state.rollup.get() else {
         return Ok(0);
     };
     let Some(key) = state.billing.usage_key() else {
@@ -1581,7 +1576,7 @@ pub async fn rollup_step(state: &std::sync::Arc<crate::http::AppState>) -> Resul
 pub async fn ops_rollup_step(
     state: &std::sync::Arc<crate::http::AppState>,
 ) -> Result<usize, String> {
-    let Some(rollup) = state.billing.rollup() else {
+    let Some(rollup) = state.rollup.get() else {
         return Ok(0);
     };
     let Some(key) = state.billing.usage_key() else {
@@ -1747,12 +1742,12 @@ pub async fn open_rollup(
     state: &std::sync::Arc<crate::http::AppState>,
     prefix: &str,
 ) -> anyhow::Result<()> {
-    if state.billing.rollup().is_some() {
+    if state.rollup.get().is_some() {
         return Ok(());
     }
     let r =
         crate::rollup::UsageRollup::open(state.data_store.clone(), prefix, &state.config).await?;
-    let _ = state.billing.install_rollup(std::sync::Arc::new(r));
+    let _ = state.rollup.install(std::sync::Arc::new(r));
     Ok(())
 }
 
@@ -1801,7 +1796,7 @@ pub fn spawn_rollup(
                 let now = crate::shard::now_ms();
                 if now - last_close > 3_600_000 {
                     last_close = now;
-                    let rollup2 = state.billing.rollup().unwrap().clone();
+                    let rollup2 = state.rollup.get().unwrap().clone();
                     let store2 = state.data_store.clone();
                     let pfx = prefix.clone();
                     if let Ok(n) = rollup2.sweep_ops_raw(now, 10_000).await
@@ -2218,17 +2213,17 @@ impl ReadSpool {
 /// their own budgeted residents, and a process-global gauge summed
 /// them into false bound violations.
 #[derive(Default)]
-pub struct SweepSched {
+pub(crate) struct SweepSched {
     /// prefix -> custody value for engines this scheduler holds.
     // mt-lint: allow(name-keyed-map): shard prefix (sweep custody), not stream identity
-    opened: std::sync::Mutex<std::collections::HashMap<String, u64>>,
+    pub(super) opened: std::sync::Mutex<std::collections::HashMap<String, u64>>,
     /// prefix -> sweeps spent resident (quantum accounting).
     // mt-lint: allow(name-keyed-map): shard prefix (sweep quantum accounting)
-    cycles: std::sync::Mutex<std::collections::HashMap<String, usize>>,
+    pub(super) cycles: std::sync::Mutex<std::collections::HashMap<String, usize>>,
     /// Peak concurrently scheduler-held engines (per state).
-    peak: std::sync::atomic::AtomicUsize,
+    pub(super) peak: std::sync::atomic::AtomicUsize,
     /// Sweep cycle counter (rotation).
-    cycle: std::sync::atomic::AtomicUsize,
+    pub(super) cycle: std::sync::atomic::AtomicUsize,
     /// R30: tombstone-walk continuation — the registry page token to
     /// RESUME from next sweep. Set when the walk stops on a budget
     /// deferral (resume at the deferred descriptor's page), cleared on
@@ -2238,21 +2233,13 @@ pub struct SweepSched {
     /// billing closure indefinitely. In-memory: a restart resumes from
     /// the beginning, which costs one extra circle, never correctness
     /// (the walk is idempotent).
-    walk_cursor: std::sync::Mutex<Option<String>>,
-}
-
-impl SweepSched {
-    /// Engines this scheduler currently marks as held (test observability).
-    #[cfg(test)]
-    pub fn held_for_test(&self) -> usize {
-        self.opened.lock().unwrap().len()
-    }
+    pub(super) walk_cursor: std::sync::Mutex<Option<String>>,
 }
 
 /// Sweep-resident engine count (ops gauge): how many engines exist
 /// ONLY because debt discovery opened them.
 pub fn sweep_resident_engines(state: &std::sync::Arc<crate::http::AppState>) -> u64 {
-    state.billing.sweep().opened.lock().unwrap().len() as u64
+    state.billing.sweep_resident_engines() as u64
 }
 
 /// Engines whose custody the scheduler currently holds, DERIVED from
@@ -2278,11 +2265,7 @@ pub fn scheduler_held(state: &std::sync::Arc<crate::http::AppState>) -> usize {
 /// re-open on its next request.
 pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>) {
     let budget = sweep_resident_budget(&state.config.billing);
-    let cycle = state
-        .billing
-        .sweep()
-        .cycle
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let cycle = state.billing.next_sweep_cycle();
 
     // Phase 1 — audit the scheduler's existing residents. An engine we
     // opened on an earlier cycle is ours to close ONLY while the
@@ -2297,15 +2280,7 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
     // can re-admit a just-evicted resident ahead of shards that have
     // never had a turn (fairness hole found by the rotation gate).
     let mut evicted_now: std::collections::HashSet<String> = std::collections::HashSet::new();
-    let mut marked: Vec<String> = state
-        .billing
-        .sweep()
-        .opened
-        .lock()
-        .unwrap()
-        .keys()
-        .cloned()
-        .collect();
+    let mut marked: Vec<String> = state.billing.sweep_custody_prefixes();
     marked.sort();
     let n = marked.len();
     if n > 0 {
@@ -2326,12 +2301,7 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
             continue;
         }
         let debt = probe_debt(&engine).await;
-        let cycles = {
-            let mut c = state.billing.sweep().cycles.lock().unwrap();
-            let e = c.entry(prefix.clone()).or_insert(0);
-            *e += 1;
-            *e
-        };
+        let cycles = state.billing.note_sweep_cycle(&prefix);
         if debt.any() && retained < budget && cycles <= residence_quantum(&state.config.billing) {
             retained += 1;
             continue;
@@ -2529,14 +2499,11 @@ fn mark(
 ) -> bool {
     match install_custody(engine) {
         Some(seq) => {
+            // `scheduler_held` derives from the engines' custody stamps
+            // (already installed above), so the peak is exact here.
             state
                 .billing
-                .sweep()
-                .opened
-                .lock()
-                .unwrap()
-                .insert(prefix.to_string(), seq);
-            note_peak(state);
+                .claim_sweep_custody(prefix, seq, scheduler_held(state));
             true
         }
         None => false,
@@ -2544,8 +2511,7 @@ fn mark(
 }
 
 fn unmark(state: &std::sync::Arc<crate::http::AppState>, prefix: &str) {
-    state.billing.sweep().opened.lock().unwrap().remove(prefix);
-    state.billing.sweep().cycles.lock().unwrap().remove(prefix);
+    state.billing.release_sweep_custody(prefix);
 }
 
 /// Still under the custody value we installed? Anything else —
@@ -2555,14 +2521,7 @@ fn custody_intact(
     prefix: &str,
     engine: &std::sync::Arc<crate::shard::ShardEngine>,
 ) -> bool {
-    let rec = state
-        .billing
-        .sweep()
-        .opened
-        .lock()
-        .unwrap()
-        .get(prefix)
-        .copied();
+    let rec = state.billing.sweep_custody_seq(prefix);
     match rec {
         Some(seq) => {
             engine
@@ -2576,29 +2535,12 @@ fn custody_intact(
 
 /// Peak concurrently scheduler-held engines, for the DST bound gate.
 pub fn sweep_open_peak(state: &std::sync::Arc<crate::http::AppState>) -> usize {
-    state
-        .billing
-        .sweep()
-        .peak
-        .load(std::sync::atomic::Ordering::Relaxed)
+    state.billing.sweep_peak()
 }
 #[cfg(test)]
 pub fn sweep_open_peak_reset(state: &std::sync::Arc<crate::http::AppState>) {
-    state
-        .billing
-        .sweep()
-        .peak
-        .store(0, std::sync::atomic::Ordering::Relaxed);
+    state.billing.reset_sweep_peak();
 }
-fn note_peak(state: &std::sync::Arc<crate::http::AppState>) {
-    let now = scheduler_held(state);
-    state
-        .billing
-        .sweep()
-        .peak
-        .fetch_max(now, std::sync::atomic::Ordering::Relaxed);
-}
-
 /// Close an engine the scheduler owns. Removal from the map happens
 /// FIRST (no new engine_for resolution can hand it out), then the
 /// touch counter is re-checked: engine_for increments it INSIDE the
@@ -2610,15 +2552,7 @@ fn note_peak(state: &std::sync::Arc<crate::http::AppState>) {
 /// by replay contract.
 fn close_scheduler_engine(state: &std::sync::Arc<crate::http::AppState>, prefix: &str) {
     use std::sync::atomic::Ordering;
-    let Some(seq) = state
-        .billing
-        .sweep()
-        .opened
-        .lock()
-        .unwrap()
-        .get(prefix)
-        .copied()
-    else {
+    let Some(seq) = state.billing.sweep_custody_seq(prefix) else {
         return;
     };
     // R30: ONE write guard held through remove -> custody CAS ->
@@ -2721,7 +2655,7 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
     if state.billing.usage_key().is_none() {
         return;
     }
-    let mut after: Option<String> = state.billing.sweep().walk_cursor.lock().unwrap().clone();
+    let mut after: Option<String> = state.billing.sweep_walk_cursor();
     loop {
         let page = match state
             .registry
@@ -2757,7 +2691,7 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
                     // resume AT THIS PAGE next sweep — the continuation
                     // is what makes deferral fair instead of starving
                     // later terminal descriptors (R30).
-                    *state.billing.sweep().walk_cursor.lock().unwrap() = after.clone();
+                    state.billing.set_sweep_walk_cursor(after.clone());
                     return;
                 };
                 let hash = d.dynamic_segment_identity(sid);
@@ -2801,7 +2735,7 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
         }
         if page.exhausted || page.next_after.is_none() {
             // Full circle from wherever we started: wrap.
-            *state.billing.sweep().walk_cursor.lock().unwrap() = None;
+            state.billing.set_sweep_walk_cursor(None);
             return;
         }
         after = page.next_after;

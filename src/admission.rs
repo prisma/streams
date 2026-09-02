@@ -370,7 +370,44 @@ impl AdmissionController {
 
     /// The maintenance-backpressure latch (R23-1): re-evaluated by the
     /// sampler tick, consulted by the append path.
-    pub fn maintenance(&self) -> &GlobalLatch {
+    /// Apply a fresh backpressure snapshot to the instance-wide
+    /// maintenance latch; returns whether it is engaged (PR 6.1-C: the
+    /// latch is the controller's implementation, not its API).
+    pub fn apply_maintenance(
+        &self,
+        snapshot: &crate::backpressure::Snapshot,
+        limits: &crate::backpressure::Limits,
+    ) -> bool {
+        self.maintenance().apply(snapshot, limits)
+    }
+
+    /// Admit a write against the instance-wide latch and the shard's own
+    /// maintenance debt; `Some(cause)` is a refusal.
+    pub fn admit_maintenance(
+        &self,
+        engine: &crate::shard::ShardEngine,
+        limits: &crate::backpressure::Limits,
+    ) -> Option<crate::backpressure::Cause> {
+        crate::backpressure::admit(engine, self.maintenance(), limits)
+    }
+
+    /// Record that a request was shed by maintenance backpressure.
+    pub fn note_maintenance_shed(&self) {
+        self.maintenance().note_shed();
+    }
+
+    /// What engaged the latch, if anything.
+    #[cfg(test)]
+    pub fn maintenance_engaged(&self) -> Option<crate::backpressure::Cause> {
+        self.maintenance().engaged()
+    }
+
+    /// The operator/debug view of the maintenance latch.
+    pub fn maintenance_stats_json(&self) -> serde_json::Value {
+        self.maintenance().stats_json()
+    }
+
+    fn maintenance(&self) -> &GlobalLatch {
         &self.inner.maintenance
     }
 
@@ -579,6 +616,6 @@ mod tests {
         assert_eq!(c.record_ceiling(), 4_096);
         c.set_record_ceiling(0);
         assert_eq!(c.record_ceiling(), 0);
-        assert_eq!(c.maintenance().engaged(), None);
+        assert_eq!(c.maintenance_engaged(), None);
     }
 }

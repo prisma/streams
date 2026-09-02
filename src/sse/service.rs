@@ -45,10 +45,45 @@ impl LiveFeedService {
         }
     }
 
+    /// Subscribe to the live feed for `key`, CREATING it if this is the
+    /// first subscriber (PR 6.1-C: the service supplies the ring
+    /// allowance and the memory budget — they are its invariants, not
+    /// the caller's). `bind` runs inside the creation closure, exactly
+    /// once per feed, so a new feed's project pressure entry is live
+    /// before its first publication reserves bytes.
+    pub fn subscribe(
+        &self,
+        key: super::feed::FeedKey,
+        src: Arc<dyn super::feed::FeedSourceRead>,
+        project: crate::tenant::ProjectId,
+        bind: impl FnOnce(&Arc<super::feed::LiveFeed>),
+    ) -> Result<super::registry::FeedSubscription, super::registry::CapacityRejected> {
+        let ring = self.ring_bytes();
+        let budget = self.inner.budget.clone();
+        let k2 = key.clone();
+        let s2 = src.clone();
+        self.inner.registry.subscribe(
+            key,
+            move || {
+                let feed = super::feed::LiveFeed::new_with_budget(k2, s2, ring, budget, project);
+                bind(&feed);
+                feed
+            },
+            Some(&src),
+        )
+    }
+
+    /// Wake every parked session (an ownership view changed).
+    pub fn wake_all_sessions(&self) {
+        self.inner.registry.wake_all_sessions();
+    }
+
+    #[cfg(test)]
     pub fn registry(&self) -> &Arc<FeedRegistry> {
         &self.inner.registry
     }
 
+    #[cfg(test)]
     pub fn budget(&self) -> &Arc<FeedMemoryBudget> {
         &self.inner.budget
     }

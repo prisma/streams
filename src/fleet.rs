@@ -793,7 +793,7 @@ pub fn start(
                     let view = state.ownership.view();
                     if last_ownership_view.as_ref() != Some(&view) {
                         if last_ownership_view.is_some() {
-                            state.livefeed.registry().wake_all_sessions();
+                            state.livefeed.wake_all_sessions();
                         }
                         last_ownership_view = Some(view);
                     }

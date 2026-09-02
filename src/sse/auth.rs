@@ -433,8 +433,7 @@ impl futures_util::Stream for GatedSseBody {
                 if chunk.records > 0 {
                     sse_stats::DELIVERED_RECORDS
                         .fetch_add(chunk.records, std::sync::atomic::Ordering::Relaxed);
-                    crate::billing::meter_read_chunk(
-                        this.state.billing.reads(),
+                    this.state.billing.meter_read_chunk(
                         &crate::billing::identity_of(&this.state, &this.desc),
                         chunk.payload_bytes,
                         chunk.records,

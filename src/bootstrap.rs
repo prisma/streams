@@ -675,6 +675,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         bearer,
         deployment,
         billing,
+        rollup: crate::rollup::RollupSlot::default(),
         tasks: tasks.monitor(),
         cert_sealed_publish_delay_ms: std::sync::atomic::AtomicU64::new(
             // PR 3.2: proven by validate(); no panic path in bootstrap.
@@ -823,7 +824,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
                     // would put the overload on the hot path.
                     if ticks.is_multiple_of(8) {
                         let snap = crate::backpressure::snapshot(&st.shards);
-                        st.admission.maintenance().apply(&snap, &bp_limits);
+                        st.admission.apply_maintenance(&snap, &bp_limits);
                     }
                     ticks = ticks.wrapping_add(1);
                     tokio::select! {

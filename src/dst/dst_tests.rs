@@ -6422,6 +6422,7 @@ async fn http_rig_build(
         bearer,
         billing,
         tasks: tasks.monitor(),
+        rollup: crate::rollup::RollupSlot::default(),
         deployment: crate::deployment::DeploymentIdentity::new(
             crate::tenant::ProjectId::new("proj-test").unwrap(),
             "acct_test".to_string(),
@@ -19984,7 +19985,7 @@ async fn same_name_cross_project_usage_attributes_exactly() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    let _ = state.billing.install_rollup(std::sync::Arc::new(rollup));
+    let _ = state.rollup.install(std::sync::Arc::new(rollup));
 
     #[derive(serde::Serialize)]
     struct C<'a> {
@@ -20202,7 +20203,7 @@ async fn invoice_reconciliation_balances_and_detects_corruption() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    let _ = state.billing.install_rollup(std::sync::Arc::new(rollup));
+    let _ = state.rollup.install(std::sync::Arc::new(rollup));
 
     #[derive(serde::Serialize)]
     struct C<'a> {
@@ -20306,7 +20307,7 @@ async fn invoice_reconciliation_balances_and_detects_corruption() {
 
     let (y, m) = crate::billing::utc_year_month(crate::billing::billing_now_ms());
     let month = crate::billing::month_str(y, m);
-    let rollup = state.billing.rollup().unwrap();
+    let rollup = state.rollup.get().unwrap();
     let clean = rollup.reconcile_month(&month).await.expect("reconcile");
     assert!(clean.ok, "books must balance: {:?}", clean.mismatches);
     assert!(clean.projects >= 2, "both projects walked: {clean:?}");
@@ -20757,7 +20758,7 @@ async fn shared_cell_certification_smoke() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    let _ = state.billing.install_rollup(std::sync::Arc::new(rollup));
+    let _ = state.rollup.install(std::sync::Arc::new(rollup));
 
     #[derive(serde::Serialize)]
     struct C<'a> {
@@ -20926,7 +20927,7 @@ async fn shared_cell_certification_smoke() {
     }
     let (y, m) = crate::billing::utc_year_month(crate::billing::billing_now_ms());
     let month = crate::billing::month_str(y, m);
-    let rollup = state.billing.rollup().unwrap();
+    let rollup = state.rollup.get().unwrap();
     let rep = rollup.reconcile_month(&month).await.expect("reconcile");
     assert!(rep.ok, "books must balance: {:?}", rep.mismatches);
     assert!(
@@ -26059,7 +26060,7 @@ async fn usage_pipeline_end_to_end_exactly_once() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    let _ = state.billing.install_rollup(std::sync::Arc::new(rollup));
+    let _ = state.rollup.install(std::sync::Arc::new(rollup));
 
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     let (st, _, _) = preq(
@@ -26147,8 +26148,8 @@ async fn usage_pipeline_end_to_end_exactly_once() {
     let before = serde_json::to_string(&v).unwrap();
     // Reset the cursor by applying an empty page carrying cursor "".
     state
-        .billing
-        .rollup()
+        .rollup
+        .get()
         .unwrap()
         .apply_page(&[], "")
         .await
@@ -26295,7 +26296,7 @@ async fn ops_metrics_and_alerts_flow() {
         crate::rollup::UsageRollup::open(state.data_store.clone(), "opsflow", &state.config)
             .await
             .unwrap();
-    let _ = state.billing.install_rollup(std::sync::Arc::new(rollup));
+    let _ = state.rollup.install(std::sync::Arc::new(rollup));
 
     // Two snapshot emissions land in the same minute bucket.
     crate::ops::emit_metrics_once(&state).await.expect("emit 1");
@@ -26314,14 +26315,14 @@ async fn ops_metrics_and_alerts_flow() {
     let now = crate::shard::now_ms();
     let minute = now - now.rem_euclid(60_000);
     let m1 = state
-        .billing
-        .rollup()
+        .rollup
+        .get()
         .unwrap()
         .ops_m1("", minute)
         .await
         .or(state
-            .billing
-            .rollup()
+            .rollup
+            .get()
             .unwrap()
             .ops_m1("", minute - 60_000)
             .await)
@@ -26386,7 +26387,7 @@ async fn telemetry_crash_points_and_cost_gates() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "p6", &state.config)
         .await
         .unwrap();
-    let _ = state.billing.install_rollup(std::sync::Arc::new(rollup));
+    let _ = state.rollup.install(std::sync::Arc::new(rollup));
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     // Three streams, one record each.
     for i in 0..3 {
@@ -30959,7 +30960,7 @@ async fn valid_transfer_bills_each_workspace_on_its_own_side() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    let _ = state.billing.install_rollup(std::sync::Arc::new(rollup));
+    let _ = state.rollup.install(std::sync::Arc::new(rollup));
     let tok_a = mint_token("c1", "proj-vtx", "ws_vta", 1, 1, "va", 600);
     rig_create(addr, "vtx", &tok_a).await;
     let mut promoter = rig_sse(addr, "vtx", &tok_a, "", None).await;
@@ -31035,7 +31036,7 @@ async fn valid_transfer_bills_each_workspace_on_its_own_side() {
     }
     let (y, m) = crate::billing::utc_year_month(crate::billing::billing_now_ms());
     let month = crate::billing::month_str(y, m);
-    let rollup = state.billing.rollup().unwrap();
+    let rollup = state.rollup.get().unwrap();
     let mut per_ws: std::collections::HashMap<String, u64> = Default::default();
     let mut iter = rollup
         .db

@@ -114,6 +114,9 @@ pub struct AppState {
     /// WP-02 / PR 6-E: the usage ledger key, the read accumulator, the
     /// spool and rollup slots, the sweep scheduler's bookkeeping.
     pub billing: crate::billing_service::BillingService,
+    /// PR 6.1-C: the rollup consumer's DATABASE (install-once), present
+    /// only on instances running the consumer. A store, not a decision.
+    pub rollup: crate::rollup::RollupSlot,
     /// WP-02 / PR 6.1-A: a READ-ONLY view of the supervisor every
     /// long-lived loop of this runtime is a child of. The supervisor
     /// itself is owned by the composition root: its tasks capture this
@@ -755,7 +758,7 @@ async fn debug_load(
         },
         "absorb_reserved_bytes_now": crate::history::absorb_reserved_bytes(),
         "shed_line_mb": adm.rss_shed_mb,
-        "maintenance_backpressure": state.admission.maintenance().stats_json(),
+        "maintenance_backpressure": state.admission.maintenance_stats_json(),
         // #266 field attribution: the wc sampler reads THIS endpoint —
         // the /v1/debug/absorb block alone left L1d7 blind on whether
         // pacing fired at all.
@@ -1034,7 +1037,7 @@ async fn debug_usage_reconcile(
         let (y, m) = crate::billing::utc_year_month(crate::billing::billing_now_ms());
         crate::billing::month_str(y, m)
     });
-    let Some(rollup) = state.billing.rollup() else {
+    let Some(rollup) = state.rollup.get() else {
         return err_resp(
             StatusCode::SERVICE_UNAVAILABLE,
             "rollup_unavailable",
@@ -1340,20 +1343,20 @@ pub fn router(state: Arc<AppState>) -> Router {
                             }));
                         }
                     }
-                    let spool = state.billing.read_spool().map(|sp| {
-                        let (rows, bytes) = sp.resident();
-                        let (l0, l0b, runs, mid) = sp.l0_stats();
+                    let spool = state.billing.read_spool_stats().map(|sp| {
+                        let (rows, bytes) = (sp.pending_rows, sp.pending_bytes);
+                        let (l0, l0b, runs, mid) = sp.l0;
                         serde_json::json!({
                             "pendingRows": rows,
                             "pendingBytes": bytes,
-                            "quarantined": sp.quarantined_count(),
+                            "quarantined": sp.quarantined,
                             "l0SstCount": l0,
                             "l0BytesEst": l0b,
                             "compactedRuns": runs,
                             "manifestId": mid,
                         })
                     });
-                    let rollup_db = state.billing.rollup().map(|ru| {
+                    let rollup_db = state.rollup.get().map(|ru| {
                         let (l0, l0b, runs, mid) = ru.l0_stats();
                         serde_json::json!({
                             "l0SstCount": l0,
@@ -1688,9 +1691,9 @@ async fn health_axum(State(state): State<Arc<AppState>>) -> Response {
             .into_response();
     }
     if crate::billing::billing_required(&state.config.billing) {
-        let spool_ok = state.billing.read_spool().is_some();
-        let rollup_ok = state.config.billing.rollup_env.as_deref() != Some("1")
-            || state.billing.rollup().is_some();
+        let spool_ok = state.billing.read_spool_open();
+        let rollup_ok =
+            state.config.billing.rollup_env.as_deref() != Some("1") || state.rollup.installed();
         if !spool_ok || !rollup_ok {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1731,15 +1734,11 @@ async fn billing_readiness_axum(
     }
     use std::sync::atomic::Ordering;
     let now = crate::shard::now_ms();
-    let spool = state.billing.read_spool();
-    let (spool_open, quarantined, depth) = match spool {
-        Some(sp) => (true, sp.quarantined_count(), sp.depth().await as u64),
-        None => (false, 0, 0),
-    };
+    let (spool_open, quarantined, depth) = state.billing.read_spool_health().await;
     let last_drain = crate::billing::LAST_DRAIN_OK_MS.load(Ordering::Relaxed);
     let last_apply = crate::billing::LAST_ROLLUP_APPLY_MS.load(Ordering::Relaxed);
     let mut rollup_info = serde_json::json!({ "running": false });
-    if let Some(r) = state.billing.rollup() {
+    if let Some(r) = state.rollup.get() {
         let pending = r
             .pending_artifacts(1000)
             .await
@@ -1769,7 +1768,7 @@ async fn billing_readiness_axum(
         || (state.billing.usage_key().is_some()
             && spool_open
             && (state.config.billing.rollup_env.as_deref() != Some("1")
-                || state.billing.rollup().is_some()));
+                || state.rollup.get().is_some()));
     axum::Json(serde_json::json!({
         "mode": state.config.billing.mode_env.clone().unwrap_or_else(|| "off".into()),
         "ready": ready,
@@ -5275,10 +5274,8 @@ async fn append_core(
     // recovery must not deadlock on its own system-of-record writes.
     if !close_only && has_entries && !crate::billing::is_reserved_stream(&name) {
         let limits = crate::backpressure::Limits::from_config(&state.config.admission);
-        if let Some(cause) =
-            crate::backpressure::admit(&engine, state.admission.maintenance(), &limits)
-        {
-            state.admission.maintenance().note_shed();
+        if let Some(cause) = state.admission.admit_maintenance(&engine, &limits) {
+            state.admission.note_maintenance_shed();
             let mut r = err_resp(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "maintenance_backpressure",

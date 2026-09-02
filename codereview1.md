@@ -2952,6 +2952,30 @@ Do not rename user-facing flags while moving them. Flag cleanup is a separate se
 > evicts A, B opens as the new resident, A's late db-close arrives and
 > changes nothing, B's own close evicts B); the existing gate, flap and
 > directory proofs run over the fenced shape.
+>
+> **PR 6.1-C (Oracle corrective on PR 6): the service surfaces are
+> honest.** `BillingService` owns the read-metering protocol
+> (`meter_read`, `meter_read_chunk`, `seal_aged_reads`,
+> `drain_sealed_reads`, `requeue_reads`, `unflushed_reads`,
+> `read_seal_deferrals`), the durable spool protocol
+> (`install_read_spool`, `read_spool_open`, `spool_sealed_reads`,
+> `pending_spooled`, `remove_spooled`, `read_spool_stats`,
+> `read_spool_health`) and the R30 sweep protocol (custody claim and
+> release, cycle accounting, custody lookup, rotation, resident count,
+> peak, walk cursor). The raw `ReadUsageAccumulator` and `ReadSpool`
+> accessors are `#[cfg(test)]`; `SweepSched` is `pub(crate)` and nobody
+> outside the service locks its fields. The usage rollup is a DATABASE,
+> not a decision this service makes, so it became its own explicit
+> install-once owner (`rollup::RollupSlot`) rather than a second facade
+> — the plan's "keep the existing concrete owners explicit" option
+> (AppState 20 → 21 fields; the dependency graph is what changed).
+> `LiveFeedService::subscribe(key, src, project, bind)` creates the feed
+> with ITS ring allowance and ITS budget, and `wake_all_sessions()`
+> replaces reaching through the registry (`registry()`/`budget()` are
+> `#[cfg(test)]`). `AdmissionController` owns the maintenance latch
+> (`apply_maintenance`, `admit_maintenance`, `note_maintenance_shed`,
+> `maintenance_engaged`, `maintenance_stats_json`); the latch accessor
+> is private, so PR 7's application layer cannot import it.
 
 **Implements:** the foundational part of WP-15.
 

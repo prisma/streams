@@ -366,6 +366,37 @@ pub struct ReconcileReport {
 // The rollup database
 // ---------------------------------------------------------------------
 
+/// PR 6.1-C: the rollup instance's DATABASE, installed once at startup
+/// on the instance that runs the consumer (`ROLLUP=1`) and read by the
+/// usage-lookup and operator surfaces. It is a store, not a decision:
+/// the honest owner is a named install-once slot, not a getter on a
+/// "billing service" that would then own nothing about it.
+#[derive(Clone, Default)]
+pub struct RollupSlot {
+    inner: std::sync::Arc<std::sync::OnceLock<std::sync::Arc<UsageRollup>>>,
+}
+
+impl RollupSlot {
+    /// Install the database. `Err` means another install won: this
+    /// instance already has one.
+    pub fn install(
+        &self,
+        rollup: std::sync::Arc<UsageRollup>,
+    ) -> Result<(), std::sync::Arc<UsageRollup>> {
+        self.inner.set(rollup)
+    }
+
+    /// The database, if this instance is a rollup consumer.
+    pub fn get(&self) -> Option<&std::sync::Arc<UsageRollup>> {
+        self.inner.get()
+    }
+
+    /// Whether this instance runs the rollup consumer.
+    pub fn installed(&self) -> bool {
+        self.inner.get().is_some()
+    }
+}
+
 pub struct UsageRollup {
     pub db: Arc<Db>,
 }
