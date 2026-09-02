@@ -578,7 +578,10 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         )
     };
 
-    let fleet_store_opt = config.fleet_store()?;
+    // PR 6.1.1-C: ONE fleet repository per runtime. The loop, the event
+    // drainer and the operator surface all receive this same owner, so
+    // no caller can be paired with a different coordination store.
+    let fleet_repository = crate::fleet::FleetRepository::new(config.fleet_store()?);
     // WP-02 / PR 6-A: the ownership and shard-directory OWNERS take their
     // own configuration here, before the composition root. PR 6.1-B: the
     // directory builds its serving map and gate itself, from the opener
@@ -667,7 +670,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         shards: shard_directory,
         admission,
         peer,
-        fleet: crate::fleet::FleetRepository::new(fleet_store_opt.clone()),
+        fleet: fleet_repository.clone(),
         livefeed,
         bearer,
         deployment,
@@ -838,10 +841,10 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
             },
         );
     }
-    if let Some(fleet_store) = fleet_store_opt {
+    if fleet_repository.enabled() {
         crate::fleet::start(
             state.clone(),
-            fleet_store,
+            fleet_repository.clone(),
             crate::fleet::FleetCfg {
                 instance: config.cli.instance_name.clone(),
                 capacity_rps: config.cli.scale_rps_capacity,

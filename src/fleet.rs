@@ -12,10 +12,15 @@
 //! since a sleeping instance serves nothing. The router waking instance N+1
 //! re-adds it to the live set on its next heartbeat.
 
-use object_store::path::Path as ObjPath;
-use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
+use object_store::UpdateVersion;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
+
+/// PR 6.1.1-C: the coordination store lives in its own module — this
+/// file is already the fleet loop's home and must not also be the
+/// storage layer.
+pub mod repository;
+pub use repository::{FleetDocument, FleetRepository};
 use std::time::{Duration, Instant};
 
 use crate::http::AppState;
@@ -355,72 +360,9 @@ pub struct FleetCfg {
     pub max: u64,
 }
 
-/// PR 6.1-D: the fleet coordination store, owned PER RUNTIME. The
-/// heartbeat documents, the desired-count and overrides documents and
-/// their CAS event outboxes are one instance's view of its cell; the
-/// fleet loop, the event drainer and the operator surface all read it
-/// from here. It replaces a process-global slot that a second runtime
-/// silently overwrote — a drainer then published another runtime's
-/// events through this instance's identity and billing pipeline.
-#[derive(Clone, Default)]
-pub struct FleetRepository {
-    store: Option<Arc<dyn ObjectStore>>,
-}
-
-impl FleetRepository {
-    pub fn new(store: Option<Arc<dyn ObjectStore>>) -> Self {
-        Self { store }
-    }
-
-    /// Whether this runtime participates in fleet coordination.
-    pub fn enabled(&self) -> bool {
-        self.store.is_some()
-    }
-
-    /// The coordination store, for the fleet module's own loop and the
-    /// operator surface's fleet views.
-    pub(crate) fn store(&self) -> Option<&Arc<dyn ObjectStore>> {
-        self.store.as_ref()
-    }
-
-    /// Replace one coordination document, but ONLY if it still has the
-    /// version we read — the CAS that makes clearing an event outbox
-    /// safe against a concurrent writer.
-    pub(crate) async fn replace_doc(
-        &self,
-        doc: &str,
-        body: Vec<u8>,
-        version: UpdateVersion,
-    ) -> bool {
-        let Some(store) = self.store.as_ref() else {
-            return false;
-        };
-        store
-            .put_opts(
-                &ObjPath::from(doc),
-                PutPayload::from(body),
-                PutOptions::from(PutMode::Update(version)),
-            )
-            .await
-            .is_ok()
-    }
-
-    /// One coordination document with the version a CAS clear needs.
-    pub(crate) async fn read_doc(&self, doc: &str) -> Option<(bytes::Bytes, UpdateVersion)> {
-        let store = self.store.as_ref()?;
-        let got = store.get(&ObjPath::from(doc)).await.ok()?;
-        let version = UpdateVersion {
-            e_tag: got.meta.e_tag.clone(),
-            version: got.meta.version.clone(),
-        };
-        let raw = got.bytes().await.ok()?;
-        Some((raw, version))
-    }
-}
-
 pub fn start(
     state: Arc<AppState>,
-    store: Arc<dyn ObjectStore>,
+    repository: FleetRepository,
     cfg: FleetCfg,
     tasks: &crate::tasks::TaskSupervisor,
 ) {
@@ -534,11 +476,7 @@ pub fn start(
                 wedge_max_ms,
                 url: state.config.fleet.self_url.clone(),
             };
-            let path = ObjPath::from(format!("fleet/{}.json", cfg.instance));
-            if let Err(e) = store
-                .put(&path, PutPayload::from(serde_json::to_vec(&hb).unwrap()))
-                .await
-            {
+            if let Err(e) = repository.publish_heartbeat(&cfg.instance, &hb).await {
                 tracing::warn!("heartbeat put failed: {e}");
                 continue;
             }
@@ -559,24 +497,7 @@ pub fn start(
             let mut peer_urls: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
             // (cpu, effective lag secs incl. wedge)
-            let mut listing = store.list(Some(&ObjPath::from("fleet")));
-            use futures_util::StreamExt;
-            let mut hb_paths = Vec::new();
-            while let Some(meta) = listing.next().await {
-                let Ok(meta) = meta else { continue };
-                if meta.location.as_ref().ends_with(".json")
-                    && !meta.location.as_ref().ends_with("desired.json")
-                    && !meta.location.as_ref().ends_with("overrides.json")
-                {
-                    hb_paths.push(meta.location);
-                }
-            }
-            for p in hb_paths {
-                let Ok(r) = store.get(&p).await else { continue };
-                let Ok(raw) = r.bytes().await else { continue };
-                let Ok(other) = serde_json::from_slice::<Heartbeat>(&raw) else {
-                    continue;
-                };
+            for other in repository.read_heartbeat_set().await {
                 hb_age_ms.insert(other.instance.clone(), now_ms() - other.ts_ms);
                 if now_ms() - other.ts_ms < 10_000 && !other.draining {
                     let eff_lag = other
@@ -615,18 +536,7 @@ pub fn start(
             // routers. Edge congestion is invisible to server-side acks.
             let mut edge_p50 = 0.0f64;
             {
-                let mut rl = store.list(Some(&ObjPath::from("routers")));
-                let mut rpaths = Vec::new();
-                while let Some(meta) = rl.next().await {
-                    let Ok(meta) = meta else { continue };
-                    rpaths.push(meta.location);
-                }
-                for p in rpaths {
-                    let Ok(r) = store.get(&p).await else { continue };
-                    let Ok(raw) = r.bytes().await else { continue };
-                    let Ok(v) = serde_json::from_slice::<serde_json::Value>(&raw) else {
-                        continue;
-                    };
+                for v in repository.read_router_reports().await {
                     let fresh = now_ms() - v["ts_ms"].as_i64().unwrap_or(0) < 10_000;
                     if fresh {
                         edge_p50 = edge_p50.max(v["client_p50_ms"].as_f64().unwrap_or(0.0));
@@ -714,23 +624,8 @@ pub fn start(
                     .clamp(1, cfg.max)
             };
 
-            let dpath = ObjPath::from("fleet/desired.json");
             let (cur, version): (Option<Desired>, Option<UpdateVersion>) =
-                match store.get(&dpath).await {
-                    Ok(r) => {
-                        let v = UpdateVersion {
-                            e_tag: r.meta.e_tag.clone(),
-                            version: r.meta.version.clone(),
-                        };
-                        let raw = r.bytes().await.unwrap_or_default();
-                        (serde_json::from_slice(&raw).ok(), Some(v))
-                    }
-                    Err(object_store::Error::NotFound { .. }) => (None, None),
-                    Err(e) => {
-                        tracing::warn!("desired.json get failed: {e}");
-                        continue;
-                    }
-                };
+                repository.read_desired_state().await;
             let cur_count = cur.as_ref().map(|d| d.count).unwrap_or(1);
             // FLEET_MIN: hard floor on the fleet size (HA / pinned test
             // rings). All dimensions and the shrink target respect it.
@@ -766,30 +661,20 @@ pub fn start(
                 // fleet reads it here. SELF_URL heartbeats remain the
                 // plain-VM path where an instance does know its address.
                 let published: Option<std::collections::HashMap<String, String>> =
-                    match store.get(&ObjPath::from("fleet/urls.json")).await {
-                        Ok(r) => match r.bytes().await {
-                            Ok(raw) => serde_json::from_slice::<
-                                std::collections::HashMap<String, String>,
-                            >(&raw)
-                            .ok()
-                            .map(|m| {
-                                m.into_iter()
-                                    .filter(|(inst, url)| {
-                                        let ok = valid_peer_url(url, &state.config.fleet);
-                                        if !ok {
-                                            tracing::warn!(
-                                                instance = %inst,
-                                                "rejecting malformed peer URL from urls.json"
-                                            );
-                                        }
-                                        ok
-                                    })
-                                    .collect()
-                            }),
-                            Err(_) => None,
-                        },
-                        Err(_) => None,
-                    };
+                    repository.read_published_urls().await.map(|m| {
+                        m.into_iter()
+                            .filter(|(inst, url)| {
+                                let ok = valid_peer_url(url, &state.config.fleet);
+                                if !ok {
+                                    tracing::warn!(
+                                        instance = %inst,
+                                        "rejecting malformed peer URL from urls.json"
+                                    );
+                                }
+                                ok
+                            })
+                            .collect()
+                    });
                 match published {
                     Some(m) => {
                         last_good_urls.clone_from(&m);
@@ -806,23 +691,8 @@ pub fn start(
             // fleet/overrides.json into routing state; the laggard itself
             // initiates a move (it alone knows per-shard lag), CAS-guarded.
             {
-                let opath = ObjPath::from("fleet/overrides.json");
                 let (mut ov, ov_ver): (Overrides, Option<UpdateVersion>) =
-                    match store.get(&opath).await {
-                        Ok(r) => {
-                            let v = UpdateVersion {
-                                e_tag: r.meta.e_tag.clone(),
-                                version: r.meta.version.clone(),
-                            };
-                            let raw = r.bytes().await.unwrap_or_default();
-                            (serde_json::from_slice(&raw).unwrap_or_default(), Some(v))
-                        }
-                        Err(object_store::Error::NotFound { .. }) => (Overrides::default(), None),
-                        Err(e) => {
-                            tracing::warn!("overrides.json get failed: {e}");
-                            (Overrides::default(), None)
-                        }
-                    };
+                    repository.read_overrides().await;
                 {
                     let map: std::collections::HashMap<String, String> = ov
                         .entries
@@ -985,15 +855,13 @@ pub fn start(
                             }
                             next.entries.remove(k);
                         }
-                        let payload = PutPayload::from(serde_json::to_vec(&next).unwrap());
-                        let mode = match ov_ver.clone() {
-                            Some(v) => PutMode::Update(v),
-                            None => PutMode::Create,
-                        };
-                        if store
-                            .put_opts(&opath, payload, PutOptions::from(mode))
+                        if repository
+                            .replace_document(
+                                FleetDocument::Overrides,
+                                serde_json::to_vec(&next).unwrap(),
+                                ov_ver.clone(),
+                            )
                             .await
-                            .is_ok()
                         {
                             tracing::info!(
                                 "rebalancer: returned {} shard(s) to rendezvous owners: {:?}",
@@ -1063,16 +931,15 @@ pub fn start(
                                 ms: now_ms(),
                             },
                         );
-                        let payload = PutPayload::from(serde_json::to_vec(&ov).unwrap());
-                        let mode = match ov_ver {
-                            Some(v) => PutMode::Update(v),
-                            None => PutMode::Create,
-                        };
-                        let res = store
-                            .put_opts(&opath, payload, PutOptions::from(mode))
+                        let committed = repository
+                            .replace_document(
+                                FleetDocument::Overrides,
+                                serde_json::to_vec(&ov).unwrap(),
+                                ov_ver,
+                            )
                             .await;
-                        match res {
-                            Ok(_) => {
+                        match committed {
+                            true => {
                                 tracing::info!(
                                     "rebalancer: moving shard {prefix} -> {to} (absorb lag {my_lag}s)"
                                 );
@@ -1089,9 +956,9 @@ pub fn start(
                                 last_move = Some(Instant::now());
                                 lag_hot_ticks = 0;
                             }
-                            Err(e) => {
+                            false => {
                                 tracing::info!(
-                                    "rebalancer: overrides CAS lost ({e}); retry next tick"
+                                    "rebalancer: overrides CAS lost; retry next tick"
                                 );
                             }
                         }
@@ -1144,32 +1011,23 @@ pub fn start(
                     computed_at_ms: now_ms(),
                     pending_events,
                 };
-                let mode = match version {
-                    Some(v) => PutMode::Update(v),
-                    None => PutMode::Create,
-                };
-                match store
-                    .put_opts(
-                        &dpath,
-                        PutPayload::from(serde_json::to_vec(&next).unwrap()),
-                        PutOptions::from(mode),
+                if repository
+                    .replace_document(
+                        FleetDocument::Desired,
+                        serde_json::to_vec(&next).unwrap(),
+                        version,
                     )
                     .await
                 {
-                    Ok(_) => {
-                        tracing::info!(
-                            "fleet desired {} -> {} ({})",
-                            cur_count,
-                            publish_count,
-                            next.reason
-                        );
-                        below_since = None;
-                    }
-                    // Lost the CAS: another instance published; converge next tick.
-                    Err(object_store::Error::Precondition { .. })
-                    | Err(object_store::Error::AlreadyExists { .. }) => {}
-                    Err(e) => tracing::warn!("desired.json cas failed: {e}"),
+                    tracing::info!(
+                        "fleet desired {} -> {} ({})",
+                        cur_count,
+                        publish_count,
+                        next.reason
+                    );
+                    below_since = None;
                 }
+                // Lost the CAS: another instance published; converge next tick.
             }
         }
     });
@@ -1187,11 +1045,11 @@ pub async fn drain_fleet_events(
         return Ok(0);
     }
     let mut emitted = 0usize;
-    for name in ["fleet/desired.json", "fleet/overrides.json"] {
-        let Some((bytes, version)) = state.fleet.read_doc(name).await else {
+    for doc in [FleetDocument::Desired, FleetDocument::Overrides] {
+        let Some((bytes, version)) = state.fleet.read_doc(doc).await else {
             continue;
         };
-        let pending: Vec<crate::ops::OpsEvent> = if name.ends_with("desired.json") {
+        let pending: Vec<crate::ops::OpsEvent> = if doc == FleetDocument::Desired {
             serde_json::from_slice::<Desired>(&bytes)
                 .map(|d| d.pending_events)
                 .unwrap_or_default()
@@ -1231,7 +1089,7 @@ pub async fn drain_fleet_events(
         emitted += ids.len();
         // Clear EXACTLY the drained ids under CAS; concurrent writers'
         // new events survive.
-        let cleared: Vec<u8> = if name.ends_with("desired.json") {
+        let cleared: Vec<u8> = if doc == FleetDocument::Desired {
             let Ok(mut d) = serde_json::from_slice::<Desired>(&bytes) else {
                 continue;
             };
@@ -1244,7 +1102,10 @@ pub async fn drain_fleet_events(
             o.pending_events.retain(|e| !ids.contains(&e.event_id));
             serde_json::to_vec(&o).unwrap_or_default()
         };
-        let _ = state.fleet.replace_doc(name, cleared, version).await;
+        let _ = state
+            .fleet
+            .replace_document(doc, cleared, Some(version))
+            .await;
     }
     Ok(emitted)
 }

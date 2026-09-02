@@ -16,10 +16,7 @@ use std::sync::Arc;
 
 use axum::extract::State;
 use axum::response::{IntoResponse, Response};
-use futures_util::StreamExt;
-use object_store::path::Path as ObjPath;
-use object_store::{ObjectStore, ObjectStoreExt};
-use serde_json::{Value, json};
+use serde_json::json;
 
 use crate::http::AppState;
 
@@ -83,55 +80,15 @@ pub async fn runbook(
         .into_response()
 }
 
-async fn read_json(store: &Arc<dyn ObjectStore>, path: &str) -> Option<Value> {
-    let result = store.get(&ObjPath::from(path)).await.ok()?;
-    let raw = result.bytes().await.ok()?;
-    serde_json::from_slice(&raw).ok()
-}
-
-/// List fleet/<instance>.json heartbeats directly — slate's cell view is
-/// the raw heartbeat set (2 s cadence, <10 s = live).
-async fn read_heartbeats(store: &Arc<dyn ObjectStore>) -> Option<Vec<Value>> {
-    let mut names: Vec<ObjPath> = Vec::new();
-    let mut listing = store.list(Some(&ObjPath::from("fleet")));
-    while let Some(meta) = listing.next().await {
-        let meta = meta.ok()?;
-        let loc = meta.location.as_ref();
-        if loc.ends_with(".json") && !loc.ends_with("desired.json") {
-            names.push(meta.location.clone());
-        }
-        if names.len() >= 64 {
-            break; // a cell is bounded; a runaway listing is not our job
-        }
-    }
-    let mut out = Vec::new();
-    for name in names {
-        let Ok(result) = store.get(&name).await else {
-            continue;
-        };
-        let Ok(raw) = result.bytes().await else {
-            continue;
-        };
-        if let Ok(v) = serde_json::from_slice::<Value>(&raw) {
-            out.push(v);
-        }
-    }
-    Some(out)
-}
-
 pub async fn data(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap) -> Response {
     if let Some(r) = operator_gate(&state, &headers) {
         return r;
     }
     let now_ms = crate::shard::now_ms();
 
-    let (heartbeats, desired) = match state.fleet.store() {
-        Some(fs) => (
-            read_heartbeats(fs).await,
-            read_json(fs, "fleet/desired.json").await,
-        ),
-        None => (None, None),
-    };
+    // PR 6.1.1-C: the operator reads the cell through the repository —
+    // one per-runtime authority, no second path to the store.
+    let (heartbeats, desired) = state.fleet.operator_snapshot().await;
 
     let adm = state.admission.snapshot();
     let local = json!({

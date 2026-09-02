@@ -3045,6 +3045,26 @@ Do not rename user-facing flags while moving them. Flag cleanup is a separate se
 > A's late database close changes nothing → B's own retirement arms the
 > next holdoff; and a declining decision keeps the same engine resident
 > with no holdoff and no close.
+>
+> **PR 6.1.1-C (Oracle corrective on PR 6.1): one fleet repository
+> authority.** `fleet::start` now takes the `FleetRepository` itself, so
+> bootstrap cannot pair one repository with a different loop store — it
+> builds exactly one and hands that same owner to the loop, the event
+> drainer and the operator surface. `FleetRepository::store()` is
+> deleted: the raw handle never leaves the module, and the repository
+> owns the storage protocol instead — `publish_heartbeat`,
+> `read_heartbeat_set`, `read_router_reports`, `read_desired_state`,
+> `read_overrides`, `read_published_urls`, `replace_document` (CAS over
+> a closed `FleetDocument` set, so no caller can invent a path),
+> `read_doc` for the drainer and `operator_snapshot` for the operator
+> view, which no longer reimplements those reads. The repository lives
+> in `src/fleet/repository.rs`, and `src/fleet.rs` shrank from 1,364 to
+> 1,258 lines rather than growing. Proof: two runtimes with different
+> coordination stores run their fleet loops CONCURRENTLY — each
+> publishes its heartbeat only to its own store, each operator view sees
+> only its own cell, neither drainer reads or clears the other's outbox,
+> and a runtime without fleet coordination has no repository, drains
+> nothing and shows nothing.
 
 **Implements:** the foundational part of WP-15.
 

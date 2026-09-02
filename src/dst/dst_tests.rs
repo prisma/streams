@@ -6181,20 +6181,21 @@ async fn distinct_incarnations_have_distinct_pinned_identities() {
     );
 }
 
-/// PR 6.1-D (Oracle corrective): fleet coordination state is per
-/// RUNTIME. Two runtimes with DIFFERENT fleet stores must not observe
-/// or mutate each other's: runtime A's event drainer reads A's outbox
-/// and never B's. The process-global slot this replaces was overwritten
-/// by whichever runtime started last, so A's drainer published B's
-/// events through A's identity and billing pipeline.
+/// PR 6.1-D, completed by 6.1.1-C: fleet coordination state is per
+/// RUNTIME, and the LOOP is part of that proof. Two runtimes with
+/// different coordination stores run their fleet loops concurrently:
+/// each publishes its heartbeat only to its own store, each operator
+/// view sees only its own cell, and neither event drainer can read or
+/// clear the other's outbox. The process-global slot this replaces was
+/// overwritten by whichever runtime started last — one runtime then
+/// published the other's events through its own identity and billing
+/// pipeline.
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn two_runtimes_never_share_fleet_state() {
-    let store_a = mem();
-    let store_b = mem();
     let fleet_a = mem();
     let fleet_b = mem();
     let rig_a = http_rig_build(
-        store_a,
+        mem(),
         RigRuntime::first(),
         HttpRigOptions {
             fleet_store: Some(fleet_a.clone()),
@@ -6204,7 +6205,7 @@ async fn two_runtimes_never_share_fleet_state() {
     )
     .await;
     let rig_b = http_rig_build(
-        store_b,
+        mem(),
         RigRuntime::incarnation(1),
         HttpRigOptions {
             fleet_store: Some(fleet_b.clone()),
@@ -6213,6 +6214,40 @@ async fn two_runtimes_never_share_fleet_state() {
         },
     )
     .await;
+    // BOTH fleet loops run, each with its own repository.
+    for (rig, name) in [(&rig_a, "inst-a"), (&rig_b, "inst-b")] {
+        crate::fleet::start(
+            rig.state.clone(),
+            rig.state.fleet.clone(),
+            fleet_cfg(name),
+            &rig.tasks,
+        );
+    }
+    // One tick is 2s; give both loops a heartbeat.
+    tokio::time::sleep(std::time::Duration::from_millis(2600)).await;
+
+    // Each loop published ITS heartbeat to ITS store, and neither store
+    // ever saw the other instance.
+    let a_names = fleet_instance_docs(&fleet_a).await;
+    let b_names = fleet_instance_docs(&fleet_b).await;
+    assert_eq!(a_names, vec!["fleet/inst-a.json".to_string()], "A's store");
+    assert_eq!(b_names, vec!["fleet/inst-b.json".to_string()], "B's store");
+
+    // Each operator view reads its own cell only.
+    let (hb_a, _) = rig_a.state.fleet.operator_snapshot().await;
+    let (hb_b, _) = rig_b.state.fleet.operator_snapshot().await;
+    let inst = |v: Option<Vec<serde_json::Value>>| -> Vec<String> {
+        let mut names: Vec<String> = v
+            .unwrap_or_default()
+            .into_iter()
+            .filter_map(|h| h["instance"].as_str().map(str::to_string))
+            .collect();
+        names.sort();
+        names
+    };
+    assert_eq!(inst(hb_a), vec!["inst-a".to_string()]);
+    assert_eq!(inst(hb_b), vec!["inst-b".to_string()]);
+
     // ONE pending fleet event, written to B's coordination store only.
     let desired = crate::fleet::Desired {
         count: 3,
@@ -6232,7 +6267,8 @@ async fn two_runtimes_never_share_fleet_state() {
         )
         .await
         .unwrap();
-    // A drains ITS store: nothing to emit, and B's document is untouched.
+    // A drains ITS repository: nothing to emit, and B's document is
+    // untouched.
     let emitted_a = crate::fleet::drain_fleet_events(&rig_a.state)
         .await
         .unwrap();
@@ -6253,10 +6289,10 @@ async fn two_runtimes_never_share_fleet_state() {
         1,
         "A must not clear B's event outbox"
     );
-    // The repositories are distinct authorities, and a runtime without
-    // fleet coordination has none at all.
-    assert!(rig_a.state.fleet.enabled() && rig_b.state.fleet.enabled());
+
+    // A runtime without fleet coordination has no repository at all.
     let plain = http_rig_build(mem(), RigRuntime::incarnation(2), HttpRigOptions::default()).await;
+    assert!(rig_a.state.fleet.enabled() && rig_b.state.fleet.enabled());
     assert!(!plain.state.fleet.enabled());
     assert_eq!(
         crate::fleet::drain_fleet_events(&plain.state)
@@ -6264,8 +6300,45 @@ async fn two_runtimes_never_share_fleet_state() {
             .unwrap(),
         0
     );
+    let (hb_none, desired_none) = plain.state.fleet.operator_snapshot().await;
+    assert!(hb_none.is_none() && desired_none.is_none());
     for rig in [rig_a, rig_b, plain] {
-        rig.tasks.shutdown(std::time::Duration::from_secs(2)).await;
+        rig.tasks.shutdown(std::time::Duration::from_secs(3)).await;
+    }
+}
+
+/// The instance heartbeat documents present in one coordination store.
+async fn fleet_instance_docs(store: &Arc<dyn ObjectStore>) -> Vec<String> {
+    use futures_util::StreamExt;
+    let mut names = Vec::new();
+    let mut listing = store.list(Some(&object_store::path::Path::from("fleet")));
+    while let Some(meta) = listing.next().await {
+        let Ok(meta) = meta else { continue };
+        let loc = meta.location.as_ref().to_string();
+        if loc.ends_with(".json") && !loc.ends_with("desired.json") {
+            names.push(loc);
+        }
+    }
+    names.sort();
+    names
+}
+
+/// A fleet configuration whose only interesting field is the instance
+/// name: the proof is about WHICH store each loop touches.
+fn fleet_cfg(instance: &str) -> crate::fleet::FleetCfg {
+    crate::fleet::FleetCfg {
+        instance: instance.to_string(),
+        capacity_rps: 0,
+        edge_slots: 0,
+        target_util: 0.75,
+        scale_in_util: 0.5,
+        hot_cpu_pct: 90.0,
+        cpu_sustain: std::time::Duration::from_secs(600),
+        scale_in: std::time::Duration::from_secs(600),
+        latency_ms: 0,
+        edge_latency_ms: 0,
+        latency_sustain: std::time::Duration::from_secs(600),
+        max: 1,
     }
 }
 
