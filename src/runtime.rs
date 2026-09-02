@@ -17,12 +17,15 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
-/// A server-trusted wall-clock reading, milliseconds since the Unix
-/// epoch. A DISTINCT type from customer-supplied timestamps (which
-/// stay raw `i64` metadata): code that needs trusted time asks the
-/// [`Clock`]; nothing can launder a customer value into one.
+/// A server-trusted WALL-clock reading, milliseconds since the Unix
+/// epoch — for external timestamps (records, descriptors, billing).
+/// A DISTINCT type from customer-supplied timestamps (which stay raw
+/// `i64` metadata), with a PRIVATE representation (PR 4.1): only clock
+/// implementations in this module construct one, so no crate module
+/// can launder a customer value into trusted time. Never use it to
+/// measure elapsed time — wall clocks jump; see [`MonotonicNow`].
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
-pub struct TrustedNow(pub i64);
+pub struct TrustedNow(i64);
 
 impl TrustedNow {
     pub fn ms(self) -> i64 {
@@ -30,19 +33,53 @@ impl TrustedNow {
     }
 }
 
-/// The time capability. Implementations must be cheap to call and
-/// safe to share (`Arc<dyn Clock>`).
+/// A MONOTONIC reading — for elapsed-time decisions only (deadlines,
+/// timeouts, watchdog windows). Measured from the runtime's own
+/// origin, so it is meaningless across runtimes and never a
+/// timestamp. Nondecreasing by contract: wall-clock jumps cannot move
+/// it (PR 4.1: the first timer migration had measured elapsed time
+/// with the wall clock, which is a regression a forward jump turns
+/// into a spurious exit and a backward jump into a suppressed one).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
+pub struct MonotonicNow(Duration);
+
+impl MonotonicNow {
+    /// Elapsed since `earlier` (saturating: a reading from the same
+    /// runtime is never earlier than a later one, but the type stays
+    /// total).
+    pub fn since(self, earlier: MonotonicNow) -> Duration {
+        self.0.saturating_sub(earlier.0)
+    }
+}
+
+/// The time capability, with two DISTINCT time domains. Implementations
+/// must be cheap to call and safe to share (`Arc<dyn Clock>`).
 pub trait Clock: Send + Sync + fmt::Debug {
-    /// Trusted wall clock (Unix ms).
+    /// Trusted wall clock (Unix ms) — timestamps, never durations.
     fn now(&self) -> TrustedNow;
-    /// Sleep for `d` — production uses the tokio timer; a manual test
-    /// clock completes sleeps when its time is advanced past them.
+    /// Monotonic reading — elapsed time, deadlines, never timestamps.
+    fn monotonic(&self) -> MonotonicNow;
+    /// Sleep for `d` in the MONOTONIC domain — production uses the
+    /// tokio timer; a manual test clock completes sleeps when its
+    /// monotonic time is advanced past the deadline (wall jumps do not
+    /// move sleeps).
     fn sleep(&self, d: Duration) -> futures_util::future::BoxFuture<'static, ()>;
 }
 
-/// Production clock: the OS wall clock and the tokio timer.
-#[derive(Debug, Default)]
-pub struct SystemClock;
+/// Production clock: the OS wall clock for timestamps, a per-runtime
+/// `Instant` origin for elapsed time, and the tokio timer for sleeps.
+#[derive(Debug)]
+pub struct SystemClock {
+    origin: std::time::Instant,
+}
+
+impl Default for SystemClock {
+    fn default() -> Self {
+        Self {
+            origin: std::time::Instant::now(),
+        }
+    }
+}
 
 impl Clock for SystemClock {
     fn now(&self) -> TrustedNow {
@@ -52,6 +89,10 @@ impl Clock for SystemClock {
                 .map(|d| d.as_millis() as i64)
                 .unwrap_or(0),
         )
+    }
+
+    fn monotonic(&self) -> MonotonicNow {
+        MonotonicNow(self.origin.elapsed())
     }
 
     fn sleep(&self, d: Duration) -> futures_util::future::BoxFuture<'static, ()> {
@@ -101,7 +142,11 @@ impl RuntimeCaps {
     /// Production capabilities: OS clock, OS CSPRNG, and a boot id
     /// minted from that CSPRNG.
     pub fn production(instance: &str) -> Self {
-        Self::with(Arc::new(SystemClock), Arc::new(OsEntropy), instance)
+        Self::with(
+            Arc::new(SystemClock::default()),
+            Arc::new(OsEntropy),
+            instance,
+        )
     }
 
     /// Assemble from explicit implementations (tests pass a manual
@@ -130,10 +175,14 @@ impl RuntimeCaps {
     }
 }
 
-/// Deterministic test clock: time moves ONLY when a test advances it,
-/// and pending sleeps complete when their deadline is reached. Each
-/// instance is independent — no process-global registry — so parallel
-/// rigs (or two runtimes in one test) cannot couple through it.
+/// Deterministic test clock with the two domains SEPARATELY movable:
+/// `advance` moves both (ordinary passage of time), `jump_wall` moves
+/// only the wall clock (an NTP step, forward or backward), and
+/// `advance_monotonic` moves only elapsed time. Pending sleeps live in
+/// the monotonic domain and complete when it passes their deadline —
+/// a wall jump can never wake or delay one. Each instance is
+/// independent (no process-global registry), so parallel rigs or two
+/// runtimes in one test cannot couple through it.
 #[cfg(test)]
 #[derive(Debug, Clone)]
 pub struct ManualClock {
@@ -143,7 +192,8 @@ pub struct ManualClock {
 #[cfg(test)]
 #[derive(Debug)]
 struct ManualInner {
-    now_ms: std::sync::Mutex<i64>,
+    wall_ms: std::sync::Mutex<i64>,
+    mono: std::sync::Mutex<Duration>,
     wake: tokio::sync::Notify,
 }
 
@@ -152,36 +202,52 @@ impl ManualClock {
     pub fn at(start_ms: i64) -> Self {
         Self {
             inner: Arc::new(ManualInner {
-                now_ms: std::sync::Mutex::new(start_ms),
+                wall_ms: std::sync::Mutex::new(start_ms),
+                mono: std::sync::Mutex::new(Duration::ZERO),
                 wake: tokio::sync::Notify::new(),
             }),
         }
     }
 
-    /// Advance the clock and wake every pending sleep so it can
-    /// re-check its deadline.
+    /// Ordinary passage of time: both domains move together.
     pub fn advance(&self, by: Duration) {
-        *self.inner.now_ms.lock().unwrap() += by.as_millis() as i64;
+        *self.inner.wall_ms.lock().unwrap() += by.as_millis() as i64;
+        self.advance_monotonic(by);
+    }
+
+    /// Elapsed time only (what timeouts observe).
+    pub fn advance_monotonic(&self, by: Duration) {
+        *self.inner.mono.lock().unwrap() += by;
         self.inner.wake.notify_waiters();
+    }
+
+    /// A wall-clock STEP (NTP correction, VM restore) — forward or
+    /// backward. Monotonic time and pending sleeps are untouched.
+    pub fn jump_wall(&self, delta_ms: i64) {
+        *self.inner.wall_ms.lock().unwrap() += delta_ms;
     }
 }
 
 #[cfg(test)]
 impl Clock for ManualClock {
     fn now(&self) -> TrustedNow {
-        TrustedNow(*self.inner.now_ms.lock().unwrap())
+        TrustedNow(*self.inner.wall_ms.lock().unwrap())
+    }
+
+    fn monotonic(&self) -> MonotonicNow {
+        MonotonicNow(*self.inner.mono.lock().unwrap())
     }
 
     fn sleep(&self, d: Duration) -> futures_util::future::BoxFuture<'static, ()> {
         let inner = self.inner.clone();
-        let deadline = *inner.now_ms.lock().unwrap() + d.as_millis() as i64;
+        let deadline = *inner.mono.lock().unwrap() + d;
         Box::pin(async move {
             loop {
                 // Register for the NEXT advance BEFORE checking the
                 // deadline, so an advance between check and await
                 // cannot be missed.
                 let notified = inner.wake.notified();
-                if *inner.now_ms.lock().unwrap() >= deadline {
+                if *inner.mono.lock().unwrap() >= deadline {
                     return;
                 }
                 notified.await;
@@ -286,6 +352,46 @@ mod tests {
         fut.await; // completes without real time passing
     }
 
+    /// PR 4.1: sleep deadlines live in the MONOTONIC domain — a wall
+    /// jump of an hour in either direction neither completes nor
+    /// delays a pending sleep; only monotonic advance does.
+    #[tokio::test]
+    async fn sleep_deadlines_are_monotonic_not_wall() {
+        use futures_util::FutureExt;
+        let clock = ManualClock::at(1_000);
+        let mut fut = clock.sleep(Duration::from_millis(100));
+        clock.jump_wall(3_600_000);
+        assert!(
+            (&mut fut).now_or_never().is_none(),
+            "forward wall jump must not wake"
+        );
+        clock.jump_wall(-7_200_000);
+        assert!(
+            (&mut fut).now_or_never().is_none(),
+            "backward wall jump must not wake"
+        );
+        assert_eq!(clock.now().ms(), 1_000 - 3_600_000, "wall moved");
+        clock.advance_monotonic(Duration::from_millis(100));
+        fut.await;
+    }
+
+    /// The two domains are independent: a wall jump leaves monotonic
+    /// readings unchanged, and `since` measures elapsed monotonic time.
+    #[test]
+    fn wall_jumps_do_not_move_monotonic_time() {
+        let clock = ManualClock::at(0);
+        let t0 = clock.monotonic();
+        clock.jump_wall(999_999);
+        assert_eq!(clock.monotonic().since(t0), Duration::ZERO);
+        clock.advance_monotonic(Duration::from_secs(5));
+        assert_eq!(clock.monotonic().since(t0), Duration::from_secs(5));
+        // Production: monotonic is the runtime's own Instant origin.
+        let sys = SystemClock::default();
+        let a = sys.monotonic();
+        let b = sys.monotonic();
+        assert!(b >= a, "nondecreasing");
+    }
+
     /// Seeded entropy reproduces byte-for-byte (deterministic rigs),
     /// and the epoch helper draws from the runtime's own source.
     #[test]
@@ -298,7 +404,7 @@ mod tests {
         b.fill(&mut y);
         assert_eq!(x, y);
         let caps = RuntimeCaps::with(
-            Arc::new(SystemClock),
+            Arc::new(SystemClock::default()),
             Arc::new(SeededEntropy::seeded(42)),
             "i",
         );

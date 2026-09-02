@@ -131,7 +131,7 @@ pub fn observe_denial(
             state.runtime.identity.boot_id,
             SEQ.fetch_add(1, Ordering::Relaxed)
         ),
-        event_time_ms: crate::shard::now_ms(),
+        event_time_ms: state.runtime.clock.now().ms(),
         cell: state.cell_id.clone(),
         code: t.code.to_string(),
         project_id: t.project.clone(),
@@ -175,7 +175,7 @@ pub async fn drain_audit_once(
                 state.runtime.identity.boot_id,
                 SEQ.fetch_add(1, Ordering::Relaxed)
             ),
-            event_time_ms: crate::shard::now_ms(),
+            event_time_ms: state.runtime.clock.now().ms(),
             cell: state.cell_id.clone(),
             code: "audit_gap".into(),
             project_id: None,

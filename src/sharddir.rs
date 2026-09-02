@@ -164,11 +164,56 @@ pub fn unready_exit_after(cfg: &crate::config::ShardRuntimeConfig) -> Duration {
 
 /// Watchdog: exit if this instance has been unready for too long without
 /// ever having opened a shard.
-/// WP-15/PR 4 (retry-timing exemplar): the watchdog's cadence and
-/// elapsed measurement go through the injected [`crate::runtime::Clock`]
-/// — a deterministic test can drive the unready window without wall
-/// time. The survival `process::exit` stays until WP-15's task
-/// supervision gives critical tasks a result policy.
+/// The unready watchdog's POLICY (PR 4.1): a pure state machine over
+/// MONOTONIC readings. It knows nothing about sleeping or about how the
+/// process terminates — the task adapter below owns those. Elapsed time
+/// is measured in the monotonic domain by construction, so a wall-clock
+/// step (NTP correction, VM restore) can neither expire the window
+/// early (forward jump) nor postpone or suppress expiry (backward jump)
+/// — the regression the first PR-4 migration introduced by subtracting
+/// `TrustedNow` values.
+#[derive(Debug, Default)]
+pub(crate) struct UnreadyWindow {
+    since: Option<crate::runtime::MonotonicNow>,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(crate) enum WatchdogDecision {
+    /// Ready (or never unready): no window is open.
+    Healthy,
+    /// Unready for `elapsed`, still inside the limit.
+    Waiting { elapsed: Duration },
+    /// Unready for at least the limit.
+    Expired { elapsed: Duration },
+}
+
+impl UnreadyWindow {
+    /// Observe one sample. A ready observation closes the window; the
+    /// first unready observation after that opens a FRESH one.
+    pub(crate) fn observe(
+        &mut self,
+        unready: bool,
+        now: crate::runtime::MonotonicNow,
+        limit: Duration,
+    ) -> WatchdogDecision {
+        if !unready {
+            self.since = None;
+            return WatchdogDecision::Healthy;
+        }
+        let since = *self.since.get_or_insert(now);
+        let elapsed = now.since(since);
+        if elapsed >= limit {
+            WatchdogDecision::Expired { elapsed }
+        } else {
+            WatchdogDecision::Waiting { elapsed }
+        }
+    }
+}
+
+/// The watchdog TASK ADAPTER: samples readiness on the injected clock's
+/// cadence, feeds the pure policy monotonic readings, and — until WP-15
+/// task supervision gives critical tasks a result policy — keeps the
+/// survival `process::exit` when the policy says Expired.
 pub fn spawn_unready_watchdog(
     cfg: &crate::config::ShardRuntimeConfig,
     clock: std::sync::Arc<dyn crate::runtime::Clock>,
@@ -178,27 +223,106 @@ pub fn spawn_unready_watchdog(
         return;
     }
     tokio::spawn(async move {
-        let mut since_ms: Option<i64> = None;
+        let mut window = UnreadyWindow::default();
         loop {
             clock.sleep(Duration::from_secs(10)).await;
-            match unready_reason() {
-                None => since_ms = None,
-                Some(reason) => {
-                    let t0 = *since_ms.get_or_insert_with(|| clock.now().ms());
-                    let elapsed = Duration::from_millis((clock.now().ms() - t0).max(0) as u64);
-                    if elapsed >= limit {
-                        tracing::error!(
-                            "unready for {:?} and no shard has ever opened ({reason}); \
-                             exiting so the platform restarts this instance rather than \
-                             leaving it in rotation-limbo",
-                            elapsed,
-                        );
-                        std::process::exit(1);
-                    }
+            let reason = unready_reason();
+            match window.observe(reason.is_some(), clock.monotonic(), limit) {
+                WatchdogDecision::Expired { elapsed } => {
+                    tracing::error!(
+                        "unready for {:?} and no shard has ever opened ({}); \
+                         exiting so the platform restarts this instance rather than \
+                         leaving it in rotation-limbo",
+                        elapsed,
+                        reason.unwrap_or_default(),
+                    );
+                    std::process::exit(1);
                 }
+                WatchdogDecision::Waiting { .. } | WatchdogDecision::Healthy => {}
             }
         }
     });
+}
+
+#[cfg(test)]
+mod watchdog_policy_tests {
+    use super::*;
+    use crate::runtime::{Clock, ManualClock};
+
+    const LIMIT: Duration = Duration::from_secs(300);
+
+    /// A large FORWARD wall-clock jump does not expire the watchdog:
+    /// only monotonic elapsed time counts.
+    #[test]
+    fn forward_wall_jump_does_not_expire() {
+        let clock = ManualClock::at(0);
+        let mut w = UnreadyWindow::default();
+        assert!(matches!(
+            w.observe(true, clock.monotonic(), LIMIT),
+            WatchdogDecision::Waiting { .. }
+        ));
+        clock.jump_wall(3_600_000);
+        assert_eq!(
+            w.observe(true, clock.monotonic(), LIMIT),
+            WatchdogDecision::Waiting {
+                elapsed: Duration::ZERO
+            }
+        );
+    }
+
+    /// A BACKWARD wall-clock jump does not postpone expiry.
+    #[test]
+    fn backward_wall_jump_does_not_postpone_expiry() {
+        let clock = ManualClock::at(0);
+        let mut w = UnreadyWindow::default();
+        w.observe(true, clock.monotonic(), LIMIT);
+        clock.jump_wall(-86_400_000);
+        clock.advance_monotonic(LIMIT);
+        assert_eq!(
+            w.observe(true, clock.monotonic(), LIMIT),
+            WatchdogDecision::Expired { elapsed: LIMIT }
+        );
+    }
+
+    /// Expiry lands EXACTLY when monotonic elapsed reaches the limit.
+    #[test]
+    fn expires_exactly_at_monotonic_limit() {
+        let clock = ManualClock::at(0);
+        let mut w = UnreadyWindow::default();
+        w.observe(true, clock.monotonic(), LIMIT);
+        clock.advance_monotonic(LIMIT - Duration::from_millis(1));
+        assert!(matches!(
+            w.observe(true, clock.monotonic(), LIMIT),
+            WatchdogDecision::Waiting { .. }
+        ));
+        clock.advance_monotonic(Duration::from_millis(1));
+        assert_eq!(
+            w.observe(true, clock.monotonic(), LIMIT),
+            WatchdogDecision::Expired { elapsed: LIMIT }
+        );
+    }
+
+    /// Returning to ready clears the active window, and a later
+    /// unready period begins a FRESH window (elapsed restarts at zero).
+    #[test]
+    fn ready_clears_and_later_unready_starts_fresh() {
+        let clock = ManualClock::at(0);
+        let mut w = UnreadyWindow::default();
+        w.observe(true, clock.monotonic(), LIMIT);
+        clock.advance_monotonic(Duration::from_secs(200));
+        assert_eq!(
+            w.observe(false, clock.monotonic(), LIMIT),
+            WatchdogDecision::Healthy
+        );
+        clock.advance_monotonic(Duration::from_secs(200));
+        assert_eq!(
+            w.observe(true, clock.monotonic(), LIMIT),
+            WatchdogDecision::Waiting {
+                elapsed: Duration::ZERO
+            },
+            "a fresh window, not 400s of accumulated unreadiness"
+        );
+    }
 }
 
 pub fn stats_json() -> serde_json::Value {
