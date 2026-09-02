@@ -26,6 +26,7 @@ mod billing;
 mod bootstrap;
 mod config;
 mod crypto;
+mod deployment;
 mod deployment_bearer;
 #[cfg(test)]
 mod dst;

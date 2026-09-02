@@ -176,7 +176,7 @@ pub async fn drain_ops_once(
     }
     for ev in &mut batch {
         if ev.cell.is_empty() {
-            ev.cell = state.cell_id.clone();
+            ev.cell = state.deployment.cell_id().as_str().to_string();
         }
     }
     let body = serde_json::to_vec(&batch).map_err(|e| e.to_string())?;
@@ -453,8 +453,8 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
     OpsSnapshot {
         v: 1,
         ts_ms: crate::shard::now_ms(),
-        cell: state.cell_id.clone(),
-        region: state.region.clone(),
+        cell: state.deployment.cell_id().as_str().to_string(),
+        region: state.deployment.region().to_string(),
         instance: state.ownership.instance().to_string(),
         role: if state.rollup.get().is_some() {
             "rollup".into()

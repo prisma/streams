@@ -1118,7 +1118,7 @@ pub async fn product_entry(
         .as_ref()
         .map(|p| p.project_id.clone())
         // mt-lint: allow(state-tenant-read): Off/Shadow single-tenant posture (Stage 5d) — enforce-mode requests always carry a principal
-        .unwrap_or_else(|| state.tenant.clone());
+        .unwrap_or_else(|| state.deployment.deployment_tenant().clone());
     if let Some(r) = reject_legacy_inputs(&headers, &query, &method) {
         return r;
     }
@@ -7577,7 +7577,7 @@ pub async fn product_list(state: Arc<AppState>, query: String, headers: HeaderMa
         .as_ref()
         .map(|p| p.project_id.clone())
         // mt-lint: allow(state-tenant-read): Off/Shadow single-tenant posture (Stage 5d) — enforce-mode requests always carry a principal
-        .unwrap_or_else(|| state.tenant.clone());
+        .unwrap_or_else(|| state.deployment.deployment_tenant().clone());
     // Review item 3: the cursor is versioned, PROJECT-BOUND and (when
     // the deployment key is set) signed — a cursor from another
     // project, another key posture, or the retired bare-base64 form is
@@ -7910,9 +7910,9 @@ pub async fn project_usage(
             .auth
             .workspace_for(authority)
             .map(|w| w.as_str().to_string())
-            .unwrap_or_else(|| state.account_id.clone())
+            .unwrap_or_else(|| state.deployment.account_id().to_string())
     } else {
-        state.account_id.clone()
+        state.deployment.account_id().to_string()
     };
     let agg = rollup
         .project_row(&month, &account, &project)

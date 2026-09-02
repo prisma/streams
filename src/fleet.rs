@@ -1163,7 +1163,7 @@ pub async fn drain_fleet_events(
         let mut stamped = pending.clone();
         for ev in &mut stamped {
             if ev.cell.is_empty() {
-                ev.cell = state.cell_id.clone();
+                ev.cell = state.deployment.cell_id().as_str().to_string();
             }
         }
         let body = match serde_json::to_vec(&stamped) {

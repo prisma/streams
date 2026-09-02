@@ -132,7 +132,7 @@ pub fn observe_denial(
             SEQ.fetch_add(1, Ordering::Relaxed)
         ),
         event_time_ms: state.runtime.clock.now().ms(),
-        cell: state.cell_id.clone(),
+        cell: state.deployment.cell_id().as_str().to_string(),
         code: t.code.to_string(),
         project_id: t.project.clone(),
         route: bounded_route(route),
@@ -176,7 +176,7 @@ pub async fn drain_audit_once(
                 SEQ.fetch_add(1, Ordering::Relaxed)
             ),
             event_time_ms: state.runtime.clock.now().ms(),
-            cell: state.cell_id.clone(),
+            cell: state.deployment.cell_id().as_str().to_string(),
             code: "audit_gap".into(),
             project_id: None,
             route: String::new(),

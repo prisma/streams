@@ -916,13 +916,13 @@ fn identity_inner(
                 if count_miss && state.auth.mode == crate::auth::AuthMode::Enforce {
                     UNOWNED_METER_EVENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
-                state.account_id.clone()
+                state.deployment.account_id().to_string()
             }
         }
     } else {
         desc.account_id
             .clone()
-            .unwrap_or_else(|| state.account_id.clone())
+            .unwrap_or_else(|| state.deployment.account_id().to_string())
     };
     BillingIdentity {
         account_id,
@@ -1107,7 +1107,7 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
     let Some(key) = state.usage_key.clone() else {
         return Ok(0);
     };
-    let cell = state.cell_id.clone();
+    let cell = state.deployment.cell_id().as_str().to_string();
     let mut envelopes: Vec<UsageEnvelope> = Vec::new();
 
     // 1. Read batches: seal, then SPOOL DURABLY before anything can
@@ -1259,7 +1259,7 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
                 // mt-lint: allow(raw-adapter-sref): pre-Stage-7 rows carry no
                 // project and are deployment-owned by definition (reviewed
                 // Stage 7 P0); a layout-4 GA cell boots with no such rows.
-                state.raw_adapter_sref(&meta.stream_name)
+                state.deployment.raw_adapter_sref(&meta.stream_name)
             } else {
                 match crate::tenant::ProjectId::new(&meta.project_id) {
                     // mt-lint: allow(stream-ref-construction): the ref is rebuilt from the row's OWN persisted project — durable attribution, not a request name (Stage 7 P0)
@@ -2679,7 +2679,7 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
         let page = match state
             .registry
             // mt-lint: allow(state-tenant-read): deployment-tenant catalog sweep — terminal-closure reconciliation walks the raw surface's own rows
-            .list_page_raw(&state.tenant, after.as_deref(), 256)
+            .list_page_raw(state.deployment.deployment_tenant(), after.as_deref(), 256)
             .await
         {
             Ok(p) => p,

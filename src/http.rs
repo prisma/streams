@@ -119,6 +119,9 @@ pub struct AppState {
     pub livefeed: crate::sse::service::LiveFeedService,
     /// WP-02 / PR 6-C: the raw surface's deployment credential.
     pub bearer: crate::deployment_bearer::DeploymentBearer,
+    /// WP-02 / PR 6-D: who this deployment is — tenant, account, cell,
+    /// region — and the raw adapters' identity source.
+    pub deployment: crate::deployment::DeploymentIdentity,
     /// Round-11.6 field canary ONLY: widen the seal close→publication
     /// gap by this many ms so the seal-herd campaign can observe the
     /// two-step window on a real release binary at fleet scale. Boot
@@ -149,11 +152,6 @@ pub struct AppState {
     /// Durable per-instance spool for sealed read batches (round-21
     /// blocker 3): sealed usage survives crash and ledger outage.
     pub read_spool: std::sync::OnceLock<Arc<crate::billing::ReadSpool>>,
-    /// Billing tenant boundary (docs/OBSERVABILITY-BILLING.md §3.2):
-    /// explicit account/project identity from the control plane's
-    /// deployment config — never inferred from stream names. Persisted
-    /// into every descriptor at creation.
-    pub account_id: String,
     /// MULTITENANCY Stage 5: the auth service — inert in Off mode,
     /// observing in Shadow, gating (Stage 5b) in Enforce.
     pub auth: std::sync::Arc<crate::auth::AuthService>,
@@ -163,17 +161,6 @@ pub struct AppState {
     /// set it so page walks verify across instances; None = bound but
     /// unsigned on a single instance).
     pub catalog_cursor_key: Option<[u8; 32]>,
-    /// The deployment's tenant (MULTITENANCY transition posture):
-    /// until enforce-mode principals carry per-request projects, a
-    /// dedicated cell serves exactly ONE project, configured
-    /// explicitly at startup (PROJECT_ID env, validated — a missing or
-    /// invalid value refuses boot; there is no silent default at the
-    /// storage layer). Every layout-4 registry path and identity hash
-    /// derives from this value via `sref()`.
-    pub tenant: crate::tenant::ProjectId,
-    /// Telemetry source coordinates.
-    pub cell_id: String,
-    pub region: String,
     /// Value of the `Prisma-Streams-Origin` header stamped on every
     /// response: instance name (or version) — proof the response came
     /// from a Streams server rather than the platform edge.
@@ -368,25 +355,6 @@ pub(crate) fn internal_unauthorized() -> Response {
 }
 
 impl AppState {
-    /// Project-qualify a canonical stream name under the DEPLOYMENT
-    /// tenant — the raw-surface adapter's identity source (§14.3:
-    /// the raw surface is internal-only and always addresses the
-    /// deployment tenant). The name says the scope: ONLY the raw
-    /// adapters (`get_segments`, `stream_entry_inner`, `read`) and
-    /// test fixtures may call this; everywhere else identity comes
-    /// from the verified principal or an existing TenantStreamRef.
-    /// Enforced by mt_lint::raw_adapter_sref_is_confined (SR-6).
-    /// `name` MUST already be canonical (`canonical_name` ran at the
-    /// route boundary); the checked construction keeps unvalidated
-    /// bytes out of registry paths and identity hashes.
-    pub fn raw_adapter_sref(&self, canonical_name: &str) -> crate::tenant::TenantStreamRef {
-        crate::tenant::TenantStreamRef::new(
-            self.tenant.clone(),
-            crate::tenant::CanonicalStreamName::new(canonical_name)
-                .expect("caller passed a canonical stream name"),
-        )
-    }
-
     /// Response-free engine lookup for the unified scaler. R29: the
     /// scaler is INTERNAL — it must not stamp external adoption, or its
     /// periodic scans would leak sweep-held engines out of the budgeted
@@ -650,7 +618,11 @@ async fn get_segments(
             "bearer token required",
         );
     }
-    let desc = match state.registry.get(&state.raw_adapter_sref(&name)).await {
+    let desc = match state
+        .registry
+        .get(&state.deployment.raw_adapter_sref(&name))
+        .await
+    {
         Ok(Some(d)) if desc_alive(&d) => d,
         Ok(_) => return err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found"),
         Err(e) => {
@@ -1869,7 +1841,7 @@ async fn project_usage_axum_inner(
             ));
         }
         // mt-lint: allow(state-tenant-read): Off/Shadow single-tenant fallback for the usage route (Stage 5d posture)
-        state.tenant.clone()
+        state.deployment.deployment_tenant().clone()
     };
     crate::product::with_product_cors(
         crate::product::project_usage(state, &authority, project, &query).await,
@@ -2059,14 +2031,17 @@ async fn stream_entry_inner(
             let r = create_stream(
                 state.clone(),
                 // mt-lint: allow(state-tenant-read): raw adapter create path (SS14.3 scope)
-                state.tenant.clone(),
+                state.deployment.deployment_tenant().clone(),
                 name.clone(),
                 headers,
                 body,
             )
             .await;
             if r.status() == StatusCode::CREATED
-                && let Ok(Some(d)) = state.registry.get(&state.raw_adapter_sref(&name)).await
+                && let Ok(Some(d)) = state
+                    .registry
+                    .get(&state.deployment.raw_adapter_sref(&name))
+                    .await
             {
                 crate::ops::emit(
                     crate::ops::OpsEvent::new(
@@ -2081,7 +2056,7 @@ async fn stream_entry_inner(
         Method::POST => {
             let r = append(
                 state.clone(),
-                state.raw_adapter_sref(&name),
+                state.deployment.raw_adapter_sref(&name),
                 headers,
                 body,
                 None,
@@ -2092,7 +2067,10 @@ async fn stream_entry_inner(
             // Operation count only (§4.5) — the BILLED ingest bytes are
             // the committer's, atomic with the records themselves.
             if r.status().is_success()
-                && let Ok(Some(desc)) = state.registry.get(&state.raw_adapter_sref(&name)).await
+                && let Ok(Some(desc)) = state
+                    .registry
+                    .get(&state.deployment.raw_adapter_sref(&name))
+                    .await
             {
                 crate::billing::meter_append_request(&state, &desc);
             }
@@ -2111,7 +2089,7 @@ async fn stream_entry_inner(
             read(state, name, params, headers, head_only).await
         }
         Method::DELETE => {
-            let sref = state.raw_adapter_sref(&name);
+            let sref = state.deployment.raw_adapter_sref(&name);
             delete_stream(state, sref).await
         }
         Method::OPTIONS => Response::builder()
@@ -2747,9 +2725,9 @@ fn fresh_desc(
     let epoch = state.runtime.epoch();
     StreamDesc {
         name: name.to_string(),
-        account_id: Some(state.account_id.clone()),
+        account_id: Some(state.deployment.account_id().to_string()),
         // mt-lint: allow(state-tenant-read): the RAW descriptor builder — raw creates are deployment-tenant by definition (SS14.3)
-        project_id: state.tenant.clone(),
+        project_id: state.deployment.deployment_tenant().clone(),
         stream_epoch: hex(&epoch),
         seal_gen_counter: 0,
         key_fingerprint: key.fingerprint(&epoch),
@@ -6217,7 +6195,7 @@ async fn read(
         );
     }
     params.key = Some(String::new());
-    let sref = state.raw_adapter_sref(&name);
+    let sref = state.deployment.raw_adapter_sref(&name);
     read_inner(
         state,
         sref,

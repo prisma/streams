@@ -15,7 +15,7 @@
 //! shared-core function may reconstruct that identity from a bare
 //! name"):
 //!
-//! * `raw-adapter-sref` — `AppState::raw_adapter_sref` is callable
+//! * `raw-adapter-sref` — `DeploymentIdentity::raw_adapter_sref` is callable
 //!   ONLY from the raw-surface adapters (`get_segments`,
 //!   `stream_entry_inner`, `read` in src/http.rs); the single other
 //!   sanctioned site is billing's pre-Stage-7 legacy-row fallback,
@@ -39,7 +39,8 @@
 //! * `dual-identity-params` — no fn takes BOTH a `TenantStreamRef`
 //!   and a bare name param; the review's "remove dual (sref, name)
 //!   params". No markers.
-//! * `state-tenant-read` — reading `AppState::tenant` IS adopting the
+//! * `state-tenant-read` — reading the deployment tenant (any `.tenant`
+//!   field, or `DeploymentIdentity::deployment_tenant()`) IS adopting the
 //!   deployment tenant's identity; it is sanctioned only inside
 //!   `raw_adapter_sref` itself. Every other read carries a marker
 //!   naming its posture, so `state.tenant.stream_ref(name)` can never
@@ -266,6 +267,20 @@ impl<'a, 'ast> Visit<'ast> for Lint<'a> {
                     ),
                 );
             }
+        } else if m == "deployment_tenant"
+            && !self.fn_stack.iter().any(|n| n == "raw_adapter_sref")
+            && !self.marker(line, "state-tenant-read")
+        {
+            // PR 6-D: the accessor on the identity owner is the field it
+            // replaced — adopting the deployment tenant stays a reviewed act.
+            self.flag(
+                line,
+                "state-tenant-read",
+                format!(
+                    "deployment-tenant identity adopted (in {})",
+                    self.fn_stack.last().map(|s| s.as_str()).unwrap_or("?")
+                ),
+            );
         } else if m == "stream_ref"
             && !STREAM_REF_FILES.contains(&self.file.as_str())
             && !self.marker(line, "stream-ref-construction")

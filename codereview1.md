@@ -2848,6 +2848,23 @@ Do not rename user-facing flags while moving them. Flag cleanup is a separate se
 > bridge token compares in constant time, nothing authorizes with
 > neither); live-feed services are per runtime; the deployment bearer
 > opens only Off mode when unset and compares in every mode when set.
+>
+> **PR 6-D (WP-02, 2026-09-02):** the registry owner already existed
+> (`registry::Registry`, typed cell, cache, CAS); what `AppState` still
+> held beside it was WHO this deployment is. `deployment::
+> DeploymentIdentity` owns the deployment tenant, the billing account,
+> the telemetry cell and the region, and `raw_adapter_sref` moved onto
+> it under its own name (the lint's caller rule is by method name, so
+> the raw-adapter confinement is unchanged). The deployment tenant is
+> reachable only through `deployment_tenant()`, and mt-lint's
+> `state-tenant-read` now flags that accessor exactly as it flagged the
+> field it replaced — every one of the seven reviewed sites keeps its
+> marker; the owner's own accessor body carries the eighth. Four more
+> fields DELETED (26 → 23); audit, billing, fleet, ops, product and the
+> HTTP raw adapters read the identity through the owner. Proofs: the
+> raw adapter's identity source qualifies a canonical name under the
+> deployment tenant and nothing else; a non-canonical name is refused
+> loudly; the lint test itself pins the accessor rule against the tree.
 
 **Implements:** the foundational part of WP-15.
 

@@ -304,6 +304,13 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     crate::sharddir::spawn_unready_watchdog(&config.shard, runtime_caps.clock.clone());
 
     let registry = Registry::new(ops_store.clone(), &cell_id);
+    // WP-02 / PR 6-D: the deployment identity, from the PROVEN parts.
+    let deployment = crate::deployment::DeploymentIdentity::new(
+        tenant,
+        config.cli.account_id.clone(),
+        cell_id.clone(),
+        config.cli.telemetry_region.clone(),
+    );
     // PR 3.2: tenant, auth mode, cursor key and the certification delay
     // were proven (and derived) by `validate()` — bootstrap only
     // consumes them. The auth service itself is constructed here
@@ -648,12 +655,12 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         runtime: runtime_caps.clone(),
         config: config.clone(),
         registry,
-        tenant,
         shards: shard_directory,
         admission,
         peer,
         livefeed,
         bearer,
+        deployment,
         cert_sealed_publish_delay_ms: std::sync::atomic::AtomicU64::new(
             // PR 3.2: proven by validate(); no panic path in bootstrap.
             cert_sealed_publish_delay_ms,
@@ -678,10 +685,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
                 boot: runtime_caps.identity.boot_id.clone(),
             },
         )),
-        account_id: config.cli.account_id.clone(),
         auth: auth_service.clone(),
-        cell_id: config.cli.cell_id.clone(),
-        region: config.cli.telemetry_region.clone(),
         quotas: crate::quota::QuotaRegistry::default(),
         catalog_cursor_key,
     });
