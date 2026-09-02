@@ -7682,7 +7682,7 @@ async fn product_usage(
         Ok(q) => q,
         Err(r) => return r,
     };
-    let Some(rollup) = state.rollup.get() else {
+    let Some(rollup) = state.billing.rollup() else {
         return perr(
             StatusCode::SERVICE_UNAVAILABLE,
             "usage_unavailable",
@@ -7881,7 +7881,7 @@ pub async fn project_usage(
             authority,
         );
     }
-    let Some(rollup) = state.rollup.get() else {
+    let Some(rollup) = state.billing.rollup() else {
         return perr(
             StatusCode::SERVICE_UNAVAILABLE,
             "usage_unavailable",

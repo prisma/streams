@@ -122,6 +122,9 @@ pub struct AppState {
     /// WP-02 / PR 6-D: who this deployment is — tenant, account, cell,
     /// region — and the raw adapters' identity source.
     pub deployment: crate::deployment::DeploymentIdentity,
+    /// WP-02 / PR 6-E: the usage ledger key, the read accumulator, the
+    /// spool and rollup slots, the sweep scheduler's bookkeeping.
+    pub billing: crate::billing_service::BillingService,
     /// Round-11.6 field canary ONLY: widen the seal close→publication
     /// gap by this many ms so the seal-herd campaign can observe the
     /// two-step window on a real release binary at fleet scale. Boot
@@ -129,29 +132,12 @@ pub struct AppState {
     /// zero = inert (production). Atomic so certification rigs can
     /// arm it on a live state.
     pub cert_sealed_publish_delay_ms: std::sync::atomic::AtomicU64,
-    /// R29: per-state sweep scheduler bookkeeping (custody marks,
-    /// quantum cycles, peak gauge) — process statics summed parallel
-    /// test rigs into false bound violations.
-    pub sweep_sched: crate::billing::SweepSched,
     /// WP-02 / PR 6-A: ring ownership (this instance's name, the active
     /// set, the rebalancer overrides) behind narrow methods.
     pub ownership: crate::ownership::OwnershipService,
     pub data_store: Arc<dyn ObjectStore>,
     pub keys: Arc<KeyCache>,
     pub touch: Arc<crate::touch::TouchRegistry>,
-    /// The read-delivery meter (docs/OBSERVABILITY-BILLING.md §7): ONE
-    /// accumulator, fed only at the public response coordinator.
-    pub billing_reads: Arc<crate::billing::ReadUsageAccumulator>,
-    /// System encryption key for `_usage` (§8.1). None = the telemetry
-    /// pipeline is off (dev default); production billing mode requires
-    /// it at startup.
-    pub usage_key: Option<String>,
-    /// The usage rollup, when THIS instance runs it (§9.1: one fenced
-    /// writer per cell). Set once at startup (ROLLUP=1) or by tests.
-    pub rollup: std::sync::OnceLock<Arc<crate::rollup::UsageRollup>>,
-    /// Durable per-instance spool for sealed read batches (round-21
-    /// blocker 3): sealed usage survives crash and ledger outage.
-    pub read_spool: std::sync::OnceLock<Arc<crate::billing::ReadSpool>>,
     /// MULTITENANCY Stage 5: the auth service — inert in Off mode,
     /// observing in Shadow, gating (Stage 5b) in Enforce.
     pub auth: std::sync::Arc<crate::auth::AuthService>,
@@ -1043,7 +1029,7 @@ async fn debug_usage_reconcile(
         let (y, m) = crate::billing::utc_year_month(crate::billing::billing_now_ms());
         crate::billing::month_str(y, m)
     });
-    let Some(rollup) = state.rollup.get() else {
+    let Some(rollup) = state.billing.rollup() else {
         return err_resp(
             StatusCode::SERVICE_UNAVAILABLE,
             "rollup_unavailable",
@@ -1330,7 +1316,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                             }));
                         }
                     }
-                    let spool = state.read_spool.get().map(|sp| {
+                    let spool = state.billing.read_spool().map(|sp| {
                         let (rows, bytes) = sp.resident();
                         let (l0, l0b, runs, mid) = sp.l0_stats();
                         serde_json::json!({
@@ -1343,7 +1329,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                             "manifestId": mid,
                         })
                     });
-                    let rollup_db = state.rollup.get().map(|ru| {
+                    let rollup_db = state.billing.rollup().map(|ru| {
                         let (l0, l0b, runs, mid) = ru.l0_stats();
                         serde_json::json!({
                             "l0SstCount": l0,
@@ -1678,9 +1664,9 @@ async fn health_axum(State(state): State<Arc<AppState>>) -> Response {
             .into_response();
     }
     if crate::billing::billing_required(&state.config.billing) {
-        let spool_ok = state.read_spool.get().is_some();
-        let rollup_ok =
-            state.config.billing.rollup_env.as_deref() != Some("1") || state.rollup.get().is_some();
+        let spool_ok = state.billing.read_spool().is_some();
+        let rollup_ok = state.config.billing.rollup_env.as_deref() != Some("1")
+            || state.billing.rollup().is_some();
         if !spool_ok || !rollup_ok {
             return (
                 StatusCode::SERVICE_UNAVAILABLE,
@@ -1721,7 +1707,7 @@ async fn billing_readiness_axum(
     }
     use std::sync::atomic::Ordering;
     let now = crate::shard::now_ms();
-    let spool = state.read_spool.get();
+    let spool = state.billing.read_spool();
     let (spool_open, quarantined, depth) = match spool {
         Some(sp) => (true, sp.quarantined_count(), sp.depth().await as u64),
         None => (false, 0, 0),
@@ -1729,7 +1715,7 @@ async fn billing_readiness_axum(
     let last_drain = crate::billing::LAST_DRAIN_OK_MS.load(Ordering::Relaxed);
     let last_apply = crate::billing::LAST_ROLLUP_APPLY_MS.load(Ordering::Relaxed);
     let mut rollup_info = serde_json::json!({ "running": false });
-    if let Some(r) = state.rollup.get() {
+    if let Some(r) = state.billing.rollup() {
         let pending = r
             .pending_artifacts(1000)
             .await
@@ -1756,14 +1742,14 @@ async fn billing_readiness_axum(
         });
     }
     let ready = !crate::billing::billing_required(&state.config.billing)
-        || (state.usage_key.is_some()
+        || (state.billing.usage_key().is_some()
             && spool_open
             && (state.config.billing.rollup_env.as_deref() != Some("1")
-                || state.rollup.get().is_some()));
+                || state.billing.rollup().is_some()));
     axum::Json(serde_json::json!({
         "mode": state.config.billing.mode_env.clone().unwrap_or_else(|| "off".into()),
         "ready": ready,
-        "usageLedgerConfigured": state.usage_key.is_some(),
+        "usageLedgerConfigured": state.billing.usage_key().is_some(),
         "spool": { "open": spool_open, "depth": depth, "quarantined": quarantined },
         "drain": {
             "lastOkMs": last_drain,

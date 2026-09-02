@@ -151,7 +151,7 @@ pub fn recent(limit: usize) -> Vec<OpsEvent> {
 pub async fn drain_ops_once(
     state: &std::sync::Arc<crate::http::AppState>,
 ) -> Result<usize, String> {
-    let Some(key) = state.usage_key.clone() else {
+    let Some(key) = state.billing.usage_key() else {
         return Ok(0);
     };
     let mut batch: Vec<OpsEvent> = {
@@ -281,14 +281,14 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
     );
     counters.insert(
         "read_meter_seal_deferrals_total".into(),
-        state.billing_reads.seal_deferrals.load(Ordering::Relaxed),
+        state.billing.reads().seal_deferrals.load(Ordering::Relaxed),
     );
-    let (rows, est, sealed) = state.billing_reads.unflushed();
+    let (rows, est, sealed) = state.billing.reads().unflushed();
     gauges.insert("read_meter_unflushed_rows".into(), rows as u64);
     gauges.insert("read_meter_unflushed_bytes_est".into(), est as u64);
     gauges.insert("read_meter_sealed_batches".into(), sealed as u64);
     gauges.insert("open_engines".into(), state.shards.open_count() as u64);
-    if let Some(sp) = state.read_spool.get() {
+    if let Some(sp) = state.billing.read_spool() {
         gauges.insert("read_spool_quarantined".into(), sp.quarantined_count());
         let (rows, bytes) = sp.resident();
         gauges.insert("read_spool_pending_rows".into(), rows);
@@ -385,12 +385,12 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
     );
     // Telemetry-DB L0 posture (OOM review I3): the bounded settings
     // must be OBSERVABLY holding, not just configured.
-    if let Some(sp) = state.read_spool.get() {
+    if let Some(sp) = state.billing.read_spool() {
         let (l0, l0b, _, _) = sp.l0_stats();
         gauges.insert("spool_l0_ssts".into(), l0);
         gauges.insert("spool_l0_bytes".into(), l0b);
     }
-    if let Some(ru) = state.rollup.get() {
+    if let Some(ru) = state.billing.rollup() {
         let (l0, l0b, _, _) = ru.l0_stats();
         gauges.insert("rollup_l0_ssts".into(), l0);
         gauges.insert("rollup_l0_bytes".into(), l0b);
@@ -456,7 +456,7 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
         cell: state.deployment.cell_id().as_str().to_string(),
         region: state.deployment.region().to_string(),
         instance: state.ownership.instance().to_string(),
-        role: if state.rollup.get().is_some() {
+        role: if state.billing.rollup().is_some() {
             "rollup".into()
         } else {
             "server".into()
@@ -471,7 +471,7 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
 pub async fn emit_metrics_once(
     state: &std::sync::Arc<crate::http::AppState>,
 ) -> Result<(), String> {
-    let Some(key) = state.usage_key.clone() else {
+    let Some(key) = state.billing.usage_key() else {
         return Ok(());
     };
     let snap = collect_snapshot(state);

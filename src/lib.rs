@@ -23,6 +23,7 @@ mod auth;
 mod auth_feed;
 mod backpressure;
 mod billing;
+mod billing_service;
 mod bootstrap;
 mod config;
 mod crypto;

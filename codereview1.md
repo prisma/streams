@@ -2865,6 +2865,19 @@ Do not rename user-facing flags while moving them. Flag cleanup is a separate se
 > raw adapter's identity source qualifies a canonical name under the
 > deployment tenant and nothing else; a non-canonical name is refused
 > loudly; the lint test itself pins the accessor rule against the tree.
+>
+> **PR 6-E (WP-02, 2026-09-02):** `billing_service::BillingService`
+> owns the usage-ledger key, the read-usage accumulator, the read spool
+> and usage rollup slots (installed exactly once by the telemetry loops
+> — `install_read_spool` / `install_rollup` keep the once-only result
+> shape — and read through `read_spool()` / `rollup()`), and the sweep
+> scheduler's bookkeeping (`sweep()`: custody marks, quantum cycles,
+> the walk cursor). Five more fields DELETED (23 → 19; 57 → 19 since
+> the extraction began). billing, audit, fleet, ops, product, the HTTP
+> debug/usage surfaces and the SSE metering path read billing state
+> through the owner; the data store stays on `AppState` for the read
+> and append services of PR 9. Proof: billing-off has no key and empty
+> slots, and two services never share an accumulator.
 
 **Implements:** the foundational part of WP-15.
 

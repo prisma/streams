@@ -1157,7 +1157,7 @@ pub async fn drain_fleet_events(
         // DURABLY before the CAS outbox is cleared — a crash between
         // the two re-emits deterministic ids the rollup deduplicates,
         // never loses the transition.
-        let Some(sys_key) = state.usage_key.clone() else {
+        let Some(sys_key) = state.billing.usage_key() else {
             continue;
         };
         let mut stamped = pending.clone();

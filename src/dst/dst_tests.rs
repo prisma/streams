@@ -6220,6 +6220,16 @@ async fn http_rig_build(
     let livefeed = crate::sse::service::LiveFeedService::from_config(&rig_config.sse);
     livefeed.set_heartbeat_ms(15_000);
     let bearer = crate::deployment_bearer::DeploymentBearer::new(auth, None);
+    let billing = crate::billing_service::BillingService::new(
+        Some(PRISMA_KEY.to_string()),
+        Arc::new(crate::billing::ReadUsageAccumulator::new(
+            crate::billing::MeterSource {
+                cell: "cell_test".to_string(),
+                instance: "dst-instance".to_string(),
+                boot: rig_runtime.identity.boot_id.clone(),
+            },
+        )),
+    );
     let state = Arc::new(crate::http::AppState {
         runtime: rig_runtime.clone(),
         config: rig_config.clone(),
@@ -6227,6 +6237,7 @@ async fn http_rig_build(
         peer,
         livefeed,
         bearer,
+        billing,
         deployment: crate::deployment::DeploymentIdentity::new(
             crate::tenant::ProjectId::new("proj-test").unwrap(),
             "acct_test".to_string(),
@@ -6253,22 +6264,11 @@ async fn http_rig_build(
             record_ceiling_bytes: 0,
         }),
         cert_sealed_publish_delay_ms: std::sync::atomic::AtomicU64::new(0),
-        sweep_sched: crate::billing::SweepSched::default(),
         ownership,
         data_store: store,
         keys,
         touch,
         origin_marker: "dst-instance".to_string(),
-        usage_key: Some(PRISMA_KEY.to_string()),
-        rollup: std::sync::OnceLock::new(),
-        read_spool: std::sync::OnceLock::new(),
-        billing_reads: Arc::new(crate::billing::ReadUsageAccumulator::new(
-            crate::billing::MeterSource {
-                cell: "cell_test".to_string(),
-                instance: "dst-instance".to_string(),
-                boot: rig_runtime.identity.boot_id.clone(),
-            },
-        )),
         auth: auth_service.unwrap_or_else(|| {
             std::sync::Arc::new(
                 crate::auth::AuthService::new(
@@ -19784,7 +19784,7 @@ async fn same_name_cross_project_usage_attributes_exactly() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    let _ = state.rollup.set(std::sync::Arc::new(rollup));
+    let _ = state.billing.install_rollup(std::sync::Arc::new(rollup));
 
     #[derive(serde::Serialize)]
     struct C<'a> {
@@ -19850,7 +19850,7 @@ async fn same_name_cross_project_usage_attributes_exactly() {
     }
 
     // Drain the ledger and consume it into the rollup.
-    state.billing_reads.seal_if_aged(0);
+    state.billing.reads().seal_if_aged(0);
     let mut drained = 0usize;
     for _ in 0..100 {
         let n = crate::billing::drain_once(&state).await.expect("drain");
@@ -20002,7 +20002,7 @@ async fn invoice_reconciliation_balances_and_detects_corruption() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    let _ = state.rollup.set(std::sync::Arc::new(rollup));
+    let _ = state.billing.install_rollup(std::sync::Arc::new(rollup));
 
     #[derive(serde::Serialize)]
     struct C<'a> {
@@ -20088,7 +20088,7 @@ async fn invoice_reconciliation_balances_and_detects_corruption() {
     .await;
     assert_eq!(st, 200);
 
-    state.billing_reads.seal_if_aged(0);
+    state.billing.reads().seal_if_aged(0);
     let mut drained = 0usize;
     for _ in 0..100 {
         let n = crate::billing::drain_once(&state).await.expect("drain");
@@ -20106,7 +20106,7 @@ async fn invoice_reconciliation_balances_and_detects_corruption() {
 
     let (y, m) = crate::billing::utc_year_month(crate::billing::billing_now_ms());
     let month = crate::billing::month_str(y, m);
-    let rollup = state.rollup.get().unwrap();
+    let rollup = state.billing.rollup().unwrap();
     let clean = rollup.reconcile_month(&month).await.expect("reconcile");
     assert!(clean.ok, "books must balance: {:?}", clean.mismatches);
     assert!(clean.projects >= 2, "both projects walked: {clean:?}");
@@ -20386,7 +20386,7 @@ async fn enforce_denials_journal_to_audit_events() {
 
     // Read the journal back through the system read path (each page is
     // a JSON array of event records) and find both events.
-    let key = state.usage_key.clone().expect("rig usage key");
+    let key = state.billing.usage_key().expect("rig usage key");
     let mut events: Vec<serde_json::Value> = Vec::new();
     let mut cursor: Option<String> = None;
     for _ in 0..200 {
@@ -20557,7 +20557,7 @@ async fn shared_cell_certification_smoke() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    let _ = state.rollup.set(std::sync::Arc::new(rollup));
+    let _ = state.billing.install_rollup(std::sync::Arc::new(rollup));
 
     #[derive(serde::Serialize)]
     struct C<'a> {
@@ -20713,7 +20713,7 @@ async fn shared_cell_certification_smoke() {
 
     // BOOKS: drain, roll up, reconcile — per-(account, project) totals
     // agree and every noisy project's row exists.
-    state.billing_reads.seal_if_aged(0);
+    state.billing.reads().seal_if_aged(0);
     for _ in 0..100 {
         if crate::billing::drain_once(&state).await.expect("drain") == 0 {
             break;
@@ -20726,7 +20726,7 @@ async fn shared_cell_certification_smoke() {
     }
     let (y, m) = crate::billing::utc_year_month(crate::billing::billing_now_ms());
     let month = crate::billing::month_str(y, m);
-    let rollup = state.rollup.get().unwrap();
+    let rollup = state.billing.rollup().unwrap();
     let rep = rollup.reconcile_month(&month).await.expect("reconcile");
     assert!(rep.ok, "books must balance: {:?}", rep.mismatches);
     assert!(
@@ -25521,7 +25521,8 @@ async fn read_meter_covers_the_matrix_exactly() {
     }
     let row = |state: &Arc<crate::http::AppState>, name: &str| -> crate::billing::RowDelta {
         state
-            .billing_reads
+            .billing
+            .reads()
             .snapshot_active()
             .into_iter()
             .find(|(id, _)| id.stream_name == name)
@@ -25647,8 +25648,8 @@ async fn read_meter_covers_the_matrix_exactly() {
 
     // Rotation: sealing moves the rows into a batch with this boot's
     // source identity and a monotone sequence.
-    state.billing_reads.seal_if_aged(0);
-    let batches = state.billing_reads.drain_sealed(8);
+    state.billing.reads().seal_if_aged(0);
+    let batches = state.billing.reads().drain_sealed(8);
     assert_eq!(batches.len(), 1);
     assert_eq!(batches[0].source.boot, state.runtime.identity.boot_id);
     assert!(
@@ -25660,7 +25661,7 @@ async fn read_meter_covers_the_matrix_exactly() {
                 && !r.identity.stream_id.is_empty()),
         "sealed rows carry the full billing identity"
     );
-    assert!(state.billing_reads.snapshot_active().is_empty());
+    assert!(state.billing.reads().snapshot_active().is_empty());
     engine_shutdown(&state).await;
 }
 
@@ -25858,7 +25859,7 @@ async fn usage_pipeline_end_to_end_exactly_once() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    let _ = state.rollup.set(std::sync::Arc::new(rollup));
+    let _ = state.billing.install_rollup(std::sync::Arc::new(rollup));
 
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     let (st, _, _) = preq(
@@ -25898,7 +25899,7 @@ async fn usage_pipeline_end_to_end_exactly_once() {
 
     // Drain: read batches + dirty snapshots reach `_usage`; the outbox
     // acks down to empty.
-    state.billing_reads.seal_if_aged(0);
+    state.billing.reads().seal_if_aged(0);
     let n = crate::billing::drain_once(&state).await.expect("drain");
     assert!(n >= 2, "expected snapshots + a read batch, drained {n}");
     // Drain again with nothing new: nothing to emit.
@@ -25946,8 +25947,8 @@ async fn usage_pipeline_end_to_end_exactly_once() {
     let before = serde_json::to_string(&v).unwrap();
     // Reset the cursor by applying an empty page carrying cursor "".
     state
-        .rollup
-        .get()
+        .billing
+        .rollup()
         .unwrap()
         .apply_page(&[], "")
         .await
@@ -26094,7 +26095,7 @@ async fn ops_metrics_and_alerts_flow() {
         crate::rollup::UsageRollup::open(state.data_store.clone(), "opsflow", &state.config)
             .await
             .unwrap();
-    let _ = state.rollup.set(std::sync::Arc::new(rollup));
+    let _ = state.billing.install_rollup(std::sync::Arc::new(rollup));
 
     // Two snapshot emissions land in the same minute bucket.
     crate::ops::emit_metrics_once(&state).await.expect("emit 1");
@@ -26113,14 +26114,14 @@ async fn ops_metrics_and_alerts_flow() {
     let now = crate::shard::now_ms();
     let minute = now - now.rem_euclid(60_000);
     let m1 = state
-        .rollup
-        .get()
+        .billing
+        .rollup()
         .unwrap()
         .ops_m1("", minute)
         .await
         .or(state
-            .rollup
-            .get()
+            .billing
+            .rollup()
             .unwrap()
             .ops_m1("", minute - 60_000)
             .await)
@@ -26137,14 +26138,14 @@ async fn ops_metrics_and_alerts_flow() {
             stream_id: format!("{i:032x}"),
             stream_name: format!("s{i}"),
         };
-        state.billing_reads.meter(
+        state.billing.reads().meter(
             &id,
             crate::billing::RowDelta {
                 read_operations: 1,
                 ..Default::default()
             },
         );
-        state.billing_reads.seal_if_aged(0);
+        state.billing.reads().seal_if_aged(0);
     }
     let snap = crate::ops::collect_snapshot(&state);
     crate::ops::evaluate_alerts(&state, &snap).await;
@@ -26155,7 +26156,7 @@ async fn ops_metrics_and_alerts_flow() {
         "backpressure alert must open: {open:?}"
     );
     // Drain the queue (ledger works in this rig), re-evaluate: resolved.
-    while !state.billing_reads.drain_sealed(64).is_empty() {}
+    while !state.billing.reads().drain_sealed(64).is_empty() {}
     let snap2 = crate::ops::collect_snapshot(&state);
     crate::ops::evaluate_alerts(&state, &snap2).await;
     assert!(
@@ -26185,7 +26186,7 @@ async fn telemetry_crash_points_and_cost_gates() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "p6", &state.config)
         .await
         .unwrap();
-    let _ = state.rollup.set(std::sync::Arc::new(rollup));
+    let _ = state.billing.install_rollup(std::sync::Arc::new(rollup));
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     // Three streams, one record each.
     for i in 0..3 {
@@ -26213,7 +26214,7 @@ async fn telemetry_crash_points_and_cost_gates() {
     }
     // §17.2: all three dirty segments (+ the read batch) drain in ONE
     // round = one ledger append, not one per stream.
-    state.billing_reads.seal_if_aged(0);
+    state.billing.reads().seal_if_aged(0);
     let n = crate::billing::drain_once(&state).await.unwrap();
     assert!(n >= 3, "one batched drain covered all dirty streams: {n}");
     for _ in 0..100 {
@@ -26312,7 +26313,7 @@ async fn read_batches_survive_crash_in_the_spool() {
         crate::billing::ReadSpool::open(state.data_store.clone(), "sp1", "inst", &state.config)
             .await
             .unwrap();
-    let _ = state.read_spool.set(std::sync::Arc::new(spool));
+    let _ = state.billing.install_read_spool(std::sync::Arc::new(spool));
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     let (st, _, _) = preq(
         addr,
@@ -26332,12 +26333,12 @@ async fn read_batches_survive_crash_in_the_spool() {
     )
     .await;
     assert_eq!(st, 200);
-    state.billing_reads.seal_if_aged(0);
+    state.billing.reads().seal_if_aged(0);
     // Persist to the spool WITHOUT reaching the ledger: simulate the
     // pre-append half of a drain by spooling directly.
-    let sealed = state.billing_reads.drain_sealed(16);
+    let sealed = state.billing.reads().drain_sealed(16);
     assert_eq!(sealed.len(), 1);
-    let sp = state.read_spool.get().unwrap();
+    let sp = state.billing.read_spool().unwrap();
     sp.persist(&sealed[0]).await.unwrap();
 
     // "Crash": a fresh spool handle over the same store still has it.
@@ -26353,7 +26354,7 @@ async fn read_batches_survive_crash_in_the_spool() {
     // A full drain now emits from the spool and clears it after ack.
     let n = crate::billing::drain_once(&state).await.unwrap();
     assert!(n >= 1);
-    assert_eq!(state.read_spool.get().unwrap().depth().await, 0);
+    assert_eq!(state.billing.read_spool().unwrap().depth().await, 0);
     engine_shutdown(&state).await;
 }
 
@@ -30758,7 +30759,7 @@ async fn valid_transfer_bills_each_workspace_on_its_own_side() {
     let rollup = crate::rollup::UsageRollup::open(state.data_store.clone(), "", &state.config)
         .await
         .unwrap();
-    let _ = state.rollup.set(std::sync::Arc::new(rollup));
+    let _ = state.billing.install_rollup(std::sync::Arc::new(rollup));
     let tok_a = mint_token("c1", "proj-vtx", "ws_vta", 1, 1, "va", 600);
     rig_create(addr, "vtx", &tok_a).await;
     let mut promoter = rig_sse(addr, "vtx", &tok_a, "", None).await;
@@ -30821,7 +30822,7 @@ async fn valid_transfer_bills_each_workspace_on_its_own_side() {
 
     // Books: reads under BOTH workspaces for this project, each side
     // attributed to the owner at event time.
-    state.billing_reads.seal_if_aged(0);
+    state.billing.reads().seal_if_aged(0);
     for _ in 0..100 {
         if crate::billing::drain_once(&state).await.expect("drain") == 0 {
             break;
@@ -30834,7 +30835,7 @@ async fn valid_transfer_bills_each_workspace_on_its_own_side() {
     }
     let (y, m) = crate::billing::utc_year_month(crate::billing::billing_now_ms());
     let month = crate::billing::month_str(y, m);
-    let rollup = state.rollup.get().unwrap();
+    let rollup = state.billing.rollup().unwrap();
     let mut per_ws: std::collections::HashMap<String, u64> = Default::default();
     let mut iter = rollup
         .db
@@ -31895,7 +31896,8 @@ async fn token_expiry_interrupts_slowly_progressing_delivery() {
 /// carry a delta assertion; the accumulator is per rig.)
 fn read_billing_sum(state: &Arc<crate::http::AppState>) -> (u64, u64) {
     state
-        .billing_reads
+        .billing
+        .reads()
         .snapshot_active()
         .iter()
         .fold((0, 0), |(b, r), (_, d)| {

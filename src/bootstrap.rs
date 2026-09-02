@@ -650,6 +650,19 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         config.cli.auth_token.clone(),
         config.cli.conformance_default_key.clone(),
     );
+    // WP-02 / PR 6-E: the billing owner takes its ledger key and the
+    // read accumulator here; the spool and rollup are installed later by
+    // the telemetry loops, exactly once.
+    let billing = crate::billing_service::BillingService::new(
+        config.cli.usage_stream_key.clone(),
+        Arc::new(crate::billing::ReadUsageAccumulator::new(
+            crate::billing::MeterSource {
+                cell: config.cli.cell_id.clone(),
+                instance: config.cli.instance_name.clone(),
+                boot: runtime_caps.identity.boot_id.clone(),
+            },
+        )),
+    );
     let config = Arc::new(config);
     let state = Arc::new(AppState {
         runtime: runtime_caps.clone(),
@@ -661,11 +674,11 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         livefeed,
         bearer,
         deployment,
+        billing,
         cert_sealed_publish_delay_ms: std::sync::atomic::AtomicU64::new(
             // PR 3.2: proven by validate(); no panic path in bootstrap.
             cert_sealed_publish_delay_ms,
         ),
-        sweep_sched: crate::billing::SweepSched::default(),
         ownership,
         data_store,
         keys,
@@ -675,16 +688,6 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         } else {
             config.cli.instance_name.clone()
         },
-        usage_key: config.cli.usage_stream_key.clone(),
-        rollup: std::sync::OnceLock::new(),
-        read_spool: std::sync::OnceLock::new(),
-        billing_reads: Arc::new(crate::billing::ReadUsageAccumulator::new(
-            crate::billing::MeterSource {
-                cell: config.cli.cell_id.clone(),
-                instance: config.cli.instance_name.clone(),
-                boot: runtime_caps.identity.boot_id.clone(),
-            },
-        )),
         auth: auth_service.clone(),
         quotas: crate::quota::QuotaRegistry::default(),
         catalog_cursor_key,

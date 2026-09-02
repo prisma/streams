@@ -120,7 +120,7 @@ pub fn observe_denial(
     // No usage key = no drain will EVER run: count the loss instead of
     // pinning the queue at cap for the process lifetime. The boot path
     // warns loudly that enforce without a usage key voids the journal.
-    if state.usage_key.is_none() {
+    if state.billing.usage_key().is_none() {
         AUDIT_DROPPED.fetch_add(1, Ordering::Relaxed);
         return;
     }
@@ -154,7 +154,7 @@ pub fn observe_denial(
 pub async fn drain_audit_once(
     state: &std::sync::Arc<crate::http::AppState>,
 ) -> Result<usize, String> {
-    let Some(key) = state.usage_key.clone() else {
+    let Some(key) = state.billing.usage_key() else {
         return Ok(0);
     };
     let mut batch: Vec<AuditEvent> = {
