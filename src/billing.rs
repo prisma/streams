@@ -1458,7 +1458,10 @@ pub async fn open_read_spool(state: &std::sync::Arc<crate::http::AppState>) -> a
 
 /// The drainer task: every TELEMETRY_DRAIN_SECS (default 2), one drain
 /// round. Errors log and retry — the durable outbox holds the truth.
-pub fn spawn_telemetry(state: std::sync::Arc<crate::http::AppState>) {
+pub fn spawn_telemetry(
+    state: std::sync::Arc<crate::http::AppState>,
+    tasks: &crate::tasks::TaskSupervisor,
+) {
     if state.billing.usage_key().is_none() {
         tracing::info!("telemetry pipeline off (USAGE_STREAM_KEY unset)");
         return;
@@ -1468,17 +1471,20 @@ pub fn spawn_telemetry(state: std::sync::Arc<crate::http::AppState>) {
     // sweep runs at start and every OUTBOX_SWEEP_SECS.
     {
         let st = state.clone();
-        state.tasks.spawn(
+        let _ = tasks.spawn(
             "telemetry-outbox-sweep",
             crate::tasks::Policy::Critical,
-            async move {
+            move |cancel| async move {
                 if let Err(e) = open_read_spool(&st).await {
                     tracing::error!("read spool open failed: {e}");
                 }
                 sweep_owned_outboxes(&st).await;
                 let sweep_secs: u64 = st.config.billing.outbox_sweep_secs;
                 loop {
-                    tokio::time::sleep(std::time::Duration::from_secs(sweep_secs)).await;
+                    tokio::select! {
+                        _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(sweep_secs)) => {}
+                    }
                     sweep_owned_outboxes(&st).await;
                 }
             },
@@ -1486,15 +1492,17 @@ pub fn spawn_telemetry(state: std::sync::Arc<crate::http::AppState>) {
     }
     let secs: u64 = state.config.billing.telemetry_drain_secs;
     let metrics_secs: u64 = state.config.billing.metrics_interval_secs;
-    let tasks = state.tasks.clone();
-    tasks.spawn(
+    let _ = tasks.spawn(
         "telemetry-drain",
         crate::tasks::Policy::Critical,
-        async move {
+        move |cancel| async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(secs.max(1)));
             let mut last_metrics = 0i64;
             loop {
-                tick.tick().await;
+                tokio::select! {
+                    _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
+                    _ = tick.tick() => {}
+                }
                 match drain_once(&state).await {
                     Ok(_) => {
                         LAST_DRAIN_OK_MS
@@ -1748,72 +1756,85 @@ pub async fn open_rollup(
     Ok(())
 }
 
-pub fn spawn_rollup(state: std::sync::Arc<crate::http::AppState>, prefix: String) {
+pub fn spawn_rollup(
+    state: std::sync::Arc<crate::http::AppState>,
+    prefix: String,
+    tasks: &crate::tasks::TaskSupervisor,
+) {
     use object_store::ObjectStoreExt;
-    let tasks = state.tasks.clone();
-    tasks.spawn("usage-rollup", crate::tasks::Policy::Critical, async move {
-        let _store = state.data_store.clone();
-        if let Err(e) = open_rollup(&state, &prefix).await {
-            tracing::error!("usage rollup open failed: {e}");
-            return;
-        }
-        tracing::info!("usage rollup running");
-        let grace_ms: i64 = state.config.billing.month_close_grace_ms;
-        let mut last_close = 0i64;
-        loop {
-            let usage_n = match rollup_step(&state).await {
-                Ok(n) => n,
-                Err(e) => {
-                    tracing::warn!("rollup step: {e}");
-                    0
-                }
-            };
-            let ops_n = match ops_rollup_step(&state).await {
-                Ok(n) => n,
-                Err(e) => {
-                    tracing::warn!("ops rollup step: {e}");
-                    0
-                }
-            };
-            if usage_n == 0 && ops_n == 0 {
-                tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+    let _ = tasks.spawn(
+        "usage-rollup",
+        crate::tasks::Policy::Critical,
+        move |cancel| async move {
+            let _store = state.data_store.clone();
+            if let Err(e) = open_rollup(&state, &prefix).await {
+                tracing::error!("usage rollup open failed: {e}");
+                return crate::tasks::TaskResult::Failed(format!("usage rollup open failed: {e}"));
             }
-            let now = crate::shard::now_ms();
-            if now - last_close > 3_600_000 {
-                last_close = now;
-                let rollup2 = state.billing.rollup().unwrap().clone();
-                let store2 = state.data_store.clone();
-                let pfx = prefix.clone();
-                if let Ok(n) = rollup2.sweep_ops_raw(now, 10_000).await
-                    && n > 0
-                {
-                    tracing::info!("ops raw retention: {n} points expired");
+            tracing::info!("usage rollup running");
+            let grace_ms: i64 = state.config.billing.month_close_grace_ms;
+            let mut last_close = 0i64;
+            loop {
+                if cancel.is_cancelled() {
+                    return crate::tasks::TaskResult::Done;
                 }
-                // Round-22 item 8: missed months catch up IN ORDER from
-                // the persisted oldest-unfinalized marker — a rollup
-                // that was down over one or more boundaries closes
-                // every overdue month, oldest first, before touching
-                // the newest.
-                match rollup2.close_months_due(grace_ms).await {
-                    Ok(closed) => {
-                        for (mstr, n) in closed {
-                            if n > 0 {
-                                tracing::info!("month {mstr} closed: {n} streams");
+                let usage_n = match rollup_step(&state).await {
+                    Ok(n) => n,
+                    Err(e) => {
+                        tracing::warn!("rollup step: {e}");
+                        0
+                    }
+                };
+                let ops_n = match ops_rollup_step(&state).await {
+                    Ok(n) => n,
+                    Err(e) => {
+                        tracing::warn!("ops rollup step: {e}");
+                        0
+                    }
+                };
+                if usage_n == 0 && ops_n == 0 {
+                    tokio::select! {
+                        _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
+                        _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
+                    }
+                }
+                let now = crate::shard::now_ms();
+                if now - last_close > 3_600_000 {
+                    last_close = now;
+                    let rollup2 = state.billing.rollup().unwrap().clone();
+                    let store2 = state.data_store.clone();
+                    let pfx = prefix.clone();
+                    if let Ok(n) = rollup2.sweep_ops_raw(now, 10_000).await
+                        && n > 0
+                    {
+                        tracing::info!("ops raw retention: {n} points expired");
+                    }
+                    // Round-22 item 8: missed months catch up IN ORDER from
+                    // the persisted oldest-unfinalized marker — a rollup
+                    // that was down over one or more boundaries closes
+                    // every overdue month, oldest first, before touching
+                    // the newest.
+                    match rollup2.close_months_due(grace_ms).await {
+                        Ok(closed) => {
+                            for (mstr, n) in closed {
+                                if n > 0 {
+                                    tracing::info!("month {mstr} closed: {n} streams");
+                                }
                             }
                         }
+                        Err(e) => tracing::warn!("month close: {e}"),
                     }
-                    Err(e) => tracing::warn!("month close: {e}"),
-                }
-                // Two-phase artifact publication (round-21 blocker 7):
-                // PutMode::Create against the immutable path; an
-                // AlreadyExists is an earlier successful PUT. Pending
-                // rows survive crash and retry here every tick.
-                if let Err(e) = publish_artifacts(&rollup2, &store2, &pfx).await {
-                    tracing::warn!("artifact publication: {e}");
+                    // Two-phase artifact publication (round-21 blocker 7):
+                    // PutMode::Create against the immutable path; an
+                    // AlreadyExists is an earlier successful PUT. Pending
+                    // rows survive crash and retry here every tick.
+                    if let Err(e) = publish_artifacts(&rollup2, &store2, &pfx).await {
+                        tracing::warn!("artifact publication: {e}");
+                    }
                 }
             }
-        }
-    });
+        },
+    );
 }
 
 // ---------------------------------------------------------------------

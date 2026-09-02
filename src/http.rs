@@ -125,9 +125,11 @@ pub struct AppState {
     /// WP-02 / PR 6-E: the usage ledger key, the read accumulator, the
     /// spool and rollup slots, the sweep scheduler's bookkeeping.
     pub billing: crate::billing_service::BillingService,
-    /// WP-02 / PR 6-F: the supervisor every long-lived loop of this
-    /// runtime is a child of — cancellation, join results, policy.
-    pub tasks: crate::tasks::TaskSupervisor,
+    /// WP-02 / PR 6.1-A: a READ-ONLY view of the supervisor every
+    /// long-lived loop of this runtime is a child of. The supervisor
+    /// itself is owned by the composition root: its tasks capture this
+    /// state, so a strong edge back would make a failed start immortal.
+    pub tasks: crate::tasks::TaskMonitor,
     /// Round-11.6 field canary ONLY: widen the seal close→publication
     /// gap by this many ms so the seal-herd campaign can observe the
     /// two-step window on a real release binary at fleet scale. Boot
@@ -852,6 +854,7 @@ async fn debug_load(
         // PR 6-F: the supervised long-lived loops and the first critical
         // exit, if any (readiness adopts it in WP-15's remaining slice).
         "tasks": {
+            "phase": state.tasks.phase().map(|p| format!("{p:?}")),
             "critical_failure": state.tasks.critical_failure(),
             "loops": state.tasks.snapshot().into_iter().map(|t| serde_json::json!({
                 "name": t.name,
@@ -1132,28 +1135,46 @@ pub async fn serve_h1(
     NOFILE_HARD.store(hard, std::sync::atomic::Ordering::Relaxed);
     tracing::info!("nofile soft={soft} hard={hard} (raised to hard at boot)");
     spawn_runtime_watchdog(&tasks);
+    // PR 6.1-A: the accept loop OWNS its connections. A connection is
+    // not request-scoped — keep-alives and live subscriptions outlive
+    // any one request — so on cancellation the loop stops accepting,
+    // releases the address, then aborts and JOINS every connection: a
+    // runtime that has shut down has no socket left open, and a
+    // replacement can bind the same address immediately.
+    let cancel = tasks.cancellation();
+    let mut conns = tokio::task::JoinSet::new();
     loop {
-        let (sock, _peer) = match listener.accept().await {
-            Ok(x) => x,
-            Err(e) => {
-                // Transient accept errors (EMFILE bursts, aborted
-                // handshakes) must not kill the acceptor.
-                tracing::warn!("accept: {e}");
-                tokio::time::sleep(std::time::Duration::from_millis(20)).await;
-                continue;
-            }
-        };
-        let svc = svc.clone();
-        tokio::spawn(async move {
-            let _ = sock.set_nodelay(true);
-            let io = hyper_util::rt::TokioIo::new(sock);
-            let mut b = hyper::server::conn::http1::Builder::new();
-            b.max_buf_size(max_buf);
-            // Errors here are routine client behavior (resets,
-            // half-closed keep-alives), not server faults.
-            let _ = b.serve_connection(io, svc).await;
-        });
+        tokio::select! {
+            _ = cancel.cancelled() => break,
+            accepted = listener.accept() => match accepted {
+                Ok((sock, _peer)) => {
+                    let svc = svc.clone();
+                    conns.spawn(async move {
+                        let _ = sock.set_nodelay(true);
+                        let io = hyper_util::rt::TokioIo::new(sock);
+                        let mut b = hyper::server::conn::http1::Builder::new();
+                        b.max_buf_size(max_buf);
+                        // Errors here are routine client behavior (resets,
+                        // half-closed keep-alives), not server faults.
+                        let _ = b.serve_connection(io, svc).await;
+                    });
+                }
+                Err(e) => {
+                    // Transient accept errors (EMFILE bursts, aborted
+                    // handshakes) must not kill the acceptor.
+                    tracing::warn!("accept: {e}");
+                    tokio::time::sleep(std::time::Duration::from_millis(20)).await;
+                }
+            },
+            // Reap finished connections so the set never grows with
+            // completed entries.
+            Some(_) = conns.join_next(), if !conns.is_empty() => {}
+        }
     }
+    drop(listener);
+    conns.abort_all();
+    while conns.join_next().await.is_some() {}
+    Ok(())
 }
 
 pub fn router(state: Arc<AppState>) -> Router {
@@ -6830,14 +6851,17 @@ pub(crate) static RUNTIME_MAX_GAP_MS: std::sync::atomic::AtomicI64 =
     std::sync::atomic::AtomicI64::new(0);
 
 pub(crate) fn spawn_runtime_watchdog(tasks: &crate::tasks::TaskSupervisor) {
-    tasks.spawn(
+    let _ = tasks.spawn(
         "runtime-watchdog",
         crate::tasks::Policy::Noncritical,
-        async move {
+        move |cancel| async move {
             let mut last = crate::shard::now_ms();
             RUNTIME_LAST_TICK_MS.store(last, std::sync::atomic::Ordering::Relaxed);
             loop {
-                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                tokio::select! {
+                    _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(1)) => {}
+                }
                 let now = crate::shard::now_ms();
                 let gap = now - last;
                 last = now;

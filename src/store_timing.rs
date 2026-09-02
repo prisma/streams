@@ -331,6 +331,11 @@ fn read_steal() -> Option<(u64, u64)> {
 }
 
 /// Spawn both sentinels; call once at startup.
+/// WP-15 / PR 6.1-A: process-lifetime INSTRUMENTATION — one OS thread
+/// and one runtime task measuring scheduler drift for the whole
+/// process. The documented exception to task supervision: it measures
+/// the process, not a runtime, holds no runtime state and has nothing
+/// to release, so it is not a child of any supervisor.
 pub fn spawn_sentinels() {
     std::thread::Builder::new()
         .name("drift-sentinel".into())

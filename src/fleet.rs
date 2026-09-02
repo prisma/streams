@@ -377,10 +377,14 @@ fn fleet_store_handle() -> Option<Arc<dyn ObjectStore>> {
     fleet_store_slot().lock().unwrap().clone()
 }
 
-pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
+pub fn start(
+    state: Arc<AppState>,
+    store: Arc<dyn ObjectStore>,
+    cfg: FleetCfg,
+    tasks: &crate::tasks::TaskSupervisor,
+) {
     *fleet_store_slot().lock().unwrap() = Some(store.clone());
-    let tasks = state.tasks.clone();
-    tasks.spawn("fleet", crate::tasks::Policy::Critical, async move {
+    let _ = tasks.spawn("fleet", crate::tasks::Policy::Critical, move |cancel| async move {
         let mut ewma_rps = 0.0f64;
         let mut last_ops = 0u64;
         let mut last_tick = Instant::now();
@@ -399,7 +403,10 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
         // wake fires only on real ownership-view changes.
         let mut last_ownership_view: Option<crate::ownership::OwnershipView> = None;
         loop {
-            tokio::time::sleep(Duration::from_secs(2)).await;
+            tokio::select! {
+                _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
+                _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+            }
             let ops = state.admission.fleet_ops();
             let dt = last_tick.elapsed().as_secs_f64().max(0.001);
             last_tick = Instant::now();

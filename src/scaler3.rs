@@ -895,11 +895,16 @@ async fn resume_merge(
 
 /// The evaluation loop (one per instance).
 pub fn start(st: std::sync::Weak<crate::http::AppState>, tasks: &crate::tasks::TaskSupervisor) {
-    tasks.spawn("scaler", crate::tasks::Policy::Critical, async move {
+    let _ = tasks.spawn("scaler", crate::tasks::Policy::Critical, move |cancel| async move {
         let eval = policy().eval_secs.max(1);
         loop {
-            tokio::time::sleep(std::time::Duration::from_secs(eval)).await;
-            let Some(st) = st.upgrade() else { return };
+            tokio::select! {
+                _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
+                _ = tokio::time::sleep(std::time::Duration::from_secs(eval)) => {}
+            }
+            let Some(st) = st.upgrade() else {
+                return crate::tasks::TaskResult::Done;
+            };
             let (decisions, merges) = evaluate(crate::shard::now_ms());
             for (name, epoch, seg_id, split_at) in decisions {
                 // Fenced to the incarnation the HEAT belongs to — a

@@ -5968,6 +5968,91 @@ async fn distinct_incarnations_have_distinct_pinned_identities() {
     );
 }
 
+/// PR 6.1-A: a runtime that has shut down holds no socket — the
+/// address is free for a replacement IMMEDIATELY (the accept loop
+/// released the listener and joined every connection before the
+/// supervisor returned).
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn shutdown_releases_the_listener_for_immediate_rebinding() {
+    let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
+    let addr = rig.addr;
+    let (st, _, _) = hreq(addr, "GET", "/health", &[], b"").await;
+    assert_eq!(st, 200);
+    let report = rig.tasks.shutdown(std::time::Duration::from_secs(2)).await;
+    assert!(report.terminated("http"), "{report:?}");
+    assert_eq!(rig.tasks.phase(), crate::tasks::Phase::Stopped);
+    tokio::net::TcpListener::bind(addr)
+        .await
+        .expect("the old runtime's address rebinds immediately after shutdown");
+}
+
+/// PR 6.1-A: a keep-alive connection is a CHILD of the accept loop —
+/// it is closed before shutdown returns, not left parked on a runtime
+/// that no longer exists.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn shutdown_terminates_a_live_keep_alive_connection() {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
+    let mut sck = tokio::net::TcpStream::connect(rig.addr).await.unwrap();
+    sck.write_all(b"GET /health HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\n\r\n")
+        .await
+        .unwrap();
+    let (head, text) = sse_head(&mut sck).await;
+    assert_eq!(head, 200, "{text}");
+    // HTTP/1.1 keeps the connection open and idle after the response.
+    tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+    let report = rig.tasks.shutdown(std::time::Duration::from_secs(2)).await;
+    assert!(report.terminated("http"), "{report:?}");
+    let mut buf = [0u8; 256];
+    let mut closed = false;
+    for _ in 0..8 {
+        match tokio::time::timeout(std::time::Duration::from_secs(1), sck.read(&mut buf)).await {
+            Ok(Ok(0)) | Ok(Err(_)) => {
+                closed = true;
+                break;
+            }
+            Ok(Ok(_)) => continue, // pending response bytes drain first
+            Err(_) => break,
+        }
+    }
+    assert!(
+        closed,
+        "the keep-alive connection must be closed by shutdown"
+    );
+}
+
+/// PR 6.1-A: a live subscription — the longest-lived connection a
+/// runtime serves — ends when the runtime shuts down.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn shutdown_terminates_a_live_sse_subscription() {
+    use tokio::io::AsyncWriteExt;
+    let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
+    let addr = rig.addr;
+    let ct = ("content-type", "application/json");
+    let (st, _, b) = hreq(addr, "PUT", "/v1/stream/livesub", &[ct], br#"[{"i":0}]"#).await;
+    assert!(
+        st == 200 || st == 201,
+        "stage: {st} {}",
+        String::from_utf8_lossy(&b)
+    );
+    let mut sck = tokio::net::TcpStream::connect(addr).await.unwrap();
+    let req = format!(
+        "GET /v1/stream/livesub?live=sse&offset=now HTTP/1.1\r\nhost: x\r\ncontent-length: 0\r\nstream-encryption-key: {RIG_KEY_B64}\r\n\r\n"
+    );
+    sck.write_all(req.as_bytes()).await.unwrap();
+    let (head, text) = sse_head(&mut sck).await;
+    assert_eq!(head, 200, "{text}");
+    let (body, ended) = hub_sse_collect(&mut sck, 5, |t| t.contains("upToDate")).await;
+    assert!(
+        !ended && body.contains("upToDate"),
+        "a parked live subscription:\n{body}"
+    );
+    let report = rig.tasks.shutdown(std::time::Duration::from_secs(2)).await;
+    assert!(report.terminated("http"), "{report:?}");
+    let (_, ended) = hub_sse_collect(&mut sck, 3, |_| false).await;
+    assert!(ended, "the live subscription must end with the runtime");
+}
+
 /// PR 4.1.1 proof (c): a touch cursor is PROCESS-LOCAL — its epoch
 /// names the journal incarnation that issued it. A restarted server (a
 /// new rig incarnation over the same persisted store) recreates the
@@ -6268,7 +6353,7 @@ async fn http_rig_build(
         livefeed,
         bearer,
         billing,
-        tasks: tasks.clone(),
+        tasks: tasks.monitor(),
         deployment: crate::deployment::DeploymentIdentity::new(
             crate::tenant::ProjectId::new("proj-test").unwrap(),
             "acct_test".to_string(),
@@ -6317,14 +6402,20 @@ async fn http_rig_build(
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
     let serve_tasks = tasks.clone();
-    tasks.spawn("http", crate::tasks::Policy::Critical, async move {
-        // #269: rigs serve through the PRODUCTION h1 loop so the whole
-        // suite exercises it (axum::serve here would leave the real
-        // connection path tested only by out-of-tree probes).
-        crate::http::serve_h1(listener, app, 64 * 1024, serve_tasks)
-            .await
-            .ok();
-    });
+    let _ = tasks.spawn(
+        "http",
+        crate::tasks::Policy::Critical,
+        move |_cancel| async move {
+            // #269: rigs serve through the PRODUCTION h1 loop so the whole
+            // suite exercises it (axum::serve here would leave the real
+            // connection path tested only by out-of-tree probes). It observes
+            // the supervisor's cancellation itself and owns its connections.
+            crate::http::serve_h1(listener, app, 64 * 1024, serve_tasks)
+                .await
+                .ok();
+            crate::tasks::TaskResult::Done
+        },
+    );
     HttpRig {
         state,
         addr,

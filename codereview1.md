@@ -2900,6 +2900,39 @@ Do not rename user-facing flags while moving them. Flag cleanup is a separate se
 > finishes inside the grace, a stubborn one is aborted, the loop is
 > gone afterwards, a second shutdown finds nothing); critical exits are
 > failures, noncritical exits are not, panics are reported.
+>
+> **PR 6.1-A (Oracle corrective on PR 6, 2026-09-02): runtime shutdown
+> is real.** The supervisor's registration and shutdown share ONE
+> phase-locked state (`Running → ShuttingDown → Stopped`): a spawn
+> after the drain began is refused (`SpawnRejected`), never registered.
+> `spawn` builds each loop WITH its `Cancellation`
+> (`FnOnce(Cancellation) -> Future<Output = TaskResult>`), so every
+> supervised loop observes cancellation by construction — all nine
+> production loops select on it at their iteration boundary. `shutdown`
+> cancels, waits to one shared deadline, aborts the survivors and then
+> JOINS every task, aborted ones included, recording a typed
+> `TaskOutcome` (finished / failed / cancelled / panicked) per task; a
+> drop probe proves an aborted future is destroyed before it returns.
+> The HTTP accept loop owns its connections (a `JoinSet`): cancellation
+> stops accepting, releases the listener, then aborts and joins every
+> connection — proofs: the address rebinds immediately after shutdown, a
+> live keep-alive connection and a live SSE subscription are closed
+> before shutdown returns. Production reaches shutdown through a
+> supervised signal task (SIGTERM / Ctrl-C request it through a weak
+> `ShutdownRequest`; `serve_h1` returns once cancelled). No loop starts
+> before the last fallible startup step: the required billing opens and
+> the listener bind moved ahead of the first spawn and the unready
+> watchdog starts with the other loops, so an early `?` strands nothing.
+> `AppState` holds a read-only `TaskMonitor` (weak), not the supervisor:
+> no state → supervisor → task → state cycle. The store-timing sentinels
+> are the documented process-lifetime exception (instrumentation of the
+> process, no runtime state). Proofs: shutdown is ordered, bounded and
+> joins everything; registration cannot race shutdown (8 racing
+> spawners × 20 rounds: every accepted spawn is in the report, every
+> spawner is refused once, nothing outlives the drain); aborted tasks
+> are destroyed before shutdown returns; critical exits, typed failures
+> and panics are reported through the monitor; `cancel` closes
+> registration before the join.
 
 **Implements:** the foundational part of WP-15.
 

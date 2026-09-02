@@ -223,13 +223,16 @@ pub fn spawn_unready_watchdog(
     if limit.is_zero() {
         return;
     }
-    tasks.spawn(
+    let _ = tasks.spawn(
         "unready-watchdog",
         crate::tasks::Policy::Critical,
-        async move {
+        move |cancel| async move {
             let mut window = UnreadyWindow::default();
             loop {
-                clock.sleep(Duration::from_secs(10)).await;
+                tokio::select! {
+                    _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
+                    _ = clock.sleep(Duration::from_secs(10)) => {}
+                }
                 let reason = unready_reason();
                 match window.observe(reason.is_some(), clock.monotonic(), limit) {
                     WatchdogDecision::Expired { elapsed } => {

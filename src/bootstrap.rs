@@ -303,8 +303,11 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     // exit rather than sit in rotation-limbo (see spawn_unready_watchdog).
     // WP-02 / PR 6-F: the task supervisor owns every long-lived loop this
     // runtime spawns — cancellation, join results, failure policy.
+    // PR 6.1-A: NO loop starts before every fallible startup step has
+    // passed (stores, topology, required billing opens, the listener
+    // bind), so an early `?` never strands a running loop; the watchdog
+    // that used to start here now starts with the others below.
     let tasks = crate::tasks::TaskSupervisor::new();
-    crate::sharddir::spawn_unready_watchdog(&config.shard, runtime_caps.clock.clone(), &tasks);
 
     let registry = Registry::new(ops_store.clone(), &cell_id);
     // WP-02 / PR 6-D: the deployment identity, from the PROVEN parts.
@@ -678,7 +681,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         bearer,
         deployment,
         billing,
-        tasks: tasks.clone(),
+        tasks: tasks.monitor(),
         cert_sealed_publish_delay_ms: std::sync::atomic::AtomicU64::new(
             // PR 3.2: proven by validate(); no panic path in bootstrap.
             cert_sealed_publish_delay_ms,
@@ -697,6 +700,59 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         catalog_cursor_key,
     });
     let _ = state_slot.set(Arc::downgrade(&state));
+    // PR 6.1-A: the LAST fallible startup steps come before the first
+    // long-lived loop starts.
+    if config.cli.billing_mode == "required" {
+        // PR 3.2.1: the PURE required-mode prerequisites (usage key
+        // present, no placeholder identities) were proven by
+        // validate(); only the store I/O below remains here.
+        // Round-22 items 2b/10: the read spool must be OPEN and
+        // READABLE before this instance serves a single request —
+        // required mode has no memory-only fallback window, so a spool
+        // that cannot open (or whose rows cannot be scanned) is fatal.
+        crate::billing::open_read_spool(&state).await.map_err(|e| {
+            anyhow::anyhow!("BILLING_MODE=required: read spool must open before serving: {e}")
+        })?;
+        // ...and the rollup instance's database likewise: a rollup
+        // owner that cannot open its DB must not serve (item 10).
+        if config.cli.rollup == "1" {
+            crate::billing::open_rollup(
+                &state,
+                &config.cli.path_prefix.clone().unwrap_or_default(),
+            )
+            .await
+            .map_err(|e| {
+                anyhow::anyhow!("BILLING_MODE=required: rollup DB must open before serving: {e}")
+            })?;
+        }
+    }
+    let listener = tokio::net::TcpListener::bind(&config.cli.listen)
+        .await
+        .with_context(|| format!("bind {}", config.cli.listen))?;
+    tracing::info!("streams-slate listening on {}", config.cli.listen);
+    // Every fallible step has passed: the long-lived loops start here.
+    // An instance that never becomes ready must exit rather than sit in
+    // rotation-limbo (see spawn_unready_watchdog).
+    crate::sharddir::spawn_unready_watchdog(&config.shard, state.runtime.clock.clone(), &tasks);
+    // PR 6.1-A: SIGTERM / Ctrl-C request the ordered shutdown — the
+    // accept loop returns once cancelled, then every loop is joined.
+    {
+        let request = tasks.shutdown_request();
+        let _ = tasks.spawn(
+            "signal",
+            crate::tasks::Policy::Noncritical,
+            move |cancel| async move {
+                tokio::select! {
+                    _ = cancel.cancelled() => {}
+                    _ = shutdown_signal() => {
+                        tracing::info!("termination signal: shutting down");
+                        request.request();
+                    }
+                }
+                crate::tasks::TaskResult::Done
+            },
+        );
+    }
     // MULTITENANCY Stage 5: feed refresher — an immediate first fetch,
     // then a cadence well inside the staleness window (checked above).
     if auth_mode != crate::auth::AuthMode::Off {
@@ -745,42 +801,45 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
             release_pct = bp_limits.release_pct,
             "maintenance backpressure bounds",
         );
-        let cancel = tasks.cancellation();
-        tasks.spawn("rss-sampler", crate::tasks::Policy::Critical, async move {
-            let mut last_purge: Option<std::time::Instant> = None;
-            let mut ticks: u64 = 0;
-            loop {
-                let mut mb = crate::fleet::rss_bytes() / 1048576;
-                let purge_due = shed_line_mb > 0
-                    && mb > shed_line_mb
-                    && last_purge.is_none_or(|t| t.elapsed() >= Duration::from_secs(10));
-                if purge_due {
-                    let _ = tokio::task::spawn_blocking(|| unsafe {
-                        libmimalloc_sys::mi_collect(true);
-                    })
-                    .await;
-                    last_purge = Some(std::time::Instant::now());
-                    mb = crate::fleet::rss_bytes() / 1048576;
+        let _ = tasks.spawn(
+            "rss-sampler",
+            crate::tasks::Policy::Critical,
+            move |cancel| async move {
+                let mut last_purge: Option<std::time::Instant> = None;
+                let mut ticks: u64 = 0;
+                loop {
+                    let mut mb = crate::fleet::rss_bytes() / 1048576;
+                    let purge_due = shed_line_mb > 0
+                        && mb > shed_line_mb
+                        && last_purge.is_none_or(|t| t.elapsed() >= Duration::from_secs(10));
+                    if purge_due {
+                        let _ = tokio::task::spawn_blocking(|| unsafe {
+                            libmimalloc_sys::mi_collect(true);
+                        })
+                        .await;
+                        last_purge = Some(std::time::Instant::now());
+                        mb = crate::fleet::rss_bytes() / 1048576;
+                    }
+                    st.admission.record_rss_mb(mb);
+                    // Peak-since-scrape for the ops snapshot (OOM review I4):
+                    // 250 ms sampling, max-held until the scrape drains it.
+                    crate::ops::RSS_PEAK_MB.fetch_max(mb, std::sync::atomic::Ordering::Relaxed);
+                    // Maintenance backpressure re-evaluates on the same tick
+                    // (R23-1). Doing it here keeps the request path to a
+                    // single atomic read — walking the lag map per append
+                    // would put the overload on the hot path.
+                    if ticks.is_multiple_of(8) {
+                        let snap = crate::backpressure::snapshot(&st.shards);
+                        st.admission.maintenance().apply(&snap, &bp_limits);
+                    }
+                    ticks = ticks.wrapping_add(1);
+                    tokio::select! {
+                        _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
+                        _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+                    }
                 }
-                st.admission.record_rss_mb(mb);
-                // Peak-since-scrape for the ops snapshot (OOM review I4):
-                // 250 ms sampling, max-held until the scrape drains it.
-                crate::ops::RSS_PEAK_MB.fetch_max(mb, std::sync::atomic::Ordering::Relaxed);
-                // Maintenance backpressure re-evaluates on the same tick
-                // (R23-1). Doing it here keeps the request path to a
-                // single atomic read — walking the lag map per append
-                // would put the overload on the hot path.
-                if ticks.is_multiple_of(8) {
-                    let snap = crate::backpressure::snapshot(&st.shards);
-                    st.admission.maintenance().apply(&snap, &bp_limits);
-                }
-                ticks = ticks.wrapping_add(1);
-                tokio::select! {
-                    _ = cancel.cancelled() => return,
-                    _ = tokio::time::sleep(Duration::from_millis(250)) => {}
-                }
-            }
-        });
+            },
+        );
     }
     if let Some(fleet_store) = fleet_store_opt {
         crate::fleet::start(
@@ -800,6 +859,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
                 latency_sustain: Duration::from_secs(config.cli.scale_lat_sustain_secs),
                 max: config.cli.fleet_max,
             },
+            &tasks,
         );
         tracing::info!(
             "fleet coordination on (prefix={}, cap={} rps)",
@@ -809,30 +869,6 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     }
     // Telemetry pipeline (docs/OBSERVABILITY-BILLING.md): the drainer on
     // every instance; the rollup consumer where ROLLUP=1.
-    if config.cli.billing_mode == "required" {
-        // PR 3.2.1: the PURE required-mode prerequisites (usage key
-        // present, no placeholder identities) were proven by
-        // validate(); only the store I/O below remains here.
-        // Round-22 items 2b/10: the read spool must be OPEN and
-        // READABLE before this instance serves a single request —
-        // required mode has no memory-only fallback window, so a spool
-        // that cannot open (or whose rows cannot be scanned) is fatal.
-        crate::billing::open_read_spool(&state).await.map_err(|e| {
-            anyhow::anyhow!("BILLING_MODE=required: read spool must open before serving: {e}")
-        })?;
-        // ...and the rollup instance's database likewise: a rollup
-        // owner that cannot open its DB must not serve (item 10).
-        if config.cli.rollup == "1" {
-            crate::billing::open_rollup(
-                &state,
-                &config.cli.path_prefix.clone().unwrap_or_default(),
-            )
-            .await
-            .map_err(|e| {
-                anyhow::anyhow!("BILLING_MODE=required: rollup DB must open before serving: {e}")
-            })?;
-        }
-    }
     // ONE startup budget summary (OOM review): every fixed memory
     // bound in a single log line, plus a headroom warning when their
     // sum leaves less than 100 MiB below the shed line — posture
@@ -903,33 +939,49 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
             );
         }
     }
-    crate::billing::spawn_telemetry(state.clone());
+    crate::billing::spawn_telemetry(state.clone(), &tasks);
     if config.cli.rollup == "1" {
         crate::billing::spawn_rollup(
             state.clone(),
             config.cli.path_prefix.clone().unwrap_or_default(),
+            &tasks,
         );
     }
     let app = crate::http::router(state);
 
     crate::store_timing::spawn_sentinels();
 
-    let listener = tokio::net::TcpListener::bind(&config.cli.listen)
-        .await
-        .with_context(|| format!("bind {}", config.cli.listen))?;
-    tracing::info!("streams-slate listening on {}", config.cli.listen);
     // #269: bounded h1 buffers — see http::serve_h1.
     let max_buf = config.http.h1_max_buf;
     crate::http::serve_h1(listener, app, max_buf, tasks.clone()).await?;
-    // PR 6-F: the accept loop returned — an ordered, bounded shutdown of
-    // every supervised loop (WP-15 §9 sequences admission, engines and
-    // stores ahead of this in its remaining slice).
+    // PR 6-F / 6.1-A: the accept loop returned because shutdown was
+    // requested — its connections are already gone; now every supervised
+    // loop is cancelled, joined and reported (WP-15 §9 sequences
+    // admission, engines and stores ahead of this in its remaining slice).
     let report = tasks.shutdown(std::time::Duration::from_secs(10)).await;
     tracing::info!(
-        finished = ?report.finished,
+        finished = ?report.finished(),
         aborted = ?report.aborted,
-        panicked = ?report.panicked,
+        panicked = ?report.panicked(),
         "supervised loops stopped"
     );
     Ok(())
+}
+
+/// PR 6.1-A: the process's termination request (SIGTERM or Ctrl-C).
+async fn shutdown_signal() {
+    let ctrl_c = tokio::signal::ctrl_c();
+    #[cfg(unix)]
+    {
+        let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())
+            .expect("SIGTERM handler");
+        tokio::select! {
+            _ = ctrl_c => {}
+            _ = term.recv() => {}
+        }
+    }
+    #[cfg(not(unix))]
+    {
+        let _ = ctrl_c.await;
+    }
 }

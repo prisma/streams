@@ -1,14 +1,21 @@
-//! Task supervision (WP-02 / PR 6-F — the first slice of WP-15 §7-9):
-//! every long-lived loop a runtime spawns is a child of ONE supervisor
-//! that owns its join handle, a cooperative cancellation handle, its
-//! result and its failure policy. Shutdown is ordered and bounded:
-//! cancel, wait a grace period, abort what did not stop. Request-scoped
-//! child tasks are NOT supervised here — they belong to their request.
-//! A deterministic rig terminates a simulated process through this
-//! owner, so a restart is literal, not two process objects over one
-//! store with the old accept loop still alive.
+//! Task supervision (WP-02 / PR 6-F, corrected by PR 6.1-A — the first
+//! slice of WP-15 §7-9): every long-lived loop a runtime spawns is a
+//! child of ONE supervisor that owns its join handle, hands it the
+//! cancellation it must observe, keeps its typed result and its failure
+//! policy, and stops it in order. Registration and shutdown share one
+//! phase-locked state, so a loop can never register after the drain;
+//! a loop that ignores cancellation is aborted AND joined, so nothing
+//! it owned outlives `shutdown`. Request-scoped child tasks are NOT
+//! supervised here — they belong to their request (the HTTP accept
+//! loop owns its connections itself, see `http::serve_h1`).
+//!
+//! A runtime hands its state a read-only [`TaskMonitor`], never the
+//! supervisor: the supervisor owns the tasks, the tasks capture the
+//! state, and a strong edge from the state back to the supervisor would
+//! make a runtime that failed to start immortal.
 
-use std::sync::{Arc, Mutex};
+use std::collections::BTreeMap;
+use std::sync::{Arc, Mutex, Weak};
 use std::time::Duration;
 
 use tokio::task::JoinHandle;
@@ -24,8 +31,8 @@ pub enum Policy {
     Noncritical,
 }
 
-/// A cooperative cancellation handle: a loop awaits `cancelled()` in
-/// its `select!`; clones observe the same signal.
+/// A cooperative cancellation handle: a loop awaits `cancelled()` at
+/// every iteration boundary; clones observe the same signal.
 #[derive(Clone)]
 pub struct Cancellation {
     rx: tokio::sync::watch::Receiver<bool>,
@@ -49,6 +56,33 @@ impl Cancellation {
     }
 }
 
+/// How a supervised loop ended on its own terms.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TaskResult {
+    /// Stopped cleanly (cancelled, or its work is complete).
+    Done,
+    /// Stopped because it could not continue.
+    Failed(String),
+}
+
+/// Identity of one supervised task, in registration order.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct TaskId(u64);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Phase {
+    Running,
+    ShuttingDown,
+    Stopped,
+}
+
+/// Why a spawn was refused: the runtime is stopping or stopped.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SpawnRejected {
+    ShuttingDown,
+    Stopped,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum TaskState {
     Running,
@@ -64,41 +98,147 @@ pub struct TaskStatus {
     pub state: TaskState,
 }
 
-/// The outcome of an ordered shutdown, by task name.
+/// How each task ended, as observed by joining its handle.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum TaskOutcome {
+    Finished,
+    Failed(String),
+    /// Aborted at the deadline and joined: it is gone.
+    Cancelled,
+    Panicked(String),
+}
+
+/// The outcome of an ordered shutdown, by task name, in registration
+/// order. Every task listed has been JOINED: none of them is running
+/// when the report exists.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
 pub struct ShutdownReport {
-    /// Stopped inside the grace period (cooperatively or by finishing).
-    pub finished: Vec<&'static str>,
-    /// Still running at the deadline: aborted at its next await point.
+    pub outcomes: Vec<(&'static str, TaskOutcome)>,
+    /// The subset that ignored cancellation past the grace and was
+    /// aborted (then joined).
     pub aborted: Vec<&'static str>,
-    /// Had panicked.
-    pub panicked: Vec<&'static str>,
 }
 
 impl ShutdownReport {
+    pub fn names(&self, want: fn(&TaskOutcome) -> bool) -> Vec<&'static str> {
+        self.outcomes
+            .iter()
+            .filter(|(_, o)| want(o))
+            .map(|(n, _)| *n)
+            .collect()
+    }
+
+    pub fn finished(&self) -> Vec<&'static str> {
+        self.names(|o| matches!(o, TaskOutcome::Finished))
+    }
+
+    pub fn panicked(&self) -> Vec<&'static str> {
+        self.names(|o| matches!(o, TaskOutcome::Panicked(_)))
+    }
+
     #[cfg(test)]
     pub fn terminated(&self, name: &str) -> bool {
-        self.finished.contains(&name)
-            || self.aborted.contains(&name)
-            || self.panicked.contains(&name)
+        self.outcomes.iter().any(|(n, _)| *n == name)
     }
 }
 
 struct Supervised {
     name: &'static str,
     policy: Policy,
-    handle: JoinHandle<()>,
+    handle: JoinHandle<TaskResult>,
 }
 
+struct SupervisorState {
+    phase: Phase,
+    next_id: u64,
+    tasks: BTreeMap<TaskId, Supervised>,
+}
+
+struct Inner {
+    state: Mutex<SupervisorState>,
+    cancel_tx: tokio::sync::watch::Sender<bool>,
+    cancel: Cancellation,
+}
+
+impl Inner {
+    fn snapshot(&self) -> Vec<TaskStatus> {
+        self.state
+            .lock()
+            .unwrap()
+            .tasks
+            .values()
+            .map(|t| TaskStatus {
+                name: t.name,
+                policy: t.policy,
+                state: if t.handle.is_finished() {
+                    TaskState::Exited
+                } else {
+                    TaskState::Running
+                },
+            })
+            .collect()
+    }
+
+    fn phase(&self) -> Phase {
+        self.state.lock().unwrap().phase
+    }
+
+    /// The first CRITICAL loop that exited while the runtime was not
+    /// shutting down — the condition WP-15's readiness policy fails on.
+    fn critical_failure(&self) -> Option<&'static str> {
+        if self.phase() != Phase::Running {
+            return None;
+        }
+        self.snapshot()
+            .into_iter()
+            .find(|t| t.policy == Policy::Critical && t.state == TaskState::Exited)
+            .map(|t| t.name)
+    }
+}
+
+/// The owner of a runtime's long-lived loops.
 #[derive(Clone)]
 pub struct TaskSupervisor {
     inner: Arc<Inner>,
 }
 
-struct Inner {
-    cancel_tx: tokio::sync::watch::Sender<bool>,
-    cancel: Cancellation,
-    tasks: Mutex<Vec<Supervised>>,
+/// A weak handle that can only REQUEST the ordered shutdown — what a
+/// signal handler needs. It keeps nothing alive.
+#[derive(Clone)]
+pub struct ShutdownRequest {
+    inner: Weak<Inner>,
+}
+
+impl ShutdownRequest {
+    pub fn request(&self) {
+        if let Some(inner) = self.inner.upgrade() {
+            TaskSupervisor { inner }.cancel();
+        }
+    }
+}
+
+/// A read-only view for health and debug surfaces. It holds no strong
+/// reference: a runtime whose supervisor is gone reports nothing.
+#[derive(Clone)]
+pub struct TaskMonitor {
+    inner: Weak<Inner>,
+}
+
+impl TaskMonitor {
+    pub fn snapshot(&self) -> Vec<TaskStatus> {
+        self.inner
+            .upgrade()
+            .map(|i| i.snapshot())
+            .unwrap_or_default()
+    }
+
+    pub fn critical_failure(&self) -> Option<&'static str> {
+        self.inner.upgrade().and_then(|i| i.critical_failure())
+    }
+
+    pub fn phase(&self) -> Option<Phase> {
+        self.inner.upgrade().map(|i| i.phase())
+    }
 }
 
 impl Default for TaskSupervisor {
@@ -112,128 +252,191 @@ impl TaskSupervisor {
         let (cancel_tx, rx) = tokio::sync::watch::channel(false);
         Self {
             inner: Arc::new(Inner {
+                state: Mutex::new(SupervisorState {
+                    phase: Phase::Running,
+                    next_id: 0,
+                    tasks: BTreeMap::new(),
+                }),
                 cancel_tx,
                 cancel: Cancellation { rx },
-                tasks: Mutex::new(Vec::new()),
             }),
         }
     }
 
-    /// The handle a loop selects on to stop cooperatively.
+    /// The handle a loop selects on to stop cooperatively (every
+    /// supervised loop also receives it from `spawn`).
     pub fn cancellation(&self) -> Cancellation {
         self.inner.cancel.clone()
     }
 
-    /// Spawn a long-lived loop as a child of this supervisor. After
-    /// `shutdown` nothing is spawned: a stopped runtime stays stopped.
-    pub fn spawn(
+    pub fn monitor(&self) -> TaskMonitor {
+        TaskMonitor {
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
+
+    pub fn shutdown_request(&self) -> ShutdownRequest {
+        ShutdownRequest {
+            inner: Arc::downgrade(&self.inner),
+        }
+    }
+
+    #[cfg(test)]
+    pub fn phase(&self) -> Phase {
+        self.inner.phase()
+    }
+
+    /// Spawn a long-lived loop as a child of this supervisor. The loop
+    /// is BUILT with the cancellation it must observe, so no supervised
+    /// loop can be written without one. Registration and the phase
+    /// check are one atomic step: once shutdown has begun, nothing is
+    /// spawned — a stopped runtime stays stopped.
+    pub fn spawn<F, Fut>(
         &self,
         label: &'static str,
         policy: Policy,
-        fut: impl std::future::Future<Output = ()> + Send + 'static,
-    ) {
-        if self.inner.cancel.is_cancelled() {
-            tracing::warn!(task = label, "not spawned: the supervisor is shut down");
-            return;
+        build: F,
+    ) -> Result<TaskId, SpawnRejected>
+    where
+        F: FnOnce(Cancellation) -> Fut,
+        Fut: std::future::Future<Output = TaskResult> + Send + 'static,
+    {
+        let mut st = self.inner.state.lock().unwrap();
+        match st.phase {
+            Phase::Running => {}
+            Phase::ShuttingDown => return Err(SpawnRejected::ShuttingDown),
+            Phase::Stopped => return Err(SpawnRejected::Stopped),
         }
-        let handle = tokio::spawn(fut);
-        self.inner.tasks.lock().unwrap().push(Supervised {
-            name: label,
-            policy,
-            handle,
-        });
+        let id = TaskId(st.next_id);
+        st.next_id += 1;
+        let handle = tokio::spawn(build(self.inner.cancel.clone()));
+        st.tasks.insert(
+            id,
+            Supervised {
+                name: label,
+                policy,
+                handle,
+            },
+        );
+        Ok(id)
     }
 
-    pub fn snapshot(&self) -> Vec<TaskStatus> {
-        self.inner
-            .tasks
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|t| TaskStatus {
-                name: t.name,
-                policy: t.policy,
-                state: if t.handle.is_finished() {
-                    TaskState::Exited
-                } else {
-                    TaskState::Running
-                },
-            })
-            .collect()
-    }
-
-    /// The first CRITICAL loop that exited while the runtime was not
-    /// shutting down — the condition WP-15's readiness policy fails on.
-    pub fn critical_failure(&self) -> Option<&'static str> {
-        if self.inner.cancel.is_cancelled() {
-            return None;
+    /// Request the ordered shutdown without waiting for it: the phase
+    /// moves to `ShuttingDown` (no further spawns) and every loop sees
+    /// cancellation. A signal handler's move; `shutdown` completes it.
+    pub fn cancel(&self) {
+        {
+            let mut st = self.inner.state.lock().unwrap();
+            if st.phase == Phase::Running {
+                st.phase = Phase::ShuttingDown;
+            }
         }
-        self.snapshot()
-            .into_iter()
-            .find(|t| t.policy == Policy::Critical && t.state == TaskState::Exited)
-            .map(|t| t.name)
-    }
-
-    /// Ordered, bounded shutdown: signal cancellation, give every task
-    /// `grace` to stop, abort the rest. Idempotent; a second call finds
-    /// nothing to stop.
-    pub async fn shutdown(&self, grace: Duration) -> ShutdownReport {
         let _ = self.inner.cancel_tx.send(true);
-        let tasks: Vec<Supervised> = std::mem::take(&mut *self.inner.tasks.lock().unwrap());
-        let mut report = ShutdownReport::default();
+    }
+
+    /// Ordered, bounded shutdown: close registration, signal
+    /// cancellation, give every task until one shared deadline, abort
+    /// the survivors, then JOIN every task — aborted ones included — and
+    /// record how each ended. When this returns, no supervised task is
+    /// running. Idempotent; a second call finds nothing to stop.
+    pub async fn shutdown(&self, grace: Duration) -> ShutdownReport {
+        let tasks: BTreeMap<TaskId, Supervised> = {
+            let mut st = self.inner.state.lock().unwrap();
+            if st.phase == Phase::Stopped {
+                return ShutdownReport::default();
+            }
+            st.phase = Phase::ShuttingDown;
+            std::mem::take(&mut st.tasks)
+        };
+        let _ = self.inner.cancel_tx.send(true);
         let deadline = tokio::time::Instant::now() + grace;
-        for mut t in tasks {
+        let mut report = ShutdownReport::default();
+        let mut survivors: Vec<Supervised> = Vec::new();
+        for (_, mut t) in tasks {
             match tokio::time::timeout_at(deadline, &mut t.handle).await {
-                Ok(Ok(())) => report.finished.push(t.name),
-                Ok(Err(e)) if e.is_panic() => report.panicked.push(t.name),
-                Ok(Err(_)) => report.aborted.push(t.name),
+                Ok(joined) => report.outcomes.push((t.name, classify(joined))),
                 Err(_elapsed) => {
                     t.handle.abort();
-                    report.aborted.push(t.name);
+                    survivors.push(t);
                 }
             }
         }
+        for mut t in survivors {
+            report.aborted.push(t.name);
+            // Abort only REQUESTS cancellation; joining proves the future
+            // was dropped, its destructors ran and its resources are gone.
+            let joined = (&mut t.handle).await;
+            report.outcomes.push((t.name, classify(joined)));
+        }
+        self.inner.state.lock().unwrap().phase = Phase::Stopped;
         report
+    }
+}
+
+fn classify(joined: Result<TaskResult, tokio::task::JoinError>) -> TaskOutcome {
+    match joined {
+        Ok(TaskResult::Done) => TaskOutcome::Finished,
+        Ok(TaskResult::Failed(e)) => TaskOutcome::Failed(e),
+        Err(e) if e.is_panic() => {
+            let p = e.into_panic();
+            let msg = p
+                .downcast_ref::<&str>()
+                .map(|s| s.to_string())
+                .or_else(|| p.downcast_ref::<String>().cloned())
+                .unwrap_or_else(|| "panic".to_string());
+            TaskOutcome::Panicked(msg)
+        }
+        Err(_) => TaskOutcome::Cancelled,
     }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicUsize, Ordering};
+    use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
     /// A cooperative loop stops inside the grace period; one that
-    /// ignores cancellation is aborted at the deadline; the report names
-    /// both, and a second shutdown has nothing left to stop.
+    /// ignores cancellation is aborted AND joined; the report names
+    /// both; a second shutdown has nothing left to stop; nothing can be
+    /// spawned afterwards.
     #[tokio::test]
-    async fn shutdown_is_ordered_and_bounded() {
+    async fn shutdown_is_ordered_bounded_and_joins_everything() {
         let sup = TaskSupervisor::new();
-        let cancel = sup.cancellation();
         let ticks = Arc::new(AtomicUsize::new(0));
         let t = ticks.clone();
-        sup.spawn("polite", Policy::Critical, async move {
+        sup.spawn("polite", Policy::Critical, move |cancel| async move {
             loop {
                 tokio::select! {
-                    _ = cancel.cancelled() => return,
+                    _ = cancel.cancelled() => return TaskResult::Done,
                     _ = tokio::time::sleep(Duration::from_millis(5)) => {
                         t.fetch_add(1, Ordering::Relaxed);
                     }
                 }
             }
-        });
-        sup.spawn("stubborn", Policy::Noncritical, async move {
+        })
+        .unwrap();
+        sup.spawn("stubborn", Policy::Noncritical, |_cancel| async move {
             loop {
                 tokio::time::sleep(Duration::from_millis(5)).await;
             }
-        });
+        })
+        .unwrap();
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert!(ticks.load(Ordering::Relaxed) >= 2);
-        assert_eq!(sup.snapshot().len(), 2);
-        assert_eq!(sup.critical_failure(), None);
+        assert_eq!(sup.monitor().snapshot().len(), 2);
+        assert_eq!(sup.monitor().critical_failure(), None);
+        assert_eq!(sup.phase(), Phase::Running);
         let report = sup.shutdown(Duration::from_millis(200)).await;
-        assert_eq!(report.finished, vec!["polite"]);
+        assert_eq!(report.finished(), vec!["polite"]);
         assert_eq!(report.aborted, vec!["stubborn"]);
-        assert!(report.terminated("polite") && report.terminated("stubborn"));
+        assert_eq!(
+            report.outcomes,
+            vec![
+                ("polite", TaskOutcome::Finished),
+                ("stubborn", TaskOutcome::Cancelled)
+            ]
+        );
+        assert_eq!(sup.phase(), Phase::Stopped);
         let after = ticks.load(Ordering::Relaxed);
         tokio::time::sleep(Duration::from_millis(30)).await;
         assert_eq!(ticks.load(Ordering::Relaxed), after, "the loop is gone");
@@ -241,33 +444,161 @@ mod tests {
             sup.shutdown(Duration::from_millis(10)).await,
             ShutdownReport::default()
         );
-        sup.spawn("late", Policy::Noncritical, async {});
-        assert!(
-            sup.snapshot().is_empty(),
-            "a shut-down supervisor spawns nothing"
+        assert_eq!(
+            sup.spawn("late", Policy::Noncritical, |_| async { TaskResult::Done }),
+            Err(SpawnRejected::Stopped)
         );
+        assert!(sup.monitor().snapshot().is_empty());
+    }
+
+    /// Registration and shutdown share one phase-locked state: however
+    /// many spawns race the drain, every spawn that succeeded is in the
+    /// report (joined), every other one was refused, and no task is
+    /// alive when shutdown returns.
+    #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+    async fn registration_cannot_race_shutdown() {
+        for _round in 0..20 {
+            let sup = TaskSupervisor::new();
+            let alive = Arc::new(AtomicUsize::new(0));
+            let accepted = Arc::new(AtomicUsize::new(0));
+            let refused = Arc::new(AtomicUsize::new(0));
+            let mut spawners = Vec::new();
+            for _ in 0..8 {
+                let sup2 = sup.clone();
+                let (alive, accepted, refused) = (alive.clone(), accepted.clone(), refused.clone());
+                spawners.push(tokio::spawn(async move {
+                    loop {
+                        let alive2 = alive.clone();
+                        match sup2.spawn("racer", Policy::Noncritical, move |cancel| async move {
+                            alive2.fetch_add(1, Ordering::SeqCst);
+                            cancel.cancelled().await;
+                            alive2.fetch_sub(1, Ordering::SeqCst);
+                            TaskResult::Done
+                        }) {
+                            Ok(_) => {
+                                accepted.fetch_add(1, Ordering::SeqCst);
+                            }
+                            Err(_) => {
+                                refused.fetch_add(1, Ordering::SeqCst);
+                                return;
+                            }
+                        }
+                        tokio::task::yield_now().await;
+                    }
+                }));
+            }
+            tokio::time::sleep(Duration::from_millis(2)).await;
+            let report = sup.shutdown(Duration::from_millis(500)).await;
+            for s in spawners {
+                s.await.unwrap();
+            }
+            assert_eq!(report.outcomes.len(), accepted.load(Ordering::SeqCst));
+            assert!(report.aborted.is_empty(), "{report:?}");
+            assert_eq!(alive.load(Ordering::SeqCst), 0, "a racer outlived shutdown");
+            assert_eq!(
+                refused.load(Ordering::SeqCst),
+                8,
+                "every spawner was refused once"
+            );
+            assert!(sup.monitor().snapshot().is_empty());
+        }
+    }
+
+    /// An aborted task's resources are gone BEFORE shutdown returns: the
+    /// drop probe inside the stubborn future has fired.
+    #[tokio::test]
+    async fn aborted_tasks_are_destroyed_before_shutdown_returns() {
+        struct Probe(Arc<AtomicBool>);
+        impl Drop for Probe {
+            fn drop(&mut self) {
+                self.0.store(true, Ordering::SeqCst);
+            }
+        }
+        let sup = TaskSupervisor::new();
+        let dropped = Arc::new(AtomicBool::new(false));
+        let probe = Probe(dropped.clone());
+        sup.spawn("holder", Policy::Critical, move |_cancel| async move {
+            let _probe = probe;
+            loop {
+                tokio::time::sleep(Duration::from_secs(3600)).await;
+            }
+        })
+        .unwrap();
+        tokio::time::sleep(Duration::from_millis(10)).await;
+        assert!(!dropped.load(Ordering::SeqCst));
+        let report = sup.shutdown(Duration::from_millis(20)).await;
+        assert!(
+            dropped.load(Ordering::SeqCst),
+            "the probe must be dropped before return"
+        );
+        assert_eq!(report.outcomes, vec![("holder", TaskOutcome::Cancelled)]);
     }
 
     /// A critical loop that exits on its own is the failure the policy
-    /// exists for; a noncritical exit is not; a panic is reported.
+    /// exists for; a noncritical exit is not; a panic and a typed
+    /// failure are reported as such; the monitor sees the same facts
+    /// without owning anything.
     #[tokio::test]
-    async fn critical_exits_are_failures_and_panics_are_reported() {
+    async fn critical_exits_failures_and_panics_are_reported() {
         let sup = TaskSupervisor::new();
-        sup.spawn("hygiene", Policy::Noncritical, async {});
+        let mon = sup.monitor();
+        sup.spawn("hygiene", Policy::Noncritical, |_| async {
+            TaskResult::Done
+        })
+        .unwrap();
         tokio::time::sleep(Duration::from_millis(10)).await;
-        assert_eq!(sup.critical_failure(), None);
-        sup.spawn("acker", Policy::Critical, async {});
+        assert_eq!(mon.critical_failure(), None);
+        sup.spawn("acker", Policy::Critical, |_| async { TaskResult::Done })
+            .unwrap();
         tokio::time::sleep(Duration::from_millis(10)).await;
-        assert_eq!(sup.critical_failure(), Some("acker"));
-        sup.spawn("boom", Policy::Critical, async { panic!("scripted") });
+        assert_eq!(mon.critical_failure(), Some("acker"));
+        sup.spawn("boom", Policy::Critical, |_| async { panic!("scripted") })
+            .unwrap();
+        sup.spawn("broken", Policy::Critical, |_| async {
+            TaskResult::Failed("store gone".into())
+        })
+        .unwrap();
         tokio::time::sleep(Duration::from_millis(10)).await;
+        assert_eq!(mon.phase(), Some(Phase::Running));
         let report = sup.shutdown(Duration::from_millis(50)).await;
-        assert!(report.panicked.contains(&"boom"), "{report:?}");
-        assert!(report.finished.contains(&"acker") && report.finished.contains(&"hygiene"));
+        assert_eq!(report.panicked(), vec!["boom"]);
+        assert!(
+            report
+                .outcomes
+                .contains(&("broken", TaskOutcome::Failed("store gone".into())))
+        );
+        assert!(report.finished().contains(&"acker") && report.finished().contains(&"hygiene"));
         assert_eq!(
-            sup.critical_failure(),
+            mon.critical_failure(),
             None,
             "after shutdown nothing is a failure"
         );
+        assert_eq!(mon.phase(), Some(Phase::Stopped));
+        drop(sup);
+        assert_eq!(mon.phase(), None, "the monitor holds nothing alive");
+    }
+
+    /// `cancel` alone closes registration and signals every loop; the
+    /// later `shutdown` completes the join.
+    #[tokio::test]
+    async fn cancel_closes_registration_before_the_join() {
+        let sup = TaskSupervisor::new();
+        let seen = Arc::new(AtomicBool::new(false));
+        let s = seen.clone();
+        sup.spawn("loop", Policy::Critical, move |cancel| async move {
+            cancel.cancelled().await;
+            s.store(true, Ordering::SeqCst);
+            TaskResult::Done
+        })
+        .unwrap();
+        sup.cancel();
+        assert_eq!(sup.phase(), Phase::ShuttingDown);
+        assert_eq!(
+            sup.spawn("late", Policy::Noncritical, |_| async { TaskResult::Done }),
+            Err(SpawnRejected::ShuttingDown)
+        );
+        let report = sup.shutdown(Duration::from_millis(100)).await;
+        assert!(seen.load(Ordering::SeqCst));
+        assert_eq!(report.finished(), vec!["loop"]);
     }
 }

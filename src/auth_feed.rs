@@ -317,10 +317,10 @@ pub fn spawn_refresher(
     every: std::time::Duration,
     tasks: &crate::tasks::TaskSupervisor,
 ) {
-    tasks.spawn(
+    let _ = tasks.spawn(
         "auth-refresher",
         crate::tasks::Policy::Critical,
-        async move {
+        move |cancel| async move {
             let mut tick = tokio::time::interval(every);
             tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
             loop {
@@ -328,6 +328,7 @@ pub fn spawn_refresher(
                 // (rate-limited in AuthService) refreshes immediately so a
                 // rotated key's first token doesn't wait a full interval.
                 tokio::select! {
+                    _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
                     _ = tick.tick() => {}
                     _ = auth.kid_wakeup.notified() => {}
                 }
