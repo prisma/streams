@@ -62,6 +62,7 @@ mod sharddir;
 mod sketch;
 mod sse;
 mod store_timing;
+mod tasks;
 mod tenant;
 mod touch;
 mod touch_keys;

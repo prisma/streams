@@ -217,31 +217,36 @@ impl UnreadyWindow {
 pub fn spawn_unready_watchdog(
     cfg: &crate::config::ShardRuntimeConfig,
     clock: std::sync::Arc<dyn crate::runtime::Clock>,
+    tasks: &crate::tasks::TaskSupervisor,
 ) {
     let limit = unready_exit_after(cfg);
     if limit.is_zero() {
         return;
     }
-    tokio::spawn(async move {
-        let mut window = UnreadyWindow::default();
-        loop {
-            clock.sleep(Duration::from_secs(10)).await;
-            let reason = unready_reason();
-            match window.observe(reason.is_some(), clock.monotonic(), limit) {
-                WatchdogDecision::Expired { elapsed } => {
-                    tracing::error!(
-                        "unready for {:?} and no shard has ever opened ({}); \
+    tasks.spawn(
+        "unready-watchdog",
+        crate::tasks::Policy::Critical,
+        async move {
+            let mut window = UnreadyWindow::default();
+            loop {
+                clock.sleep(Duration::from_secs(10)).await;
+                let reason = unready_reason();
+                match window.observe(reason.is_some(), clock.monotonic(), limit) {
+                    WatchdogDecision::Expired { elapsed } => {
+                        tracing::error!(
+                            "unready for {:?} and no shard has ever opened ({}); \
                          exiting so the platform restarts this instance rather than \
                          leaving it in rotation-limbo",
-                        elapsed,
-                        reason.unwrap_or_default(),
-                    );
-                    std::process::exit(1);
+                            elapsed,
+                            reason.unwrap_or_default(),
+                        );
+                        std::process::exit(1);
+                    }
+                    WatchdogDecision::Waiting { .. } | WatchdogDecision::Healthy => {}
                 }
-                WatchdogDecision::Waiting { .. } | WatchdogDecision::Healthy => {}
             }
-        }
-    });
+        },
+    );
 }
 
 #[cfg(test)]

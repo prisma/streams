@@ -894,8 +894,8 @@ async fn resume_merge(
 }
 
 /// The evaluation loop (one per instance).
-pub fn start(st: std::sync::Weak<crate::http::AppState>) {
-    tokio::spawn(async move {
+pub fn start(st: std::sync::Weak<crate::http::AppState>, tasks: &crate::tasks::TaskSupervisor) {
+    tasks.spawn("scaler", crate::tasks::Policy::Critical, async move {
         let eval = policy().eval_secs.max(1);
         loop {
             tokio::time::sleep(std::time::Duration::from_secs(eval)).await;

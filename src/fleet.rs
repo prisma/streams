@@ -379,7 +379,8 @@ fn fleet_store_handle() -> Option<Arc<dyn ObjectStore>> {
 
 pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
     *fleet_store_slot().lock().unwrap() = Some(store.clone());
-    tokio::spawn(async move {
+    let tasks = state.tasks.clone();
+    tasks.spawn("fleet", crate::tasks::Policy::Critical, async move {
         let mut ewma_rps = 0.0f64;
         let mut last_ops = 0u64;
         let mut last_tick = Instant::now();

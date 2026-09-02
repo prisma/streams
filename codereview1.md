@@ -2878,6 +2878,28 @@ Do not rename user-facing flags while moving them. Flag cleanup is a separate se
 > through the owner; the data store stays on `AppState` for the read
 > and append services of PR 9. Proof: billing-off has no key and empty
 > slots, and two services never share an accumulator.
+>
+> **PR 6-F (WP-02 + the first slice of WP-15 §7–9, 2026-09-02):**
+> `tasks::TaskSupervisor` owns every long-lived loop a runtime spawns:
+> the unready and runtime watchdogs, the auth refresher, the scaler,
+> the RSS sampler, the fleet loop, the telemetry outbox sweep and
+> drain, the usage rollup, and — in the rig — the HTTP accept loop.
+> Each child has a name, a policy (Critical / Noncritical), a
+> cooperative `Cancellation` handle and a join handle the supervisor
+> keeps; `shutdown(grace)` is ordered and bounded (cancel, wait the
+> grace, abort the rest) and reports finished / aborted / panicked by
+> name; `critical_failure()` names the first critical loop that exited
+> on its own (readiness adopts it in WP-15's remaining slice, and the
+> debug surface shows it today); a shut-down supervisor spawns nothing.
+> Request-scoped child tasks are deliberately NOT supervised here. The
+> composition roots spawn through it (one field added, 19 → 20 — the
+> supervisor's own handle, deleted with `AppState` in PR 8). The two
+> restart proofs now TERMINATE the old process through its supervisor
+> before starting the replacement incarnation, so restart evidence is
+> literal. Proofs: shutdown is ordered and bounded (a polite loop
+> finishes inside the grace, a stubborn one is aborted, the loop is
+> gone afterwards, a second shutdown finds nothing); critical exits are
+> failures, noncritical exits are not, panics are reported.
 
 **Implements:** the foundational part of WP-15.
 

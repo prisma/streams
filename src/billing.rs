@@ -1468,50 +1468,59 @@ pub fn spawn_telemetry(state: std::sync::Arc<crate::http::AppState>) {
     // sweep runs at start and every OUTBOX_SWEEP_SECS.
     {
         let st = state.clone();
-        tokio::spawn(async move {
-            if let Err(e) = open_read_spool(&st).await {
-                tracing::error!("read spool open failed: {e}");
-            }
-            sweep_owned_outboxes(&st).await;
-            let sweep_secs: u64 = st.config.billing.outbox_sweep_secs;
-            loop {
-                tokio::time::sleep(std::time::Duration::from_secs(sweep_secs)).await;
+        state.tasks.spawn(
+            "telemetry-outbox-sweep",
+            crate::tasks::Policy::Critical,
+            async move {
+                if let Err(e) = open_read_spool(&st).await {
+                    tracing::error!("read spool open failed: {e}");
+                }
                 sweep_owned_outboxes(&st).await;
-            }
-        });
+                let sweep_secs: u64 = st.config.billing.outbox_sweep_secs;
+                loop {
+                    tokio::time::sleep(std::time::Duration::from_secs(sweep_secs)).await;
+                    sweep_owned_outboxes(&st).await;
+                }
+            },
+        );
     }
     let secs: u64 = state.config.billing.telemetry_drain_secs;
     let metrics_secs: u64 = state.config.billing.metrics_interval_secs;
-    tokio::spawn(async move {
-        let mut tick = tokio::time::interval(std::time::Duration::from_secs(secs.max(1)));
-        let mut last_metrics = 0i64;
-        loop {
-            tick.tick().await;
-            match drain_once(&state).await {
-                Ok(_) => {
-                    LAST_DRAIN_OK_MS
-                        .store(crate::shard::now_ms(), std::sync::atomic::Ordering::Relaxed);
+    let tasks = state.tasks.clone();
+    tasks.spawn(
+        "telemetry-drain",
+        crate::tasks::Policy::Critical,
+        async move {
+            let mut tick = tokio::time::interval(std::time::Duration::from_secs(secs.max(1)));
+            let mut last_metrics = 0i64;
+            loop {
+                tick.tick().await;
+                match drain_once(&state).await {
+                    Ok(_) => {
+                        LAST_DRAIN_OK_MS
+                            .store(crate::shard::now_ms(), std::sync::atomic::Ordering::Relaxed);
+                    }
+                    Err(e) => tracing::warn!("usage drain: {e}"),
                 }
-                Err(e) => tracing::warn!("usage drain: {e}"),
-            }
-            if let Err(e) = crate::ops::drain_ops_once(&state).await {
-                tracing::warn!("ops drain: {e}");
-            }
-            if let Err(e) = crate::audit::drain_audit_once(&state).await {
-                tracing::warn!("audit drain: {e}");
-            }
-            if let Err(e) = crate::fleet::drain_fleet_events(&state).await {
-                tracing::warn!("fleet event drain: {e}");
-            }
-            let now = crate::shard::now_ms();
-            if now - last_metrics >= (metrics_secs as i64) * 1000 {
-                last_metrics = now;
-                if let Err(e) = crate::ops::emit_metrics_once(&state).await {
-                    tracing::warn!("ops metrics emit: {e}");
+                if let Err(e) = crate::ops::drain_ops_once(&state).await {
+                    tracing::warn!("ops drain: {e}");
+                }
+                if let Err(e) = crate::audit::drain_audit_once(&state).await {
+                    tracing::warn!("audit drain: {e}");
+                }
+                if let Err(e) = crate::fleet::drain_fleet_events(&state).await {
+                    tracing::warn!("fleet event drain: {e}");
+                }
+                let now = crate::shard::now_ms();
+                if now - last_metrics >= (metrics_secs as i64) * 1000 {
+                    last_metrics = now;
+                    if let Err(e) = crate::ops::emit_metrics_once(&state).await {
+                        tracing::warn!("ops metrics emit: {e}");
+                    }
                 }
             }
-        }
-    });
+        },
+    );
 }
 
 // ---------------------------------------------------------------------
@@ -1741,7 +1750,8 @@ pub async fn open_rollup(
 
 pub fn spawn_rollup(state: std::sync::Arc<crate::http::AppState>, prefix: String) {
     use object_store::ObjectStoreExt;
-    tokio::spawn(async move {
+    let tasks = state.tasks.clone();
+    tasks.spawn("usage-rollup", crate::tasks::Policy::Critical, async move {
         let _store = state.data_store.clone();
         if let Err(e) = open_rollup(&state, &prefix).await {
             tracing::error!("usage rollup open failed: {e}");

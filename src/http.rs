@@ -125,6 +125,9 @@ pub struct AppState {
     /// WP-02 / PR 6-E: the usage ledger key, the read accumulator, the
     /// spool and rollup slots, the sweep scheduler's bookkeeping.
     pub billing: crate::billing_service::BillingService,
+    /// WP-02 / PR 6-F: the supervisor every long-lived loop of this
+    /// runtime is a child of — cancellation, join results, policy.
+    pub tasks: crate::tasks::TaskSupervisor,
     /// Round-11.6 field canary ONLY: widen the seal close→publication
     /// gap by this many ms so the seal-herd campaign can observe the
     /// two-step window on a real release binary at fleet scale. Boot
@@ -846,6 +849,16 @@ async fn debug_load(
         // layout seal. Nonzero = the absorber's lane classification
         // raced dispatch somewhere; the seal made it harmless, but it
         // should stay rare enough to investigate when it moves.
+        // PR 6-F: the supervised long-lived loops and the first critical
+        // exit, if any (readiness adopts it in WP-15's remaining slice).
+        "tasks": {
+            "critical_failure": state.tasks.critical_failure(),
+            "loops": state.tasks.snapshot().into_iter().map(|t| serde_json::json!({
+                "name": t.name,
+                "policy": format!("{:?}", t.policy),
+                "state": format!("{:?}", t.state),
+            })).collect::<Vec<_>>(),
+        },
         "absorb_lane_dropped": state
             .shards.engines().iter()
             .map(|e| e.absorb_lane_dropped.load(std::sync::atomic::Ordering::Relaxed))
@@ -1107,6 +1120,7 @@ pub async fn serve_h1(
     listener: tokio::net::TcpListener,
     app: axum::Router,
     max_buf: usize,
+    tasks: crate::tasks::TaskSupervisor,
 ) -> std::io::Result<()> {
     let svc = hyper_util::service::TowerToHyperService::new(app);
     let limits = raise_nofile();
@@ -1117,7 +1131,7 @@ pub async fn serve_h1(
     NOFILE_SOFT.store(soft, std::sync::atomic::Ordering::Relaxed);
     NOFILE_HARD.store(hard, std::sync::atomic::Ordering::Relaxed);
     tracing::info!("nofile soft={soft} hard={hard} (raised to hard at boot)");
-    spawn_runtime_watchdog();
+    spawn_runtime_watchdog(&tasks);
     loop {
         let (sock, _peer) = match listener.accept().await {
             Ok(x) => x,
@@ -6815,19 +6829,23 @@ pub(crate) static RUNTIME_LAST_TICK_MS: std::sync::atomic::AtomicI64 =
 pub(crate) static RUNTIME_MAX_GAP_MS: std::sync::atomic::AtomicI64 =
     std::sync::atomic::AtomicI64::new(0);
 
-pub(crate) fn spawn_runtime_watchdog() {
-    tokio::spawn(async move {
-        let mut last = crate::shard::now_ms();
-        RUNTIME_LAST_TICK_MS.store(last, std::sync::atomic::Ordering::Relaxed);
-        loop {
-            tokio::time::sleep(std::time::Duration::from_secs(1)).await;
-            let now = crate::shard::now_ms();
-            let gap = now - last;
-            last = now;
-            RUNTIME_LAST_TICK_MS.store(now, std::sync::atomic::Ordering::Relaxed);
-            RUNTIME_MAX_GAP_MS.fetch_max(gap, std::sync::atomic::Ordering::Relaxed);
-        }
-    });
+pub(crate) fn spawn_runtime_watchdog(tasks: &crate::tasks::TaskSupervisor) {
+    tasks.spawn(
+        "runtime-watchdog",
+        crate::tasks::Policy::Noncritical,
+        async move {
+            let mut last = crate::shard::now_ms();
+            RUNTIME_LAST_TICK_MS.store(last, std::sync::atomic::Ordering::Relaxed);
+            loop {
+                tokio::time::sleep(std::time::Duration::from_secs(1)).await;
+                let now = crate::shard::now_ms();
+                let gap = now - last;
+                last = now;
+                RUNTIME_LAST_TICK_MS.store(now, std::sync::atomic::Ordering::Relaxed);
+                RUNTIME_MAX_GAP_MS.fetch_max(gap, std::sync::atomic::Ordering::Relaxed);
+            }
+        },
+    );
 }
 
 /// The single-segment SSE dispatch: the livefeed session (round 11.8:

@@ -301,7 +301,10 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     tracing::info!("startup canary: ops/shard/data buckets readable and writable");
     // R23-5: and if we ever DO end up unready with no shard ever opened,
     // exit rather than sit in rotation-limbo (see spawn_unready_watchdog).
-    crate::sharddir::spawn_unready_watchdog(&config.shard, runtime_caps.clock.clone());
+    // WP-02 / PR 6-F: the task supervisor owns every long-lived loop this
+    // runtime spawns — cancellation, join results, failure policy.
+    let tasks = crate::tasks::TaskSupervisor::new();
+    crate::sharddir::spawn_unready_watchdog(&config.shard, runtime_caps.clock.clone(), &tasks);
 
     let registry = Registry::new(ops_store.clone(), &cell_id);
     // WP-02 / PR 6-D: the deployment identity, from the PROVEN parts.
@@ -675,6 +678,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         bearer,
         deployment,
         billing,
+        tasks: tasks.clone(),
         cert_sealed_publish_delay_ms: std::sync::atomic::AtomicU64::new(
             // PR 3.2: proven by validate(); no panic path in bootstrap.
             cert_sealed_publish_delay_ms,
@@ -708,10 +712,11 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
                 config.cli.streams_auth_grants_file.clone().unwrap(),
             )),
             std::time::Duration::from_secs(config.cli.streams_auth_refresh_secs.max(1)),
+            &tasks,
         );
     }
     // Unified scaler (ROUTING-V3 §5): sketch-driven splits/merges.
-    crate::scaler3::start(Arc::downgrade(&state));
+    crate::scaler3::start(Arc::downgrade(&state), &tasks);
     {
         // RSS sampler for the shed check (500 ms; /proc read per request
         // would be silly). Unconditional: this used to live inside the
@@ -740,7 +745,8 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
             release_pct = bp_limits.release_pct,
             "maintenance backpressure bounds",
         );
-        tokio::spawn(async move {
+        let cancel = tasks.cancellation();
+        tasks.spawn("rss-sampler", crate::tasks::Policy::Critical, async move {
             let mut last_purge: Option<std::time::Instant> = None;
             let mut ticks: u64 = 0;
             loop {
@@ -769,7 +775,10 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
                     st.admission.maintenance().apply(&snap, &bp_limits);
                 }
                 ticks = ticks.wrapping_add(1);
-                tokio::time::sleep(Duration::from_millis(250)).await;
+                tokio::select! {
+                    _ = cancel.cancelled() => return,
+                    _ = tokio::time::sleep(Duration::from_millis(250)) => {}
+                }
             }
         });
     }
@@ -911,6 +920,16 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     tracing::info!("streams-slate listening on {}", config.cli.listen);
     // #269: bounded h1 buffers — see http::serve_h1.
     let max_buf = config.http.h1_max_buf;
-    crate::http::serve_h1(listener, app, max_buf).await?;
+    crate::http::serve_h1(listener, app, max_buf, tasks.clone()).await?;
+    // PR 6-F: the accept loop returned — an ordered, bounded shutdown of
+    // every supervised loop (WP-15 §9 sequences admission, engines and
+    // stores ahead of this in its remaining slice).
+    let report = tasks.shutdown(std::time::Duration::from_secs(10)).await;
+    tracing::info!(
+        finished = ?report.finished,
+        aborted = ?report.aborted,
+        panicked = ?report.panicked,
+        "supervised loops stopped"
+    );
     Ok(())
 }

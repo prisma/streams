@@ -5675,6 +5675,9 @@ struct HttpRig {
     state: Arc<crate::http::AppState>,
     addr: std::net::SocketAddr,
     clock: crate::runtime::ManualClock,
+    /// PR 6-F: the simulated process's supervisor — a restart test
+    /// TERMINATES the old process through it before starting the next.
+    tasks: crate::tasks::TaskSupervisor,
 }
 
 impl HttpRig {
@@ -5973,7 +5976,13 @@ async fn distinct_incarnations_have_distinct_pinned_identities() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn restart_invalidates_process_local_touch_cursors() {
     let store = mem();
-    let (_state_a, addr_a) = http_rig(store.clone()).await;
+    let rig_a = http_rig_build(
+        store.clone(),
+        RigRuntime::first(),
+        HttpRigOptions::default(),
+    )
+    .await;
+    let addr_a = rig_a.addr;
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     let (st, _, b) = preq(
         addr_a,
@@ -6026,7 +6035,14 @@ async fn restart_invalidates_process_local_touch_cursors() {
     let v = wait(addr_a, cursor.clone()).await;
     assert_eq!(v["invalidated"], false, "{v}");
 
-    // Restart: a NEW process incarnation over the same store.
+    // Restart: the old process is TERMINATED through its supervisor
+    // (PR 6-F), then a NEW incarnation starts over the same store.
+    let report = rig_a
+        .tasks
+        .shutdown(std::time::Duration::from_secs(2))
+        .await;
+    assert!(report.terminated("http"), "{report:?}");
+    drop(rig_a);
     let (_state_b, addr_b) = http_rig_at(store, RigRuntime::incarnation(1)).await;
     let v = wait(addr_b, cursor.clone()).await;
     assert_eq!(v["invalidated"], true, "{v}");
@@ -6045,7 +6061,13 @@ async fn restart_invalidates_process_local_touch_cursors() {
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn stream_epoch_survives_restart_but_not_recreation() {
     let store = mem();
-    let (_state_a, addr_a) = http_rig(store.clone()).await;
+    let rig_a = http_rig_build(
+        store.clone(),
+        RigRuntime::first(),
+        HttpRigOptions::default(),
+    )
+    .await;
+    let addr_a = rig_a.addr;
     let key = [("prisma-encryption-key", PRISMA_KEY)];
     let body = br#"{"format":{"kind":"json"},"watches":[{"name":"by-customer","fields":["/customerId"]}]}"#;
     let epoch_of = |b: &[u8]| {
@@ -6060,7 +6082,14 @@ async fn stream_epoch_survives_restart_but_not_recreation() {
     assert_eq!(st, 200);
     let e1 = epoch_of(&b);
 
-    // Restart: the persisted epoch is what the new incarnation serves.
+    // Restart: terminate the old process, then the persisted epoch is
+    // what the new incarnation serves.
+    let report = rig_a
+        .tasks
+        .shutdown(std::time::Duration::from_secs(2))
+        .await;
+    assert!(report.terminated("http"), "{report:?}");
+    drop(rig_a);
     let (_state_b, addr_b) = http_rig_at(store, RigRuntime::incarnation(1)).await;
     let (st, _, b) = preq(addr_b, "GET", "/v1/streams/inc", &[], b"").await;
     assert_eq!(st, 200);
@@ -6220,6 +6249,7 @@ async fn http_rig_build(
     let livefeed = crate::sse::service::LiveFeedService::from_config(&rig_config.sse);
     livefeed.set_heartbeat_ms(15_000);
     let bearer = crate::deployment_bearer::DeploymentBearer::new(auth, None);
+    let tasks = crate::tasks::TaskSupervisor::new();
     let billing = crate::billing_service::BillingService::new(
         Some(PRISMA_KEY.to_string()),
         Arc::new(crate::billing::ReadUsageAccumulator::new(
@@ -6238,6 +6268,7 @@ async fn http_rig_build(
         livefeed,
         bearer,
         billing,
+        tasks: tasks.clone(),
         deployment: crate::deployment::DeploymentIdentity::new(
             crate::tenant::ProjectId::new("proj-test").unwrap(),
             "acct_test".to_string(),
@@ -6285,13 +6316,21 @@ async fn http_rig_build(
     let app = crate::http::router(state.clone());
     let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
     let addr = listener.local_addr().unwrap();
-    tokio::spawn(async move {
+    let serve_tasks = tasks.clone();
+    tasks.spawn("http", crate::tasks::Policy::Critical, async move {
         // #269: rigs serve through the PRODUCTION h1 loop so the whole
         // suite exercises it (axum::serve here would leave the real
         // connection path tested only by out-of-tree probes).
-        crate::http::serve_h1(listener, app, 64 * 1024).await.ok();
+        crate::http::serve_h1(listener, app, 64 * 1024, serve_tasks)
+            .await
+            .ok();
     });
-    HttpRig { state, addr, clock }
+    HttpRig {
+        state,
+        addr,
+        clock,
+        tasks,
+    }
 }
 
 const RIG_KEY_B64: &str = "BwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwcHBwc="; // skey() = [7u8; 32]
