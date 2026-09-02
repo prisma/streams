@@ -6,11 +6,11 @@
 //! place.
 
 use std::collections::HashMap;
-use std::sync::{Arc, RwLock};
+use std::sync::{Arc, RwLock, Weak};
 use std::time::Duration;
 
 use crate::shard::ShardEngine;
-use crate::sharddir::{OpenGate, OpenOutcome};
+use crate::sharddir::{EngineIncarnation, OpenFn, OpenGate, OpenOutcome};
 
 /// How a resolution counts for sweep custody (R29).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -68,10 +68,10 @@ pub struct ShardDirectory {
 
 struct DirInner {
     prefixes: Vec<String>,
-    /// Serving map, shared with the OpenGate's spawned open tasks (which
-    /// insert into it directly).
-    // mt-lint: allow(name-keyed-map): shard prefix -> engine (layout-4 prefixes, not stream names)
-    shards: Arc<RwLock<HashMap<String, Arc<ShardEngine>>>>,
+    /// Serving map. Created HERE, together with the gate that inserts
+    /// into it (PR 6.1-B): no constructor can give the directory and its
+    /// gate different maps.
+    shards: crate::sharddir::ServingMap,
     gate: OpenGate,
     ownership: crate::ownership::OwnershipService,
     /// How long a request waits on an in-flight open before a retryable
@@ -79,23 +79,82 @@ struct DirInner {
     open_wait: Duration,
 }
 
+/// The two open timings the directory's gate applies: the ceiling on
+/// one open attempt, and how long a request waits on an in-flight open
+/// before a retryable refusal.
+#[derive(Clone, Copy, Debug)]
+pub struct OpenTiming {
+    pub open_deadline: Duration,
+    pub open_wait: Duration,
+}
+
+/// PR 6.1-B: the ONE capability an opener gets from the directory — to
+/// report that the engine of a given incarnation closed. It reaches the
+/// directory's internals weakly and nothing else: an opener cannot see
+/// the runtime, only tell its directory that a resident is gone.
+#[derive(Clone)]
+pub struct ShardCloseNotifier {
+    inner: Weak<DirInner>,
+}
+
+impl ShardCloseNotifier {
+    /// The engine of `incarnation` closed. Evicts it from the serving
+    /// map and arms the anti-flap holdoff — only if it is still the
+    /// resident; a late notification for a replaced engine is ignored.
+    /// Returns whether it evicted.
+    pub fn closed(&self, prefix: &str, incarnation: EngineIncarnation) -> bool {
+        match self.inner.upgrade() {
+            Some(dir) => dir.gate.notify_closed(prefix, incarnation),
+            None => false,
+        }
+    }
+}
+
 impl ShardDirectory {
+    /// Build the directory, its serving map and its open gate together.
+    /// `opener` receives the close notifier it must wire into every
+    /// engine it produces; it captures nothing else of the runtime.
     pub fn new(
         prefixes: Vec<String>,
-        shards: Arc<RwLock<HashMap<String, Arc<ShardEngine>>>>,
-        gate: OpenGate,
         ownership: crate::ownership::OwnershipService,
-        open_wait: Duration,
+        timing: OpenTiming,
+        opener: impl FnOnce(ShardCloseNotifier) -> OpenFn,
     ) -> Self {
-        Self {
-            inner: Arc::new(DirInner {
+        let inner = Arc::new_cyclic(|weak: &Weak<DirInner>| {
+            let shards: crate::sharddir::ServingMap = Arc::new(RwLock::new(HashMap::new()));
+            let notifier = ShardCloseNotifier {
+                inner: weak.clone(),
+            };
+            let gate = OpenGate::new(shards.clone(), opener(notifier), timing.open_deadline);
+            DirInner {
                 prefixes,
                 shards,
                 gate,
                 ownership,
-                open_wait,
-            }),
+                open_wait: timing.open_wait,
+            }
+        });
+        Self { inner }
+    }
+
+    /// The close capability for engines opened outside the opener
+    /// (tests, adoption paths).
+    #[cfg(test)]
+    pub fn close_notifier(&self) -> ShardCloseNotifier {
+        ShardCloseNotifier {
+            inner: Arc::downgrade(&self.inner),
         }
+    }
+
+    /// Tests only: the resident's incarnation and a holdoff reset.
+    #[cfg(test)]
+    pub fn resident_incarnation(&self, prefix: &str) -> Option<EngineIncarnation> {
+        self.inner.gate.resident_incarnation(prefix)
+    }
+
+    #[cfg(test)]
+    pub fn clear_holdoff(&self, prefix: &str) {
+        self.inner.gate.clear_holdoff(prefix)
     }
 
     /// The topology's shard prefixes (layout-4 bit prefixes).
@@ -124,7 +183,7 @@ impl ShardDirectory {
         let external = adoption == Adoption::External;
         if let Some(e) = {
             let guard = self.inner.shards.read().unwrap();
-            let e = guard.get(&prefix).cloned();
+            let e = guard.get(&prefix).map(|r| r.engine.clone());
             // R29 custody: EXTERNAL resolution stamps the adoption
             // sequence and revokes any sweep custody, INSIDE the read
             // guard — the scheduler's close takes the write lock
@@ -140,8 +199,8 @@ impl ShardDirectory {
             }
             // Possession must yield to the ring (fleet2 leg C: a scan
             // snapshot froze a live segment at 252 of 510 records).
-            if let Some(e) = self.inner.shards.write().unwrap().remove(&prefix) {
-                e.begin_close();
+            if let Some(r) = self.inner.shards.write().unwrap().remove(&prefix) {
+                r.engine.begin_close();
             }
         }
         // R2/R3: only the ring owner may claim a shard.
@@ -187,7 +246,12 @@ impl ShardDirectory {
 
     /// The resident engine for `prefix`, if open (no adoption stamp).
     pub fn open(&self, prefix: &str) -> Option<Arc<ShardEngine>> {
-        self.inner.shards.read().unwrap().get(prefix).cloned()
+        self.inner
+            .shards
+            .read()
+            .unwrap()
+            .get(prefix)
+            .map(|r| r.engine.clone())
     }
 
     pub fn is_open(&self, prefix: &str) -> bool {
@@ -206,7 +270,7 @@ impl ShardDirectory {
             .read()
             .unwrap()
             .values()
-            .cloned()
+            .map(|r| r.engine.clone())
             .collect()
     }
 
@@ -216,7 +280,7 @@ impl ShardDirectory {
             .read()
             .unwrap()
             .iter()
-            .map(|(p, e)| (p.clone(), e.clone()))
+            .map(|(p, r)| (p.clone(), r.engine.clone()))
             .collect()
     }
 
@@ -226,7 +290,12 @@ impl ShardDirectory {
 
     /// Drop `prefix` from the serving map; the caller owns the close.
     pub fn evict(&self, prefix: &str) -> Option<Arc<ShardEngine>> {
-        self.inner.shards.write().unwrap().remove(prefix)
+        self.inner
+            .shards
+            .write()
+            .unwrap()
+            .remove(prefix)
+            .map(|r| r.engine)
     }
 
     /// R30: ONE write guard held through remove -> decide -> possible
@@ -243,23 +312,15 @@ impl ShardDirectory {
         decide: impl FnOnce(&Arc<ShardEngine>) -> bool,
     ) -> RemoveOutcome {
         let mut guard = self.inner.shards.write().unwrap();
-        let Some(engine) = guard.remove(prefix) else {
+        let Some(resident) = guard.remove(prefix) else {
             return RemoveOutcome::Absent;
         };
-        if decide(&engine) {
-            RemoveOutcome::Removed(engine)
+        if decide(&resident.engine) {
+            RemoveOutcome::Removed(resident.engine)
         } else {
-            guard.insert(prefix.to_string(), engine);
+            guard.insert(prefix.to_string(), resident);
             RemoveOutcome::Kept
         }
-    }
-
-    /// Called when a shard db closes (fenced by a new owner): drop it
-    /// from the serving map and start the anti-flap holdoff. Eviction +
-    /// holdoff live in the gate; an engine that died young escalates the
-    /// holdoff (rapid open→die cycles are the storm).
-    pub fn notify_closed(&self, prefix: &str) {
-        self.inner.gate.notify_closed(prefix);
     }
 }
 
@@ -267,7 +328,6 @@ impl ShardDirectory {
 mod directory_tests {
     use super::*;
     use crate::ownership::OwnershipService;
-    use crate::sharddir::OpenFn;
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     /// A directory over an empty serving map whose opener is scripted:
@@ -278,20 +338,20 @@ mod directory_tests {
     ) -> (ShardDirectory, OwnershipService, Arc<AtomicUsize>) {
         let calls = Arc::new(AtomicUsize::new(0));
         let c = calls.clone();
-        let opener: OpenFn = Box::new(move |_prefix: String| {
+        let opener: OpenFn = Box::new(move |_prefix: String, _inc: EngineIncarnation| {
             c.fetch_add(1, Ordering::Relaxed);
             let r = behave();
             Box::pin(async move { r })
         });
-        let shards = Arc::new(RwLock::new(HashMap::new()));
-        let gate = OpenGate::new(shards.clone(), opener, Duration::from_secs(60));
         let ownership = OwnershipService::new(instance);
         let dir = ShardDirectory::new(
             ["00", "01", "10", "11"].map(str::to_string).to_vec(),
-            shards,
-            gate,
             ownership.clone(),
-            Duration::from_millis(50),
+            OpenTiming {
+                open_deadline: Duration::from_secs(60),
+                open_wait: Duration::from_millis(50),
+            },
+            |_notifier| opener,
         );
         (dir, ownership, calls)
     }
@@ -364,18 +424,18 @@ mod directory_tests {
         // a directory whose opener PENDS is built inline here.
         let calls_pending = Arc::new(AtomicUsize::new(0));
         let c = calls_pending.clone();
-        let opener: OpenFn = Box::new(move |_p: String| {
+        let opener: OpenFn = Box::new(move |_p: String, _inc: EngineIncarnation| {
             c.fetch_add(1, Ordering::Relaxed);
             Box::pin(std::future::pending())
         });
-        let shards = Arc::new(RwLock::new(HashMap::new()));
-        let gate = OpenGate::new(shards.clone(), opener, Duration::from_secs(60));
         let slow = ShardDirectory::new(
             dir.prefixes().to_vec(),
-            shards,
-            gate,
             OwnershipService::new(""),
-            Duration::from_millis(30),
+            OpenTiming {
+                open_deadline: Duration::from_secs(60),
+                open_wait: Duration::from_millis(30),
+            },
+            |_notifier| opener,
         );
         let Err(err) = slow
             .resolve(&hash_in(&slow, "11"), Adoption::External)

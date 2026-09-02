@@ -2699,13 +2699,15 @@ async fn open_gate_survives_impatient_clients_without_a_storm() {
     let st = store.clone();
     let gate = OpenGate::new(
         shards.clone(),
-        Box::new(move |prefix: String| {
-            let st = st.clone();
-            Box::pin(async move {
-                let s: Arc<dyn ObjectStore> = st;
-                Ok(open_engine(s, &prefix).await)
-            })
-        }),
+        Box::new(
+            move |prefix: String, _inc: crate::sharddir::EngineIncarnation| {
+                let st = st.clone();
+                Box::pin(async move {
+                    let s: Arc<dyn ObjectStore> = st;
+                    Ok(open_engine(s, &prefix).await)
+                })
+            },
+        ),
         std::time::Duration::from_secs(180),
     );
 
@@ -2940,14 +2942,16 @@ async fn health_reports_unready_when_no_shard_has_ever_opened() {
     let shards = Arc::new(std::sync::RwLock::new(HashMap::new()));
     let gate = OpenGate::new(
         shards.clone(),
-        Box::new(move |_prefix: String| {
-            Box::pin(async move {
-                anyhow::bail!(
-                    "invalid configuration: max_unflushed_bytes (16777216) must be \
+        Box::new(
+            move |_prefix: String, _inc: crate::sharddir::EngineIncarnation| {
+                Box::pin(async move {
+                    anyhow::bail!(
+                        "invalid configuration: max_unflushed_bytes (16777216) must be \
                      greater than l0_sst_size_bytes (33554432)"
-                )
-            })
-        }),
+                    )
+                })
+            },
+        ),
         std::time::Duration::from_secs(180),
     );
 
@@ -2984,6 +2988,68 @@ async fn health_reports_unready_when_no_shard_has_ever_opened() {
     );
 }
 
+/// PR 6.1-B: a close notification names the engine incarnation it
+/// belongs to. An old engine's LATE close (the db's close reason arrives
+/// after `begin_close` already notified once) must not evict the
+/// replacement that opened after the holdoff — the forced ordering
+/// old-close-after-new-insert.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_stale_close_notification_cannot_evict_a_replacement() {
+    let store = mem();
+    let st = store.clone();
+    let dir = crate::shard_directory::ShardDirectory::new(
+        vec!["0".into(), "1".into()],
+        crate::ownership::OwnershipService::new(""),
+        crate::shard_directory::OpenTiming {
+            open_deadline: std::time::Duration::from_secs(60),
+            open_wait: std::time::Duration::from_secs(30),
+        },
+        |_notifier| {
+            Box::new(
+                move |prefix: String, _inc: crate::sharddir::EngineIncarnation| {
+                    let st = st.clone();
+                    Box::pin(async move { Ok(open_engine(st, &prefix).await) })
+                },
+            )
+        },
+    );
+    let notifier = dir.close_notifier();
+    let prefix = "0";
+    let crate::sharddir::OpenOutcome::Ready(a) = dir
+        .open_or_wait(prefix, std::time::Duration::from_secs(30))
+        .await
+    else {
+        panic!("open A must be ready");
+    };
+    let inc_a = dir.resident_incarnation(prefix).expect("A is the resident");
+    // A's FIRST close notification evicts A and arms the holdoff.
+    assert!(notifier.closed(prefix, inc_a));
+    assert!(!dir.is_open(prefix));
+    dir.clear_holdoff(prefix);
+    let crate::sharddir::OpenOutcome::Ready(b) = dir
+        .open_or_wait(prefix, std::time::Duration::from_secs(30))
+        .await
+    else {
+        panic!("open B must be ready");
+    };
+    let inc_b = dir.resident_incarnation(prefix).expect("B is the resident");
+    assert_ne!(inc_a, inc_b, "every open is its own incarnation");
+    assert!(!Arc::ptr_eq(&a, &b));
+    // A's LATE close (the db reported its close reason) arrives now.
+    assert!(
+        !notifier.closed(prefix, inc_a),
+        "a stale close must not evict the replacement"
+    );
+    assert!(dir.is_open(prefix), "B still serves");
+    let serving = dir.engines();
+    assert!(serving.iter().any(|e| Arc::ptr_eq(e, &b)));
+    // B's OWN close evicts B.
+    assert!(notifier.closed(prefix, inc_b));
+    assert!(!dir.is_open(prefix));
+    a.begin_close();
+    b.begin_close();
+}
+
 /// An engine that keeps dying young must meet an escalating holdoff, not
 /// an eager reopen: rapid open→die cycles against a sick store ARE the
 /// storm, whatever kills the engine.
@@ -2997,13 +3063,15 @@ async fn open_gate_escalates_holdoff_for_engines_that_die_young() {
     let st = inner.clone();
     let gate = OpenGate::new(
         shards.clone(),
-        Box::new(move |prefix: String| {
-            let st = st.clone();
-            Box::pin(async move {
-                let s: Arc<dyn ObjectStore> = st.clone();
-                Ok(open_engine(s, &prefix).await)
-            })
-        }),
+        Box::new(
+            move |prefix: String, _inc: crate::sharddir::EngineIncarnation| {
+                let st = st.clone();
+                Box::pin(async move {
+                    let s: Arc<dyn ObjectStore> = st.clone();
+                    Ok(open_engine(s, &prefix).await)
+                })
+            },
+        ),
         std::time::Duration::from_secs(180),
     );
 
@@ -3024,8 +3092,9 @@ async fn open_gate_escalates_holdoff_for_engines_that_die_young() {
                 OpenOutcome::Failed(e) => panic!("open failed: {e}"),
             }
         };
+        let inc = gate.resident_incarnation("dst-flap").expect("resident");
         drop(eng);
-        gate.notify_closed("dst-flap"); // died young (lifetime ≈ 0)
+        assert!(gate.notify_closed("dst-flap", inc)); // died young (lifetime ≈ 0)
         match gate
             .get_or_open("dst-flap", std::time::Duration::from_secs(1))
             .await
@@ -3069,20 +3138,22 @@ async fn a_hung_open_is_deadlined_and_its_late_engine_reaped() {
     let st = inner.clone();
     let rel = release.clone();
     let op = opened.clone();
-    let gate = OpenGate::with_deadline(
+    let gate = OpenGate::new(
         shards.clone(),
-        Box::new(move |prefix: String| {
-            let st = st.clone();
-            let rel = rel.clone();
-            let op = op.clone();
-            Box::pin(async move {
-                let _ = rel.acquire().await; // park here until the test releases
-                let s: Arc<dyn ObjectStore> = st.clone();
-                let e = open_engine(s, &prefix).await;
-                op.lock().unwrap().push(e.clone());
-                Ok(e)
-            })
-        }),
+        Box::new(
+            move |prefix: String, _inc: crate::sharddir::EngineIncarnation| {
+                let st = st.clone();
+                let rel = rel.clone();
+                let op = op.clone();
+                Box::pin(async move {
+                    let _ = rel.acquire().await; // park here until the test releases
+                    let s: Arc<dyn ObjectStore> = st.clone();
+                    let e = open_engine(s, &prefix).await;
+                    op.lock().unwrap().push(e.clone());
+                    Ok(e)
+                })
+            },
+        ),
         std::time::Duration::from_secs(30),
     );
 
@@ -6209,64 +6280,66 @@ fn rig_opener(
     open_park: Option<Arc<tokio::sync::Mutex<()>>>,
     absorber_cfg: Option<crate::history::AbsorberConfig>,
 ) -> crate::sharddir::OpenFn {
-    Box::new(move |prefix: String| {
-        let store = store.clone();
-        let keys = keys.clone();
-        let shard_cfg = shard_cfg.clone();
-        let open_park = open_park.clone();
-        let absorber_cfg = absorber_cfg.clone();
-        let fut: futures_util::future::BoxFuture<
-            'static,
-            anyhow::Result<Arc<crate::shard::ShardEngine>>,
-        > = Box::pin(async move {
-            let db = slatedb::Db::builder(format!("{prefix}/shard"), store.clone())
-                .with_settings(slatedb::config::Settings {
-                    flush_interval: Some(std::time::Duration::from_millis(5)),
-                    manifest_poll_interval: std::time::Duration::from_millis(50),
-                    ..Default::default()
-                })
-                .build()
-                .await?;
-            let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
-            // R26-5 park point: BEFORE restoration, exactly where a
-            // slow durable-state load sits in production.
-            if let Some(park) = &open_park {
-                let _p = park.lock().await;
-            }
-            // R25-A: tests use the REAL load path — a fresh DB rebuilds to
-            // zero; a reopened DB restores its durable backlog, exactly as
-            // the production opener does.
-            let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-                .await
-                .expect("load maintenance");
-            let engine = crate::shard::ShardEngine::start(
-                prefix,
-                Arc::new(db),
-                store.clone(),
-                shard_cfg.clone(),
-                absorb_tx,
-                None,
-                __maint,
-            );
-            crate::history::Absorber::start(
-                store,
-                engine.clone(),
-                keys,
-                absorber_cfg
-                    .clone()
-                    .unwrap_or(crate::history::AbsorberConfig {
-                        threshold_bytes: 1,
-                        threshold_age: std::time::Duration::from_millis(1),
-                        tick: std::time::Duration::from_millis(20),
-                        sweep_every: u32::MAX,
+    Box::new(
+        move |prefix: String, _incarnation: crate::sharddir::EngineIncarnation| {
+            let store = store.clone();
+            let keys = keys.clone();
+            let shard_cfg = shard_cfg.clone();
+            let open_park = open_park.clone();
+            let absorber_cfg = absorber_cfg.clone();
+            let fut: futures_util::future::BoxFuture<
+                'static,
+                anyhow::Result<Arc<crate::shard::ShardEngine>>,
+            > = Box::pin(async move {
+                let db = slatedb::Db::builder(format!("{prefix}/shard"), store.clone())
+                    .with_settings(slatedb::config::Settings {
+                        flush_interval: Some(std::time::Duration::from_millis(5)),
+                        manifest_poll_interval: std::time::Duration::from_millis(50),
                         ..Default::default()
-                    }),
-                absorb_rx,
-            );
-            Ok(engine)
-        });
-        fut
-    })
+                    })
+                    .build()
+                    .await?;
+                let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+                // R26-5 park point: BEFORE restoration, exactly where a
+                // slow durable-state load sits in production.
+                if let Some(park) = &open_park {
+                    let _p = park.lock().await;
+                }
+                // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+                // zero; a reopened DB restores its durable backlog, exactly as
+                // the production opener does.
+                let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+                    .await
+                    .expect("load maintenance");
+                let engine = crate::shard::ShardEngine::start(
+                    prefix,
+                    Arc::new(db),
+                    store.clone(),
+                    shard_cfg.clone(),
+                    absorb_tx,
+                    None,
+                    __maint,
+                );
+                crate::history::Absorber::start(
+                    store,
+                    engine.clone(),
+                    keys,
+                    absorber_cfg
+                        .clone()
+                        .unwrap_or(crate::history::AbsorberConfig {
+                            threshold_bytes: 1,
+                            threshold_age: std::time::Duration::from_millis(1),
+                            tick: std::time::Duration::from_millis(20),
+                            sweep_every: u32::MAX,
+                            ..Default::default()
+                        }),
+                    absorb_rx,
+                );
+                Ok(engine)
+            });
+            fut
+        },
+    )
 }
 
 /// Build a rig from ONE process runtime and the focused options.
@@ -6303,9 +6376,6 @@ async fn http_rig_build(
         touch_entropy,
     } = runtime;
     let touch = Arc::new(crate::touch::TouchRegistry::with_entropy(touch_entropy));
-    let shards_map: Arc<
-        std::sync::RwLock<std::collections::HashMap<String, Arc<crate::shard::ShardEngine>>>,
-    > = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
     let opener = rig_opener(
         store.clone(),
         keys.clone(),
@@ -6322,8 +6392,6 @@ async fn http_rig_build(
         crate::config::CliArgs::deterministic(),
         &crate::config::MapEnvironment::empty(),
     ));
-    let gate =
-        crate::sharddir::OpenGate::new(shards_map.clone(), opener, rig_config.shard.open_deadline);
     let ownership = crate::ownership::OwnershipService::new(instance_name.unwrap_or_default());
     let (fleet_static_token, fleet_token_source) = match fleet_auth {
         Some((t, s)) => (t, s),
@@ -6362,10 +6430,12 @@ async fn http_rig_build(
         ),
         shards: crate::shard_directory::ShardDirectory::new(
             prefixes,
-            shards_map,
-            gate,
             ownership.clone(),
-            std::time::Duration::from_millis(rig_config.shard.open_wait_ms),
+            crate::shard_directory::OpenTiming {
+                open_deadline: rig_config.shard.open_deadline,
+                open_wait: std::time::Duration::from_millis(rig_config.shard.open_wait_ms),
+            },
+            |_notifier| opener,
         ),
         admission: crate::admission::AdmissionController::new(crate::admission::AdmissionKnobs {
             max_inflight: 0,

@@ -82,17 +82,6 @@ const APPEND_TIMEOUT: Duration = Duration::from_secs(10);
 // so clients see clean empty responses instead of gateway errors.
 const MAX_LONG_POLL: Duration = Duration::from_secs(25);
 
-/// Everything needed to open a shard log on demand. Shards are opened
-/// lazily on first routed request (COMPUTE-SPEC §5.1): opening fences the
-/// previous owner, so ownership follows routing with no coordination.
-pub struct ShardOpener {
-    pub open: Box<
-        dyn Fn(String) -> futures_util::future::BoxFuture<'static, anyhow::Result<Arc<ShardEngine>>>
-            + Send
-            + Sync,
-    >,
-}
-
 pub struct AppState {
     /// The one parsed, immutable process configuration (WP-01 PR 3.1).
     /// Owners read their knobs from here; nothing reads the process

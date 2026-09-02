@@ -348,8 +348,33 @@ pub fn stats_json() -> serde_json::Value {
 }
 
 type OpenResult = Result<Arc<ShardEngine>, String>;
+/// PR 6.1-B: the identity of ONE open attempt's engine within its
+/// directory. A close notification carries the incarnation it belongs
+/// to, and the serving map evicts only the resident with that identity:
+/// an old engine's late close (the db reports its close reason after
+/// `begin_close` already notified once) cannot remove the replacement
+/// that opened after the holdoff.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub struct EngineIncarnation(u64);
+
+/// A resident of the serving map: the engine and the incarnation the
+/// gate minted for the open that produced it.
+#[derive(Clone)]
+pub struct Resident {
+    pub engine: Arc<ShardEngine>,
+    pub incarnation: EngineIncarnation,
+}
+
+// mt-lint: allow(name-keyed-map): shard prefix -> resident engine (layout-4 prefixes, not stream names)
+pub(crate) type ServingMap = Arc<RwLock<HashMap<String, Resident>>>;
+
+/// Opens the shard log for `prefix`; the incarnation is the identity the
+/// engine's close notification must carry.
 pub(crate) type OpenFn = Box<
-    dyn Fn(String) -> futures_util::future::BoxFuture<'static, anyhow::Result<Arc<ShardEngine>>>
+    dyn Fn(
+            String,
+            EngineIncarnation,
+        ) -> futures_util::future::BoxFuture<'static, anyhow::Result<Arc<ShardEngine>>>
         + Send
         + Sync,
 >;
@@ -373,9 +398,10 @@ fn holdoff_for(strikes: u32) -> Duration {
 }
 
 struct GateInner {
-    // mt-lint: allow(name-keyed-map): shard prefix -> engine
-    shards: Arc<RwLock<HashMap<String, Arc<ShardEngine>>>>,
+    shards: ServingMap,
     opener: OpenFn,
+    /// Incarnations are minted per open attempt, per gate.
+    next_incarnation: AtomicU64,
     // mt-lint: allow(name-keyed-map): shard prefix -> open/park gate
     st: Mutex<HashMap<String, PrefixGate>>,
     /// Ceiling on one open attempt (SHARD_OPEN_DEADLINE_MS via config).
@@ -415,23 +441,12 @@ pub struct OpenGate {
 }
 
 impl OpenGate {
-    pub fn new(
-        shards: Arc<RwLock<HashMap<String, Arc<ShardEngine>>>>,
-        opener: OpenFn,
-        open_deadline: Duration,
-    ) -> Self {
-        Self::with_deadline(shards, opener, open_deadline)
-    }
-
-    pub fn with_deadline(
-        shards: Arc<RwLock<HashMap<String, Arc<ShardEngine>>>>,
-        opener: OpenFn,
-        open_deadline: Duration,
-    ) -> Self {
+    pub(crate) fn new(shards: ServingMap, opener: OpenFn, open_deadline: Duration) -> Self {
         OpenGate {
             inner: Arc::new(GateInner {
                 shards,
                 opener,
+                next_incarnation: AtomicU64::new(0),
                 st: Mutex::new(HashMap::new()),
                 open_deadline,
                 #[cfg(test)]
@@ -446,16 +461,11 @@ impl OpenGate {
         }
     }
 
-    /// The serving map (shared with the fleet loop and debug surfaces).
-    pub fn shards(&self) -> &Arc<RwLock<HashMap<String, Arc<ShardEngine>>>> {
-        &self.inner.shards
-    }
-
     /// Get the engine for `prefix`, starting (or joining) a single-flight
     /// open if needed, waiting at most `wait` for it.
     pub async fn get_or_open(&self, prefix: &str, wait: Duration) -> OpenOutcome {
-        if let Some(e) = self.inner.shards.read().unwrap().get(prefix) {
-            return OpenOutcome::Ready(e.clone());
+        if let Some(r) = self.inner.shards.read().unwrap().get(prefix) {
+            return OpenOutcome::Ready(r.engine.clone());
         }
 
         // Decide under the state lock: subscribe, holdoff, or start.
@@ -480,8 +490,8 @@ impl OpenGate {
                 }
                 // Raced with a completed open? (map insert happens before
                 // the inflight entry clears)
-                if let Some(e) = self.inner.shards.read().unwrap().get(prefix) {
-                    return OpenOutcome::Ready(e.clone());
+                if let Some(r) = self.inner.shards.read().unwrap().get(prefix) {
+                    return OpenOutcome::Ready(r.engine.clone());
                 }
                 let (tx, rx) = tokio::sync::watch::channel(None);
                 g.inflight = Some(rx.clone());
@@ -503,7 +513,9 @@ impl OpenGate {
                     // open that loops inside slatedb recovery makes the
                     // shard unavailable forever — observed live on
                     // eu-central-1 at the end of the soak2 campaign.
-                    let mut fut = Box::pin((inner.opener)(p.clone()));
+                    let incarnation =
+                        EngineIncarnation(inner.next_incarnation.fetch_add(1, Ordering::Relaxed));
+                    let mut fut = Box::pin((inner.opener)(p.clone(), incarnation));
                     let res: Result<anyhow::Result<Arc<ShardEngine>>, tokio::time::error::Elapsed> =
                         tokio::time::timeout(inner.open_deadline, &mut fut).await;
                     OPENS_IN_FLIGHT.fetch_sub(1, Ordering::Relaxed);
@@ -512,11 +524,13 @@ impl OpenGate {
                             OPENS_COMPLETED.fetch_add(1, Ordering::Relaxed);
                             #[cfg(test)]
                             inner.c_completed.fetch_add(1, Ordering::Relaxed);
-                            inner
-                                .shards
-                                .write()
-                                .unwrap()
-                                .insert(p.clone(), engine.clone());
+                            inner.shards.write().unwrap().insert(
+                                p.clone(),
+                                Resident {
+                                    engine: engine.clone(),
+                                    incarnation,
+                                },
+                            );
                             let mut st = inner.st.lock().unwrap();
                             let g = st.entry(p.clone()).or_default();
                             g.inflight = None;
@@ -619,11 +633,21 @@ impl OpenGate {
     }
 
     /// Called when a shard engine closes (fenced by a new owner, or a
-    /// fatal store error). Evicts it and arms the holdoff — escalating if
-    /// the engine died young, because rapid open→die cycles are exactly
-    /// the storm this module exists to prevent.
-    pub fn notify_closed(&self, prefix: &str) {
-        self.inner.shards.write().unwrap().remove(prefix);
+    /// fatal store error). Evicts it — ONLY if the resident is that very
+    /// incarnation; a stale notification for an engine that was already
+    /// replaced changes nothing — and arms the holdoff, escalating if the
+    /// engine died young, because rapid open→die cycles are exactly the
+    /// storm this module exists to prevent. Returns whether it evicted.
+    pub fn notify_closed(&self, prefix: &str, incarnation: EngineIncarnation) -> bool {
+        {
+            let mut map = self.inner.shards.write().unwrap();
+            match map.get(prefix) {
+                Some(r) if r.incarnation == incarnation => {
+                    map.remove(prefix);
+                }
+                _ => return false,
+            }
+        }
         let mut st = self.inner.st.lock().unwrap();
         let g = st.entry(prefix.to_string()).or_default();
         let lifetime = g.opened_at.map(|t| t.elapsed());
@@ -633,17 +657,28 @@ impl OpenGate {
             _ => g.strikes = g.strikes.saturating_add(1),
         }
         g.holdoff_until = Some(Instant::now() + holdoff_for(g.strikes));
+        true
     }
 
-    /// Test/ops visibility: is an open currently in flight for `prefix`?
-    pub fn opening(&self, prefix: &str) -> bool {
+    /// The incarnation of the engine currently serving `prefix`.
+    #[cfg(test)]
+    pub fn resident_incarnation(&self, prefix: &str) -> Option<EngineIncarnation> {
         self.inner
-            .st
-            .lock()
+            .shards
+            .read()
             .unwrap()
             .get(prefix)
-            .map(|g| g.inflight.is_some())
-            .unwrap_or(false)
+            .map(|r| r.incarnation)
+    }
+
+    /// Tests only: forget the anti-flap holdoff so a replacement can open
+    /// at once (the holdoff itself is proven by the flap test).
+    #[cfg(test)]
+    pub fn clear_holdoff(&self, prefix: &str) {
+        if let Some(g) = self.inner.st.lock().unwrap().get_mut(prefix) {
+            g.holdoff_until = None;
+            g.strikes = 0;
+        }
     }
 
     #[cfg(test)]
@@ -669,16 +704,6 @@ impl OpenGate {
             self.inner.c_completed.load(Ordering::Relaxed),
             self.inner.c_failed.load(Ordering::Relaxed),
             self.inner.c_coalesced.load(Ordering::Relaxed),
-        )
-    }
-
-    #[cfg(test)]
-    pub fn counters_for_tests() -> (u64, u64, u64, u64) {
-        (
-            OPENS_STARTED.load(Ordering::Relaxed),
-            OPENS_COMPLETED.load(Ordering::Relaxed),
-            OPENS_FAILED.load(Ordering::Relaxed),
-            OPENS_COALESCED.load(Ordering::Relaxed),
         )
     }
 }

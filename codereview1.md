@@ -2933,6 +2933,25 @@ Do not rename user-facing flags while moving them. Flag cleanup is a separate se
 > are destroyed before shutdown returns; critical exits, typed failures
 > and panics are reported through the monitor; `cancel` closes
 > registration before the join.
+>
+> **PR 6.1-B (Oracle corrective on PR 6): ShardDirectory ownership is
+> complete.** The directory builds its serving map and open gate
+> TOGETHER (`ShardDirectory::new(prefixes, ownership, OpenTiming,
+> opener_factory)`): no constructor path can hand the directory and its
+> gate different maps. The opener is a factory over the directory's
+> `ShardCloseNotifier` — a weak handle to the directory's internals and
+> the ONE capability an engine's close needs — so the production opener
+> captures no `AppState`, weak or strong; the weak state slot and
+> `http::ShardOpener` are deleted, and `OpenGate::shards()` with them.
+> Every open attempt is minted an `EngineIncarnation`; the gate records
+> the resident as `{engine, incarnation}`, the engine's close callback
+> carries its incarnation, and `notify_closed(prefix, incarnation)`
+> evicts (and arms the holdoff) only when the resident IS that
+> incarnation — a stale close cannot remove a replacement. Proof: the
+> forced ordering old-close-after-new-insert (A opens, A's first close
+> evicts A, B opens as the new resident, A's late db-close arrives and
+> changes nothing, B's own close evicts B); the existing gate, flap and
+> directory proofs run over the fenced shape.
 
 **Implements:** the foundational part of WP-15.
 

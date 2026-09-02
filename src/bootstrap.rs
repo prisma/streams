@@ -3,7 +3,6 @@
 //! owned [`crate::config::ServerConfig`]). The binary calls exactly one
 //! entry point: [`run`].
 
-use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -388,11 +387,10 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
 
     // Shards open lazily on first routed request (COMPUTE-SPEC §5.1):
     // opening fences the previous owner, so ownership follows routing.
-    // A closed (fenced-away) shard is dropped from the serving map via
-    // ShardDirectory::notify_closed through this weak back-reference.
-    let state_slot: Arc<std::sync::OnceLock<std::sync::Weak<AppState>>> =
-        Arc::new(std::sync::OnceLock::new());
-    let opener = {
+    // PR 6.1-B: the opener is a FACTORY over the directory's close
+    // notifier — the one capability an engine's close needs — and it
+    // captures nothing else of the runtime.
+    let opener = |notifier: crate::shard_directory::ShardCloseNotifier| -> crate::sharddir::OpenFn {
         let shard_store = shard_store.clone();
         let data_store = data_store.clone();
         let keys = keys.clone();
@@ -464,15 +462,14 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
             config.cli.wal_gather_skip_bytes
         };
         let tail_ring_bytes = config.cli.tail_ring_bytes;
-        let state_slot = state_slot.clone();
         // Per-open inputs cloned out of the owned config: the Fn opener
         // runs once per shard open and cannot move fields out of its
         // captured variables, so it clones from these locals per call.
         let opener_history = config.history.clone();
         let opener_compactor = config.engine.compactor_options();
         let opener_frame_compress = config.crypto.frame_compress;
-        crate::http::ShardOpener {
-            open: Box::new(move |prefix: String| {
+        Box::new(
+            move |prefix: String, incarnation: crate::sharddir::EngineIncarnation| {
                 let shard_store = shard_store.clone();
                 let shared_cache = shared_cache.clone();
                 let data_store = data_store.clone();
@@ -492,9 +489,9 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
                     let spread = (base.as_millis() as u64 / 2).max(1);
                     settings.flush_interval = Some(base + Duration::from_millis(h as u64 % spread));
                 }
-                let state_slot = state_slot.clone();
                 let opener_history = opener_history.clone();
                 let opener_compactor = opener_compactor.clone();
+                let notifier = notifier.clone();
                 Box::pin(async move {
                     let path = crate::sharddir::shard_db_path(&prefix);
                     tracing::info!("opening shard log {path} (lazy; fences prior owner)");
@@ -524,12 +521,10 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
                     let on_close = {
                         let touch = touch.clone();
                         let prefix = prefix.clone();
-                        let state_slot = state_slot.clone();
+                        let notifier = notifier.clone();
                         Arc::new(move || {
                             touch.close_shard(&prefix);
-                            if let Some(st) = state_slot.get().and_then(std::sync::Weak::upgrade) {
-                                st.shards.notify_closed(&prefix);
-                            }
+                            notifier.closed(&prefix, incarnation);
                         }) as Arc<dyn Fn() + Send + Sync>
                     };
                     let engine = ShardEngine::start(
@@ -579,25 +574,24 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
                     );
                     Ok(engine)
                 })
-            }),
-        }
+            },
+        )
     };
 
     let fleet_store_opt = config.fleet_store()?;
-    let shards_map: std::sync::Arc<
-        std::sync::RwLock<HashMap<String, Arc<crate::shard::ShardEngine>>>,
-    > = std::sync::Arc::new(std::sync::RwLock::new(HashMap::new()));
-    let gate =
-        crate::sharddir::OpenGate::new(shards_map.clone(), opener.open, config.shard.open_deadline);
     // WP-02 / PR 6-A: the ownership and shard-directory OWNERS take their
-    // own configuration here, before the composition root.
+    // own configuration here, before the composition root. PR 6.1-B: the
+    // directory builds its serving map and gate itself, from the opener
+    // factory and its timings.
     let ownership = crate::ownership::OwnershipService::new(config.cli.instance_name.clone());
     let shard_directory = crate::shard_directory::ShardDirectory::new(
         topology.shards.clone(),
-        shards_map,
-        gate,
         ownership.clone(),
-        Duration::from_millis(config.shard.open_wait_ms),
+        crate::shard_directory::OpenTiming {
+            open_deadline: config.shard.open_deadline,
+            open_wait: Duration::from_millis(config.shard.open_wait_ms),
+        },
+        opener,
     );
     let admission = crate::admission::AdmissionController::new(crate::admission::AdmissionKnobs {
         max_inflight: config.cli.admit_max_inflight,
@@ -699,7 +693,6 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         quotas: crate::quota::QuotaRegistry::default(),
         catalog_cursor_key,
     });
-    let _ = state_slot.set(Arc::downgrade(&state));
     // PR 6.1-A: the LAST fallible startup steps come before the first
     // long-lived loop starts.
     if config.cli.billing_mode == "required" {
