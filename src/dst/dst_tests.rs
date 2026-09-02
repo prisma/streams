@@ -5623,7 +5623,7 @@ struct HttpRigOptions {
     /// Static account bearer (the negative authorization matrix).
     auth: Option<String>,
     /// A NAMED instance makes ring ownership real: setting
-    /// `state.ring_active` afterward makes rendezvous routing live, and
+    /// `ownership.set_ring_active` afterward makes rendezvous routing live, and
     /// shards the ring assigns elsewhere answer 409 + Streams-Replay-To.
     instance: Option<String>,
     /// The shard OPENER parks on this lock right before maintenance
@@ -6084,6 +6084,77 @@ async fn stream_epoch_survives_restart_but_not_recreation() {
     assert_ne!(epoch_of(&b), e1, "recreation mints a new stream epoch");
 }
 
+/// The rig's shard opener: the REAL production open order — db build →
+/// load_or_rebuild_maintenance → engine start → absorber — with the
+/// R26-5 park point before restoration and the fast test absorber
+/// defaults (a caller's absorber config, e.g. `cold_absorber`, wins).
+fn rig_opener(
+    store: Arc<dyn ObjectStore>,
+    keys: Arc<crate::history::KeyCache>,
+    shard_cfg: crate::shard::ShardConfig,
+    open_park: Option<Arc<tokio::sync::Mutex<()>>>,
+    absorber_cfg: Option<crate::history::AbsorberConfig>,
+) -> crate::sharddir::OpenFn {
+    Box::new(move |prefix: String| {
+        let store = store.clone();
+        let keys = keys.clone();
+        let shard_cfg = shard_cfg.clone();
+        let open_park = open_park.clone();
+        let absorber_cfg = absorber_cfg.clone();
+        let fut: futures_util::future::BoxFuture<
+            'static,
+            anyhow::Result<Arc<crate::shard::ShardEngine>>,
+        > = Box::pin(async move {
+            let db = slatedb::Db::builder(format!("{prefix}/shard"), store.clone())
+                .with_settings(slatedb::config::Settings {
+                    flush_interval: Some(std::time::Duration::from_millis(5)),
+                    manifest_poll_interval: std::time::Duration::from_millis(50),
+                    ..Default::default()
+                })
+                .build()
+                .await?;
+            let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
+            // R26-5 park point: BEFORE restoration, exactly where a
+            // slow durable-state load sits in production.
+            if let Some(park) = &open_park {
+                let _p = park.lock().await;
+            }
+            // R25-A: tests use the REAL load path — a fresh DB rebuilds to
+            // zero; a reopened DB restores its durable backlog, exactly as
+            // the production opener does.
+            let __maint = crate::shard::load_or_rebuild_maintenance(&db)
+                .await
+                .expect("load maintenance");
+            let engine = crate::shard::ShardEngine::start(
+                prefix,
+                Arc::new(db),
+                store.clone(),
+                shard_cfg.clone(),
+                absorb_tx,
+                None,
+                __maint,
+            );
+            crate::history::Absorber::start(
+                store,
+                engine.clone(),
+                keys,
+                absorber_cfg
+                    .clone()
+                    .unwrap_or(crate::history::AbsorberConfig {
+                        threshold_bytes: 1,
+                        threshold_age: std::time::Duration::from_millis(1),
+                        tick: std::time::Duration::from_millis(20),
+                        sweep_every: u32::MAX,
+                        ..Default::default()
+                    }),
+                absorb_rx,
+            );
+            Ok(engine)
+        });
+        fut
+    })
+}
+
 /// Build a rig from ONE process runtime and the focused options.
 async fn http_rig_build(
     store: Arc<dyn ObjectStore>,
@@ -6121,70 +6192,13 @@ async fn http_rig_build(
     let shards_map: Arc<
         std::sync::RwLock<std::collections::HashMap<String, Arc<crate::shard::ShardEngine>>>,
     > = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
-    let opener = {
-        let store = store.clone();
-        let keys = keys.clone();
-        let shard_cfg = shard_cfg.clone();
-        let absorber_cfg = absorber_cfg.clone();
-        Box::new(move |prefix: String| {
-            let store = store.clone();
-            let keys = keys.clone();
-            let shard_cfg = shard_cfg.clone();
-            let open_park = open_park.clone();
-            let absorber_cfg = absorber_cfg.clone();
-            let fut: futures_util::future::BoxFuture<
-                'static,
-                anyhow::Result<Arc<crate::shard::ShardEngine>>,
-            > = Box::pin(async move {
-                let db = slatedb::Db::builder(format!("{prefix}/shard"), store.clone())
-                    .with_settings(slatedb::config::Settings {
-                        flush_interval: Some(std::time::Duration::from_millis(5)),
-                        manifest_poll_interval: std::time::Duration::from_millis(50),
-                        ..Default::default()
-                    })
-                    .build()
-                    .await?;
-                let (absorb_tx, absorb_rx) = crate::history::absorber_channel();
-                // R26-5 park point: BEFORE restoration, exactly where a
-                // slow durable-state load sits in production.
-                if let Some(park) = &open_park {
-                    let _p = park.lock().await;
-                }
-                // R25-A: tests use the REAL load path — a fresh DB rebuilds to
-                // zero; a reopened DB restores its durable backlog, exactly as
-                // the production opener does.
-                let __maint = crate::shard::load_or_rebuild_maintenance(&db)
-                    .await
-                    .expect("load maintenance");
-                let engine = crate::shard::ShardEngine::start(
-                    prefix,
-                    Arc::new(db),
-                    store.clone(),
-                    shard_cfg.clone(),
-                    absorb_tx,
-                    None,
-                    __maint,
-                );
-                crate::history::Absorber::start(
-                    store,
-                    engine.clone(),
-                    keys,
-                    absorber_cfg
-                        .clone()
-                        .unwrap_or(crate::history::AbsorberConfig {
-                            threshold_bytes: 1,
-                            threshold_age: std::time::Duration::from_millis(1),
-                            tick: std::time::Duration::from_millis(20),
-                            sweep_every: u32::MAX,
-                            ..Default::default()
-                        }),
-                    absorb_rx,
-                );
-                Ok(engine)
-            });
-            fut
-        })
-    };
+    let opener = rig_opener(
+        store.clone(),
+        keys.clone(),
+        shard_cfg.clone(),
+        open_park,
+        absorber_cfg.clone(),
+    );
     // The rig's owned configuration (WP-01 PR 3.1): the no-environment
     // knob posture — every knob default, no env overlay. PR 4.1.1.1:
     // the CLI half comes from the HERMETIC fixture, never from a parse
@@ -6196,15 +6210,20 @@ async fn http_rig_build(
     ));
     let gate =
         crate::sharddir::OpenGate::new(shards_map.clone(), opener, rig_config.shard.open_deadline);
+    let ownership = crate::ownership::OwnershipService::new(instance_name.unwrap_or_default());
     let state = Arc::new(crate::http::AppState {
         runtime: rig_runtime.clone(),
         config: rig_config.clone(),
         registry,
         tenant: crate::tenant::ProjectId::new("proj-test").unwrap(),
-        shard_prefixes: prefixes,
-        shards: shards_map,
+        shards: crate::shard_directory::ShardDirectory::new(
+            prefixes,
+            shards_map,
+            gate,
+            ownership.clone(),
+            std::time::Duration::from_millis(rig_config.shard.open_wait_ms),
+        ),
         fleet_store: None,
-        gate,
         fleet_ops: std::sync::atomic::AtomicU64::new(0),
         inflight: std::sync::atomic::AtomicI64::new(0),
         inflight_peak: std::sync::atomic::AtomicI64::new(0),
@@ -6237,9 +6256,7 @@ async fn http_rig_build(
         wedge_shed: std::sync::atomic::AtomicU64::new(0),
         maint_latch: crate::backpressure::GlobalLatch::new(),
         sweep_sched: crate::billing::SweepSched::default(),
-        instance_name: instance_name.unwrap_or_default(),
-        ring_active: std::sync::RwLock::new(Vec::new()),
-        ring_overrides: std::sync::RwLock::new(std::collections::HashMap::new()),
+        ownership,
         peer_urls: std::sync::RwLock::new(std::collections::HashMap::new()),
         data_store: store,
         keys,
@@ -7535,8 +7552,8 @@ async fn split_children_land_on_distinct_engines() {
     let r0 = desc.segment_route(live[0]);
     let r1 = desc.segment_route(live[1]);
     assert_ne!(r0, r1, "children carry independent routes");
-    let p0 = crate::registry::shard_for_hash(&state.shard_prefixes, &r0);
-    let p1 = crate::registry::shard_for_hash(&state.shard_prefixes, &r1);
+    let p0 = state.shards.prefix_for(&r0);
+    let p1 = state.shards.prefix_for(&r1);
     assert_ne!(p0, p1, "routes land on distinct shard prefixes");
     let e0 = state.engine_for_scaler(&r0).await.expect("engine 0");
     let e1 = state.engine_for_scaler(&r1).await.expect("engine 1");
@@ -7735,7 +7752,7 @@ async fn post_split_throughput_scales() {
 
 /// Close every open engine so background loops die with the test.
 async fn engine_shutdown(state: &Arc<crate::http::AppState>) {
-    let engines: Vec<_> = state.shards.read().unwrap().values().cloned().collect();
+    let engines: Vec<_> = state.shards.engines();
     for e in engines {
         e.begin_close();
     }
@@ -10173,11 +10190,10 @@ async fn touch_close_shard_matches_route_hash_not_storage_hash() {
             .await
             .unwrap()
             .unwrap();
-        let rp = crate::registry::shard_for_hash(
-            &state.shard_prefixes,
-            &crate::crypto::RouteHash::for_stream(&state.raw_adapter_sref(&name)).0,
-        );
-        let sp = crate::registry::shard_for_hash(&state.shard_prefixes, &desc.storage_hash());
+        let rp = state
+            .shards
+            .prefix_for(&crate::crypto::RouteHash::for_stream(&state.raw_adapter_sref(&name)).0);
+        let sp = state.shards.prefix_for(&desc.storage_hash());
         if rp != sp {
             picked = Some((name, rp, sp));
             break;
@@ -27253,7 +27269,7 @@ async fn ownership_replay_wins_over_a_latched_local_engine() {
     // The ring moves the shard to inst-b. The SAME request must now be
     // redirected — the resident latched engine yields, it does not
     // answer with its own backlog.
-    *state.ring_active.write().unwrap() = vec!["inst-b".to_string()];
+    state.ownership.set_ring_active(vec!["inst-b".to_string()]);
     let (st, hdrs, body) = hreq(addr, "POST", "/v1/stream/replay-x", &ct, br#"[{"n":3}]"#).await;
     assert_eq!(st, 409, "non-owner must redirect, got {st}");
     let body = String::from_utf8_lossy(&body).to_string();
@@ -27295,7 +27311,7 @@ async fn first_request_waits_for_restoration_then_sees_the_restored_ledger() {
         .unwrap()
         .unwrap();
     let seg = desc.resolve_segment("");
-    let prefix = crate::registry::shard_for_hash(&state1.shard_prefixes, &seg.shard_route);
+    let prefix = state1.shards.prefix_for(&seg.shard_route);
     let engine1 = state1
         .engine_for_scaler(&seg.shard_route)
         .await
@@ -27318,7 +27334,7 @@ async fn first_request_waits_for_restoration_then_sees_the_restored_ledger() {
         .unwrap();
     engine1.db.flush().await.unwrap();
     {
-        state1.shards.write().unwrap().remove(&prefix);
+        state1.shards.evict(&prefix);
     }
     engine1.begin_close();
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -27480,7 +27496,7 @@ async fn drain_billing_clean(state: &Arc<crate::http::AppState>, prefixes: &[&st
         let _ = crate::billing::drain_once(state).await;
         let mut clean = true;
         for p in prefixes {
-            let Some(e) = state.shards.read().unwrap().get(*p).cloned() else {
+            let Some(e) = state.shards.open(p) else {
                 continue;
             };
             let dirty = e
@@ -27540,13 +27556,13 @@ async fn cold_shard_maintenance_debt_survives_the_sweep_and_drains() {
     .await;
     assert!(st == 200 || st == 204);
     drain_billing_clean(&state, &["00"]).await;
-    let engine = state.shards.read().unwrap().get("00").cloned().unwrap();
+    let engine = state.shards.open("00").unwrap();
     let ledger = engine.maintenance_snapshot().unabsorbed_frame_bytes;
     assert!(ledger > 0, "backlog must exist before the cold phase");
 
     // Go cold: the production sweep-close pattern (remove + close).
     {
-        state.shards.write().unwrap().remove("00");
+        state.shards.evict("00");
     }
     engine.begin_close();
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
@@ -27554,7 +27570,7 @@ async fn cold_shard_maintenance_debt_survives_the_sweep_and_drains() {
     // Sweep: reopens the owned shard, sees maintenance debt with clean
     // billing, and must keep it resident.
     crate::billing::sweep_owned_outboxes(&state).await;
-    let kept = state.shards.read().unwrap().get("00").cloned();
+    let kept = state.shards.open("00");
     let kept = kept.expect("sweep must keep a maintenance-indebted shard resident");
     assert_eq!(
         kept.maintenance_snapshot().unabsorbed_frame_bytes,
@@ -27586,7 +27602,7 @@ async fn cold_shard_maintenance_debt_survives_the_sweep_and_drains() {
     // ...and the NEXT sweep closes the now debt-free shard.
     crate::billing::sweep_owned_outboxes(&state).await;
     assert!(
-        !state.shards.read().unwrap().contains_key("00"),
+        !state.shards.is_open("00"),
         "a drained sweep-opened shard must close"
     );
 }
@@ -27622,7 +27638,7 @@ async fn sweep_residency_bound_rotates_over_many_indebted_shards() {
             .unwrap()
             .unwrap();
         let seg = desc.resolve_segment("");
-        let p = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
+        let p = state.shards.prefix_for(&seg.shard_route);
         if covered.insert(p) {
             let (st, _, _) = hreq(
                 addr,
@@ -27640,10 +27656,10 @@ async fn sweep_residency_bound_rotates_over_many_indebted_shards() {
     drain_billing_clean(&state, &pref_refs).await;
 
     // All four go cold with durable backlog.
-    let engines: Vec<_> = {
-        let mut m = state.shards.write().unwrap();
-        prefixes.iter().filter_map(|p| m.remove(p)).collect()
-    };
+    let engines: Vec<_> = prefixes
+        .iter()
+        .filter_map(|p| state.shards.evict(p))
+        .collect();
     assert_eq!(engines.len(), 4);
     for e in engines {
         assert!(e.maintenance_snapshot().unabsorbed_frame_bytes > 0);
@@ -27652,7 +27668,7 @@ async fn sweep_residency_bound_rotates_over_many_indebted_shards() {
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     let resident = |state: &Arc<crate::http::AppState>| -> Vec<String> {
-        let mut v: Vec<String> = state.shards.read().unwrap().keys().cloned().collect();
+        let mut v: Vec<String> = state.shards.held_prefixes();
         v.sort();
         v
     };
@@ -27718,7 +27734,7 @@ async fn sweep_peak_open_never_exceeds_the_budget() {
             .unwrap()
             .unwrap();
         let seg = desc.resolve_segment("");
-        let p = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
+        let p = state.shards.prefix_for(&seg.shard_route);
         if covered.insert(p) {
             let (st, _, _) = hreq(
                 addr,
@@ -27734,10 +27750,10 @@ async fn sweep_peak_open_never_exceeds_the_budget() {
     assert_eq!(covered.len(), 4);
     let pref_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
     drain_billing_clean(&state, &pref_refs).await;
-    let engines: Vec<_> = {
-        let mut m = state.shards.write().unwrap();
-        prefixes.iter().filter_map(|p| m.remove(p)).collect()
-    };
+    let engines: Vec<_> = prefixes
+        .iter()
+        .filter_map(|p| state.shards.evict(p))
+        .collect();
     for e in engines {
         e.begin_close();
     }
@@ -27782,7 +27798,7 @@ async fn customer_race_into_a_sweep_opened_engine_prevents_its_close() {
         .unwrap()
         .unwrap();
     let seg = desc.resolve_segment("");
-    let prefix = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
+    let prefix = state.shards.prefix_for(&seg.shard_route);
     let (st, _, _) = hreq(
         addr,
         "POST",
@@ -27795,17 +27811,17 @@ async fn customer_race_into_a_sweep_opened_engine_prevents_its_close() {
     let pref_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
     drain_billing_clean(&state, &pref_refs).await;
     // Cold: close every engine, then let ONE sweep re-open the debtor.
-    let engines: Vec<_> = {
-        let mut m = state.shards.write().unwrap();
-        prefixes.iter().filter_map(|p| m.remove(p)).collect()
-    };
+    let engines: Vec<_> = prefixes
+        .iter()
+        .filter_map(|p| state.shards.evict(p))
+        .collect();
     for e in engines {
         e.begin_close();
     }
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     crate::billing::sweep_owned_outboxes(&state).await;
     assert!(
-        state.shards.read().unwrap().contains_key(&prefix),
+        state.shards.is_open(&prefix),
         "sweep must have re-opened the indebted shard {prefix}"
     );
     // Customer traffic adopts the engine (append -> engine_for touch).
@@ -27827,7 +27843,7 @@ async fn customer_race_into_a_sweep_opened_engine_prevents_its_close() {
         crate::billing::sweep_owned_outboxes(&state).await;
     }
     assert!(
-        state.shards.read().unwrap().contains_key(&prefix),
+        state.shards.is_open(&prefix),
         "adopted engine was closed out from under customer traffic"
     );
     // And it still serves: the stream reads back.
@@ -27863,23 +27879,23 @@ async fn custody_declines_on_prior_external_use() {
         .unwrap()
         .unwrap();
     let seg = desc.resolve_segment("");
-    let prefix = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
+    let prefix = state.shards.prefix_for(&seg.shard_route);
     let pref_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
     drain_billing_clean(&state, &pref_refs).await;
     // Cold-close, then reproduce the reviewer's ordering EXACTLY: the
     // open completes (engine publicly visible), a customer resolves it
     // (external stamp), and only THEN would the sweep mark it.
-    let engines: Vec<_> = {
-        let mut m = state.shards.write().unwrap();
-        prefixes.iter().filter_map(|p| m.remove(p)).collect()
-    };
+    let engines: Vec<_> = prefixes
+        .iter()
+        .filter_map(|p| state.shards.evict(p))
+        .collect();
     for e in engines {
         e.begin_close();
     }
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     let crate::sharddir::OpenOutcome::Ready(engine) = state
-        .gate
-        .get_or_open(&prefix, std::time::Duration::from_secs(20))
+        .shards
+        .open_or_wait(&prefix, std::time::Duration::from_secs(20))
         .await
     else {
         panic!("open failed");
@@ -27893,7 +27909,7 @@ async fn custody_declines_on_prior_external_use() {
         crate::billing::sweep_owned_outboxes(&state).await;
     }
     assert!(
-        state.shards.read().unwrap().contains_key(&prefix),
+        state.shards.is_open(&prefix),
         "engine with prior external use must never be sweep-closed"
     );
     assert_eq!(
@@ -27932,13 +27948,13 @@ async fn internal_touch_does_not_leak_an_engine_from_the_rotation() {
         .unwrap()
         .unwrap();
     let seg = desc.resolve_segment("");
-    let prefix = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
+    let prefix = state.shards.prefix_for(&seg.shard_route);
     let pref_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
     drain_billing_clean(&state, &pref_refs).await;
-    let engines: Vec<_> = {
-        let mut m = state.shards.write().unwrap();
-        prefixes.iter().filter_map(|p| m.remove(p)).collect()
-    };
+    let engines: Vec<_> = prefixes
+        .iter()
+        .filter_map(|p| state.shards.evict(p))
+        .collect();
     for e in engines {
         e.begin_close();
     }
@@ -27947,10 +27963,7 @@ async fn internal_touch_does_not_leak_an_engine_from_the_rotation() {
     crate::billing::sweep_owned_outboxes(&state).await;
     let engine = state
         .shards
-        .read()
-        .unwrap()
-        .get(&prefix)
-        .cloned()
+        .open(&prefix)
         .expect("sweep must retain the indebted shard");
     let custody0 = engine
         .sweep_custody
@@ -27972,7 +27985,7 @@ async fn internal_touch_does_not_leak_an_engine_from_the_rotation() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(30);
     loop {
         crate::billing::sweep_owned_outboxes(&state).await;
-        if !state.shards.read().unwrap().contains_key(&prefix) {
+        if !state.shards.is_open(&prefix) {
             break;
         }
         assert!(
@@ -28017,7 +28030,7 @@ async fn tombstone_walk_peak_residency_stays_under_the_budget() {
             .unwrap()
             .unwrap();
         let seg = desc.resolve_segment("");
-        let p = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
+        let p = state.shards.prefix_for(&seg.shard_route);
         if covered.insert(p) {
             let (st, _, _) = hreq(
                 addr,
@@ -28036,10 +28049,10 @@ async fn tombstone_walk_peak_residency_stays_under_the_budget() {
     drain_billing_clean(&state, &pref_refs).await;
     // Cold-close everything, let the TTL lapse so every descriptor is
     // terminal, and force fresh registry reads.
-    let engines: Vec<_> = {
-        let mut m = state.shards.write().unwrap();
-        prefixes.iter().filter_map(|p| m.remove(p)).collect()
-    };
+    let engines: Vec<_> = prefixes
+        .iter()
+        .filter_map(|p| state.shards.evict(p))
+        .collect();
     for e in engines {
         e.begin_close();
     }
@@ -28097,7 +28110,7 @@ async fn tombstone_walk_fairness_under_occupied_budget() {
             .unwrap()
             .unwrap();
         let seg = desc.resolve_segment("");
-        let p = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
+        let p = state.shards.prefix_for(&seg.shard_route);
         if pinned.len() < 2 && !expired_shards.contains(&p) {
             if pinned.insert(p.clone()) {
                 let (st, _, _) = hreq(
@@ -28135,10 +28148,10 @@ async fn tombstone_walk_fairness_under_occupied_budget() {
     drain_billing_clean(&state, &pref_refs).await;
     // Pin the maintenance debt: paused absorbers never retire it.
     crate::history::absorb_pause_flag().store(true, std::sync::atomic::Ordering::Relaxed);
-    let engines: Vec<_> = {
-        let mut m = state.shards.write().unwrap();
-        prefixes.iter().filter_map(|p| m.remove(p)).collect()
-    };
+    let engines: Vec<_> = prefixes
+        .iter()
+        .filter_map(|p| state.shards.evict(p))
+        .collect();
     for e in engines {
         e.begin_close();
     }
@@ -28199,15 +28212,15 @@ async fn revoked_close_keeps_the_identical_engine_with_no_new_open() {
         .unwrap()
         .unwrap();
     let seg = desc.resolve_segment("");
-    let prefix = crate::registry::shard_for_hash(&state.shard_prefixes, &seg.shard_route);
+    let prefix = state.shards.prefix_for(&seg.shard_route);
     let pref_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
     drain_billing_clean(&state, &pref_refs).await;
     // Cold-close, reopen via the gate, take custody, then let a
     // customer adopt (revoke) — the exact adopted-close shape.
-    let engines: Vec<_> = {
-        let mut m = state.shards.write().unwrap();
-        prefixes.iter().filter_map(|p| m.remove(p)).collect()
-    };
+    let engines: Vec<_> = prefixes
+        .iter()
+        .filter_map(|p| state.shards.evict(p))
+        .collect();
     for e in engines {
         e.begin_close();
     }
@@ -28215,10 +28228,7 @@ async fn revoked_close_keeps_the_identical_engine_with_no_new_open() {
     crate::billing::sweep_owned_outboxes(&state).await;
     let engine = state
         .shards
-        .read()
-        .unwrap()
-        .get(&prefix)
-        .cloned()
+        .open(&prefix)
         .expect("sweep must retain the indebted shard");
     assert_ne!(
         engine
@@ -28231,10 +28241,7 @@ async fn revoked_close_keeps_the_identical_engine_with_no_new_open() {
     crate::billing::sweep_owned_outboxes(&state).await;
     let now = state
         .shards
-        .read()
-        .unwrap()
-        .get(&prefix)
-        .cloned()
+        .open(&prefix)
         .expect("adopted engine must remain resident");
     assert!(
         std::sync::Arc::ptr_eq(&engine, &now),
@@ -29359,12 +29366,10 @@ async fn jwt_only_fleet_relay_succeeds() {
     .await
     .parts();
     // B's ring says A owns the shard; B's peer map resolves A's URL.
-    *state_b.ring_active.write().unwrap() = vec!["rig-a".to_string(), "rig-b".to_string()];
     state_b
-        .ring_overrides
-        .write()
-        .unwrap()
-        .insert("00".to_string(), "rig-a".to_string());
+        .ownership
+        .set_ring_active(vec!["rig-a".to_string(), "rig-b".to_string()]);
+    state_b.ownership.set_override("00", "rig-a");
     state_b
         .peer_urls
         .write()
@@ -29467,12 +29472,10 @@ async fn rotated_workload_jwt_refreshes_and_retries() {
     )
     .await
     .parts();
-    *state_b.ring_active.write().unwrap() = vec!["rig-a".to_string(), "rig-b".to_string()];
     state_b
-        .ring_overrides
-        .write()
-        .unwrap()
-        .insert("00".to_string(), "rig-a".to_string());
+        .ownership
+        .set_ring_active(vec!["rig-a".to_string(), "rig-b".to_string()]);
+    state_b.ownership.set_override("00", "rig-a");
     state_b
         .peer_urls
         .write()
@@ -32588,12 +32591,7 @@ async fn collection_seal_relays_segment_closes_to_the_foreign_owner() {
     assert_eq!(st, 200);
 
     // A: the shard belongs to inst-b, reachable at addr_b.
-    *state_a
-        .ring_overrides
-        .write()
-        .unwrap()
-        .entry("00".to_string())
-        .or_insert("inst-b".into()) = "inst-b".into();
+    state_a.ownership.set_override("00", "inst-b");
     state_a
         .peer_urls
         .write()
@@ -34289,12 +34287,10 @@ async fn livefeed_remote_sealed_predecessor_streams_through_owner() {
     // The parent's shard belongs to A (an override on B + A's peer
     // URL); the child's shard differs, so B serves it itself. The
     // fixed stream name makes both routes deterministic.
-    let p_parent =
-        crate::registry::shard_for_hash(&state_b.shard_prefixes, &desc.segment_route_by_id(0));
-    let p_child = crate::registry::shard_for_hash(
-        &state_b.shard_prefixes,
-        &desc.segment_route_by_id(child_seg),
-    );
+    let p_parent = state_b.shards.prefix_for(&desc.segment_route_by_id(0));
+    let p_child = state_b
+        .shards
+        .prefix_for(&desc.segment_route_by_id(child_seg));
     assert_ne!(
         p_parent, p_child,
         "pick a stream name whose parent/child routes differ"
@@ -34302,12 +34298,13 @@ async fn livefeed_remote_sealed_predecessor_streams_through_owner() {
     // B's view of the fleet: both instances active; the parent's
     // shard is pinned to A, every other shard to B (explicit
     // overrides beat the rendezvous pick for determinism).
-    *state_b.ring_active.write().unwrap() = vec!["inst-a".to_string(), "inst-b".to_string()];
+    state_b
+        .ownership
+        .set_ring_active(vec!["inst-a".to_string(), "inst-b".to_string()]);
     {
-        let mut ov = state_b.ring_overrides.write().unwrap();
-        for p in state_b.shard_prefixes.clone() {
+        for p in state_b.shards.prefixes().to_vec() {
             let owner = if p == p_parent { "inst-a" } else { "inst-b" };
-            ov.insert(p, owner.to_string());
+            state_b.ownership.set_override(&p, owner);
         }
     }
     state_b
@@ -34506,20 +34503,17 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
     state_b.registry.invalidate(&sref);
     let desc = state_b.registry.get(&sref).await.unwrap().unwrap();
     let child_seg = desc.resolve_segment("").seg_id;
-    let p_parent =
-        crate::registry::shard_for_hash(&state_b.shard_prefixes, &desc.segment_route_by_id(0));
-    let p_child = crate::registry::shard_for_hash(
-        &state_b.shard_prefixes,
-        &desc.segment_route_by_id(child_seg),
-    );
+    let p_parent = state_b.shards.prefix_for(&desc.segment_route_by_id(0));
+    let p_child = state_b
+        .shards
+        .prefix_for(&desc.segment_route_by_id(child_seg));
     assert_ne!(p_parent, p_child);
     let all = ["inst-a", "inst-b", "inst-c"].map(str::to_string).to_vec();
-    *state_b.ring_active.write().unwrap() = all.clone();
+    state_b.ownership.set_ring_active(all.clone());
     {
-        let mut ov = state_b.ring_overrides.write().unwrap();
-        for p in state_b.shard_prefixes.clone() {
+        for p in state_b.shards.prefixes().to_vec() {
             let owner = if p == p_parent { "inst-a" } else { "inst-b" };
-            ov.insert(p, owner.to_string());
+            state_b.ownership.set_override(&p, owner);
         }
     }
     {
@@ -34540,12 +34534,10 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
 
     // PHASE 1 — one verified redirect: A no longer owns the parent
     // and names inst-c; C serves the pages.
-    *state_a.ring_active.write().unwrap() = all.clone();
+    state_a.ownership.set_ring_active(all.clone());
     state_a
-        .ring_overrides
-        .write()
-        .unwrap()
-        .insert(p_parent.clone(), "inst-c".to_string());
+        .ownership
+        .set_override(&p_parent.clone(), &"inst-c".to_string());
     {
         let mut sck = lf_connect(addr_b, "xmv", "?cursor=beginning").await;
         let (acc, eof) =
@@ -34564,12 +34556,10 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
     teardown(state_b.clone()).await;
 
     // PHASE 2 — redirect LOOP refused: C points the parent back at A.
-    *_state_c.ring_active.write().unwrap() = all.clone();
+    _state_c.ownership.set_ring_active(all.clone());
     _state_c
-        .ring_overrides
-        .write()
-        .unwrap()
-        .insert(p_parent.clone(), "inst-a".to_string());
+        .ownership
+        .set_override(&p_parent.clone(), &"inst-a".to_string());
     let loops_before = crate::sse::auth::sse_stats::FEED_CUTOFF_REDIRECT_LOOP
         .load(std::sync::atomic::Ordering::Relaxed);
     {
@@ -34595,10 +34585,8 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
     // PHASE 3 — the predecessor moves TO the reader: B now owns it
     // and adopts it locally.
     state_b
-        .ring_overrides
-        .write()
-        .unwrap()
-        .insert(p_parent.clone(), "inst-b".to_string());
+        .ownership
+        .set_override(&p_parent.clone(), &"inst-b".to_string());
     {
         let mut sck = lf_connect(addr_b, "xmv", "?cursor=beginning").await;
         let (acc, eof) =
@@ -34623,10 +34611,8 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
     let (a1, _) = hub_sse_collect(&mut sub1, 15, |t| lf_record_and_status(t, "\"h\":2")).await;
     assert!(a1.contains("\"h\":2"), "sub1 established:\n{a1}");
     state_b
-        .ring_overrides
-        .write()
-        .unwrap()
-        .insert(p_child.clone(), "inst-a".to_string());
+        .ownership
+        .set_override(&p_child.clone(), &"inst-a".to_string());
     {
         let mut sub2 = lf_connect(addr_b, "xmv", "?cursor=beginning").await;
         let (acc, _) = hub_sse_collect(&mut sub2, 15, |t| t.contains("HTTP/1.1 409")).await;
@@ -34824,14 +34810,16 @@ async fn livefeed_parked_live_session_is_cut_off_by_engine_close() {
     );
     // Ownership moves away; the loser's engine closes (fence). The
     // parked session must observe it WITHOUT any traffic.
-    *state_b.ring_active.write().unwrap() = ["inst-a", "inst-b"].map(str::to_string).to_vec();
+    state_b
+        .ownership
+        .set_ring_active(["inst-a", "inst-b"].map(str::to_string).to_vec());
     {
-        let mut ov = state_b.ring_overrides.write().unwrap();
-        for p in state_b.shard_prefixes.clone() {
-            ov.insert(p, "inst-a".to_string());
+        let ov = &state_b.ownership;
+        for p in state_b.shards.prefixes().to_vec() {
+            ov.set_override(&p, &"inst-a".to_string());
         }
     }
-    let engines: Vec<_> = state_b.shards.read().unwrap().values().cloned().collect();
+    let engines: Vec<_> = state_b.shards.engines();
     for e in engines {
         e.begin_close();
     }
@@ -34900,19 +34888,18 @@ async fn livefeed_blackholed_peer_never_suppresses_heartbeats() {
     state_b.registry.invalidate(&sref);
     let desc = state_b.registry.get(&sref).await.unwrap().unwrap();
     let child_seg = desc.resolve_segment("").seg_id;
-    let p_parent =
-        crate::registry::shard_for_hash(&state_b.shard_prefixes, &desc.segment_route_by_id(0));
-    let p_child = crate::registry::shard_for_hash(
-        &state_b.shard_prefixes,
-        &desc.segment_route_by_id(child_seg),
-    );
+    let p_parent = state_b.shards.prefix_for(&desc.segment_route_by_id(0));
+    let p_child = state_b
+        .shards
+        .prefix_for(&desc.segment_route_by_id(child_seg));
     assert_ne!(p_parent, p_child);
-    *state_b.ring_active.write().unwrap() = vec!["inst-a".to_string(), "inst-b".to_string()];
+    state_b
+        .ownership
+        .set_ring_active(vec!["inst-a".to_string(), "inst-b".to_string()]);
     {
-        let mut ov = state_b.ring_overrides.write().unwrap();
-        for p in state_b.shard_prefixes.clone() {
+        for p in state_b.shards.prefixes().to_vec() {
             let owner = if p == p_parent { "inst-a" } else { "inst-b" };
-            ov.insert(p, owner.to_string());
+            state_b.ownership.set_override(&p, owner);
         }
     }
     hub_append_lf(addr_b, "xbh", r#"{"h":1}"#).await;
@@ -36148,13 +36135,10 @@ async fn livefeed_swap_externally_adopts_child_engines() {
     // LiveFeed build (last_external_seq > 0), and sweeps must neither
     // close it nor install custody.
     let child_route = desc.segment_route_by_id(desc.resolve_segment("").seg_id);
-    let prefix = crate::registry::shard_for_hash(&state.shard_prefixes, &child_route);
+    let prefix = state.shards.prefix_for(&child_route);
     let engine = state
         .shards
-        .read()
-        .unwrap()
-        .get(&prefix)
-        .cloned()
+        .open(&prefix)
         .expect("the child engine is resident after the swap");
     assert!(
         engine
@@ -36167,7 +36151,7 @@ async fn livefeed_swap_externally_adopts_child_engines() {
         crate::billing::sweep_owned_outboxes(&state).await;
     }
     assert!(
-        state.shards.read().unwrap().contains_key(&prefix),
+        state.shards.is_open(&prefix),
         "an engine serving a customer LiveFeed must never be sweep-closed"
     );
     assert_eq!(

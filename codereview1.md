@@ -2756,6 +2756,41 @@ Do not rename user-facing flags while moving them. Flag cleanup is a separate se
 > optional descriptor limits, posture consumed once) is deferred to
 > the AdmissionController extraction in PR 6, per the review.
 
+> **PR 6-A (WP-02 first half, 2026-09-02):** the first two runtime
+> owners exist as concrete handles with narrow methods, and their six
+> `AppState` fields are DELETED (57 → 53; the architecture report now
+> carries an `AppState fields` counter with a baseline of 57, so every
+> extraction shows the count falling until the struct is gone).
+> `ownership::OwnershipService` is the pure ring-policy resolver
+> (instance name, active set, rebalancer overrides; `effective_owner`,
+> `foreign_owner`, `is_mine`, `view`; rendezvous `ring_pick` moved out
+> of the transport). `shard_directory::ShardDirectory` owns the
+> topology prefixes, the serving map, the single-flight `OpenGate` and
+> the ONE resolution policy — `resolve(hash, Adoption) ->
+> Result<Arc<ShardEngine>, ResolveError>` (possession yields to the
+> ring, external adoption stamps under the read guard, bounded
+> single-flight opens) — plus `open_or_wait`, `open`, `is_open`,
+> `engines`, `held_prefixes`, `evict`, `notify_closed`, and
+> `remove_if`, which keeps the R30 custody protocol's one write guard
+> through remove → decide → reinstate inside the owner (the sweep's
+> CAS is the decision). The HTTP layer keeps exactly one transport
+> mapping (`resolve_error_response`: not-owner → 409 +
+> Streams-Replay-To, opening → 503 + Retry-After, failure → 500) behind
+> thin `engine_for*` adapters that PR 8 deletes with `AppState`; fleet,
+> billing, backpressure (`snapshot(&ShardDirectory)`), ops, operator,
+> SSE source and scaler callers migrated to the owners. Owner proofs:
+> ownership (no ring = serve everything; the pick is shared and
+> "foreign" is relative; an override is honored only for an active
+> target) and directory (a foreign shard is refused with its owner and
+> the opener is never consulted; open failure typed; a slow open is a
+> retryable typed refusal with one single-flight open; `remove_if` on
+> an empty slot is Absent; routing is the topology hash). The rig
+> builder composes the owners the way bootstrap does and its opener is
+> a named helper (under the function budget). Remaining WP-02 owners
+> follow in 6-B (AdmissionController, with the unforgeable capacity
+> posture), 6-C (PeerClient, LiveFeedService, raw bearer), 6-D
+> (RegistryService), 6-E (BillingService), 6-F (TaskSupervisor).
+
 **Implements:** the foundational part of WP-15.
 
 Replace HTTP-owned randomness and process-time lookups in core/background paths with explicit `Clock`, `Entropy` and `RuntimeIdentity` values. Migrate boot IDs, epochs, retry timing and test time first. Keep cryptographic randomness behind an appropriately strong production implementation; deterministic entropy is test-only.

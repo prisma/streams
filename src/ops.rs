@@ -290,10 +290,7 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
     gauges.insert("read_meter_unflushed_rows".into(), rows as u64);
     gauges.insert("read_meter_unflushed_bytes_est".into(), est as u64);
     gauges.insert("read_meter_sealed_batches".into(), sealed as u64);
-    gauges.insert(
-        "open_engines".into(),
-        state.shards.read().unwrap().len() as u64,
-    );
+    gauges.insert("open_engines".into(), state.shards.open_count() as u64);
     if let Some(sp) = state.read_spool.get() {
         gauges.insert("read_spool_quarantined".into(), sp.quarantined_count());
         let (rows, bytes) = sp.resident();
@@ -357,7 +354,7 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
     // History partitions: L0 posture from each OPEN partition's
     // in-memory manifest snapshot (no store requests, never opens one).
     {
-        let engines: Vec<_> = state.shards.read().unwrap().values().cloned().collect();
+        let engines: Vec<_> = state.shards.engines();
         let (mut open, mut l0_max, mut l0_bytes, mut runs_max) = (0u64, 0u64, 0u64, 0u64);
         for e in engines {
             if let Some(part) = e.history_partition_if_open() {
@@ -461,7 +458,7 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
         ts_ms: crate::shard::now_ms(),
         cell: state.cell_id.clone(),
         region: state.region.clone(),
-        instance: state.instance_name.clone(),
+        instance: state.ownership.instance().to_string(),
         role: if state.rollup.get().is_some() {
             "rollup".into()
         } else {
@@ -532,7 +529,7 @@ pub async fn evaluate_alerts(state: &std::sync::Arc<crate::http::AppState>, snap
     let g = |k: &str| snap.gauges.get(k).copied().unwrap_or(0);
     // (fingerprint, breached, human summary)
     let dirty_total = {
-        let engines: Vec<_> = state.shards.read().unwrap().values().cloned().collect();
+        let engines: Vec<_> = state.shards.engines();
         let mut n = 0usize;
         for e in engines {
             n += e.usage_dirty_scan().await.map(|v| v.len()).unwrap_or(0);

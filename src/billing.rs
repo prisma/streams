@@ -1155,10 +1155,7 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
     }
 
     // 2. Dirty segment snapshots + month finals from every open engine.
-    let engines: Vec<std::sync::Arc<crate::shard::ShardEngine>> = {
-        let map = state.shards.read().unwrap();
-        map.values().cloned().collect()
-    };
+    let engines: Vec<std::sync::Arc<crate::shard::ShardEngine>> = state.shards.engines();
     let mut acks: Vec<(
         std::sync::Arc<crate::shard::ShardEngine>,
         [u8; 16],
@@ -1451,7 +1448,7 @@ pub async fn open_read_spool(state: &std::sync::Arc<crate::http::AppState>) -> a
     let sp = ReadSpool::open(
         state.data_store.clone(),
         &prefix,
-        &state.instance_name,
+        state.ownership.instance(),
         &state.config,
     )
     .await?;
@@ -2224,9 +2221,8 @@ pub fn sweep_resident_engines(state: &std::sync::Arc<crate::http::AppState>) -> 
 pub fn scheduler_held(state: &std::sync::Arc<crate::http::AppState>) -> usize {
     state
         .shards
-        .read()
-        .unwrap()
-        .values()
+        .engines()
+        .iter()
         .filter(|e| e.sweep_custody.load(std::sync::atomic::Ordering::Relaxed) != 0)
         .count()
 }
@@ -2275,13 +2271,11 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
         marked.rotate_left(cycle % n);
     }
     for prefix in marked {
-        if let Some(owner) = state.effective_owner(&prefix)
-            && owner != state.instance_name
-        {
+        if state.ownership.foreign_owner(&prefix).is_some() {
             unmark(state, &prefix);
             continue;
         }
-        let Some(engine) = state.shards.read().unwrap().get(&prefix).cloned() else {
+        let Some(engine) = state.shards.open(&prefix) else {
             unmark(state, &prefix);
             continue;
         };
@@ -2323,7 +2317,7 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
     // the budget because discovery stops at the budget line.
     let discovery_cap: usize = state.config.billing.sweep_discovery_max;
     let mut discovered = 0usize;
-    let mut owned: Vec<String> = state.shard_prefixes.clone();
+    let mut owned: Vec<String> = state.shards.prefixes().to_vec();
     let n = owned.len();
     if n > 0 {
         owned.rotate_left(cycle % n);
@@ -2335,20 +2329,18 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
         if evicted_now.contains(&prefix) {
             continue;
         }
-        if let Some(owner) = state.effective_owner(&prefix)
-            && owner != state.instance_name
-        {
+        if state.ownership.foreign_owner(&prefix).is_some() {
             unmark(state, &prefix);
             continue;
         }
-        if state.shards.read().unwrap().contains_key(&prefix) {
+        if state.shards.is_open(&prefix) {
             // Already resident (customer traffic or an earlier mark):
             // the normal drain covers it; phase 1 audits marks.
             continue;
         }
         match state
-            .gate
-            .get_or_open(&prefix, std::time::Duration::from_secs(20))
+            .shards
+            .open_or_wait(&prefix, std::time::Duration::from_secs(20))
             .await
         {
             crate::sharddir::OpenOutcome::Ready(_) => {}
@@ -2358,7 +2350,7 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
             }
         }
         discovered += 1;
-        let Some(engine) = state.shards.read().unwrap().get(&prefix).cloned() else {
+        let Some(engine) = state.shards.open(&prefix) else {
             continue;
         };
         let debt = probe_debt(&engine).await;
@@ -2593,33 +2585,22 @@ fn close_scheduler_engine(state: &std::sync::Arc<crate::http::AppState>, prefix:
     // stamped before we acquired the write lock is visible to the
     // CAS, and nothing can resolve or re-open the prefix until the
     // slot's fate is settled. Only begin_close() runs after release.
-    let closing = {
-        let mut guard = state.shards.write().unwrap();
-        let Some(engine) = guard.remove(prefix) else {
-            drop(guard);
-            unmark(state, prefix);
-            return;
-        };
-        if engine
+    // PR 6-A: the directory holds that one guard through remove ->
+    // decide -> reinstate; the custody CAS is the decision.
+    match state.shards.remove_if(prefix, |engine| {
+        engine
             .sweep_custody
             .compare_exchange(seq, 0, Ordering::Relaxed, Ordering::Relaxed)
-            .is_err()
-        {
-            // Adopted: reinstate the SAME engine under the SAME guard —
-            // no observable empty-slot window exists.
-            guard.insert(prefix.to_string(), engine);
-            None
-        } else {
-            Some(engine)
-        }
-    };
-    match closing {
-        Some(engine) => {
+            .is_ok()
+    }) {
+        crate::shard_directory::RemoveOutcome::Removed(engine) => {
             engine.begin_close();
             unmark(state, prefix);
             tracing::info!("sweep closed shard {prefix}");
         }
-        None => unmark(state, prefix),
+        // Adopted (reinstated under the same guard), or already gone.
+        crate::shard_directory::RemoveOutcome::Kept
+        | crate::shard_directory::RemoveOutcome::Absent => unmark(state, prefix),
     }
 }
 
@@ -2636,8 +2617,8 @@ async fn walk_engine_budgeted(
     route: &[u8; 16],
     budget: usize,
 ) -> Option<(std::sync::Arc<crate::shard::ShardEngine>, bool)> {
-    let prefix = crate::registry::shard_for_hash(&state.shard_prefixes, route);
-    if let Some(e) = state.shards.read().unwrap().get(&prefix).cloned() {
+    let prefix = state.shards.prefix_for(route);
+    if let Some(e) = state.shards.open(&prefix) {
         return Some((e, false)); // resident: quiet use, not ours to close
     }
     if scheduler_held(state) >= budget {
@@ -2656,7 +2637,7 @@ async fn walk_engine_budgeted(
 /// After the walk finishes with a scheduler-opened engine: keep it as
 /// a budgeted resident if it carries debt, close it otherwise.
 async fn walk_settle(state: &std::sync::Arc<crate::http::AppState>, prefix: &str) {
-    let Some(engine) = state.shards.read().unwrap().get(prefix).cloned() else {
+    let Some(engine) = state.shards.open(prefix) else {
         unmark(state, prefix);
         return;
     };
@@ -2766,7 +2747,7 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
                     // Scheduler-opened for this descriptor: close it or
                     // keep it as an indebted budgeted resident NOW —
                     // never accumulate walk opens across the page.
-                    let prefix = crate::registry::shard_for_hash(&state.shard_prefixes, &route);
+                    let prefix = state.shards.prefix_for(&route);
                     walk_settle(state, &prefix).await;
                 }
             }

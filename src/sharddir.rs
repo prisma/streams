@@ -340,7 +340,7 @@ pub fn stats_json() -> serde_json::Value {
 }
 
 type OpenResult = Result<Arc<ShardEngine>, String>;
-type OpenFn = Box<
+pub(crate) type OpenFn = Box<
     dyn Fn(String) -> futures_util::future::BoxFuture<'static, anyhow::Result<Arc<ShardEngine>>>
         + Send
         + Sync,

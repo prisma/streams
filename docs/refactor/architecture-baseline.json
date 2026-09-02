@@ -1778,6 +1778,8 @@
     "forbidden_edge_refs": 298,
     "axum_refs_outside_transport": 363,
     "keytag_sites": 27,
-    "mutable_statics": 154
-  }
+    "mutable_statics": 154,
+    "appstate_fields": 57
+  },
+  "appstate_fields": 57
 }

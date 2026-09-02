@@ -212,11 +212,7 @@ impl std::error::Error for FatalSpanCutoff {}
 /// Is this instance the effective owner of `route`'s shard? None-ring
 /// (single instance) counts as ours.
 fn owned_here(state: &crate::http::AppState, route: &[u8; 16]) -> bool {
-    let prefix = crate::registry::shard_for_hash(&state.shard_prefixes, route);
-    match state.effective_owner(&prefix) {
-        None => true,
-        Some(o) => o == state.instance_name,
-    }
+    state.ownership.is_mine(&state.shards.prefix_for(route))
 }
 
 impl LineageSpan {
@@ -463,12 +459,13 @@ impl LineageSource {
         let owner = {
             let hinted = owner_hint.read().unwrap().clone();
             match hinted {
-                Some(o) if o != self.state.instance_name => o,
+                Some(o) if o != self.state.ownership.instance() => o,
                 _ => {
-                    let prefix = crate::registry::shard_for_hash(&self.state.shard_prefixes, route);
+                    let prefix = self.state.shards.prefix_for(route);
                     self.state
+                        .ownership
                         .effective_owner(&prefix)
-                        .filter(|o| *o != self.state.instance_name)
+                        .filter(|o| *o != self.state.ownership.instance())
                         .ok_or_else(|| {
                             anyhow::anyhow!(
                                 "sealed span {} ownership indeterminate; retrying",

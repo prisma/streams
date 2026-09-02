@@ -736,7 +736,7 @@ pub async fn resume(
     // deterministic route (stable across CAS retries: derived from the
     // stream name and the child's seg id) that the ring spreads across
     // shard prefixes and owners.
-    let prefixes = st.shard_prefixes.clone();
+    let prefixes = st.shards.prefixes().to_vec();
     // Phase B is fenced to the incarnation the pending transition was
     // READ from: mid-resume, the whole collection can be deleted and
     // recreated, and a name-scoped publication would stamp successors

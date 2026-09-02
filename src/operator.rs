@@ -134,9 +134,9 @@ pub async fn data(State(state): State<Arc<AppState>>, headers: axum::http::Heade
     };
 
     let local = json!({
-        "instance": state.instance_name,
-        "open_shards": state.shards.read().unwrap().len(),
-        "ring_active": state.ring_active.read().unwrap().clone(),
+        "instance": state.ownership.instance(),
+        "open_shards": state.shards.open_count(),
+        "ring_active": state.ownership.ring_active(),
         "inflight": state.inflight.load(std::sync::atomic::Ordering::Relaxed),
         "inflight_peak": state.inflight_peak.load(std::sync::atomic::Ordering::Relaxed),
         "admit_shed": state.admit_shed.load(std::sync::atomic::Ordering::Relaxed),

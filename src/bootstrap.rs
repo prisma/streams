@@ -375,7 +375,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     // Shards open lazily on first routed request (COMPUTE-SPEC §5.1):
     // opening fences the previous owner, so ownership follows routing.
     // A closed (fenced-away) shard is dropped from the serving map via
-    // AppState::shard_closed through this weak back-reference.
+    // ShardDirectory::notify_closed through this weak back-reference.
     let state_slot: Arc<std::sync::OnceLock<std::sync::Weak<AppState>>> =
         Arc::new(std::sync::OnceLock::new());
     let opener = {
@@ -514,7 +514,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
                         Arc::new(move || {
                             touch.close_shard(&prefix);
                             if let Some(st) = state_slot.get().and_then(std::sync::Weak::upgrade) {
-                                st.shard_closed(&prefix);
+                                st.shards.notify_closed(&prefix);
                             }
                         }) as Arc<dyn Fn() + Send + Sync>
                     };
@@ -575,16 +575,24 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     > = std::sync::Arc::new(std::sync::RwLock::new(HashMap::new()));
     let gate =
         crate::sharddir::OpenGate::new(shards_map.clone(), opener.open, config.shard.open_deadline);
+    // WP-02 / PR 6-A: the ownership and shard-directory OWNERS take their
+    // own configuration here, before the composition root.
+    let ownership = crate::ownership::OwnershipService::new(config.cli.instance_name.clone());
+    let shard_directory = crate::shard_directory::ShardDirectory::new(
+        topology.shards.clone(),
+        shards_map,
+        gate,
+        ownership.clone(),
+        Duration::from_millis(config.shard.open_wait_ms),
+    );
     let config = Arc::new(config);
     let state = Arc::new(AppState {
         runtime: runtime_caps.clone(),
         config: config.clone(),
         registry,
         tenant,
-        shard_prefixes: topology.shards.clone(),
-        shards: shards_map,
+        shards: shard_directory,
         fleet_store: fleet_store_opt.clone(),
-        gate,
         fleet_ops: std::sync::atomic::AtomicU64::new(0),
         inflight: std::sync::atomic::AtomicI64::new(0),
         inflight_peak: std::sync::atomic::AtomicI64::new(0),
@@ -626,9 +634,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         wedge_shed: std::sync::atomic::AtomicU64::new(0),
         maint_latch: crate::backpressure::GlobalLatch::new(),
         sweep_sched: crate::billing::SweepSched::default(),
-        instance_name: config.cli.instance_name.clone(),
-        ring_active: std::sync::RwLock::new(Vec::new()),
-        ring_overrides: std::sync::RwLock::new(std::collections::HashMap::new()),
+        ownership,
         peer_urls: std::sync::RwLock::new(std::collections::HashMap::new()),
         data_store,
         keys,
@@ -767,7 +773,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
                 // single atomic read — walking the lag map per append
                 // would put the overload on the hot path.
                 if ticks.is_multiple_of(8) {
-                    let snap = crate::backpressure::snapshot(&st);
+                    let snap = crate::backpressure::snapshot(&st.shards);
                     st.maint_latch.apply(&snap, &bp_limits);
                 }
                 ticks = ticks.wrapping_add(1);

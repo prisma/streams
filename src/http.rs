@@ -23,7 +23,7 @@ use crate::crypto::{
 };
 use crate::history::KeyCache;
 use crate::offsets::Offset;
-use crate::registry::{Registry, StreamDesc, shard_for_hash};
+use crate::registry::{Registry, StreamDesc};
 use crate::shard::{AppendErr, AppendReq, ShardEngine, now_ms, read_frames};
 
 /// Protocol ceiling on a request body — the wire pin, re-exported from
@@ -102,16 +102,10 @@ pub struct AppState {
     /// runtime's identity. Owned here, never process-global.
     pub runtime: crate::runtime::RuntimeCaps,
     pub registry: Registry,
-    /// Single-flight, cancellation-proof history DbReader service — one
-    /// per process/store (history.rs).
-    pub shard_prefixes: Vec<String>,
-    /// Serving map, shared with the fleet loop and the OpenGate's spawned
-    /// open tasks (which insert into it directly — see sharddir.rs).
-    // mt-lint: allow(name-keyed-map): shard prefix -> engine (layout-4 prefixes, not stream names)
-    pub shards: std::sync::Arc<std::sync::RwLock<HashMap<String, Arc<ShardEngine>>>>,
-    /// Single-flight, cancellation-proof shard opens with escalating
-    /// holdoff — the eu-central-1 reopen-storm fix (sharddir.rs).
-    pub gate: crate::sharddir::OpenGate,
+    /// WP-02 / PR 6-A: the shard directory OWNS the topology prefixes,
+    /// the serving map and the single-flight open gate; resolution
+    /// policy lives there, transport-neutral.
+    pub shards: crate::shard_directory::ShardDirectory,
     /// Counts /v1/stream/* requests for the fleet load vector (§4.2).
     pub fleet_ops: std::sync::atomic::AtomicU64,
     /// Concurrently in-flight HTTP requests (all routes) + windowed peak.
@@ -210,19 +204,9 @@ pub struct AppState {
     /// Fleet-coordination store (heartbeats/desired.json) for the operator
     /// dashboard's cell view; None when running standalone.
     pub fleet_store: Option<Arc<dyn object_store::ObjectStore>>,
-    /// This instance's name plus the ring's active instance set, updated by
-    /// the fleet loop from desired.json + heartbeat liveness (a selected
-    /// instance that has gone heartbeat-dark >30 s is dropped until it
-    /// revives). Used for the R2 ring-ownership check: never open a shard
-    /// the ring assigns elsewhere, even if a stale router sends it.
-    /// Empty = check disabled (fleet mode off or bootstrapping).
-    pub instance_name: String,
-    pub ring_active: std::sync::RwLock<Vec<String>>,
-    /// Rebalancer shard-move overrides (fleet/overrides.json, CAS'd):
-    /// shard prefix -> instance. Consulted before the rendezvous pick; an
-    /// override whose target is not in the active set is ignored.
-    // mt-lint: allow(name-keyed-map): shard prefix -> owning instance
-    pub ring_overrides: std::sync::RwLock<std::collections::HashMap<String, String>>,
+    /// WP-02 / PR 6-A: ring ownership (this instance's name, the active
+    /// set, the rebalancer overrides) behind narrow methods.
+    pub ownership: crate::ownership::OwnershipService,
     /// Fresh peers' published base URLs (heartbeat `url`, from SELF_URL),
     /// updated by the fleet loop. Segment fan-out — cross-owner lineage
     /// reads and consumer sweeps — addresses owners through this map;
@@ -559,75 +543,48 @@ impl AppState {
         )
     }
 
-    /// Shard engine for `hash`, opening the shard log on first use (which
-    /// fences any previous owner). A shard that was just fenced away is
-    /// held off for 3 s (anti-flap while the router converges) → 503.
-    /// Response-free engine lookup for the unified scaler.
-    pub async fn engine_for_scaler(self: &Arc<Self>, hash: &[u8; 16]) -> Option<Arc<ShardEngine>> {
-        // R29: the scaler is INTERNAL — it must not stamp external
-        // adoption, or its periodic scans would leak sweep-held
-        // engines out of the budgeted rotation.
-        self.engine_for_inner(hash, false).await.ok()
+    /// Response-free engine lookup for the unified scaler. R29: the
+    /// scaler is INTERNAL — it must not stamp external adoption, or its
+    /// periodic scans would leak sweep-held engines out of the budgeted
+    /// rotation.
+    pub async fn engine_for_scaler(&self, hash: &[u8; 16]) -> Option<Arc<ShardEngine>> {
+        self.shards
+            .resolve(hash, crate::shard_directory::Adoption::Internal)
+            .await
+            .ok()
     }
 
     /// Internal (non-adopting) resolution: same ownership rules and
     /// on-demand open as engine_for, but never stamps the adoption
     /// sequence — for the tombstone walk and other maintenance.
     pub(crate) async fn engine_for_quiet(
-        self: &Arc<Self>,
+        &self,
         hash: &[u8; 16],
     ) -> Result<Arc<ShardEngine>, Response> {
-        self.engine_for_inner(hash, false).await
+        self.shards
+            .resolve(hash, crate::shard_directory::Adoption::Internal)
+            .await
+            .map_err(resolve_error_response)
     }
 
-    pub(crate) async fn engine_for(
-        self: &Arc<Self>,
-        hash: &[u8; 16],
-    ) -> Result<Arc<ShardEngine>, Response> {
-        self.engine_for_inner(hash, true).await
+    /// Customer-path resolution (stamps external adoption). PR 6-A: a
+    /// thin adapter over the shard directory — the policy lives there;
+    /// this is the transport's error map, deleted with AppState.
+    pub(crate) async fn engine_for(&self, hash: &[u8; 16]) -> Result<Arc<ShardEngine>, Response> {
+        self.shards
+            .resolve(hash, crate::shard_directory::Adoption::External)
+            .await
+            .map_err(resolve_error_response)
     }
+}
 
-    async fn engine_for_inner(
-        self: &Arc<Self>,
-        hash: &[u8; 16],
-        external: bool,
-    ) -> Result<Arc<ShardEngine>, Response> {
-        let prefix = shard_for_hash(&self.shard_prefixes, hash);
-        let owner = self.effective_owner(&prefix);
-        let not_mine = owner.as_ref().is_some_and(|o| *o != self.instance_name);
-        if let Some(e) = {
-            let guard = self.shards.read().unwrap();
-            let e = guard.get(&prefix).cloned();
-            // R29 custody: EXTERNAL resolution stamps the adoption
-            // sequence and revokes any sweep custody, INSIDE the read
-            // guard — the scheduler's close takes the write lock
-            // first, so every resolution that could still hold this
-            // engine is visible to the close's re-check.
-            if external && let Some(ref e) = e {
-                crate::billing::stamp_external(e);
-            }
-            e
-        } {
-            // Possession must yield to the ring. An instance that lost
-            // a shard on a rendezvous redraw keeps its engine here, and
-            // slatedb fencing only fails its next WRITE — with all
-            // writes at the new owner, the loser serves reads from a
-            // view frozen at the fence point indefinitely (fleet2 leg C:
-            // a scan snapshot froze a live segment at 252 of 510
-            // records). Yield, close, and redirect like any non-owner.
-            if !not_mine {
-                return Ok(e);
-            }
-            let eng = self.shards.write().unwrap().remove(&prefix);
-            if let Some(e) = eng {
-                e.begin_close();
-            }
-        }
-        // R2/R3: only the ring owner may claim a shard. A stale router can
-        // still send us one — answer 409 + Streams-Replay-To so the router
-        // corrects itself, instead of fencing the rightful owner.
-        if not_mine {
-            let owner = owner.expect("not_mine implies owner");
+/// The ONE transport mapping of a shard-resolution refusal (PR 6-A):
+/// not-owner → 409 + Streams-Replay-To (so a stale router corrects
+/// itself), opening → retryable 503 + Retry-After, open failure → 500.
+pub(crate) fn resolve_error_response(e: crate::shard_directory::ResolveError) -> Response {
+    use crate::shard_directory::ResolveError;
+    match e {
+        ResolveError::NotOwner { prefix, owner } => {
             let mut r = err_resp(
                 StatusCode::CONFLICT,
                 "not_ring_owner",
@@ -636,66 +593,28 @@ impl AppState {
             if let Ok(v) = axum::http::HeaderValue::from_str(&owner) {
                 r.headers_mut().insert("streams-replay-to", v);
             }
-            return Err(r);
+            r
         }
-        // Single-flight open with a bounded wait. A slow WAL replay
-        // continues in its own task regardless of what this request does —
-        // the caller only ever gets a retryable 503, never the power to
-        // abandon or duplicate an open (the eu-central-1 storm).
-        let wait = std::time::Duration::from_millis(self.config.shard.open_wait_ms);
-        match self.gate.get_or_open(&prefix, wait).await {
-            crate::sharddir::OpenOutcome::Ready(engine) => {
-                // R29: a customer who coalesced into (or raced) an open
-                // the sweep started still counts as external adoption.
-                if external {
-                    crate::billing::stamp_external(&engine);
-                }
-                Ok(engine)
-            }
-            crate::sharddir::OpenOutcome::Wait {
+        ResolveError::Opening {
+            code,
+            retry_after_secs,
+            ..
+        } => {
+            let mut r = err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
                 code,
-                retry_after_secs,
-            } => {
-                let mut r = err_resp(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    code,
-                    "shard not currently serving here; retry",
-                );
-                if let Ok(v) = axum::http::HeaderValue::from_str(&retry_after_secs.to_string()) {
-                    r.headers_mut().insert("retry-after", v);
-                }
-                Err(r)
+                "shard not currently serving here; retry",
+            );
+            if let Ok(v) = axum::http::HeaderValue::from_str(&retry_after_secs.to_string()) {
+                r.headers_mut().insert("retry-after", v);
             }
-            crate::sharddir::OpenOutcome::Failed(e) => Err(err_resp(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "shard_open",
-                &format!("open shard {prefix}: {e}"),
-            )),
+            r
         }
-    }
-
-    /// Ring ownership for a shard prefix: the rebalancer override if its
-    /// target is active, else the rendezvous pick. None when no ring is
-    /// configured (single instance) — then everyone may serve everything.
-    pub fn effective_owner(&self, prefix: &str) -> Option<String> {
-        let active = self.ring_active.read().unwrap().clone();
-        if active.is_empty() || self.instance_name.is_empty() {
-            return None;
-        }
-        if let Some(t) = self.ring_overrides.read().unwrap().get(prefix)
-            && active.iter().any(|a| a == t)
-        {
-            return Some(t.clone());
-        }
-        Some(active[ring_pick(prefix, &active)].clone())
-    }
-
-    /// Called when a shard db closes (fenced by a new owner): drop it from
-    /// the serving map and start the anti-flap holdoff.
-    pub fn shard_closed(self: &Arc<Self>, prefix: &str) {
-        // Eviction + holdoff live in the gate; an engine that died young
-        // escalates the holdoff (rapid open→die cycles are the storm).
-        self.gate.notify_closed(prefix);
+        ResolveError::OpenFailed { prefix, error } => err_resp(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "shard_open",
+            &format!("open shard {prefix}: {error}"),
+        ),
     }
 }
 
@@ -800,7 +719,7 @@ fn acquire_stream_slot(
 
 /// Per-engine maintenance state for /v1/debug/load (R25-C).
 fn maintenance_shards_json(state: &AppState) -> serde_json::Value {
-    let engines: Vec<Arc<ShardEngine>> = state.shards.read().unwrap().values().cloned().collect();
+    let engines: Vec<Arc<ShardEngine>> = state.shards.engines();
     let now = crate::shard::now_ms();
     let shards_engaged = engines
         .iter()
@@ -1043,9 +962,8 @@ async fn debug_load(
     // audit: several grew unbounded and invisibly).
     let resident_handles: usize = state
         .shards
-        .read()
-        .unwrap()
-        .values()
+        .engines()
+        .iter()
         .map(|e| e.resident_streams())
         .sum();
     // Trim maintenance rollup across shards: debt = streams owing
@@ -1053,9 +971,8 @@ async fn debug_load(
     // stress reads (must stay ≤ TRIM_GLOBAL_BUDGET).
     let (trim_debt, trim_last, trim_max_batch, trim_total) = state
         .shards
-        .read()
-        .unwrap()
-        .values()
+        .engines()
+        .iter()
         .map(|e| e.trim_stats())
         .fold((0usize, 0u64, 0u64, 0u64), |a, v| {
             (a.0 + v.0, a.1.max(v.1), a.2.max(v.2), a.3 + v.3)
@@ -1065,18 +982,16 @@ async fn debug_load(
     // bound), so its size is surfaced before it could ever matter.
     let (fence_entries, fence_max_gen) = state
         .shards
-        .read()
-        .unwrap()
-        .values()
+        .engines()
+        .iter()
         .map(|e| e.seal_fence_stats())
         .fold((0usize, 0u64), |a, v| (a.0 + v.0, a.1.max(v.1)));
     // Consumer-fence rollup (round 17): same unbounded-by-design map,
     // same visibility rule.
     let (cfence_entries, cfence_max_gen) = state
         .shards
-        .read()
-        .unwrap()
-        .values()
+        .engines()
+        .iter()
         .map(|e| e.consumer_fence_stats())
         .fold((0usize, 0u64), |a, v| (a.0 + v.0, a.1.max(v.1)));
     axum::Json(serde_json::json!({
@@ -1212,11 +1127,7 @@ async fn debug_load(
             "read_frames_matched": crate::history::READ_FRAMES_MATCHED.load(std::sync::atomic::Ordering::Relaxed),
             "corrupt": crate::history::POSTINGS_CORRUPT.load(std::sync::atomic::Ordering::Relaxed),
             "cache": state
-                .shards
-                .read()
-                .unwrap()
-                .values()
-                .next()
+                .shards.engines().first()
                 .map(|e| e.postings_cache.stats())
                 .unwrap_or(serde_json::json!(null)),
         },
@@ -1225,24 +1136,15 @@ async fn debug_load(
         // certification harness waits on real override convergence
         // instead of guessing at tick cadence.
         "ring": {
-            "active": state.ring_active.read().unwrap().clone(),
-            "overrides": state
-                .ring_overrides
-                .read()
-                .unwrap()
-                .iter()
-                .map(|(k, v)| (k.clone(), v.clone()))
-                .collect::<std::collections::BTreeMap<_, _>>(),
+            "active": state.ownership.ring_active(),
+            "overrides": state.ownership.overrides().into_iter().collect::<std::collections::BTreeMap<_, _>>(),
         },
         // Cross-layout absorb advances rejected by the committer's
         // layout seal. Nonzero = the absorber's lane classification
         // raced dispatch somewhere; the seal made it harmless, but it
         // should stay rare enough to investigate when it moves.
         "absorb_lane_dropped": state
-            .shards
-            .read()
-            .unwrap()
-            .values()
+            .shards.engines().iter()
             .map(|e| e.absorb_lane_dropped.load(std::sync::atomic::Ordering::Relaxed))
             .sum::<u64>(),
     }))
@@ -1693,10 +1595,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                         );
                     }
                     let ord = std::sync::atomic::Ordering::Relaxed;
-                    let engines: Vec<_> = {
-                        let m = state.shards.read().unwrap();
-                        m.iter().map(|(p, e)| (p.clone(), e.clone())).collect()
-                    };
+                    let engines: Vec<_> = state.shards.engines_by_prefix();
                     let mut parts = Vec::new();
                     for (prefix, e) in engines {
                         if let Some(part) = e.history_partition_if_open() {
@@ -1842,24 +1741,6 @@ pub fn router(state: Arc<AppState>) -> Router {
 /// Rendezvous over instance NAMES (FNV-1a, identical in the pilot LB) —
 /// both sides compute the same shard→instance assignment from the same
 /// inputs (COMPUTE-SPEC §2: "the live set is the assignment").
-pub fn ring_pick(shard: &str, instances: &[String]) -> usize {
-    let mut best = 0usize;
-    let mut best_score = 0u32;
-    for (i, name) in instances.iter().enumerate() {
-        let key = format!("{shard} {name}");
-        let mut h: u32 = 2166136261;
-        for b in key.bytes() {
-            h ^= b as u32;
-            h = h.wrapping_mul(16777619);
-        }
-        if i == 0 || h > best_score {
-            best_score = h;
-            best = i;
-        }
-    }
-    best
-}
-
 pub(crate) fn err_resp(status: StatusCode, code: &str, message: &str) -> Response {
     (
         status,
@@ -1880,13 +1761,7 @@ async fn debug_timings(State(state): State<Arc<AppState>>, headers: HeaderMap) -
         );
     }
     let mut shards = serde_json::Map::new();
-    let engines: Vec<(String, Arc<ShardEngine>)> = state
-        .shards
-        .read()
-        .unwrap()
-        .iter()
-        .map(|(k, v)| (k.clone(), v.clone()))
-        .collect();
+    let engines: Vec<(String, Arc<ShardEngine>)> = state.shards.engines_by_prefix();
     for (prefix, eng) in &engines {
         let samples: Vec<_> = eng
             .timings
@@ -3180,13 +3055,10 @@ pub(crate) fn ring_owner_check(
     state: &Arc<AppState>,
     sref: &crate::tenant::TenantStreamRef,
 ) -> Option<Response> {
-    let prefix = shard_for_hash(
-        &state.shard_prefixes,
-        &crate::crypto::RouteHash::for_stream(sref).0,
-    );
-    if let Some(owner) = state.effective_owner(&prefix)
-        && owner != state.instance_name
-    {
+    let prefix = state
+        .shards
+        .prefix_for(&crate::crypto::RouteHash::for_stream(sref).0);
+    if let Some(owner) = state.ownership.foreign_owner(&prefix) {
         let mut r = err_resp(
             StatusCode::CONFLICT,
             "not_ring_owner",
@@ -3251,13 +3123,10 @@ pub(crate) async fn create_stream(
     // wrong shard (and bounced the rightful owner) for every system
     // stream and every enforce-mode product create.
     {
-        let prefix = shard_for_hash(
-            &state.shard_prefixes,
-            &crate::crypto::RouteHash::for_stream(&project.stream_ref(&name)).0,
-        );
-        if let Some(owner) = state.effective_owner(&prefix)
-            && owner != state.instance_name
-        {
+        let prefix = state
+            .shards
+            .prefix_for(&crate::crypto::RouteHash::for_stream(&project.stream_ref(&name)).0);
+        if let Some(owner) = state.ownership.foreign_owner(&prefix) {
             let mut r = err_resp(
                 StatusCode::CONFLICT,
                 "not_ring_owner",

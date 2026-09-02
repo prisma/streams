@@ -325,17 +325,16 @@ pub fn admit(
 /// Snapshot the RESIDENT engines' maintenance state (R25-C, semantics
 /// pinned in R26-6).
 ///
-/// This iterates `state.shards` — the engines currently OPEN in this
+/// This iterates the shard directory — the engines currently OPEN in this
 /// process — which is exactly the resident-safety scope the limits
 /// document: open engines are what consume this process's memory and
 /// pipelines. An owned-but-cold shard is absent here BY DESIGN; its
 /// durable ledger is loaded before it ever serves, so the per-shard
 /// gate covers it on first access. Each engine's state leaves this
-/// aggregate the moment the engine leaves `state.shards` — no
+/// aggregate the moment the engine leaves the serving map — no
 /// process-global map to go stale.
-pub fn snapshot(state: &crate::http::AppState) -> Snapshot {
-    let engines: Vec<std::sync::Arc<crate::shard::ShardEngine>> =
-        state.shards.read().unwrap().values().cloned().collect();
+pub fn snapshot(shards: &crate::shard_directory::ShardDirectory) -> Snapshot {
+    let engines: Vec<std::sync::Arc<crate::shard::ShardEngine>> = shards.engines();
     let now = crate::shard::now_ms();
     let mut total = 0u64;
     let mut max_stall = 0u64;

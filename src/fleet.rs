@@ -397,10 +397,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
         let mut ewma_cpu = 0.0f64;
         // (ring_active, overrides) as last observed — the parked-session
         // wake fires only on real ownership-view changes.
-        let mut last_ownership_view: Option<(
-            Vec<String>,
-            std::collections::BTreeMap<String, String>,
-        )> = None;
+        let mut last_ownership_view: Option<crate::ownership::OwnershipView> = None;
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
             let ops = state.fleet_ops.load(Ordering::Relaxed);
@@ -424,7 +421,10 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
 
             // 1. Heartbeat (single writer per object: plain PUT).
             let (owned, ack_p50_ms, wedge_prefix, wedge_max_ms) = {
-                let shards = state.shards.read().unwrap();
+                let shards: std::collections::HashMap<
+                    String,
+                    std::sync::Arc<crate::shard::ShardEngine>,
+                > = state.shards.engines_by_prefix().into_iter().collect();
                 let owned: Vec<String> = shards.keys().cloned().collect();
                 let (wedge_prefix, wedge_max_ms) = shards
                     .iter()
@@ -702,7 +702,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 if active.is_empty() {
                     active = ordinal;
                 }
-                *state.ring_active.write().unwrap() = active;
+                state.ownership.set_ring_active(active);
                 // fleet/urls.json overrides heartbeat-published URLs: on
                 // Compute a deploy cannot know its own final preview URL
                 // (each version mints a new one), so the deploy script
@@ -773,7 +773,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                         .iter()
                         .map(|(k, v)| (k.clone(), v.to.clone()))
                         .collect();
-                    *state.ring_overrides.write().unwrap() = map;
+                    state.ownership.set_overrides(map);
                 }
 
                 // Round-11.4: when the OWNERSHIP VIEW changed, wake
@@ -784,16 +784,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 // engine from the serving map, and the too-early wake
                 // re-parks on the stale map with nothing left to fire.
                 {
-                    let view = (
-                        state.ring_active.read().unwrap().clone(),
-                        state
-                            .ring_overrides
-                            .read()
-                            .unwrap()
-                            .iter()
-                            .map(|(k, v)| (k.clone(), v.clone()))
-                            .collect::<std::collections::BTreeMap<_, _>>(),
-                    );
+                    let view = state.ownership.view();
                     if last_ownership_view.as_ref() != Some(&view) {
                         if last_ownership_view.is_some() {
                             state.live_feeds.wake_all_sessions();
@@ -811,11 +802,11 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 // the typed WrongOwner cutoff, and the zombie db dies
                 // now instead of at the winner's first fence.
                 {
-                    let held: Vec<String> = state.shards.read().unwrap().keys().cloned().collect();
+                    let held: Vec<String> = state.shards.held_prefixes();
                     for prefix in held {
-                        let owner = state.effective_owner(&prefix);
+                        let owner = state.ownership.effective_owner(&prefix);
                         if owner.as_deref().is_some_and(|o| o != cfg.instance) {
-                            let eng = state.shards.write().unwrap().remove(&prefix);
+                            let eng = state.shards.evict(&prefix);
                             if let Some(e) = eng {
                                 tracing::info!(
                                     shard = %prefix,
@@ -841,13 +832,13 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                         .map(|(p, _)| p.clone())
                         .collect();
                     for prefix in mine {
-                        let have = state.shards.read().unwrap().contains_key(&prefix);
+                        let have = state.shards.is_open(&prefix);
                         if !have {
                             // Through the gate: single-flight with the
                             // request path, honoring the same holdoffs.
                             match state
-                                .gate
-                                .get_or_open(&prefix, std::time::Duration::from_secs(300))
+                                .shards
+                                .open_or_wait(&prefix, std::time::Duration::from_secs(300))
                                 .await
                             {
                                 crate::sharddir::OpenOutcome::Ready(_) => {
@@ -873,7 +864,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                 // (ladder p3: streams-2 owned nothing by D3).
                 {
                     let return_secs: i64 = state.config.fleet.rebalance_return_secs as i64;
-                    let active = state.ring_active.read().unwrap().clone();
+                    let active = state.ownership.ring_active();
                     let mut drop_keys: Vec<String> = Vec::new();
                     let mut pending_returns: std::collections::HashMap<String, usize> =
                         std::collections::HashMap::new();
@@ -884,7 +875,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                         if active.is_empty() {
                             continue;
                         }
-                        let home = active[crate::http::ring_pick(prefix, &active)].clone();
+                        let home = active[crate::ownership::ring_pick(prefix, &active)].clone();
                         if home == e.to {
                             drop_keys.push(prefix.clone()); // override is a no-op
                             continue;
@@ -904,15 +895,18 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                         // ladder-p3 case this block exists for) is below
                         // the mean and still gets its shards back.
                         let owned = state
-                            .shard_prefixes
+                            .shards
+                            .prefixes()
                             .iter()
-                            .filter(|p| state.effective_owner(p).as_deref() == Some(home.as_str()))
+                            .filter(|p| {
+                                state.ownership.effective_owner(p).as_deref() == Some(home.as_str())
+                            })
                             .count();
                         let gain = pending_returns.get(&home).copied().unwrap_or(0) + 1;
                         if !return_home_allowed(
                             owned,
                             gain,
-                            state.shard_prefixes.len(),
+                            state.shards.prefixes().len(),
                             active.len(),
                         ) {
                             continue;
@@ -982,8 +976,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                         // Possession-first, keyed by the shard the absorber
                         // actually serves (never re-derived from a stream
                         // hash — see usage::shard_lag_map).
-                        let served: Vec<String> =
-                            state.shards.read().unwrap().keys().cloned().collect();
+                        let served: Vec<String> = state.shards.held_prefixes();
                         pick_victim_shard(&crate::usage::shard_lag_all(), &served)
                             // No committed backlog anywhere (shed-before-
                             // commit): move the WEDGED shard itself.
@@ -1026,16 +1019,12 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                                 tracing::info!(
                                     "rebalancer: moving shard {prefix} -> {to} (absorb lag {my_lag}s)"
                                 );
-                                state
-                                    .ring_overrides
-                                    .write()
-                                    .unwrap()
-                                    .insert(prefix.clone(), to.clone());
+                                state.ownership.set_override(&prefix, &to);
                                 // Stop serving immediately and fail all
                                 // in-flight work fast (retryable) — the new
                                 // owner fences the log on first routed
                                 // request.
-                                let eng = state.shards.write().unwrap().remove(&prefix);
+                                let eng = state.shards.evict(&prefix);
                                 if let Some(e) = eng {
                                     e.begin_close();
                                 }

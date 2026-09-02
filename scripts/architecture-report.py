@@ -210,6 +210,24 @@ def find_functions(clean: str) -> list[tuple[str, int, int]]:
     return spans
 
 
+APPSTATE_RE = re.compile(r"^pub struct AppState \{$", re.M)
+FIELD_RE = re.compile(r"^\s+pub(?:\(crate\))? \w+:")
+
+
+def count_appstate_fields(http_src: str) -> int:
+    """WP-02 step 7: the `http::AppState` field count, reported so every
+    owner extraction shows it DECREASING (0 = the struct is gone). Counts
+    `pub` fields between `pub struct AppState {` and its closing brace;
+    comments and attributes are not fields."""
+    m = APPSTATE_RE.search(http_src)
+    if not m:
+        return 0
+    body = http_src[m.end() :]
+    end = body.find("\n}\n")
+    body = body if end < 0 else body[:end]
+    return sum(1 for ln in body.splitlines() if FIELD_RE.match(ln))
+
+
 def rel(p: Path) -> str:
     return str(p.relative_to(REPO))
 
@@ -324,7 +342,15 @@ def main() -> int:
                     {"file": r, "line": ln_no, "type": ty.strip(), "test_only": test_only}
                 )
 
+    http_path = SRC / "http.rs"
+    report["appstate_fields"] = (
+        count_appstate_fields(http_path.read_text(encoding="utf-8", errors="replace"))
+        if http_path.exists()
+        else 0
+    )
+
     report["totals"] = {
+        "appstate_fields": report["appstate_fields"],
         "rust_files": len(files),
         "rust_lines": total_lines,
         "files_over_budget": len(report["files_over_budget"]),
@@ -384,6 +410,7 @@ def main() -> int:
         for f, c in sorted(by_file.items(), key=lambda kv: -kv[1]):
             print(f"  {f}: {c}")
         print(f"mutable process statics: {t['mutable_statics']}")
+        print(f"AppState fields: {t['appstate_fields']} (WP-02: the struct is deleted at 0)")
         by_file = {}
         for e in report["mutable_statics"]:
             by_file[e["file"]] = by_file.get(e["file"], 0) + 1
@@ -433,6 +460,8 @@ def item_keys(report: dict) -> dict[str, set]:
         "axum_outside_transport": {e["file"] for e in report["axum_outside_transport"]},
         "keytag_sites": {f"{e['file']}|{_norm_ws(e['src'])}" for e in report["keytag_sites"]},
         "mutable_statics": {f"{k}|x{n}" for k, n in static_types.items()},
+        # WP-02: present while the struct exists; RESOLVED when it is gone.
+        "appstate": ({"src/http.rs::AppState"} if report.get("appstate_fields", 0) else set()),
     }
 
 
@@ -449,6 +478,11 @@ def count_keys(report: dict) -> dict[str, dict[str, int]]:
             f"{f['file']}::{f['function']}": f["lines"]
             for f in report["functions_over_budget"]
         },
+        "appstate": (
+            {"src/http.rs::AppState": report["appstate_fields"]}
+            if report.get("appstate_fields", 0)
+            else {}
+        ),
     }
 
 
@@ -466,8 +500,8 @@ def baseline_diff(current: dict, baseline_path: Path) -> int:
     base = item_keys(baseline)
     any_new = False
     for cat in cur:
-        new = sorted(cur[cat] - base[cat])
-        resolved = sorted(base[cat] - cur[cat])
+        new = sorted(cur[cat] - base.get(cat, set()))
+        resolved = sorted(base.get(cat, set()) - cur[cat])
         if new:
             any_new = True
         print(f"[{cat}] new: {len(new)}  resolved: {len(resolved)}")
@@ -488,9 +522,10 @@ def baseline_diff(current: dict, baseline_path: Path) -> int:
         "functions_over_budget": "lines",
         "forbidden_edges": "refs",
         "axum_outside_transport": "refs",
+        "appstate": "fields",
     }
     for cat, unit in units.items():
-        for k in sorted(set(cur_c[cat]) & set(base_c[cat])):
+        for k in sorted(set(cur_c.get(cat, {})) & set(base_c.get(cat, {}))):
             d = cur_c[cat][k] - base_c[cat][k]
             line = f"  {cat:<24} {k:<44} {base_c[cat][k]} -> {cur_c[cat][k]} {unit} ({d:+})"
             if d > 0:
@@ -555,7 +590,33 @@ fn b() { let x = 1; }
         for f in failures:
             print(f"self-test FAIL: {f}")
         return 1
-    print("architecture-report self-test: OK (4 checks)")
+    # 5. The AppState field counter counts fields, not comments,
+    # attributes, or the fields of a neighbouring struct.
+    fake = """
+pub struct Other {
+    pub not_counted: u8,
+}
+pub struct AppState {
+    /// doc: pub decoy: u8,
+    // mt-lint: allow(name-keyed-map): pub decoy2: u8,
+    pub a: Arc<X>,
+    #[allow(dead_code)]
+    pub(crate) b: std::sync::RwLock<Vec<String>>,
+    pub c: u64,
+}
+pub struct After {
+    pub also_not_counted: u8,
+}
+"""
+    if count_appstate_fields(fake) != 3:
+        failures.append(f"appstate counter: {count_appstate_fields(fake)} != 3")
+    if count_appstate_fields("pub struct NoState {}") != 0:
+        failures.append("appstate counter must be 0 without the struct")
+    if failures:
+        for f in failures:
+            print(f"self-test FAIL: {f}")
+        return 1
+    print("architecture-report self-test: OK (5 checks)")
     return 0
 
 
