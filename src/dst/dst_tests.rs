@@ -3187,6 +3187,167 @@ async fn a_declined_retirement_keeps_the_engine_and_arms_nothing() {
     );
 }
 
+/// PR 6.1.2-A: retirement and opening take the gate's two locks in ONE
+/// order, so they cannot deadlock.
+///
+/// 6.1.1-B made retirement hold the SERVING MAP write guard and then arm
+/// the holdoff, which locks the GATE STATE. `get_or_open` does the
+/// reverse: it re-checks the serving map while holding the gate state.
+/// That is an AB/BA deadlock, and because the gate state is ONE mutex
+/// shared by every prefix, it strands shards that never meet — which is
+/// why this proof retires "0" while an open of "1" is in the window.
+///
+/// The interleaving is forced, not raced: the opening side parks INSIDE
+/// the gate state lock, immediately before the serving-map re-check.
+/// Against the old order this test hangs and fails on its deadline;
+/// against one order both sides complete.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn retirement_and_opening_take_the_gate_locks_in_one_order() {
+    use std::sync::mpsc;
+    let store = mem();
+    let st = store.clone();
+    let dir = crate::shard_directory::ShardDirectory::new(
+        vec!["0".into(), "1".into()],
+        crate::ownership::OwnershipService::new(""),
+        crate::shard_directory::OpenTiming {
+            open_deadline: std::time::Duration::from_secs(60),
+            open_wait: std::time::Duration::from_secs(30),
+        },
+        |_notifier| {
+            Box::new(
+                move |prefix: String, _inc: crate::sharddir::EngineIncarnation| {
+                    let st = st.clone();
+                    Box::pin(async move {
+                        // The opening side only has to REACH the gate
+                        // state window; what it opens is irrelevant, and
+                        // failing keeps the proof free of store timing.
+                        if prefix == "1" {
+                            anyhow::bail!("the opening side never needs an engine");
+                        }
+                        Ok(open_engine(st, &prefix).await)
+                    })
+                },
+            )
+        },
+    );
+
+    // "0" must hold a resident: an absent slot returns before the
+    // retirement ever reaches the holdoff, and there is nothing to race.
+    let crate::sharddir::OpenOutcome::Ready(_a) = dir
+        .open_or_wait("0", std::time::Duration::from_secs(30))
+        .await
+    else {
+        panic!("the retiring side needs a resident");
+    };
+
+    let gate = dir.gate_for_tests();
+    gate.test_park().arm("1");
+
+    // The OPENING side: parks holding the gate state.
+    let (open_done_tx, open_done) = mpsc::channel();
+    let opening = dir.clone();
+    std::thread::spawn(move || {
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("opening runtime");
+        let _ = rt.block_on(opening.open_or_wait("1", std::time::Duration::from_secs(30)));
+        let _ = open_done_tx.send(());
+    });
+    assert!(
+        gate.test_park()
+            .wait_arrived(std::time::Duration::from_secs(10)),
+        "the opening side never reached the gate-state window"
+    );
+
+    // The RETIRING side, on an UNRELATED prefix.
+    let (entered_tx, entered) = mpsc::channel();
+    let (retire_done_tx, retire_done) = mpsc::channel();
+    let retiring = dir.clone();
+    std::thread::spawn(move || {
+        // Retirement closes the engine, and closing spawns the db close:
+        // this thread needs a reactor of its own.
+        let rt = tokio::runtime::Builder::new_multi_thread()
+            .worker_threads(2)
+            .enable_all()
+            .build()
+            .expect("retiring runtime");
+        let _guard = rt.enter();
+        let _ = entered_tx.send(());
+        retiring.retire(
+            "0",
+            crate::shard_directory::RetirementReason::Shutdown,
+            |_, _| true,
+        );
+        let _ = retire_done_tx.send(());
+    });
+    entered
+        .recv_timeout(std::time::Duration::from_secs(10))
+        .expect("the retiring side never started");
+    // It is now blocked on its first acquisition. Under the old order it
+    // holds the serving map while it waits; under one order it holds
+    // nothing.
+    std::thread::sleep(std::time::Duration::from_millis(150));
+
+    // Release the opening side INTO the serving-map read it was about to
+    // take. Old order: it waits for the map the retiring side holds,
+    // while the retiring side waits for the gate state it holds. Neither
+    // of these arrives.
+    gate.test_park().release();
+    open_done
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("the opening side deadlocked against a retirement of another prefix");
+    retire_done
+        .recv_timeout(std::time::Duration::from_secs(20))
+        .expect("the retirement deadlocked against an open of another prefix");
+    assert!(!dir.is_open("0"), "the retirement completed");
+}
+
+/// PR 6.1.2-A: `engine_shutdown` — the shared test oracle for a restart,
+/// snapshot or quiescence boundary — must actually shut engines down.
+///
+/// 6.1.1-B reduced it to cloning the resident handles and dropping the
+/// clones, which does nothing at all: the directory still owns its own
+/// `Arc`, so no resident is removed, no close is initiated and no
+/// engine-owned loop stops. ~170 tests took their restart boundary from
+/// that. This characterizes what the helper now guarantees.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn engine_shutdown_really_retires_and_closes_every_resident() {
+    let store = mem();
+    let (state, addr) = http_rig(store).await;
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/shutdown-oracle",
+        &[("content-type", "application/json")],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 201, "create {st}");
+
+    // A handle held OUTSIDE the directory: the previous implementation
+    // dropped exactly this kind of clone and called it a shutdown.
+    let observed = state.shards.engines();
+    assert_eq!(observed.len(), 1, "one resident engine");
+    let engine = observed[0].clone();
+    assert!(!engine.is_closed(), "serving before shutdown");
+    assert_eq!(state.shards.open_count(), 1);
+
+    engine_shutdown(&state).await;
+
+    assert_eq!(
+        state.shards.open_count(),
+        0,
+        "shutdown must leave no resident"
+    );
+    assert!(
+        engine.is_closed(),
+        "shutdown must initiate close on the engine itself, not just drop a handle"
+    );
+    assert!(state.shards.held_prefixes().is_empty());
+}
+
 /// An engine that keeps dying young must meet an escalating holdoff, not
 /// an eager reopen: rapid open→die cycles against a sick store ARE the
 /// storm, whatever kills the engine.
@@ -8270,10 +8431,47 @@ async fn post_split_throughput_scales() {
     engine_shutdown(&state).await;
 }
 
-/// Close every open engine so background loops die with the test.
+/// Close every engine this runtime is serving, through the REAL
+/// retirement protocol — the only thing that removes a resident,
+/// initiates close and stops the engine-owned loops.
+///
+/// PR 6.1.2-A: this used to take cloned `Arc`s and drop them, with a
+/// comment claiming retirement had already closed them. That was untrue
+/// at nearly every one of its ~170 call sites: dropping one clone of a
+/// handle the directory still owns removes no resident, calls no
+/// `begin_close` and terminates no loop, so every restart, snapshot and
+/// quiescence boundary a test believed it had was imaginary.
+///
+/// The anti-flap holdoff the protocol arms is cleared afterwards, on
+/// purpose: a test shutdown is a QUIESCENCE boundary for one instance,
+/// not the possession yield the holdoff exists to damp. Production waits
+/// it out; a restart test reopens the same storage deliberately.
 async fn engine_shutdown(state: &Arc<crate::http::AppState>) {
-    let engines: Vec<_> = state.shards.engines();
-    drop(engines); // retirement already closed them
+    for prefix in state.shards.held_prefixes() {
+        match state.shards.retire(
+            &prefix,
+            crate::shard_directory::RetirementReason::Shutdown,
+            |_, _| true,
+        ) {
+            crate::shard_directory::RetireOutcome::Retired(engine) => {
+                assert!(
+                    engine.is_closed(),
+                    "retirement must initiate close of {prefix}"
+                );
+            }
+            // A close callback evicted it between the listing and here.
+            crate::shard_directory::RetireOutcome::Absent => {}
+            crate::shard_directory::RetireOutcome::Kept => {
+                panic!("an unconditional shutdown retirement was declined for {prefix}")
+            }
+        }
+        state.shards.clear_holdoff(&prefix);
+    }
+    assert_eq!(
+        state.shards.open_count(),
+        0,
+        "engine shutdown left resident shards"
+    );
 }
 
 /// Merge execution (review deferral, now implemented): split then merge

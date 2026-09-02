@@ -188,6 +188,13 @@ impl ShardDirectory {
         self.inner.gate.clear_holdoff(prefix)
     }
 
+    /// Tests only: this directory's open gate, so the lock-order proof
+    /// can reach the forced-interleaving park.
+    #[cfg(test)]
+    pub fn gate_for_tests(&self) -> crate::sharddir::OpenGate {
+        self.inner.gate.clone()
+    }
+
     /// The topology's shard prefixes (layout-4 bit prefixes).
     pub fn prefixes(&self) -> &[String] {
         &self.inner.prefixes
@@ -342,20 +349,19 @@ impl ShardDirectory {
         reason: RetirementReason,
         decide: impl FnOnce(&Arc<ShardEngine>, EngineIncarnation) -> bool,
     ) -> RetireOutcome {
-        let engine = {
-            let mut guard = self.inner.shards.write().unwrap();
-            let Some(resident) = guard.remove(prefix) else {
-                return RetireOutcome::Absent;
-            };
-            if !decide(&resident.engine, resident.incarnation) {
-                guard.insert(prefix.to_string(), resident);
-                return RetireOutcome::Kept;
-            }
-            // Armed while the slot is still held: the removal and the
-            // holdoff are one decision, never half-applied.
-            self.inner.gate.arm_holdoff(prefix);
-            resident.engine
+        // PR 6.1.2-A: the protocol lives in the gate, which owns BOTH
+        // the gate state and the serving map and so can take them in the
+        // one permitted order (gate state, then serving map — see
+        // `crate::sharddir::ServingMap`). Doing it here meant holding the
+        // serving map and then reaching for the gate state, which
+        // deadlocked against a concurrent open of an UNRELATED prefix.
+        let engine = match self.inner.gate.retire_resident(prefix, decide) {
+            crate::sharddir::Retirement::Retired(engine) => engine,
+            crate::sharddir::Retirement::Kept => return RetireOutcome::Kept,
+            crate::sharddir::Retirement::Absent => return RetireOutcome::Absent,
         };
+        // Both guards are released: closing an engine must never happen
+        // under a lock that a request path can be waiting on.
         tracing::info!(shard = %prefix, reason = reason.as_str(), "shard retired");
         engine.begin_close();
         RetireOutcome::Retired(engine)

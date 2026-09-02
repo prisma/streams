@@ -366,6 +366,16 @@ pub struct Resident {
 }
 
 // mt-lint: allow(name-keyed-map): shard prefix -> resident engine (layout-4 prefixes, not stream names)
+///
+/// LOCK ORDER (PR 6.1.2-A) — the ONE permitted order in this module is
+/// **gate state (`GateInner::st`) first, serving map second**. Every
+/// operation that needs both takes them in that order and no other.
+///
+/// The inverse order is a real deadlock, not a theoretical one: 6.1.1-B
+/// made retirement hold this map's write guard while arming the holdoff,
+/// which locks `st`, and `get_or_open` re-checks this map while holding
+/// `st`. Because `st` is ONE mutex shared across every prefix, the two
+/// operations deadlocked even when they named DIFFERENT shards.
 pub(crate) type ServingMap = Arc<RwLock<HashMap<String, Resident>>>;
 
 /// Opens the shard log for `prefix`; the incarnation is the identity the
@@ -392,6 +402,24 @@ struct PrefixGate {
     opened_at: Option<Instant>,
 }
 
+/// Arm the anti-flap holdoff for `prefix` under an ALREADY-HELD gate
+/// state. Escalates when the engine died young, because rapid
+/// open->die cycles are the storm this module exists to prevent.
+///
+/// PR 6.1.2-A: the one arming body. It takes the guard rather than the
+/// lock so that a caller holding the gate state can arm WITHOUT ever
+/// reaching for `st` in the forbidden order (see `ServingMap`).
+fn arm_holdoff_locked(st: &mut HashMap<String, PrefixGate>, prefix: &str) {
+    let g = st.entry(prefix.to_string()).or_default();
+    let lifetime = g.opened_at.map(|t| t.elapsed());
+    g.opened_at = None;
+    match lifetime {
+        Some(l) if l >= SHORT_LIVED => g.strikes = 0,
+        _ => g.strikes = g.strikes.saturating_add(1),
+    }
+    g.holdoff_until = Some(Instant::now() + holdoff_for(g.strikes));
+}
+
 fn holdoff_for(strikes: u32) -> Duration {
     let mult = 1u32 << strikes.min(5); // 3s,6s,12s,24s,48s,96s→cap
     (HOLDOFF_BASE * mult).min(HOLDOFF_CAP)
@@ -403,6 +431,11 @@ struct GateInner {
     /// Incarnations are minted per open attempt, per gate.
     next_incarnation: AtomicU64,
     // mt-lint: allow(name-keyed-map): shard prefix -> open/park gate
+    ///
+    /// LOCK ORDER (PR 6.1.2-A): this mutex is taken **before** the
+    /// serving map, never after — see `ServingMap`. It is a single
+    /// mutex for ALL prefixes, so an inverted acquisition deadlocks
+    /// shards that never meet.
     st: Mutex<HashMap<String, PrefixGate>>,
     /// Ceiling on one open attempt (SHARD_OPEN_DEADLINE_MS via config).
     open_deadline: Duration,
@@ -420,6 +453,85 @@ struct GateInner {
     c_failed: AtomicU64,
     #[cfg(test)]
     c_coalesced: AtomicU64,
+    /// PR 6.1.2-A: the forced-interleaving park. Per GATE INSTANCE, not
+    /// process-global and not keyed by prefix name: two directories in
+    /// one test binary must never park each other's opens.
+    #[cfg(test)]
+    park: GatePark,
+}
+
+/// PR 6.1.2-A: parks an open INSIDE the gate state lock so a test can
+/// force the interleaving that the old retirement order deadlocked on.
+///
+/// This cannot be one of the `failpoints` registry's pause sites: those
+/// await a `tokio::sync::Notify`, and the site holds a std `MutexGuard`,
+/// which must never be held across an await. So it is a condvar, and the
+/// parked thread blocks. It exists ONLY under `cfg(test)`; it is not a
+/// third lock in the retirement path.
+#[cfg(test)]
+#[derive(Default)]
+struct ParkState {
+    /// The prefix whose next open parks, if any.
+    prefix: Option<String>,
+    arrived: bool,
+}
+
+#[cfg(test)]
+#[derive(Default)]
+pub(crate) struct GatePark {
+    st: Mutex<ParkState>,
+    cv: std::sync::Condvar,
+}
+
+#[cfg(test)]
+impl GatePark {
+    /// Park the next open of `prefix` while it holds the gate state.
+    pub(crate) fn arm(&self, prefix: &str) {
+        let mut s = self.st.lock().unwrap();
+        s.prefix = Some(prefix.to_string());
+        s.arrived = false;
+    }
+
+    /// Let the parked open continue.
+    pub(crate) fn release(&self) {
+        self.st.lock().unwrap().prefix = None;
+        self.cv.notify_all();
+    }
+
+    /// Whether an open reached the park within `deadline`.
+    pub(crate) fn wait_arrived(&self, deadline: Duration) -> bool {
+        let start = Instant::now();
+        loop {
+            if self.st.lock().unwrap().arrived {
+                return true;
+            }
+            if start.elapsed() > deadline {
+                return false;
+            }
+            std::thread::sleep(Duration::from_millis(2));
+        }
+    }
+
+    /// The site: blocks while armed for `prefix`.
+    fn hit(&self, prefix: &str) {
+        let mut s = self.st.lock().unwrap();
+        if s.prefix.as_deref() != Some(prefix) {
+            return;
+        }
+        s.arrived = true;
+        while s.prefix.as_deref() == Some(prefix) {
+            s = self.cv.wait(s).unwrap();
+        }
+    }
+}
+
+/// What `retire_resident` did with the slot. `Kept` means the decision
+/// declined and the SAME resident is still serving; `Absent` means there
+/// was nothing to retire and the decision was never consulted.
+pub(crate) enum Retirement {
+    Retired(Arc<ShardEngine>),
+    Kept,
+    Absent,
 }
 
 /// What a caller gets back. `Wait` is always retryable and never means the
@@ -457,6 +569,8 @@ impl OpenGate {
                 c_failed: AtomicU64::new(0),
                 #[cfg(test)]
                 c_coalesced: AtomicU64::new(0),
+                #[cfg(test)]
+                park: GatePark::default(),
             }),
         }
     }
@@ -488,6 +602,13 @@ impl OpenGate {
                         };
                     }
                 }
+                // PR 6.1.2-A: the forced-interleaving site. This is the
+                // exact window the old retirement order deadlocked
+                // against — the gate state is HELD here and the serving
+                // map is about to be taken. Tests park here to prove the
+                // order is safe; in release builds it does not exist.
+                #[cfg(test)]
+                self.inner.park.hit(prefix);
                 // Raced with a completed open? (map insert happens before
                 // the inflight entry clears)
                 if let Some(r) = self.inner.shards.read().unwrap().get(prefix) {
@@ -524,6 +645,12 @@ impl OpenGate {
                             OPENS_COMPLETED.fetch_add(1, Ordering::Relaxed);
                             #[cfg(test)]
                             inner.c_completed.fetch_add(1, Ordering::Relaxed);
+                            // PR 6.1.2-A: gate state FIRST, serving map
+                            // second. Holding both also publishes the
+                            // resident and clears the in-flight marker as
+                            // one step, so no observer sees a resident
+                            // with an open still nominally in flight.
+                            let mut st = inner.st.lock().unwrap();
                             inner.shards.write().unwrap().insert(
                                 p.clone(),
                                 Resident {
@@ -531,7 +658,6 @@ impl OpenGate {
                                     incarnation,
                                 },
                             );
-                            let mut st = inner.st.lock().unwrap();
                             let g = st.entry(p.clone()).or_default();
                             g.inflight = None;
                             g.opened_at = Some(Instant::now());
@@ -639,6 +765,10 @@ impl OpenGate {
     /// engine died young, because rapid open→die cycles are exactly the
     /// storm this module exists to prevent. Returns whether it evicted.
     pub fn notify_closed(&self, prefix: &str, incarnation: EngineIncarnation) -> bool {
+        // PR 6.1.2-A: gate state FIRST, serving map second — the one
+        // permitted order (see `ServingMap`). Holding both also makes
+        // the eviction and its holdoff one step, exactly as `retire`.
+        let mut st = self.inner.st.lock().unwrap();
         {
             let mut map = self.inner.shards.write().unwrap();
             match map.get(prefix) {
@@ -648,34 +778,47 @@ impl OpenGate {
                 _ => return false,
             }
         }
-        let mut st = self.inner.st.lock().unwrap();
-        let g = st.entry(prefix.to_string()).or_default();
-        let lifetime = g.opened_at.map(|t| t.elapsed());
-        g.opened_at = None;
-        match lifetime {
-            Some(l) if l >= SHORT_LIVED => g.strikes = 0,
-            _ => g.strikes = g.strikes.saturating_add(1),
-        }
-        g.holdoff_until = Some(Instant::now() + holdoff_for(g.strikes));
+        arm_holdoff_locked(&mut st, prefix);
         true
     }
 
-    /// Arm the anti-flap holdoff for a resident the DIRECTORY has just
-    /// removed under its own write guard (PR 6.1.1-B). `notify_closed`
-    /// cannot do it in that flow: by the time the engine's close
-    /// callback runs, the slot is already empty, and an eviction that
-    /// silently skipped the holdoff let a request reopen the prefix
-    /// immediately — the anti-flap regression this repairs.
-    pub(crate) fn arm_holdoff(&self, prefix: &str) {
+    /// Retire the resident of `prefix`: remove it, arm the anti-flap
+    /// holdoff, and hand the engine back for closing — as ONE decision
+    /// that no request observer can see half-applied. `decide` sees the
+    /// engine AND its incarnation and may decline, which reinstates the
+    /// very same resident under the same guards.
+    ///
+    /// PR 6.1.2-A: retirement lives HERE, in the component that owns
+    /// both pieces of state, so it can take them in the one permitted
+    /// order — gate state, then serving map (see `ServingMap`). The
+    /// directory used to hold the serving map and then reach for the
+    /// gate state, which deadlocked against `get_or_open` across
+    /// unrelated prefixes. Closing the engine is deliberately NOT done
+    /// here: the caller does it after both guards are released.
+    pub(crate) fn retire_resident(
+        &self,
+        prefix: &str,
+        decide: impl FnOnce(&Arc<ShardEngine>, EngineIncarnation) -> bool,
+    ) -> Retirement {
         let mut st = self.inner.st.lock().unwrap();
-        let g = st.entry(prefix.to_string()).or_default();
-        let lifetime = g.opened_at.map(|t| t.elapsed());
-        g.opened_at = None;
-        match lifetime {
-            Some(l) if l >= SHORT_LIVED => g.strikes = 0,
-            _ => g.strikes = g.strikes.saturating_add(1),
+        let mut map = self.inner.shards.write().unwrap();
+        let Some(resident) = map.remove(prefix) else {
+            return Retirement::Absent;
+        };
+        if !decide(&resident.engine, resident.incarnation) {
+            map.insert(prefix.to_string(), resident);
+            return Retirement::Kept;
         }
-        g.holdoff_until = Some(Instant::now() + holdoff_for(g.strikes));
+        // Armed while the slot is still held: the removal and the
+        // holdoff are one decision, never half-applied.
+        arm_holdoff_locked(&mut st, prefix);
+        Retirement::Retired(resident.engine)
+    }
+
+    /// The forced-interleaving park for THIS gate (tests only).
+    #[cfg(test)]
+    pub(crate) fn test_park(&self) -> &GatePark {
+        &self.inner.park
     }
 
     /// The incarnation of the engine currently serving `prefix`.
