@@ -5551,6 +5551,74 @@ async fn producer_retries_across_a_split_commit_once() {
 /// Full-fidelity HTTP rig: real AppState + axum server on a loopback
 /// port, one shard prefix, fast absorber. The gap tests need the exact
 /// header behavior clients see, not engine-level approximations.
+/// The principal rig's fixed seed and wall-clock start (PR 4.1):
+/// deterministic by DEFAULT — two rigs built from the same seed and
+/// request schedule reproduce every migrated identity.
+const RIG_SEED: u64 = 0x5eed_0000_0000_0001;
+const RIG_START_MS: i64 = 1_700_000_000_000;
+
+/// Domain-separated deterministic capabilities for one rig: the boot
+/// id draws from "runtime-identity", epochs from "stream-epoch", and
+/// the touch registry from "touch-journal".
+fn rig_runtime_caps(
+    seed: u64,
+) -> (
+    crate::runtime::RuntimeCaps,
+    Arc<dyn crate::runtime::Entropy>,
+) {
+    use crate::runtime::{ManualClock, RuntimeCaps, SeededEntropy};
+    let caps = RuntimeCaps::with_sources(
+        Arc::new(ManualClock::at(RIG_START_MS)),
+        &SeededEntropy::domain(seed, "runtime-identity"),
+        Arc::new(SeededEntropy::domain(seed, "stream-epoch")),
+        "dst-instance",
+    );
+    (caps, Arc::new(SeededEntropy::domain(seed, "touch-journal")))
+}
+
+/// PR 4.1 reproducibility proof: given the same seed, fixed clock and
+/// request schedule, two FRESH rigs produce the same boot id, the same
+/// generated stream epoch, and the same registry-class store trace
+/// (whose paths embed the epoch). The registry class is compared
+/// rather than the whole trace because WAL/manifest object counts
+/// depend on flush timing, which is not a migrated input yet.
+#[tokio::test]
+async fn same_seed_rigs_reproduce_identities_epochs_and_registry_trace() {
+    async fn run_once() -> (String, String, Vec<(crate::dst::StoreOp, String)>) {
+        let trace = crate::dst::trace_store::TraceStore::verbatim(mem());
+        let store: Arc<dyn ObjectStore> = trace.clone();
+        let (state, addr) = http_rig(store).await;
+        let ct = [("content-type", "application/json")];
+        let (st, _, _) = hreq(addr, "PUT", "/v1/stream/repro/s", &ct, b"").await;
+        assert!(st == 200 || st == 201, "create: {st}");
+        let (st, _, _) = hreq(addr, "POST", "/v1/stream/repro/s", &ct, br#"[{"n":1}]"#).await;
+        assert!(st == 200 || st == 204, "append: {st}");
+        let desc = state
+            .registry
+            .get(&state.raw_adapter_sref("repro/s"))
+            .await
+            .unwrap()
+            .expect("created");
+        let registry_ops = trace
+            .events()
+            .into_iter()
+            .filter(|e| e.path.starts_with("registry/"))
+            .map(|e| (e.op, e.path))
+            .collect();
+        (
+            state.runtime.identity.boot_id.clone(),
+            desc.stream_epoch.clone(),
+            registry_ops,
+        )
+    }
+    let a = run_once().await;
+    let b = run_once().await;
+    assert_eq!(a.0, b.0, "boot id reproduces under the same seed");
+    assert_eq!(a.1, b.1, "stream epoch reproduces under the same seed");
+    assert!(!a.2.is_empty(), "the registry trace must not be vacuous");
+    assert_eq!(a.2, b.2, "registry-class store trace reproduces");
+}
+
 async fn http_rig(
     store: Arc<dyn ObjectStore>,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
@@ -5729,7 +5797,13 @@ async fn http_rig_inner(
         &crate::tenant::CellId::new("test-cell").unwrap(),
     );
     let keys = Arc::new(crate::history::KeyCache::default());
-    let touch = Arc::new(crate::touch::TouchRegistry::default());
+    // PR 4.1: the principal rig NEVER selects OS entropy or the OS
+    // clock — every migrated ambient input (boot id, stream/consumer
+    // epochs, touch-journal epochs, trusted time) is under rig control,
+    // with domain-separated seeded streams so concurrent draw order
+    // cannot couple unrelated ids.
+    let (rig_runtime, touch_entropy) = rig_runtime_caps(RIG_SEED);
+    let touch = Arc::new(crate::touch::TouchRegistry::with_entropy(touch_entropy));
     let shards_map: Arc<
         std::sync::RwLock<std::collections::HashMap<String, Arc<crate::shard::ShardEngine>>>,
     > = Arc::new(std::sync::RwLock::new(std::collections::HashMap::new()));
@@ -5810,7 +5884,6 @@ async fn http_rig_inner(
     ));
     let gate =
         crate::sharddir::OpenGate::new(shards_map.clone(), opener, rig_config.shard.open_deadline);
-    let rig_runtime = crate::runtime::RuntimeCaps::production("dst-instance");
     let state = Arc::new(crate::http::AppState {
         runtime: rig_runtime.clone(),
         config: rig_config.clone(),

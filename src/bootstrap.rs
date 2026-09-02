@@ -243,21 +243,16 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         // not per PID. Firecracker VMs commonly start at the same pid, so
         // two instances sharing a namespace would collide on one object:
         // A puts, B puts, A deletes, B reads -> missing, and B refuses to
-        // start for a store that is perfectly healthy.
+        // start for a store that is perfectly healthy. PR 4.1: the
+        // incarnation IS the runtime identity — its boot id, minted from
+        // the runtime's entropy — so no pid and no wall-clock nonce is
+        // needed; the create-only put below remains the collision
+        // detector.
         let probe = object_store::path::Path::from(format!(
-            "{}_canary/{}-{}-{}",
+            "{}_canary/{}-{}",
             canary_prefix.trim_end_matches('/'),
             config.cli.instance_name.replace('/', "_"),
-            std::process::id(),
-            // A boot-unique nonce. No new dependency: the wall clock in
-            // nanos plus the instance name already distinguishes two
-            // VMs that happen to share a pid, and a create-only put
-            // below turns any residual collision into a loud error
-            // rather than a silent overwrite.
-            std::time::SystemTime::now()
-                .duration_since(std::time::UNIX_EPOCH)
-                .map(|d| d.as_nanos())
-                .unwrap_or(0),
+            runtime_caps.identity.boot_id,
         ));
         let payload = b"streams-startup-canary".to_vec();
         store

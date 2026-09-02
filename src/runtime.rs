@@ -149,15 +149,29 @@ impl RuntimeCaps {
         )
     }
 
-    /// Assemble from explicit implementations (tests pass a manual
-    /// clock / seeded entropy; production goes through
+    /// Assemble from explicit implementations with ONE entropy source
+    /// for both the boot id and later epochs (production goes through
     /// [`RuntimeCaps::production`]).
     pub fn with(clock: Arc<dyn Clock>, entropy: Arc<dyn Entropy>, instance: &str) -> Self {
+        Self::with_sources(clock, &*entropy, entropy.clone(), instance)
+    }
+
+    /// Assemble with DOMAIN-SEPARATED sources (PR 4.1): the boot id is
+    /// drawn exactly once from `identity_source`; every later epoch
+    /// draws from `epoch_source`. Deterministic rigs give each domain
+    /// its own seeded stream so the ORDER in which concurrent tasks
+    /// draw epochs can never perturb the boot id (or vice versa).
+    pub fn with_sources(
+        clock: Arc<dyn Clock>,
+        identity_source: &dyn Entropy,
+        epoch_source: Arc<dyn Entropy>,
+        instance: &str,
+    ) -> Self {
         let mut boot = [0u8; 16];
-        entropy.fill(&mut boot);
+        identity_source.fill(&mut boot);
         Self {
             clock,
-            entropy,
+            entropy: epoch_source,
             identity: RuntimeIdentity {
                 boot_id: crate::crypto::hex(&boot),
                 instance: instance.to_string(),
@@ -273,6 +287,20 @@ impl SeededEntropy {
             state: std::sync::Mutex::new(seed),
         }
     }
+
+    /// A domain-separated stream: the same rig seed yields INDEPENDENT
+    /// sequences for "runtime-identity", "stream-epoch",
+    /// "touch-journal", … so unrelated id domains cannot couple
+    /// through concurrent draw order.
+    pub fn domain(seed: u64, domain: &str) -> Self {
+        // FNV-1a over the label, folded into the seed.
+        let mut h: u64 = 0xcbf2_9ce4_8422_2325;
+        for b in domain.bytes() {
+            h ^= b as u64;
+            h = h.wrapping_mul(0x0000_0100_0000_01b3);
+        }
+        Self::seeded(seed ^ h)
+    }
 }
 
 #[cfg(test)]
@@ -294,47 +322,110 @@ impl Entropy for SeededEntropy {
 mod tests {
     use super::*;
 
-    /// PR 4 proof 1: two runtimes in one process share NOTHING — boot
-    /// identities differ (minted per construction, no once-cell) and
-    /// each manual clock moves independently.
+    /// Scripted entropy: returns prescribed bytes and RECORDS every
+    /// draw, so identity construction is proven by inspection rather
+    /// than by a probabilistic `assert_ne!` (PR 4.1 review).
+    #[derive(Debug)]
+    struct ScriptedEntropy {
+        bytes: Vec<u8>,
+        cursor: std::sync::Mutex<usize>,
+        draws: std::sync::Mutex<Vec<usize>>,
+    }
+
+    impl ScriptedEntropy {
+        fn new(bytes: Vec<u8>) -> Self {
+            Self {
+                bytes,
+                cursor: std::sync::Mutex::new(0),
+                draws: std::sync::Mutex::new(Vec::new()),
+            }
+        }
+        fn draws(&self) -> Vec<usize> {
+            self.draws.lock().unwrap().clone()
+        }
+    }
+
+    impl Entropy for ScriptedEntropy {
+        fn fill(&self, dest: &mut [u8]) {
+            let mut c = self.cursor.lock().unwrap();
+            for d in dest.iter_mut() {
+                *d = self.bytes[*c % self.bytes.len()];
+                *c += 1;
+            }
+            self.draws.lock().unwrap().push(dest.len());
+        }
+    }
+
+    /// PR 4 proof 1 (made deterministic in PR 4.1): two runtimes in one
+    /// process share NOTHING — each boot id is exactly ONE 16-byte draw
+    /// from that runtime's OWN identity source (the other source sees
+    /// no draw), and each manual clock moves independently.
     #[test]
     fn two_runtimes_share_no_identity_or_timing_state() {
+        let src_a = ScriptedEntropy::new((0u8..32).collect());
+        let src_b = ScriptedEntropy::new((100u8..132).collect());
         let clock_a = ManualClock::at(1_000);
         let clock_b = ManualClock::at(50_000);
-        let a = RuntimeCaps::with(
+        let a = RuntimeCaps::with_sources(
             Arc::new(clock_a.clone()),
-            Arc::new(SeededEntropy::seeded(7)),
+            &src_a,
+            Arc::new(SeededEntropy::seeded(1)),
             "instance-a",
         );
-        let b = RuntimeCaps::with(
+        let b = RuntimeCaps::with_sources(
             Arc::new(clock_b.clone()),
-            Arc::new(SeededEntropy::seeded(7)),
+            &src_b,
+            Arc::new(SeededEntropy::seeded(1)),
             "instance-b",
         );
-        // Same seed, same first draw — the IDs still belong to their
-        // own runtimes; production uses OsEntropy where draws differ.
-        assert_eq!(a.identity.boot_id, b.identity.boot_id);
-        // ...so prove separation with distinct seeds too:
-        let c = RuntimeCaps::with(
-            Arc::new(clock_b.clone()),
-            Arc::new(SeededEntropy::seeded(8)),
-            "instance-c",
+        // Exactly one 16-byte draw per runtime, from its own source.
+        assert_eq!(src_a.draws(), vec![16]);
+        assert_eq!(src_b.draws(), vec![16]);
+        assert_eq!(
+            a.identity.boot_id,
+            crate::crypto::hex(&(0u8..16).collect::<Vec<_>>())
         );
-        assert_ne!(a.identity.boot_id, c.identity.boot_id);
+        assert_eq!(
+            b.identity.boot_id,
+            crate::crypto::hex(&(100u8..116).collect::<Vec<_>>())
+        );
+        assert_ne!(a.identity.boot_id, b.identity.boot_id);
+        // Epochs come from the EPOCH source, never the identity source.
+        let _ = a.epoch();
+        assert_eq!(
+            src_a.draws(),
+            vec![16],
+            "identity source untouched by epochs"
+        );
         // Independent clocks: advancing A leaves B untouched.
         clock_a.advance(Duration::from_millis(500));
         assert_eq!(a.clock.now().ms(), 1_500);
         assert_eq!(b.clock.now().ms(), 50_000);
     }
 
-    /// Production identities are unpredictable and unique per runtime
-    /// construction (OS CSPRNG).
+    /// Production identities have the documented REPRESENTATION (16
+    /// bytes, hex). Unpredictability belongs to the selected `OsEntropy`
+    /// implementation, not to a probabilistic unit-test assertion.
     #[test]
-    fn production_runtimes_mint_distinct_boot_ids() {
+    fn production_boot_id_has_the_documented_representation() {
         let a = RuntimeCaps::production("x");
-        let b = RuntimeCaps::production("x");
-        assert_ne!(a.identity.boot_id, b.identity.boot_id);
         assert_eq!(a.identity.boot_id.len(), 32, "16 bytes hex");
+        assert!(a.identity.boot_id.bytes().all(|b| b.is_ascii_hexdigit()));
+        assert_eq!(a.identity.instance, "x");
+    }
+
+    /// Domain separation: the same seed yields independent streams per
+    /// domain, and each domain reproduces itself exactly.
+    #[test]
+    fn seeded_domains_are_independent_and_reproducible() {
+        let mut id1 = [0u8; 16];
+        let mut id2 = [0u8; 16];
+        let mut ep = [0u8; 16];
+        SeededEntropy::domain(7, "runtime-identity").fill(&mut id1);
+        SeededEntropy::domain(7, "runtime-identity").fill(&mut id2);
+        SeededEntropy::domain(7, "stream-epoch").fill(&mut ep);
+        assert_eq!(id1, id2, "same seed + domain reproduces");
+        assert_ne!(id1, ep, "different domains, different streams");
     }
 
     /// PR 4 proof 2: deterministic tests control time per runtime —

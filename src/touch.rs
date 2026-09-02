@@ -493,15 +493,6 @@ pub struct TouchRegistry {
     entropy: Arc<dyn crate::runtime::Entropy>,
 }
 
-impl Default for TouchRegistry {
-    /// Test rigs: OS entropy (a deterministic rig passes its own via
-    /// [`TouchRegistry::with_entropy`]). Production hands in the
-    /// runtime's capability.
-    fn default() -> Self {
-        Self::with_entropy(Arc::new(crate::runtime::OsEntropy))
-    }
-}
-
 impl TouchRegistry {
     pub fn with_entropy(entropy: Arc<dyn crate::runtime::Entropy>) -> Self {
         Self {
