@@ -6375,13 +6375,15 @@ async fn two_runtimes_never_share_fleet_state() {
         },
     )
     .await;
-    // BOTH fleet loops run, each with its own repository.
-    for (rig, name) in [(&rig_a, "inst-a"), (&rig_b, "inst-b")] {
-        crate::fleet::start(
-            rig.state.clone(),
-            rig.state.fleet.clone(),
-            fleet_cfg(name),
-            &rig.tasks,
+    // BOTH fleet loops run — started through the SAME assembly bootstrap
+    // uses (PR 6.1.2-B). There is no repository argument to get wrong:
+    // each loop takes its own runtime's `state.fleet`, and this proof
+    // would stop exercising production wiring if that ever diverged.
+    for rig in [&rig_a, &rig_b] {
+        let config = rig.state.config.clone();
+        assert!(
+            crate::fleet::start_configured(rig.state.clone(), &config, &rig.tasks),
+            "a rig with a fleet store must start its loop"
         );
     }
     // One tick is 2s; give both loops a heartbeat.
@@ -6482,25 +6484,6 @@ async fn fleet_instance_docs(store: &Arc<dyn ObjectStore>) -> Vec<String> {
     }
     names.sort();
     names
-}
-
-/// A fleet configuration whose only interesting field is the instance
-/// name: the proof is about WHICH store each loop touches.
-fn fleet_cfg(instance: &str) -> crate::fleet::FleetCfg {
-    crate::fleet::FleetCfg {
-        instance: instance.to_string(),
-        capacity_rps: 0,
-        edge_slots: 0,
-        target_util: 0.75,
-        scale_in_util: 0.5,
-        hot_cpu_pct: 90.0,
-        cpu_sustain: std::time::Duration::from_secs(600),
-        scale_in: std::time::Duration::from_secs(600),
-        latency_ms: 0,
-        edge_latency_ms: 0,
-        latency_sustain: std::time::Duration::from_secs(600),
-        max: 1,
-    }
 }
 
 /// PR 6.1-A: a runtime that has shut down holds no socket — the
@@ -6866,8 +6849,20 @@ async fn http_rig_build(
     // the CLI half comes from the HERMETIC fixture, never from a parse
     // — clap's `env = ...` bindings would otherwise read the ambient
     // process environment into the principal rig.
+    // PR 6.1.2-B: the instance name reaches the CONFIG as well as the
+    // ownership service. Production derives both from one
+    // `config.cli.instance_name`; the rig used to name only ownership,
+    // so a rig's config claimed to be "streams" whatever the test called
+    // it — and any assembly reading the config disagreed with the
+    // runtime it was assembling.
     let rig_config = Arc::new(crate::config::ServerConfig::load(
-        crate::config::CliArgs::deterministic(),
+        {
+            let mut cli = crate::config::CliArgs::deterministic();
+            if let Some(name) = instance_name.clone() {
+                cli.instance_name = name;
+            }
+            cli
+        },
         &crate::config::MapEnvironment::empty(),
     ));
     let ownership = crate::ownership::OwnershipService::new(instance_name.unwrap_or_default());

@@ -360,13 +360,55 @@ pub struct FleetCfg {
     pub max: u64,
 }
 
-pub fn start(
+/// The PRODUCTION assembly: derive this runtime's fleet-loop posture
+/// from its validated configuration and start the loop on its own
+/// repository. Bootstrap and the two-runtime isolation proof both go
+/// through here, so the proof cannot keep passing while the wiring
+/// production actually uses diverges from it (PR 6.1.2-B).
+///
+/// A runtime without fleet coordination starts nothing.
+pub fn start_configured(
     state: Arc<AppState>,
-    repository: FleetRepository,
-    cfg: FleetCfg,
+    config: &crate::config::ServerConfig,
     tasks: &crate::tasks::TaskSupervisor,
-) {
+) -> bool {
+    if !state.fleet.enabled() {
+        return false;
+    }
+    let cli = &config.cli;
+    start(
+        state,
+        FleetCfg {
+            instance: cli.instance_name.clone(),
+            capacity_rps: cli.scale_rps_capacity,
+            edge_slots: cli.scale_edge_slots,
+            target_util: (cli.scale_out_cpu_pct as f64 / 100.0).clamp(0.05, 0.95),
+            scale_in_util: (cli.scale_in_cpu_pct as f64 / 100.0).clamp(0.05, 0.90),
+            hot_cpu_pct: cli.scale_out_cpu_pct as f64,
+            cpu_sustain: Duration::from_secs(cli.scale_cpu_sustain_secs),
+            scale_in: Duration::from_secs(cli.scale_in_secs),
+            latency_ms: cli.scale_latency_ms,
+            edge_latency_ms: cli.scale_edge_latency_ms,
+            latency_sustain: Duration::from_secs(cli.scale_lat_sustain_secs),
+            max: cli.fleet_max,
+        },
+        tasks,
+    );
+    true
+}
+
+/// Start this runtime's fleet loop.
+///
+/// PR 6.1.2-B: there is no repository parameter. The loop takes the
+/// runtime's OWN repository, so the loop, the event drainer and the
+/// operator surface cannot be given different coordination stores —
+/// 6.1.1-C left that to caller discipline, and nothing in the types
+/// required the argument to equal `state.fleet`.
+pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupervisor) {
     let _ = tasks.spawn("fleet", crate::tasks::Policy::Critical, move |cancel| async move {
+        // The ONE authority: the same repository the drainer and the
+        // operator view read through.
+        let repository = state.fleet.clone();
         let mut ewma_rps = 0.0f64;
         let mut last_ops = 0u64;
         let mut last_tick = Instant::now();

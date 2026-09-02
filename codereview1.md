@@ -3066,6 +3066,43 @@ Do not rename user-facing flags while moving them. Flag cleanup is a separate se
 > and a runtime without fleet coordination has no repository, drains
 > nothing and shows nothing.
 
+> **PR 6.1.2-A (Oracle corrective on PR 6.1.1): ONE lock order for
+> retirement and opening, and a test shutdown that shuts down.** Making
+> removal and holdoff atomic in 6.1.1-B nested two locks that had been
+> sequential: retirement held the SERVING MAP write guard and then armed
+> the holdoff, which locks the GATE STATE, while `get_or_open` re-checks
+> the serving map while holding the gate state. That is an AB/BA
+> deadlock, and because the gate state is ONE mutex shared by every
+> prefix it strands shards that never meet. Retirement now lives in
+> `OpenGate`, which owns both pieces of state and takes them in the one
+> permitted order — gate state, then serving map — documented beside
+> BOTH state definitions; `notify_closed` and the open task were brought
+> onto the same order. No third lock was added. The proof is red-first
+> and forced: the opening side parks INSIDE the gate state lock, right
+> before the serving-map re-check, while a retirement of a DIFFERENT
+> prefix runs; inverting the order fails it on its deadline. Separately,
+> `engine_shutdown` — the shared oracle behind ~170 restart, snapshot
+> and quiescence boundaries — had been reduced to dropping cloned `Arc`s
+> the directory still owned, which removed no resident, initiated no
+> close and stopped no loop. It now retires every held prefix through
+> the real protocol and asserts none survives. It clears the anti-flap
+> holdoff afterwards on purpose: a test shutdown is a quiescence
+> boundary, not the possession yield the holdoff damps.
+
+> **PR 6.1.2-B (Oracle corrective on PR 6.1.1): one fleet authority by
+> construction.** 6.1.1-C still let two authorities exist: `fleet::start`
+> took a `FleetRepository` argument that nothing required to equal
+> `state.fleet`, so a caller could publish heartbeats into one store
+> while the drainer and operator read another. The parameter is gone —
+> the loop takes the runtime's own repository. Posture now comes from
+> `fleet::start_configured`, the ONE assembly bootstrap uses, and the
+> two-runtime isolation proof goes through that same function, so it
+> cannot keep passing while production wiring diverges. The rig also
+> gained the instance name in its CONFIG rather than only on its
+> ownership service: a rig's config used to claim to be "streams"
+> whatever the test called it, which is precisely the divergence a
+> config-derived assembly exposes.
+
 **Implements:** the foundational part of WP-15.
 
 Replace HTTP-owned randomness and process-time lookups in core/background paths with explicit `Clock`, `Entropy` and `RuntimeIdentity` values. Migrate boot IDs, epochs, retry timing and test time first. Keep cryptographic randomness behind an appropriately strong production implementation; deterministic entropy is test-only.

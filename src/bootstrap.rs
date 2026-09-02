@@ -841,26 +841,11 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
             },
         );
     }
-    if fleet_repository.enabled() {
-        crate::fleet::start(
-            state.clone(),
-            fleet_repository.clone(),
-            crate::fleet::FleetCfg {
-                instance: config.cli.instance_name.clone(),
-                capacity_rps: config.cli.scale_rps_capacity,
-                edge_slots: config.cli.scale_edge_slots,
-                target_util: (config.cli.scale_out_cpu_pct as f64 / 100.0).clamp(0.05, 0.95),
-                scale_in_util: (config.cli.scale_in_cpu_pct as f64 / 100.0).clamp(0.05, 0.90),
-                hot_cpu_pct: config.cli.scale_out_cpu_pct as f64,
-                cpu_sustain: Duration::from_secs(config.cli.scale_cpu_sustain_secs),
-                scale_in: Duration::from_secs(config.cli.scale_in_secs),
-                latency_ms: config.cli.scale_latency_ms,
-                edge_latency_ms: config.cli.scale_edge_latency_ms,
-                latency_sustain: Duration::from_secs(config.cli.scale_lat_sustain_secs),
-                max: config.cli.fleet_max,
-            },
-            &tasks,
-        );
+    // PR 6.1.2-B: the loop takes its authority from `state.fleet` — the
+    // same value the drainer and the operator surface read through — and
+    // derives its posture through the ONE assembly the isolation proof
+    // also exercises.
+    if crate::fleet::start_configured(state.clone(), &config, &tasks) {
         tracing::info!(
             "fleet coordination on (prefix={}, cap={} rps)",
             config.cli.fleet_prefix.as_deref().unwrap_or(""),
