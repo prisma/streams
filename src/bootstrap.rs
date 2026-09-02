@@ -640,11 +640,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
                 Some(tok)
             }) as crate::peer::FleetTokenSource
         });
-    let peer = crate::peer::PeerClient::new(
-        fleet_static_token,
-        fleet_token_source,
-        fleet_store_opt.clone(),
-    );
+    let peer = crate::peer::PeerClient::new(fleet_static_token, fleet_token_source);
     let livefeed = crate::sse::service::LiveFeedService::from_config(&config.sse);
     let bearer = crate::deployment_bearer::DeploymentBearer::new(
         config.cli.auth_token.clone(),
@@ -671,6 +667,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         shards: shard_directory,
         admission,
         peer,
+        fleet: crate::fleet::FleetRepository::new(fleet_store_opt.clone()),
         livefeed,
         bearer,
         deployment,

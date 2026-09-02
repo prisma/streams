@@ -125,7 +125,7 @@ pub async fn data(State(state): State<Arc<AppState>>, headers: axum::http::Heade
     }
     let now_ms = crate::shard::now_ms();
 
-    let (heartbeats, desired) = match state.peer.fleet_store() {
+    let (heartbeats, desired) = match state.fleet.store() {
         Some(fs) => (
             read_heartbeats(fs).await,
             read_json(fs, "fleet/desired.json").await,

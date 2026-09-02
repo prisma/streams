@@ -15,7 +15,7 @@
 use object_store::path::Path as ObjPath;
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
 use serde::{Deserialize, Serialize};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::Arc;
 use std::time::{Duration, Instant};
 
 use crate::http::AppState;
@@ -175,17 +175,6 @@ pub fn valid_peer_url_with(url: &str, allow_http: bool, peer_domains: Option<&st
             .any(|d| host == d || host.ends_with(&format!(".{d}"))),
         _ => true,
     }
-}
-
-/// Last successfully-read AND validated fleet/urls.json map. A transient
-/// GET failure must not drop back to heartbeat SELF_URLs: on Compute
-/// those are stale after any redeploy (each version mints a new preview
-/// URL), so losing the published map would point relays at dead
-/// addresses until the next successful read (round-19).
-fn last_good_urls() -> &'static Mutex<std::collections::HashMap<String, String>> {
-    // mt-lint: allow(name-keyed-map): instance name -> last good base URL
-    static M: OnceLock<Mutex<std::collections::HashMap<String, String>>> = OnceLock::new();
-    M.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
 }
 
 /// Return-home admission: dropping an override hands `gain` shard(s)
@@ -366,15 +355,67 @@ pub struct FleetCfg {
     pub max: u64,
 }
 
-/// The fleet coordination store, registered by start() so the ops
-/// drainer can read/clear the CAS outboxes without threading handles.
-fn fleet_store_slot() -> &'static Mutex<Option<Arc<dyn ObjectStore>>> {
-    static S: OnceLock<Mutex<Option<Arc<dyn ObjectStore>>>> = OnceLock::new();
-    S.get_or_init(|| Mutex::new(None))
+/// PR 6.1-D: the fleet coordination store, owned PER RUNTIME. The
+/// heartbeat documents, the desired-count and overrides documents and
+/// their CAS event outboxes are one instance's view of its cell; the
+/// fleet loop, the event drainer and the operator surface all read it
+/// from here. It replaces a process-global slot that a second runtime
+/// silently overwrote — a drainer then published another runtime's
+/// events through this instance's identity and billing pipeline.
+#[derive(Clone, Default)]
+pub struct FleetRepository {
+    store: Option<Arc<dyn ObjectStore>>,
 }
 
-fn fleet_store_handle() -> Option<Arc<dyn ObjectStore>> {
-    fleet_store_slot().lock().unwrap().clone()
+impl FleetRepository {
+    pub fn new(store: Option<Arc<dyn ObjectStore>>) -> Self {
+        Self { store }
+    }
+
+    /// Whether this runtime participates in fleet coordination.
+    pub fn enabled(&self) -> bool {
+        self.store.is_some()
+    }
+
+    /// The coordination store, for the fleet module's own loop and the
+    /// operator surface's fleet views.
+    pub(crate) fn store(&self) -> Option<&Arc<dyn ObjectStore>> {
+        self.store.as_ref()
+    }
+
+    /// Replace one coordination document, but ONLY if it still has the
+    /// version we read — the CAS that makes clearing an event outbox
+    /// safe against a concurrent writer.
+    pub(crate) async fn replace_doc(
+        &self,
+        doc: &str,
+        body: Vec<u8>,
+        version: UpdateVersion,
+    ) -> bool {
+        let Some(store) = self.store.as_ref() else {
+            return false;
+        };
+        store
+            .put_opts(
+                &ObjPath::from(doc),
+                PutPayload::from(body),
+                PutOptions::from(PutMode::Update(version)),
+            )
+            .await
+            .is_ok()
+    }
+
+    /// One coordination document with the version a CAS clear needs.
+    pub(crate) async fn read_doc(&self, doc: &str) -> Option<(bytes::Bytes, UpdateVersion)> {
+        let store = self.store.as_ref()?;
+        let got = store.get(&ObjPath::from(doc)).await.ok()?;
+        let version = UpdateVersion {
+            e_tag: got.meta.e_tag.clone(),
+            version: got.meta.version.clone(),
+        };
+        let raw = got.bytes().await.ok()?;
+        Some((raw, version))
+    }
 }
 
 pub fn start(
@@ -383,7 +424,6 @@ pub fn start(
     cfg: FleetCfg,
     tasks: &crate::tasks::TaskSupervisor,
 ) {
-    *fleet_store_slot().lock().unwrap() = Some(store.clone());
     let _ = tasks.spawn("fleet", crate::tasks::Policy::Critical, move |cancel| async move {
         let mut ewma_rps = 0.0f64;
         let mut last_ops = 0u64;
@@ -402,6 +442,16 @@ pub fn start(
         // (ring_active, overrides) as last observed — the parked-session
         // wake fires only on real ownership-view changes.
         let mut last_ownership_view: Option<crate::ownership::OwnershipView> = None;
+        // PR 6.1-D: last successfully-read AND validated fleet/urls.json
+        // map. A transient GET failure must not drop back to heartbeat
+        // SELF_URLs: on Compute those are stale after any redeploy (each
+        // version mints a new preview URL), so losing the published map
+        // would point relays at dead addresses until the next successful
+        // read (round-19). It is this loop's OWN history — one runtime's
+        // fallback can never become another's.
+        // mt-lint: allow(name-keyed-map): instance name -> last good base URL
+        let mut last_good_urls: std::collections::HashMap<String, String> =
+            std::collections::HashMap::new();
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
@@ -742,12 +792,12 @@ pub fn start(
                     };
                 match published {
                     Some(m) => {
-                        *last_good_urls().lock().unwrap() = m.clone();
+                        last_good_urls.clone_from(&m);
                         peer_urls.extend(m);
                     }
                     // Transient failure: keep the last validated map
                     // rather than falling back to stale heartbeat URLs.
-                    None => peer_urls.extend(last_good_urls().lock().unwrap().clone()),
+                    None => peer_urls.extend(last_good_urls.clone()),
                 }
                 state.peer.set_peers(peer_urls.clone());
             }
@@ -1131,20 +1181,12 @@ pub fn start(
 pub async fn drain_fleet_events(
     state: &std::sync::Arc<crate::http::AppState>,
 ) -> Result<usize, String> {
-    let Some(store) = fleet_store_handle() else {
+    if !state.fleet.enabled() {
         return Ok(0);
-    };
+    }
     let mut emitted = 0usize;
     for name in ["fleet/desired.json", "fleet/overrides.json"] {
-        let path = ObjPath::from(name);
-        let Ok(got) = store.get(&path).await else {
-            continue;
-        };
-        let version = UpdateVersion {
-            e_tag: got.meta.e_tag.clone(),
-            version: got.meta.version.clone(),
-        };
-        let Ok(bytes) = got.bytes().await else {
+        let Some((bytes, version)) = state.fleet.read_doc(name).await else {
             continue;
         };
         let pending: Vec<crate::ops::OpsEvent> = if name.ends_with("desired.json") {
@@ -1200,13 +1242,7 @@ pub async fn drain_fleet_events(
             o.pending_events.retain(|e| !ids.contains(&e.event_id));
             serde_json::to_vec(&o).unwrap_or_default()
         };
-        let _ = store
-            .put_opts(
-                &path,
-                PutPayload::from(cleared),
-                PutOptions::from(PutMode::Update(version)),
-            )
-            .await;
+        let _ = state.fleet.replace_doc(name, cleared, version).await;
     }
     Ok(emitted)
 }

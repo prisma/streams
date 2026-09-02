@@ -5688,6 +5688,8 @@ impl RigRuntime {
 /// separate required capability of [`http_rig_build`], so every
 /// restart / multi-instance call site names its incarnation.
 struct HttpRigOptions {
+    /// PR 6.1-D: this rig's OWN fleet coordination store, if any.
+    fleet_store: Option<Arc<dyn ObjectStore>>,
     prefixes: Vec<String>,
     shard: crate::shard::ShardConfig,
     per_segment_slots: i64,
@@ -5712,6 +5714,7 @@ struct HttpRigOptions {
 impl Default for HttpRigOptions {
     fn default() -> Self {
         Self {
+            fleet_store: None,
             prefixes: vec!["00".to_string()],
             shard: crate::shard::ShardConfig::default(),
             per_segment_slots: 0,
@@ -6039,6 +6042,94 @@ async fn distinct_incarnations_have_distinct_pinned_identities() {
     );
 }
 
+/// PR 6.1-D (Oracle corrective): fleet coordination state is per
+/// RUNTIME. Two runtimes with DIFFERENT fleet stores must not observe
+/// or mutate each other's: runtime A's event drainer reads A's outbox
+/// and never B's. The process-global slot this replaces was overwritten
+/// by whichever runtime started last, so A's drainer published B's
+/// events through A's identity and billing pipeline.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn two_runtimes_never_share_fleet_state() {
+    let store_a = mem();
+    let store_b = mem();
+    let fleet_a = mem();
+    let fleet_b = mem();
+    let rig_a = http_rig_build(
+        store_a,
+        RigRuntime::first(),
+        HttpRigOptions {
+            fleet_store: Some(fleet_a.clone()),
+            instance: Some("inst-a".to_string()),
+            ..Default::default()
+        },
+    )
+    .await;
+    let rig_b = http_rig_build(
+        store_b,
+        RigRuntime::incarnation(1),
+        HttpRigOptions {
+            fleet_store: Some(fleet_b.clone()),
+            instance: Some("inst-b".to_string()),
+            ..Default::default()
+        },
+    )
+    .await;
+    // ONE pending fleet event, written to B's coordination store only.
+    let desired = crate::fleet::Desired {
+        count: 3,
+        reason: "test".into(),
+        epoch: 1,
+        computed_at_ms: 1,
+        pending_events: vec![crate::ops::OpsEvent::new(
+            "scale_out",
+            "fleet/b/only/1".to_string(),
+        )],
+    };
+    fleet_b
+        .put_opts(
+            &object_store::path::Path::from("fleet/desired.json"),
+            PutPayload::from(serde_json::to_vec(&desired).unwrap()),
+            PutOptions::default(),
+        )
+        .await
+        .unwrap();
+    // A drains ITS store: nothing to emit, and B's document is untouched.
+    let emitted_a = crate::fleet::drain_fleet_events(&rig_a.state)
+        .await
+        .unwrap();
+    assert_eq!(emitted_a, 0, "A's drainer must never read B's outbox");
+    let still = fleet_b
+        .get_opts(
+            &object_store::path::Path::from("fleet/desired.json"),
+            GetOptions::default(),
+        )
+        .await
+        .unwrap()
+        .bytes()
+        .await
+        .unwrap();
+    let doc: crate::fleet::Desired = serde_json::from_slice(&still).unwrap();
+    assert_eq!(
+        doc.pending_events.len(),
+        1,
+        "A must not clear B's event outbox"
+    );
+    // The repositories are distinct authorities, and a runtime without
+    // fleet coordination has none at all.
+    assert!(rig_a.state.fleet.enabled() && rig_b.state.fleet.enabled());
+    let plain = http_rig_build(mem(), RigRuntime::incarnation(2), HttpRigOptions::default()).await;
+    assert!(!plain.state.fleet.enabled());
+    assert_eq!(
+        crate::fleet::drain_fleet_events(&plain.state)
+            .await
+            .unwrap(),
+        0
+    );
+    for rig in [rig_a, rig_b, plain] {
+        rig.tasks.shutdown(std::time::Duration::from_secs(2)).await;
+    }
+}
+
 /// PR 6.1-A: a runtime that has shut down holds no socket — the
 /// address is free for a replacement IMMEDIATELY (the accept loop
 /// released the listener and joined every connection before the
@@ -6349,6 +6440,7 @@ async fn http_rig_build(
     opts: HttpRigOptions,
 ) -> HttpRig {
     let HttpRigOptions {
+        fleet_store,
         prefixes,
         shard: shard_cfg,
         per_segment_slots,
@@ -6397,7 +6489,7 @@ async fn http_rig_build(
         Some((t, s)) => (t, s),
         None => (Some("dst-internal-token".to_string()), None),
     };
-    let peer = crate::peer::PeerClient::new(fleet_static_token, fleet_token_source, None);
+    let peer = crate::peer::PeerClient::new(fleet_static_token, fleet_token_source);
     // Per-rig budget: isolated from every other rig in the process.
     let livefeed = crate::sse::service::LiveFeedService::from_config(&rig_config.sse);
     livefeed.set_heartbeat_ms(15_000);
@@ -6423,6 +6515,7 @@ async fn http_rig_build(
         billing,
         tasks: tasks.monitor(),
         rollup: crate::rollup::RollupSlot::default(),
+        fleet: crate::fleet::FleetRepository::new(fleet_store.clone()),
         deployment: crate::deployment::DeploymentIdentity::new(
             crate::tenant::ProjectId::new("proj-test").unwrap(),
             "acct_test".to_string(),

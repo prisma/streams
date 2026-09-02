@@ -2976,6 +2976,21 @@ Do not rename user-facing flags while moving them. Flag cleanup is a separate se
 > (`apply_maintenance`, `admit_maintenance`, `note_maintenance_shed`,
 > `maintenance_engaged`, `maintenance_stats_json`); the latch accessor
 > is private, so PR 7's application layer cannot import it.
+>
+> **PR 6.1-D (Oracle corrective on PR 6): the fleet globals are gone.**
+> `fleet_store_slot()` and `last_good_urls()` are deleted. The
+> coordination store is now `fleet::FleetRepository`, owned per runtime
+> on `AppState` (`enabled`, `store` for the fleet module's own loop and
+> the operator's fleet views, `read_doc`, `replace_doc` for the CAS
+> outbox clear): the fleet loop, the event drainer and the operator
+> surface read ONE authority, and `PeerClient` no longer carries a fleet
+> store it did not own (peer routing, credentials and the one-refresh
+> send stay with it). The last-good published-URL map became the fleet
+> loop's own local history — one runtime's fallback cannot become
+> another's, structurally. Proof: two runtimes with different fleet
+> stores; A's drainer emits nothing from B's outbox and does not clear
+> B's document; a runtime without fleet coordination has no repository
+> and drains nothing.
 
 **Implements:** the foundational part of WP-15.
 

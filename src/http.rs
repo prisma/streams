@@ -103,6 +103,9 @@ pub struct AppState {
     /// WP-02 / PR 6-C: peers — the trusted URL table, the outbound
     /// bearer, the inbound static-credential rule, the fleet store.
     pub peer: crate::peer::PeerClient,
+    /// PR 6.1-D: this runtime's fleet coordination store (heartbeats,
+    /// desired count, overrides and their CAS event outboxes).
+    pub fleet: crate::fleet::FleetRepository,
     /// WP-02 / PR 6-C: live feeds — registry, memory budget, ring
     /// allowance, keep-alive cadence.
     pub livefeed: crate::sse::service::LiveFeedService,

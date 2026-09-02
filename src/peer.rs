@@ -27,21 +27,15 @@ struct Inner {
     /// mode whatever the environment carried.
     static_token: Option<String>,
     token_source: Option<FleetTokenSource>,
-    fleet_store: Option<Arc<dyn object_store::ObjectStore>>,
 }
 
 impl PeerClient {
-    pub fn new(
-        static_token: Option<String>,
-        token_source: Option<FleetTokenSource>,
-        fleet_store: Option<Arc<dyn object_store::ObjectStore>>,
-    ) -> Self {
+    pub fn new(static_token: Option<String>, token_source: Option<FleetTokenSource>) -> Self {
         Self {
             inner: Arc::new(Inner {
                 peer_urls: RwLock::new(HashMap::new()),
                 static_token,
                 token_source,
-                fleet_store,
             }),
         }
     }
@@ -116,12 +110,6 @@ impl PeerClient {
         }
         Ok(resp)
     }
-
-    /// The fleet object store (heartbeats, desired count), when fleet
-    /// mode is on.
-    pub fn fleet_store(&self) -> Option<&Arc<dyn object_store::ObjectStore>> {
-        self.inner.fleet_store.as_ref()
-    }
 }
 
 #[cfg(test)]
@@ -133,7 +121,7 @@ mod tests {
     /// loop, read by relays; unknown instances are unroutable.
     #[test]
     fn peer_table_is_replaced_wholesale_and_read_by_name() {
-        let p = PeerClient::new(None, None, None);
+        let p = PeerClient::new(None, None);
         assert!(!p.has_peer("b"));
         p.set_peer("b", "http://b:1");
         assert_eq!(p.url_for("b").as_deref(), Some("http://b:1"));
@@ -157,7 +145,7 @@ mod tests {
                 "cached".into()
             })
         });
-        let workload = PeerClient::new(Some("leaked-static".into()), Some(src), None);
+        let workload = PeerClient::new(Some("leaked-static".into()), Some(src));
         assert!(workload.has_workload_source());
         assert_eq!(workload.outbound_bearer(false).as_deref(), Some("cached"));
         assert_eq!(workload.outbound_bearer(true).as_deref(), Some("fresh"));
@@ -167,7 +155,7 @@ mod tests {
             "the leaked static token is dead in workload mode"
         );
 
-        let bridge = PeerClient::new(Some("bridge-token".into()), None, None);
+        let bridge = PeerClient::new(Some("bridge-token".into()), None);
         assert_eq!(
             bridge.outbound_bearer(true).as_deref(),
             Some("bridge-token")
@@ -176,9 +164,8 @@ mod tests {
         assert!(!bridge.inbound_static_ok(Some("bridge-tokeN")));
         assert!(!bridge.inbound_static_ok(None));
 
-        let none = PeerClient::new(None, None, None);
+        let none = PeerClient::new(None, None);
         assert_eq!(none.outbound_bearer(false), None);
         assert!(!none.inbound_static_ok(Some("anything")));
-        assert!(none.fleet_store().is_none());
     }
 }

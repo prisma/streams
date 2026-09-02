@@ -1756,7 +1756,6 @@ pub fn spawn_rollup(
     prefix: String,
     tasks: &crate::tasks::TaskSupervisor,
 ) {
-    use object_store::ObjectStoreExt;
     let _ = tasks.spawn(
         "usage-rollup",
         crate::tasks::Policy::Critical,
