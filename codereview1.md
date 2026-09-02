@@ -2684,6 +2684,45 @@ Do not rename user-facing flags while moving them. Flag cleanup is a separate se
 > read; the watchdog's survival `process::exit` awaits WP-15 task
 > supervision (result policy), and crypto key generation keeps the OS
 > CSPRNG directly until its owner moves.
+> **PR 4.1 (corrective, review-driven, 2026-09-02):** the review found
+> the watchdog migration had REGRESSED elapsed-time measurement to the
+> wall clock, and the principal DST rig still selected OS entropy.
+> Commit A: `Clock` has two DISTINCT domains — `now() -> TrustedNow`
+> (wall, timestamps; private representation) and `monotonic() ->
+> MonotonicNow` (elapsed only; per-runtime `Instant` origin in
+> production); `sleep` lives in the monotonic domain; `ManualClock`
+> moves wall and monotonic time independently (`advance`, `jump_wall`,
+> `advance_monotonic`). The watchdog is a pure state machine
+> (`UnreadyWindow` → `WatchdogDecision`) fed monotonic readings — tests
+> pin: forward wall jump does not expire, backward wall jump does not
+> postpone, expiry exactly at the monotonic limit, ready clears and a
+> later unready period starts fresh, sleeps ignore wall jumps.
+> `TrustedNow` gained its first production consumer (audit event
+> timestamps) rather than being baselined dead. Commit B: the rig
+> builds domain-separated seeded capabilities (identity / stream-epoch
+> / touch-journal streams) over a `ManualClock`, never
+> `RuntimeCaps::production`; `TouchRegistry::default` is deleted; the
+> startup canary key is `<instance>-<boot_id>` (no pid, no wall nanos);
+> the probabilistic identity test is replaced by a scripted-entropy
+> proof (exactly one 16-byte draw per runtime from its OWN source); a
+> same-seed end-to-end test reproduces boot id, stream epoch and the
+> registry-class store trace across two fresh rigs. Commit C:
+> `ValidatedServerConfig` fields are PRIVATE (bootstrap consumes
+> `into_bootstrap_parts()`); validation emits NO logs — typed
+> `ConfigNotice`s are collected and emitted by bootstrap after the
+> whole configuration was accepted; the old `validate_release_capacity`
+> is two functions (`validate_configured_capacity`, pure, and
+> `resolve_effective_capacity`, the preflight) with no `nofile == 0`
+> sentinel and no in-place mutation; `validate()` is 25 lines
+> orchestrating seven domain helpers; bootstrap re-exports nothing
+> from config (HTTP calls `config::profile::compactor_profile_json`
+> directly, and the profile diagnostics own `config/profile.rs`);
+> baseline-diff identities are presence-only with count movement
+> reported as SHRINK/GROWTH; `trace_store_tests` is five behavior
+> modules under 310 lines each; the product-side precedence rescan is
+> DELETED — `CanonicalStreamName::new` checks every component before
+> the reserved root (characterized by `name_error_precedence`). The
+> architecture baseline remains unrefreshed.
 
 **Implements:** the foundational part of WP-15.
 

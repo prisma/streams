@@ -1165,7 +1165,7 @@ async fn debug_load(
         "git_commit": env!("STREAMS_GIT_COMMIT"),
         "build_unix": env!("STREAMS_BUILD_UNIX"),
         "boot_id": state.runtime.identity.boot_id.as_str(),
-        "compactor_profile": crate::bootstrap::compactor_profile_json(&state.config),
+        "compactor_profile": crate::config::profile::compactor_profile_json(&state.config),
         // R29: the KERNEL's high-water mark, not sampled RSS — sampled
         // peaks missed the 5 s kill waves entirely. cgroup v2 first,
         // v1 fallback; null off-Linux.

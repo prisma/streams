@@ -101,28 +101,12 @@ impl TryFrom<&str> for ProductStreamName {
     type Error = ProductNameError;
 
     fn try_from(raw: &str) -> Result<Self, ProductNameError> {
-        let canonical = crate::tenant::CanonicalStreamName::new(raw).map_err(|e| {
-            // Precedence fixup for ONE corner: the identity validator
-            // reports the reserved root on the FIRST component, while
-            // the product surface historically finished the segment
-            // scan first — so `__ds/..` reports the dot segment. Keep
-            // the historical wire message.
-            if matches!(e, crate::tenant::NameError::ReservedRoot) {
-                for seg in raw.split('/') {
-                    if seg.is_empty() {
-                        return ProductNameError::Structural(
-                            crate::tenant::NameError::EmptyComponent,
-                        );
-                    }
-                    if seg == "." || seg == ".." {
-                        return ProductNameError::Structural(
-                            crate::tenant::NameError::DotComponent,
-                        );
-                    }
-                }
-            }
-            ProductNameError::Structural(e)
-        })?;
+        // No structural rule is repeated here (PR 4.1): the canonical
+        // layer owns error precedence, including the historical
+        // `__ds/..` corner (structural problems before the reserved
+        // root); this adapter only maps one canonical error.
+        let canonical =
+            crate::tenant::CanonicalStreamName::new(raw).map_err(ProductNameError::Structural)?;
         let segments: Vec<&str> = raw.split('/').collect();
         if let Some(last) = segments.last()
             && RESERVED_FINAL_SEGMENTS.contains(last)
@@ -7969,7 +7953,8 @@ mod tests {
     /// WP-03/PR 5: the wire error MESSAGES are pinned across the
     /// single-sourcing — same code, same body text per case, including
     /// the multi-violation precedence corner (`__ds/..` reports the
-    /// dot segment, exactly as the pre-WP-03 segment-scan order did).
+    /// dot segment — since PR 4.1 that order is owned by the canonical
+    /// layer, not re-scanned here).
     #[test]
     fn name_error_messages_are_wire_pinned() {
         let msg = |raw: &str| match ProductStreamName::try_from(raw) {

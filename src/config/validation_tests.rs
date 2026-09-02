@@ -21,11 +21,11 @@ mod memprofile_tests {
             ]),
             &crate::config::MapEnvironment::empty(),
         );
-        let cert = super::resolved_compactor_options(&cfg.engine)
+        let cert = crate::config::profile::resolved_compactor_options(&cfg.engine)
             .worker
             .clone()
             .unwrap_or_default();
-        for (family, co) in super::production_settings_families(&cfg) {
+        for (family, co) in crate::config::profile::production_settings_families(&cfg) {
             let co = co.unwrap_or_else(|| panic!("{family}: compactor disabled"));
             let w = co.worker.clone().unwrap_or_default();
             assert_eq!(w.max_subcompactions, cert.max_subcompactions, "{family}");
@@ -76,7 +76,7 @@ mod config_validation_tests {
             "legacy-token-0123456789",
         ]);
         assert!(
-            validate_fleet_auth(&a, false).is_err(),
+            validate_fleet_auth(&a, false, &mut Vec::new()).is_err(),
             "release+workload must refuse a coexisting static token"
         );
         // Static mode under release: refused even single-instance.
@@ -90,7 +90,7 @@ mod config_validation_tests {
             "legacy-token-0123456789",
         ]);
         assert!(
-            validate_fleet_auth(&a, false).is_err(),
+            validate_fleet_auth(&a, false, &mut Vec::new()).is_err(),
             "release posture must refuse static mode without fleet mode too"
         );
         // Release workload posture without enforce: refused.
@@ -102,7 +102,7 @@ mod config_validation_tests {
             "--release-posture",
         ]);
         assert!(
-            validate_fleet_auth(&a, false).is_err(),
+            validate_fleet_auth(&a, false, &mut Vec::new()).is_err(),
             "release posture requires STREAMS_AUTH_MODE=enforce"
         );
         // The clean release shape passes, single-instance AND fleet.
@@ -115,8 +115,8 @@ mod config_validation_tests {
             "enforce",
             "--release-posture",
         ]);
-        assert!(validate_fleet_auth(&a, false).is_ok());
-        assert!(validate_fleet_auth(&a, true).is_ok());
+        assert!(validate_fleet_auth(&a, false, &mut Vec::new()).is_ok());
+        assert!(validate_fleet_auth(&a, true, &mut Vec::new()).is_ok());
         // Non-release migration coexistence stays allowed (boot only;
         // the runtime gate still refuses the static bearer in
         // workload mode).
@@ -128,13 +128,13 @@ mod config_validation_tests {
             "--fleet-internal-token",
             "legacy-token-0123456789",
         ]);
-        assert!(validate_fleet_auth(&a, false).is_ok());
+        assert!(validate_fleet_auth(&a, false, &mut Vec::new()).is_ok());
         // Static fleet mode off-release keeps its existing rules.
         let a = parse(&["--fleet-internal-token", "legacy-token-0123456789"]);
-        assert!(validate_fleet_auth(&a, true).is_ok());
+        assert!(validate_fleet_auth(&a, true, &mut Vec::new()).is_ok());
         let a = parse(&[]);
         assert!(
-            validate_fleet_auth(&a, true).is_err(),
+            validate_fleet_auth(&a, true, &mut Vec::new()).is_err(),
             "static fleet mode still requires the token"
         );
     }
@@ -228,137 +228,115 @@ mod config_validation_tests {
         .expect("default history settings must open");
     }
 
+    fn configured(
+        release: bool,
+        profile: Option<&str>,
+        feed: Option<&str>,
+        cap: u64,
+    ) -> Result<ConfiguredCapacity, String> {
+        validate_configured_capacity(release, profile, feed, cap, &mut Vec::new())
+    }
+
+    fn resolved(cap: u64, release: bool, nofile_hard: u64) -> Result<u64, String> {
+        let c = configured(release, None, None, cap)?;
+        resolve_effective_capacity(c, release, nofile_hard, &mut Vec::new())
+            .map(|e| e.sse_max_connections)
+    }
+
     /// Follow-up review finding 4 (red): the release-safe hub-budget
     /// maximum is PROFILE-specific. The 64-MiB rung was exercised but
     /// produced RSS shed on the 1-GiB class, so it must not be that
-    /// class's release-safe ceiling.
+    /// class's release-safe ceiling. PR 4.1: pure configured-capacity
+    /// validation, no OS input in sight.
     #[test]
     fn hub_budget_maximum_is_profile_specific() {
         const THIRTY_TWO_MIB: &str = "33554432";
-        // Round-12: the LiveFeed retention model is exactly accounted
-        // (bounded reservation per retained batch, released on
-        // eviction), and the perf study certified 64 MiB on the 1-GiB
-        // class: 10,000 parked subscribers idle at 307 MB, peak
-        // 399 MB, 101 MB below the shed line (docs/PERF-LIVEFEED.md
-        // §3). The old 16 MiB ceiling was the HUB's uncertainty.
-        let mut cap = 10_000;
-        validate_release_capacity(
-            true,
-            Some("compute-1g"),
-            Some("67108864"),
-            &mut cap,
-            u32::MAX as u64,
-        )
-        .unwrap();
+        // Round-12: the perf study certified 64 MiB on the 1-GiB class.
+        configured(true, Some("compute-1g"), Some("67108864"), 10_000).unwrap();
         // Above the newly certified 64 MiB: still refused.
-        let mut cap = 10_000;
         assert!(
-            validate_release_capacity(
-                true,
-                Some("compute-1g"),
-                Some("134217728"),
-                &mut cap,
-                u32::MAX as u64
-            )
-            .is_err(),
+            configured(true, Some("compute-1g"), Some("134217728"), 10_000).is_err(),
             "the 1-GiB profile must refuse a feed budget above its certified 64 MiB"
         );
-        // Unknown/default profile + release + 32 MiB: allowed (largest
-        // EXERCISED envelope until that tier certifies its own).
-        let mut cap = 10_000;
-        validate_release_capacity(true, None, Some(THIRTY_TWO_MIB), &mut cap, u32::MAX as u64)
-            .unwrap();
-        // Non-release warns only.
-        let mut cap = 10_000;
-        validate_release_capacity(
+        // Unknown/default profile + release + 32 MiB: allowed.
+        configured(true, None, Some(THIRTY_TWO_MIB), 10_000).unwrap();
+        // Non-release: a NOTICE, not a refusal.
+        let mut notices = Vec::new();
+        validate_configured_capacity(
             false,
             Some("compute-1g"),
-            Some(THIRTY_TWO_MIB),
-            &mut cap,
-            u32::MAX as u64,
+            Some("134217728"),
+            10_000,
+            &mut notices,
         )
         .unwrap();
+        assert!(
+            matches!(
+                notices.as_slice(),
+                [ConfigNotice::FeedBudgetAboveReleaseMax { .. }]
+            ),
+            "{notices:?}"
+        );
         // The certified posture lands everywhere.
-        let mut cap = 10_000;
-        validate_release_capacity(
-            true,
-            Some("compute-1g"),
-            Some("16777216"),
-            &mut cap,
-            u32::MAX as u64,
-        )
-        .unwrap();
+        configured(true, Some("compute-1g"), Some("16777216"), 10_000).unwrap();
     }
 
     /// Round-4 follow-up review, finding 1 (red): the runtime reads
-    /// SSE_MAX_CONNECTIONS=0 as UNLIMITED, so neither the validator's
+    /// SSE_MAX_CONNECTIONS=0 as UNLIMITED, so neither the resolver's
     /// own clamp nor an explicit zero may ever produce it under the
     /// release posture. A degraded platform fails closed.
     #[test]
     fn release_capacity_never_turns_the_sse_gate_off() {
-        // Explicit cap 0 + release posture: boot refusal.
-        let mut cap = 0u64;
-        assert!(
-            validate_release_capacity(true, None, None, &mut cap, u32::MAX as u64).is_err(),
-            "release posture must refuse an unlimited subscription budget"
-        );
+        // Explicit cap 0 + release posture: refused at VALIDATION.
+        assert!(configured(true, None, None, 0).is_err());
         // Non-release cap 0 remains allowed and untouched.
-        let mut cap = 0u64;
-        validate_release_capacity(false, None, None, &mut cap, 4_096).unwrap();
-        assert_eq!(cap, 0);
+        assert_eq!(resolved(0, false, 4_096).unwrap(), 0);
         // A degraded ceiling must not clamp DOWN to zero (=unlimited):
         // nofile_hard == FD_RESERVE refuses; below it refuses too.
-        let mut cap = 10_000;
-        assert!(validate_release_capacity(true, None, None, &mut cap, FD_RESERVE).is_err());
-        let mut cap = 10_000;
-        assert!(validate_release_capacity(true, None, None, &mut cap, FD_RESERVE - 1).is_err());
-        // Non-release only warns.
-        let mut cap = 10_000;
-        validate_release_capacity(false, None, None, &mut cap, FD_RESERVE).unwrap();
-        assert_eq!(cap, 10_000);
+        assert!(resolved(10_000, true, FD_RESERVE).is_err());
+        assert!(resolved(10_000, true, FD_RESERVE - 1).is_err());
+        // Non-release only notices.
+        assert_eq!(resolved(10_000, false, FD_RESERVE).unwrap(), 10_000);
         // The first usable ceiling above the reserve clamps to it.
-        let mut cap = 10_000;
-        validate_release_capacity(true, None, None, &mut cap, FD_RESERVE + 1).unwrap();
-        assert_eq!(cap, 1);
+        assert_eq!(resolved(10_000, true, FD_RESERVE + 1).unwrap(), 1);
         // The observed Compute-class shape is unchanged.
-        let mut cap = 10_000;
-        validate_release_capacity(true, None, None, &mut cap, 4_096).unwrap();
-        assert_eq!(cap, 3_072);
+        assert_eq!(resolved(10_000, true, 4_096).unwrap(), 3_072);
     }
 
-    /// Round-4 review: release-posture capacity validation — the hub
-    /// budget stays inside the field-certified envelope, a typo'd byte
-    /// count never silently becomes the default, and the SSE
-    /// connection cap clamps to what nofile_hard can carry.
+    /// Round-4 review: release-posture capacity — the hub budget stays
+    /// inside the field-certified envelope, a typo'd byte count never
+    /// silently becomes the default, and the SSE connection cap clamps
+    /// to what nofile_hard can carry. PR 4.1: the two phases are two
+    /// functions; an unknown ceiling (0) is "nothing to resolve
+    /// against", not a validation sentinel.
     #[test]
     fn release_capacity_validates_hub_budget_and_fd_ceiling() {
-        // An explicit hub budget above the certified envelope: refused
-        // under the release posture, warned outside it.
-        let mut cap = 10_000u64;
-        assert!(validate_release_capacity(true, None, Some("134217728"), &mut cap, 0).is_err());
-        assert!(validate_release_capacity(false, None, Some("134217728"), &mut cap, 0).is_ok());
-        // The certified postures pass (16 MiB default is implicit).
-        let mut cap = 10_000;
-        assert!(validate_release_capacity(true, None, Some("16777216"), &mut cap, 65_536).is_ok());
-        assert!(validate_release_capacity(true, None, None, &mut cap, 65_536).is_ok());
+        assert!(configured(true, None, Some("134217728"), 10_000).is_err());
+        assert!(configured(false, None, Some("134217728"), 10_000).is_ok());
+        assert!(configured(true, None, Some("16777216"), 10_000).is_ok());
+        assert!(configured(true, None, None, 10_000).is_ok());
         // A typo'd value must not silently become the default.
-        assert!(validate_release_capacity(false, None, Some("16 MiB"), &mut cap, 0).is_err());
+        assert!(configured(false, None, Some("16 MiB"), 10_000).is_err());
         // The Compute-class ceiling: hard 4,096 with a 1,024 reserve
-        // clamps the configured 10k to 3,072 under the release posture.
-        let mut cap = 10_000;
-        validate_release_capacity(true, None, None, &mut cap, 4_096).unwrap();
-        assert_eq!(
-            cap, 3_072,
-            "effective cap must fit nofile_hard minus reserve"
-        );
+        // clamps the configured 10k to 3,072 under the release posture —
+        // and the clamp is a typed notice.
+        let c = configured(true, None, None, 10_000).unwrap();
+        let mut notices = Vec::new();
+        let e = resolve_effective_capacity(c, true, 4_096, &mut notices).unwrap();
+        assert_eq!(e.sse_max_connections, 3_072);
+        assert!(matches!(
+            notices.as_slice(),
+            [ConfigNotice::SseCapClamped {
+                effective: 3_072,
+                ..
+            }]
+        ));
         // Outside the release posture the configured value stands.
-        let mut cap = 10_000;
-        validate_release_capacity(false, None, None, &mut cap, 4_096).unwrap();
-        assert_eq!(cap, 10_000);
-        // A generous ceiling leaves the cap alone.
-        let mut cap = 10_000;
-        validate_release_capacity(true, None, None, &mut cap, u32::MAX as u64).unwrap();
-        assert_eq!(cap, 10_000);
+        assert_eq!(resolved(10_000, false, 4_096).unwrap(), 10_000);
+        // A generous ceiling leaves the cap alone; an unknown ceiling
+        // (non-unix) resolves to the configured value.
+        assert_eq!(resolved(10_000, true, u32::MAX as u64).unwrap(), 10_000);
+        assert_eq!(resolved(10_000, true, 0).unwrap(), 10_000);
     }
 
     /// CHAOS-3: the body ceiling is a capacity knob. Lowering it must

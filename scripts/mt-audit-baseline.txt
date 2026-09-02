@@ -67,7 +67,7 @@ tenant-fallback	src/config/cli.rs account_id: "acct_local".into(),
 tenant-fallback	src/config/cli.rs project_id: "proj_local".into(),	
 tenant-fallback	src/config/tests.rs ("account-id", "ACCOUNT_ID", "acct_local"),	
 tenant-fallback	src/config/tests.rs ("project-id", "PROJECT_ID", "proj_local"),	
-tenant-fallback	src/config/validation.rs // reach a shadow/enforce deployment — proj_local silently	
+tenant-fallback	src/config/validation.rs // shadow/enforce deployment — proj_local silently naming a	
 tenant-fallback	src/config/validation.rs if self.cli.account_id == "acct_local"	
 tenant-fallback	src/config/validation.rs if self.cli.project_id == "proj_local" {	
 tenant-fallback	src/config/validation.rs || self.cli.project_id == "proj_local"	

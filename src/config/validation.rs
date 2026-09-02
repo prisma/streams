@@ -18,143 +18,11 @@ use std::time::Duration;
 use slatedb::config::Settings;
 
 use crate::config::cli::CliArgs;
+use crate::config::profile::{certified_memprofile_errors, resolved_compactor_options};
 
 #[cfg(test)]
 #[path = "validation_tests.rs"]
 mod validation_tests;
-
-/// Dedicated runtime for every SlateDB instance (shard logs, history DBs,
-/// readers). SlateDB spawns its flusher / compactor / batch-writer on the
-/// runtime that drives `build()`, and those tasks run CPU-bound SST builds
-/// (block encode + zstd + AES block transform) inline in their polls — on
-/// the request runtime a single 4-16 MB build holds a worker for 100s of
-/// ms and can stall the runtime's timer/IO driver outright (sinmax run 12:
-/// tokio timer p99 848 ms vs 3.6 ms for a raw OS thread on the same box).
-/// On their own OS threads the kernel preempts them at timeslice
-/// granularity instead, so the ack path pays milliseconds, not bursts.
-/// R27-4 / R28 review: ONE resolved CompactorOptions for EVERY SlateDB
-/// this process opens — shard DBs, telemetry, rollup, spool. The first
-/// SIN fix missed the telemetry DBs because their Settings used
-/// `..Default::default()`, silently reinstating the upstream worker
-/// (concurrency 4, 4 subcompactions, 4x2 MiB read-ahead, 256 MiB
-/// rolls) beside the bounded shard DBs. WP-01 PR 3: the knobs live in
-/// `config::EngineConfig`, parsed once at startup; clap args mirror the
-/// same env vars for --help discoverability.
-pub fn resolved_compactor_options(
-    engine: &crate::config::EngineConfig,
-) -> slatedb::config::CompactorOptions {
-    engine.compactor_options()
-}
-
-/// The resolved worker knobs as JSON (debug/load + startup log) and the
-/// certification check: with MEMPROFILE_CERT=compute-1g the process
-/// REFUSES to start unless the live resolved configuration matches the
-/// certified survival profile — a deploy that drops one env var must
-/// fail loudly at boot, not OOM at +28 minutes.
-pub fn compactor_profile_json(cfg: &crate::config::ServerConfig) -> serde_json::Value {
-    let co = cfg.engine.compactor_options();
-    let w = co.worker.clone().unwrap_or_default();
-    serde_json::json!({
-        "max_concurrent_compactions": co.max_concurrent_compactions,
-        "worker_max_concurrent_compactions": w.max_concurrent_compactions,
-        "max_subcompactions": w.max_subcompactions,
-        "max_fetch_tasks": w.max_fetch_tasks,
-        "bytes_to_fetch": w.bytes_to_fetch,
-        "max_sst_size": w.max_sst_size,
-        "store_bulk_inflight_max_bytes": cfg.storage.bulk_inflight_max_bytes,
-    })
-}
-
-/// Every production Settings family and the worker options it will
-/// hand its DB builder. R29 release blocker: the certification used to
-/// validate only the env helper, while history_settings() passed
-/// UPSTREAM defaults to every history partition — the process logged
-/// "certified" with the exact unsafe profile running. Certification
-/// (and the structural test) now inspects what the builders receive.
-pub fn production_settings_families(
-    cfg: &crate::config::ServerConfig,
-) -> Vec<(&'static str, Option<slatedb::config::CompactorOptions>)> {
-    vec![
-        ("shard", Some(resolved_compactor_options(&cfg.engine))),
-        (
-            "history_v1",
-            crate::history::history_settings(&cfg.history, &cfg.engine.compactor_options())
-                .compactor_options,
-        ),
-        (
-            "history_v2",
-            crate::history::history2_settings(&cfg.history, &cfg.engine.compactor_options())
-                .compactor_options,
-        ),
-        (
-            "telemetry",
-            crate::billing::telemetry_settings(&cfg.billing, &cfg.engine.compactor_options())
-                .compactor_options,
-        ),
-    ]
-}
-
-/// PR 3.2: pure — returns every certification mismatch instead of
-/// calling `process::exit` from library code (the binary decides how to
-/// terminate). Empty vec = certified (or certification not requested).
-pub(crate) fn certified_memprofile_errors(cfg: &crate::config::ServerConfig) -> Vec<String> {
-    if cfg.runtime.memprofile_cert.as_deref() != Some("compute-1g") {
-        return Vec::new();
-    }
-    let mut errors = Vec::new();
-    let p = compactor_profile_json(cfg);
-    let expect = serde_json::json!({
-        "max_concurrent_compactions": 1,
-        "worker_max_concurrent_compactions": 1,
-        "max_subcompactions": 1,
-        "max_fetch_tasks": 1,
-        "bytes_to_fetch": 1048576,
-        "max_sst_size": 33554432,
-        "store_bulk_inflight_max_bytes": 33554432u64,
-    });
-    for (k, want) in expect.as_object().unwrap() {
-        let got = &p[k];
-        if got != want {
-            errors.push(format!(
-                "MEMPROFILE_CERT=compute-1g but {k}={got} (certified {want}) — \
-                 the deploy dropped or overrode a survival knob; refusing to start"
-            ));
-        }
-    }
-    // The env helper matching the certificate is necessary but not
-    // sufficient: every DB family's ACTUAL settings must carry the
-    // same worker profile.
-    let cert = cfg
-        .engine
-        .compactor_options()
-        .worker
-        .clone()
-        .unwrap_or_default();
-    for (family, co) in production_settings_families(cfg) {
-        let Some(co) = co else {
-            errors.push(format!(
-                "MEMPROFILE_CERT: {family} settings disable the compactor"
-            ));
-            continue;
-        };
-        let w = co.worker.clone().unwrap_or_default();
-        if w.max_subcompactions != cert.max_subcompactions
-            || w.max_fetch_tasks != cert.max_fetch_tasks
-            || w.bytes_to_fetch != cert.bytes_to_fetch
-            || w.max_sst_size != cert.max_sst_size
-            || w.max_concurrent_compactions != cert.max_concurrent_compactions
-        {
-            errors.push(format!(
-                "MEMPROFILE_CERT: {family} settings carry a different \
-                 compaction worker profile than the certified one; refusing to start"
-            ));
-        }
-    }
-    if errors.is_empty() {
-        tracing::info!(profile = %p, "memory profile certified: compute-1g (all DB families)");
-    }
-    errors
-}
 
 pub(crate) fn shard_settings(args: &CliArgs, engine: &crate::config::EngineConfig) -> Settings {
     Settings {
@@ -335,7 +203,11 @@ fn validate_record_ceiling(
     Ok(())
 }
 
-fn validate_fleet_auth(args: &CliArgs, fleet_mode: bool) -> anyhow::Result<()> {
+fn validate_fleet_auth(
+    args: &CliArgs,
+    fleet_mode: bool,
+    notices: &mut Vec<ConfigNotice>,
+) -> anyhow::Result<()> {
     match args.fleet_auth_mode.as_str() {
         "static" => {
             if args.release_posture {
@@ -344,10 +216,7 @@ fn validate_fleet_auth(args: &CliArgs, fleet_mode: bool) -> anyhow::Result<()> {
                      STREAMS_RELEASE_POSTURE=1 — configure workload identity (§14.1)"
                 );
             }
-            tracing::warn!(
-                "FLEET_AUTH_MODE=static: the shared bridge token is a NAMED legacy \
-                 posture; the release posture requires workload identity (§14.1)"
-            );
+            notices.push(ConfigNotice::FleetAuthStaticBridge);
             if fleet_mode {
                 match (&args.fleet_internal_token, &args.auth_token) {
                     (None, _) => anyhow::bail!(
@@ -422,108 +291,127 @@ fn profile_feed_budget_max(profile: Option<&str>) -> u64 {
 /// keeps this much headroom below `nofile_hard`.
 const FD_RESERVE: u64 = 1024;
 
-/// Round-4 review: lock the safe 1-GiB defaults at boot. Pure over its
-/// inputs so the suite can exercise every shape without touching
-/// process environment or rlimits.
-/// * `feed_total_env` — the raw SSE_FEED_TOTAL_BYTES value, when set.
-/// * `sse_max_connections` — configured cap; CLAMPED in place to the
-///   effective ceiling when it exceeds what the descriptor budget can
-///   actually carry (clamp + emit, per the review's acceptable arm).
-/// * `nofile_hard` — RLIMIT_NOFILE hard ceiling already raised to
-///   (0 = unknown / non-unix: skip the fd clamp).
-pub(crate) fn validate_release_capacity(
+/// The PROVEN configured subscription capacity (PR 4.1: the pure half
+/// of the old `validate_release_capacity`, which mixed configured-limit
+/// validation with OS-dependent resolution behind a `nofile_hard == 0`
+/// sentinel and an in-place mutation).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ConfiguredCapacity {
+    sse_max_connections: u64,
+}
+
+/// The EFFECTIVE subscription capacity after the descriptor-budget
+/// resolution — what the runtime installs.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct EffectiveCapacity {
+    pub sse_max_connections: u64,
+}
+
+/// Round-4 review: lock the safe 1-GiB defaults at boot — the PURE
+/// checks over configured values (no OS probe): the feed retention
+/// budget must stay inside the profile's release-safe maximum and must
+/// parse exactly (a typo'd byte count must not masquerade as the
+/// default), and the release posture must carry a BOUNDED subscription
+/// cap (the runtime reads 0 as unlimited).
+pub(crate) fn validate_configured_capacity(
     release_posture: bool,
     profile: Option<&str>,
     feed_total_env: Option<&str>,
-    sse_max_connections: &mut u64,
-    nofile_hard: u64,
-) -> anyhow::Result<()> {
-    // The feed retention budget: refuse an explicit override above the
-    // largest certified posture, and refuse a value that would
-    // silently parse as the default (a typo'd byte count must not
-    // masquerade as a tuned budget).
+    sse_max_connections: u64,
+    notices: &mut Vec<ConfigNotice>,
+) -> Result<ConfiguredCapacity, String> {
     if let Some(raw) = feed_total_env {
         let parsed: Option<u64> = raw.trim().parse().ok();
         match parsed {
             None => {
-                anyhow::bail!(
+                return Err(format!(
                     "SSE_FEED_TOTAL_BYTES={raw:?} does not parse as a byte count \
                      (an unparseable value would silently fall back to the default)"
-                );
+                ));
             }
             Some(v) if v > profile_feed_budget_max(profile) => {
                 let max = profile_feed_budget_max(profile);
                 if release_posture {
-                    anyhow::bail!(
+                    return Err(format!(
                         "SSE_FEED_TOTAL_BYTES={v} exceeds the {max}-byte release-safe \
                          maximum for memory profile {:?} (the 1-GiB class certifies at \
                          16 MiB; 64 MiB tripped RSS shed at ~505 feeds)",
                         profile.unwrap_or("default")
-                    );
+                    ));
                 }
-                tracing::warn!(
-                    "SSE_FEED_TOTAL_BYTES={v} exceeds the {max}-byte release-safe \
-                     maximum for memory profile {:?}",
-                    profile.unwrap_or("default")
-                );
+                notices.push(ConfigNotice::FeedBudgetAboveReleaseMax {
+                    configured: v,
+                    max,
+                    profile: profile.unwrap_or("default").to_string(),
+                });
             }
             Some(_) => {}
         }
     }
-    // The descriptor ceiling: the configured SSE cap must fit under
-    // nofile_hard with headroom for everything else the process holds.
-    // Under the release posture: clamp and emit (the review's
-    // acceptable arm) rather than refusing — a platform that lowers
-    // the ceiling mid-fleet must not take the whole deployment down at
-    // restart. Outside the release posture, warn only.
-    //
-    // Round-4 follow-up review, finding 1: the runtime reads cap 0 as
-    // UNLIMITED, so a degraded descriptor ceiling (nofile_hard <=
-    // reserve) must never clamp DOWN to it — and an explicit 0 must
-    // never pass release validation. A degraded platform fails CLOSED
-    // (refusal), not open.
-    if release_posture && *sse_max_connections == 0 {
-        anyhow::bail!(
+    // Round-4 follow-up review, finding 1: an explicit 0 must never
+    // pass release validation (0 = unlimited on the request path).
+    if release_posture && sse_max_connections == 0 {
+        return Err(
             "SSE_MAX_CONNECTIONS=0 means unlimited; the release posture \
              requires a bounded subscription cap"
+                .to_string(),
         );
     }
+    Ok(ConfiguredCapacity {
+        sse_max_connections,
+    })
+}
+
+/// The OS-dependent half (bootstrap PREFLIGHT, after the descriptor
+/// limit has been raised and probed): the configured cap must fit
+/// under `nofile_hard` with headroom for everything else the process
+/// holds. Under the release posture: clamp and notice (the review's
+/// acceptable arm) rather than refusing — a platform that lowers the
+/// ceiling mid-fleet must not take the whole deployment down at
+/// restart. Outside the release posture: notice only. A degraded
+/// ceiling (`nofile_hard <= reserve`) must never clamp DOWN to 0
+/// (= unlimited): the release posture fails CLOSED. `nofile_hard == 0`
+/// means the platform reported no ceiling (non-unix): nothing to
+/// resolve against, the configured value stands.
+pub(crate) fn resolve_effective_capacity(
+    configured: ConfiguredCapacity,
+    release_posture: bool,
+    nofile_hard: u64,
+    notices: &mut Vec<ConfigNotice>,
+) -> Result<EffectiveCapacity, String> {
+    let mut cap = configured.sse_max_connections;
     if nofile_hard > 0 {
         if nofile_hard <= FD_RESERVE {
             if release_posture {
-                anyhow::bail!(
+                return Err(format!(
                     "nofile_hard={nofile_hard} leaves no safe SSE connection capacity \
                      (a {FD_RESERVE}-descriptor reserve is required before any \
                      subscription budget)"
-                );
+                ));
             }
-            tracing::warn!(
-                "nofile_hard={nofile_hard} leaves no safe SSE connection capacity \
-                 after the {FD_RESERVE}-descriptor reserve"
-            );
+            notices.push(ConfigNotice::DescriptorReserveTight { nofile_hard });
         } else {
             let ceiling = nofile_hard - FD_RESERVE;
-            if *sse_max_connections > ceiling {
+            if cap > ceiling {
                 if release_posture {
-                    tracing::warn!(
-                        "SSE_MAX_CONNECTIONS={} exceeds what nofile_hard={nofile_hard} can carry \
-                         with a {FD_RESERVE}-descriptor reserve; clamping the effective cap to {ceiling} \
-                         (raise RLIMIT_NOFILE or lower SSE_MAX_CONNECTIONS)",
-                        *sse_max_connections
-                    );
-                    *sse_max_connections = ceiling;
+                    notices.push(ConfigNotice::SseCapClamped {
+                        configured: cap,
+                        nofile_hard,
+                        effective: ceiling,
+                    });
+                    cap = ceiling;
                 } else {
-                    tracing::warn!(
-                        "SSE_MAX_CONNECTIONS={} exceeds what nofile_hard={nofile_hard} can carry \
-                         with a {FD_RESERVE}-descriptor reserve; descriptor exhaustion wedges \
-                         parked subscriptions (~1.5k seen in the field)",
-                        *sse_max_connections
-                    );
+                    notices.push(ConfigNotice::SseCapExceedsDescriptors {
+                        configured: cap,
+                        nofile_hard,
+                    });
                 }
             }
         }
     }
-    Ok(())
+    Ok(EffectiveCapacity {
+        sse_max_connections: cap,
+    })
 }
 
 /// Cross-knob validation of a SlateDB `Settings` before any engine opens.
@@ -641,15 +529,131 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
+/// A typed advisory produced by validation (PR 4.1). Validation itself
+/// emits NO logs — it must not announce one subsection as certified
+/// before a later subsection rejects the whole configuration — so
+/// notices are collected here and emitted by bootstrap only after the
+/// entire validation succeeded.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum ConfigNotice {
+    MemoryProfileCertified {
+        profile: String,
+    },
+    FleetAuthStaticBridge,
+    FeedBudgetAboveReleaseMax {
+        configured: u64,
+        max: u64,
+        profile: String,
+    },
+    CoarseInitialShards {
+        configured: usize,
+        fleet_max: u64,
+        suggested: usize,
+    },
+    DescriptorReserveTight {
+        nofile_hard: u64,
+    },
+    SseCapClamped {
+        configured: u64,
+        nofile_hard: u64,
+        effective: u64,
+    },
+    SseCapExceedsDescriptors {
+        configured: u64,
+        nofile_hard: u64,
+    },
+}
+
+impl ConfigNotice {
+    /// Severity for the emitter: `true` = warning, `false` = info.
+    pub fn is_warning(&self) -> bool {
+        !matches!(self, Self::MemoryProfileCertified { .. })
+    }
+}
+
+impl std::fmt::Display for ConfigNotice {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::MemoryProfileCertified { profile } => write!(
+                f,
+                "memory profile certified: compute-1g (all DB families) profile={profile}"
+            ),
+            Self::FleetAuthStaticBridge => write!(
+                f,
+                "FLEET_AUTH_MODE=static: the shared bridge token is a NAMED legacy \
+                 posture; the release posture requires workload identity (§14.1)"
+            ),
+            Self::FeedBudgetAboveReleaseMax {
+                configured,
+                max,
+                profile,
+            } => write!(
+                f,
+                "SSE_FEED_TOTAL_BYTES={configured} exceeds the {max}-byte release-safe \
+                 maximum for memory profile {profile:?}"
+            ),
+            Self::CoarseInitialShards {
+                configured,
+                fleet_max,
+                suggested,
+            } => write!(
+                f,
+                "INITIAL_SHARDS={configured} < 4×FLEET_MAX={fleet_max}: a fresh topology \
+                 this coarse draws unevenly under rendezvous and the rebalancer flaps \
+                 against return-home; use >= {suggested}"
+            ),
+            Self::DescriptorReserveTight { nofile_hard } => write!(
+                f,
+                "nofile_hard={nofile_hard} leaves no safe SSE connection capacity after \
+                 the {FD_RESERVE}-descriptor reserve"
+            ),
+            Self::SseCapClamped {
+                configured,
+                nofile_hard,
+                effective,
+            } => write!(
+                f,
+                "SSE_MAX_CONNECTIONS={configured} exceeds what nofile_hard={nofile_hard} can \
+                 carry with a {FD_RESERVE}-descriptor reserve; clamping the effective cap to \
+                 {effective} (raise RLIMIT_NOFILE or lower SSE_MAX_CONNECTIONS)"
+            ),
+            Self::SseCapExceedsDescriptors {
+                configured,
+                nofile_hard,
+            } => write!(
+                f,
+                "SSE_MAX_CONNECTIONS={configured} exceeds what nofile_hard={nofile_hard} can \
+                 carry with a {FD_RESERVE}-descriptor reserve; descriptor exhaustion wedges \
+                 parked subscriptions (~1.5k seen in the field)"
+            ),
+        }
+    }
+}
+
 /// A [`crate::config::ServerConfig`] whose invariants have been proven
 /// (PR 3.2): the only way to construct one is
-/// [`crate::config::ServerConfig::validate`], and [`run`] accepts only
-/// this type — so validation is complete before any process-global
-/// initialization, store opening, canary write, or task spawn, by
-/// construction rather than by call-site discipline. Carries the values
-/// validation had to derive anyway, so bootstrap never re-parses (and
-/// can never disagree with what was validated).
+/// [`crate::config::ServerConfig::validate`], and [`crate::bootstrap::run`]
+/// accepts only this type — so validation is complete before any
+/// process-global initialization, store opening, canary write, or task
+/// spawn, by construction rather than by call-site discipline. Every
+/// field is PRIVATE (PR 4.1): no other crate module can forge one;
+/// bootstrap takes the proven parts through
+/// [`ValidatedServerConfig::into_bootstrap_parts`].
 pub struct ValidatedServerConfig {
+    config: crate::config::ServerConfig,
+    tenant: crate::tenant::ProjectId,
+    cell_id: crate::tenant::CellId,
+    auth_mode: crate::auth::AuthMode,
+    catalog_cursor_key: Option<[u8; 32]>,
+    cert_sealed_publish_delay_ms: u64,
+    initial_shards: InitialShards,
+    configured_capacity: ConfiguredCapacity,
+    notices: Vec<ConfigNotice>,
+}
+
+/// The proven values bootstrap consumes — obtainable ONLY from a
+/// [`ValidatedServerConfig`].
+pub(crate) struct BootstrapParts {
     pub(crate) config: crate::config::ServerConfig,
     pub(crate) tenant: crate::tenant::ProjectId,
     pub(crate) cell_id: crate::tenant::CellId,
@@ -657,6 +661,8 @@ pub struct ValidatedServerConfig {
     pub(crate) catalog_cursor_key: Option<[u8; 32]>,
     pub(crate) cert_sealed_publish_delay_ms: u64,
     pub(crate) initial_shards: InitialShards,
+    pub(crate) configured_capacity: ConfiguredCapacity,
+    pub(crate) notices: Vec<ConfigNotice>,
 }
 
 impl ValidatedServerConfig {
@@ -664,38 +670,97 @@ impl ValidatedServerConfig {
     pub fn config(&self) -> &crate::config::ServerConfig {
         &self.config
     }
+
+    /// Advisories collected during validation, for the caller to emit
+    /// AFTER success.
+    pub fn notices(&self) -> &[ConfigNotice] {
+        &self.notices
+    }
+
+    pub(crate) fn into_bootstrap_parts(self) -> BootstrapParts {
+        BootstrapParts {
+            config: self.config,
+            // mt-lint: allow(state-tenant-read): THE one consuming accessor of the validated boundary — it hands the PROVEN deployment tenant to bootstrap, which is the sanctioned adopter (PR 4.1)
+            tenant: self.tenant,
+            cell_id: self.cell_id,
+            auth_mode: self.auth_mode,
+            catalog_cursor_key: self.catalog_cursor_key,
+            cert_sealed_publish_delay_ms: self.cert_sealed_publish_delay_ms,
+            initial_shards: self.initial_shards,
+            configured_capacity: self.configured_capacity,
+            notices: self.notices,
+        }
+    }
+}
+
+/// Collector for one validation pass: every problem and every advisory.
+#[derive(Default)]
+struct Findings {
+    errors: Vec<String>,
+    notices: Vec<ConfigNotice>,
+}
+
+impl Findings {
+    fn err(&mut self, e: impl Into<String>) {
+        self.errors.push(e.into());
+    }
 }
 
 impl crate::config::ServerConfig {
     /// Prove the parsed configuration internally consistent (PR 3.2).
     /// Pure over the configuration value: no environment reads, no
-    /// stores, no spawns, no process termination — every problem is
-    /// collected and returned. OS-resource checks that need a live
-    /// probe (the `nofile` descriptor clamp) run in [`run`]'s preflight
-    /// stage instead, before any process-global initialization.
+    /// stores, no spawns, no process termination, and (PR 4.1) NO
+    /// LOGS — advisories are returned as typed notices. Every problem
+    /// is collected and returned. OS-resource checks that need a live
+    /// probe (the descriptor clamp) run in [`crate::bootstrap::run`]'s
+    /// preflight through [`resolve_effective_capacity`].
     pub fn validate(self) -> Result<ValidatedServerConfig, ConfigError> {
-        let mut errors = Vec::new();
+        let mut f = Findings::default();
+        self.validate_engine_and_profile(&mut f);
+        let (tenant, cell_id) = self.validate_identity(&mut f);
+        let initial_shards = self.validate_topology_and_ceilings(&mut f);
+        self.validate_billing_prerequisites(&mut f);
+        let (auth_mode, catalog_cursor_key) = self.validate_auth_and_keys(&mut f);
+        let configured_capacity = self.validate_posture(&mut f);
+        let cert_sealed_publish_delay_ms = self.validate_instruments(&mut f);
 
-        // R28: SWEEP_MAINT_RESIDENT=0 would silently starve every cold
-        // debt class (the rotation would open and immediately close
-        // each indebted engine, so no absorber lives long enough to
-        // drain). The config stores the raw value; the billing adapter
-        // floors at use.
+        if !f.errors.is_empty() {
+            return Err(ConfigError { errors: f.errors });
+        }
+        Ok(ValidatedServerConfig {
+            tenant: tenant.expect("no errors implies tenant parsed"),
+            cell_id: cell_id.expect("no errors implies cell id parsed"),
+            auth_mode: auth_mode.expect("no errors implies auth mode parsed"),
+            catalog_cursor_key,
+            cert_sealed_publish_delay_ms: cert_sealed_publish_delay_ms
+                .expect("no errors implies delay parsed"),
+            initial_shards: initial_shards.expect("no errors implies shards proven"),
+            configured_capacity: configured_capacity.expect("no errors implies capacity proven"),
+            notices: f.notices,
+            config: self,
+        })
+    }
+
+    /// R28 sweep residency + memory-profile certification + the
+    /// engine settings SlateDB would reject at open time (CHAOS-2).
+    fn validate_engine_and_profile(&self, f: &mut Findings) {
+        // SWEEP_MAINT_RESIDENT=0 would silently starve every cold debt
+        // class (the rotation would open and immediately close each
+        // indebted engine, so no absorber lives long enough to drain).
+        // The config stores the raw value; the billing adapter floors at
+        // use.
         if self.billing.sweep_maint_resident == 0 {
-            errors.push(
+            f.err(
                 "SWEEP_MAINT_RESIDENT=0 starves all cold-debt drain; \
-                 set >= 1 or unset (default 2)"
-                    .to_string(),
+                 set >= 1 or unset (default 2)",
             );
         }
-        // R28: a certified survival deploy must fail at boot, not OOM
-        // at +28 min, if any memory knob was dropped or overridden.
-        errors.extend(certified_memprofile_errors(&self));
-        // A configuration SlateDB will reject at open time must stop
-        // here, not turn into a permanently-500 data plane behind an
-        // `ok` health check (CHAOS-2). Both engine tiers go through the
-        // same check so a future edit to either cannot reintroduce the
-        // hole.
+        // A certified survival deploy must fail at boot, not OOM at
+        // +28 min, if any memory knob was dropped or overridden.
+        let profile_errors = certified_memprofile_errors(self, &mut f.notices);
+        f.errors.extend(profile_errors);
+        // Both engine tiers go through the same check so a future edit
+        // to either cannot reintroduce the permanently-500 hole.
         for (what, settings) in [
             ("shard", shard_settings(&self.cli, &self.engine)),
             (
@@ -704,112 +769,122 @@ impl crate::config::ServerConfig {
             ),
         ] {
             if let Err(e) = validate_engine_settings(what, &settings) {
-                errors.push(format!("{e}"));
+                f.err(format!("{e}"));
             }
         }
-        // MULTITENANCY transition posture: the deployment tenant is
-        // EXPLICIT, validated config — layout-4 paths and hashes derive
-        // from it, so an invalid or reserved value refuses boot loudly
-        // instead of writing a mis-keyed namespace.
+    }
+
+    /// The deployment tenant (layout-4 paths and hashes derive from
+    /// it) and the telemetry cell identity (§2), both as typed values.
+    fn validate_identity(
+        &self,
+        f: &mut Findings,
+    ) -> (
+        Option<crate::tenant::ProjectId>,
+        Option<crate::tenant::CellId>,
+    ) {
         let tenant = match crate::tenant::ProjectId::new(&self.cli.project_id) {
             Ok(t) if t.is_system() => {
-                errors.push("PROJECT_ID may not be the reserved system project".to_string());
+                f.err("PROJECT_ID may not be the reserved system project");
                 None
             }
             Ok(t) => Some(t),
             Err(e) => {
-                errors.push(format!(
+                f.err(format!(
                     "PROJECT_ID {:?} is invalid: {e}",
                     self.cli.project_id
                 ));
                 None
             }
         };
-        // §2: the telemetry cell identity — formerly re-validated (and
-        // expect-ed) inside Registry::new; the proof now lives here and
-        // Registry consumes the typed value.
         let cell_id = match crate::tenant::CellId::new(&self.cli.cell_id) {
             Ok(c) => Some(c),
             Err(e) => {
-                errors.push(format!("CELL_ID {:?} is invalid: {e}", self.cli.cell_id));
+                f.err(format!("CELL_ID {:?} is invalid: {e}", self.cli.cell_id));
                 None
             }
         };
-        // The effective body ceiling (pure bounds; the installer is
-        // infallible). CHAOS-3: this value also sizes the absorber's
-        // worst-frame reservation, so it must be right BEFORE any
-        // process-global budget reads it.
+        (tenant, cell_id)
+    }
+
+    /// The effective body ceiling (CHAOS-3: it sizes the absorber's
+    /// worst-frame reservation, so it must be right BEFORE any
+    /// process-global budget reads it) and the effective initial shard
+    /// count, resolved against the fleet-mode default and proven.
+    fn validate_topology_and_ceilings(&self, f: &mut Findings) -> Option<InitialShards> {
         if let Err(e) = validate_body_ceiling(self.cli.max_request_body_bytes) {
-            errors.push(e);
+            f.err(e);
         }
-        // The effective initial shard count, resolved against the
-        // fleet-mode default and proven (nonzero power of two). The
-        // coarse-topology warning moves here with it.
-        let fleet_mode = self.cli.fleet_prefix.is_some() && self.cli.fleet_max > 1;
+        let fleet_mode = self.fleet_mode();
         let effective_shards = match self.cli.initial_shards {
             Some(n) => {
                 if fleet_mode && n < 4 * self.cli.fleet_max as usize {
-                    tracing::warn!(
-                        "INITIAL_SHARDS={n} < 4×FLEET_MAX={}: a fresh topology this \
-                         coarse draws unevenly under rendezvous and the rebalancer \
-                         flaps against return-home; use >= {}",
-                        self.cli.fleet_max,
-                        (4 * self.cli.fleet_max as usize).next_power_of_two()
-                    );
+                    f.notices.push(ConfigNotice::CoarseInitialShards {
+                        configured: n,
+                        fleet_max: self.cli.fleet_max,
+                        suggested: (4 * self.cli.fleet_max as usize).next_power_of_two(),
+                    });
                 }
                 n
             }
             None if fleet_mode => (4 * self.cli.fleet_max as usize).next_power_of_two(),
             None => 1,
         };
-        let initial_shards = match InitialShards::new(effective_shards) {
+        match InitialShards::new(effective_shards) {
             Ok(s) => Some(s),
             Err(e) => {
-                errors.push(e);
+                f.err(e);
                 None
             }
-        };
-        // Round-21: production billing must never silently attribute a
-        // customer's traffic to the placeholder tenant — the PURE
-        // billing-required prerequisites are proven here; the spool and
-        // rollup OPENS (store I/O) stay in bootstrap.
-        if self.cli.billing_mode == "required" {
-            if self.cli.usage_stream_key.is_none() {
-                errors.push(
-                    "BILLING_MODE=required needs USAGE_STREAM_KEY — production \
-                     billing refuses to run without the usage ledger (§14.1)"
-                        .to_string(),
-                );
-            }
-            if self.cli.account_id == "acct_local"
-                || self.cli.project_id == "proj_local"
-                || self.cli.cell_id == "local"
-            {
-                errors.push(
-                    "BILLING_MODE=required needs explicit ACCOUNT_ID, PROJECT_ID \
-                     and CELL_ID — refusing to bill production traffic to the \
-                     local placeholders"
-                        .to_string(),
-                );
-            }
         }
-        // MULTITENANCY Stage 5: the auth service exists in every mode
-        // (Off is inert).
+    }
+
+    /// Round-21: production billing must never silently attribute a
+    /// customer's traffic to the placeholder tenant — the PURE
+    /// billing-required prerequisites; the spool and rollup OPENS
+    /// (store I/O) stay in bootstrap.
+    fn validate_billing_prerequisites(&self, f: &mut Findings) {
+        if self.cli.billing_mode != "required" {
+            return;
+        }
+        if self.cli.usage_stream_key.is_none() {
+            f.err(
+                "BILLING_MODE=required needs USAGE_STREAM_KEY — production \
+                 billing refuses to run without the usage ledger (§14.1)",
+            );
+        }
+        if self.cli.account_id == "acct_local"
+            || self.cli.project_id == "proj_local"
+            || self.cli.cell_id == "local"
+        {
+            f.err(
+                "BILLING_MODE=required needs explicit ACCOUNT_ID, PROJECT_ID \
+                 and CELL_ID — refusing to bill production traffic to the \
+                 local placeholders",
+            );
+        }
+    }
+
+    /// MULTITENANCY Stage 5: the auth mode, its required files and
+    /// refresh cadence, and the catalog cursor key.
+    fn validate_auth_and_keys(
+        &self,
+        f: &mut Findings,
+    ) -> (Option<crate::auth::AuthMode>, Option<[u8; 32]>) {
         let auth_mode =
             match crate::auth::AuthMode::from_env(Some(self.cli.streams_auth_mode.as_str())) {
                 Ok(m) => Some(m),
                 Err(e) => {
-                    errors.push(format!("{e}"));
+                    f.err(format!("{e}"));
                     None
                 }
             };
         if auth_mode.is_some_and(|m| m != crate::auth::AuthMode::Off) {
-            // Review item: the local placeholder tenant must never
-            // reach a shadow/enforce deployment — proj_local silently
-            // naming a real project's data is exactly the accident
-            // this refuses.
+            // The local placeholder tenant must never reach a
+            // shadow/enforce deployment — proj_local silently naming a
+            // real project's data is exactly the accident this refuses.
             if self.cli.project_id == "proj_local" {
-                errors.push(format!(
+                f.err(format!(
                     "STREAMS_AUTH_MODE={} requires an explicit non-default PROJECT_ID",
                     self.cli.streams_auth_mode
                 ));
@@ -818,19 +893,19 @@ impl crate::config::ServerConfig {
                 && self.cli.streams_auth_policy_file.is_some()
                 && self.cli.streams_auth_grants_file.is_some())
             {
-                errors.push(format!(
+                f.err(format!(
                     "STREAMS_AUTH_MODE={} requires STREAMS_AUTH_KEYS_FILE, \
                      STREAMS_AUTH_POLICY_FILE and STREAMS_AUTH_GRANTS_FILE",
                     self.cli.streams_auth_mode
                 ));
             }
-            // The refresher cadence must clear the staleness window
-            // with room for a failed fetch or two, or the cell
-            // oscillates into fail-closed refusals on schedule.
+            // The refresher cadence must clear the staleness window with
+            // room for a failed fetch or two, or the cell oscillates into
+            // fail-closed refusals on schedule.
             if (self.cli.streams_auth_refresh_secs as i64)
                 > crate::auth::POLICY_STALENESS_MAX_SECS / 3
             {
-                errors.push(format!(
+                f.err(format!(
                     "STREAMS_AUTH_REFRESH_SECS={} must be <= {} (a third of the \
                      {}s staleness window)",
                     self.cli.streams_auth_refresh_secs,
@@ -845,74 +920,67 @@ impl crate::config::ServerConfig {
                 use base64::Engine;
                 match base64::engine::general_purpose::STANDARD.decode(b64) {
                     Err(e) => {
-                        errors.push(format!("STREAMS_CURSOR_KEY is not base64: {e}"));
+                        f.err(format!("STREAMS_CURSOR_KEY is not base64: {e}"));
                         None
                     }
                     Ok(raw) => match <[u8; 32]>::try_from(raw.as_slice()) {
                         Ok(k) => Some(k),
                         Err(_) => {
-                            errors.push(
-                                "STREAMS_CURSOR_KEY must decode to exactly 32 bytes".to_string(),
-                            );
+                            f.err("STREAMS_CURSOR_KEY must decode to exactly 32 bytes");
                             None
                         }
                     },
                 }
             }
         };
-        // FAIL CLOSED (round-19 security): fleet mode must not start
-        // without its own internal credential.
-        if let Err(e) = validate_fleet_auth(&self.cli, fleet_mode) {
-            errors.push(format!("{e}"));
+        (auth_mode, catalog_cursor_key)
+    }
+
+    /// The release posture: fleet-auth credentials (FAIL CLOSED,
+    /// round-19), the per-record ceiling, and the configured
+    /// subscription capacity.
+    fn validate_posture(&self, f: &mut Findings) -> Option<ConfiguredCapacity> {
+        if let Err(e) = validate_fleet_auth(&self.cli, self.fleet_mode(), &mut f.notices) {
+            f.err(format!("{e}"));
         }
         if let Err(e) = validate_record_ceiling(
             &self.sse,
             self.cli.release_posture,
             self.cli.max_record_payload_bytes,
         ) {
-            errors.push(format!("{e}"));
+            f.err(format!("{e}"));
         }
-        // The pure half of the release-capacity posture: nofile_hard=0
-        // means "no descriptor probe", so only the feed-budget and
-        // bounded-cap checks run here. The live descriptor clamp is
-        // run()'s preflight.
-        {
-            let mut cap_probe = self.cli.sse_max_connections;
-            if let Err(e) = validate_release_capacity(
-                self.cli.release_posture,
-                self.runtime.memprofile_cert.as_deref(),
-                self.sse.feed_total_bytes_raw.as_deref(),
-                &mut cap_probe,
-                0,
-            ) {
-                errors.push(format!("{e}"));
+        match validate_configured_capacity(
+            self.cli.release_posture,
+            self.runtime.memprofile_cert.as_deref(),
+            self.sse.feed_total_bytes_raw.as_deref(),
+            self.cli.sse_max_connections,
+            &mut f.notices,
+        ) {
+            Ok(c) => Some(c),
+            Err(e) => {
+                f.err(e);
+                None
             }
         }
-        // Round-11.6: the seal-publication delay is a CERTIFICATION
-        // instrument, never a production knob.
-        let cert_sealed_publish_delay_ms = match cert_sealed_publish_delay_from(
+    }
+
+    /// Round-11.6: the seal-publication delay is a CERTIFICATION
+    /// instrument, never a production knob.
+    fn validate_instruments(&self, f: &mut Findings) -> Option<u64> {
+        match cert_sealed_publish_delay_from(
             self.runtime.cert_sealed_publish_delay_ms_raw.as_deref(),
             self.runtime.certification_mode.as_deref(),
         ) {
             Ok(ms) => Some(ms),
             Err(e) => {
-                errors.push(format!("{e}"));
+                f.err(format!("{e}"));
                 None
             }
-        };
-
-        if !errors.is_empty() {
-            return Err(ConfigError { errors });
         }
-        Ok(ValidatedServerConfig {
-            tenant: tenant.expect("no errors implies tenant parsed"),
-            cell_id: cell_id.expect("no errors implies cell id parsed"),
-            auth_mode: auth_mode.expect("no errors implies auth mode parsed"),
-            catalog_cursor_key,
-            cert_sealed_publish_delay_ms: cert_sealed_publish_delay_ms
-                .expect("no errors implies delay parsed"),
-            initial_shards: initial_shards.expect("no errors implies shards proven"),
-            config: self,
-        })
+    }
+
+    fn fleet_mode(&self) -> bool {
+        self.cli.fleet_prefix.is_some() && self.cli.fleet_max > 1
     }
 }

@@ -409,15 +409,14 @@ def _norm_ws(s: str) -> str:
 
 
 def item_keys(report: dict) -> dict[str, set]:
-    """Stable per-category item keys for baseline diffing (line numbers
-    deliberately absent — they move under any edit).
+    """Stable per-category PRESENCE keys for baseline diffing (line
+    numbers deliberately absent — they move under any edit).
 
-    PR 3.2: coarse identities carry their COUNT, so growth inside an
-    already-flagged item is a visible diff (a count change reads as one
-    NEW + one RESOLVED pair). Previously another forbidden reference in
-    a flagged file, another Axum leak in a flagged file, a second
-    mutable static of the same type, or a second over-budget function
-    with a colliding name produced NO diff item at all."""
+    PR 4.1: NEW means absent before and present now; RESOLVED the
+    reverse. Counts are therefore NOT part of the identity (a
+    forbidden-reference count going 47 -> 46 is an improvement, not a
+    new offender and a resolved one) — count movement is reported
+    separately as SHRINK/GROWTH by `baseline_diff`."""
     from collections import Counter
 
     fn_names = Counter(
@@ -429,15 +428,27 @@ def item_keys(report: dict) -> dict[str, set]:
     return {
         "files_over_budget": {f["file"] for f in report["files_over_budget"]},
         "functions_over_budget": {f"{k}|x{n}" for k, n in fn_names.items()},
-        "forbidden_edges": {
-            f"{e['file']}|refs={e['count']}" for e in report["forbidden_edges"]
-        },
+        "forbidden_edges": {e["file"] for e in report["forbidden_edges"]},
         "env_reads": {f"{e['file']}|{_norm_ws(e['src'])}" for e in report["env_reads"]},
-        "axum_outside_transport": {
-            f"{e['file']}|refs={e['count']}" for e in report["axum_outside_transport"]
-        },
+        "axum_outside_transport": {e["file"] for e in report["axum_outside_transport"]},
         "keytag_sites": {f"{e['file']}|{_norm_ws(e['src'])}" for e in report["keytag_sites"]},
         "mutable_statics": {f"{k}|x{n}" for k, n in static_types.items()},
+    }
+
+
+def count_keys(report: dict) -> dict[str, dict[str, int]]:
+    """Per-category COUNT metrics for the SHRINK/GROWTH report: how many
+    references/lines an already-present item carries."""
+    return {
+        "forbidden_edges": {e["file"]: e["count"] for e in report["forbidden_edges"]},
+        "axum_outside_transport": {
+            e["file"]: e["count"] for e in report["axum_outside_transport"]
+        },
+        "files_over_budget": {f["file"]: f["lines"] for f in report["files_over_budget"]},
+        "functions_over_budget": {
+            f"{f['file']}::{f['function']}": f["lines"]
+            for f in report["functions_over_budget"]
+        },
     }
 
 
@@ -464,39 +475,38 @@ def baseline_diff(current: dict, baseline_path: Path) -> int:
             print(f"  NEW      {k}")
         for k in resolved:
             print(f"  RESOLVED {k}")
-    # PR 3.2.1: growth INSIDE already-flagged offenders was invisible —
-    # an over-budget file's identity is its filename, so +419 lines in
-    # a known offender produced no diff item. Report line-count deltas
-    # for over-budget files/functions present on both sides.
+    # PR 3.2.1/4.1: movement INSIDE already-present items — line counts
+    # of over-budget files/functions, reference counts of forbidden
+    # edges and Axum leaks — is reported as SHRINK/GROWTH, never as a
+    # NEW+RESOLVED pair.
     growth: list[str] = []
-
-    def spans(report: dict, cat: str, keyf, sizef):
-        return {keyf(e): sizef(e) for e in report.get(cat, [])}
-
-    cur_files = spans(current, "files_over_budget", lambda e: e["file"], lambda e: e["lines"])
-    base_files = spans(baseline, "files_over_budget", lambda e: e["file"], lambda e: e["lines"])
-    for f in sorted(set(cur_files) & set(base_files)):
-        d = cur_files[f] - base_files[f]
-        if d != 0:
-            growth.append(f"  {f:<40} {d:+} lines ({base_files[f]} -> {cur_files[f]})")
-    cur_fns = spans(
-        current, "functions_over_budget",
-        lambda e: f"{e['file']}::{e['function']}", lambda e: e["lines"],
-    )
-    base_fns = spans(
-        baseline, "functions_over_budget",
-        lambda e: f"{e['file']}::{e['function']}", lambda e: e["lines"],
-    )
-    for f in sorted(set(cur_fns) & set(base_fns)):
-        d = cur_fns[f] - base_fns[f]
-        if d != 0:
-            growth.append(f"  {f:<40} {d:+} lines ({base_fns[f]} -> {cur_fns[f]})")
+    shrink: list[str] = []
+    cur_c = count_keys(current)
+    base_c = count_keys(baseline)
+    units = {
+        "files_over_budget": "lines",
+        "functions_over_budget": "lines",
+        "forbidden_edges": "refs",
+        "axum_outside_transport": "refs",
+    }
+    for cat, unit in units.items():
+        for k in sorted(set(cur_c[cat]) & set(base_c[cat])):
+            d = cur_c[cat][k] - base_c[cat][k]
+            line = f"  {cat:<24} {k:<44} {base_c[cat][k]} -> {cur_c[cat][k]} {unit} ({d:+})"
+            if d > 0:
+                growth.append(line)
+            elif d < 0:
+                shrink.append(line)
     if growth:
-        print("GROWTH (inside already-flagged offenders):")
+        print("GROWTH (inside already-present items):")
         for g in growth:
             print(g)
     else:
-        print("GROWTH: none inside already-flagged offenders")
+        print("GROWTH: none inside already-present items")
+    if shrink:
+        print("SHRINK (inside already-present items):")
+        for s in shrink:
+            print(s)
     print("baseline-diff:", "REGRESSIONS PRESENT" if any_new else "no new regressions")
     return 0
 

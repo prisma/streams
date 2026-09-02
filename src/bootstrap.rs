@@ -12,8 +12,8 @@ use object_store::aws::{AmazonS3, AmazonS3Builder, S3ConditionalPut};
 use object_store::{ObjectStore, ObjectStoreExt};
 use slatedb::Db;
 
-pub use crate::config::validation::{ValidatedServerConfig, compactor_profile_json};
-use crate::config::validation::{shard_settings, validate_release_capacity};
+use crate::config::validation::ValidatedServerConfig;
+use crate::config::validation::{resolve_effective_capacity, shard_settings};
 use crate::history::{Absorber, AbsorberConfig, KeyCache, absorber_channel};
 use crate::http::AppState;
 use crate::registry::{Registry, load_or_init_topology};
@@ -144,7 +144,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
              one's seeds (WP-02 replaces these with per-runtime owners)"
         );
     }
-    let ValidatedServerConfig {
+    let crate::config::validation::BootstrapParts {
         mut config,
         tenant,
         cell_id,
@@ -152,7 +152,9 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         catalog_cursor_key,
         cert_sealed_publish_delay_ms,
         initial_shards,
-    } = validated;
+        configured_capacity,
+        mut notices,
+    } = validated.into_bootstrap_parts();
 
     // ---- preflight: the one OS-resource probe, BEFORE any process-
     // global initialization or remote I/O (PR 3.2). Round-4 review: the
@@ -169,13 +171,23 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         "runtime identity minted"
     );
     let (nofile_soft, nofile_hard) = crate::http::raise_nofile();
-    validate_release_capacity(
+    let effective = resolve_effective_capacity(
+        configured_capacity,
         config.cli.release_posture,
-        config.runtime.memprofile_cert.as_deref(),
-        config.sse.feed_total_bytes_raw.as_deref(),
-        &mut config.cli.sse_max_connections,
         nofile_hard,
-    )?;
+        &mut notices,
+    )
+    .map_err(|e| anyhow::anyhow!("{e}"))?;
+    config.cli.sse_max_connections = effective.sse_max_connections;
+    // PR 4.1: validation is silent; its advisories (and the preflight's)
+    // are emitted HERE, after the whole configuration was accepted.
+    for n in &notices {
+        if n.is_warning() {
+            tracing::warn!("{n}");
+        } else {
+            tracing::info!("{n}");
+        }
+    }
     tracing::info!(
         "nofile soft={nofile_soft} hard={nofile_hard} (raised to hard at boot); \
          feed retention budget={}B",

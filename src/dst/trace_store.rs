@@ -14,7 +14,7 @@ use object_store::{
 use super::{ObjClass, StoreOp};
 
 #[cfg(test)]
-#[path = "trace_store_tests.rs"]
+#[path = "trace_store_tests/mod.rs"]
 mod trace_store_tests;
 
 // ---- the tracing store -----------------------------------------------

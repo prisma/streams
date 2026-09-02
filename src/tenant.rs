@@ -310,13 +310,17 @@ impl CanonicalStreamName {
         {
             return Err(NameError::ControlChar { at });
         }
-        let mut first = true;
+        // Precedence (PR 4.1, characterized in `name_error_precedence`):
+        // EVERY component is checked for structural validity before
+        // the reserved-root rule, so a name that is both mis-shaped
+        // and reserved reports the structural problem — the one rule
+        // order the product surface historically exposed, now owned
+        // here instead of re-scanned by the product adapter.
         for comp in raw.split('/') {
             valid_component(comp)?;
-            if first && comp == RESERVED_ROOT {
-                return Err(NameError::ReservedRoot);
-            }
-            first = false;
+        }
+        if raw.split('/').next() == Some(RESERVED_ROOT) {
+            return Err(NameError::ReservedRoot);
         }
         Ok(Self(Arc::from(raw)))
     }
@@ -1045,6 +1049,30 @@ mod tests {
         );
         // __ds below the root is a legal component (only the ROOT is reserved).
         assert!(CanonicalStreamName::new("a/__ds").is_ok());
+    }
+
+    /// PR 4.1: the canonical layer OWNS error precedence. Structural
+    /// component problems win over the reserved root (the product
+    /// surface's historical wire order); a well-formed reserved name
+    /// still reports the root.
+    #[test]
+    fn name_error_precedence() {
+        assert_eq!(
+            CanonicalStreamName::new("__ds/..").unwrap_err(),
+            NameError::DotComponent
+        );
+        assert_eq!(
+            CanonicalStreamName::new("__ds//x").unwrap_err(),
+            NameError::EmptyComponent
+        );
+        assert_eq!(
+            CanonicalStreamName::new("__ds/x").unwrap_err(),
+            NameError::ReservedRoot
+        );
+        assert_eq!(
+            CanonicalStreamName::new("__ds").unwrap_err(),
+            NameError::ReservedRoot
+        );
         assert_eq!(
             CanonicalStreamName::new("a\u{7}b"),
             Err(NameError::ControlChar { at: 1 })
