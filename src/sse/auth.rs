@@ -337,12 +337,8 @@ impl GatedSseBody {
         gen_rx: tokio::sync::watch::Receiver<u64>,
     ) -> Self {
         let nap = watch.nap();
-        let heartbeat_interval = std::time::Duration::from_millis(
-            state
-                .sse_heartbeat_ms
-                .load(std::sync::atomic::Ordering::Relaxed)
-                .max(50),
-        );
+        let heartbeat_interval =
+            std::time::Duration::from_millis(state.livefeed.heartbeat_ms().max(50));
         Self {
             gen_rx,
             state,

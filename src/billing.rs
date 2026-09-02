@@ -2848,7 +2848,7 @@ pub async fn system_append(
             }
             req
         };
-        match crate::http::send_fleet(state, mk).await {
+        match state.peer.send(mk).await {
             Ok(resp) if resp.status().is_success() => return Ok(()),
             Ok(resp) => return Err(format!("telemetry relay {stream}: {}", resp.status())),
             Err(e) => return Err(format!("telemetry relay {stream}: {e}")),
@@ -2937,7 +2937,7 @@ pub async fn system_read(
         }
         req
     };
-    match crate::http::send_fleet(state, mk).await {
+    match state.peer.send(mk).await {
         Ok(resp) if resp.status().is_success() => {
             let next = resp
                 .headers()

@@ -492,7 +492,7 @@ async fn relay_segment_close(
         }
         req
     };
-    match crate::http::send_fleet(state, mk).await {
+    match state.peer.send(mk).await {
         Ok(r) if r.status() == axum::http::StatusCode::OK => {
             #[derive(serde::Deserialize)]
             struct Ack {

@@ -5305,7 +5305,7 @@ async fn relay_sweep_segment(
             }
             req
         };
-        let reply: Option<serde_json::Value> = match crate::http::send_fleet(state, mk).await {
+        let reply: Option<serde_json::Value> = match state.peer.send(mk).await {
             Ok(r) if r.status().is_success() => r.json().await.ok(),
             _ => None,
         };
@@ -5529,7 +5529,7 @@ async fn relay_queue_cursor(
         }
         req
     };
-    let v: serde_json::Value = match crate::http::send_fleet(state, mk).await {
+    let v: serde_json::Value = match state.peer.send(mk).await {
         Ok(r) if r.status().is_success() => r.json().await.ok()?,
         _ => return None,
     };
@@ -5708,7 +5708,7 @@ pub(crate) async fn remote_span_page(
 ) -> Result<RemoteSpanPage, RemoteSpanError> {
     let mut owner = initial_owner.to_string();
     for hop in 0..2u8 {
-        let Some(base) = state.peer_urls.read().unwrap().get(&owner).cloned() else {
+        let Some(base) = state.peer.url_for(&owner) else {
             return Err(RemoteSpanError::Transport(format!(
                 "owner {owner} has no entry in the trusted peer table"
             )));
@@ -5722,10 +5722,7 @@ pub(crate) async fn remote_span_page(
                         second: next,
                     });
                 }
-                if next.is_empty()
-                    || next == owner
-                    || !state.peer_urls.read().unwrap().contains_key(&next)
-                {
+                if next.is_empty() || next == owner || !state.peer.has_peer(&next) {
                     return Err(RemoteSpanError::InvalidResponse(format!(
                         "redirect names an unroutable owner {next:?}"
                     )));
@@ -5767,7 +5764,7 @@ async fn scan_page_once(
         }
         req
     };
-    let resp = match crate::http::send_fleet(state, mk).await {
+    let resp = match state.peer.send(mk).await {
         Ok(r) => r,
         Err(e) => return Err(RemoteSpanError::Transport(e.to_string())),
     };
@@ -5889,7 +5886,7 @@ async fn relay_segment_tail(
         }
         req
     };
-    let r = match crate::http::send_fleet(state, mk).await {
+    let r = match state.peer.send(mk).await {
         Ok(r) if r.status().is_success() => r,
         _ => return None,
     };

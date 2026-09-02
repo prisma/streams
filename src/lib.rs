@@ -26,6 +26,7 @@ mod billing;
 mod bootstrap;
 mod config;
 mod crypto;
+mod deployment_bearer;
 #[cfg(test)]
 mod dst;
 mod failpoints;
@@ -39,6 +40,7 @@ mod offsets;
 mod operator;
 mod ops;
 mod ownership;
+mod peer;
 mod postings;
 mod postings_cache;
 mod product;

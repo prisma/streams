@@ -199,16 +199,14 @@ pub(crate) async fn serve(
     // ring allowance from the process-global budget — exhaustion
     // rejects THE NEW subscriber with a typed capacity refusal while
     // the existing singleton continues normally.
-    let subscription = match state.live_feeds.subscribe(
+    let subscription = match state.livefeed.registry().subscribe(
         fkey.clone(),
         || {
             let feed = LiveFeed::new_with_budget(
                 fkey.clone(),
                 src.clone(),
-                state
-                    .feed_ring_bytes
-                    .load(std::sync::atomic::Ordering::Relaxed),
-                state.feed_budget.clone(),
+                state.livefeed.ring_bytes(),
+                state.livefeed.budget().clone(),
                 desc.project_id.clone(),
             );
             // Round-13: bind the project's admission pressure entry —

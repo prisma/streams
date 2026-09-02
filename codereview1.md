@@ -2822,6 +2822,32 @@ Do not rename user-facing flags while moving them. Flag cleanup is a separate se
 > counts; the snapshot mirrors the controller) and
 > `capacity_posture_is_unforgeable` beside the rewritten capacity
 > matrix. The rig builder is 141 lines.
+>
+> **PR 6-C (WP-02, 2026-09-02):** three more owners, eleven more
+> `AppState` fields DELETED (34 → 26). `peer::PeerClient` owns how this
+> instance addresses and authenticates to its fleet peers: the trusted
+> URL table (`url_for`, `has_peer`, `set_peers` from the fleet loop),
+> the outbound bearer (workload identity when a source is configured,
+> else the static bridge token), the SR3-1 exclusivity rule for an
+> inbound static credential (`inbound_static_ok`: dead the moment a
+> workload source exists), the fleet-internal `send` with its single
+> 401 refresh-and-retry, and the fleet object store; `FleetTokenSource`
+> lives with it. `sse::service::LiveFeedService` owns the feed
+> registry, the per-runtime memory budget, the ring allowance and the
+> keep-alive cadence (`registry`, `budget`, `ring_bytes`,
+> `heartbeat_ms`, `snapshot`); two rigs in one process never share a
+> budget. `deployment_bearer::DeploymentBearer` owns the raw surface's
+> static account credential and the conformance default key
+> (`authorizes(presented, mode)`: allow-if-unset only in Off mode;
+> `default_key`). The per-record payload ceiling joined the admission
+> controller (`record_ceiling`). Constant-time `secret_eq` moved to
+> `crypto` so the two credential owners share one implementation; the
+> HTTP layer keeps only header parsing and wire shapes. Proofs: the
+> peer table is replaced wholesale and read by name; credential modes
+> are exclusive (a leaked static token is dead in workload mode, the
+> bridge token compares in constant time, nothing authorizes with
+> neither); live-feed services are per runtime; the deployment bearer
+> opens only Off mode when unset and compares in every mode when set.
 
 **Implements:** the foundational part of WP-15.
 

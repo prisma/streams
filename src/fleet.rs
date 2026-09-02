@@ -741,7 +741,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     // rather than falling back to stale heartbeat URLs.
                     None => peer_urls.extend(last_good_urls().lock().unwrap().clone()),
                 }
-                *state.peer_urls.write().unwrap() = peer_urls.clone();
+                state.peer.set_peers(peer_urls.clone());
             }
 
             // R4 rebalancer (SCALING.md §4). Every instance mirrors
@@ -785,7 +785,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     let view = state.ownership.view();
                     if last_ownership_view.as_ref() != Some(&view) {
                         if last_ownership_view.is_some() {
-                            state.live_feeds.wake_all_sessions();
+                            state.livefeed.registry().wake_all_sessions();
                         }
                         last_ownership_view = Some(view);
                     }

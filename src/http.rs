@@ -111,21 +111,14 @@ pub struct AppState {
     /// live-subscription budget, maintenance backpressure, the fleet
     /// load vector — behind RAII tickets and one snapshot.
     pub admission: crate::admission::AdmissionController,
-    pub live_feeds: Arc<crate::sse::registry::FeedRegistry>,
-    /// LiveFeed retained-bytes budget — per AppState so test rigs are
-    /// isolated (follow-up review: a static OnceLock budget coupled
-    /// parallel HTTP rigs).
-    pub feed_budget: Arc<crate::sse::feed::FeedMemoryBudget>,
-    /// Per-feed ring allowance for feeds created from now on
-    /// (SSE_FEED_RING_BYTES; test rigs may shrink it).
-    pub feed_ring_bytes: std::sync::atomic::AtomicUsize,
-    /// Per-record payload ceiling (round-10 review); 0 = unlimited
-    /// (dev posture). The release posture requires a value whose
-    /// worst-case prepared SSE frame fits the feed ring.
-    pub max_record_payload_bytes: std::sync::atomic::AtomicUsize,
-    /// SSE keep-alive cadence (round-11.1: OWNED BY GatedSseBody, so
-    /// no blocked read can suppress it); tests shrink it per rig.
-    pub sse_heartbeat_ms: std::sync::atomic::AtomicU64,
+    /// WP-02 / PR 6-C: peers — the trusted URL table, the outbound
+    /// bearer, the inbound static-credential rule, the fleet store.
+    pub peer: crate::peer::PeerClient,
+    /// WP-02 / PR 6-C: live feeds — registry, memory budget, ring
+    /// allowance, keep-alive cadence.
+    pub livefeed: crate::sse::service::LiveFeedService,
+    /// WP-02 / PR 6-C: the raw surface's deployment credential.
+    pub bearer: crate::deployment_bearer::DeploymentBearer,
     /// Round-11.6 field canary ONLY: widen the seal close→publication
     /// gap by this many ms so the seal-herd campaign can observe the
     /// two-step window on a real release binary at fleet scale. Boot
@@ -137,28 +130,12 @@ pub struct AppState {
     /// quantum cycles, peak gauge) — process statics summed parallel
     /// test rigs into false bound violations.
     pub sweep_sched: crate::billing::SweepSched,
-    /// Fleet-coordination store (heartbeats/desired.json) for the operator
-    /// dashboard's cell view; None when running standalone.
-    pub fleet_store: Option<Arc<dyn object_store::ObjectStore>>,
     /// WP-02 / PR 6-A: ring ownership (this instance's name, the active
     /// set, the rebalancer overrides) behind narrow methods.
     pub ownership: crate::ownership::OwnershipService,
-    /// Fresh peers' published base URLs (heartbeat `url`, from SELF_URL),
-    /// updated by the fleet loop. Segment fan-out — cross-owner lineage
-    /// reads and consumer sweeps — addresses owners through this map;
-    /// empty in standalone mode or when SELF_URL isn't deployed.
-    // mt-lint: allow(name-keyed-map): instance name -> base URL
-    pub peer_urls: std::sync::RwLock<std::collections::HashMap<String, String>>,
     pub data_store: Arc<dyn ObjectStore>,
     pub keys: Arc<KeyCache>,
     pub touch: Arc<crate::touch::TouchRegistry>,
-    /// Conformance/dev accommodation: used when a request carries no
-    /// Stream-Encryption-Key header (the upstream conformance suite cannot
-    /// send custom headers). Never set in production.
-    pub default_key: Option<String>,
-    /// Bearer token required on /v1/* when set (pilot authn). This is the
-    /// CUSTOMER-facing account token; it never authorizes /v1/internal/*.
-    pub auth_token: Option<String>,
     /// The read-delivery meter (docs/OBSERVABILITY-BILLING.md §7): ONE
     /// accumulator, fed only at the public response coordinator.
     pub billing_reads: Arc<crate::billing::ReadUsageAccumulator>,
@@ -201,50 +178,6 @@ pub struct AppState {
     /// response: instance name (or version) — proof the response came
     /// from a Streams server rather than the platform edge.
     pub origin_marker: String,
-    /// Fleet-internal credential (FLEET_INTERNAL_TOKEN). A SEPARATE trust
-    /// boundary from `auth_token`: peer RPCs can fence consumer
-    /// generations and read segment state without a stream key, so a
-    /// customer bearer must never reach them, and this token must never
-    /// authorize a product operation. Required whenever fleet mode is on
-    /// (startup refuses otherwise); None = internal routes fail closed.
-    pub fleet_internal_token: Option<String>,
-    /// §14.1 (SR2 finding 1, outbound half): the workload-identity
-    /// source this instance presents to PEERS. `Fn(force_refresh) ->
-    /// token`; the source caches and refreshes (file-backed in
-    /// production — the platform rotates the file). When set, outbound
-    /// relays prefer it over the static bridge token; a 401 from a
-    /// peer forces one refresh-and-retry (key rotation).
-    pub fleet_token_source: Option<FleetTokenSource>,
-}
-
-/// See `AppState::fleet_token_source`.
-pub type FleetTokenSource = std::sync::Arc<dyn Fn(bool) -> Option<String> + Send + Sync>;
-
-/// The bearer this instance presents to peers: workload identity when
-/// a source is configured, else the static bridge token.
-pub(crate) fn outbound_fleet_bearer(state: &AppState, force_refresh: bool) -> Option<String> {
-    if let Some(src) = &state.fleet_token_source {
-        return src(force_refresh);
-    }
-    state.fleet_internal_token.clone()
-}
-
-/// Send one fleet-internal request built by `mk` (which receives the
-/// bearer to attach, if any). On a 401 with a workload source
-/// configured, the token is force-refreshed and the request retried
-/// ONCE — the rotated-credential path (§14.1). Any other outcome
-/// returns as-is.
-pub(crate) async fn send_fleet(
-    state: &AppState,
-    mk: impl Fn(Option<&str>) -> reqwest::RequestBuilder,
-) -> Result<reqwest::Response, reqwest::Error> {
-    let t = outbound_fleet_bearer(state, false);
-    let resp = mk(t.as_deref()).send().await?;
-    if resp.status() == reqwest::StatusCode::UNAUTHORIZED && state.fleet_token_source.is_some() {
-        let t2 = outbound_fleet_bearer(state, true);
-        return mk(t2.as_deref()).send().await;
-    }
-    Ok(resp)
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
@@ -254,29 +187,12 @@ fn bearer(headers: &HeaderMap) -> Option<&str> {
         .and_then(|v| v.strip_prefix("Bearer "))
 }
 
-/// Constant-time comparison for shared-secret tokens: a byte-by-byte
-/// `==` on a secret leaks its prefix length through timing.
-fn secret_eq(a: &str, b: &str) -> bool {
-    let (a, b) = (a.as_bytes(), b.as_bytes());
-    if a.len() != b.len() {
-        return false;
-    }
-    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
-}
-
 /// Customer/account authorization for the PUBLIC surface. Deliberately
 /// does not consult the fleet-internal token: the two credentials are
 /// separate trust boundaries (round-19 security finding), so an internal
 /// token can never perform a product operation.
 pub(crate) fn authorized(state: &AppState, headers: &HeaderMap) -> bool {
-    match &state.auth_token {
-        // SR-5 (Søren review): allow-if-unset is a LOCAL DEVELOPMENT
-        // convenience and exists only in Off mode. Shadow and enforce
-        // are multi-tenant postures — an unconfigured bearer there
-        // must close the surface, not open it.
-        None => state.auth.mode == crate::auth::AuthMode::Off,
-        Some(t) => bearer(headers).map(|v| secret_eq(v, t)).unwrap_or(false),
-    }
+    state.bearer.authorizes(bearer(headers), state.auth.mode)
 }
 
 /// SR-5 (Søren decision): the raw Durable Streams surface is
@@ -371,11 +287,7 @@ fn fleet_operation_authorization(
     op: InternalOperation,
 ) -> Option<RawSurfaceAuth> {
     // SR3-1: exclusive modes at runtime (see fleet_operation_authorized).
-    let static_ok = match (&state.fleet_token_source, &state.fleet_internal_token) {
-        (Some(_), _) => false,
-        (None, Some(t)) => bearer(headers).map(|v| secret_eq(v, t)).unwrap_or(false),
-        (None, None) => false,
-    };
+    let static_ok = state.peer.inbound_static_ok(bearer(headers));
     if static_ok {
         return Some(RawSurfaceAuth::StaticBridge);
     }
@@ -441,11 +353,7 @@ pub(crate) fn fleet_operation_authorized(
     // dead even if a legacy FLEET_INTERNAL_TOKEN leaked into the
     // environment. Startup also refuses that coexistence under the
     // release posture; this is the defense-in-depth layer beneath it.
-    let static_ok = match (&state.fleet_token_source, &state.fleet_internal_token) {
-        (Some(_), _) => false,
-        (None, Some(t)) => bearer(headers).map(|v| secret_eq(v, t)).unwrap_or(false),
-        (None, None) => false,
-    };
+    let static_ok = state.peer.inbound_static_ok(bearer(headers));
     static_ok || workload_jwt_operation(state, headers, op)
 }
 
@@ -802,6 +710,7 @@ async fn debug_load(
     }
     let (now, peak) = state.admission.swap_peak();
     let adm = state.admission.snapshot();
+    let lf = state.livefeed.snapshot();
     // Cardinality gauges for every stream-indexed structure (static
     // audit: several grew unbounded and invisibly).
     let resident_handles: usize = state
@@ -862,8 +771,8 @@ async fn debug_load(
         "runtime_tick_age_ms": crate::shard::now_ms() - RUNTIME_LAST_TICK_MS.load(std::sync::atomic::Ordering::Relaxed),
         "runtime_max_tick_gap_ms": RUNTIME_MAX_GAP_MS.load(std::sync::atomic::Ordering::Relaxed),
         "sse_livefeed": {
-            "live_feeds": state.live_feeds.len(),
-            "reserved_bytes": state.feed_budget.reserved(),
+            "live_feeds": lf.live_feeds,
+            "reserved_bytes": lf.reserved_bytes,
             "capacity_rejected": crate::sse::auth::sse_stats::FEED_CAPACITY_REJECTED.load(std::sync::atomic::Ordering::Relaxed),
             "no_progress": crate::sse::auth::sse_stats::FEED_NO_PROGRESS.load(std::sync::atomic::Ordering::Relaxed),
             "source_failed": crate::sse::auth::sse_stats::FEED_SOURCE_FAILED.load(std::sync::atomic::Ordering::Relaxed),
@@ -872,7 +781,7 @@ async fn debug_load(
             "project_cap_uncached": crate::sse::auth::sse_stats::FEED_PROJECT_CAP_UNCACHED.load(std::sync::atomic::Ordering::Relaxed),
             // Bounded cardinality: rows exist only while a project has
             // live feeds (round-10e per-project observability).
-            "project_retention": state.feed_budget.project_rows().into_iter().map(|(p, reserved, cap_hits)| {
+            "project_retention": lf.project_retention.into_iter().map(|(p, reserved, cap_hits)| {
                 serde_json::json!({"project": p, "reserved_bytes": reserved, "cap_hits": cap_hits})
             }).collect::<Vec<_>>(),
             "lag_disconnects": crate::sse::auth::sse_stats::FEED_LAG_DISCONNECTS.load(std::sync::atomic::Ordering::Relaxed),
@@ -2262,7 +2171,7 @@ fn raw_key<'a>(headers: &'a HeaderMap, state: &'a AppState) -> Option<&'a str> {
     headers
         .get("stream-encryption-key")
         .and_then(|v| v.to_str().ok())
-        .or(state.default_key.as_deref())
+        .or(state.bearer.default_key())
 }
 
 pub(crate) fn check_key(raw: Option<&str>, desc: &StreamDesc) -> KeyCheck {
@@ -2784,9 +2693,7 @@ fn json_entries(body: &[u8], allow_empty_array: bool) -> Result<Vec<Bytes>, Stri
 /// size. 0 = unlimited (dev posture); the release posture requires a
 /// ring-consistent value (main.rs boot validation).
 fn over_record_ceiling(state: &AppState, entries: &[Bytes]) -> Option<usize> {
-    let cap = state
-        .max_record_payload_bytes
-        .load(std::sync::atomic::Ordering::Relaxed);
+    let cap = state.admission.record_ceiling();
     if cap == 0 {
         return None;
     }
@@ -7076,7 +6983,7 @@ pub(crate) fn replay_peer_url(state: &AppState, r: &Response) -> Option<(String,
         .to_str()
         .ok()?
         .to_string();
-    let url = state.peer_urls.read().unwrap().get(&owner)?.clone();
+    let url = state.peer.url_for(&owner)?;
     Some((owner, url))
 }
 
@@ -7161,7 +7068,7 @@ async fn relay_segment_read(
         }
         req
     };
-    match send_fleet(state, mk).await {
+    match state.peer.send(mk).await {
         Ok(r) => {
             let mut out = Response::builder().status(r.status().as_u16());
             for (k, v) in r.headers() {

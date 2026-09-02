@@ -6,6 +6,7 @@ pub(crate) mod auth;
 pub(crate) mod budget;
 pub(crate) mod feed;
 pub(crate) mod registry;
+pub(crate) mod service;
 pub(crate) mod session;
 pub(crate) mod source;
 pub(crate) mod wire;

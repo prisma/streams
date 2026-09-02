@@ -5635,7 +5635,7 @@ struct HttpRigOptions {
     auth_service: Option<Arc<crate::auth::AuthService>>,
     /// (static fleet token, workload token source); None = the default
     /// static-bridge rig posture.
-    fleet_auth: Option<(Option<String>, Option<crate::http::FleetTokenSource>)>,
+    fleet_auth: Option<(Option<String>, Option<crate::peer::FleetTokenSource>)>,
 }
 
 impl Default for HttpRigOptions {
@@ -6211,11 +6211,23 @@ async fn http_rig_build(
     let gate =
         crate::sharddir::OpenGate::new(shards_map.clone(), opener, rig_config.shard.open_deadline);
     let ownership = crate::ownership::OwnershipService::new(instance_name.unwrap_or_default());
+    let (fleet_static_token, fleet_token_source) = match fleet_auth {
+        Some((t, s)) => (t, s),
+        None => (Some("dst-internal-token".to_string()), None),
+    };
+    let peer = crate::peer::PeerClient::new(fleet_static_token, fleet_token_source, None);
+    // Per-rig budget: isolated from every other rig in the process.
+    let livefeed = crate::sse::service::LiveFeedService::from_config(&rig_config.sse);
+    livefeed.set_heartbeat_ms(15_000);
+    let bearer = crate::deployment_bearer::DeploymentBearer::new(auth, None);
     let state = Arc::new(crate::http::AppState {
         runtime: rig_runtime.clone(),
         config: rig_config.clone(),
         registry,
         tenant: crate::tenant::ProjectId::new("proj-test").unwrap(),
+        peer,
+        livefeed,
+        bearer,
         shards: crate::shard_directory::ShardDirectory::new(
             prefixes,
             shards_map,
@@ -6223,7 +6235,6 @@ async fn http_rig_build(
             ownership.clone(),
             std::time::Duration::from_millis(rig_config.shard.open_wait_ms),
         ),
-        fleet_store: None,
         admission: crate::admission::AdmissionController::new(crate::admission::AdmissionKnobs {
             max_inflight: 0,
             per_stream_cap: per_segment_slots,
@@ -6234,32 +6245,15 @@ async fn http_rig_build(
                 effective: 0,
                 configured: 0,
             },
+            record_ceiling_bytes: 0,
         }),
-        live_feeds: Arc::new(crate::sse::registry::FeedRegistry::new()),
-        // Per-rig budget: isolated from every other rig in the process.
-        feed_budget: Arc::new(crate::sse::feed::FeedMemoryBudget::from_config(
-            &rig_config.sse,
-        )),
-        feed_ring_bytes: std::sync::atomic::AtomicUsize::new(crate::sse::budget::feed_ring_bytes(
-            &rig_config.sse,
-        )),
-        max_record_payload_bytes: std::sync::atomic::AtomicUsize::new(0),
         cert_sealed_publish_delay_ms: std::sync::atomic::AtomicU64::new(0),
-        sse_heartbeat_ms: std::sync::atomic::AtomicU64::new(15_000),
         sweep_sched: crate::billing::SweepSched::default(),
         ownership,
-        peer_urls: std::sync::RwLock::new(std::collections::HashMap::new()),
         data_store: store,
         keys,
         touch,
-        default_key: None,
-        auth_token: auth,
         origin_marker: "dst-instance".to_string(),
-        fleet_internal_token: match &fleet_auth {
-            Some((t, _)) => t.clone(),
-            None => Some("dst-internal-token".to_string()),
-        },
-        fleet_token_source: fleet_auth.and_then(|(_, s)| s),
         usage_key: Some(PRISMA_KEY.to_string()),
         rollup: std::sync::OnceLock::new(),
         read_spool: std::sync::OnceLock::new(),
@@ -29336,7 +29330,7 @@ async fn jwt_only_fleet_relay_succeeds() {
     // workload JWT minted by the source with EXACTLY telemetry-append.
     let src_calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let sc = src_calls.clone();
-    let src: crate::http::FleetTokenSource = std::sync::Arc::new(move |_force: bool| {
+    let src: crate::peer::FleetTokenSource = std::sync::Arc::new(move |_force: bool| {
         sc.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         Some(sr2_workload_jwt(
             "wl-1",
@@ -29361,11 +29355,7 @@ async fn jwt_only_fleet_relay_succeeds() {
         .ownership
         .set_ring_active(vec!["rig-a".to_string(), "rig-b".to_string()]);
     state_b.ownership.set_override("00", "rig-a");
-    state_b
-        .peer_urls
-        .write()
-        .unwrap()
-        .insert("rig-a".to_string(), format!("http://{addr_a}"));
+    state_b.peer.set_peer("rig-a", &format!("http://{addr_a}"));
 
     // Prime: the OWNER creates the system stream (production owners
     // do this on their own telemetry path); B's local attempt then
@@ -29440,7 +29430,7 @@ async fn rotated_workload_jwt_refreshes_and_retries() {
     let calls = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let forced = std::sync::Arc::new(std::sync::atomic::AtomicU32::new(0));
     let (c2, f2) = (calls.clone(), forced.clone());
-    let src: crate::http::FleetTokenSource = std::sync::Arc::new(move |force: bool| {
+    let src: crate::peer::FleetTokenSource = std::sync::Arc::new(move |force: bool| {
         c2.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
         let now = crate::shard::now_ms() / 1000;
         if force {
@@ -29467,11 +29457,7 @@ async fn rotated_workload_jwt_refreshes_and_retries() {
         .ownership
         .set_ring_active(vec!["rig-a".to_string(), "rig-b".to_string()]);
     state_b.ownership.set_override("00", "rig-a");
-    state_b
-        .peer_urls
-        .write()
-        .unwrap()
-        .insert("rig-a".to_string(), format!("http://{addr_a}"));
+    state_b.peer.set_peer("rig-a", &format!("http://{addr_a}"));
 
     // Prime: the OWNER creates the system stream (production owners
     // do this on their own telemetry path); B's local attempt then
@@ -29891,7 +29877,7 @@ async fn static_token_is_dead_in_workload_mode() {
     })
     .unwrap();
     // MISCONFIGURED coexistence: a static token AND a workload source.
-    let src: crate::http::FleetTokenSource = std::sync::Arc::new(move |_| {
+    let src: crate::peer::FleetTokenSource = std::sync::Arc::new(move |_| {
         Some(sr2_workload_jwt(
             "wm-1",
             &["telemetry-append"],
@@ -31508,7 +31494,7 @@ async fn off_mode_subscriptions_are_untouched_by_staleness() {
     let (state, _addr, _promoter, mut sck) = hub_rig_stream("offst").await;
     let (a, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
     assert!(a.contains("upToDate"));
-    assert!(state.live_feeds.len_for_test() >= 1);
+    assert!(state.livefeed.registry().len_for_test() >= 1);
     let (_, eof) = hub_sse_collect(&mut sck, 5, |_| false).await;
     assert!(!eof, "Off mode: no lease, no staleness termination");
 }
@@ -32583,11 +32569,7 @@ async fn collection_seal_relays_segment_closes_to_the_foreign_owner() {
 
     // A: the shard belongs to inst-b, reachable at addr_b.
     state_a.ownership.set_override("00", "inst-b");
-    state_a
-        .peer_urls
-        .write()
-        .unwrap()
-        .insert("inst-b".to_string(), format!("http://{addr_b}"));
+    state_a.peer.set_peer("inst-b", &format!("http://{addr_b}"));
 
     // THE SEAL from A: seg 0's local resolution says WRONG OWNER and
     // must relay rather than answer "did not close".
@@ -32737,7 +32719,8 @@ async fn livefeed_two_subscribers_share_one_feed_and_one_source_read() {
         .unwrap();
     let key = crate::sse::session::feed_key_of(&desc, &Some(String::new()));
     let feed = state
-        .live_feeds
+        .livefeed
+        .registry()
         .feed_for_test(&key)
         .expect("the shared feed must exist");
     assert_eq!(
@@ -32866,7 +32849,8 @@ async fn livefeed_keyed_lane_scopes_records_and_shares_preparation() {
         .unwrap();
     let key = crate::sse::session::feed_key_of(&desc, &Some("ka".to_string()));
     let feed = state
-        .live_feeds
+        .livefeed
+        .registry()
         .feed_for_test(&key)
         .expect("keyed lane feed exists");
     assert_eq!(feed.subscriber_count(), 2);
@@ -33060,7 +33044,8 @@ async fn livefeed_singleton_large_window_delivers_everything_exactly_once() {
         .unwrap();
     let key = crate::sse::session::feed_key_of(&desc, &Some(String::new()));
     let feed = state
-        .live_feeds
+        .livefeed
+        .registry()
         .feed_for_test(&key)
         .expect("the singleton feed must exist");
     assert!(
@@ -33430,9 +33415,7 @@ async fn livefeed_ring_wrap_during_initial_handoff_recatchups() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
     // A tiny ring so a handful of shared batches wraps the floor.
-    state
-        .feed_ring_bytes
-        .store(1024, std::sync::atomic::Ordering::Relaxed);
+    state.livefeed.set_ring_bytes(1024);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -33582,7 +33565,8 @@ async fn livefeed_fork_foreign_only_window_is_progress() {
         .unwrap();
     let key = crate::sse::session::feed_key_of(&desc, &Some(String::new()));
     let feed = state
-        .live_feeds
+        .livefeed
+        .registry()
         .feed_for_test(&key)
         .expect("the fork feed must exist");
     assert!(
@@ -34026,9 +34010,7 @@ async fn livefeed_oversized_record_solo_in_place_shared_resumes_durably() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
     // Tiny feed ring: a 64-KiB record can never be retained.
-    state
-        .feed_ring_bytes
-        .store(4096, std::sync::atomic::Ordering::Relaxed);
+    state.livefeed.set_ring_bytes(4096);
     let (st, _, _) = preq(
         addr,
         "PUT",
@@ -34115,7 +34097,7 @@ async fn livefeed_budget_exhaustion_publishes_uncached_and_resumes() {
     let cur2 = last_next_cursor(&a2);
 
     // Exhaust the process retention budget, then publish.
-    let held = state.feed_budget.exhaust_for_test();
+    let held = state.livefeed.budget().exhaust_for_test();
     hub_append_lf(addr, "lfcap", r#"{"c":1}"#).await;
     let mut cursors = Vec::new();
     for (n, (sck, cur)) in [(1, (&mut s1, cur1)), (2, (&mut s2, cur2))] {
@@ -34131,7 +34113,7 @@ async fn livefeed_budget_exhaustion_publishes_uncached_and_resumes() {
         cursors.push((n, cur));
     }
     // Budget returns; both resumes deliver the record exactly once.
-    state.feed_budget.release_for_test(held);
+    state.livefeed.budget().release_for_test(held);
     for (n, cur) in cursors {
         let mut resumed = lf_connect(addr, "lfcap", &format!("?cursor={cur}")).await;
         let (r, eof) =
@@ -34160,9 +34142,7 @@ async fn fork_materialized_partial_respects_the_record_ceiling() {
     let big = "x".repeat(8 * 1024);
     let (st, _, _) = hreq(addr, "PUT", "/v1/stream/fbig", &ct, big.as_bytes()).await;
     assert!(st == 200 || st == 201, "source create {st}");
-    state
-        .max_record_payload_bytes
-        .store(4096, std::sync::atomic::Ordering::Relaxed);
+    state.admission.set_record_ceiling(4096);
     // An oversized materialized partial (6000 > 4096): refused, and
     // the child never becomes externally visible.
     let (st, _, body) = hreq(
@@ -34298,11 +34278,7 @@ async fn livefeed_remote_sealed_predecessor_streams_through_owner() {
             state_b.ownership.set_override(&p, owner);
         }
     }
-    state_b
-        .peer_urls
-        .write()
-        .unwrap()
-        .insert("inst-a".to_string(), format!("http://{addr_a}"));
+    state_b.peer.set_peer("inst-a", &format!("http://{addr_a}"));
     // The successor record lands through B (B owns the child's shard;
     // its open fences A's copy of that shard).
     hub_append_lf(addr_b, "xown", r#"{"h":2}"#).await;
@@ -34320,7 +34296,7 @@ async fn livefeed_remote_sealed_predecessor_streams_through_owner() {
         "the child's owner must serve the split stream in place:\n{acc}"
     );
     assert!(
-        state_b.live_feeds.len() >= 1,
+        state_b.livefeed.registry().len() >= 1,
         "the session must ride the LIVEFEED engine, not the legacy lineage fallback"
     );
     for i in 0..3u64 {
@@ -34360,17 +34336,19 @@ async fn livefeed_remote_sealed_predecessor_streams_through_owner() {
     // late attacher without touching the peer.
     drop(sck);
     for _ in 0..200 {
-        if state_b.live_feeds.len() == 0 {
+        if state_b.livefeed.registry().len() == 0 {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert_eq!(state_b.live_feeds.len(), 0, "the feed tears down at zero");
+    assert_eq!(
+        state_b.livefeed.registry().len(),
+        0,
+        "the feed tears down at zero"
+    );
     state_b
-        .peer_urls
-        .write()
-        .unwrap()
-        .insert("inst-a".to_string(), "http://127.0.0.1:9".to_string());
+        .peer
+        .set_peer("inst-a", &"http://127.0.0.1:9".to_string());
     let mut down = lf_connect(addr_b, "xown", "?cursor=beginning").await;
     let (held, eof3) = hub_sse_collect(&mut down, 2, |_| false).await;
     assert!(!eof3, "a peer outage is a stall, not a disconnect:\n{held}");
@@ -34378,11 +34356,7 @@ async fn livefeed_remote_sealed_predecessor_streams_through_owner() {
         !held.contains("event: data") && !held.contains("\"sealed\":true"),
         "no data and no false terminal while the peer is down:\n{held}"
     );
-    state_b
-        .peer_urls
-        .write()
-        .unwrap()
-        .insert("inst-a".to_string(), format!("http://{addr_a}"));
+    state_b.peer.set_peer("inst-a", &format!("http://{addr_a}"));
     let (rec, eof4) = hub_sse_collect(&mut down, 15, |t| lf_record_and_status(t, "\"h\":3")).await;
     assert!(!eof4, "recovery completes in place:\n{rec}");
     for i in 0..4u64 {
@@ -34508,14 +34482,13 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
         }
     }
     {
-        let mut urls = state_b.peer_urls.write().unwrap();
-        urls.insert("inst-a".to_string(), format!("http://{addr_a}"));
-        urls.insert("inst-c".to_string(), format!("http://{addr_c}"));
+        state_b.peer.set_peer("inst-a", &format!("http://{addr_a}"));
+        state_b.peer.set_peer("inst-c", &format!("http://{addr_c}"));
     }
     hub_append_lf(addr_b, "xmv", r#"{"h":2}"#).await;
     let teardown = |state_b: Arc<crate::http::AppState>| async move {
         for _ in 0..300 {
-            if state_b.live_feeds.len() == 0 {
+            if state_b.livefeed.registry().len() == 0 {
                 return;
             }
             tokio::time::sleep(std::time::Duration::from_millis(10)).await;
@@ -34831,12 +34804,12 @@ async fn livefeed_parked_live_session_is_cut_off_by_engine_close() {
     );
     drop(sub);
     for _ in 0..300 {
-        if state_b.live_feeds.len() == 0 {
+        if state_b.livefeed.registry().len() == 0 {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert_eq!(state_b.live_feeds.len(), 0, "feed teardown");
+    assert_eq!(state_b.livefeed.registry().len(), 0, "feed teardown");
 }
 
 /// Round-11.1 (red): a BLACKHOLED peer — TCP accepted, request read,
@@ -34850,9 +34823,7 @@ async fn livefeed_blackholed_peer_never_suppresses_heartbeats() {
     let (state_a, addr_a) = http_rig_owner(store.clone(), "inst-a").await;
     let (state_b, addr_b) = http_rig_owner_at(store, "inst-b", RigRuntime::incarnation(1)).await;
     // Fast keep-alives so the leg proves cadence in seconds.
-    state_b
-        .sse_heartbeat_ms
-        .store(300, std::sync::atomic::Ordering::Relaxed);
+    state_b.livefeed.set_heartbeat_ms(300);
     let (st, _, _) = preq(
         addr_a,
         "PUT",
@@ -34915,10 +34886,8 @@ async fn livefeed_blackholed_peer_never_suppresses_heartbeats() {
         }
     });
     state_b
-        .peer_urls
-        .write()
-        .unwrap()
-        .insert("inst-a".to_string(), format!("http://{hole_addr}"));
+        .peer
+        .set_peer("inst-a", &format!("http://{hole_addr}"));
 
     // Two subscribers whose remote catch-up is blackholed.
     let mut s1 = lf_connect(addr_b, "xbh", "?cursor=beginning").await;
@@ -34945,11 +34914,7 @@ async fn livefeed_blackholed_peer_never_suppresses_heartbeats() {
     );
 
     // Peer restored: recovery completes in place.
-    state_b
-        .peer_urls
-        .write()
-        .unwrap()
-        .insert("inst-a".to_string(), format!("http://{addr_a}"));
+    state_b.peer.set_peer("inst-a", &format!("http://{addr_a}"));
     let (rec, eof3) = hub_sse_collect(&mut s1, 30, |t| lf_record_and_status(t, "\"h\":1")).await;
     assert!(!eof3, "recovery in place:\n{rec}");
     for i in 0..2u64 {
@@ -34959,12 +34924,16 @@ async fn livefeed_blackholed_peer_never_suppresses_heartbeats() {
     // Final drop tears the feed down and CANCELS in-flight work.
     drop(s1);
     for _ in 0..200 {
-        if state_b.live_feeds.len() == 0 {
+        if state_b.livefeed.registry().len() == 0 {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(10)).await;
     }
-    assert_eq!(state_b.live_feeds.len(), 0, "teardown reaches zero feeds");
+    assert_eq!(
+        state_b.livefeed.registry().len(),
+        0,
+        "teardown reaches zero feeds"
+    );
 }
 
 /// Round-11.1 (red): a delayed seal publication over a parked FAN-OUT
@@ -35018,7 +34987,11 @@ async fn livefeed_seal_retry_is_one_task_per_feed_at_fanout() {
             .unwrap(),
         &Some(String::new()),
     );
-    let feed = state.live_feeds.feed_for_test(&key).expect("shared feed");
+    let feed = state
+        .livefeed
+        .registry()
+        .feed_for_test(&key)
+        .expect("shared feed");
     let spawns = feed.retry_spawns.load(std::sync::atomic::Ordering::Relaxed);
     assert!(
         (1..=3).contains(&spawns),
@@ -35036,7 +35009,7 @@ async fn livefeed_seal_retry_is_one_task_per_feed_at_fanout() {
     assert!(
         stuck.is_empty(),
         "stuck subs {stuck:?}; feed={:?}",
-        state.live_feeds.feed_for_test(&key).map(|f| (
+        state.livefeed.registry().feed_for_test(&key).map(|f| (
             f.subscriber_count(),
             f.lifecycle_for_test(),
             f.current_source().closed(),
@@ -35052,9 +35025,7 @@ async fn livefeed_seal_retry_is_one_task_per_feed_at_fanout() {
 async fn record_ceiling_refuses_one_oversized_record_not_the_batch() {
     let store = mem();
     let (state, addr) = http_rig(store).await;
-    state
-        .max_record_payload_bytes
-        .store(4096, std::sync::atomic::Ordering::Relaxed);
+    state.admission.set_record_ceiling(4096);
     let ct = [("content-type", "application/json")];
     // A JSON stream on the raw surface: appended ARRAYS split into
     // individual records, so the per-record ceiling is observable.
@@ -35170,10 +35141,8 @@ async fn livefeed_budget_noisy_project_cannot_evict_another() {
     }
     // Cheap exhaustion geometry: 32-KiB rings under a 256-KiB cell
     // ceiling — twelve noisy feeds demand ~384 KiB of retention.
-    state
-        .feed_ring_bytes
-        .store(32 * 1024, std::sync::atomic::Ordering::Relaxed);
-    state.feed_budget.set_max_for_test(256 * 1024);
+    state.livefeed.set_ring_bytes(32 * 1024);
+    state.livefeed.budget().set_max_for_test(256 * 1024);
     let tok_a = mint_token("ca", "proj-noisy", "ws_iso", 1, 1, "na", 600);
     let tok_b = mint_token("cb", "proj-victim", "ws_iso", 1, 1, "vb", 600);
 
@@ -35198,7 +35167,7 @@ async fn livefeed_budget_noisy_project_cannot_evict_another() {
     // every publication decided its retention posture.
     let mut last = u64::MAX;
     for _ in 0..100 {
-        let now = state.feed_budget.reserved();
+        let now = state.livefeed.budget().reserved();
         if now == last {
             break;
         }
@@ -35327,12 +35296,15 @@ async fn livefeed_mass_disconnect_tears_down_within_deadline() {
         assert!(a.contains("upToDate"));
         socks.push(sck);
     }
-    assert!(state.live_feeds.len() >= 1, "the shared feed exists");
+    assert!(
+        state.livefeed.registry().len() >= 1,
+        "the shared feed exists"
+    );
     drop(socks);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
         let conns = state.admission.snapshot().sse_connections;
-        let feeds = state.live_feeds.len();
+        let feeds = state.livefeed.registry().len();
         if conns == 0 && feeds == 0 {
             break;
         }
@@ -35472,7 +35444,7 @@ async fn livefeed_raw_disconnects_without_terminal_on_split() {
     assert!(
         eof,
         "the raw session takes the typed disconnect; feeds={} tail:\n{tail}",
-        state.live_feeds.len()
+        state.livefeed.registry().len()
     );
     assert!(
         !tail.contains("\"streamClosed\":true"),
@@ -35564,7 +35536,7 @@ async fn livefeed_delete_recreate_isolates_incarnations() {
     let (acc0, _) = hub_sse_collect(&mut sck, 8, |t| t.contains("upToDate")).await;
     assert!(acc0.contains("upToDate"), "parks:\n{acc0}");
     assert_eq!(
-        state.live_feeds.len(),
+        state.livefeed.registry().len(),
         1,
         "one feed on the first incarnation"
     );
@@ -35620,7 +35592,7 @@ async fn livefeed_delete_recreate_isolates_incarnations() {
         "the new incarnation serves normally:\n{acc2}"
     );
     assert_eq!(
-        state.live_feeds.len(),
+        state.livefeed.registry().len(),
         2,
         "old and new incarnations are distinct feeds"
     );
@@ -35628,12 +35600,16 @@ async fn livefeed_delete_recreate_isolates_incarnations() {
     // Old session closes: its feed is evicted; the new one remains.
     drop(sck);
     for _ in 0..100 {
-        if state.live_feeds.len() == 1 {
+        if state.livefeed.registry().len() == 1 {
             break;
         }
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
     }
-    assert_eq!(state.live_feeds.len(), 1, "the old feed is evicted");
+    assert_eq!(
+        state.livefeed.registry().len(),
+        1,
+        "the old feed is evicted"
+    );
 }
 
 // ==================================================================
@@ -35769,7 +35745,8 @@ async fn livefeed_split_shared_subscribers_swap_once_deliver_twice() {
             let retries = crate::sse::auth::sse_stats::FEED_CATCHUP_RETRIES
                 .load(std::sync::atomic::Ordering::Relaxed);
             let feed_state = state
-                .live_feeds
+                .livefeed
+                .registry()
                 .feed_for_test(&crate::sse::session::feed_key_of(
                     &state
                         .registry
@@ -36107,7 +36084,8 @@ async fn livefeed_swap_externally_adopts_child_engines() {
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(15);
     loop {
         let g = state
-            .live_feeds
+            .livefeed
+            .registry()
             .feed_for_test(&fkey)
             .map(|f| f.source_snapshot().generation);
         if g == Some(1) {
@@ -37116,7 +37094,7 @@ async fn cut_resume_never_skips_a_durable_record() {
     // legitimate sparse keyed lanes concurrently (arming it here
     // failed five unrelated tests). The leg's protection is the exact
     // reconciliation below, which is what caught the field loss.
-    state.feed_budget.set_max_for_test(64 * 1024); // project cap 16 KiB
+    state.livefeed.budget().set_max_for_test(64 * 1024); // project cap 16 KiB
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let ct = ("content-type", "application/json");
     let (st, _, _) = preq(

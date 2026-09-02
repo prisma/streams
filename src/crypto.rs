@@ -757,3 +757,15 @@ mod compress_tests {
         assert!(decrypt_frame(&sub(), &hash, &dec, &frame).is_err());
     }
 }
+
+/// Constant-time comparison for shared-secret tokens: a byte-by-byte
+/// `==` on a secret leaks its prefix length through timing (PR 6-C:
+/// shared by the deployment bearer and the peer client).
+#[allow(dead_code)] // the by-path bins (s3lite, edgesim) include this module and use only the hashing half
+pub(crate) fn secret_eq(a: &str, b: &str) -> bool {
+    let (a, b) = (a.as_bytes(), b.as_bytes());
+    if a.len() != b.len() {
+        return false;
+    }
+    a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}

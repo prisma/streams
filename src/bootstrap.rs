@@ -596,7 +596,53 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
             effective: effective.sse_max_connections,
             configured: effective.configured,
         },
+        record_ceiling_bytes: config.cli.max_record_payload_bytes.unwrap_or(0),
     });
+    // SR3-1: the MODE determines the runtime credential state — in
+    // workload mode the static token does not exist at runtime,
+    // whatever the environment carried; in static mode no source
+    // exists and relays use the bridge token.
+    let fleet_static_token = if config.cli.fleet_auth_mode == "workload" {
+        None
+    } else {
+        config.cli.fleet_internal_token.clone()
+    };
+    let fleet_token_source: Option<crate::peer::FleetTokenSource> = (config.cli.fleet_auth_mode
+        == "workload")
+        .then_some(config.cli.workload_token_file.as_ref())
+        .flatten()
+        .map(|path| {
+            // Expiry-aware file cache: the platform rotates the file;
+            // this re-reads when forced (peer 401) or within 30s of
+            // the cached token's exp. The exp is read WITHOUT
+            // verification — freshness scheduling only; peers verify.
+            let path = path.clone();
+            let cache: std::sync::Mutex<Option<(String, i64)>> = std::sync::Mutex::new(None);
+            std::sync::Arc::new(move |force: bool| {
+                let now = chrono::Utc::now().timestamp();
+                let mut c = cache.lock().unwrap();
+                if !force
+                    && let Some((tok, exp)) = c.as_ref()
+                    && now < exp - 30
+                {
+                    return Some(tok.clone());
+                }
+                let tok = std::fs::read_to_string(&path).ok()?.trim().to_string();
+                let exp = crate::auth::unverified_exp(&tok).unwrap_or(now);
+                *c = Some((tok.clone(), exp));
+                Some(tok)
+            }) as crate::peer::FleetTokenSource
+        });
+    let peer = crate::peer::PeerClient::new(
+        fleet_static_token,
+        fleet_token_source,
+        fleet_store_opt.clone(),
+    );
+    let livefeed = crate::sse::service::LiveFeedService::from_config(&config.sse);
+    let bearer = crate::deployment_bearer::DeploymentBearer::new(
+        config.cli.auth_token.clone(),
+        config.cli.conformance_default_key.clone(),
+    );
     let config = Arc::new(config);
     let state = Arc::new(AppState {
         runtime: runtime_caps.clone(),
@@ -605,74 +651,23 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         tenant,
         shards: shard_directory,
         admission,
-        fleet_store: fleet_store_opt.clone(),
-        live_feeds: Arc::new(crate::sse::registry::FeedRegistry::new()),
-        feed_budget: Arc::new(crate::sse::feed::FeedMemoryBudget::from_config(&config.sse)),
-        feed_ring_bytes: std::sync::atomic::AtomicUsize::new(crate::sse::budget::feed_ring_bytes(
-            &config.sse,
-        )),
-        max_record_payload_bytes: std::sync::atomic::AtomicUsize::new(
-            config.cli.max_record_payload_bytes.unwrap_or(0),
-        ),
+        peer,
+        livefeed,
+        bearer,
         cert_sealed_publish_delay_ms: std::sync::atomic::AtomicU64::new(
             // PR 3.2: proven by validate(); no panic path in bootstrap.
             cert_sealed_publish_delay_ms,
         ),
-        sse_heartbeat_ms: std::sync::atomic::AtomicU64::new(
-            // Operational cadence knob (fleet certification runs it at
-            // 500ms to observe keep-alives inside short stall windows);
-            // GatedSseBody clamps to its 50ms floor.
-            config.sse.heartbeat_ms,
-        ),
         sweep_sched: crate::billing::SweepSched::default(),
         ownership,
-        peer_urls: std::sync::RwLock::new(std::collections::HashMap::new()),
         data_store,
         keys,
         touch,
-        default_key: config.cli.conformance_default_key.clone(),
-        auth_token: config.cli.auth_token.clone(),
-        // Never empty: a standalone server still must be
-        // distinguishable from the platform edge (round-19 MF4).
         origin_marker: if config.cli.instance_name.is_empty() {
             format!("streams/{}", env!("CARGO_PKG_VERSION"))
         } else {
             config.cli.instance_name.clone()
         },
-        // SR3-1: the MODE determines the runtime credential state — in
-        // workload mode the static token does not exist at runtime,
-        // whatever the environment carried; in static mode no source
-        // exists and relays use the bridge token.
-        fleet_internal_token: if config.cli.fleet_auth_mode == "workload" {
-            None
-        } else {
-            config.cli.fleet_internal_token.clone()
-        },
-        fleet_token_source: (config.cli.fleet_auth_mode == "workload")
-            .then_some(config.cli.workload_token_file.as_ref())
-            .flatten()
-            .map(|path| {
-                // Expiry-aware file cache: the platform rotates the file;
-                // this re-reads when forced (peer 401) or within 30s of
-                // the cached token's exp. The exp is read WITHOUT
-                // verification — freshness scheduling only; peers verify.
-                let path = path.clone();
-                let cache: std::sync::Mutex<Option<(String, i64)>> = std::sync::Mutex::new(None);
-                std::sync::Arc::new(move |force: bool| {
-                    let now = chrono::Utc::now().timestamp();
-                    let mut c = cache.lock().unwrap();
-                    if !force
-                        && let Some((tok, exp)) = c.as_ref()
-                        && now < exp - 30
-                    {
-                        return Some(tok.clone());
-                    }
-                    let tok = std::fs::read_to_string(&path).ok()?.trim().to_string();
-                    let exp = crate::auth::unverified_exp(&tok).unwrap_or(now);
-                    *c = Some((tok.clone(), exp));
-                    Some(tok)
-                }) as crate::http::FleetTokenSource
-            }),
         usage_key: config.cli.usage_stream_key.clone(),
         rollup: std::sync::OnceLock::new(),
         read_spool: std::sync::OnceLock::new(),

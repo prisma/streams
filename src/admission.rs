@@ -47,6 +47,9 @@ pub struct AdmissionKnobs {
     /// Hysteresis release point, percent of the threshold (clamped 1..=100).
     pub project_memory_release_pct: u64,
     pub subscriptions: SubscriptionCapacity,
+    /// Per-RECORD payload ceiling, independent of the request-body
+    /// ceiling (0 = unlimited, the dev posture).
+    pub record_ceiling_bytes: usize,
 }
 
 /// A write refused by the global gates. The transport decides the wire
@@ -125,6 +128,7 @@ struct Inner {
     maintenance: GlobalLatch,
     /// Successful /v1/stream/* requests, the fleet load vector (§4.2).
     fleet_ops: AtomicU64,
+    record_ceiling: std::sync::atomic::AtomicUsize,
 }
 
 /// RAII in-flight ticket: the count drops on response AND on
@@ -203,6 +207,7 @@ impl AdmissionController {
                 sse_connections: AtomicU64::new(0),
                 maintenance: GlobalLatch::new(),
                 fleet_ops: AtomicU64::new(0),
+                record_ceiling: std::sync::atomic::AtomicUsize::new(knobs.record_ceiling_bytes),
             }),
         }
     }
@@ -383,6 +388,16 @@ impl AdmissionController {
         self.inner.fleet_ops.load(Ordering::Relaxed)
     }
 
+    /// The per-record payload ceiling (0 = unlimited).
+    pub fn record_ceiling(&self) -> usize {
+        self.inner.record_ceiling.load(Ordering::Relaxed)
+    }
+
+    #[cfg(test)]
+    pub fn set_record_ceiling(&self, bytes: usize) {
+        self.inner.record_ceiling.store(bytes, Ordering::Relaxed);
+    }
+
     pub fn snapshot(&self) -> AdmissionSnapshot {
         let i = &self.inner;
         let ord = Ordering::Relaxed;
@@ -433,6 +448,7 @@ mod tests {
                 effective: sse,
                 configured: sse,
             },
+            record_ceiling_bytes: 0,
         })
     }
 
@@ -549,6 +565,7 @@ mod tests {
                 effective: 5,
                 configured: 9,
             },
+            record_ceiling_bytes: 4_096,
         });
         assert_eq!(c.project_memory_release_pct(), 100, "clamped");
         c.note_fleet_op();
@@ -559,6 +576,9 @@ mod tests {
         assert_eq!(s.project_memory_pressure_bytes, 13);
         assert_eq!((s.sse_effective_max, s.sse_configured_max), (5, 9));
         assert_eq!((s.fleet_ops, s.shed.wedge), (1, 1));
+        assert_eq!(c.record_ceiling(), 4_096);
+        c.set_record_ceiling(0);
+        assert_eq!(c.record_ceiling(), 0);
         assert_eq!(c.maintenance().engaged(), None);
     }
 }
