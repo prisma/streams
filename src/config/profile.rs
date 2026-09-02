@@ -3,7 +3,7 @@
 //! validation.rs, which had grown past budget; HTTP's debug surface and
 //! validation both consume it from here, never through bootstrap).
 
-use crate::config::validation::ConfigNotice;
+use crate::config::notice::ConfigNotice;
 
 /// Dedicated runtime for every SlateDB instance (shard logs, history DBs,
 /// readers). SlateDB spawns its flusher / compactor / batch-writer on the

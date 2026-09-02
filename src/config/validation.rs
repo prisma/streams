@@ -18,6 +18,7 @@ use std::time::Duration;
 use slatedb::config::Settings;
 
 use crate::config::cli::CliArgs;
+use crate::config::notice::ConfigNotice;
 use crate::config::profile::{certified_memprofile_errors, resolved_compactor_options};
 
 #[cfg(test)]
@@ -389,7 +390,10 @@ pub(crate) fn resolve_effective_capacity(
                      subscription budget)"
                 ));
             }
-            notices.push(ConfigNotice::DescriptorReserveTight { nofile_hard });
+            notices.push(ConfigNotice::DescriptorReserveTight {
+                nofile_hard,
+                reserve: FD_RESERVE,
+            });
         } else {
             let ceiling = nofile_hard - FD_RESERVE;
             if cap > ceiling {
@@ -397,6 +401,7 @@ pub(crate) fn resolve_effective_capacity(
                     notices.push(ConfigNotice::SseCapClamped {
                         configured: cap,
                         nofile_hard,
+                        reserve: FD_RESERVE,
                         effective: ceiling,
                     });
                     cap = ceiling;
@@ -404,6 +409,7 @@ pub(crate) fn resolve_effective_capacity(
                     notices.push(ConfigNotice::SseCapExceedsDescriptors {
                         configured: cap,
                         nofile_hard,
+                        reserve: FD_RESERVE,
                     });
                 }
             }
@@ -529,107 +535,6 @@ impl std::fmt::Display for ConfigError {
 
 impl std::error::Error for ConfigError {}
 
-/// A typed advisory produced by validation (PR 4.1). Validation itself
-/// emits NO logs — it must not announce one subsection as certified
-/// before a later subsection rejects the whole configuration — so
-/// notices are collected here and emitted by bootstrap only after the
-/// entire validation succeeded.
-#[derive(Debug, Clone, PartialEq, Eq)]
-pub enum ConfigNotice {
-    MemoryProfileCertified {
-        profile: String,
-    },
-    FleetAuthStaticBridge,
-    FeedBudgetAboveReleaseMax {
-        configured: u64,
-        max: u64,
-        profile: String,
-    },
-    CoarseInitialShards {
-        configured: usize,
-        fleet_max: u64,
-        suggested: usize,
-    },
-    DescriptorReserveTight {
-        nofile_hard: u64,
-    },
-    SseCapClamped {
-        configured: u64,
-        nofile_hard: u64,
-        effective: u64,
-    },
-    SseCapExceedsDescriptors {
-        configured: u64,
-        nofile_hard: u64,
-    },
-}
-
-impl ConfigNotice {
-    /// Severity for the emitter: `true` = warning, `false` = info.
-    pub fn is_warning(&self) -> bool {
-        !matches!(self, Self::MemoryProfileCertified { .. })
-    }
-}
-
-impl std::fmt::Display for ConfigNotice {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        match self {
-            Self::MemoryProfileCertified { profile } => write!(
-                f,
-                "memory profile certified: compute-1g (all DB families) profile={profile}"
-            ),
-            Self::FleetAuthStaticBridge => write!(
-                f,
-                "FLEET_AUTH_MODE=static: the shared bridge token is a NAMED legacy \
-                 posture; the release posture requires workload identity (§14.1)"
-            ),
-            Self::FeedBudgetAboveReleaseMax {
-                configured,
-                max,
-                profile,
-            } => write!(
-                f,
-                "SSE_FEED_TOTAL_BYTES={configured} exceeds the {max}-byte release-safe \
-                 maximum for memory profile {profile:?}"
-            ),
-            Self::CoarseInitialShards {
-                configured,
-                fleet_max,
-                suggested,
-            } => write!(
-                f,
-                "INITIAL_SHARDS={configured} < 4×FLEET_MAX={fleet_max}: a fresh topology \
-                 this coarse draws unevenly under rendezvous and the rebalancer flaps \
-                 against return-home; use >= {suggested}"
-            ),
-            Self::DescriptorReserveTight { nofile_hard } => write!(
-                f,
-                "nofile_hard={nofile_hard} leaves no safe SSE connection capacity after \
-                 the {FD_RESERVE}-descriptor reserve"
-            ),
-            Self::SseCapClamped {
-                configured,
-                nofile_hard,
-                effective,
-            } => write!(
-                f,
-                "SSE_MAX_CONNECTIONS={configured} exceeds what nofile_hard={nofile_hard} can \
-                 carry with a {FD_RESERVE}-descriptor reserve; clamping the effective cap to \
-                 {effective} (raise RLIMIT_NOFILE or lower SSE_MAX_CONNECTIONS)"
-            ),
-            Self::SseCapExceedsDescriptors {
-                configured,
-                nofile_hard,
-            } => write!(
-                f,
-                "SSE_MAX_CONNECTIONS={configured} exceeds what nofile_hard={nofile_hard} can \
-                 carry with a {FD_RESERVE}-descriptor reserve; descriptor exhaustion wedges \
-                 parked subscriptions (~1.5k seen in the field)"
-            ),
-        }
-    }
-}
-
 /// A [`crate::config::ServerConfig`] whose invariants have been proven
 /// (PR 3.2): the only way to construct one is
 /// [`crate::config::ServerConfig::validate`], and [`crate::bootstrap::run`]
@@ -669,12 +574,6 @@ impl ValidatedServerConfig {
     /// The proven configuration graph (read-only).
     pub fn config(&self) -> &crate::config::ServerConfig {
         &self.config
-    }
-
-    /// Advisories collected during validation, for the caller to emit
-    /// AFTER success.
-    pub fn notices(&self) -> &[ConfigNotice] {
-        &self.notices
     }
 
     pub(crate) fn into_bootstrap_parts(self) -> BootstrapParts {

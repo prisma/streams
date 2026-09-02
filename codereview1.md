@@ -2723,6 +2723,38 @@ Do not rename user-facing flags while moving them. Flag cleanup is a separate se
 > DELETED — `CanonicalStreamName::new` checks every component before
 > the reserved root (characterized by `name_error_precedence`). The
 > architecture baseline remains unrefreshed.
+>
+> **PR 4.1.1 (corrective, review-driven, 2026-09-02):** the review of
+> PR 4.1 found the principal HTTP rig collapsed every simulated
+> process onto ONE incarnation (a fixed seed for every fresh rig), so
+> restart / second-cold-server / two-instance tests shared a boot id
+> and the first stream and touch-journal epochs, and the advertised
+> touch-journal proof was missing. Commit A: every rig carries an
+> explicit `RigIncarnation` — `RigRuntime` (caps + manual clock +
+> touch entropy) is derived from (base seed, incarnation) through a
+> splitmix fold, never a process-global counter; the ten-argument
+> `http_rig_inner` is gone, replaced by `http_rig_build(store,
+> RigRuntime, HttpRigOptions)` returning an `HttpRig { state, addr,
+> clock }` fixture (the returned clock is proven to be the runtime's
+> clock); every restart / peer-instance site names its incarnation
+> (`http_rig_at`, `http_rig_named_at`, `http_rig_owner_at`,
+> `http_rig_park`, `pm_enforce_rig`). Proofs: same incarnation
+> reproduces boot id, stream epoch, touch-journal epoch and the
+> registry-class trace; distinct incarnations are distinct AND pinned
+> (golden boot ids / touch epochs for incarnations 0 and 1); a restart
+> answers a foreign-incarnation touch cursor with the existing RESYNC;
+> a stream epoch survives restart but not hard-delete + recreate.
+> Commit B (non-blocking follow-ups the review named): `ConfigNotice`
+> lives in `config/notice.rs` (the descriptor reserve travels in the
+> notice, so the module depends on nothing), the unused
+> `ValidatedServerConfig::notices()` accessor is deleted. Architecture
+> status, stated precisely: the baseline-diff resolves the
+> over-budget FILE finding for bootstrap.rs and dst.rs only;
+> registry.rs is NOT resolved on size (it grew 2,131 → ~2,279) — what
+> resolved for registry.rs is a forbidden-edge finding. The capacity
+> posture typing (`ConfiguredCapacity::{Release, Development}`,
+> optional descriptor limits, posture consumed once) is deferred to
+> the AdmissionController extraction in PR 6, per the review.
 
 **Implements:** the foundational part of WP-15.
 

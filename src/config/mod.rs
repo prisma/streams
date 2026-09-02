@@ -24,6 +24,7 @@ pub mod cli;
 pub mod environment;
 pub mod load;
 pub mod model;
+pub mod notice;
 pub mod profile;
 pub mod summary;
 pub mod validation;
