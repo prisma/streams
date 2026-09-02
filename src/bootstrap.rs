@@ -145,7 +145,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         );
     }
     let crate::config::validation::BootstrapParts {
-        mut config,
+        config,
         tenant,
         cell_id,
         auth_mode,
@@ -170,15 +170,16 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         instance = %runtime_caps.identity.instance,
         "runtime identity minted"
     );
-    let (nofile_soft, nofile_hard) = crate::http::raise_nofile();
-    let effective = resolve_effective_capacity(
-        configured_capacity,
-        config.cli.release_posture,
-        nofile_hard,
-        &mut notices,
-    )
-    .map_err(|e| anyhow::anyhow!("{e}"))?;
-    config.cli.sse_max_connections = effective.sse_max_connections;
+    let limits = crate::http::raise_nofile();
+    // PR 6-B: the posture travels inside the capacity value; the
+    // effective cap is installed in the admission controller below —
+    // the configuration graph is never mutated after validation.
+    let effective = resolve_effective_capacity(configured_capacity, limits, &mut notices)
+        .map_err(|e| anyhow::anyhow!("{e}"))?;
+    let (nofile_soft, nofile_hard) = (
+        limits.soft.map_or(0, |n| n.get()),
+        limits.hard.map_or(0, |n| n.get()),
+    );
     // PR 4.1: validation is silent; its advisories (and the preflight's)
     // are emitted HERE, after the whole configuration was accepted.
     for n in &notices {
@@ -585,6 +586,17 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         ownership.clone(),
         Duration::from_millis(config.shard.open_wait_ms),
     );
+    let admission = crate::admission::AdmissionController::new(crate::admission::AdmissionKnobs {
+        max_inflight: config.cli.admit_max_inflight,
+        per_stream_cap: config.cli.admit_max_inflight_per_stream,
+        rss_shed_mb: config.cli.admit_rss_shed_mb,
+        project_memory_pressure_bytes: config.cli.project_memory_pressure_bytes,
+        project_memory_release_pct: config.cli.project_memory_release_pct,
+        subscriptions: crate::admission::SubscriptionCapacity {
+            effective: effective.sse_max_connections,
+            configured: effective.configured,
+        },
+    });
     let config = Arc::new(config);
     let state = Arc::new(AppState {
         runtime: runtime_caps.clone(),
@@ -592,23 +604,8 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         registry,
         tenant,
         shards: shard_directory,
+        admission,
         fleet_store: fleet_store_opt.clone(),
-        fleet_ops: std::sync::atomic::AtomicU64::new(0),
-        inflight: std::sync::atomic::AtomicI64::new(0),
-        inflight_peak: std::sync::atomic::AtomicI64::new(0),
-        admit_max_inflight: std::sync::atomic::AtomicI64::new(config.cli.admit_max_inflight),
-        admit_rss_shed_mb: config.cli.admit_rss_shed_mb,
-        rss_mb_cached: std::sync::atomic::AtomicU64::new(0),
-        admit_shed: std::sync::atomic::AtomicU64::new(0),
-        admit_shed_inflight: std::sync::atomic::AtomicU64::new(0),
-        admit_shed_survival: std::sync::atomic::AtomicU64::new(0),
-        project_memory_pressure_bytes: std::sync::atomic::AtomicU64::new(
-            config.cli.project_memory_pressure_bytes,
-        ),
-        project_memory_release_pct: config.cli.project_memory_release_pct.clamp(1, 100),
-        admit_shed_rss: std::sync::atomic::AtomicU64::new(0),
-        sse_max_connections: config.cli.sse_max_connections,
-        sse_configured_max_connections: config.cli.sse_max_connections,
         live_feeds: Arc::new(crate::sse::registry::FeedRegistry::new()),
         feed_budget: Arc::new(crate::sse::feed::FeedMemoryBudget::from_config(&config.sse)),
         feed_ring_bytes: std::sync::atomic::AtomicUsize::new(crate::sse::budget::feed_ring_bytes(
@@ -627,12 +624,6 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
             // GatedSseBody clamps to its 50ms floor.
             config.sse.heartbeat_ms,
         ),
-        sse_connections: std::sync::atomic::AtomicU64::new(0),
-        admit_max_inflight_per_stream: config.cli.admit_max_inflight_per_stream,
-        stream_inflight: std::sync::Mutex::new(HashMap::new()),
-        stream_shed: std::sync::atomic::AtomicU64::new(0),
-        wedge_shed: std::sync::atomic::AtomicU64::new(0),
-        maint_latch: crate::backpressure::GlobalLatch::new(),
         sweep_sched: crate::billing::SweepSched::default(),
         ownership,
         peer_urls: std::sync::RwLock::new(std::collections::HashMap::new()),
@@ -763,8 +754,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
                     last_purge = Some(std::time::Instant::now());
                     mb = crate::fleet::rss_bytes() / 1048576;
                 }
-                st.rss_mb_cached
-                    .store(mb, std::sync::atomic::Ordering::Relaxed);
+                st.admission.record_rss_mb(mb);
                 // Peak-since-scrape for the ops snapshot (OOM review I4):
                 // 250 ms sampling, max-held until the scrape drains it.
                 crate::ops::RSS_PEAK_MB.fetch_max(mb, std::sync::atomic::Ordering::Relaxed);
@@ -774,7 +764,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
                 // would put the overload on the hot path.
                 if ticks.is_multiple_of(8) {
                     let snap = crate::backpressure::snapshot(&st.shards);
-                    st.maint_latch.apply(&snap, &bp_limits);
+                    st.admission.maintenance().apply(&snap, &bp_limits);
                 }
                 ticks = ticks.wrapping_add(1);
                 tokio::time::sleep(Duration::from_millis(250)).await;

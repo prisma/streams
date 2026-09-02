@@ -6224,20 +6224,17 @@ async fn http_rig_build(
             std::time::Duration::from_millis(rig_config.shard.open_wait_ms),
         ),
         fleet_store: None,
-        fleet_ops: std::sync::atomic::AtomicU64::new(0),
-        inflight: std::sync::atomic::AtomicI64::new(0),
-        inflight_peak: std::sync::atomic::AtomicI64::new(0),
-        admit_max_inflight: std::sync::atomic::AtomicI64::new(0),
-        admit_rss_shed_mb: 0,
-        rss_mb_cached: std::sync::atomic::AtomicU64::new(0),
-        admit_shed: std::sync::atomic::AtomicU64::new(0),
-        admit_shed_inflight: std::sync::atomic::AtomicU64::new(0),
-        admit_shed_survival: std::sync::atomic::AtomicU64::new(0),
-        project_memory_pressure_bytes: std::sync::atomic::AtomicU64::new(0),
-        project_memory_release_pct: 75,
-        admit_shed_rss: std::sync::atomic::AtomicU64::new(0),
-        sse_max_connections: 0,
-        sse_configured_max_connections: 0,
+        admission: crate::admission::AdmissionController::new(crate::admission::AdmissionKnobs {
+            max_inflight: 0,
+            per_stream_cap: per_segment_slots,
+            rss_shed_mb: 0,
+            project_memory_pressure_bytes: 0,
+            project_memory_release_pct: 75,
+            subscriptions: crate::admission::SubscriptionCapacity {
+                effective: 0,
+                configured: 0,
+            },
+        }),
         live_feeds: Arc::new(crate::sse::registry::FeedRegistry::new()),
         // Per-rig budget: isolated from every other rig in the process.
         feed_budget: Arc::new(crate::sse::feed::FeedMemoryBudget::from_config(
@@ -6249,12 +6246,6 @@ async fn http_rig_build(
         max_record_payload_bytes: std::sync::atomic::AtomicUsize::new(0),
         cert_sealed_publish_delay_ms: std::sync::atomic::AtomicU64::new(0),
         sse_heartbeat_ms: std::sync::atomic::AtomicU64::new(15_000),
-        sse_connections: std::sync::atomic::AtomicU64::new(0),
-        admit_max_inflight_per_stream: per_segment_slots,
-        stream_inflight: std::sync::Mutex::new(std::collections::HashMap::new()),
-        stream_shed: std::sync::atomic::AtomicU64::new(0),
-        wedge_shed: std::sync::atomic::AtomicU64::new(0),
-        maint_latch: crate::backpressure::GlobalLatch::new(),
         sweep_sched: crate::billing::SweepSched::default(),
         ownership,
         peer_urls: std::sync::RwLock::new(std::collections::HashMap::new()),
@@ -35340,9 +35331,7 @@ async fn livefeed_mass_disconnect_tears_down_within_deadline() {
     drop(socks);
     let deadline = std::time::Instant::now() + std::time::Duration::from_secs(3);
     loop {
-        let conns = state
-            .sse_connections
-            .load(std::sync::atomic::Ordering::Relaxed);
+        let conns = state.admission.snapshot().sse_connections;
         let feeds = state.live_feeds.len();
         if conns == 0 && feeds == 0 {
             break;
@@ -36754,12 +36743,8 @@ async fn inflight_admission_answers_only_after_authentication() {
     );
 
     // Saturate the ordinary cap (over cap, under the 4x survival bound).
-    state
-        .admit_max_inflight
-        .store(4, std::sync::atomic::Ordering::Relaxed);
-    state
-        .inflight
-        .fetch_add(8, std::sync::atomic::Ordering::Relaxed);
+    state.admission.set_max_inflight(4);
+    state.admission.add_inflight_for_test(8);
 
     // 1. Unauthenticated at saturation: 401, NO 25 ms tarpit, and no
     //    capacity vocabulary in the body. (elapsed < 25ms is exclusive
@@ -36791,18 +36776,11 @@ async fn inflight_admission_answers_only_after_authentication() {
         t0.elapsed() >= std::time::Duration::from_millis(25),
         "the authenticated refusal keeps the tarpit"
     );
-    assert!(
-        state
-            .admit_shed_inflight
-            .load(std::sync::atomic::Ordering::Relaxed)
-            > 0
-    );
+    assert!(state.admission.snapshot().shed.inflight > 0);
 
     // 3. Catastrophic survival bound (>4x cap): pre-auth instant
     //    generic refusal — sockets are being defended, no tarpit.
-    state
-        .inflight
-        .fetch_add(100, std::sync::atomic::Ordering::Relaxed);
+    state.admission.add_inflight_for_test(100);
     let t0 = std::time::Instant::now();
     let (st, _, _) = hreq(addr, "POST", "/v1/stream/adm", &[ct], b"x").await;
     assert_eq!(st, 503, "survival bound answers even unauthenticated");
@@ -36810,17 +36788,10 @@ async fn inflight_admission_answers_only_after_authentication() {
         t0.elapsed() < std::time::Duration::from_millis(25),
         "the survival refusal never tarpits"
     );
-    assert!(
-        state
-            .admit_shed_survival
-            .load(std::sync::atomic::Ordering::Relaxed)
-            > 0
-    );
+    assert!(state.admission.snapshot().shed.survival > 0);
 
     // 4. Pressure released: an authenticated append flows again.
-    state
-        .inflight
-        .fetch_sub(108, std::sync::atomic::Ordering::Relaxed);
+    state.admission.add_inflight_for_test(-108);
     let (st, _, b) = hreq(addr, "POST", "/v1/stream/adm", &[auth, ct], b"y").await;
     assert!(
         st == 200 || st == 201 || st == 204,
@@ -36969,8 +36940,8 @@ async fn pm_enforce_rig(
 async fn project_memory_pressure_throttles_new_appends_only() {
     let (state, addr, bearer, pid) = pm_enforce_rig(mem(), RigRuntime::first()).await;
     state
-        .project_memory_pressure_bytes
-        .store(256 * 1024, std::sync::atomic::Ordering::Relaxed);
+        .admission
+        .set_project_memory_pressure_bytes(256 * 1024);
     let auth = ("authorization", bearer.as_str());
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let ct = ("content-type", "application/json");

@@ -133,21 +133,20 @@ pub async fn data(State(state): State<Arc<AppState>>, headers: axum::http::Heade
         None => (None, None),
     };
 
+    let adm = state.admission.snapshot();
     let local = json!({
         "instance": state.ownership.instance(),
         "open_shards": state.shards.open_count(),
         "ring_active": state.ownership.ring_active(),
-        "inflight": state.inflight.load(std::sync::atomic::Ordering::Relaxed),
-        "inflight_peak": state.inflight_peak.load(std::sync::atomic::Ordering::Relaxed),
-        "admit_shed": state.admit_shed.load(std::sync::atomic::Ordering::Relaxed),
-        "stream_shed": state.stream_shed.load(std::sync::atomic::Ordering::Relaxed),
-        "wedge_shed": state.wedge_shed.load(std::sync::atomic::Ordering::Relaxed),
-        "admit_max_inflight": state
-            .admit_max_inflight
-            .load(std::sync::atomic::Ordering::Relaxed),
-        "admit_max_inflight_per_stream": state.admit_max_inflight_per_stream,
+        "inflight": adm.inflight,
+        "inflight_peak": adm.inflight_peak,
+        "admit_shed": adm.shed.total,
+        "stream_shed": adm.shed.stream,
+        "wedge_shed": adm.shed.wedge,
+        "admit_max_inflight": adm.max_inflight,
+        "admit_max_inflight_per_stream": adm.per_stream_cap,
         "rss_mb": crate::fleet::rss_bytes() as f64 / 1048576.0,
-        "rss_shed_mb": state.admit_rss_shed_mb,
+        "rss_shed_mb": adm.rss_shed_mb,
         // per-op-class store latency, sentinels, steal — non-destructive read
         "store": crate::store_timing::snapshot(60, false),
     });

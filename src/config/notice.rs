@@ -43,6 +43,11 @@ pub enum ConfigNotice {
         nofile_hard: u64,
         reserve: u64,
     },
+    /// The platform reported no descriptor ceiling (no `getrlimit`), so
+    /// the release posture's SSE cap could not be resolved against it.
+    DescriptorCeilingUnknown {
+        configured: u64,
+    },
 }
 
 impl ConfigNotice {
@@ -111,6 +116,11 @@ impl std::fmt::Display for ConfigNotice {
                 "SSE_MAX_CONNECTIONS={configured} exceeds what nofile_hard={nofile_hard} can \
                  carry with a {reserve}-descriptor reserve; descriptor exhaustion wedges \
                  parked subscriptions (~1.5k seen in the field)"
+            ),
+            Self::DescriptorCeilingUnknown { configured } => write!(
+                f,
+                "the platform reported no descriptor ceiling; the release posture's \
+                 SSE_MAX_CONNECTIONS={configured} stands unresolved against RLIMIT_NOFILE"
             ),
         }
     }

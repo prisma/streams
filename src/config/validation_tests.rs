@@ -237,10 +237,66 @@ mod config_validation_tests {
         validate_configured_capacity(release, profile, feed, cap, &mut Vec::new())
     }
 
+    /// A probe result: `0` = the platform reported no ceiling (`None`).
+    fn limits(nofile_hard: u64) -> DescriptorLimits {
+        DescriptorLimits {
+            soft: None,
+            hard: NonZeroU64::new(nofile_hard),
+        }
+    }
+
     fn resolved(cap: u64, release: bool, nofile_hard: u64) -> Result<u64, String> {
         let c = configured(release, None, None, cap)?;
-        resolve_effective_capacity(c, release, nofile_hard, &mut Vec::new())
+        resolve_effective_capacity(c, limits(nofile_hard), &mut Vec::new())
             .map(|e| e.sse_max_connections)
+    }
+
+    /// PR 6-B: the capacity posture is UNFORGEABLE. A release capacity
+    /// is a non-zero value by construction; resolution reads the posture
+    /// from the value (no second boolean), so a development capacity —
+    /// including the unlimited 0 — can never be resolved as release, and
+    /// an absent ceiling under release is a typed notice, not a skip.
+    #[test]
+    fn capacity_posture_is_unforgeable() {
+        assert!(matches!(
+            configured(true, None, None, 10).unwrap(),
+            ConfiguredCapacity::Release(n) if n.get() == 10
+        ));
+        assert!(matches!(
+            configured(false, None, None, 0).unwrap(),
+            ConfiguredCapacity::Development(0)
+        ));
+        // Development 0 stays unlimited whatever the ceiling.
+        let mut notices = Vec::new();
+        let e = resolve_effective_capacity(
+            ConfiguredCapacity::Development(0),
+            limits(4_096),
+            &mut notices,
+        )
+        .unwrap();
+        assert_eq!((e.sse_max_connections, e.configured), (0, 0));
+        assert!(notices.is_empty(), "{notices:?}");
+        // Release with no reported ceiling: the cap stands, LOUDLY.
+        let mut notices = Vec::new();
+        let e = resolve_effective_capacity(
+            ConfiguredCapacity::Release(NonZeroU64::new(7).unwrap()),
+            DescriptorLimits::default(),
+            &mut notices,
+        )
+        .unwrap();
+        assert_eq!((e.sse_max_connections, e.configured), (7, 7));
+        assert!(
+            matches!(
+                notices.as_slice(),
+                [ConfigNotice::DescriptorCeilingUnknown { configured: 7 }]
+            ),
+            "{notices:?}"
+        );
+        assert!(notices[0].is_warning());
+        // The effective value always carries what it was resolved from.
+        let c = configured(true, None, None, 10_000).unwrap();
+        let e = resolve_effective_capacity(c, limits(4_096), &mut Vec::new()).unwrap();
+        assert_eq!((e.sse_max_connections, e.configured), (3_072, 10_000));
     }
 
     /// Follow-up review finding 4 (red): the release-safe hub-budget
@@ -307,8 +363,8 @@ mod config_validation_tests {
     /// inside the field-certified envelope, a typo'd byte count never
     /// silently becomes the default, and the SSE connection cap clamps
     /// to what nofile_hard can carry. PR 4.1: the two phases are two
-    /// functions; an unknown ceiling (0) is "nothing to resolve
-    /// against", not a validation sentinel.
+    /// functions; PR 6-B: an unknown ceiling is `None`, never a zero
+    /// sentinel, and the posture travels inside the capacity value.
     #[test]
     fn release_capacity_validates_hub_budget_and_fd_ceiling() {
         assert!(configured(true, None, Some("134217728"), 10_000).is_err());
@@ -322,7 +378,7 @@ mod config_validation_tests {
         // and the clamp is a typed notice.
         let c = configured(true, None, None, 10_000).unwrap();
         let mut notices = Vec::new();
-        let e = resolve_effective_capacity(c, true, 4_096, &mut notices).unwrap();
+        let e = resolve_effective_capacity(c, limits(4_096), &mut notices).unwrap();
         assert_eq!(e.sse_max_connections, 3_072);
         assert!(matches!(
             notices.as_slice(),

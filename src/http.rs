@@ -106,30 +106,11 @@ pub struct AppState {
     /// the serving map and the single-flight open gate; resolution
     /// policy lives there, transport-neutral.
     pub shards: crate::shard_directory::ShardDirectory,
-    /// Counts /v1/stream/* requests for the fleet load vector (§4.2).
-    pub fleet_ops: std::sync::atomic::AtomicU64,
-    /// Concurrently in-flight HTTP requests (all routes) + windowed peak.
-    /// THE direct measurement of admitted concurrency: the platform edge
-    /// delivers a bounded number of concurrent requests per instance, and
-    /// that bound — not CPU — was the run-6/8 per-instance ceiling. The
-    /// fleet loop swaps the peak each heartbeat.
-    pub inflight: std::sync::atomic::AtomicI64,
-    pub inflight_peak: std::sync::atomic::AtomicI64,
-    /// §12-lite admission backstop: /v1/stream requests beyond this many
-    /// in flight are shed with 429 + Retry-After instead of queueing into
-    /// latency collapse (runs 7-9: offered load past capacity turned into
-    /// multi-second p50 and timeout churn; shedding holds goodput at
-    /// capacity with bounded latency). 0 = off. Health/debug are exempt.
-    pub admit_max_inflight: std::sync::atomic::AtomicI64,
-    /// #267 SSE Phase 1: instance connection budget for live SSE
-    /// subscriptions. Subscriber memory and the write path share ONE
-    /// RSS shed line, so unbounded subscribers make UNRELATED appends
-    /// 429 — the budget refuses NEW subscriptions with a typed 503
-    /// instead. 0 = unlimited (tests/dev).
-    /// EFFECTIVE live-subscription cap (round-4 follow-up: the
-    /// configured value after release-posture clamping to the real
-    /// descriptor ceiling; 0 = unlimited, non-release only).
-    pub sse_max_connections: u64,
+    /// WP-02 / PR 6-B: every request-admission gate and counter —
+    /// global in-flight, survival bound, RSS shed, per-stream slots, the
+    /// live-subscription budget, maintenance backpressure, the fleet
+    /// load vector — behind RAII tickets and one snapshot.
+    pub admission: crate::admission::AdmissionController,
     pub live_feeds: Arc<crate::sse::registry::FeedRegistry>,
     /// LiveFeed retained-bytes budget — per AppState so test rigs are
     /// isolated (follow-up review: a static OnceLock budget coupled
@@ -152,51 +133,6 @@ pub struct AppState {
     /// zero = inert (production). Atomic so certification rigs can
     /// arm it on a live state.
     pub cert_sealed_publish_delay_ms: std::sync::atomic::AtomicU64,
-    /// The CONFIGURED cap before any platform-driven clamp — exported
-    /// next to the effective one so the fleet can detect a platform
-    /// lowering RLIMIT_NOFILE under it.
-    pub sse_configured_max_connections: u64,
-    pub sse_connections: std::sync::atomic::AtomicU64,
-    /// RSS shed threshold (MB): writes are 429'd while resident memory
-    /// exceeds this. Converts cgroup/instance OOM death (docker phase 1:
-    /// RSS 218→1030 MB at full throughput, OOMKilled=true) into graceful
-    /// backpressure. 0 = off. Sampled every 500 ms into rss_mb_cached.
-    pub admit_rss_shed_mb: u64,
-    /// Round-13 per-project memory-pressure backstop: the high
-    /// watermark for estimated project pressure (0 = off) and the
-    /// hysteresis release percentage. Atomic so campaigns and tests
-    /// can flip the posture without a rebuild.
-    pub project_memory_pressure_bytes: std::sync::atomic::AtomicU64,
-    pub project_memory_release_pct: u64,
-    pub rss_mb_cached: std::sync::atomic::AtomicU64,
-    /// 429s issued by the admission backstop (observability).
-    pub admit_shed: std::sync::atomic::AtomicU64,
-    /// #266 attribution: admit_shed sums two mechanisms (global
-    /// in-flight cap, RSS write-shed) — L1d11 spent a night proving
-    /// which one fired from 10-second gauge samples and couldn't.
-    /// These split the SAME increments by source; admit_shed stays the
-    /// sum for dashboard continuity.
-    pub admit_shed_inflight: std::sync::atomic::AtomicU64,
-    /// Round-13: pre-auth survival refusals (the catastrophic bound at
-    /// 4x the ordinary cap). The ordinary inflight gate moved POST-auth
-    /// (append_core) — the multitenancy contract says authentication
-    /// precedes tarpit work and capacity answers.
-    pub admit_shed_survival: std::sync::atomic::AtomicU64,
-    pub admit_shed_rss: std::sync::atomic::AtomicU64,
-    /// Per-stream inflight append cap (0 = off): one hot stream cannot
-    /// occupy every admission slot of its shard owner. Scoped 429 +
-    /// Retry-After. The counter map is bounded: entries are removed at
-    /// zero, and past `STREAM_INFLIGHT_MAX_TRACKED` new streams are
-    /// admitted untracked (fail open on the bound, never leak).
-    pub admit_max_inflight_per_stream: i64,
-    pub stream_inflight: std::sync::Mutex<HashMap<[u8; 16], i64>>,
-    pub stream_shed: std::sync::atomic::AtomicU64,
-    /// 429s issued because a shard's commit pipeline was blocked (wedge).
-    pub wedge_shed: std::sync::atomic::AtomicU64,
-    /// R27-1: the instance-wide maintenance latch, ONE per AppState —
-    /// the global machine of the two-machine split (the per-shard
-    /// machine lives on each engine's `maintenance_shard_shed`).
-    pub maint_latch: crate::backpressure::GlobalLatch,
     /// R29: per-state sweep scheduler bookkeeping (custody marks,
     /// quantum cycles, peak gauge) — process statics summed parallel
     /// test rigs into false bound violations.
@@ -618,93 +554,18 @@ pub(crate) fn resolve_error_response(e: crate::shard_directory::ResolveError) ->
     }
 }
 
-/// RAII in-flight counter: decrements on response AND on cancel/panic.
-struct InflightGuard(Arc<AppState>);
-impl Drop for InflightGuard {
-    fn drop(&mut self) {
-        self.0
-            .inflight
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-    }
-}
-
-/// Bound on distinct streams tracked by the per-stream admission map.
-const STREAM_INFLIGHT_MAX_TRACKED: usize = 65_536;
-
-#[derive(Debug, PartialEq)]
-enum SlotTry {
-    /// Limiter off or the map is at its bound: admit without tracking
-    /// (fail open on the bound, never leak).
-    Untracked,
-    Acquired,
-    AtCap,
-}
-
-fn stream_slot_try(m: &mut HashMap<[u8; 16], i64>, cap: i64, hash: [u8; 16]) -> SlotTry {
-    if cap <= 0 {
-        return SlotTry::Untracked;
-    }
-    match m.get_mut(&hash) {
-        Some(v) => {
-            if *v >= cap {
-                return SlotTry::AtCap;
-            }
-            *v += 1;
-            SlotTry::Acquired
-        }
-        None => {
-            if m.len() >= STREAM_INFLIGHT_MAX_TRACKED {
-                return SlotTry::Untracked;
-            }
-            m.insert(hash, 1);
-            SlotTry::Acquired
-        }
-    }
-}
-
-/// Entries are removed at zero so the map stays proportional to
-/// concurrently-active streams.
-fn stream_slot_release(m: &mut HashMap<[u8; 16], i64>, hash: &[u8; 16]) {
-    if let Some(v) = m.get_mut(hash) {
-        *v -= 1;
-        if *v <= 0 {
-            m.remove(hash);
-        }
-    }
-}
-
-/// RAII per-stream inflight slot (None = untracked).
-struct StreamSlot {
-    state: Arc<AppState>,
-    hash: [u8; 16],
-}
-impl Drop for StreamSlot {
-    fn drop(&mut self) {
-        stream_slot_release(&mut self.state.stream_inflight.lock().unwrap(), &self.hash);
-    }
-}
-
-/// Acquire a per-stream slot, or a scoped 429 when the stream is at its cap.
+/// Acquire a per-stream slot, or a scoped 429 when the stream is at its
+/// cap (PR 6-B: the slot policy is the admission controller's; this is
+/// the transport's error map).
 #[allow(clippy::result_large_err)] // Err is the ready-to-send 429 Response, same as engine_for
 fn acquire_stream_slot(
     state: &Arc<AppState>,
     hash: [u8; 16],
-) -> Result<Option<StreamSlot>, Response> {
-    let outcome = stream_slot_try(
-        &mut state.stream_inflight.lock().unwrap(),
-        state.admit_max_inflight_per_stream,
-        hash,
-    );
-    match outcome {
-        SlotTry::Untracked => Ok(None),
-        SlotTry::Acquired => Ok(Some(StreamSlot {
-            state: state.clone(),
-            hash,
-        })),
-        SlotTry::AtCap => {
-            state
-                .stream_shed
-                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+) -> Result<Option<crate::admission::StreamSlot>, Response> {
+    state
+        .admission
+        .stream_slot(hash)
+        .map_err(|crate::admission::StreamRefusal| {
             let mut r = err_resp(
                 StatusCode::TOO_MANY_REQUESTS,
                 "stream_overloaded",
@@ -712,9 +573,8 @@ fn acquire_stream_slot(
             );
             r.headers_mut()
                 .insert("retry-after", axum::http::HeaderValue::from_static("1"));
-            Err(r)
-        }
-    }
+            r
+        })
 }
 
 /// Per-engine maintenance state for /v1/debug/load (R25-C).
@@ -791,14 +651,9 @@ async fn track_inflight(
     req: axum::extract::Request,
     next: axum::middleware::Next,
 ) -> Response {
-    let cur = state
-        .inflight
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        + 1;
-    state
-        .inflight_peak
-        .fetch_max(cur, std::sync::atomic::Ordering::Relaxed);
-    let _guard = InflightGuard(state.clone());
+    let ticket = state.admission.enter();
+    let cur = ticket.current();
+    let _guard = ticket;
     // Round-13 (review): the ORDINARY inflight admission gate moved
     // POST-auth into append_core — running it here answered 429 with
     // capacity information (plus a 25 ms tarpit) to UNAUTHENTICATED
@@ -809,17 +664,8 @@ async fn track_inflight(
     // ordinary cap): no tarpit, a generic instant refusal, because a
     // process at 4x its admission cap is defending its sockets, not
     // answering capacity questions.
-    let cap = state
-        .admit_max_inflight
-        .load(std::sync::atomic::Ordering::Relaxed);
     let path_is_stream = req.uri().path().starts_with("/v1/stream");
-    if cap > 0 && cur > cap.saturating_mul(4) && path_is_stream {
-        state
-            .admit_shed
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        state
-            .admit_shed_survival
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if state.admission.survival_refused(cur, path_is_stream) {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             [("retry-after", "1"), ("content-type", "application/json")],
@@ -954,10 +800,8 @@ async fn debug_load(
             "bearer token required",
         );
     }
-    let now = state.inflight.load(std::sync::atomic::Ordering::Relaxed);
-    let peak = state
-        .inflight_peak
-        .swap(now, std::sync::atomic::Ordering::Relaxed);
+    let (now, peak) = state.admission.swap_peak();
+    let adm = state.admission.snapshot();
     // Cardinality gauges for every stream-indexed structure (static
     // audit: several grew unbounded and invisibly).
     let resident_handles: usize = state
@@ -998,27 +842,19 @@ async fn debug_load(
         "inflight_now": now,
         "inflight_peak": peak,
         "rss_mb": crate::fleet::rss_bytes() as f64 / 1048576.0,
-        "admit_shed": state.admit_shed.load(std::sync::atomic::Ordering::Relaxed),
-        "admit_shed_inflight": state
-            .admit_shed_inflight
-            .load(std::sync::atomic::Ordering::Relaxed),
-        "admit_shed_rss": state.admit_shed_rss.load(std::sync::atomic::Ordering::Relaxed),
-        "admit_shed_survival": state
-            .admit_shed_survival
-            .load(std::sync::atomic::Ordering::Relaxed),
+        "admit_shed": adm.shed.total,
+        "admit_shed_inflight": adm.shed.inflight,
+        "admit_shed_rss": adm.shed.rss,
+        "admit_shed_survival": adm.shed.survival,
         "project_memory": state.quotas.memory_pressure_json(
-            state
-                .project_memory_pressure_bytes
-                .load(std::sync::atomic::Ordering::Relaxed),
+            adm.project_memory_pressure_bytes,
             32,
         ),
         "project_pressure_model": crate::quota::pressure_model_json(),
-        "sse_connections": state
-            .sse_connections
-            .load(std::sync::atomic::Ordering::Relaxed),
-        "sse_max_connections": state.sse_max_connections,
-        "sse_configured_max_connections": state.sse_configured_max_connections,
-        "sse_effective_max_connections": state.sse_max_connections,
+        "sse_connections": adm.sse_connections,
+        "sse_max_connections": adm.sse_effective_max,
+        "sse_configured_max_connections": adm.sse_configured_max,
+        "sse_effective_max_connections": adm.sse_effective_max,
         "lease_terminations": crate::sse::auth::lease_terminations_json(),
         "nofile_soft": NOFILE_SOFT.load(std::sync::atomic::Ordering::Relaxed),
         "nofile_hard": NOFILE_HARD.load(std::sync::atomic::Ordering::Relaxed),
@@ -1057,8 +893,8 @@ async fn debug_load(
             "delivered_records": crate::sse::auth::sse_stats::DELIVERED_RECORDS.load(std::sync::atomic::Ordering::Relaxed),
         },
         "absorb_reserved_bytes_now": crate::history::absorb_reserved_bytes(),
-        "shed_line_mb": state.admit_rss_shed_mb,
-        "maintenance_backpressure": state.maint_latch.stats_json(),
+        "shed_line_mb": adm.rss_shed_mb,
+        "maintenance_backpressure": state.admission.maintenance().stats_json(),
         // #266 field attribution: the wc sampler reads THIS endpoint —
         // the /v1/debug/absorb block alone left L1d7 blind on whether
         // pacing fired at all.
@@ -1093,9 +929,9 @@ async fn debug_load(
                 "/sys/fs/cgroup/memory/memory.max_usage_in_bytes"))
             .ok()
             .and_then(|v| v.trim().parse::<u64>().ok()),
-        "stream_shed": state.stream_shed.load(std::sync::atomic::Ordering::Relaxed),
-        "wedge_shed": state.wedge_shed.load(std::sync::atomic::Ordering::Relaxed),
-        "streams_tracked": state.stream_inflight.lock().unwrap().len(),
+        "stream_shed": adm.shed.stream,
+        "wedge_shed": adm.shed.wedge,
+        "streams_tracked": adm.streams_tracked,
         "absorb_lag_max_secs": crate::usage::absorb_lag_max(),
         "cardinality": {
             "resident_handles": resident_handles,
@@ -1406,7 +1242,11 @@ pub async fn serve_h1(
     max_buf: usize,
 ) -> std::io::Result<()> {
     let svc = hyper_util::service::TowerToHyperService::new(app);
-    let (soft, hard) = raise_nofile();
+    let limits = raise_nofile();
+    let (soft, hard) = (
+        limits.soft.map_or(0, |n| n.get()),
+        limits.hard.map_or(0, |n| n.get()),
+    );
     NOFILE_SOFT.store(soft, std::sync::atomic::Ordering::Relaxed);
     NOFILE_HARD.store(hard, std::sync::atomic::Ordering::Relaxed);
     tracing::info!("nofile soft={soft} hard={hard} (raised to hard at boot)");
@@ -1645,7 +1485,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                                 crate::history::absorb_worst_frame_transient(),
                             "injectedFlushStallMs": crate::history::HISTORY_FLUSH_STALL_MS
                                 .load(std::sync::atomic::Ordering::Relaxed),
-                            "shedLineMb": state.admit_rss_shed_mb,
+                            "shedLineMb": state.admission.rss_shed_mb(),
                         },
                         "absorber": {
                             "reservedBytes": crate::history::absorb_reserved_bytes(),
@@ -1677,7 +1517,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                         },
                         "config": crate::history::RESOLVED_MEMORY_CONFIG.get(),
                         "process": {
-                            "rssMb": state.rss_mb_cached.load(ord),
+                            "rssMb": state.admission.rss_mb(),
                             "cgroupCurrentMb": std::fs::read_to_string("/sys/fs/cgroup/memory.current")
                                 .ok().and_then(|s| s.trim().parse::<u64>().ok()).map(|v| v / 1048576),
                             "cgroupPeakMb": std::fs::read_to_string("/sys/fs/cgroup/memory.peak")
@@ -2256,8 +2096,7 @@ async fn stream_entry(
     // routing noise (409 replays, 404s) masquerades as demand and drives
     // the desired count up on garbage.
     if resp.status().is_success() {
-        st.fleet_ops
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        st.admission.note_fleet_op();
     }
     resp
 }
@@ -4851,17 +4690,7 @@ async fn append_core(
     // stream-key auth (it lived in pre-auth middleware; see
     // track_inflight). Writes only — R24-B settled that shedding reads
     // hides the instance from its own operators.
-    let inflight_cap = state
-        .admit_max_inflight
-        .load(std::sync::atomic::Ordering::Relaxed);
-    if inflight_cap > 0 && state.inflight.load(std::sync::atomic::Ordering::Relaxed) > inflight_cap
-    {
-        state
-            .admit_shed
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        state
-            .admit_shed_inflight
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    if state.admission.admit_write_inflight().is_err() {
         // Tarpit: a ~25 ms pause before the 429 bounds the reject rate a
         // non-compliant closed-loop client can generate (an instant 429
         // invites an instant retry — measured as a CPU-starving reject
@@ -4928,20 +4757,11 @@ async fn append_core(
     // the instance from its own operators. The guard considers sampled
     // RSS PLUS reserved absorber bytes so the line moves BEFORE the
     // memory does.
-    if state.admit_rss_shed_mb > 0
-        && crate::history::memory_pressure_mb(
-            state
-                .rss_mb_cached
-                .load(std::sync::atomic::Ordering::Relaxed),
-            crate::history::absorb_reserved_bytes(),
-        ) > state.admit_rss_shed_mb
+    if state
+        .admission
+        .admit_write_memory(crate::history::absorb_reserved_bytes())
+        .is_err()
     {
-        state
-            .admit_shed
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-        state
-            .admit_shed_rss
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
         let mut r = err_resp(
             StatusCode::TOO_MANY_REQUESTS,
@@ -5560,8 +5380,10 @@ async fn append_core(
     // recovery must not deadlock on its own system-of-record writes.
     if !close_only && has_entries && !crate::billing::is_reserved_stream(&name) {
         let limits = crate::backpressure::Limits::from_config(&state.config.admission);
-        if let Some(cause) = crate::backpressure::admit(&engine, &state.maint_latch, &limits) {
-            state.maint_latch.note_shed();
+        if let Some(cause) =
+            crate::backpressure::admit(&engine, state.admission.maintenance(), &limits)
+        {
+            state.admission.maintenance().note_shed();
             let mut r = err_resp(
                 StatusCode::SERVICE_UNAVAILABLE,
                 "maintenance_backpressure",
@@ -5583,9 +5405,7 @@ async fn append_core(
     // climbs to 30 s+, so 5 s discriminates cleanly without false sheds.
     let blocked = engine.wedge_ms();
     if blocked > 5_000 {
-        state
-            .wedge_shed
-            .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+        state.admission.note_wedge_shed();
         let mut r = err_resp(
             StatusCode::TOO_MANY_REQUESTS,
             "engine_backpressure",
@@ -7032,38 +6852,27 @@ pub(crate) async fn sse_send_billed(
 }
 
 /// #267: RAII connection slot against the instance SSE budget. Held by
-/// the response stream's map closure — dropping the body releases it.
-pub(crate) struct SseSlot(pub(crate) Arc<AppState>);
-impl Drop for SseSlot {
-    fn drop(&mut self) {
-        self.0
-            .sse_connections
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-    }
-}
+/// the response stream's map closure — dropping the body releases it
+/// (PR 6-B: the admission controller's ticket).
+pub(crate) type SseSlot = crate::admission::SubscriptionTicket;
 
 /// Acquire an SSE connection slot or produce the typed 503. The gate
 /// exists so subscriber memory exhausts SUBSCRIPTION capacity, not the
 /// shared RSS line that sheds unrelated appends.
 pub(crate) fn sse_acquire(state: &Arc<AppState>) -> Result<SseSlot, Box<Response>> {
-    let cur = state
-        .sse_connections
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        + 1;
-    if state.sse_max_connections > 0 && cur > state.sse_max_connections {
-        state
-            .sse_connections
-            .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
-        let mut r = err_resp(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "subscription_capacity",
-            "instance at live-subscription capacity; retry another instance or later",
-        );
-        r.headers_mut()
-            .insert("retry-after", axum::http::HeaderValue::from_static("5"));
-        return Err(Box::new(r));
-    }
-    Ok(SseSlot(state.clone()))
+    state
+        .admission
+        .subscribe()
+        .map_err(|crate::admission::SubscriptionRefusal| {
+            let mut r = err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "subscription_capacity",
+                "instance at live-subscription capacity; retry another instance or later",
+            );
+            r.headers_mut()
+                .insert("retry-after", axum::http::HeaderValue::from_static("5"));
+            Box::new(r)
+        })
 }
 
 /// Which wire contract an SSE connection speaks. The drain/hop/wait
@@ -7089,7 +6898,8 @@ pub(crate) enum SseSurface {
 /// accepts, WAL->S3 flushes and therefore appends, while parked
 /// clients see silence. Raise the soft limit to the hard limit at boot
 /// and expose headroom so the canary can see it coming.
-pub(crate) fn raise_nofile() -> (u64, u64) {
+pub(crate) fn raise_nofile() -> crate::config::validation::DescriptorLimits {
+    use crate::config::validation::DescriptorLimits;
     #[cfg(unix)]
     unsafe {
         let mut lim = libc::rlimit {
@@ -7104,10 +6914,14 @@ pub(crate) fn raise_nofile() -> (u64, u64) {
                     lim = want;
                 }
             }
-            return (lim.rlim_cur, lim.rlim_max);
+            return DescriptorLimits {
+                soft: std::num::NonZeroU64::new(lim.rlim_cur),
+                hard: std::num::NonZeroU64::new(lim.rlim_max),
+            };
         }
     }
-    (0, 0)
+    // PR 6-B: no probe = no ceiling, typed — never a zero sentinel.
+    DescriptorLimits::default()
 }
 
 pub(crate) static NOFILE_SOFT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
@@ -8222,25 +8036,4 @@ mod tests {
         assert_eq!(encode_stream_name_path("é"), "%C3%A9");
     }
     use super::*;
-
-    #[test]
-    fn per_stream_slots_cap_and_release() {
-        let mut m: HashMap<[u8; 16], i64> = HashMap::new();
-        let h = [1u8; 16];
-        // cap 0 = limiter off
-        assert_eq!(stream_slot_try(&mut m, 0, h), SlotTry::Untracked);
-        assert!(m.is_empty());
-        // acquire to cap, then reject
-        assert_eq!(stream_slot_try(&mut m, 2, h), SlotTry::Acquired);
-        assert_eq!(stream_slot_try(&mut m, 2, h), SlotTry::Acquired);
-        assert_eq!(stream_slot_try(&mut m, 2, h), SlotTry::AtCap);
-        // a different stream is unaffected
-        assert_eq!(stream_slot_try(&mut m, 2, [2u8; 16]), SlotTry::Acquired);
-        // release frees a slot and empties the entry at zero
-        stream_slot_release(&mut m, &h);
-        assert_eq!(stream_slot_try(&mut m, 2, h), SlotTry::Acquired);
-        stream_slot_release(&mut m, &h);
-        stream_slot_release(&mut m, &h);
-        assert!(!m.contains_key(&h), "zero-count entry must be removed");
-    }
 }

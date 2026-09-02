@@ -262,10 +262,7 @@ pub static RSS_PEAK_MB: std::sync::atomic::AtomicU64 = std::sync::atomic::Atomic
 pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSnapshot {
     let mut counters = std::collections::BTreeMap::new();
     let mut gauges = std::collections::BTreeMap::new();
-    counters.insert(
-        "fleet_ops_total".into(),
-        state.fleet_ops.load(Ordering::Relaxed),
-    );
+    counters.insert("fleet_ops_total".into(), state.admission.fleet_ops());
     counters.insert(
         "ops_events_dropped_total".into(),
         EVENTS_DROPPED.load(Ordering::Relaxed),
@@ -405,7 +402,7 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
     // Process memory: sampled RSS + peak-since-scrape (the 250 ms
     // sampler keeps the peak; inter-snapshot SST-build spikes survive),
     // allocator commit, and cgroup truth when the platform provides it.
-    gauges.insert("rss_mb".into(), state.rss_mb_cached.load(ord));
+    gauges.insert("rss_mb".into(), state.admission.rss_mb());
     gauges.insert("rss_peak_since_scrape_mb".into(), RSS_PEAK_MB.swap(0, ord));
     {
         let mut current_commit = 0usize;

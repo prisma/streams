@@ -2790,6 +2790,38 @@ Do not rename user-facing flags while moving them. Flag cleanup is a separate se
 > follow in 6-B (AdmissionController, with the unforgeable capacity
 > posture), 6-C (PeerClient, LiveFeedService, raw bearer), 6-D
 > (RegistryService), 6-E (BillingService), 6-F (TaskSupervisor).
+>
+> **PR 6-B (WP-02, 2026-09-02):** `admission::AdmissionController`
+> owns every request-admission gate and counter — the global in-flight
+> gate, the pre-auth survival bound (4× the cap, stream paths only,
+> never a capacity answer), the RSS write-shed (sampled RSS plus the
+> absorber's reservation against the line), per-stream slots (bounded
+> per stream, fail-open at 65,536 tracked streams, released at zero),
+> the live-subscription budget, the maintenance-backpressure latch and
+> the fleet load vector. Counters are PRIVATE: request paths hold RAII
+> tickets (`InflightTicket`, `StreamSlot`, `SubscriptionTicket`) and
+> ask typed questions (`survival_refused`, `admit_write_inflight`,
+> `admit_write_memory`, `stream_slot`, `subscribe`); operator, debug
+> and ops surfaces read one immutable `snapshot()`; the HTTP layer
+> keeps only the wire shapes and the tarpit. Twenty `AppState` fields
+> are DELETED (53 → 34). The capacity posture is UNFORGEABLE:
+> `ConfiguredCapacity::{Release(NonZeroU64), Development(u64)}`
+> encodes the posture once, `DescriptorLimits { soft, hard:
+> Option<NonZeroU64> }` replaces the zero sentinel from the probe, and
+> `resolve_effective_capacity(configured, limits, notices)` reads the
+> posture from the value (no second boolean) — a development capacity,
+> including the unlimited 0, can never be resolved as release, and an
+> absent ceiling under release is a typed `DescriptorCeilingUnknown`
+> warning. `EffectiveCapacity` now carries the configured value it was
+> resolved from and is installed into the controller; bootstrap no
+> longer mutates the configuration graph after validation. Proofs:
+> controller units (tickets are RAII and record the peak; survival and
+> ordinary gates are distinct mechanisms with distinct counters; the
+> RSS gate counts reserved bytes; stream slots are bounded and
+> released; the subscription budget is exact and a refusal never
+> counts; the snapshot mirrors the controller) and
+> `capacity_posture_is_unforgeable` beside the rewritten capacity
+> matrix. The rig builder is 141 lines.
 
 **Implements:** the foundational part of WP-15.
 

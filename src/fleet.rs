@@ -15,7 +15,6 @@
 use object_store::path::Path as ObjPath;
 use object_store::{ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion};
 use serde::{Deserialize, Serialize};
-use std::sync::atomic::Ordering;
 use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Duration, Instant};
 
@@ -400,7 +399,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
         let mut last_ownership_view: Option<crate::ownership::OwnershipView> = None;
         loop {
             tokio::time::sleep(Duration::from_secs(2)).await;
-            let ops = state.fleet_ops.load(Ordering::Relaxed);
+            let ops = state.admission.fleet_ops();
             let dt = last_tick.elapsed().as_secs_f64().max(0.001);
             last_tick = Instant::now();
             let inst_rps = (ops - last_ops) as f64 / dt;
@@ -455,8 +454,7 @@ pub fn start(state: Arc<AppState>, store: Arc<dyn ObjectStore>, cfg: FleetCfg) {
                     wedge_max_ms,
                 )
             };
-            let inflight_now = state.inflight.load(Ordering::Relaxed);
-            let inflight_peak = state.inflight_peak.swap(inflight_now, Ordering::Relaxed);
+            let (inflight_now, inflight_peak) = state.admission.swap_peak();
             let (wal_put_p50_ms, wal_put_p99_ms, out_inflight, out_inflight_peak) =
                 crate::store_timing::heartbeat_summary();
             let hb = Heartbeat {

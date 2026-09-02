@@ -17,6 +17,7 @@
 //! run(config).await                                  // preflight, owners, serve
 //! ```
 
+mod admission;
 mod audit;
 mod auth;
 mod auth_feed;

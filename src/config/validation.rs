@@ -13,6 +13,7 @@
 //! because two configuration fields are inconsistent. OS-probe checks
 //! (descriptor limits) live in `run()`'s named preflight instead.
 
+use std::num::NonZeroU64;
 use std::time::Duration;
 
 use slatedb::config::Settings;
@@ -292,20 +293,45 @@ fn profile_feed_budget_max(profile: Option<&str>) -> u64 {
 /// keeps this much headroom below `nofile_hard`.
 const FD_RESERVE: u64 = 1024;
 
-/// The PROVEN configured subscription capacity (PR 4.1: the pure half
-/// of the old `validate_release_capacity`, which mixed configured-limit
-/// validation with OS-dependent resolution behind a `nofile_hard == 0`
-/// sentinel and an in-place mutation).
+/// The PROVEN configured subscription capacity, with its POSTURE
+/// encoded (PR 6-B): a release-posture capacity is a `NonZeroU64` by
+/// construction, so a zero/unlimited cap accepted under development can
+/// never be resolved as release, and resolution consumes the posture
+/// from the value instead of a second boolean.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-pub struct ConfiguredCapacity {
-    sse_max_connections: u64,
+pub enum ConfiguredCapacity {
+    Release(NonZeroU64),
+    Development(u64),
+}
+
+impl ConfiguredCapacity {
+    pub fn configured(&self) -> u64 {
+        match self {
+            Self::Release(n) => n.get(),
+            Self::Development(c) => *c,
+        }
+    }
+
+    pub fn is_release(&self) -> bool {
+        matches!(self, Self::Release(_))
+    }
+}
+
+/// What the descriptor probe reported (PR 6-B: typed — `None` means the
+/// platform reported no ceiling; there is no zero sentinel).
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
+pub struct DescriptorLimits {
+    pub soft: Option<NonZeroU64>,
+    pub hard: Option<NonZeroU64>,
 }
 
 /// The EFFECTIVE subscription capacity after the descriptor-budget
-/// resolution — what the runtime installs.
+/// resolution — what the runtime installs — beside the configured value
+/// it was resolved from.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct EffectiveCapacity {
     pub sse_max_connections: u64,
+    pub configured: u64,
 }
 
 /// Round-4 review: lock the safe 1-GiB defaults at boot — the PURE
@@ -350,39 +376,47 @@ pub(crate) fn validate_configured_capacity(
         }
     }
     // Round-4 follow-up review, finding 1: an explicit 0 must never
-    // pass release validation (0 = unlimited on the request path).
-    if release_posture && sse_max_connections == 0 {
-        return Err(
-            "SSE_MAX_CONNECTIONS=0 means unlimited; the release posture \
-             requires a bounded subscription cap"
-                .to_string(),
-        );
+    // pass release validation (0 = unlimited on the request path) —
+    // PR 6-B: the release variant cannot even hold a zero.
+    if release_posture {
+        return NonZeroU64::new(sse_max_connections)
+            .map(ConfiguredCapacity::Release)
+            .ok_or_else(|| {
+                "SSE_MAX_CONNECTIONS=0 means unlimited; the release posture \
+                 requires a bounded subscription cap"
+                    .to_string()
+            });
     }
-    Ok(ConfiguredCapacity {
-        sse_max_connections,
-    })
+    Ok(ConfiguredCapacity::Development(sse_max_connections))
 }
 
 /// The OS-dependent half (bootstrap PREFLIGHT, after the descriptor
 /// limit has been raised and probed): the configured cap must fit
-/// under `nofile_hard` with headroom for everything else the process
+/// under the hard ceiling with headroom for everything else the process
 /// holds. Under the release posture: clamp and notice (the review's
 /// acceptable arm) rather than refusing — a platform that lowers the
 /// ceiling mid-fleet must not take the whole deployment down at
 /// restart. Outside the release posture: notice only. A degraded
-/// ceiling (`nofile_hard <= reserve`) must never clamp DOWN to 0
-/// (= unlimited): the release posture fails CLOSED. `nofile_hard == 0`
-/// means the platform reported no ceiling (non-unix): nothing to
-/// resolve against, the configured value stands.
+/// ceiling (`hard <= reserve`) must never clamp DOWN to 0 (= unlimited):
+/// the release posture fails CLOSED. PR 6-B: the posture is read from
+/// the capacity value itself, and an absent ceiling is `None` — under
+/// the release posture that is a typed notice, never a silent skip.
 pub(crate) fn resolve_effective_capacity(
     configured: ConfiguredCapacity,
-    release_posture: bool,
-    nofile_hard: u64,
+    limits: DescriptorLimits,
     notices: &mut Vec<ConfigNotice>,
 ) -> Result<EffectiveCapacity, String> {
-    let mut cap = configured.sse_max_connections;
-    if nofile_hard > 0 {
-        if nofile_hard <= FD_RESERVE {
+    let release_posture = configured.is_release();
+    let cap = configured.configured();
+    let mut effective = cap;
+    match limits.hard {
+        None => {
+            if release_posture {
+                notices.push(ConfigNotice::DescriptorCeilingUnknown { configured: cap });
+            }
+        }
+        Some(hard) if hard.get() <= FD_RESERVE => {
+            let nofile_hard = hard.get();
             if release_posture {
                 return Err(format!(
                     "nofile_hard={nofile_hard} leaves no safe SSE connection capacity \
@@ -394,7 +428,9 @@ pub(crate) fn resolve_effective_capacity(
                 nofile_hard,
                 reserve: FD_RESERVE,
             });
-        } else {
+        }
+        Some(hard) => {
+            let nofile_hard = hard.get();
             let ceiling = nofile_hard - FD_RESERVE;
             if cap > ceiling {
                 if release_posture {
@@ -404,7 +440,7 @@ pub(crate) fn resolve_effective_capacity(
                         reserve: FD_RESERVE,
                         effective: ceiling,
                     });
-                    cap = ceiling;
+                    effective = ceiling;
                 } else {
                     notices.push(ConfigNotice::SseCapExceedsDescriptors {
                         configured: cap,
@@ -416,7 +452,8 @@ pub(crate) fn resolve_effective_capacity(
         }
     }
     Ok(EffectiveCapacity {
-        sse_max_connections: cap,
+        sse_max_connections: effective,
+        configured: cap,
     })
 }
 

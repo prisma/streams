@@ -823,15 +823,17 @@ pub(crate) fn project_memory_gate(
     state: &AppState,
     principal: Option<&crate::auth::RequestPrincipal>,
 ) -> Option<Response> {
-    let high = state
-        .project_memory_pressure_bytes
-        .load(std::sync::atomic::Ordering::Relaxed);
+    let high = state.admission.project_memory_pressure_bytes();
     if high == 0 {
         return None;
     }
     let p = principal?;
     let adm = state.quotas.pressure_handle(&p.project_id)?;
-    if adm.memory_gate(&p.project_id, high, state.project_memory_release_pct) {
+    if adm.memory_gate(
+        &p.project_id,
+        high,
+        state.admission.project_memory_release_pct(),
+    ) {
         return Some(crate::audit::tag_project(
             quota_refusal_response(&crate::quota::QuotaRefusal::MemoryPressure),
             &p.project_id,
