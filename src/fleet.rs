@@ -862,15 +862,16 @@ pub fn start(
                     for prefix in held {
                         let owner = state.ownership.effective_owner(&prefix);
                         if owner.as_deref().is_some_and(|o| o != cfg.instance) {
-                            let eng = state.shards.evict(&prefix);
-                            if let Some(e) = eng {
-                                tracing::info!(
-                                    shard = %prefix,
-                                    to = %owner.unwrap_or_default(),
-                                    "possession yields at tick: shard moved away"
-                                );
-                                e.begin_close();
-                            }
+                            tracing::info!(
+                                shard = %prefix,
+                                to = %owner.unwrap_or_default(),
+                                "possession yields at tick: shard moved away"
+                            );
+                            state.shards.retire(
+                                &prefix,
+                                crate::shard_directory::RetirementReason::OwnershipMoved,
+                                |_, _| true,
+                            );
                         }
                     }
                 }
@@ -1080,10 +1081,11 @@ pub fn start(
                                 // in-flight work fast (retryable) — the new
                                 // owner fences the log on first routed
                                 // request.
-                                let eng = state.shards.evict(&prefix);
-                                if let Some(e) = eng {
-                                    e.begin_close();
-                                }
+                                state.shards.retire(
+                                    &prefix,
+                                    crate::shard_directory::RetirementReason::FleetEviction,
+                                    |_, _| true,
+                                );
                                 last_move = Some(Instant::now());
                                 lag_hot_ticks = 0;
                             }

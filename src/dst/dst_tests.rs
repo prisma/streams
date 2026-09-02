@@ -214,6 +214,37 @@ async fn open_engine(store: Arc<dyn ObjectStore>, prefix: &str) -> Arc<crate::sh
     open_engine_cfg(store, prefix, crate::shard::ShardConfig::default()).await
 }
 
+/// PR 6.1.1-B: an engine that reports its own close, the way the
+/// production opener and the principal rig wire it.
+async fn open_engine_with_on_close(
+    store: Arc<dyn ObjectStore>,
+    prefix: &str,
+    on_close: Arc<dyn Fn() + Send + Sync>,
+) -> Arc<crate::shard::ShardEngine> {
+    let db = slatedb::Db::builder(prefix, store.clone())
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(std::time::Duration::from_millis(5)),
+            manifest_poll_interval: std::time::Duration::from_millis(50),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .expect("open db");
+    let (absorb_tx, _absorb_rx) = crate::history::absorber_channel();
+    let maint = crate::shard::load_or_rebuild_maintenance(&db)
+        .await
+        .expect("load maintenance");
+    crate::shard::ShardEngine::start(
+        prefix.to_string(),
+        Arc::new(db),
+        store,
+        crate::shard::ShardConfig::default(),
+        absorb_tx,
+        Some(on_close),
+        maint,
+    )
+}
+
 async fn open_engine_cfg(
     store: Arc<dyn ObjectStore>,
     prefix: &str,
@@ -2988,13 +3019,16 @@ async fn health_reports_unready_when_no_shard_has_ever_opened() {
     );
 }
 
-/// PR 6.1-B: a close notification names the engine incarnation it
-/// belongs to. An old engine's LATE close (the db's close reason arrives
-/// after `begin_close` already notified once) must not evict the
-/// replacement that opened after the holdoff — the forced ordering
-/// old-close-after-new-insert.
+/// PR 6.1.1-B: ONE retirement protocol, proven through the REAL close
+/// path. Retiring a shard must remove exactly that resident, arm the
+/// anti-flap holdoff and close the engine as ONE step — the previous
+/// shape removed the engine first, so its close callback found an empty
+/// slot and silently skipped the holdoff, letting a request reopen the
+/// prefix the instant it was evicted. A late notification from the
+/// retired incarnation must then be an idempotent no-op that cannot
+/// touch the replacement.
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-async fn a_stale_close_notification_cannot_evict_a_replacement() {
+async fn retirement_arms_the_holdoff_and_a_stale_close_cannot_evict_a_replacement() {
     let store = mem();
     let st = store.clone();
     let dir = crate::shard_directory::ShardDirectory::new(
@@ -3002,18 +3036,26 @@ async fn a_stale_close_notification_cannot_evict_a_replacement() {
         crate::ownership::OwnershipService::new(""),
         crate::shard_directory::OpenTiming {
             open_deadline: std::time::Duration::from_secs(60),
-            open_wait: std::time::Duration::from_secs(30),
+            open_wait: std::time::Duration::from_millis(50),
         },
-        |_notifier| {
+        // The opener wires the close notifier exactly as production and
+        // the principal rig do: an engine's own close evicts itself.
+        |notifier| {
             Box::new(
-                move |prefix: String, _inc: crate::sharddir::EngineIncarnation| {
+                move |prefix: String, incarnation: crate::sharddir::EngineIncarnation| {
                     let st = st.clone();
-                    Box::pin(async move { Ok(open_engine(st, &prefix).await) })
+                    let notifier = notifier.clone();
+                    Box::pin(async move {
+                        let p = prefix.clone();
+                        let cb: Arc<dyn Fn() + Send + Sync> = Arc::new(move || {
+                            notifier.closed(&p, incarnation);
+                        });
+                        Ok(open_engine_with_on_close(st, &prefix, cb).await)
+                    })
                 },
             )
         },
     );
-    let notifier = dir.close_notifier();
     let prefix = "0";
     let crate::sharddir::OpenOutcome::Ready(a) = dir
         .open_or_wait(prefix, std::time::Duration::from_secs(30))
@@ -3022,9 +3064,28 @@ async fn a_stale_close_notification_cannot_evict_a_replacement() {
         panic!("open A must be ready");
     };
     let inc_a = dir.resident_incarnation(prefix).expect("A is the resident");
-    // A's FIRST close notification evicts A and arms the holdoff.
-    assert!(notifier.closed(prefix, inc_a));
+
+    // RETIRE A the way the fleet loop does: removed, held off, closed.
+    let crate::shard_directory::RetireOutcome::Retired(retired) = dir.retire(
+        prefix,
+        crate::shard_directory::RetirementReason::FleetEviction,
+        |_, _| true,
+    ) else {
+        panic!("A was resident");
+    };
+    assert!(Arc::ptr_eq(&retired, &a));
     assert!(!dir.is_open(prefix));
+    match dir
+        .open_or_wait(prefix, std::time::Duration::from_millis(20))
+        .await
+    {
+        crate::sharddir::OpenOutcome::Wait { code, .. } => {
+            assert_eq!(code, "shard_moving", "retirement must arm the holdoff");
+        }
+        _ => panic!("a just-retired shard must not reopen immediately"),
+    }
+
+    // After the holdoff, the replacement opens.
     dir.clear_holdoff(prefix);
     let crate::sharddir::OpenOutcome::Ready(b) = dir
         .open_or_wait(prefix, std::time::Duration::from_secs(30))
@@ -3035,19 +3096,95 @@ async fn a_stale_close_notification_cannot_evict_a_replacement() {
     let inc_b = dir.resident_incarnation(prefix).expect("B is the resident");
     assert_ne!(inc_a, inc_b, "every open is its own incarnation");
     assert!(!Arc::ptr_eq(&a, &b));
-    // A's LATE close (the db reported its close reason) arrives now.
-    assert!(
-        !notifier.closed(prefix, inc_a),
-        "a stale close must not evict the replacement"
-    );
+
+    // A's LATE database close (the acker path fires the same callback a
+    // second time) must change nothing.
+    let notifier = dir.close_notifier();
+    assert!(!notifier.closed(prefix, inc_a), "a stale close is a no-op");
     assert!(dir.is_open(prefix), "B still serves");
-    let serving = dir.engines();
-    assert!(serving.iter().any(|e| Arc::ptr_eq(e, &b)));
-    // B's OWN close evicts B.
-    assert!(notifier.closed(prefix, inc_b));
-    assert!(!dir.is_open(prefix));
-    a.begin_close();
-    b.begin_close();
+    assert!(dir.engines().iter().any(|e| Arc::ptr_eq(e, &b)));
+
+    // B's own retirement arms the next holdoff.
+    assert!(matches!(
+        dir.retire(
+            prefix,
+            crate::shard_directory::RetirementReason::Shutdown,
+            |_, _| true
+        ),
+        crate::shard_directory::RetireOutcome::Retired(_)
+    ));
+    match dir
+        .open_or_wait(prefix, std::time::Duration::from_millis(20))
+        .await
+    {
+        crate::sharddir::OpenOutcome::Wait { code, .. } => assert_eq!(code, "shard_moving"),
+        _ => panic!("B's retirement must arm its own holdoff"),
+    }
+}
+
+/// PR 6.1.1-B: a DECLINING decision reinstates the very same engine
+/// under the same write guard — no empty-slot window, no holdoff, no
+/// close. This is the R30 sweep's custody CAS losing to customer
+/// adoption.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn a_declined_retirement_keeps_the_engine_and_arms_nothing() {
+    let store = mem();
+    let st = store.clone();
+    let dir = crate::shard_directory::ShardDirectory::new(
+        vec!["0".into(), "1".into()],
+        crate::ownership::OwnershipService::new(""),
+        crate::shard_directory::OpenTiming {
+            open_deadline: std::time::Duration::from_secs(60),
+            open_wait: std::time::Duration::from_millis(50),
+        },
+        |_notifier| {
+            Box::new(
+                move |prefix: String, _inc: crate::sharddir::EngineIncarnation| {
+                    let st = st.clone();
+                    Box::pin(async move { Ok(open_engine(st, &prefix).await) })
+                },
+            )
+        },
+    );
+    let prefix = "0";
+    let crate::sharddir::OpenOutcome::Ready(a) = dir
+        .open_or_wait(prefix, std::time::Duration::from_secs(30))
+        .await
+    else {
+        panic!("open must be ready");
+    };
+    let inc = dir.resident_incarnation(prefix).unwrap();
+    let seen = Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let s2 = seen.clone();
+    assert!(matches!(
+        dir.retire(
+            prefix,
+            crate::shard_directory::RetirementReason::SweepEviction,
+            move |engine, incarnation| {
+                // The decision sees the resident and its incarnation.
+                assert_eq!(incarnation, inc);
+                assert!(!engine.is_closed());
+                s2.store(true, std::sync::atomic::Ordering::SeqCst);
+                false
+            }
+        ),
+        crate::shard_directory::RetireOutcome::Kept
+    ));
+    assert!(seen.load(std::sync::atomic::Ordering::SeqCst));
+    assert!(dir.is_open(prefix), "the same engine was reinstated");
+    assert_eq!(dir.resident_incarnation(prefix), Some(inc));
+    let crate::sharddir::OpenOutcome::Ready(again) = dir
+        .open_or_wait(prefix, std::time::Duration::from_millis(20))
+        .await
+    else {
+        panic!("a kept engine keeps serving");
+    };
+    assert!(Arc::ptr_eq(&a, &again), "no holdoff, no replacement");
+    dir.retire(
+        prefix,
+        crate::shard_directory::RetirementReason::Shutdown,
+        |_, _| true,
+    );
 }
 
 /// An engine that keeps dying young must meet an escalating holdoff, not
@@ -6368,15 +6505,22 @@ async fn stream_epoch_survives_restart_but_not_recreation() {
 /// load_or_rebuild_maintenance → engine start → absorber — with the
 /// R26-5 park point before restoration and the fast test absorber
 /// defaults (a caller's absorber config, e.g. `cold_absorber`, wins).
+/// PR 6.1.1-B: the principal rig opens engines the way production does
+/// — including the close notifier, so the whole suite exercises the real
+/// directory lifecycle (a fenced or failed engine evicts itself and arms
+/// the anti-flap holdoff) instead of a rig-only shape with no close
+/// callback at all.
 fn rig_opener(
     store: Arc<dyn ObjectStore>,
     keys: Arc<crate::history::KeyCache>,
     shard_cfg: crate::shard::ShardConfig,
     open_park: Option<Arc<tokio::sync::Mutex<()>>>,
     absorber_cfg: Option<crate::history::AbsorberConfig>,
+    notifier: crate::shard_directory::ShardCloseNotifier,
 ) -> crate::sharddir::OpenFn {
     Box::new(
-        move |prefix: String, _incarnation: crate::sharddir::EngineIncarnation| {
+        move |prefix: String, incarnation: crate::sharddir::EngineIncarnation| {
+            let notifier = notifier.clone();
             let store = store.clone();
             let keys = keys.clone();
             let shard_cfg = shard_cfg.clone();
@@ -6406,13 +6550,20 @@ fn rig_opener(
                 let __maint = crate::shard::load_or_rebuild_maintenance(&db)
                     .await
                     .expect("load maintenance");
+                let on_close = {
+                    let notifier = notifier.clone();
+                    let prefix = prefix.clone();
+                    Arc::new(move || {
+                        notifier.closed(&prefix, incarnation);
+                    }) as Arc<dyn Fn() + Send + Sync>
+                };
                 let engine = crate::shard::ShardEngine::start(
                     prefix,
                     Arc::new(db),
                     store.clone(),
                     shard_cfg.clone(),
                     absorb_tx,
-                    None,
+                    Some(on_close),
                     __maint,
                 );
                 crate::history::Absorber::start(
@@ -6472,13 +6623,10 @@ async fn http_rig_build(
         touch_entropy,
     } = runtime;
     let touch = Arc::new(crate::touch::TouchRegistry::with_entropy(touch_entropy));
-    let opener = rig_opener(
-        store.clone(),
-        keys.clone(),
-        shard_cfg.clone(),
-        open_park,
-        absorber_cfg.clone(),
-    );
+    let opener_store = store.clone();
+    let opener_keys = keys.clone();
+    let opener_shard_cfg = shard_cfg.clone();
+    let opener_absorber = absorber_cfg.clone();
     // The rig's owned configuration (WP-01 PR 3.1): the no-environment
     // knob posture — every knob default, no env overlay. PR 4.1.1.1:
     // the CLI half comes from the HERMETIC fixture, never from a parse
@@ -6533,7 +6681,16 @@ async fn http_rig_build(
                 open_deadline: rig_config.shard.open_deadline,
                 open_wait: std::time::Duration::from_millis(rig_config.shard.open_wait_ms),
             },
-            |_notifier| opener,
+            |notifier| {
+                rig_opener(
+                    opener_store,
+                    opener_keys,
+                    opener_shard_cfg,
+                    open_park,
+                    opener_absorber,
+                    notifier,
+                )
+            },
         ),
         admission: crate::admission::AdmissionController::new(crate::admission::AdmissionKnobs {
             max_inflight: 0,
@@ -8043,9 +8200,7 @@ async fn post_split_throughput_scales() {
 /// Close every open engine so background loops die with the test.
 async fn engine_shutdown(state: &Arc<crate::http::AppState>) {
     let engines: Vec<_> = state.shards.engines();
-    for e in engines {
-        e.begin_close();
-    }
+    drop(engines); // retirement already closed them
 }
 
 /// Merge execution (review deferral, now implemented): split then merge
@@ -27894,10 +28049,12 @@ async fn first_request_waits_for_restoration_then_sees_the_restored_ledger() {
         .await
         .unwrap();
     engine1.db.flush().await.unwrap();
-    {
-        state1.shards.evict(&prefix);
-    }
-    engine1.begin_close();
+    state1.shards.retire(
+        &prefix,
+        crate::shard_directory::RetirementReason::Shutdown,
+        |_, _| true,
+    );
+    state1.shards.clear_holdoff(&prefix); // the fixture reopens at once
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     // Rig 2: fresh gate over the same store, restoration parked.
@@ -28121,11 +28278,14 @@ async fn cold_shard_maintenance_debt_survives_the_sweep_and_drains() {
     let ledger = engine.maintenance_snapshot().unabsorbed_frame_bytes;
     assert!(ledger > 0, "backlog must exist before the cold phase");
 
-    // Go cold: the production sweep-close pattern (remove + close).
-    {
-        state.shards.evict("00");
-    }
-    engine.begin_close();
+    // Go cold through the production retirement protocol (remove +
+    // holdoff + close as ONE step).
+    state.shards.retire(
+        "00",
+        crate::shard_directory::RetirementReason::SweepEviction,
+        |_, _| true,
+    );
+    state.shards.clear_holdoff("00"); // the fixture reopens at once
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     // Sweep: reopens the owned shard, sees maintenance debt with clean
@@ -28219,12 +28379,27 @@ async fn sweep_residency_bound_rotates_over_many_indebted_shards() {
     // All four go cold with durable backlog.
     let engines: Vec<_> = prefixes
         .iter()
-        .filter_map(|p| state.shards.evict(p))
+        .filter_map(|p| {
+            match state.shards.retire(
+                p,
+                crate::shard_directory::RetirementReason::Shutdown,
+                |_, _| true,
+            ) {
+                crate::shard_directory::RetireOutcome::Retired(e) => Some(e),
+                _ => None,
+            }
+        })
         .collect();
+    // PR 6.1.1-B: retirement arms the production anti-flap holdoff. The
+    // fixture wants the NEXT sweep to rediscover these shards at once —
+    // in production that is simply a later request, after the holdoff —
+    // so the test says so instead of waiting it out.
+    for p in &prefixes {
+        state.shards.clear_holdoff(p);
+    }
     assert_eq!(engines.len(), 4);
     for e in engines {
         assert!(e.maintenance_snapshot().unabsorbed_frame_bytes > 0);
-        e.begin_close();
     }
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
@@ -28313,11 +28488,25 @@ async fn sweep_peak_open_never_exceeds_the_budget() {
     drain_billing_clean(&state, &pref_refs).await;
     let engines: Vec<_> = prefixes
         .iter()
-        .filter_map(|p| state.shards.evict(p))
+        .filter_map(|p| {
+            match state.shards.retire(
+                p,
+                crate::shard_directory::RetirementReason::Shutdown,
+                |_, _| true,
+            ) {
+                crate::shard_directory::RetireOutcome::Retired(e) => Some(e),
+                _ => None,
+            }
+        })
         .collect();
-    for e in engines {
-        e.begin_close();
+    // PR 6.1.1-B: retirement arms the production anti-flap holdoff. The
+    // fixture wants the NEXT sweep to rediscover these shards at once —
+    // in production that is simply a later request, after the holdoff —
+    // so the test says so instead of waiting it out.
+    for p in &prefixes {
+        state.shards.clear_holdoff(p);
     }
+    drop(engines); // retirement already closed them
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
 
     crate::billing::sweep_open_peak_reset(&state);
@@ -28374,11 +28563,25 @@ async fn customer_race_into_a_sweep_opened_engine_prevents_its_close() {
     // Cold: close every engine, then let ONE sweep re-open the debtor.
     let engines: Vec<_> = prefixes
         .iter()
-        .filter_map(|p| state.shards.evict(p))
+        .filter_map(|p| {
+            match state.shards.retire(
+                p,
+                crate::shard_directory::RetirementReason::Shutdown,
+                |_, _| true,
+            ) {
+                crate::shard_directory::RetireOutcome::Retired(e) => Some(e),
+                _ => None,
+            }
+        })
         .collect();
-    for e in engines {
-        e.begin_close();
+    // PR 6.1.1-B: retirement arms the production anti-flap holdoff. The
+    // fixture wants the NEXT sweep to rediscover these shards at once —
+    // in production that is simply a later request, after the holdoff —
+    // so the test says so instead of waiting it out.
+    for p in &prefixes {
+        state.shards.clear_holdoff(p);
     }
+    drop(engines); // retirement already closed them
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     crate::billing::sweep_owned_outboxes(&state).await;
     assert!(
@@ -28448,11 +28651,25 @@ async fn custody_declines_on_prior_external_use() {
     // (external stamp), and only THEN would the sweep mark it.
     let engines: Vec<_> = prefixes
         .iter()
-        .filter_map(|p| state.shards.evict(p))
+        .filter_map(|p| {
+            match state.shards.retire(
+                p,
+                crate::shard_directory::RetirementReason::Shutdown,
+                |_, _| true,
+            ) {
+                crate::shard_directory::RetireOutcome::Retired(e) => Some(e),
+                _ => None,
+            }
+        })
         .collect();
-    for e in engines {
-        e.begin_close();
+    // PR 6.1.1-B: retirement arms the production anti-flap holdoff. The
+    // fixture wants the NEXT sweep to rediscover these shards at once —
+    // in production that is simply a later request, after the holdoff —
+    // so the test says so instead of waiting it out.
+    for p in &prefixes {
+        state.shards.clear_holdoff(p);
     }
+    drop(engines); // retirement already closed them
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     let crate::sharddir::OpenOutcome::Ready(engine) = state
         .shards
@@ -28514,11 +28731,25 @@ async fn internal_touch_does_not_leak_an_engine_from_the_rotation() {
     drain_billing_clean(&state, &pref_refs).await;
     let engines: Vec<_> = prefixes
         .iter()
-        .filter_map(|p| state.shards.evict(p))
+        .filter_map(|p| {
+            match state.shards.retire(
+                p,
+                crate::shard_directory::RetirementReason::Shutdown,
+                |_, _| true,
+            ) {
+                crate::shard_directory::RetireOutcome::Retired(e) => Some(e),
+                _ => None,
+            }
+        })
         .collect();
-    for e in engines {
-        e.begin_close();
+    // PR 6.1.1-B: retirement arms the production anti-flap holdoff. The
+    // fixture wants the NEXT sweep to rediscover these shards at once —
+    // in production that is simply a later request, after the holdoff —
+    // so the test says so instead of waiting it out.
+    for p in &prefixes {
+        state.shards.clear_holdoff(p);
     }
+    drop(engines); // retirement already closed them
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     // One sweep opens + retains the indebted shard under custody.
     crate::billing::sweep_owned_outboxes(&state).await;
@@ -28612,11 +28843,25 @@ async fn tombstone_walk_peak_residency_stays_under_the_budget() {
     // terminal, and force fresh registry reads.
     let engines: Vec<_> = prefixes
         .iter()
-        .filter_map(|p| state.shards.evict(p))
+        .filter_map(|p| {
+            match state.shards.retire(
+                p,
+                crate::shard_directory::RetirementReason::Shutdown,
+                |_, _| true,
+            ) {
+                crate::shard_directory::RetireOutcome::Retired(e) => Some(e),
+                _ => None,
+            }
+        })
         .collect();
-    for e in engines {
-        e.begin_close();
+    // PR 6.1.1-B: retirement arms the production anti-flap holdoff. The
+    // fixture wants the NEXT sweep to rediscover these shards at once —
+    // in production that is simply a later request, after the holdoff —
+    // so the test says so instead of waiting it out.
+    for p in &prefixes {
+        state.shards.clear_holdoff(p);
     }
+    drop(engines); // retirement already closed them
     tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
     for n in &names {
         state
@@ -28713,11 +28958,25 @@ async fn tombstone_walk_fairness_under_occupied_budget() {
     crate::history::absorb_pause_flag().store(true, std::sync::atomic::Ordering::Relaxed);
     let engines: Vec<_> = prefixes
         .iter()
-        .filter_map(|p| state.shards.evict(p))
+        .filter_map(|p| {
+            match state.shards.retire(
+                p,
+                crate::shard_directory::RetirementReason::Shutdown,
+                |_, _| true,
+            ) {
+                crate::shard_directory::RetireOutcome::Retired(e) => Some(e),
+                _ => None,
+            }
+        })
         .collect();
-    for e in engines {
-        e.begin_close();
+    // PR 6.1.1-B: retirement arms the production anti-flap holdoff. The
+    // fixture wants the NEXT sweep to rediscover these shards at once —
+    // in production that is simply a later request, after the holdoff —
+    // so the test says so instead of waiting it out.
+    for p in &prefixes {
+        state.shards.clear_holdoff(p);
     }
+    drop(engines); // retirement already closed them
     tokio::time::sleep(std::time::Duration::from_millis(1200)).await;
     for n in &expired_names {
         state
@@ -28784,11 +29043,25 @@ async fn revoked_close_keeps_the_identical_engine_with_no_new_open() {
     // customer adopt (revoke) — the exact adopted-close shape.
     let engines: Vec<_> = prefixes
         .iter()
-        .filter_map(|p| state.shards.evict(p))
+        .filter_map(|p| {
+            match state.shards.retire(
+                p,
+                crate::shard_directory::RetirementReason::Shutdown,
+                |_, _| true,
+            ) {
+                crate::shard_directory::RetireOutcome::Retired(e) => Some(e),
+                _ => None,
+            }
+        })
         .collect();
-    for e in engines {
-        e.begin_close();
+    // PR 6.1.1-B: retirement arms the production anti-flap holdoff. The
+    // fixture wants the NEXT sweep to rediscover these shards at once —
+    // in production that is simply a later request, after the holdoff —
+    // so the test says so instead of waiting it out.
+    for p in &prefixes {
+        state.shards.clear_holdoff(p);
     }
+    drop(engines); // retirement already closed them
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     crate::billing::sweep_owned_outboxes(&state).await;
     let engine = state
@@ -35373,9 +35646,7 @@ async fn livefeed_parked_live_session_is_cut_off_by_engine_close() {
         }
     }
     let engines: Vec<_> = state_b.shards.engines();
-    for e in engines {
-        e.begin_close();
-    }
+    drop(engines); // retirement already closed them
     let (a1, eof1) = hub_sse_collect(&mut sub, 10, |_| false).await;
     assert!(
         eof1,

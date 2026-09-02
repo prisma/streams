@@ -3018,6 +3018,33 @@ Do not rename user-facing flags while moving them. Flag cleanup is a separate se
 > the old SERVER SURFACE and its supervised loops are terminated before
 > the replacement starts — engine-internal and open-gate helper tasks
 > join the supervisor with WP-15.
+>
+> **PR 6.1.1-B (Oracle corrective on PR 6.1): ONE incarnation-safe
+> retirement protocol.** PR 6.1-B's incarnation fence protected
+> replacements from a late close but regressed the ordinary path: the
+> explicit eviction sites removed the resident BEFORE `begin_close`, so
+> the close callback found an empty slot and never armed the anti-flap
+> holdoff — a prefix could reopen the instant it was evicted.
+> `ShardDirectory::retire(prefix, reason, decide)` is now the one
+> protocol: under a single write guard it removes exactly the resident,
+> hands the decision that engine AND its incarnation, arms the holdoff
+> atomically with the removal, and closes the engine outside the lock; a
+> declining decision reinstates the very same engine under that guard,
+> so no empty-slot window is observable. `evict()` and `remove_if()` are
+> deleted — no remove-and-return primitive whose caller must remember
+> the rest, and no `_and_holdoff` variants. Every explicit path uses it:
+> the ownership yield inside `resolve`, the fleet loop's possession
+> yield and rebalancer eviction, the R30 sweep (its custody CAS IS the
+> decision closure) and test teardown, each naming a `RetirementReason`.
+> The principal rig's opener now consumes the `ShardCloseNotifier` and
+> starts engines WITH a close callback, so the suite exercises the
+> production lifecycle at last (it passed `None` before, which is why no
+> rig test had ever observed a holdoff). Proofs through the REAL close
+> path: retire A as the fleet loop does → an immediate reopen is refused
+> `shard_moving` → B opens after the holdoff with a new incarnation →
+> A's late database close changes nothing → B's own retirement arms the
+> next holdoff; and a declining decision keeps the same engine resident
+> with no holdoff and no close.
 
 **Implements:** the foundational part of WP-15.
 

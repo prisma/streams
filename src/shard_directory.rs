@@ -46,9 +46,40 @@ pub enum ResolveError {
 }
 
 /// The fate of a `remove_if` decision, settled under ONE write guard.
-pub enum RemoveOutcome {
-    /// Removed from the serving map; the caller closes it.
-    Removed(Arc<ShardEngine>),
+/// Why a shard is being retired. Recorded on the retirement so the
+/// reason a prefix went cold is visible where the decision was made.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum RetirementReason {
+    /// The ring moved the shard to another instance.
+    OwnershipMoved,
+    /// The fleet loop is handing the shard over.
+    FleetEviction,
+    /// The billing sweep is releasing an engine it opened.
+    SweepEviction,
+    /// The runtime (or a test rig) is going away. Production shutdown
+    /// closes engines through the supervisor today; the rigs retire
+    /// explicitly, which is the same protocol.
+    #[cfg_attr(not(test), allow(dead_code))]
+    Shutdown,
+}
+
+impl RetirementReason {
+    fn as_str(self) -> &'static str {
+        match self {
+            RetirementReason::OwnershipMoved => "ownership moved",
+            RetirementReason::FleetEviction => "fleet eviction",
+            RetirementReason::SweepEviction => "sweep eviction",
+            RetirementReason::Shutdown => "shutdown",
+        }
+    }
+}
+
+pub enum RetireOutcome {
+    /// Removed from the serving map, the holdoff armed and the engine
+    /// closed. The engine is returned only so the caller can OBSERVE
+    /// it — its lifecycle is already settled — which is why production
+    /// callers ignore it and the proofs assert on it.
+    Retired(#[cfg_attr(not(test), allow(dead_code))] Arc<ShardEngine>),
     /// The decision declined: the SAME engine was reinstated under the
     /// same guard — no observable empty-slot window existed.
     Kept,
@@ -199,9 +230,7 @@ impl ShardDirectory {
             }
             // Possession must yield to the ring (fleet2 leg C: a scan
             // snapshot froze a live segment at 252 of 510 records).
-            if let Some(r) = self.inner.shards.write().unwrap().remove(&prefix) {
-                r.engine.begin_close();
-            }
+            self.retire(&prefix, RetirementReason::OwnershipMoved, |_, _| true);
         }
         // R2/R3: only the ring owner may claim a shard.
         if let Some(owner) = foreign {
@@ -288,39 +317,48 @@ impl ShardDirectory {
         self.inner.shards.read().unwrap().keys().cloned().collect()
     }
 
-    /// Drop `prefix` from the serving map; the caller owns the close.
-    pub fn evict(&self, prefix: &str) -> Option<Arc<ShardEngine>> {
-        self.inner
-            .shards
-            .write()
-            .unwrap()
-            .remove(prefix)
-            .map(|r| r.engine)
-    }
-
-    /// R30: ONE write guard held through remove -> decide -> possible
-    /// reinstatement. Releasing the guard between removal and the
-    /// decision let a request observe an empty slot and start a SECOND
-    /// open while the first engine was about to be reinstated. With the
-    /// guard held, external resolution (which stamps under the READ
-    /// guard) is strictly ordered against the decision: whatever stamped
-    /// before the write lock is visible to `decide`, and nothing can
-    /// resolve or re-open the prefix until the slot's fate is settled.
-    pub fn remove_if(
+    /// PR 6.1.1-B: the ONE retirement protocol. Every explicit removal
+    /// — ownership yield, fleet eviction, sweep eviction, teardown —
+    /// goes through here, because retiring a shard is three steps that
+    /// must not come apart: remove exactly the resident the decision
+    /// was made about, arm the anti-flap holdoff, and close the engine.
+    /// Callers used to remove the engine and then close it themselves,
+    /// which meant the close callback found an empty slot and never
+    /// armed the holdoff — a prefix could be reopened the instant it
+    /// was evicted.
+    ///
+    /// `decide` runs under the SAME write guard that removed the
+    /// resident and receives its incarnation: an unconditional
+    /// retirement passes `|_, _| true`, an incarnation-fenced one
+    /// compares, and the R30 sweep does its custody CAS there. A
+    /// declining decision reinstates the very same engine under that
+    /// guard, so no empty-slot window is ever observable. The engine's
+    /// own close callback then arrives with its incarnation and finds
+    /// nothing to do: retirement is idempotent, and a late callback
+    /// from a retired incarnation can never touch a replacement.
+    pub fn retire(
         &self,
         prefix: &str,
-        decide: impl FnOnce(&Arc<ShardEngine>) -> bool,
-    ) -> RemoveOutcome {
-        let mut guard = self.inner.shards.write().unwrap();
-        let Some(resident) = guard.remove(prefix) else {
-            return RemoveOutcome::Absent;
+        reason: RetirementReason,
+        decide: impl FnOnce(&Arc<ShardEngine>, EngineIncarnation) -> bool,
+    ) -> RetireOutcome {
+        let engine = {
+            let mut guard = self.inner.shards.write().unwrap();
+            let Some(resident) = guard.remove(prefix) else {
+                return RetireOutcome::Absent;
+            };
+            if !decide(&resident.engine, resident.incarnation) {
+                guard.insert(prefix.to_string(), resident);
+                return RetireOutcome::Kept;
+            }
+            // Armed while the slot is still held: the removal and the
+            // holdoff are one decision, never half-applied.
+            self.inner.gate.arm_holdoff(prefix);
+            resident.engine
         };
-        if decide(&resident.engine) {
-            RemoveOutcome::Removed(resident.engine)
-        } else {
-            guard.insert(prefix.to_string(), resident);
-            RemoveOutcome::Kept
-        }
+        tracing::info!(shard = %prefix, reason = reason.as_str(), "shard retired");
+        engine.begin_close();
+        RetireOutcome::Retired(engine)
     }
 }
 
@@ -468,23 +506,22 @@ mod directory_tests {
         assert_eq!(calls_pending.load(Ordering::Relaxed), 1);
     }
 
-    /// The custody primitive on an empty slot reports Absent and the
-    /// decision closure is never consulted.
+    /// Retiring an empty slot reports Absent and the decision closure
+    /// is never consulted.
     #[test]
-    fn remove_if_on_an_absent_prefix_is_absent() {
+    fn retiring_an_absent_prefix_is_absent() {
         let (dir, _o, _c) = directory("", || anyhow::bail!("unused"));
         let consulted = std::cell::Cell::new(false);
-        match dir.remove_if("00", |_| {
+        match dir.retire("00", RetirementReason::SweepEviction, |_, _| {
             consulted.set(true);
             true
         }) {
-            RemoveOutcome::Absent => {}
+            RetireOutcome::Absent => {}
             _ => panic!("nothing was resident"),
         }
         assert!(!consulted.get());
         assert_eq!(dir.open_count(), 0);
         assert!(dir.held_prefixes().is_empty());
-        assert!(dir.evict("00").is_none());
     }
 
     /// Routing is the topology's bit-prefix hash, exposed once.

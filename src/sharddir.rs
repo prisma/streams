@@ -660,6 +660,24 @@ impl OpenGate {
         true
     }
 
+    /// Arm the anti-flap holdoff for a resident the DIRECTORY has just
+    /// removed under its own write guard (PR 6.1.1-B). `notify_closed`
+    /// cannot do it in that flow: by the time the engine's close
+    /// callback runs, the slot is already empty, and an eviction that
+    /// silently skipped the holdoff let a request reopen the prefix
+    /// immediately — the anti-flap regression this repairs.
+    pub(crate) fn arm_holdoff(&self, prefix: &str) {
+        let mut st = self.inner.st.lock().unwrap();
+        let g = st.entry(prefix.to_string()).or_default();
+        let lifetime = g.opened_at.map(|t| t.elapsed());
+        g.opened_at = None;
+        match lifetime {
+            Some(l) if l >= SHORT_LIVED => g.strikes = 0,
+            _ => g.strikes = g.strikes.saturating_add(1),
+        }
+        g.holdoff_until = Some(Instant::now() + holdoff_for(g.strikes));
+    }
+
     /// The incarnation of the engine currently serving `prefix`.
     #[cfg(test)]
     pub fn resident_incarnation(&self, prefix: &str) -> Option<EngineIncarnation> {

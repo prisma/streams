@@ -2567,20 +2567,25 @@ fn close_scheduler_engine(state: &std::sync::Arc<crate::http::AppState>, prefix:
     // slot's fate is settled. Only begin_close() runs after release.
     // PR 6-A: the directory holds that one guard through remove ->
     // decide -> reinstate; the custody CAS is the decision.
-    match state.shards.remove_if(prefix, |engine| {
-        engine
-            .sweep_custody
-            .compare_exchange(seq, 0, Ordering::Relaxed, Ordering::Relaxed)
-            .is_ok()
-    }) {
-        crate::shard_directory::RemoveOutcome::Removed(engine) => {
-            engine.begin_close();
+    // PR 6.1.1-B: ONE retirement — the custody CAS is the decision, and
+    // the directory removes, arms the holdoff and closes as one step.
+    match state.shards.retire(
+        prefix,
+        crate::shard_directory::RetirementReason::SweepEviction,
+        |engine, _incarnation| {
+            engine
+                .sweep_custody
+                .compare_exchange(seq, 0, Ordering::Relaxed, Ordering::Relaxed)
+                .is_ok()
+        },
+    ) {
+        crate::shard_directory::RetireOutcome::Retired(_) => {
             unmark(state, prefix);
             tracing::info!("sweep closed shard {prefix}");
         }
         // Adopted (reinstated under the same guard), or already gone.
-        crate::shard_directory::RemoveOutcome::Kept
-        | crate::shard_directory::RemoveOutcome::Absent => unmark(state, prefix),
+        crate::shard_directory::RetireOutcome::Kept
+        | crate::shard_directory::RetireOutcome::Absent => unmark(state, prefix),
     }
 }
 
