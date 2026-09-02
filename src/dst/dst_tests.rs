@@ -6186,14 +6186,12 @@ async fn http_rig_build(
         })
     };
     // The rig's owned configuration (WP-01 PR 3.1): the no-environment
-    // knob posture — every knob default, no env overlay.
+    // knob posture — every knob default, no env overlay. PR 4.1.1.1:
+    // the CLI half comes from the HERMETIC fixture, never from a parse
+    // — clap's `env = ...` bindings would otherwise read the ambient
+    // process environment into the principal rig.
     let rig_config = Arc::new(crate::config::ServerConfig::load(
-        <crate::config::CliArgs as clap::Parser>::try_parse_from([
-            "streams-slate",
-            "--s3-endpoint",
-            "http://127.0.0.1:1",
-        ])
-        .unwrap(),
+        crate::config::CliArgs::deterministic(),
         &crate::config::MapEnvironment::empty(),
     ));
     let gate =
@@ -23939,7 +23937,7 @@ async fn a_stale_applied_cursor_is_refused_after_crash_restart() {
     engine_shutdown(&state2).await;
 
     // Phase 3: the "restarted server" — the snapshot without r2.
-    let (state3, addr3) = http_rig(snapshot).await;
+    let (state3, addr3) = http_rig_at(snapshot, RigRuntime::incarnation(2)).await;
     let (st, _, b) = preq(
         addr3,
         "GET",

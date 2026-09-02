@@ -498,12 +498,7 @@ mod tests {
     /// settings come from the owned config since WP-01 PR 3.1).
     fn test_cfg() -> crate::config::ServerConfig {
         crate::config::ServerConfig::load(
-            <crate::config::CliArgs as clap::Parser>::try_parse_from([
-                "streams-slate",
-                "--s3-endpoint",
-                "http://127.0.0.1:1",
-            ])
-            .unwrap(),
+            crate::config::CliArgs::deterministic(),
             &crate::config::MapEnvironment::empty(),
         )
     }
