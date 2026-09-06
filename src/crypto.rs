@@ -557,6 +557,8 @@ pub fn decode_frame(buf: &[u8]) -> Option<DecodedFrame<'_>> {
 pub const MAX_RECORD_PLAINTEXT: usize = 32 << 20;
 pub const MAX_ENCODED_FRAME: usize = MAX_RECORD_PLAINTEXT + u16::MAX as usize + 55;
 
+// Shared by the standalone keys/cryptobench tools; server pages use bounded reads.
+#[allow(dead_code)]
 pub fn decrypt_frame(
     subkey: &[u8; KEY_LEN],
     stream_hash: &[u8; 16],
@@ -576,48 +578,12 @@ pub fn decrypt_frame_limited(
     raw: &[u8],
     limit: usize,
 ) -> Result<Option<Vec<u8>>, String> {
-    if raw.len() > MAX_ENCODED_FRAME || frame.ciphertext.len() > MAX_RECORD_PLAINTEXT + 16 {
-        return Err("encoded record exceeds the record bound".into());
-    }
-    let limit = limit.min(MAX_RECORD_PLAINTEXT);
-    let payload = Payload {
-        msg: frame.ciphertext,
-        aad: &aad(stream_hash, &raw[..frame.header_len]),
-    };
-    let pt = match frame.ver {
-        LEGACY_FRAME_VER | LEGACY_FRAME_VER_Z => {
-            let cipher = Aes256Gcm::new(subkey.into());
-            let nonce = nonce_for_offset(frame.header.offset);
-            cipher.decrypt(Nonce::from_slice(&nonce), payload)
-        }
-        FRAME_VER | FRAME_VER_Z => {
-            let cipher = Aes256GcmSiv::new((&segment_frame_key(subkey, stream_hash)).into());
-            let nonce = raw
-                .get(frame.header_len - 12..frame.header_len)
-                .ok_or_else(|| "invalid frame nonce".to_string())?;
-            cipher.decrypt(Nonce::from_slice(nonce), payload)
-        }
-        _ => return Err("unsupported frame version".into()),
-    }
-    .map_err(|_| "decryption failed (wrong key or tampered record)".to_string())?;
-    if frame.ver == FRAME_VER_Z || frame.ver == LEGACY_FRAME_VER_Z {
-        // Version byte is AAD-bound, so reaching here means the frame was
-        // genuinely written compressed.
-        use std::io::Read;
-        let mut decoder = zstd::stream::read::Decoder::new(&pt[..])
-            .map_err(|e| format!("frame decompression failed: {e}"))?;
-        decoder
-            .window_log_max(25)
-            .map_err(|e| format!("frame window limit: {e}"))?;
-        let mut decoded = Vec::new();
-        decoder
-            .take(limit as u64 + 1)
-            .read_to_end(&mut decoded)
-            .map_err(|e| format!("frame decompression failed: {e}"))?;
-        return Ok((decoded.len() <= limit).then_some(decoded));
-    }
-    Ok((pt.len() <= limit).then_some(pt))
+    FrameDecryptor::new(subkey, stream_hash).decrypt(frame, raw, limit)
 }
+
+#[path = "crypto/decrypt.rs"]
+mod decrypt;
+pub(crate) use decrypt::FrameDecryptor;
 
 #[cfg(test)]
 mod capability_vector {

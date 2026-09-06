@@ -1,10 +1,10 @@
 //! Canonical bounded segment read plan and page. HTTP and SSE render this
 //! result; scanned progress never depends on the number of matching records.
 use super::read_budget::{MAX_SCAN_BATCH_BYTES, PageBudget, SCAN_WINDOW};
-use crate::crypto::{StreamKey, decode_frame, decrypt_frame_limited, derive_subkey};
+use super::read_keys::ReadKeys;
+use crate::crypto::{StreamKey, decode_frame};
 use crate::shard::{Deliver, ShardEngine, StreamHandle};
 use bytes::Bytes;
-use std::collections::HashMap;
 use std::sync::Arc;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -112,10 +112,7 @@ pub(crate) struct ReadPage {
 /// are consumed, but the low-level scan's later cursor must then be discarded.
 fn decode_frames_into(
     frames: &[Bytes],
-    key: &StreamKey,
-    epoch: &[u8; 16],
-    hash: &[u8; 16],
-    subkeys: &mut HashMap<(String, u32), [u8; 32]>,
+    keys: &mut ReadKeys<'_>,
     out: &mut ReadPage,
     budget: &mut PageBudget,
 ) -> Result<bool, String> {
@@ -126,17 +123,7 @@ fn decode_frames_into(
             out.last = offset.checked_sub(1);
             return Ok(false);
         }
-        let sk = *subkeys
-            .entry((frame.header.routing_key.clone(), frame.header.key_version))
-            .or_insert_with(|| {
-                derive_subkey(
-                    key,
-                    epoch,
-                    &frame.header.routing_key,
-                    frame.header.key_version,
-                )
-            });
-        let Some(pt) = decrypt_frame_limited(&sk, hash, &frame, raw, budget.decode_limit())? else {
+        let Some(pt) = keys.decrypt(&frame, raw, budget.decode_limit())? else {
             if out.recs.is_empty() {
                 return Err("decoded record exceeds 32 MiB".into());
             }
@@ -212,7 +199,7 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
         completed: true,
     };
     let mut budget = PageBudget::new(max_bytes);
-    let mut subkeys: HashMap<(String, u32), [u8; 32]> = HashMap::new();
+    let mut subkeys = ReadKeys::new(key, epoch, hash);
 
     // The absorbed snapshot above and the tail scan below are a TOCTOU
     // pair: the absorber can advance the boundary AND durably trim the
@@ -318,15 +305,7 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
             out.completed = false;
             return Ok(out);
         }
-        let decoded_all = decode_frames_into(
-            &part.frames,
-            key,
-            epoch,
-            &hash,
-            &mut subkeys,
-            &mut out,
-            &mut budget,
-        )?;
+        let decoded_all = decode_frames_into(&part.frames, &mut subkeys, &mut out, &mut budget)?;
         if decoded_all && let Some(last) = part.last_offset {
             out.last = Some(out.last.map_or(last, |o| o.max(last)));
         }
@@ -765,7 +744,7 @@ struct HistoryRange {
 async fn decode_history_range(
     plan: &ReadPlan<'_>,
     range: HistoryRange,
-    subkeys: &mut HashMap<(String, u32), [u8; 32]>,
+    subkeys: &mut ReadKeys<'_>,
     out: &mut ReadPage,
     budget: &mut PageBudget,
 ) -> Result<bool, String> {
@@ -807,15 +786,7 @@ async fn decode_history_range(
         .await
         .map_err(|e| e.to_string())?,
     };
-    let decoded_all = decode_frames_into(
-        &frames,
-        plan.key,
-        plan.epoch,
-        &range.identity,
-        subkeys,
-        out,
-        budget,
-    )?;
+    let decoded_all = decode_frames_into(&frames, subkeys, out, budget)?;
     // consumed_to is first-class (review blocker): a partial
     // keyed page's cursor advances over every range the read
     // PROVED — index-verified match-free stretches and

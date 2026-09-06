@@ -41,7 +41,11 @@ async fn r06a_actual_receiver_refuses_declared_wire_overflow_before_reading_body
     let server = tokio::spawn(async move {
         let (mut socket, _) = listener.accept().await.unwrap();
         let mut request = [0; 4096];
-        socket.read(&mut request).await.unwrap();
+        let bytes = socket.read(&mut request).await.unwrap();
+        assert!(
+            bytes > 0,
+            "the receiver must request the actual wire response"
+        );
         socket
             .write_all(
                 format!(
