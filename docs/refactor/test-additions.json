@@ -63,6 +63,21 @@
   },
   {
     "finding": "R05",
+    "reason": "Reject a typed cross-project source/child pair before claims or source references; same-project control durably anchors and exposes the inherited record.",
+    "test": {
+      "name": "r05_typed_fork_keeps_source_and_child_in_one_project",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+      ],
+      "function_sha256": "a212bfd4c0c13d4feb0556ec067b86848f391b44091cb2beb3b757258488578d",
+      "mechanisms": [],
+      "configuration": [],
+      "file": "src/dst/tests/fork_lifecycle.rs",
+      "scenarios": []
+    }
+  },
+  {
+    "finding": "R05",
     "reason": "Both child-claim response uncertainty and child-anchor failure keep the durable fork source reference; retried resume proves safe progress.",
     "test": {
       "name": "r05_unknown_child_state_preserves_its_source_reference",
@@ -117,6 +132,21 @@
   },
   {
     "finding": "R06",
+    "reason": "Reject all four mismatched peer target coordinates before peer resolution; valid target reaches the peer-resolution control.",
+    "test": {
+      "name": "r06_peer_target_is_bound_before_peer_resolution",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+      ],
+      "function_sha256": "167af4322d289fde98abaf4fcaf003c476b1f8de1653e9ff1a8454eae5e91bf6",
+      "mechanisms": [],
+      "configuration": [],
+      "file": "src/dst/tests/read_application.rs",
+      "scenarios": []
+    }
+  },
+  {
+    "finding": "R06",
     "reason": "Same-name refresh cannot cross descriptor incarnation.",
     "test": {
       "name": "r06_refresh_rejects_same_name_recreation",
@@ -145,6 +175,23 @@
       "scenarios": [
         "QUE-007"
       ]
+    }
+  },
+  {
+    "finding": "R09",
+    "reason": "Discover actual committer dirty markers with bounded cursor pages; validate restart compatibility and committed tail absorption.",
+    "test": {
+      "name": "r09_committer_dirty_markers_survive_bounded_discovery",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+      ],
+      "function_sha256": "271032a5a44cc9b2601652e6aa57152488d1356b7292d8041449be03d9a7b529",
+      "mechanisms": [],
+      "configuration": [
+        "let coverage = FaultStore::uniform(mem(), 1, FaultPlan::CLEAN).coverage();"
+      ],
+      "file": "src/dst/tests/billing_maintenance.rs",
+      "scenarios": []
     }
   },
   {

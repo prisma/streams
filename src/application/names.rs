@@ -102,6 +102,7 @@ pub(crate) fn split_subresource(path: &str) -> Option<(&str, &str)> {
     None
 }
 
+// mt-lint: allow(name-param-shared-core): identity-neutral URL shape predicate; no state or tenant lookup.
 pub(crate) fn addressable_name(name: &str) -> bool {
     !name
         .rsplit('/')

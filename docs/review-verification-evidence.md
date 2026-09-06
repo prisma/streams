@@ -32,8 +32,8 @@ current evidence and pending work. Historical reader-cache obligations retain
 their original IDs and state the replacement mechanism; they are not renamed
 away. Current symbol line numbers replace the obsolete monolith positions.
 
-The DST inventory preserves all 410 original tests and records ten reviewed
-additions (420 total, zero ignored). Five fixture body adaptations have exact
+The DST inventory preserves all 410 original tests and records thirteen reviewed
+additions (423 total, zero ignored). Five fixture body adaptations have exact
 old/new hashes and reasons: valid allocated seal generations and the legal
 competing transition at the parked phase-B seam. The new SEC-002 mapping is a
 separately recorded metadata adaptation. Two append contract unit tests moved
@@ -136,3 +136,13 @@ applicable Bun/Deno/live-server SDK legs remain **pending** until their own
 final-build artifacts exist. The manifest carries explicit owners and required
 evidence for each. A local mapped/full scenario is never a claim that these
 external acceptance legs passed.
+
+The recursive Rust identity lint now preserves source-relative paths. A nested
+`application/creation/product.rs` cannot inherit `src/product.rs` ingress
+exemptions, and creation/consumer `deletion.rs` diagnostics remain distinct.
+Its controlled test accepts the two real ingress files and rejects nested
+product, HTTP, tenant and deletion owners. Both the production scan and the
+negative-control test pass when compiled directly with the cached release
+`syn`/`quote` dependencies. The actual suite run still supplies final execution
+evidence. Two explicit markers identify a pure URL-shape predicate and shard
+engine-path scan cursors; neither carries customer stream identity.

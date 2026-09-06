@@ -54,10 +54,10 @@
       "source_obligation": "Critical-task registration and runtime resource wiring"
     },
     "file:src/history.rs": {
-      "limit": 2761,
+      "limit": 2765,
       "owner": "History partition owner",
       "finding": "R08/R09/R10",
-      "rationale": "Typed fence error classification, shared maintenance admission and required read refusal extend the existing owner; regression tests preserve these mechanisms. R10 also moves the worst-frame history floor into each runtime configuration, validated by different_runtime_body_limits_size_independent_history_floors.",
+      "rationale": "Typed fence error classification, shared maintenance admission and required read refusal extend the existing owner; regression tests preserve these mechanisms. R10 also moves the worst-frame history floor into each runtime configuration, validated by different_runtime_body_limits_size_independent_history_floors. R09 adds four lines to accept the actual committed 24/32-byte dirty-marker formats during bounded restart discovery, preserving the signal-less recovery tests.",
       "source_obligation": "r08_fence_disposition_uses_error_kind_through_context; bounded history admission"
     },
     "function:src/product.rs::product_entry": {
@@ -103,11 +103,11 @@
       "source_obligation": "Exact monthly delta application and close replay assertions"
     },
     "file:src/shard.rs": {
-      "limit": 6414,
+      "limit": 6445,
       "owner": "Shard actor durability transaction",
       "finding": "R03/R09/R12/R13",
-      "rationale": "Retained actor protocol and one batch commit owner now use validated tails, typed after-commit replies and bounded accounting pages. Most growth is direct corruption, read-failure and real remote-frontier regressions; no new responsibility is granted by this cap.",
-      "source_obligation": "R03 group failure/fence publication; R09 bounded page accounting; R12 tail corruption; R13 accounting read failures"
+      "rationale": "Retained actor protocol and one batch commit owner now use validated tails, typed after-commit replies and bounded accounting pages. Most growth is direct corruption, read-failure and real remote-frontier regressions; no new responsibility is granted by this cap. R09/R12 follow-ups preserve 16/24/32-byte recovery marker compatibility and the frozen v2/v3 tail byte codecs; validation remains mandatory at stored-state reads, with a separate corruption regression.",
+      "source_obligation": "R03 group failure/fence publication; R09 bounded page accounting; R12 tail corruption; R13 accounting read failures; r12_byte_compatibility_does_not_bypass_stored_state_validation; r09_committer_dirty_markers_survive_bounded_discovery"
     },
     "function:src/shard.rs::start": {
       "limit": 389,

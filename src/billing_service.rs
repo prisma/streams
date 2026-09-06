@@ -26,6 +26,7 @@ struct Inner {
 #[derive(Default)]
 struct DrainProgress {
     engine_after: Option<String>,
+    // mt-lint: allow(name-keyed-map): keys are shard engine path prefixes, tracking bounded outbox scan cursors, never customer stream names.
     rows_after: std::collections::HashMap<String, [u8; 16]>,
 }
 

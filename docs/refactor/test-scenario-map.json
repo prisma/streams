@@ -1766,7 +1766,7 @@
       {
         "name": "history2_lives_under_the_shard_db_path",
         "file": "src/sharddir.rs",
-        "line": 854
+        "line": 855
       }
     ],
     "mapped": true,

@@ -46,7 +46,7 @@
 //!   naming its posture, so `state.tenant.stream_ref(name)` can never
 //!   slip into a product helper unmarked, even in the ingress files.
 //!
-//! Scope: src/*.rs. Excluded: src/dst.rs + src/dst/ (the DST harness
+//! Scope: src/**/*.rs. Excluded: src/dst.rs + src/dst/ (the DST harness
 //! and tests — fixture staging legitimately uses raw identity),
 //! src/bin/ (single-tenant client tools), this file, and every
 //! `#[cfg(test)]` item in scanned files.
@@ -357,23 +357,23 @@ fn multitenancy_identity_lint() {
     // Recursive: new submodules are scanned the day they appear.
     // src/dst/ (harness + tests) and src/bin/ (single-tenant client
     // tools) stay out by directory.
-    fn walk(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+    fn walk(root: &std::path::Path, dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
         for e in std::fs::read_dir(dir).unwrap().filter_map(|e| e.ok()) {
             let p = e.path();
-            let name = p.file_name().unwrap().to_str().unwrap().to_string();
+            let relative = source_relative_path(root, &p);
             if p.is_dir() {
-                if name != "dst" && name != "bin" {
-                    walk(&p, out);
+                if relative != "dst" && relative != "bin" {
+                    walk(root, &p, out);
                 }
             } else if p.extension().is_some_and(|x| x == "rs")
-                && !SCAN_SKIP.contains(&name.as_str())
+                && !SCAN_SKIP.contains(&relative.as_str())
             {
                 out.push(p);
             }
         }
     }
     let mut entries: Vec<std::path::PathBuf> = Vec::new();
-    walk(&root, &mut entries);
+    walk(&root, &root, &mut entries);
     entries.sort();
     for path in entries {
         let src = std::fs::read_to_string(&path).unwrap();
@@ -389,7 +389,7 @@ fn multitenancy_identity_lint() {
             continue;
         }
         let mut lint = Lint {
-            file: path.file_name().unwrap().to_str().unwrap().to_string(),
+            file: source_relative_path(&root, &path),
             lines: src.lines().collect(),
             fn_stack: Vec::new(),
             violations: Vec::new(),
@@ -427,5 +427,46 @@ fn multitenancy_identity_lint() {
              `// mt-lint: allow(<category>): <reason>` marker",
             violations.len()
         );
+    }
+}
+
+// Keep paths relative to src so a nested product.rs cannot inherit the
+// root product adapter's authority, and equal basenames stay distinguishable.
+fn source_relative_path(root: &std::path::Path, path: &std::path::Path) -> String {
+    path.strip_prefix(root)
+        .expect("lint source belongs under src")
+        .to_str()
+        .expect("UTF-8 source path")
+        .replace('\\', "/")
+}
+
+#[test]
+fn nested_owner_names_do_not_inherit_ingress_exemptions() {
+    let root = std::path::Path::new("fixture/src");
+    let src = "fn perform(project: ProjectId) { project.stream_ref(\"name\"); }";
+    let ast = syn::parse_file(src).unwrap();
+    for (relative, allowed) in [
+        ("product.rs", true),
+        ("http.rs", true),
+        ("application/creation/product.rs", false),
+        ("application/http.rs", false),
+        ("application/tenant.rs", false),
+        ("application/creation/deletion.rs", false),
+        ("application/consumer/deletion.rs", false),
+    ] {
+        let mut lint = Lint {
+            file: source_relative_path(root, &root.join(relative)),
+            lines: src.lines().collect(),
+            fn_stack: Vec::new(),
+            violations: Vec::new(),
+            markers: Vec::new(),
+        };
+        lint.visit_file(&ast);
+        assert_eq!(lint.violations.is_empty(), allowed, "{relative}");
+        if !allowed {
+            assert_eq!(lint.violations.len(), 1);
+            assert_eq!(lint.violations[0].file, relative);
+            assert_eq!(lint.violations[0].category, "stream-ref-construction");
+        }
     }
 }
