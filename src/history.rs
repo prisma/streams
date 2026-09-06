@@ -183,8 +183,9 @@ pub const FRAME_ENCODING_ALLOWANCE: usize = 64 * 1024;
 /// size averaged 6 MB. A deployment that lowers MAX_REQUEST_BODY_BYTES
 /// shrinks this proportionally and buys the difference back as
 /// admission headroom.
+#[cfg(test)]
 pub fn absorb_worst_frame_transient() -> usize {
-    worst_frame_transient_for(crate::http::max_body_bytes())
+    worst_frame_transient_for(crate::protocol_pin::MAX_BODY_BYTES)
 }
 
 /// The sizing rule as a pure function of the body ceiling, so it can be
@@ -205,6 +206,7 @@ pub struct HistoryResources {
     pub cache: Arc<slatedb::db_cache::foyer::FoyerCache>,
     pub paused: std::sync::atomic::AtomicBool,
     pub packing_bytes: usize,
+    pub worst_frame_transient: usize,
     pub resolved_memory_config: std::sync::OnceLock<serde_json::Value>,
 }
 impl std::fmt::Debug for HistoryResources {
@@ -217,8 +219,18 @@ impl std::fmt::Debug for HistoryResources {
 }
 impl HistoryResources {
     pub fn new(cfg: &crate::config::HistoryConfig, packing_bytes: usize) -> Self {
-        let capacity =
-            floored_budget_capacity(cfg.absorb_global_budget_bytes).min(u32::MAX as usize);
+        Self::with_body_limit(cfg, packing_bytes, crate::protocol_pin::MAX_BODY_BYTES)
+    }
+    pub fn with_body_limit(
+        cfg: &crate::config::HistoryConfig,
+        packing_bytes: usize,
+        body_limit: usize,
+    ) -> Self {
+        let worst_frame_transient = worst_frame_transient_for(body_limit);
+        let capacity = cfg
+            .absorb_global_budget_bytes
+            .max(worst_frame_transient)
+            .min(u32::MAX as usize);
         Self {
             budget: AbsorbBudget::new(capacity, cfg.absorb_global_gathers),
             cache: Arc::new(slatedb::db_cache::foyer::FoyerCache::new_with_opts(
@@ -229,13 +241,14 @@ impl HistoryResources {
             )),
             paused: std::sync::atomic::AtomicBool::new(cfg.absorb_pause_initial),
             packing_bytes: packing_bytes.min(capacity / ABSORB_BUILD_MULTIPLIER),
+            worst_frame_transient,
             resolved_memory_config: std::sync::OnceLock::new(),
         }
     }
     pub fn per_gather_reservation_bytes(&self) -> usize {
         self.packing_bytes
             .saturating_mul(ABSORB_BUILD_MULTIPLIER)
-            .max(absorb_worst_frame_transient())
+            .max(self.worst_frame_transient)
             .clamp(1, self.budget.capacity())
     }
     pub fn effective_gather_concurrency(&self) -> usize {
@@ -254,6 +267,7 @@ pub static HISTORY_FLUSH_STALL_MS: AtomicU64 = AtomicU64::new(0);
 
 /// The budget floor as a pure function (tested directly): a configured
 /// capacity below one worst-case frame build is raised to it.
+#[cfg(test)]
 pub fn floored_budget_capacity(configured: usize) -> usize {
     configured.max(absorb_worst_frame_transient())
 }
@@ -791,7 +805,7 @@ impl Absorber {
         let seed = cfg
             .gather_max_bytes
             .saturating_mul(ABSORB_BUILD_MULTIPLIER)
-            .max(absorb_worst_frame_transient()) as u64;
+            .max(shard.history_resources.worst_frame_transient) as u64;
         Absorber {
             data_store,
             shard,
@@ -816,7 +830,7 @@ impl Absorber {
             .cfg
             .gather_max_bytes
             .saturating_mul(ABSORB_BUILD_MULTIPLIER)
-            .max(absorb_worst_frame_transient());
+            .max(self.shard.history_resources.worst_frame_transient);
         let floor = worst_frame_transient_for(GATHER_PER_STREAM_CAP).min(cap);
         (self
             .recent_transient
@@ -2383,7 +2397,8 @@ mod tests {
     async fn worst_frame_floor_serializes_oversized_gathers_without_starvation() {
         assert_eq!(
             absorb_worst_frame_transient(),
-            (crate::http::MAX_BODY_BYTES + FRAME_ENCODING_ALLOWANCE) * ABSORB_BUILD_MULTIPLIER
+            (crate::protocol_pin::MAX_BODY_BYTES + FRAME_ENCODING_ALLOWANCE)
+                * ABSORB_BUILD_MULTIPLIER
         );
         // A too-small configured budget floors up to the worst frame.
         assert_eq!(

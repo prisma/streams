@@ -25,3 +25,10 @@ cancellation/release, weak-reference teardown, wall-clock jumps, and idle
 expiration. The R17 HTTP regression also passed for both readiness endpoints
 following a normal return, error, and panic of a critical task. Full final-tree
 checks are recorded separately in the remediation summary.
+
+The final ownership audit also removed the history budget's dependency on the
+transport's global body-limit setting. Each HistoryResources stores its own
+worst-frame reservation from the validated runtime body limit; absorber seeds,
+adaptive caps and memory diagnostics read that same value. A new two-runtime
+regression uses 1 MiB and 4 MiB body limits with a zero configured budget and
+proves separate floors, capacities and per-gather reservations (passed).

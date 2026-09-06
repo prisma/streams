@@ -897,7 +897,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
             mib(telemetry),
             mib(config.cli.max_unflushed_bytes),
             mib(absorb_budget),
-            mib(crate::history::absorb_worst_frame_transient()),
+            mib(runtime_caps.history.worst_frame_transient),
             mib(per_gather),
             gathers,
             effective_gathers,

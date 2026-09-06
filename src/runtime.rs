@@ -160,9 +160,10 @@ impl RuntimeCaps {
             &config.admission,
             self.clock.clone(),
         ));
-        self.history = Arc::new(crate::history::HistoryResources::new(
+        self.history = Arc::new(crate::history::HistoryResources::with_body_limit(
             &config.history,
             config.cli.absorb_gather_max_bytes,
+            config.cli.max_request_body_bytes,
         ));
         self.postings = crate::postings_cache::PostingsCache::new(config.postings.cache_bytes);
         self
@@ -402,6 +403,32 @@ mod tests {
         drop(a);
         assert!(history.upgrade().is_none());
         assert!(postings.upgrade().is_none());
+    }
+
+    #[test]
+    fn different_runtime_body_limits_size_independent_history_floors() {
+        let configured = |body_limit| {
+            let mut cfg = crate::config::ServerConfig::load(
+                crate::config::CliArgs::deterministic(),
+                &crate::config::MapEnvironment::empty(),
+            );
+            cfg.cli.max_request_body_bytes = body_limit;
+            cfg.cli.absorb_gather_max_bytes = 1;
+            cfg.history.absorb_global_budget_bytes = 0;
+            RuntimeCaps::production("body-limit-test").with_config(&cfg)
+        };
+        let small = configured(1024 * 1024);
+        let large = configured(4 * 1024 * 1024);
+        let small_floor = crate::history::worst_frame_transient_for(1024 * 1024);
+        let large_floor = crate::history::worst_frame_transient_for(4 * 1024 * 1024);
+        assert_eq!(small.history.worst_frame_transient, small_floor);
+        assert_eq!(large.history.worst_frame_transient, large_floor);
+        assert_eq!(small.history.budget.capacity(), small_floor);
+        assert_eq!(large.history.budget.capacity(), large_floor);
+        assert_eq!(small.history.per_gather_reservation_bytes(), small_floor);
+        assert_eq!(large.history.per_gather_reservation_bytes(), large_floor);
+        drop(large);
+        assert_eq!(small.history.budget.capacity(), small_floor);
     }
 
     /// Scripted entropy: returns prescribed bytes and RECORDS every
