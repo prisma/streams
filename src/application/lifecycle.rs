@@ -886,3 +886,6 @@ pub(crate) use claims::{
     EnterSeal, FinalDisposition, SealAuthz, SealClaim, SealTicket, final_err_disposition,
     seal_op_id_full, seal_op_id_semantic,
 };
+
+mod raw_close;
+pub(crate) use raw_close::{RawClose, complete_raw_close};

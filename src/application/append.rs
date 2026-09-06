@@ -252,7 +252,7 @@ pub(crate) fn fail(class: FailureClass, code: AppendCode, message: &str) -> Appe
     Err(AppendFailure::new(class, code, message))
 }
 
-use crate::application::lifecycle::{FinalDisposition, SealAuthz, final_err_disposition};
+use crate::application::lifecycle::SealAuthz;
 use crate::crypto::{StreamKey, derive_subkey};
 use crate::registry::{Registry, StreamDesc};
 use crate::shard::{AppendReq, now_ms};
@@ -1137,185 +1137,41 @@ async fn execute_once(
         }
     };
 
-    // Ack-token shape is client-visible: single-segment streams (every
-    // unified-model stream until its first split, and all total-order
-    // streams) keep the plain token byte-for-byte; legacy per-key
-    // layouts keep their epoch-prefixed tokens (epoch 0 when n == 1,
-    // exactly as before).
-    let segmented = desc.segments.is_some();
-
-    // A definitive committer refusal of a raw close means the promised
-    // records can never land, so this operation must take its own
-    // uncommitted intent back down — otherwise the collection is left
-    // Sealing: ordinary writes refused, and a plain close unable to
-    // finish because the intent still owes a record. Only OUR claim, and
-    // only while it still owes; 429/408 keep it, because the write may
-    // yet succeed on a retry.
-    if let Err(e) = &outcome {
-        // A gap is NOT terminal: the missing predecessor may already be
-        // admitted and staging inside this very commit group, which
-        // would make an exact retry succeed. Tearing the intent down on
-        // that verdict can drop a final record another request is still
-        // completing. Gaps and stale epochs therefore keep the intent
-        // and let the client retry exactly; only verdicts about the
-        // REQUEST ITSELF — a malformed body, the wrong content type, a
-        // sequence reused with different content — are terminal.
-        let definitive = final_err_disposition(e) == FinalDisposition::DefinitivelyRejected;
-        if close
-            && close_carries_content
-            && definitive
-            && let Some(g) = raw_seal_gen
-            && let Err(m) = crate::application::lifecycle::abandon_seal_intent(
-                &state.lifecycle,
-                &desc.sref(),
-                &this_close_op,
-                &desc.stream_epoch,
-                g,
+    if outcome.is_ok() {
+        state.creation.touch_ttl(&desc);
+    }
+    if close && seal_auth.is_none() {
+        crate::application::lifecycle::complete_raw_close(
+            &state.lifecycle,
+            &desc,
+            crate::application::lifecycle::RawClose {
+                operation: &this_close_op,
+                generation: raw_seal_gen,
+                carries_content: close_carries_content,
+                resumes_owed_final: is_owed_final,
+            },
+            &outcome,
+        )
+        .await
+        .map_err(|error| {
+            AppendFailure::new(
+                FailureClass::Unavailable,
+                AppendCode::SealIncomplete,
+                error.to_string(),
             )
-            .await
-        {
-            tracing::error!(stream = %name, "abandoning a refused raw close intent: {m}");
-        }
+        })?;
     }
     match outcome {
-        Ok(ack) => {
-            state.creation.touch_ttl(&desc); // writes slide the idle window
-            // A DUPLICATE that did not close: the producer tuple was
-            // spent by an earlier NON-closing operation, so this close
-            // can never deliver what its intent promised — the tuple
-            // it would deliver under is gone, and every exact retry
-            // will meet the same duplicate answer. The claim this
-            // request installed comes down NOW (epoch- and
-            // generation-fenced, so only our own), or the collection
-            // sits Sealing behind an undeliverable promise until a
-            // takeover discards it. The response stays the protocol's
-            // duplicate answer; the collection stays open.
-            if close
-                && ack.duplicate
-                && !ack.closed
-                && let Some(g) = raw_seal_gen
-                && let Err(m) = crate::application::lifecycle::abandon_seal_intent(
-                    &state.lifecycle,
-                    &desc.sref(),
-                    &this_close_op,
-                    &desc.stream_epoch,
-                    g,
-                )
-                .await
-            {
-                tracing::error!(
-                    stream = %name,
-                    "releasing a non-closing duplicate's seal intent: {m}"
-                );
-            }
-            // The seal's own final record also carries `close`, but that
-            // operation finishes the transition itself — it marks the
-            // record committed first, which is what lets the seal
-            // complete at all. Sealing here would run with no operation
-            // id and be refused by its own intent.
-            // Who finishes the collection transition:
-            //   * the PRODUCT seal completes its own (it marks the
-            //     record durable, then seals) — recognised by the
-            //     trusted seal_auth parameter;
-            //   * a raw close owns whatever intent matches its own
-            //     computed identity, including a retry that is resuming
-            //     one published before a crash;
-            //   * a plain close-only just seals.
-            if close && ack.closed && seal_auth.is_none() {
-                // Who owns the completion:
-                //   * a FRESH close that carried content (its write is
-                //     the ack) — it marks and seals;
-                //   * a DUPLICATE only when the descriptor says OUR
-                //     operation still owes the record (the crashed
-                //     close's exact retry). A duplicate whose identity
-                //     is NOT the owed one — the protocol's
-                //     close-with-different-body retry, deduplicated by
-                //     producer sequence against an already-sealed
-                //     collection — must answer as the duplicate it is,
-                //     not attempt (and fail) somebody else's mark.
-                let owns_final = is_owed_final || (close_carries_content && !ack.duplicate);
-                #[cfg(test)]
-                if owns_final {
-                    crate::failpoints::pause_close_before_mark(&name).await;
-                }
-                #[cfg(test)]
-                if owns_final && crate::failpoints::should_stop_before_mark_committed(&name) {
-                    return fail(
-                        FailureClass::Unavailable,
-                        AppendCode::SealIncomplete,
-                        "failpoint: stopped before marking the final durable",
-                    );
-                }
-                if owns_final {
-                    let g = raw_seal_gen.unwrap_or_default();
-                    if let Err(e) = crate::application::lifecycle::mark_final_committed(
-                        &state.lifecycle,
-                        &desc.sref(),
-                        &this_close_op,
-                        &desc.stream_epoch,
-                        g,
-                    )
-                    .await
-                    {
-                        // The record is durable and the segment closed,
-                        // but the transition could not be recorded as
-                        // owning it — the claim moved, or the whole
-                        // incarnation did. NEVER continue into run_seal
-                        // here: a close issued against a deleted
-                        // incarnation would claim and seal the
-                        // replacement. The transition (whoever owns it
-                        // now) stays resumable.
-                        tracing::error!(stream = %name, "marking the close's final durable: {e}");
-                        return fail(
-                            FailureClass::Unavailable,
-                            AppendCode::SealIncomplete,
-                            &format!(
-                                "the final record is durable but the seal could not be recorded: {e}; retry the close"
-                            ),
-                        );
-                    }
-                }
-                let op = owns_final.then(|| this_close_op.clone());
-                // An owner drives the transition under ITS generation
-                // (the one its marked claim holds). A plain close-only
-                // passes None and adopts whatever generation the shared
-                // Empty claim holds NOW — concurrent plain closes renew
-                // the claim as they join, and a close that pinned its
-                // own admission-time generation would fail publication
-                // against a sibling's renewal.
-                let run_gen = if owns_final { raw_seal_gen } else { None };
-                if let Err(e) = crate::application::lifecycle::run_seal(
-                    &state.lifecycle,
-                    &desc.sref(),
-                    op,
-                    &desc.stream_epoch,
-                    run_gen,
-                )
-                .await
-                {
-                    // The segment is closed but the collection is not
-                    // sealed. Answering success is how the two surfaces
-                    // end up permanently disagreeing; the transition
-                    // stays resumable, so say it failed.
-                    tracing::error!(stream = %name, "collection seal after raw close: {e}");
-                    return fail(
-                        FailureClass::Unavailable,
-                        AppendCode::SealIncomplete,
-                        &format!("the collection seal did not complete: {e}; retry the close"),
-                    );
-                }
-            }
-            Ok(crate::application::append::AppendOutcome {
-                seg_id: seg.seg_id,
-                materialized: desc.segments.is_some(),
-                next_offset: ack.next_offset,
-                last_offset: ack.last_offset,
-                duplicate: ack.duplicate,
-                closed: ack.closed,
-                producer: ack.producer.filter(|_| !synthetic_producer),
-                appended_records,
-            })
-        }
+        Ok(ack) => Ok(crate::application::append::AppendOutcome {
+            seg_id: seg.seg_id,
+            materialized: desc.segments.is_some(),
+            next_offset: ack.next_offset,
+            last_offset: ack.last_offset,
+            duplicate: ack.duplicate,
+            closed: ack.closed,
+            producer: ack.producer.filter(|_| !synthetic_producer),
+            appended_records,
+        }),
         Err(error) => Err(AppendFailure::from_commit(
             seg.seg_id,
             desc.segments.is_some(),
