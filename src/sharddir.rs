@@ -484,9 +484,6 @@ pub struct OpenGate {
 }
 
 impl OpenGate {
-    pub fn health(&self) -> ShardHealth {
-        self.inner.health.clone()
-    }
     pub fn unready_reason(&self) -> Option<String> {
         self.inner.health.unready_reason().or_else(|| {
             self.inner
@@ -727,22 +724,22 @@ impl OpenGate {
                 return Some(closing_outcome());
             }
             let gate = state.get(prefix)?;
-            if let Some(until) = gate.holdoff_until {
-                if until > Instant::now() {
-                    return Some(OpenOutcome::Wait {
-                        code: "shard_moving",
-                        retry_after_secs: (until - Instant::now()).as_secs().max(1),
-                    });
-                }
+            if let Some(until) = gate.holdoff_until
+                && until > Instant::now()
+            {
+                return Some(OpenOutcome::Wait {
+                    code: "shard_moving",
+                    retry_after_secs: (until - Instant::now()).as_secs().max(1),
+                });
             }
             gate.closing.clone()
         };
-        if let Some(engine) = retiring {
+        if let Some(engine) = retiring
+            && !engine.terminated()
+        {
+            let _ = engine.wait(wait).await;
             if !engine.terminated() {
-                let _ = engine.wait(wait).await;
-                if !engine.terminated() {
-                    return Some(closing_outcome());
-                }
+                return Some(closing_outcome());
             }
         }
         None

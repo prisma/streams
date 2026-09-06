@@ -113,6 +113,7 @@ impl TaskSupervisor {
 
     /// A narrower milestone for owners that must distinguish released worker
     /// reservations from a still-running database close. Does not start work.
+    #[cfg(test)]
     pub(crate) async fn workers_terminated(&self) -> ShutdownReport {
         loop {
             let notified = self.inner.workers_done.notified();

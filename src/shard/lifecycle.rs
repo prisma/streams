@@ -64,12 +64,7 @@ impl EngineTasks {
     pub(super) fn handle(&self) -> EngineShutdown {
         EngineShutdown(self.supervisor.clone())
     }
-    pub(super) fn terminated(&self) -> bool {
-        self.handle().terminated()
-    }
-    pub(super) async fn wait(&self, timeout: Duration) -> Result<(), String> {
-        self.handle().wait(timeout).await
-    }
+    #[cfg(test)]
     pub(super) async fn workers(&self, timeout: Duration) -> Result<(), String> {
         tokio::time::timeout(timeout, self.supervisor.workers_terminated())
             .await

@@ -317,10 +317,7 @@ impl Absorber {
             if self.shard.is_closed() {
                 return; // fenced while waiting for budget
             }
-            match self
-                .absorb_gather_v2_with(&v2_lane, &mut _reservation)
-                .await
-            {
+            match self.absorb_gather_v2_with(v2_lane, &mut _reservation).await {
                 Ok(outcome) => {
                     // Retire ONLY what the gather settled:
                     // covered streams advanced; no_work had

@@ -1741,8 +1741,9 @@ impl ShardEngine {
     pub(crate) fn shutdown_handle(&self) -> EngineShutdown {
         self.tasks.handle()
     }
+    #[cfg(test)]
     pub(crate) fn termination_complete(&self) -> bool {
-        self.tasks.terminated()
+        self.shutdown_handle().terminated()
     }
 
     /// Level-triggered notification also covers subscription after close.
@@ -1759,11 +1760,12 @@ impl ShardEngine {
     /// stops this observer; workers and storage closure retain their owner.
     pub async fn await_terminated(&self, timeout: std::time::Duration) -> Result<(), String> {
         self.begin_close();
-        self.tasks.wait(timeout).await
+        self.shutdown_handle().wait(timeout).await
     }
 
     /// Worker reservations may be released while a native store close is
     /// still blocked. This narrower milestone never reports full termination.
+    #[cfg(test)]
     pub(crate) async fn await_workers(&self, timeout: std::time::Duration) -> Result<(), String> {
         self.begin_close();
         self.tasks.workers(timeout).await

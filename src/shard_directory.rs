@@ -142,9 +142,6 @@ impl ShardCloseNotifier {
 }
 
 impl ShardDirectory {
-    pub fn health(&self) -> crate::sharddir::ShardHealth {
-        self.inner.gate.health()
-    }
     pub fn unready_reason(&self) -> Option<String> {
         self.inner.gate.unready_reason()
     }

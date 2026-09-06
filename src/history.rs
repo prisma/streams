@@ -871,6 +871,7 @@ impl Absorber {
         shard.spawn_required("absorber", absorber.run(rx));
     }
 
+    #[cfg(test)]
     pub fn start(
         data_store: Arc<dyn ObjectStore>,
         shard: Arc<ShardEngine>,
