@@ -187,7 +187,10 @@ impl WatchService {
         };
         let lookup = capability_project
             .as_ref()
-            .map(|project| project.stream_ref(stream.name().as_str()))
+            .map(|project| {
+                // mt-lint: allow(stream-ref-construction): explicit capability project is a lookup hint only; signature/key verification below must grant observation authority.
+                project.stream_ref(stream.name().as_str())
+            })
             .unwrap_or_else(|| stream.clone());
         let descriptor = self
             .registry
