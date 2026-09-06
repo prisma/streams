@@ -79,7 +79,7 @@ fn encode_tail(t: &TailFields) -> Vec<u8> {
 }
 
 fn decode_tail(v: &[u8]) -> Option<TailFields> {
-    if v.len() < 44 || (v[0] != 2 && v[0] != 3) {
+    if v.len() < 43 || (v[0] != 2 && v[0] != 3) {
         return None;
     }
     let v3 = v[0] == 3;
@@ -89,13 +89,23 @@ fn decode_tail(v: &[u8]) -> Option<TailFields> {
     let absorbed = u64::from_le_bytes(v[25..33].try_into().ok()?);
     let trimmed = u64::from_le_bytes(v[33..41].try_into().ok()?);
     let (flags, seq_at) = if v3 { (v[41], 42usize) } else { (0u8, 41usize) };
-    let seq_len = u16::from_le_bytes(v[seq_at..seq_at + 2].try_into().ok()?) as usize;
+    let seq_len = u16::from_le_bytes(v.get(seq_at..seq_at + 2)?.try_into().ok()?) as usize;
     let seq = if seq_len == 0 {
         None
     } else {
         Some(String::from_utf8(v.get(seq_at + 2..seq_at + 2 + seq_len)?.to_vec()).ok()?)
     };
     let route_at = seq_at + 2 + seq_len;
+    // Historical tails end after seq, route, or trim_safe_to. A partial
+    // extension is corruption, not an absent optional field.
+    let extension_len = v.len().checked_sub(route_at)?;
+    if !matches!(extension_len, 0 | 16 | 24 | 32)
+        || flags & !3 != 0
+        || trimmed > absorbed
+        || absorbed > next
+    {
+        return None;
+    }
     let route: [u8; 16] = v
         .get(route_at..route_at + 16)
         .and_then(|r| r.try_into().ok())
@@ -108,6 +118,7 @@ fn decode_tail(v: &[u8]) -> Option<TailFields> {
     };
     let trim_safe_to = le8(route_at + 16);
     let unabsorbed_bytes = le8(route_at + 24);
+    if trim_safe_to > absorbed { return None; }
     Some(TailFields {
         next,
         ts,
@@ -121,6 +132,19 @@ fn decode_tail(v: &[u8]) -> Option<TailFields> {
         trim_safe_to,
         unabsorbed_bytes,
     })
+}
+
+/// Existing malformed bytes must never initialize a fresh segment.
+fn stored_tail(raw: &[u8]) -> Result<TailFields, slatedb::Error> {
+    decode_tail(raw).ok_or_else(|| slatedb::Error::data("invalid persisted tail".into()))
+}
+
+/// Fixed-width metadata is exactly eight bytes; short and trailing bytes
+/// indicate corruption. Absence is handled separately by the repository.
+pub(crate) fn decode_cursor(raw: &[u8]) -> Result<u64, slatedb::Error> {
+    let bytes: [u8; 8] = raw.try_into()
+        .map_err(|_| slatedb::Error::data("invalid persisted cursor length".into()))?;
+    Ok(u64::from_le_bytes(bytes))
 }
 
 /// Test-only: encode a tail then STRIP the trailing exact-gauge field,
@@ -2088,7 +2112,8 @@ impl ShardEngine {
             .db
             .get(tail_key(hash))
             .await?
-            .and_then(|raw| decode_tail(&raw)))
+            .map(|raw| stored_tail(&raw))
+            .transpose()?)
     }
 
     /// Enroll a stream in TrimTick maintenance (startup marker scan; the
@@ -2139,7 +2164,7 @@ impl ShardEngine {
                 },
             )
             .await?;
-        Ok(v.and_then(|b| decode_tail(&b))
+        Ok(v.map(|b| stored_tail(&b)).transpose()?
             .map_or((0, false), |t| (t.absorbed, t.history_v2)))
     }
 
@@ -2157,7 +2182,8 @@ impl ShardEngine {
         route: [u8; 16],
         at: u64,
     ) -> Result<(), slatedb::Error> {
-        if self.db.get(tail_key(&hash)).await?.is_some() {
+        if let Some(raw) = self.db.get(tail_key(&hash)).await? {
+            stored_tail(&raw)?;
             return Ok(());
         }
         let t = TailFields {
@@ -2185,7 +2211,7 @@ impl ShardEngine {
             .db
             .get(crate::queue::cursor_key(&hash, consumer, cgen))
             .await?
-            .map(|v| u64::from_le_bytes(v[..8].try_into().unwrap_or([0; 8])))
+            .map(|v| decode_cursor(&v)).transpose()?
             .unwrap_or(0))
     }
 
@@ -2219,7 +2245,7 @@ impl ShardEngine {
             return Ok(h.clone());
         }
         let tail = match self.db.get(tail_key(&hash)).await? {
-            Some(raw) => decode_tail(&raw).unwrap_or_default(),
+            Some(raw) => stored_tail(&raw)?,
             None => TailFields::default(),
         };
         // Trim-debt discovery on load: a stream evicted (or restarted)
@@ -5505,6 +5531,71 @@ mod maintenance_tests {
             load_or_rebuild_maintenance(&db).await.is_err(),
             "corrupt maintenance row must fail the open"
         );
+        db.close().await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod storage_decode_tests {
+    use super::*;
+
+    #[test]
+    fn r12_supported_tail_versions_and_extensions() {
+        let tail = TailFields { next: 9, absorbed: 4, trimmed: 2,
+            trim_safe_to: 3, seq: Some("lane".into()), ..Default::default() };
+        let full = encode_tail(&tail);
+        let base = 44 + 4;
+        for extension in [0, 16, 24, 32] {
+            let decoded = stored_tail(&full[..base + extension]).unwrap();
+            assert_eq!(decoded.next, 9);
+            assert_eq!(decoded.seq.as_deref(), Some("lane"));
+        }
+        let mut v2 = full.clone();
+        v2[0] = 2;
+        v2.remove(41); // v2 has no flags
+        assert_eq!(stored_tail(&v2[..43 + 4]).unwrap().next, 9);
+        for len in 0..full.len() {
+            if ![base, base + 16, base + 24].contains(&len) {
+                assert!(stored_tail(&full[..len]).is_err(), "len={len}");
+            }
+        }
+        let mut invalid = full.clone(); invalid[0] = 99;
+        assert!(stored_tail(&invalid).is_err());
+        let mut invalid = full.clone(); invalid[41] = 4;
+        assert!(stored_tail(&invalid).is_err());
+        let mut invalid = full; invalid[25..33].copy_from_slice(&10u64.to_le_bytes());
+        assert!(stored_tail(&invalid).is_err());
+    }
+
+    #[test]
+    fn r12_cursor_requires_exact_width() {
+        for len in 0..=9 {
+            let result = decode_cursor(&vec![0; len]);
+            assert_eq!(result.is_ok(), len == 8, "len={len}");
+        }
+        assert_eq!(decode_cursor(&123u64.to_le_bytes()).unwrap(), 123);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r12_corrupt_tail_refuses_open_without_overwriting_records() {
+        let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let db = Arc::new(Db::builder("r12", store.clone()).build().await.unwrap());
+        let hash = [12; 16];
+        let mut wb = WriteBatch::new();
+        wb.put(record_key(&hash, 0), b"retained ciphertext");
+        wb.put(tail_key(&hash), b"broken tail");
+        db.write(wb).await.unwrap();
+        let (tx, _rx) = mpsc::channel(1);
+        let engine = ShardEngine::start("r12".into(), db.clone(), store,
+            ShardConfig::default(), tx, None, ShardMaintenance::default());
+        assert!(engine.stream_handle(hash).await.is_err());
+        assert!(engine.tail_fields(&hash).await.is_err());
+        assert!(engine.durable_absorbed(&hash).await.is_err());
+        assert!(engine.seed_fork_tail(hash, [1; 16], 0).await.is_err());
+        assert_eq!(db.get(record_key(&hash, 0)).await.unwrap().unwrap().as_ref(), b"retained ciphertext");
+        assert_eq!(db.get(tail_key(&hash)).await.unwrap().unwrap().as_ref(), b"broken tail");
+        assert!(!engine.streams.lock().unwrap().contains_key(&hash));
+        engine.begin_close();
         db.close().await.unwrap();
     }
 }
