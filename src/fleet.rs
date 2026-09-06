@@ -17,6 +17,7 @@ use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
 mod outbox;
+mod planning;
 /// PR 6.1.1-C: the coordination store lives in its own module — this
 /// file is already the fleet loop's home and must not also be the
 /// storage layer.
@@ -438,10 +439,24 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
         // mt-lint: allow(name-keyed-map): instance name -> last good base URL
         let mut last_good_urls: std::collections::HashMap<String, String> =
             std::collections::HashMap::new();
-        loop {
+        'ticks: loop {
             tokio::select! {
                 _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
                 _ = tokio::time::sleep(Duration::from_secs(2)) => {}
+            }
+            // This owner reads fresh authority each tick. Interrupted reads
+            // publish nothing; interrupted CAS writes retain their document
+            // and event outbox for authoritative retry on the next tick.
+            let pass_deadline = tokio::time::Instant::now() + Duration::from_secs(45);
+            macro_rules! fleet_io {
+                ($operation:expr) => {
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
+                        _ = tokio::time::sleep_until(pass_deadline) => continue 'ticks,
+                        result = $operation => result,
+                    }
+                };
             }
             let ops = state.admission.fleet_ops();
             let dt = last_tick.elapsed().as_secs_f64().max(0.001);
@@ -520,7 +535,7 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
                 wedge_max_ms,
                 url: state.config.fleet.self_url.clone(),
             };
-            if let Err(e) = repository.publish_heartbeat(&cfg.instance, &hb).await {
+            if let Err(e) = fleet_io!(repository.publish_heartbeat(&cfg.instance, &hb)) {
                 tracing::warn!("heartbeat put failed: {e}");
                 continue;
             }
@@ -541,10 +556,7 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
             let mut peer_urls: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
             // (cpu, effective lag secs incl. wedge)
-            let heartbeats = tokio::select! {
-                _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
-                result = repository.read_heartbeat_set() => result,
-            };
+            let heartbeats = fleet_io!(repository.read_heartbeat_set());
             let heartbeats = match heartbeats {
                 Ok(items) => items,
                 Err(error) => { tracing::warn!(%error, "fleet snapshot deferred; ownership view retained"); continue; }
@@ -588,10 +600,7 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
             // routers. Edge congestion is invisible to server-side acks.
             let mut edge_p50 = 0.0f64;
             {
-                let reports = tokio::select! {
-                    _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
-                    result = repository.read_router_reports() => result,
-                };
+                let reports = fleet_io!(repository.read_router_reports());
                 let reports = match reports {
                     Ok(items) => items,
                     Err(error) => { tracing::warn!(%error, "router snapshot deferred; scale decision deferred"); continue; }
@@ -685,7 +694,13 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
             };
 
             let (cur, version): (Option<Desired>, Option<UpdateVersion>) =
-                repository.read_desired_state().await;
+                match fleet_io!(repository.read_desired_state()) {
+                    Ok(view) => view,
+                    Err(error) => {
+                        tracing::warn!(%error, "fleet desired unavailable; retaining ownership view");
+                        continue;
+                    }
+                };
             let cur_count = cur.as_ref().map(|d| d.count).unwrap_or(1);
             // FLEET_MIN: hard floor on the fleet size (HA / pinned test
             // rings). All dimensions and the shrink target respect it.
@@ -698,22 +713,8 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
             // a merely-sleeping one). Self is always fresh (just wrote).
             // Falls back to the unfiltered ordinal set if filtering empties
             // it (bootstrap: everyone asleep, first request must land).
+            let active = planning::active_members(cur_count, &cfg.instance, &hb_age_ms);
             {
-                let ordinal: Vec<String> = (1..=cur_count.max(1))
-                    .map(|i| format!("streams-{i}"))
-                    .collect();
-                let mut active: Vec<String> = ordinal
-                    .iter()
-                    .filter(|n| {
-                        **n == cfg.instance
-                            || hb_age_ms.get(*n).map(|a| *a < 30_000).unwrap_or(false)
-                    })
-                    .cloned()
-                    .collect();
-                if active.is_empty() {
-                    active = ordinal;
-                }
-                state.ownership.set_ring_active(active);
                 // fleet/urls.json overrides heartbeat-published URLs: on
                 // Compute a deploy cannot know its own final preview URL
                 // (each version mints a new one), so the deploy script
@@ -721,20 +722,9 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
                 // fleet reads it here. SELF_URL heartbeats remain the
                 // plain-VM path where an instance does know its address.
                 let published: Option<std::collections::HashMap<String, String>> =
-                    repository.read_published_urls().await.map(|m| {
-                        m.into_iter()
-                            .filter(|(inst, url)| {
-                                let ok = valid_peer_url(url, &state.config.fleet);
-                                if !ok {
-                                    tracing::warn!(
-                                        instance = %inst,
-                                        "rejecting malformed peer URL from urls.json"
-                                    );
-                                }
-                                ok
-                            })
-                            .collect()
-                    });
+                    fleet_io!(repository.read_published_urls())
+                        .inspect_err(|error| tracing::warn!(%error, "fleet URLs unavailable; retaining last good view"))
+                        .ok().flatten().map(|map| planning::trusted_urls(map, &state.config.fleet));
                 match published {
                     Some(m) => {
                         last_good_urls.clone_from(&m);
@@ -744,7 +734,7 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
                     // rather than falling back to stale heartbeat URLs.
                     None => peer_urls.extend(last_good_urls.clone()),
                 }
-                state.peer.set_peers(peer_urls.clone());
+
             }
 
             // R4 rebalancer (SCALING.md §4). Every instance mirrors
@@ -752,14 +742,23 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
             // initiates a move (it alone knows per-shard lag), CAS-guarded.
             {
                 let (mut ov, ov_ver): (Overrides, Option<UpdateVersion>) =
-                    repository.read_overrides().await;
+                    match fleet_io!(repository.read_overrides()) {
+                        Ok(view) => view,
+                        Err(error) => {
+                            tracing::warn!(%error, "fleet overrides unavailable; retaining last good view");
+                            continue;
+                        }
+                    };
                 {
                     let map: std::collections::HashMap<String, String> = ov
                         .entries
                         .iter()
                         .map(|(k, v)| (k.clone(), v.to.clone()))
                         .collect();
-                    state.ownership.set_overrides(map);
+                    // Publish only a complete successful authority read. This
+                    // synchronous replacement cannot expose a mixed ring/map.
+                    state.ownership.set_view(active, map);
+                    state.peer.set_peers(peer_urls.clone());
                 }
 
                 // Round-11.4: when the OWNERSHIP VIEW changed, wake
@@ -833,6 +832,7 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
                     loop {
                         let next = tokio::select! {
                             _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
+                            _ = tokio::time::sleep_until(pass_deadline) => continue 'ticks,
                             next = opens.next() => next,
                         };
                         let Some((prefix, outcome)) = next else { break; };
@@ -915,13 +915,11 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
                             }
                             next.entries.remove(k);
                         }
-                        if repository
-                            .replace_document(
+                        if fleet_io!(repository.replace_document(
                                 FleetDocument::Overrides,
                                 serde_json::to_vec(&next).unwrap(),
                                 ov_ver.clone(),
-                            )
-                            .await
+                            ))
                         {
                             tracing::info!(
                                 "rebalancer: returned {} shard(s) to rendezvous owners: {:?}",
@@ -991,13 +989,11 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
                                 ms: now_ms(),
                             },
                         );
-                        let committed = repository
-                            .replace_document(
+                        let committed = fleet_io!(repository.replace_document(
                                 FleetDocument::Overrides,
                                 serde_json::to_vec(&ov).unwrap(),
                                 ov_ver,
-                            )
-                            .await;
+                            ));
                         match committed {
                             true => {
                                 tracing::info!(
@@ -1071,13 +1067,11 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
                     computed_at_ms: now_ms(),
                     pending_events,
                 };
-                if repository
-                    .replace_document(
+                if fleet_io!(repository.replace_document(
                         FleetDocument::Desired,
                         serde_json::to_vec(&next).unwrap(),
                         version,
-                    )
-                    .await
+                    ))
                 {
                     tracing::info!(
                         "fleet desired {} -> {} ({})",

@@ -448,6 +448,7 @@ pub async fn execute_split(
         .await
 }
 
+#[cfg(test)]
 pub async fn execute_split_fenced(
     st: &std::sync::Arc<crate::http::AppState>,
     sref: &crate::tenant::TenantStreamRef,
@@ -475,23 +476,6 @@ pub async fn execute_merge(
     crate::application::topology::execute_merge(&st.topology_service(), sref, a_id, b_id).await
 }
 
-pub async fn execute_merge_fenced(
-    st: &std::sync::Arc<crate::http::AppState>,
-    sref: &crate::tenant::TenantStreamRef,
-    expect_epoch: &str,
-    a_id: u32,
-    b_id: u32,
-) -> bool {
-    crate::application::topology::execute_merge_fenced(
-        &st.topology_service(),
-        sref,
-        expect_epoch,
-        a_id,
-        b_id,
-    )
-    .await
-}
-
 pub async fn resume(
     st: &std::sync::Arc<crate::http::AppState>,
     sref: &crate::tenant::TenantStreamRef,
@@ -501,93 +485,60 @@ pub async fn resume(
 
 pub(crate) use crate::application::topology::close_segment_on_engine;
 
-/// The evaluation loop (one per instance).
+pub(crate) mod controller;
+
+/// The evaluation loop keeps at most 4096 pending hints and executes at most
+/// 16 per turn, serially per incarnation, under a shared 60-second deadline.
 pub fn start(st: std::sync::Weak<crate::http::AppState>, tasks: &crate::tasks::TaskSupervisor) {
-    let _ = tasks.spawn("scaler", crate::tasks::Policy::Critical, move |cancel| async move {
-        let Some(initial) = st.upgrade() else { return crate::tasks::TaskResult::Done; };
-        let eval = initial.config.scaler.eval_secs.max(1);
-        drop(initial);
-        loop {
-            tokio::select! {
-                _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
-                _ = tokio::time::sleep(std::time::Duration::from_secs(eval)) => {}
-            }
-            let Some(st) = st.upgrade() else {
+    let _ = tasks.spawn(
+        "scaler",
+        crate::tasks::Policy::Critical,
+        move |cancel| async move {
+            let Some(initial) = st.upgrade() else {
                 return crate::tasks::TaskResult::Done;
             };
-            let (decisions, merges) = st.runtime.scaler.evaluate();
-            for (name, epoch, seg_id, split_at) in decisions {
-                // Fenced to the incarnation the HEAT belongs to — a
-                // decision computed from a deleted collection's
-                // traffic declines instead of splitting whatever now
-                // owns the name.
-                let done = execute_split_fenced(&st, &name, &epoch, seg_id, split_at).await;
-                if done {
-                    // §12.3 topology journal: deterministic per
-                    // (incarnation, parent segment) — a replayed
-                    // execution is the same transition.
-                    st.runtime.ops.emit(
-                        crate::ops::OpsEvent::new(
-                            "split_committed",
-                            format!("split/{epoch}/{seg_id}"),
-                        )
-                        .stream(&name, &epoch)
-                        .fields(serde_json::json!({"segId": seg_id, "splitAt": split_at, "projectId": name.project_id().as_str()})),
-                    );
+            let eval = initial.config.scaler.eval_secs.max(1);
+            let mut controller = controller::Controller::new(
+                initial.topology_service(),
+                initial.runtime.ops.clone(),
+                initial.config.scaler.cooldown_secs,
+            );
+            drop(initial);
+            loop {
+                tokio::select! {
+                    _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
+                    _ = tokio::time::sleep(std::time::Duration::from_secs(eval)) => {}
                 }
-                tracing::info!(
-                    project = %name.project_id().as_str(),
-                    stream = %name.name().as_str(),
-                    seg_id,
-                    split_at,
-                    done,
-                    "unified scaler split"
-                );
-            }
-            for (name, epoch) in merges {
-                // Validate against the LIVE map: pick the first adjacent
-                // live pair, both older than the cooldown (never merge a
-                // segment the scaler just minted). The decision is
-                // fenced to the incarnation the cold sketches belong
-                // to — a replacement under the same name is not merged
-                // on a dead collection's silence.
-                let Ok(Some(desc)) = st.registry.get(&name).await else {
-                    continue;
+                let Some(st) = st.upgrade() else {
+                    return crate::tasks::TaskResult::Done;
                 };
-                if desc.stream_epoch != epoch {
-                    continue;
+                let (decisions, merges) = st.runtime.scaler.evaluate();
+                for (name, epoch, segment, split_at) in decisions {
+                    controller.enqueue(controller::Decision::Split(name, epoch, segment, split_at));
                 }
-                let Some(map) = &desc.segments else { continue };
-                if map.pending.is_some() {
-                    continue;
+                for (name, epoch) in merges {
+                    controller.enqueue(controller::Decision::Merge(name, epoch));
                 }
-                let mut live: Vec<_> = map.segments.iter().filter(|s| s.is_live()).collect();
-                live.sort_by_key(|s| s.lo);
-                let min_age = st.config.scaler.cooldown_secs * 1000;
-                let now = crate::shard::now_ms();
-                let pair = live.windows(2).find(|w| {
-                    w[0].hi == w[1].lo
-                        && now - w[0].created_ms >= min_age
-                        && now - w[1].created_ms >= min_age
-                });
-                if let Some(w) = pair {
-                    let (a, b) = (w[0].seg_id, w[1].seg_id);
-                    let done = execute_merge_fenced(&st, &name, &epoch, a, b).await;
-                    if done {
-                        st.runtime.ops.emit(
-                            crate::ops::OpsEvent::new(
-                                "merge_committed",
-                                format!("merge/{epoch}/{a}/{b}"),
-                            )
-                            .stream(&name, &epoch)
-                            .fields(serde_json::json!({"a": a, "b": b, "projectId": name.project_id().as_str()})),
-                        );
-                    }
-                    tracing::info!(project = %name.project_id().as_str(), stream = %name.name().as_str(), a, b, done, "unified scaler merge");
+                drop(st);
+                let report = controller
+                    .pass(
+                        &cancel,
+                        tokio::time::Instant::now() + controller::PASS_DEADLINE,
+                    )
+                    .await;
+                tracing::debug!(
+                    attempted = report.attempted,
+                    completed = report.completed,
+                    deferred = report.deferred,
+                    cancelled = report.cancelled,
+                    "scaler iteration"
+                );
+                if report.cancelled {
+                    return crate::tasks::TaskResult::Done;
                 }
             }
-        }
-    });
+        },
+    );
 }
 
 impl Scaler {

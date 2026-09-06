@@ -386,6 +386,15 @@ pub(crate) async fn execute_merge_fenced(
 pub(crate) async fn resume(st: &TopologyService, sref: &crate::tenant::TenantStreamRef) -> bool {
     resume_incarnation(st, sref, None).await
 }
+/// Resume only the incarnation selected by an autonomous decision.
+pub(crate) async fn resume_fenced(
+    st: &TopologyService,
+    sref: &crate::tenant::TenantStreamRef,
+    epoch: &str,
+) -> bool {
+    resume_incarnation(st, sref, Some(epoch)).await
+}
+
 async fn resume_incarnation(
     st: &TopologyService,
     sref: &crate::tenant::TenantStreamRef,

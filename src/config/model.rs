@@ -445,6 +445,11 @@ impl Default for BillingConfig {
     }
 }
 
+impl FleetConfig {
+    /// Bounds runtime ring allocation and every persisted membership document.
+    pub const MAX_MEMBERS: u64 = 4096;
+}
+
 impl Default for FleetConfig {
     fn default() -> Self {
         Self {

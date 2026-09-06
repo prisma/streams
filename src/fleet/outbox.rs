@@ -17,17 +17,21 @@ where
     }
     let mut emitted = 0usize;
     for doc in [FleetDocument::Desired, FleetDocument::Overrides] {
-        let Some((bytes, version)) = repository.read_doc(doc).await else {
+        let Some((bytes, version)) = repository
+            .read_doc(doc)
+            .await
+            .map_err(|error| error.to_string())?
+        else {
             continue;
         };
         let pending: Vec<crate::ops::OpsEvent> = if doc == FleetDocument::Desired {
             serde_json::from_slice::<Desired>(&bytes)
                 .map(|d| d.pending_events)
-                .unwrap_or_default()
+                .map_err(|error| format!("invalid desired outbox: {error}"))?
         } else {
             serde_json::from_slice::<Overrides>(&bytes)
                 .map(|o| o.pending_events)
-                .unwrap_or_default()
+                .map_err(|error| format!("invalid overrides outbox: {error}"))?
         };
         if pending.is_empty() {
             continue;
@@ -102,7 +106,11 @@ mod tests {
         );
     }
     async fn pending(repository: &FleetRepository) -> Vec<String> {
-        let (body, _) = repository.read_doc(FleetDocument::Desired).await.unwrap();
+        let (body, _) = repository
+            .read_doc(FleetDocument::Desired)
+            .await
+            .unwrap()
+            .unwrap();
         serde_json::from_slice::<Desired>(&body)
             .unwrap()
             .pending_events

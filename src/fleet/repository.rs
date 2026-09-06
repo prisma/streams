@@ -24,6 +24,11 @@ use super::{Desired, Heartbeat, Overrides};
 const DESIRED_DOC: &str = "fleet/desired.json";
 const OVERRIDES_DOC: &str = "fleet/overrides.json";
 const URLS_DOC: &str = "fleet/urls.json";
+// Single coordination documents are read sequentially. The same ceiling applies
+// to streamed bodies and writes, independent of provider metadata accuracy.
+const MAX_DOCUMENT_BYTES: usize = 8 * 1024 * 1024;
+pub(super) const MAX_MEMBERS: usize = crate::config::FleetConfig::MAX_MEMBERS as usize;
+const DOCUMENT_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
 #[derive(Clone, Default)]
 pub struct FleetRepository {
@@ -47,9 +52,11 @@ impl FleetRepository {
             return Ok(());
         };
         let path = ObjPath::from(format!("fleet/{instance}.json"));
-        store
-            .put(&path, PutPayload::from(serde_json::to_vec(hb)?))
-            .await?;
+        let body = serde_json::to_vec(hb)?;
+        anyhow::ensure!(body.len() <= 128 * 1024, "heartbeat exceeds byte budget");
+        tokio::time::timeout(DOCUMENT_DEADLINE, store.put(&path, PutPayload::from(body)))
+            .await
+            .map_err(|_| anyhow::anyhow!("heartbeat publication timed out"))??;
         Ok(())
     }
 
@@ -135,29 +142,57 @@ impl FleetRepository {
 
     // -- coordination documents ----------------------------------------
 
-    /// The desired-count document and the version a CAS must present.
-    pub async fn read_desired_state(&self) -> (Option<Desired>, Option<UpdateVersion>) {
-        match self.read_typed::<Desired>(DESIRED_DOC).await {
-            Some((doc, version)) => (doc, Some(version)),
-            None => (None, None),
+    /// Absence is distinct from unavailable or corrupt state: only a confirmed
+    /// NotFound may bootstrap a count or clear the local override mirror.
+    pub async fn read_desired_state(
+        &self,
+    ) -> anyhow::Result<(Option<Desired>, Option<UpdateVersion>)> {
+        match self.read_typed::<Desired>(DESIRED_DOC).await? {
+            Some((doc, version)) => {
+                anyhow::ensure!(
+                    (1..=MAX_MEMBERS as u64).contains(&doc.count),
+                    "desired count exceeds fleet budget"
+                );
+                anyhow::ensure!(doc.epoch < u64::MAX, "desired epoch exhausted");
+                anyhow::ensure!(
+                    doc.pending_events.len() <= 64,
+                    "desired outbox exceeds item budget"
+                );
+                Ok((Some(doc), Some(version)))
+            }
+            None => Ok((None, None)),
         }
     }
 
-    /// The overrides document (absent reads as empty) and its version.
-    pub async fn read_overrides(&self) -> (Overrides, Option<UpdateVersion>) {
-        match self.read_typed::<Overrides>(OVERRIDES_DOC).await {
-            Some((doc, version)) => (doc.unwrap_or_default(), Some(version)),
-            None => (Overrides::default(), None),
+    pub async fn read_overrides(&self) -> anyhow::Result<(Overrides, Option<UpdateVersion>)> {
+        match self.read_typed::<Overrides>(OVERRIDES_DOC).await? {
+            Some((doc, version)) => {
+                anyhow::ensure!(
+                    doc.entries.len() <= MAX_MEMBERS,
+                    "override map exceeds item budget"
+                );
+                anyhow::ensure!(
+                    doc.pending_events.len() <= 64,
+                    "override outbox exceeds item budget"
+                );
+                Ok((doc, Some(version)))
+            }
+            None => Ok((Overrides::default(), None)),
         }
     }
 
-    /// The platform-published instance -> base URL map, exactly as
-    /// stored; the caller applies its own trust policy to each URL.
-    pub async fn read_published_urls(&self) -> Option<std::collections::HashMap<String, String>> {
-        let (doc, _) = self
+    /// The caller validates each URL's authority before publishing the view.
+    pub async fn read_published_urls(
+        &self,
+    ) -> anyhow::Result<Option<std::collections::HashMap<String, String>>> {
+        let Some((doc, _)) = self
             .read_typed::<std::collections::HashMap<String, String>>(URLS_DOC)
-            .await?;
-        doc
+            .await?
+        else {
+            return Ok(None);
+        };
+        anyhow::ensure!(doc.len() <= MAX_MEMBERS, "URL map exceeds item budget");
+        Ok(Some(doc))
     }
 
     /// CAS-replace a coordination document: `Some(version)` updates that
@@ -175,27 +210,65 @@ impl FleetRepository {
             Some(v) => PutMode::Update(v),
             None => PutMode::Create,
         };
-        store
-            .put_opts(
+        if body.len() > MAX_DOCUMENT_BYTES {
+            tracing::warn!(document = doc.path(), "fleet write exceeds byte budget");
+            return false;
+        }
+        // An uncertain PUT is retried from the next authoritative version;
+        // callers never erase its durable pending events on timeout.
+        tokio::time::timeout(
+            DOCUMENT_DEADLINE,
+            store.put_opts(
                 &ObjPath::from(doc.path()),
                 PutPayload::from(body),
                 PutOptions::from(mode),
-            )
-            .await
-            .is_ok()
+            ),
+        )
+        .await
+        .is_ok_and(|result| result.is_ok())
     }
 
     /// One document's bytes with the version a CAS clear needs — the
     /// event drainer's read.
-    pub(crate) async fn read_doc(&self, doc: FleetDocument) -> Option<(Bytes, UpdateVersion)> {
-        let store = self.store.as_ref()?;
-        let got = store.get(&ObjPath::from(doc.path())).await.ok()?;
-        let version = UpdateVersion {
-            e_tag: got.meta.e_tag.clone(),
-            version: got.meta.version.clone(),
+    pub(crate) async fn read_doc(
+        &self,
+        doc: FleetDocument,
+    ) -> anyhow::Result<Option<(Bytes, UpdateVersion)>> {
+        self.read_bytes(doc.path()).await
+    }
+
+    async fn read_bytes(&self, path: &str) -> anyhow::Result<Option<(Bytes, UpdateVersion)>> {
+        let Some(store) = self.store.as_ref() else {
+            return Ok(None);
         };
-        let raw = got.bytes().await.ok()?;
-        Some((raw, version))
+        let read = async {
+            let got = match store.get(&ObjPath::from(path)).await {
+                Ok(result) => result,
+                Err(object_store::Error::NotFound { .. }) => return Ok(None),
+                Err(error) => return Err(error.into()),
+            };
+            anyhow::ensure!(
+                got.meta.size <= MAX_DOCUMENT_BYTES as u64,
+                "fleet document exceeds byte budget: {path}"
+            );
+            let version = UpdateVersion {
+                e_tag: got.meta.e_tag.clone(),
+                version: got.meta.version.clone(),
+            };
+            let mut chunks = got.into_stream();
+            let mut body = Vec::new();
+            while let Some(chunk) = chunks.try_next().await? {
+                anyhow::ensure!(
+                    body.len().saturating_add(chunk.len()) <= MAX_DOCUMENT_BYTES,
+                    "fleet body exceeds byte budget: {path}"
+                );
+                body.extend_from_slice(&chunk);
+            }
+            Ok(Some((Bytes::from(body), version)))
+        };
+        tokio::time::timeout(DOCUMENT_DEADLINE, read)
+            .await
+            .map_err(|_| anyhow::anyhow!("fleet document read timed out: {path}"))?
     }
 
     /// What the operator surface shows about the cell: the live
@@ -215,30 +288,23 @@ impl FleetRepository {
         let desired = self
             .read_typed::<serde_json::Value>(DESIRED_DOC)
             .await
-            .and_then(|(doc, _)| doc);
+            .inspect_err(|error| tracing::warn!(%error, "fleet operator document unavailable"))
+            .ok()
+            .flatten()
+            .map(|(doc, _)| doc);
         (heartbeats, desired)
     }
 
     async fn read_typed<T: serde::de::DeserializeOwned>(
         &self,
         doc: &str,
-    ) -> Option<(Option<T>, UpdateVersion)> {
-        let store = self.store.as_ref()?;
-        match store.get(&ObjPath::from(doc)).await {
-            Ok(r) => {
-                let version = UpdateVersion {
-                    e_tag: r.meta.e_tag.clone(),
-                    version: r.meta.version.clone(),
-                };
-                let raw = r.bytes().await.unwrap_or_default();
-                Some((serde_json::from_slice::<T>(&raw).ok(), version))
-            }
-            Err(object_store::Error::NotFound { .. }) => None,
-            Err(e) => {
-                tracing::warn!(document = doc, "fleet document read failed: {e}");
-                None
-            }
-        }
+    ) -> anyhow::Result<Option<(T, UpdateVersion)>> {
+        let Some((raw, version)) = self.read_bytes(doc).await? else {
+            return Ok(None);
+        };
+        let value = serde_json::from_slice::<T>(&raw)
+            .map_err(|error| anyhow::anyhow!("invalid fleet document {doc}: {error}"))?;
+        Ok(Some((value, version)))
     }
 }
 
@@ -332,3 +398,7 @@ mod population_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "repository/document_tests.rs"]
+mod document_tests;

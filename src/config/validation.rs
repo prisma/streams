@@ -750,6 +750,12 @@ impl crate::config::ServerConfig {
         if let Err(e) = validate_body_ceiling(self.cli.max_request_body_bytes) {
             f.err(e);
         }
+        if !(1..=super::FleetConfig::MAX_MEMBERS).contains(&self.cli.fleet_max)
+            || self.fleet.fleet_min > super::FleetConfig::MAX_MEMBERS
+        {
+            f.err("FLEET_MAX and FLEET_MIN must fit the 4096-member fleet work budget");
+            return None;
+        }
         let fleet_mode = self.fleet_mode();
         let effective_shards = match self.cli.initial_shards {
             Some(n) => {

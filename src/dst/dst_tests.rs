@@ -226,5 +226,9 @@ mod read_application;
 #[path = "tests/runtime_journals.rs"]
 mod runtime_journals;
 
+#[path = "tests/fleet_controller.rs"]
+mod fleet_controller;
 #[path = "tests/runtime_usage.rs"]
 mod runtime_usage;
+#[path = "tests/scaler_controller.rs"]
+mod scaler_controller;
