@@ -79,7 +79,7 @@ pub(crate) struct PreparedBatch {
 pub(crate) struct SourceBatch {
     pub(crate) scan_from: u64,
     pub(crate) scan_to: u64,
-    pub(crate) records: Vec<crate::http::PlainRec>,
+    pub(crate) records: Vec<crate::application::read::PlainRec>,
     pub(crate) completed: bool,
 }
 
@@ -91,7 +91,7 @@ pub(crate) trait FeedSourceRead: Send + Sync {
     /// The DATA event for one record, formatted ONCE per lane. Cursor
     /// and status controls are composed per session (canonical framing:
     /// flags never ride data frames).
-    fn prepare_data(&self, rec: &crate::http::PlainRec) -> Bytes;
+    fn prepare_data(&self, rec: &crate::application::read::PlainRec) -> Bytes;
     /// Wake source: fired on every durable advance and close. Sessions
     /// park on this (registered eagerly at loop top — see session.rs).
     fn advance_notify(&self) -> &tokio::sync::Notify;
@@ -1485,7 +1485,7 @@ pub(crate) mod tests {
             let mut used = 0usize;
             let mut off = from;
             while off < frontier && used + self.payload <= max_bytes {
-                records.push(crate::http::PlainRec {
+                records.push(crate::application::read::PlainRec {
                     off,
                     payload: Bytes::from(vec![b'x'; self.payload]),
                     rkey: String::new(),
@@ -1506,7 +1506,7 @@ pub(crate) mod tests {
         fn closed(&self) -> bool {
             self.closed.load(Ordering::Relaxed)
         }
-        fn prepare_data(&self, rec: &crate::http::PlainRec) -> Bytes {
+        fn prepare_data(&self, rec: &crate::application::read::PlainRec) -> Bytes {
             Bytes::from(format!("event: data\ndata:{}\n\n", rec.off))
         }
         fn advance_notify(&self) -> &tokio::sync::Notify {

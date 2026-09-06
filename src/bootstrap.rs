@@ -663,7 +663,8 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     let state = Arc::new(AppState {
         runtime: runtime_caps.clone(),
         config: config.clone(),
-        registry,
+        registry: Arc::new(registry),
+        reads: std::sync::OnceLock::new(),
         shards: shard_directory,
         admission,
         peer,

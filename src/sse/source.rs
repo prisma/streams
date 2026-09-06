@@ -18,7 +18,7 @@ use bytes::Bytes;
 use std::sync::Arc;
 
 pub(crate) struct SingleSource {
-    pub(crate) state: Arc<crate::http::AppState>,
+    pub(crate) state: Arc<crate::application::read::ReadService>,
     pub(crate) rk_filter: Option<String>,
     pub(crate) desc: StreamDesc,
     pub(crate) key: crate::crypto::StreamKey,
@@ -53,13 +53,12 @@ impl FeedSourceRead for SingleSource {
         // records in the CHILD's logical offset space — the same cursor
         // space every other lane uses.
         let out = if self.desc.forked_from.is_some() {
-            crate::http::read_stitched(&self.state, &self.desc, &self.key, from, max_bytes)
+            self.state
+                .read_stitched(&self.desc, &self.key, from, max_bytes)
                 .await
                 .map_err(|e| anyhow::anyhow!(e))?
         } else {
-            crate::http::read_records(
-                &self.state,
-                &self.desc,
+            crate::application::read::read_merged(
                 &self.key,
                 &self.epoch,
                 &self.handle,
@@ -78,7 +77,7 @@ impl FeedSourceRead for SingleSource {
         // the driver whether this page reached the durable frontier; a
         // partial page with no scanned progress is NOT a successful
         // drive (finding 6).
-        let scan_to = out.last.map(|x| x + 1).unwrap_or(from);
+        let scan_to = out.scanned_through(from);
         #[cfg(test)]
         if self.rk_filter.is_none() {
             let mut expect = from;
@@ -107,7 +106,7 @@ impl FeedSourceRead for SingleSource {
         self.handle.state.lock().unwrap().durable.closed
     }
 
-    fn prepare_data(&self, rec: &crate::http::PlainRec) -> Bytes {
+    fn prepare_data(&self, rec: &crate::application::read::PlainRec) -> Bytes {
         Bytes::from(crate::sse::wire::sse_data_event(&self.desc, &rec.payload))
     }
 
@@ -180,7 +179,7 @@ enum SpanReader {
     /// instance.
     Sealed {
         route: [u8; 16],
-        target: crate::product::InternalTarget,
+        target: crate::application::read_remote::InternalTarget,
         owner_hint: std::sync::RwLock<Option<String>>,
         local: tokio::sync::Mutex<Option<(Arc<ShardEngine>, Arc<StreamHandle>)>>,
     },
@@ -211,7 +210,7 @@ impl std::error::Error for FatalSpanCutoff {}
 
 /// Is this instance the effective owner of `route`'s shard? None-ring
 /// (single instance) counts as ours.
-fn owned_here(state: &crate::http::AppState, route: &[u8; 16]) -> bool {
+fn owned_here(state: &crate::application::read::ReadService, route: &[u8; 16]) -> bool {
     state.ownership.is_mine(&state.shards.prefix_for(route))
 }
 
@@ -228,7 +227,7 @@ impl LineageSpan {
 /// default lane) always has exactly ONE live segment; sealed
 /// predecessors contribute their frozen caps to the logical prefix.
 pub(crate) struct LineageSource {
-    state: Arc<crate::http::AppState>,
+    state: Arc<crate::application::read::ReadService>,
     desc: StreamDesc,
     key: crate::crypto::StreamKey,
     /// The stream key in wire form for internal relays (computed once).
@@ -274,22 +273,22 @@ impl LineageSource {
     /// containing the lane's key point, ordered by
     /// `(created_ms, seg_id)`).
     pub(crate) async fn build(
-        state: Arc<crate::http::AppState>,
+        state: Arc<crate::application::read::ReadService>,
         desc: StreamDesc,
         key: crate::crypto::StreamKey,
         epoch: [u8; 16],
         rk_filter: Option<String>,
     ) -> Result<Arc<Self>, LineageBuildError> {
-        let map = desc.segments.as_ref().ok_or_else(|| {
+        desc.segments.as_ref().ok_or_else(|| {
             LineageBuildError::IncompatibleTopology(
                 "lineage source needs a materialized segment map".into(),
             )
         })?;
-        let lane = rk_filter.clone().unwrap_or_default();
-        let point = StreamDesc::key_point(&lane);
-        let mut segs: Vec<&crate::segmap::SegmentDesc> =
-            map.segments.iter().filter(|s| s.contains(point)).collect();
-        segs.sort_by_key(|s| (s.created_ms, s.seg_id));
+        let topology = crate::application::read::ReadTopology::new(
+            &desc,
+            Some(rk_filter.as_deref().unwrap_or("")),
+        );
+        let segs = &topology.spans;
         if segs.is_empty() {
             return Err(LineageBuildError::IncompatibleTopology(
                 "lineage has no span for the lane's key point".into(),
@@ -312,7 +311,9 @@ impl LineageSource {
                 // ownership-DYNAMIC reader — nothing is opened or
                 // contacted at build time (locate/logicalize need no
                 // engines, and a span's owner may change later).
-                let Some(target) = crate::product::InternalTarget::of(&desc, sg.seg_id) else {
+                let Some(target) =
+                    crate::application::read_remote::InternalTarget::of(&desc, sg.seg_id)
+                else {
                     return Err(LineageBuildError::IncompatibleTopology(format!(
                         "segment {} has no internal target",
                         sg.seg_id
@@ -326,7 +327,11 @@ impl LineageSource {
                 }
             } else {
                 // The LIVE tail must be LOCAL (locked architecture).
-                match state.engine_for(&route).await {
+                match state
+                    .shards
+                    .resolve(&route, crate::shard_directory::Adoption::External)
+                    .await
+                {
                     Ok(engine) => {
                         let handle = engine.stream_handle(identity).await.map_err(|e| {
                             LineageBuildError::Transient(format!("stream handle: {e}"))
@@ -338,25 +343,16 @@ impl LineageSource {
                             handle,
                         }
                     }
-                    Err(resp) if resp.status() == axum::http::StatusCode::CONFLICT => {
-                        // engine_for's refusal names the ring owner in
-                        // Streams-Replay-To; thread it through so the
-                        // connect-time refusal keeps the routing signal.
-                        let owner = resp
-                            .headers()
-                            .get("streams-replay-to")
-                            .and_then(|v| v.to_str().ok())
-                            .map(str::to_string);
+                    Err(crate::shard_directory::ResolveError::NotOwner { owner, .. }) => {
                         return Err(LineageBuildError::WrongOwner {
                             msg: format!("live segment {} is owned by another instance", sg.seg_id),
-                            owner,
+                            owner: Some(owner),
                         });
                     }
-                    Err(resp) => {
+                    Err(error) => {
                         return Err(LineageBuildError::Transient(format!(
-                            "segment {} engine unavailable ({})",
-                            sg.seg_id,
-                            resp.status()
+                            "segment {} engine unavailable: {error:?}",
+                            sg.seg_id
                         )));
                     }
                 }
@@ -405,17 +401,22 @@ impl LineageSource {
         &self,
         span: &LineageSpan,
         route: &[u8; 16],
-        target: &crate::product::InternalTarget,
+        target: &crate::application::read_remote::InternalTarget,
         owner_hint: &std::sync::RwLock<Option<String>>,
         local: &tokio::sync::Mutex<Option<(Arc<ShardEngine>, Arc<StreamHandle>)>>,
         local_from: u64,
         budget: usize,
-    ) -> anyhow::Result<crate::http::ReadOut> {
+    ) -> anyhow::Result<crate::application::read::ReadPage> {
         use super::feed::SourceCutoff;
         if owned_here(&self.state, route) {
             let mut cached = local.lock().await;
             if cached.is_none() {
-                match self.state.engine_for(route).await {
+                match self
+                    .state
+                    .shards
+                    .resolve(route, crate::shard_directory::Adoption::External)
+                    .await
+                {
                     Ok(engine) => {
                         let handle = engine
                             .stream_handle(span.identity)
@@ -428,16 +429,14 @@ impl LineageSource {
                     }
                     // Ownership raced away between the check and the
                     // open: fall through to the remote path below.
-                    Err(resp) if resp.status() == axum::http::StatusCode::CONFLICT => {}
-                    Err(resp) => {
-                        anyhow::bail!("sealed span engine unavailable ({})", resp.status())
+                    Err(crate::shard_directory::ResolveError::NotOwner { .. }) => {}
+                    Err(error) => {
+                        anyhow::bail!("sealed span engine unavailable: {error:?}")
                     }
                 }
             }
             if let Some((engine, handle)) = cached.as_ref() {
-                return crate::http::read_records(
-                    &self.state,
-                    &self.desc,
+                return crate::application::read::read_merged(
                     &self.key,
                     &self.epoch,
                     handle,
@@ -475,8 +474,8 @@ impl LineageSource {
                 }
             }
         };
-        match crate::product::remote_span_page(
-            &self.state,
+        match crate::application::read_remote::remote_span_page(
+            &self.state.peer,
             &owner,
             &self.desc.name,
             target,
@@ -494,25 +493,28 @@ impl LineageSource {
                 }
                 Ok(out)
             }
-            Err(crate::product::RemoteSpanError::Retryable { status, code }) => {
+            Err(crate::application::read_remote::RemoteSpanError::Retryable { status, code }) => {
                 anyhow::bail!("remote span {}: retryable {status} {code:?}", span.seg_id)
             }
-            Err(crate::product::RemoteSpanError::Transport(m)) => {
+            Err(crate::application::read_remote::RemoteSpanError::Transport(m)) => {
                 anyhow::bail!("remote span {}: transport {m}", span.seg_id)
             }
-            Err(crate::product::RemoteSpanError::InvalidResponse(m)) => {
+            Err(crate::application::read_remote::RemoteSpanError::InvalidResponse(m)) => {
                 anyhow::bail!("remote span {}: invalid response {m}", span.seg_id)
             }
-            Err(crate::product::RemoteSpanError::Unauthorized) => {
+            Err(crate::application::read_remote::RemoteSpanError::Unauthorized) => {
                 Err(anyhow::Error::new(FatalSpanCutoff(SourceCutoff::FleetAuth)))
             }
-            Err(crate::product::RemoteSpanError::TargetGone) => Err(anyhow::Error::new(
-                FatalSpanCutoff(SourceCutoff::IncarnationChanged),
-            )),
-            Err(crate::product::RemoteSpanError::TargetMismatch) => Err(anyhow::Error::new(
-                FatalSpanCutoff(SourceCutoff::TargetMismatch),
-            )),
-            Err(crate::product::RemoteSpanError::RedirectLoop { first, second }) => {
+            Err(crate::application::read_remote::RemoteSpanError::TargetGone) => Err(
+                anyhow::Error::new(FatalSpanCutoff(SourceCutoff::IncarnationChanged)),
+            ),
+            Err(crate::application::read_remote::RemoteSpanError::TargetMismatch) => Err(
+                anyhow::Error::new(FatalSpanCutoff(SourceCutoff::TargetMismatch)),
+            ),
+            Err(crate::application::read_remote::RemoteSpanError::RedirectLoop {
+                first,
+                second,
+            }) => {
                 tracing::warn!(
                     span = span.seg_id,
                     %first,
@@ -523,7 +525,7 @@ impl LineageSource {
                     SourceCutoff::RedirectLoop,
                 )))
             }
-            Err(crate::product::RemoteSpanError::WrongOwner { owner }) => {
+            Err(crate::application::read_remote::RemoteSpanError::WrongOwner { owner }) => {
                 anyhow::bail!("remote span {}: unresolved owner {owner}", span.seg_id)
             }
         }
@@ -538,7 +540,7 @@ impl LineageSource {
 impl FeedSourceRead for LineageSource {
     async fn read_batch(&self, from: u64, max_bytes: usize) -> anyhow::Result<SourceBatch> {
         let mut cursor = from;
-        let mut recs: Vec<crate::http::PlainRec> = Vec::new();
+        let mut recs: Vec<crate::application::read::PlainRec> = Vec::new();
         let mut budget = max_bytes;
         let mut completed = false;
         for (i, span) in self.spans.iter().enumerate() {
@@ -563,9 +565,7 @@ impl FeedSourceRead for LineageSource {
                             super::feed::SourceCutoff::WrongOwner,
                         )));
                     }
-                    crate::http::read_records(
-                        &self.state,
-                        &self.desc,
+                    crate::application::read::read_merged(
                         &self.key,
                         &self.epoch,
                         handle,
@@ -593,7 +593,7 @@ impl FeedSourceRead for LineageSource {
             // CONSUMED progress (finding 2/6): the scanned boundary,
             // capped at the span's sealed cap — match-free ranges
             // count, records beyond the cap belong to the next span.
-            let scanned_after = part.last.map(|l| l + 1).unwrap_or(local_from);
+            let scanned_after = part.scanned_through(local_from);
             let consumed_local = match span.cap {
                 Some(c) => scanned_after.min(c),
                 None => scanned_after,
@@ -603,7 +603,7 @@ impl FeedSourceRead for LineageSource {
                     break;
                 }
                 budget = budget.saturating_sub(r.payload.len());
-                recs.push(crate::http::PlainRec {
+                recs.push(crate::application::read::PlainRec {
                     off: span.logical_start + r.off,
                     payload: r.payload,
                     rkey: r.rkey,
@@ -678,7 +678,7 @@ impl FeedSourceRead for LineageSource {
         }
     }
 
-    fn prepare_data(&self, rec: &crate::http::PlainRec) -> Bytes {
+    fn prepare_data(&self, rec: &crate::application::read::PlainRec) -> Bytes {
         Bytes::from(crate::sse::wire::sse_data_event(&self.desc, &rec.payload))
     }
 
@@ -757,7 +757,7 @@ impl FeedSourceRead for LineageSource {
 /// Genuine-close detection mirrors `http::genuine_closure` exactly
 /// (no materialized map, or a <=1-segment map with nothing pending).
 pub(crate) async fn refresh_transition(
-    state: &Arc<crate::http::AppState>,
+    state: &Arc<crate::application::read::ReadService>,
     desc: &StreamDesc,
     key: &crate::crypto::StreamKey,
     epoch: &[u8; 16],
@@ -867,7 +867,7 @@ pub(crate) async fn refresh_transition(
             if remaining.is_zero() {
                 return Ok(SourceTransition::RetryLater);
             }
-            let _ = tokio::time::timeout(remaining, crate::scaler3::resume(state, &sref)).await;
+            let _ = tokio::time::timeout(remaining, state.topology.resume(&sref)).await;
             continue;
         }
         if map.segments.len() <= 1 {

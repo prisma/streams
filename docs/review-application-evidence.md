@@ -6,7 +6,7 @@
 
 Regression: `r15_bodyless_and_unauthorized_requests_never_poll_the_body` drives the real HTTP entry function with a pending body that records each poll and declares an oversized length. It covers preflight, missing bearer on read/write/watch, malformed and expired/forged capability carriers in both header and query forms. Every result must arrive within two seconds with zero body polls and CORS headers.
 
-Validation is pending the shared Rust 1.98.1 dependency build; the ambient Cargo 1.84.1 cannot parse this repository's edition 2024 manifest and is not used as evidence.
+Executed on Rust 1.98.1: both real-entry security tests pass. The ambient Cargo 1.84.1 is not used; it cannot parse this repository's edition 2024 manifest.
 
 ## R16 — watch refusal indistinguishability
 
@@ -28,4 +28,12 @@ Regressions: `r08_missing_conditional_token_fails_closed`, `r08_only_preconditio
 
 Topology validation distinguishes absent implicit topology from an empty/invalid explicit map, validates allocators/ranges/references/transition shapes, and accepts sealed terminal coverage and legitimately pruned predecessor IDs. Unknown segment IDs return no route; public/internal callers reject them before engine access. An explicit map cannot fall back to invented implicit segment zero. Split rejects invalid points and exhausted IDs before modifying a parent.
 
-Executed debug tests: registry filter 22 passed (including six SSE registry tests); segmap filter 7 passed; security filter 2 passed after the serving-state conversion. New tests `r04_invalid_descriptors_cannot_reach_storage` prove malformed identity/topology/lifecycle fails before object creation; `r04_valid_transition_and_sealed_predecessor_snapshots` covers pending split, split, merge, and sealed predecessors. Golden descriptor tests identified a defaults fixture that intentionally omits layout_version; it now decodes as the persisted DTO, preserving its original purpose independently from serving validation.
+Executed debug tests: registry filter 22 passed (including six SSE registry tests); segmap filter 7 passed; security filter 2 passed after the serving-state conversion. New tests `r04_invalid_descriptors_cannot_reach_storage` prove malformed identity/topology/lifecycle fails before object creation; `r04_valid_transition_and_sealed_predecessor_snapshots` covers pending split, split, merge, and sealed predecessors. Golden descriptor tests: 5 passed. They identified a defaults fixture that intentionally omits layout_version; it now decodes as the persisted DTO, preserving its original purpose independently from serving validation.
+
+## R06 — canonical read executor and topology progress
+
+The actual history/postings/tail merge and frame decoding now live in `application::read`. `ReadPlan` binds a physical segment, epoch, selector, visibility and byte budget; `ReadPage` explicitly carries durable/applied watermarks and consumed progress. `ReadTopology` owns selector ordering and successor continuation, shared by HTTP replay and SSE lineage construction. Empty filtered pages advance by scanned position; durable resume clamps applied suffixes. The original bounded history executor remains intact.
+
+`ReadService` owns only query capabilities and is cached once per runtime. Fork-chain validation, ancestor key checks and stitched execution moved into it. SSE feed/source has no HTTP or product import; owner resolution matches typed shard errors. Incarnation-bound remote pages and canonical path encoding moved to the peer read adapter. No internal response is encoded to call the reader.
+
+Rust 1.98.1 checks: typed read progress tests 2 passed; product read/scan scenarios 6 passed; fork/livefeed/cold-history/remote-predecessor/split/merge scenarios 11 passed; external-completion refresh 1 passed; signed watch/bodyless security 2 passed; applied suffix rollback 1 passed; source cursor mapping 2 passed; internal target binding 6 passed. Logs: `/private/tmp/r06-tests.log`, `/private/tmp/r06-final-tests.log`. The raw and product protocol adapters still own public cursor decoding and rendering; full final conformance and cold/hot workload comparison are recorded in the repository-wide gate evidence.

@@ -18,6 +18,7 @@
 //! ```
 
 mod admission;
+mod application;
 mod audit;
 mod auth;
 mod auth_feed;

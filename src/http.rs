@@ -6,25 +6,23 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
+use axum::Router;
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{header, HeaderMap, Method, StatusCode};
+use axum::http::{HeaderMap, Method, StatusCode, header};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
-use axum::Router;
 use bytes::{Bytes, BytesMut};
 use object_store::ObjectStore;
 use serde::Deserialize;
 use serde_json::json;
 use tokio::sync::oneshot;
 
-use crate::crypto::{
-    FrameHeader, StreamKey, decode_frame, decrypt_frame, derive_subkey, encrypt_frame, hex,
-};
+use crate::crypto::{FrameHeader, StreamKey, derive_subkey, encrypt_frame, hex};
 use crate::history::KeyCache;
 use crate::offsets::Offset;
 use crate::registry::{Registry, StreamDesc};
-use crate::shard::{AppendErr, AppendReq, ShardEngine, now_ms, read_frames};
+use crate::shard::{AppendErr, AppendReq, ShardEngine, now_ms};
 
 /// Protocol ceiling on a request body — the wire pin, re-exported from
 /// [`crate::protocol_pin`] (PR 3.2.1: the pin moved beside the other
@@ -90,7 +88,8 @@ pub struct AppState {
     /// Per-runtime capabilities (WP-15/PR 4): clock, entropy, and this
     /// runtime's identity. Owned here, never process-global.
     pub runtime: crate::runtime::RuntimeCaps,
-    pub registry: Registry,
+    pub registry: Arc<Registry>,
+    pub(crate) reads: std::sync::OnceLock<Arc<crate::application::read::ReadService>>,
     /// WP-02 / PR 6-A: the shard directory OWNS the topology prefixes,
     /// the serving map and the single-flight open gate; resolution
     /// policy lives there, transport-neutral.
@@ -151,6 +150,24 @@ pub struct AppState {
     /// response: instance name (or version) — proof the response came
     /// from a Streams server rather than the platform edge.
     pub origin_marker: String,
+}
+
+impl AppState {
+    pub(crate) fn topology_service(&self) -> crate::application::topology::TopologyService {
+        crate::application::topology::TopologyService {
+            registry: self.registry.clone(), shards: self.shards.clone(),
+            peer: self.peer.clone(), scaler: self.runtime.scaler.clone(),
+        }
+    }
+
+    pub(crate) fn read_service(self: &Arc<Self>) -> Arc<crate::application::read::ReadService> {
+        self.reads.get_or_init(|| Arc::new(crate::application::read::ReadService::new(
+            self.registry.clone(), self.shards.clone(), self.peer.clone(),
+            self.ownership.clone(), self.keys.clone(),
+            Arc::new(self.topology_service()),
+        ))).clone()
+    }
+
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
@@ -2321,191 +2338,6 @@ fn parse_fork_offset(tok: &str) -> Result<u64, String> {
     Offset::parse(tok).map(|o| o.scan_from())
 }
 
-/// A fork's ancestor chain, self-first: (descriptor, fork boundary,
-/// epoch bytes). boundary = where the entry's OWN records begin.
-/// Soft-deleted/expired ancestors still serve (their data backs this
-/// fork); a hard-deleted ancestor is an integrity error.
-fn fork_chain_of(
-    state: &Arc<AppState>,
-    desc: &StreamDesc,
-) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<Vec<(StreamDesc, u64, [u8; 16])>, String>> + Send>,
-> {
-    let state_reg = state.clone();
-    let desc = desc.clone();
-    Box::pin(async move {
-        // Bounded, cycle-free, and epoch-checked (audit P0): a stale
-        // reference must be an integrity error, never a silent read of
-        // a RECREATED source incarnation.
-        const MAX_FORK_DEPTH: usize = 64;
-        let mut chain: Vec<(StreamDesc, u64, [u8; 16])> = Vec::new();
-        let mut seen: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut cur = desc;
-        loop {
-            if chain.len() >= MAX_FORK_DEPTH {
-                return Err("fork chain exceeds the maximum depth".into());
-            }
-            if !seen.insert(format!("{}\u{0}{}", cur.name, cur.stream_epoch)) {
-                return Err("fork chain contains a cycle".into());
-            }
-            let boundary = cur.forked_from.as_ref().map(|f| f.fork_offset).unwrap_or(0);
-            let epoch = cur.epoch_bytes().ok_or("bad epoch in fork chain")?;
-            let parent = cur.forked_from.as_ref().map(|f| {
-                (
-                    f.source.clone(),
-                    cur.ref_in_project(&f.source),
-                    f.source_epoch.clone(),
-                )
-            });
-            chain.push((cur, boundary, epoch));
-            match parent {
-                None => break,
-                Some((src, src_ref, want_epoch)) => {
-                    let d = match state_reg.registry.get(&src_ref).await {
-                        Ok(Some(d)) if !d.deleted => d,
-                        _ => return Err(format!("fork source '{src}' is gone")),
-                    };
-                    if !want_epoch.is_empty() && d.stream_epoch != want_epoch {
-                        return Err(format!(
-                            "fork source '{src}' is a different incarnation                              (expected {want_epoch}, found {})",
-                            d.stream_epoch
-                        ));
-                    }
-                    cur = d;
-                }
-            }
-        }
-        Ok(chain)
-    })
-}
-
-/// Stitched fork read (pinned DS fork contract): records [from, ...)
-/// in the stream's OWN offset numbering, served from the ancestor
-/// chain below each fork boundary and from the stream itself at and
-/// above its boundary. `end`/`completed` describe the OWN tail.
-/// `last` is the CONSUMED boundary (last scanned offset), not the last
-/// matching record: match-free scanned ranges and drained ancestors
-/// count as progress (follow-up review finding 6), so filtered
-/// callers never rescan a range the chain already proved empty.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn read_stitched(
-    state: &Arc<AppState>,
-    desc: &StreamDesc,
-    key: &StreamKey,
-    from: u64,
-    max_bytes: usize,
-) -> Result<ReadOut, String> {
-    let chain = fork_chain_of(state, desc).await?;
-    // Every hop must accept the presented key (uniform-key chains; a
-    // cross-key fork chain would decrypt garbage, so it is an error).
-    for (d, _, _) in &chain {
-        if matches!(check_key(Some(&key_b64_of(key)), d), KeyCheck::Wrong) {
-            return Err("wrong key for a fork ancestor".into());
-        }
-    }
-    // Own tail state.
-    let (own_engine, own_handle) = handle_of(state, &chain[0].0).await?;
-    let own_end = own_handle.state.lock().unwrap().durable.next;
-    let mut out = ReadOut {
-        recs: Vec::new(),
-        last: None,
-        end: own_end,
-        completed: false,
-    };
-    let mut budget = max_bytes;
-    let mut cursor = from;
-    for _ in 0..(chain.len() * 4 + 8) {
-        if budget == 0 {
-            break;
-        }
-        // Owner of `cursor`: the deepest entry whose boundary <= cursor.
-        let Some(idx) = chain.iter().position(|(_, b, _)| *b <= cursor) else {
-            return Err("fork chain has no owner for offset".into());
-        };
-        // Cap: the smallest child boundary above the cursor.
-        let cap = chain[..idx]
-            .iter()
-            .map(|(_, b, _)| *b)
-            .min()
-            .unwrap_or(u64::MAX);
-        let (d, _, epoch) = &chain[idx];
-        let (engine, handle) = if idx == 0 {
-            (own_engine.clone(), own_handle.clone())
-        } else {
-            handle_of(state, d).await?
-        };
-        state.keys.put(handle.hash, key.clone(), *epoch);
-        // The DEFAULT key only. `None` here meant "every routing key",
-        // so a raw fork of a collection that product clients had
-        // written keyed records to replayed all of them through the
-        // standards route — the one surface whose contract is that it
-        // IS the default-key stream.
-        let part = read_merged(
-            key,
-            epoch,
-            &handle,
-            &engine,
-            cursor,
-            Some(""),
-            budget,
-            crate::shard::Deliver::Durable,
-        )
-        .await?;
-        // CONSUMED progress (finding 6): read_merged's `last` advances
-        // over scanned NON-MATCHING ranges inside this ancestor, so the
-        // child's consumed position moves by the SCAN boundary — capped
-        // at the next owner's boundary, never by emitted records alone.
-        let scanned_after = part.last.map(|l| l + 1).unwrap_or(cursor);
-        let consumed_here = scanned_after.min(cap);
-        let before = cursor;
-        let mut emitted = false;
-        for r in part.recs {
-            if r.off >= cap {
-                break;
-            }
-            budget = budget.saturating_sub(r.payload.len());
-            cursor = r.off + 1;
-            out.recs.push(r);
-            emitted = true;
-        }
-        // Match-free scanned ranges are consumed progress: the child
-        // never revisits them.
-        cursor = cursor.max(consumed_here);
-        if cursor > from {
-            out.last = Some(cursor - 1);
-        }
-        if idx == 0 {
-            // Own range: read_merged's completion IS the answer.
-            out.end = part.end;
-            out.completed = part.completed;
-            break;
-        }
-        if part.completed || cursor >= cap {
-            // Corruption guard (checked BEFORE the hop — the old order
-            // compared AFTER forcing cursor to cap, which could never
-            // be true): a completed ancestor whose durable end sits
-            // below the fork boundary means records were lost —
-            // surface it rather than silently hopping to the child.
-            if part.completed && scanned_after < cap {
-                return Err("fork ancestor ended below the fork boundary".into());
-            }
-            // Ancestor drained to the cap (or its whole range): hop to
-            // the next owner at the cap.
-            cursor = cursor.max(cap);
-            if cursor > from {
-                out.last = Some(cursor - 1);
-            }
-            continue;
-        }
-        if !emitted && cursor == before {
-            // Budget too small for one record and no scanned progress:
-            // honest partial.
-            break;
-        }
-    }
-    Ok(out)
-}
-
 /// Clear a descriptor's parent-reference debt — fenced to the exact
 /// incarnation the debt was OBSERVED on and to the exact debt. The
 /// name-only `Registry::update` this replaces could clear a freshly
@@ -2547,23 +2379,6 @@ async fn clear_parent_debt(
 fn key_b64_of(key: &StreamKey) -> String {
     use base64::Engine;
     base64::engine::general_purpose::STANDARD.encode(key.0)
-}
-
-/// (engine, handle) for a stream's sole segment identity.
-async fn handle_of(
-    state: &Arc<AppState>,
-    desc: &StreamDesc,
-) -> Result<(Arc<ShardEngine>, Arc<crate::shard::StreamHandle>), String> {
-    let ro = desc.resolve_segment("");
-    let engine = state
-        .engine_for_scaler(&ro.shard_route)
-        .await
-        .ok_or("engine unavailable")?;
-    let handle = engine
-        .stream_handle(ro.identity)
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok((engine, handle))
 }
 
 /// Sliding idle expiry (protocol Stream-TTL): origin reads and writes
@@ -3064,7 +2879,7 @@ pub(crate) async fn create_stream(
                 );
             }
         };
-        let (_, src_handle) = match handle_of(&state, &src).await {
+        let (_, src_handle) = match state.read_service().handle_of(&src).await {
             Ok(v) => v,
             Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
         };
@@ -3134,7 +2949,11 @@ pub(crate) async fn create_stream(
                 }
                 // The record being split (the source may itself be a
                 // fork — read through its chain).
-                let rec = match read_stitched(&state, &src, &src_key, base, 64 << 20).await {
+                let rec = match state
+                    .read_service()
+                    .read_stitched(&src, &src_key, base, 64 << 20)
+                    .await
+                {
                     Ok(out) => out.recs.into_iter().find(|r| r.off == base),
                     Err(m) => {
                         return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m);
@@ -3549,7 +3368,13 @@ pub(crate) async fn create_stream(
             }
             desc = match StreamDesc::try_from(stamped_desc) {
                 Ok(desc) => desc,
-                Err(error) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "invalid_descriptor", &error.to_string()),
+                Err(error) => {
+                    return err_resp(
+                        StatusCode::INTERNAL_SERVER_ERROR,
+                        "invalid_descriptor",
+                        &error.to_string(),
+                    );
+                }
             };
         }
         // The CHILD must still exist to be worth anchoring: a
@@ -3742,7 +3567,11 @@ pub(crate) async fn create_stream(
             ts_hint_ms: None,
             seq: None,
             bytes,
-            finish: if close { crate::shard::AppendFinish::Close } else { crate::shard::AppendFinish::Open },
+            finish: if close {
+                crate::shard::AppendFinish::Close
+            } else {
+                crate::shard::AppendFinish::Open
+            },
             // Exactly-once initial content (audit P0): the append
             // carries a synthetic producer identity derived from the
             // creation-request hash, so concurrent joiners and resumed
@@ -4276,7 +4105,9 @@ fn delete_lifecycle(
                 .unwrap_or_else(|| vec![0]);
             for sid in seg_ids {
                 let identity = d.dynamic_segment_identity(sid);
-                let route = d.segment_route_by_id(sid).expect("segment selected from validated topology");
+                let route = d
+                    .segment_route_by_id(sid)
+                    .expect("segment selected from validated topology");
                 if let Ok(engine) = state.engine_for(&route).await
                     && let Err(e) = engine.submit_billing_close(identity, close_stamp).await
                 {
@@ -4500,15 +4331,21 @@ pub(crate) async fn fence_segment_for_key(
     };
     let seg = desc.resolve_segment(routing_key);
     let identity = desc.dynamic_segment_identity(seg.seg_id);
-    let route = desc.segment_route_by_id(seg.seg_id).ok_or("unknown segment")?;
+    let route = desc
+        .segment_route_by_id(seg.seg_id)
+        .ok_or("unknown segment")?;
     let engine = state
         .engine_for(&route)
         .await
         .map_err(|_| "segment engine unavailable".to_string())?;
     let (tx, rx) = tokio::sync::oneshot::channel();
-    engine.try_seal_fence(crate::shard::SealFenceReq {
-        hash: identity, generation: fence_to, resp: tx,
-    }).map_err(|_| "append queue full; fence not placed".to_string())?;
+    engine
+        .try_seal_fence(crate::shard::SealFenceReq {
+            hash: identity,
+            generation: fence_to,
+            resp: tx,
+        })
+        .map_err(|_| "append queue full; fence not placed".to_string())?;
     match rx.await {
         Ok(Ok(ack)) => Ok(ack.closed),
         Ok(Err(e)) => Err(format!("fence refused: {e:?}")),
@@ -5138,7 +4975,10 @@ async fn append_core(
     // Unified-scaler sketch feed (spec §5.1): admitted appends only.
     if !close_only && deferred.is_none() {
         let fed: usize = entries.iter().map(|e| e.len()).sum();
-        state.runtime.scaler.note_append(&desc, &seg, fed as u64, entries.len() as u64);
+        state
+            .runtime
+            .scaler
+            .note_append(&desc, &seg, fed as u64, entries.len() as u64);
     }
     // Usage counters key by the name hash; the absorber keys lag by this
     // engine hash. Record the alias so /v1/debug/usage can join them.
@@ -5224,7 +5064,11 @@ async fn append_core(
         ts_hint_ms: parse_ts_hint(&headers),
         seq: hdr(&headers, "stream-seq"),
         bytes,
-        finish: if close { crate::shard::AppendFinish::Close } else { crate::shard::AppendFinish::Open },
+        finish: if close {
+            crate::shard::AppendFinish::Close
+        } else {
+            crate::shard::AppendFinish::Open
+        },
         producer: producer.clone(),
         deferred_error: deferred,
         sealed_reject_new,
@@ -5602,356 +5446,11 @@ async fn append_core(
     }
 }
 
-/// A decrypted record ready for response assembly.
-#[derive(Clone)]
-pub(crate) struct PlainRec {
-    pub(crate) off: u64,
-    pub(crate) payload: Bytes,
-    /// Exact routing-key bytes from the frame header (product scan
-    /// surfaces them per record; keyed reads ignore the field).
-    pub(crate) rkey: String,
-}
-
-pub(crate) struct ReadOut {
-    pub(crate) recs: Vec<PlainRec>,
-    pub(crate) last: Option<u64>,
-    pub(crate) end: u64,
-    pub(crate) completed: bool,
-}
-
-/// Merged two-tier read returning plaintext records.
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn read_records(
-    _state: &AppState,
-    _desc: &StreamDesc,
-    key: &StreamKey,
-    epoch: &[u8; 16],
-    handle: &Arc<crate::shard::StreamHandle>,
-    engine: &Arc<ShardEngine>,
-    scan_from: u64,
-    key_filter: Option<&str>,
-    max_bytes: usize,
-    deliver: crate::shard::Deliver,
-) -> Result<ReadOut, String> {
-    read_merged(
-        key, epoch, handle, engine, scan_from, key_filter, max_bytes, deliver,
-    )
-    .await
-}
-
-/// Decode raw stream-key-encrypted frames (v2 history or shard tail —
-/// byte-identical formats) into plaintext records, charging the byte
-/// budget per record.
-fn decode_frames_into(
-    frames: &[Bytes],
-    key: &StreamKey,
-    epoch: &[u8; 16],
-    hash: &[u8; 16],
-    subkeys: &mut HashMap<(String, u32), [u8; 32]>,
-    out: &mut ReadOut,
-    budget: &mut usize,
-) -> Result<(), String> {
-    for raw in frames {
-        let Some(frame) = decode_frame(raw) else {
-            return Err("bad frame".into());
-        };
-        let sk = *subkeys
-            .entry((frame.header.routing_key.clone(), frame.header.key_version))
-            .or_insert_with(|| {
-                derive_subkey(
-                    key,
-                    epoch,
-                    &frame.header.routing_key,
-                    frame.header.key_version,
-                )
-            });
-        let pt = decrypt_frame(&sk, hash, &frame, raw)?;
-        *budget = budget.saturating_sub(pt.len());
-        out.recs.push(PlainRec {
-            off: frame.header.offset,
-            payload: Bytes::from(pt),
-            rkey: frame.header.routing_key.clone(),
-        });
-        out.last = Some(
-            out.last
-                .map_or(frame.header.offset, |o| o.max(frame.header.offset)),
-        );
-    }
-    Ok(())
-}
-
-/// The merge itself, free of `AppState` so the simulation harness can call
-/// the production reader instead of reimplementing the history/tail split
-/// (`src/dst.rs`). A second copy of this boundary logic would be a copy
-/// that can drift, and drift here means the oracle stops testing what
-/// production does.
-#[allow(clippy::too_many_arguments)]
-/// Round-13 CODE-RED bisect: the repro's stream carries ONLY rk=""
-/// records, so keyed reads must be dense too — armed by the test.
+use crate::application::read::ReadPlan;
 #[cfg(test)]
-pub(crate) static TEST_ASSERT_KEYED_DENSE: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-pub(crate) async fn read_merged(
-    key: &StreamKey,
-    epoch: &[u8; 16],
-    handle: &Arc<crate::shard::StreamHandle>,
-    engine: &Arc<ShardEngine>,
-    scan_from: u64,
-    key_filter: Option<&str>,
-    max_bytes: usize,
-    deliver: crate::shard::Deliver,
-) -> Result<ReadOut, String> {
-    // The sub-stream identity (AAD + history-DB path): for total-order
-    // streams this is the incarnation hash; for per-key streams, the
-    // segment hash. Either way it's the handle's identity.
-    let hash = handle.hash;
-    let (absorbed, end, mut hist_v2, route) = {
-        let st = handle.state.lock().unwrap();
-        let end = match deliver {
-            crate::shard::Deliver::Durable => st.durable.next,
-            // Applied extends visibility to the applied watermark; the
-            // history boundary below stays durable-sourced (absorption
-            // only ever operates on durable data, so boundary <= end).
-            crate::shard::Deliver::Applied => st.applied.next.max(st.durable.next),
-        };
-        (
-            st.durable.absorbed,
-            end,
-            st.durable.history_v2,
-            st.durable.route,
-        )
-    };
-    let mut out = ReadOut {
-        recs: Vec::new(),
-        last: None,
-        end,
-        completed: true,
-    };
-    let mut budget = max_bytes;
-    let mut subkeys: HashMap<(String, u32), [u8; 32]> = HashMap::new();
-
-    // The absorbed snapshot above and the tail scan below are a TOCTOU
-    // pair: the absorber can advance the boundary AND durably trim the
-    // shard log between them, leaving the tail scan a hole at
-    // `[cursor, new_boundary)` that this loop would otherwise emit as a
-    // "complete" page — permanently skipping records for a paginating
-    // client (2026-07-27 boundary-race DST failure). Everything trim can
-    // remove is already readable in history (the absorber flushes history
-    // before the boundary advances), so on detecting an advance we
-    // re-serve the gap from history and re-scan the tail. `boundary` only
-    // moves forward and is capped by `end`, so the loop terminates; the
-    // bound is paranoia, and falling out of it yields an honest
-    // `completed = false` partial page.
-    let mut cursor = scan_from; // next offset still needed
-    let mut boundary = absorbed; // history serves [_, boundary)
-    for _ in 0..16 {
-        let hist_upto = boundary.min(end);
-        if cursor < hist_upto && budget > 0 {
-            if !hist_v2 {
-                // The v1 per-stream layout was deleted in the clean
-                // switch: an unabsorbed-below-boundary tail without the
-                // v2 flag cannot exist in a fresh namespace.
-                return Err("unsupported_storage_layout: v1 history".into());
-            }
-            let completed = {
-                // v2: the range lives in the shard's SHARED partition,
-                // read through the owner's open Db — no reader open, no
-                // checkpoint, no coverage probe (this Db's flush is what
-                // advanced the boundary). Frames decode like tail frames.
-                // Keyed ranges resolve their postings runs through the
-                // engine's decoded slice cache (spec §7).
-                let part = engine
-                    .history_partition()
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let (frames, scan_last, completed) = match key_filter {
-                    Some(rk) => crate::history::read_history2_keyed_cached(
-                        &engine.postings_cache,
-                        &part,
-                        crate::crypto::RouteHash(route),
-                        crate::crypto::SegmentHash(hash),
-                        rk,
-                        cursor,
-                        hist_upto,
-                        boundary,
-                        budget,
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?,
-                    None => crate::history::read_history2(
-                        &part,
-                        crate::crypto::RouteHash(route),
-                        crate::crypto::SegmentHash(hash),
-                        cursor,
-                        hist_upto,
-                        None,
-                        budget,
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?,
-                };
-                decode_frames_into(
-                    &frames,
-                    key,
-                    epoch,
-                    &hash,
-                    &mut subkeys,
-                    &mut out,
-                    &mut budget,
-                )?;
-                // consumed_to is first-class (review blocker): a partial
-                // keyed page's cursor advances over every range the read
-                // PROVED — index-verified match-free stretches and
-                // mid-run truncation points — never inferred from the
-                // last matching frame alone. Without this, a fat run
-                // that planned zero frames re-polled the same position
-                // forever.
-                if let Some(sl) = scan_last {
-                    out.last = Some(out.last.map_or(sl, |o| o.max(sl)));
-                }
-                completed
-            };
-            if !completed {
-                // Byte-truncated, or (v1) the reader cannot prove coverage
-                // of this boundary yet: report the honest partial; the
-                // caller re-polls from `last + 1`.
-                out.completed = false;
-                return Ok(out);
-            }
-            // Fully scanned with proven coverage: everything below
-            // `hist_upto` is consumed even when the range yields no
-            // records for this key filter.
-            if hist_upto > 0 {
-                out.last = Some(out.last.map_or(hist_upto - 1, |o| o.max(hist_upto - 1)));
-            }
-            #[cfg(test)]
-            if TEST_ASSERT_KEYED_DENSE.load(std::sync::atomic::Ordering::Relaxed) {
-                let mut expect = scan_from;
-                for r in &out.recs {
-                    assert!(
-                        r.off <= expect,
-                        "HISTORY leg gap: expect {expect} got {} (scan_from {scan_from}, hist_upto {hist_upto}, boundary {boundary}, filter {key_filter:?})",
-                        r.off
-                    );
-                    expect = r.off + 1;
-                }
-                assert!(
-                    hist_upto <= expect,
-                    "HISTORY leg over-claim: hist_upto {hist_upto} beyond served {expect} (scan_from {scan_from}, boundary {boundary}, filter {key_filter:?})"
-                );
-            }
-            cursor = hist_upto;
-        }
-        if budget == 0 || cursor >= end {
-            break;
-        }
-        let part = read_frames(engine, handle, cursor, key_filter, budget, deliver)
-            .await
-            .map_err(|e| e.to_string())?;
-        // Revalidate the scan against concurrent absorption before
-        // trusting it.
-        let raced_boundary = if key_filter.is_none() {
-            // Unfiltered offsets below the durable frontier are dense,
-            // so ANY gap in the page IS the absorb/trim race — head OR
-            // MID-PAGE (round-13 CODE-RED: the 2026-07-27 guard checked
-            // only the head; a mid-scan retire produced {..78, 88..}
-            // pages that were consumed as complete, permanently
-            // skipping the seam for every subscriber and every resume —
-            // 11 durable records lost in field leg A1v2, reproduced
-            // deterministically by cut_resume_never_skips_a_durable_record).
-            let gap = if part.frames.is_empty() {
-                cursor < end // nothing at all in a non-empty range
-            } else {
-                // O(1): dense pages satisfy count == last - first + 1,
-                // so one head decode + the page's own last_offset
-                // detects head AND mid-page gaps without touching the
-                // hot path's per-frame budget (the O(n) version cost
-                // the capacity gate ~2%).
-                let first = match decode_frame(&part.frames[0]) {
-                    Some(f) => f.header.offset,
-                    None => return Err("bad frame".into()),
-                };
-                first > cursor
-                    || part
-                        .last_offset
-                        .is_some_and(|l| l + 1 - first != part.frames.len() as u64)
-            };
-            if gap {
-                Some(
-                    engine
-                        .durable_absorbed(&hash)
-                        .await
-                        .map_err(|e| e.to_string())?,
-                )
-            } else {
-                None
-            }
-        } else {
-            // A filtered scan cannot distinguish "trimmed" from "did not
-            // match", so always ask the remotely-durable tracker.
-            let (durable, remote_v2) = engine
-                .durable_absorbed(&hash)
-                .await
-                .map_err(|e| e.to_string())?;
-            (durable > cursor).then_some((durable, remote_v2))
-        };
-        if let Some((durable, remote_v2)) = raced_boundary {
-            if durable > boundary {
-                // Adopt the remote LAYOUT FLAG with the remote boundary:
-                // in the first absorption's flush-to-dispatch window the
-                // in-memory snapshot still says v1 while the row that
-                // moved the boundary already says v2 — mixing the two
-                // refused a perfectly readable v2 range as v1.
-                boundary = durable;
-                hist_v2 = hist_v2 || remote_v2;
-                continue; // the gap is in history now; re-serve from there
-            }
-            // A hole the boundary does not explain: never emit it as
-            // consumed. Drop the tail and report the honest partial.
-            out.completed = false;
-            return Ok(out);
-        }
-        decode_frames_into(
-            &part.frames,
-            key,
-            epoch,
-            &hash,
-            &mut subkeys,
-            &mut out,
-            &mut budget,
-        )?;
-        if let Some(last) = part.last_offset {
-            out.last = Some(out.last.map_or(last, |o| o.max(last)));
-        }
-        break;
-    }
-    let consumed_next = out.last.map(|o| o + 1).unwrap_or(scan_from);
-    out.completed = consumed_next >= end;
-    // Round-13 CODE-RED bisect (test builds): an unfiltered merged read
-    // must NEVER emit a gapped page — any panic here localizes the
-    // durable-skip to THIS layer.
-    #[cfg(test)]
-    if key_filter.is_none() {
-        let mut expect = scan_from;
-        for r in &out.recs {
-            assert!(
-                r.off <= expect,
-                "read_merged emitted a gap: expected <= {expect}, got {} (scan_from {scan_from}, last {:?}, boundary-race?)",
-                r.off,
-                out.last
-            );
-            expect = r.off + 1;
-        }
-        if let Some(l) = out.last {
-            assert!(
-                l < expect,
-                "read_merged over-claimed: last {l} beyond served {expect} (scan_from {scan_from})"
-            );
-        }
-    }
-    Ok(out)
-}
+pub(crate) use crate::application::read::TEST_ASSERT_KEYED_DENSE;
+#[cfg(test)]
+pub(crate) use crate::application::read::read_merged;
 
 pub(crate) fn interval_cursor(req_cursor: Option<&str>) -> String {
     interval_cursor_at(now_ms() as u64, req_cursor)
@@ -6014,7 +5513,7 @@ async fn read_fork_inner(
             );
         }
     };
-    let (_engine, handle) = match handle_of(&state, &desc).await {
+    let (_engine, handle) = match state.read_service().handle_of(&desc).await {
         Ok(v) => v,
         Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
     };
@@ -6065,7 +5564,7 @@ async fn read_fork_inner(
         },
     };
     if live == Some("sse") {
-        let (engine2, _h) = match handle_of(&state, &desc).await {
+        let (engine2, _h) = match state.read_service().handle_of(&desc).await {
             Ok(v) => v,
             Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
         };
@@ -6124,7 +5623,11 @@ async fn read_fork_inner(
             return r.body(Body::empty()).unwrap();
         }
     }
-    let out = match read_stitched(&state, &desc, &key, scan_from, MAX_READ_BYTES).await {
+    let out = match state
+        .read_service()
+        .read_stitched(&desc, &key, scan_from, MAX_READ_BYTES)
+        .await
+    {
         Ok(o) => o,
         Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
     };
@@ -6532,9 +6035,7 @@ pub(crate) async fn read_inner(
 
     let frames_format = params.format.as_deref() == Some("frames");
     let t_read = std::time::Instant::now();
-    let out = match read_records(
-        &state,
-        &desc,
+    let out = match ReadPlan::segment(
         &key,
         &epoch,
         &handle,
@@ -6550,6 +6051,7 @@ pub(crate) async fn read_inner(
         }),
         deliver,
     )
+    .execute()
     .await
     {
         Ok(o) => o,
@@ -6887,7 +6389,7 @@ async fn sse_response(
     {
         let rk_filter = params.key.clone();
         let src = Arc::new(crate::sse::source::SingleSource {
-            state: state.clone(),
+            state: state.read_service(),
             rk_filter: rk_filter.clone(),
             desc: desc.clone(),
             key: key.clone(),
@@ -6923,44 +6425,7 @@ async fn sse_response(
 
 // ---- per-key ordering read surface (PER-KEY-ORDERING.md §4) ----
 
-/// Percent-encode a stream name for use as a URL PATH, preserving the
-/// hierarchy separator. Product names are hierarchical UTF-8 and may
-/// legally contain '?', '#', '%' — interpolating one raw into a relay
-/// URL turned the rest of the name into a query, fragment, or invalid
-/// escape and addressed the wrong stream (round-19 fleet-contract
-/// finding). Every internal relay must route its name through this.
-pub(crate) fn encode_stream_name_path(name: &str) -> String {
-    let mut out = String::with_capacity(name.len() + 8);
-    for seg in name.split('/') {
-        if !out.is_empty() {
-            out.push('/');
-        }
-        for b in seg.bytes() {
-            match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                    out.push(b as char)
-                }
-                _ => out.push_str(&format!("%{b:02X}")),
-            }
-        }
-    }
-    out
-}
-
-/// Shared client for fleet-internal peer calls (segment fan-out). One
-/// pool, HTTP/1.1, idle timeout under the platform's ~5 s VM-suspend
-/// socket kill (same rule as the store client and the pilot LB).
-pub(crate) fn peer_client() -> &'static reqwest::Client {
-    static C: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    C.get_or_init(|| {
-        reqwest::Client::builder()
-            .http1_only()
-            .pool_idle_timeout(std::time::Duration::from_secs(4))
-            .tcp_nodelay(true)
-            .build()
-            .expect("peer client")
-    })
-}
+pub(crate) use crate::peer::{client as peer_client, encode_stream_name_path};
 
 /// Resolve a Streams-Replay-To response to a peer base URL. None when
 /// the response is not an ownership bounce or the peer is unknown
@@ -7141,7 +6606,11 @@ async fn internal_segment_close(
         );
     }
     let Some(route) = desc.segment_route_by_id(params.seg_id) else {
-        return err_resp(StatusCode::BAD_REQUEST, "unknown_segment", "segment is not part of this incarnation");
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "unknown_segment",
+            "segment is not part of this incarnation",
+        );
     };
     let engine = match state.engine_for_quiet(&route).await {
         Ok(e) => e,
@@ -7334,27 +6803,8 @@ async fn read_v3_lineage_inner(
         crate::failpoints::pause_sse_before_lease_gate(&desc.name).await;
     }
 
-    // Lineage: for a keyed read, every segment whose range contains the
-    // key point, oldest first; keyless replay walks ALL segments in
-    // seg-id order.
-    let lineage: Vec<crate::segmap::SegmentDesc> = match params.key.as_deref() {
-        Some(rk) => {
-            let point = StreamDesc::key_point(rk);
-            let mut v: Vec<_> = map
-                .segments
-                .iter()
-                .filter(|sg| sg.contains(point))
-                .cloned()
-                .collect();
-            v.sort_by_key(|sg| (sg.created_ms, sg.seg_id));
-            v
-        }
-        None => {
-            let mut v = map.segments.clone();
-            v.sort_by_key(|sg| sg.seg_id);
-            v
-        }
-    };
+    let topology = crate::application::read::ReadTopology::new(&desc, params.key.as_deref());
+    let lineage = &topology.spans;
     if lineage.is_empty() {
         return err_resp(
             StatusCode::INTERNAL_SERVER_ERROR,
@@ -7439,7 +6889,7 @@ async fn read_v3_lineage_inner(
         {
             let rk_filter = params.key.clone();
             match crate::sse::source::LineageSource::build(
-                state.clone(),
+                state.read_service(),
                 desc.clone(),
                 key.clone(),
                 epoch,
@@ -7750,9 +7200,7 @@ async fn read_v3_lineage_inner(
             return r.body(Body::empty()).unwrap();
         }
 
-        let out = match read_records(
-            &state,
-            &desc,
+        let out = match ReadPlan::segment(
             &key,
             &epoch,
             &handle,
@@ -7766,28 +7214,18 @@ async fn read_v3_lineage_inner(
             }),
             deliver,
         )
+        .execute()
         .await
         {
             Ok(o) => o,
             Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
         };
-        // Clamp progression to this SEGMENT's end (sealed_next), never
-        // the raw handle end (a sealed identity's tail may sit past the
-        // frozen boundary only if re-opened — defensive).
-        let consumed_to = out
-            .last
-            .map(|o| o + 1)
-            .unwrap_or(scan_from)
-            .min(seg_end.max(scan_from));
-        let drained = out.completed && consumed_to >= seg_end;
+        let (next, durable_resume, drained) = topology
+            .page_progress(sg.seg_id, scan_from, &out)
+            .expect("planned segment");
+        let consumed_to = out.scanned_through(scan_from).min(seg_end.max(scan_from));
         let sealed_mid = sg.sealed_next_offset.is_some() && !is_last;
-        let next_token = if drained && sealed_mid {
-            // Hand the cursor to the successor.
-            let succ = &lineage[pos + 1];
-            seg_tok(succ.seg_id, None)
-        } else {
-            seg_tok(sg.seg_id, consumed_to.checked_sub(1))
-        };
+        let next_token = seg_tok(next.segment, next.after.checked_sub(1));
 
         let body: Bytes = if desc.is_json() {
             let mut buf = BytesMut::new();
@@ -7822,7 +7260,7 @@ async fn read_v3_lineage_inner(
             // construction, so its durable cursor IS the next token.
             let floor_now = handle.state.lock().unwrap().durable.next;
             let durable_tok = if drained && sealed_mid {
-                seg_tok(lineage[pos + 1].seg_id, None)
+                seg_tok(durable_resume.segment, durable_resume.after.checked_sub(1))
             } else {
                 seg_tok(sg.seg_id, consumed_to.min(floor_now).checked_sub(1))
             };
