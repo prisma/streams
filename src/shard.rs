@@ -1731,8 +1731,8 @@ impl ShardEngine {
         engine
     }
 
-    pub(crate) fn register_task(&self, name: &'static str, task: tokio::task::JoinHandle<()>) {
-        self.tasks.lock().unwrap().push((name, task));
+    pub(crate) fn register_task(&self, label: &'static str, task: tokio::task::JoinHandle<()>) {
+        self.tasks.lock().unwrap().push((label, task));
     }
 
     /// Level-triggered notification also covers subscription after close.
