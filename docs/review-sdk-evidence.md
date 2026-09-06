@@ -20,4 +20,22 @@ including a delayed old-generation 401 after refresh completion.
 
 Verification: `npm run typecheck --prefix sdk`,
 `npm run build --prefix sdk`, and `npm test --prefix sdk`.
-Commit: see the commit introducing this R19 section and `git log --grep=R19`.
+Commit: `6a79dfb`.
+
+## R20 — one producer mutation queue
+
+Removed the duplicate send queue. Append, batch append, final seal and epoch
+bump now share `_chain`; automatic reclaim remains inside the held send.
+The caller receives its original rejection while the queue tail drains and
+releases its routing-key entry. The README defines exclusive instance scope
+ownership and uncertain fetch/save outcomes without claiming cross-process
+locking.
+
+Before the fix, `node --test sdk/scripts/producer-ordering.test.mjs` failed
+the barrier ordering case: epoch became 1 before the held append completed.
+The fetch/save failure recovery cases already passed and remain controls.
+After the fix all 3 cases pass, including captured append/batch/final-seal
+headers `0/0`, `1/0`, `1/1` and final state `{epoch:1,nextSeq:2}`.
+
+Verification: SDK typecheck, build, and complete `npm test --prefix sdk`.
+Commit: see `git log --grep=R20`.

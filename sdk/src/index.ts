@@ -211,6 +211,8 @@ export interface ProducerState {
 }
 
 export interface ProducerStateStore {
+  /** One Producer instance must exclusively own each scope. These
+   * methods are not a cross-instance/process compare-and-swap lock. */
   load(scope: ProducerScope): Promise<ProducerState | undefined>;
   save(scope: ProducerScope, state: ProducerState): Promise<void>;
 }
@@ -1056,12 +1058,14 @@ export class Producer<T> {
   }
 
   async bumpEpoch(routingKey = ""): Promise<void> {
-    const scope = this.scope(routingKey);
-    const st = (await this.options.state.load(scope)) ?? {
-      epoch: 0,
-      nextSeq: 0,
-    };
-    await this.options.state.save(scope, { epoch: st.epoch + 1, nextSeq: 0 });
+    return this._chain(routingKey, async () => {
+      const scope = this.scope(routingKey);
+      const st = (await this.options.state.load(scope)) ?? {
+        epoch: 0,
+        nextSeq: 0,
+      };
+      await this.options.state.save(scope, { epoch: st.epoch + 1, nextSeq: 0 });
+    });
   }
 
   private scope(routingKey: string): ProducerScope {
@@ -1079,19 +1083,17 @@ export class Producer<T> {
    * anything that consumes a sequence number is serialized with the
    * appends — including the final seal.
    */
-  async _chain<R>(routingKey: string, op: () => Promise<R>): Promise<R> {
+  _chain<R>(routingKey: string, op: () => Promise<R>): Promise<R> {
     const prev = this.chains.get(routingKey) ?? Promise.resolve();
-    let out!: Promise<R>;
-    const next = prev.then(async () => {
-      out = op();
-      await out.catch(() => {});
-    });
-    this.chains.set(routingKey, next);
-    void next.then(() => {
-      if (this.chains.get(routingKey) === next) this.chains.delete(routingKey);
-    });
-    await next;
-    return out;
+    const result = prev.then(op);
+    const release = () => {
+      if (this.chains.get(routingKey) === tail) this.chains.delete(routingKey);
+    };
+    // The queue tail always completes, while the original result carries
+    // any failure to its caller. Rejection cannot poison or leak a key.
+    const tail = result.then(release, release);
+    this.chains.set(routingKey, tail);
+    return result;
   }
 
   /** Same-key requests serialize in sequence order (spec §5.1). */
@@ -1100,21 +1102,7 @@ export class Producer<T> {
     routingKey: string,
     batch: boolean,
   ): Promise<AppendResult> {
-    const prev = this.chains.get(routingKey) ?? Promise.resolve();
-    let result!: Promise<AppendResult>;
-    const next = prev.then(async () => {
-      result = this.sendNow(payload, routingKey, batch);
-      await result.catch(() => {});
-    });
-    this.chains.set(routingKey, next);
-    // Drop the key once its queue drains, or a producer that writes to
-    // many routing keys accumulates one settled promise per key it has
-    // ever touched. Only the tail clears itself, so a chain that grew
-    // while this one ran is left alone.
-    void next.then(() => {
-      if (this.chains.get(routingKey) === next) this.chains.delete(routingKey);
-    });
-    return next.then(() => result);
+    return this._chain(routingKey, () => this.sendNow(payload, routingKey, batch));
   }
 
   private async sendNow(

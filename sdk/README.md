@@ -40,6 +40,23 @@ you want the key without the URL.
 encryption key: dead-letter records are written with the source
 collection's key. The link is checked when the consumer is configured.
 
+## Producer state ownership
+
+Use one `Producer` instance as the exclusive owner of each producer scope
+(endpoint, project, stream, producer ID, routing key), backed by durable
+state in production. Appends, batches, final seals, epoch bumps and automatic
+reclaims share that instance's per-key queue. Independent routing keys can
+progress concurrently. A state store is not a cross-process lock; coordinate
+ownership externally before another instance takes over the same scope.
+
+A failed fetch or state save rejects the operation and leaves later queue
+operations usable. The server may already have committed the request. Retry
+the same payload to resolve that uncertain outcome before sending different
+content or intentionally changing the epoch. A rejected state save may itself
+have persisted, depending on the store's contract; recover the store's outcome
+before continuing. `bumpEpoch()` intentionally starts a fresh sequence and
+cannot determine whether an earlier uncertain append committed.
+
 Authentication (`token`) belongs to the client; encryption
 (`encryptionKey`) belongs to the stream handle. Zero dependencies.
 
