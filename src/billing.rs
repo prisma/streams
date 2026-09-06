@@ -1080,18 +1080,22 @@ pub async fn spool_sealed(
     spool: &ReadSpool,
     max: usize,
 ) -> Result<(), String> {
-    let sealed = acc.drain_sealed(max);
-    if sealed.is_empty() {
+    let mut sealed = crate::billing_service::ReadDrain::new(acc, max);
+    if sealed.batches.is_empty() {
         return Ok(());
     }
     // One WriteBatch + one flush for the whole round (OOM review item
     // 5). persist_all is all-or-nothing: on error nothing became
     // durable, so the WHOLE drained set — not just a suffix — requeues
     // (round-22 item 2a's no-loss guarantee, now trivially whole-set).
-    if let Err(e) = spool.persist_all(&sealed).await {
-        acc.requeue(sealed);
-        return Err(format!("read spool persist: {e}"));
-    }
+    spool
+        .persist_all(&sealed.batches)
+        .await
+        .map_err(|e| format!("read spool persist: {e}"))?;
+    // Until durable acceptance, Drop returns the whole set even when the
+    // future is cancelled at a storage await. An ambiguous accepted write
+    // may replay; the unchanged source/sequence identity deduplicates it.
+    sealed.accepted();
     Ok(())
 }
 
@@ -1510,17 +1514,27 @@ pub fn spawn_telemetry(
             "telemetry-outbox-sweep",
             crate::tasks::Policy::Critical,
             move |cancel| async move {
-                if let Err(e) = open_read_spool(&st).await {
-                    tracing::error!("read spool open failed: {e}");
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
+                    _ = async {
+                        if let Err(e) = open_read_spool(&st).await {
+                            tracing::error!("read spool open failed: {e}");
+                        }
+                        sweep_owned_outboxes(&st).await;
+                    } => {}
                 }
-                sweep_owned_outboxes(&st).await;
                 let sweep_secs: u64 = st.config.billing.outbox_sweep_secs;
                 loop {
                     tokio::select! {
                         _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
                         _ = tokio::time::sleep(std::time::Duration::from_secs(sweep_secs)) => {}
                     }
-                    sweep_owned_outboxes(&st).await;
+                    tokio::select! {
+                        biased;
+                        _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
+                        _ = sweep_owned_outboxes(&st) => {}
+                    }
                 }
             },
         );
@@ -1538,28 +1552,33 @@ pub fn spawn_telemetry(
                     _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
                     _ = tick.tick() => {}
                 }
-                match drain_once(&state).await {
-                    Ok(_) => {
-                        LAST_DRAIN_OK_MS
-                            .store(crate::shard::now_ms(), std::sync::atomic::Ordering::Relaxed);
-                    }
-                    Err(e) => tracing::warn!("usage drain: {e}"),
-                }
-                if let Err(e) = crate::ops::drain_ops_once(&state).await {
-                    tracing::warn!("ops drain: {e}");
-                }
-                if let Err(e) = crate::audit::drain_audit_once(&state).await {
-                    tracing::warn!("audit drain: {e}");
-                }
-                if let Err(e) = crate::fleet::drain_fleet_events(&state).await {
-                    tracing::warn!("fleet event drain: {e}");
-                }
-                let now = crate::shard::now_ms();
-                if now - last_metrics >= (metrics_secs as i64) * 1000 {
-                    last_metrics = now;
-                    if let Err(e) = crate::ops::emit_metrics_once(&state).await {
-                        tracing::warn!("ops metrics emit: {e}");
-                    }
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
+                    _ = async {
+    match drain_once(&state).await {
+        Ok(_) => {
+            LAST_DRAIN_OK_MS.store(crate::shard::now_ms(), std::sync::atomic::Ordering::Relaxed);
+        }
+        Err(e) => tracing::warn!("usage drain: {e}"),
+    }
+    if let Err(e) = crate::ops::drain_ops_once(&state).await {
+        tracing::warn!("ops drain: {e}");
+    }
+    if let Err(e) = crate::audit::drain_audit_once(&state).await {
+        tracing::warn!("audit drain: {e}");
+    }
+    if let Err(e) = crate::fleet::drain_fleet_events(&state).await {
+        tracing::warn!("fleet event drain: {e}");
+    }
+    let now = crate::shard::now_ms();
+    if now - last_metrics >= (metrics_secs as i64) * 1000 {
+        last_metrics = now;
+        if let Err(e) = crate::ops::emit_metrics_once(&state).await {
+            tracing::warn!("ops metrics emit: {e}");
+        }
+    }
+} => {}
                 }
             }
         },
@@ -1990,6 +2009,22 @@ pub struct ReadSpool {
     pub fail_after: std::sync::atomic::AtomicI64,
 }
 
+/// Until spool readability is proved, cancellation/errors retain an explicit
+/// close owner. The SlateDB runtime keeps that one close alive to completion.
+struct SpoolOpenGuard(Option<std::sync::Arc<slatedb::Db>>);
+
+impl Drop for SpoolOpenGuard {
+    fn drop(&mut self) {
+        if let Some(db) = self.0.take() {
+            crate::bootstrap::slatedb_runtime().spawn(async move {
+                if let Err(error) = db.close().await {
+                    tracing::warn!("abandoned read spool close failed: {error}");
+                }
+            });
+        }
+    }
+}
+
 impl ReadSpool {
     pub async fn open(
         store: std::sync::Arc<dyn object_store::ObjectStore>,
@@ -2016,6 +2051,8 @@ impl ReadSpool {
                 .await
         })
         .await?;
+        let db = std::sync::Arc::new(db);
+        let mut opening = SpoolOpenGuard(Some(db.clone()));
         let next = match db.get(&b"meta/next-seq"[..]).await? {
             Some(v) => crate::shard::decode_cursor(&v)?,
             None => 0,
@@ -2036,7 +2073,7 @@ impl ReadSpool {
         let rows = sizes.len() as u64;
         let bytes: u64 = sizes.values().sum();
         let sp = ReadSpool {
-            db: std::sync::Arc::new(db),
+            db,
             next: std::sync::atomic::AtomicU64::new(next),
             quarantined: std::sync::atomic::AtomicU64::new(prior),
             sizes: std::sync::Mutex::new(sizes),
@@ -2048,6 +2085,7 @@ impl ReadSpool {
         // Round-22 item 2b: an openable spool whose PENDING rows cannot
         // be scanned is not "ready" — prove readability before use.
         sp.pending(16).await?;
+        opening.0.take();
         Ok(sp)
     }
 
@@ -2193,6 +2231,11 @@ impl ReadSpool {
         wb.put(key, val);
         self.db.write(wb).await?;
         Ok(())
+    }
+
+    #[cfg(test)]
+    pub async fn close_for_tests(&self) {
+        self.db.close().await.unwrap();
     }
 
     #[cfg(test)]
@@ -2410,13 +2453,15 @@ pub async fn sweep_owned_outboxes(state: &std::sync::Arc<crate::http::AppState>)
         let Some(engine) = state.shards.open(&prefix) else {
             continue;
         };
-        let debt = probe_debt(&engine).await;
         if !mark(state, &prefix, &engine) {
             // Custody declined: a customer resolved this engine already
             // (possibly by coalescing into the open we just started).
             // It is theirs; the normal drain covers any debt.
             continue;
         }
+        // Custody is installed before the first awaited probe. Cancellation
+        // leaves a tracked resident for the next sweep or runtime shutdown.
+        let debt = probe_debt(&engine).await;
         if debt.any() {
             tracing::info!(
                 unabsorbed_frame_bytes = debt.maintenance,
@@ -2700,104 +2745,104 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
     if state.billing.usage_key().is_none() {
         return;
     }
-    let mut after: Option<String> = state.billing.sweep_walk_cursor();
-    loop {
-        let page = match state
-            .registry
-            // mt-lint: allow(state-tenant-read): deployment-tenant catalog sweep — terminal-closure reconciliation walks the raw surface's own rows
-            .list_page_raw(state.deployment.deployment_tenant(), after.as_deref(), 256)
-            .await
-        {
-            Ok(p) => p,
-            Err(e) => {
-                tracing::warn!("tombstone walk paused (registry list): {e}");
-                return;
-            }
-        };
-        for d in &page.streams {
-            let expired = d.expires_at_ms.is_some_and(|e| billing_now_ms() >= e);
-            let retained = d.soft_deleted && !d.deleted;
-            let terminal = d.deleted || expired;
-            if !terminal && !retained {
-                continue;
-            }
-            let seg_ids: Vec<u32> = d
-                .segments
-                .as_ref()
-                .map(|m| m.segments.iter().map(|sg| sg.seg_id).collect())
-                .unwrap_or_else(|| vec![0]);
-            for sid in seg_ids {
-                let Some(route) = d.segment_route_by_id(sid) else {
-                    tracing::error!(
-                        segment = sid,
-                        "billing sweep encountered missing validated segment"
-                    );
-                    state.billing.set_sweep_walk_cursor(after.clone());
-                    return;
-                };
-                // Foreign routes are skipped — every instance walks the
-                // same registry and closes what IT owns.
-                let budget = sweep_resident_budget(&state.config.billing);
-                let Some((engine, ours)) = walk_engine_budgeted(state, &route, budget).await else {
-                    // Deferred (budget full) or open-contended: STOP and
-                    // resume AT THIS PAGE next sweep — the continuation
-                    // is what makes deferral fair instead of starving
-                    // later terminal descriptors (R30).
-                    state.billing.set_sweep_walk_cursor(after.clone());
-                    return;
-                };
-                let hash = d.dynamic_segment_identity(sid);
-                let meta = match engine.load_billing_meta(hash).await {
-                    Ok(Some(meta)) => meta,
-                    Ok(None) => continue,
-                    Err(error) => {
-                        tracing::error!("billing sweep metadata read failed: {error}");
-                        state.billing.set_sweep_walk_cursor(after.clone());
-                        return;
-                    }
-                };
-                if meta.stream_id != d.stream_epoch {
-                    continue;
-                }
-                if terminal && meta.owned_frame_bytes_current > 0 {
-                    let close_ms = if d.deleted {
-                        d.logical_close_ms.unwrap_or_else(billing_now_ms)
-                    } else {
-                        d.expires_at_ms.unwrap_or_else(billing_now_ms)
-                    };
-                    tracing::info!(
-                        "tombstone walk: closing {}#{sid} ({} B) at persisted {}",
-                        d.name,
-                        meta.owned_frame_bytes_current,
-                        close_ms
-                    );
-                    if let Err(e) = engine.submit_billing_close(hash, close_ms).await {
-                        tracing::warn!("tombstone-walk close failed for {}: {e}", d.name);
-                    } else {
-                        WALK_CLOSE_SUBMITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                    }
-                } else if retained
-                    && !meta.retained_by_forks
-                    && let Err(e) = engine.submit_billing_retained(hash, true).await
-                {
-                    tracing::warn!("tombstone-walk retain failed for {}: {e}", d.name);
-                }
-                if ours {
-                    // Scheduler-opened for this descriptor: close it or
-                    // keep it as an indebted budgeted resident NOW —
-                    // never accumulate walk opens across the page.
-                    let prefix = state.shards.prefix_for(&route);
-                    walk_settle(state, &prefix).await;
-                }
-            }
-        }
-        if page.exhausted || page.next_after.is_none() {
-            // Full circle from wherever we started: wrap.
-            state.billing.set_sweep_walk_cursor(None);
+    let after: Option<String> = state.billing.sweep_walk_cursor();
+    let page = match state
+        .registry
+        // mt-lint: allow(state-tenant-read): deployment-tenant catalog sweep — terminal-closure reconciliation walks the raw surface's own rows
+        .list_page_raw(state.deployment.deployment_tenant(), after.as_deref(), 256)
+        .await
+    {
+        Ok(p) => p,
+        Err(e) => {
+            tracing::warn!("tombstone walk paused (registry list): {e}");
             return;
         }
-        after = page.next_after;
+    };
+    for d in &page.streams {
+        let expired = d.expires_at_ms.is_some_and(|e| billing_now_ms() >= e);
+        let retained = d.soft_deleted && !d.deleted;
+        let terminal = d.deleted || expired;
+        if !terminal && !retained {
+            continue;
+        }
+        let seg_ids: Vec<u32> = d
+            .segments
+            .as_ref()
+            .map(|m| m.segments.iter().map(|sg| sg.seg_id).collect())
+            .unwrap_or_else(|| vec![0]);
+        for sid in seg_ids {
+            let Some(route) = d.segment_route_by_id(sid) else {
+                tracing::error!(
+                    segment = sid,
+                    "billing sweep encountered missing validated segment"
+                );
+                state.billing.set_sweep_walk_cursor(after.clone());
+                return;
+            };
+            // Foreign routes are skipped — every instance walks the
+            // same registry and closes what IT owns.
+            let budget = sweep_resident_budget(&state.config.billing);
+            let Some((engine, ours)) = walk_engine_budgeted(state, &route, budget).await else {
+                // Deferred (budget full) or open-contended: STOP and
+                // resume AT THIS PAGE next sweep — the continuation
+                // is what makes deferral fair instead of starving
+                // later terminal descriptors (R30).
+                state.billing.set_sweep_walk_cursor(after.clone());
+                return;
+            };
+            let hash = d.dynamic_segment_identity(sid);
+            let meta = match engine.load_billing_meta(hash).await {
+                Ok(Some(meta)) => meta,
+                Ok(None) => continue,
+                Err(error) => {
+                    tracing::error!("billing sweep metadata read failed: {error}");
+                    state.billing.set_sweep_walk_cursor(after.clone());
+                    return;
+                }
+            };
+            if meta.stream_id != d.stream_epoch {
+                continue;
+            }
+            if terminal && meta.owned_frame_bytes_current > 0 {
+                let close_ms = if d.deleted {
+                    d.logical_close_ms.unwrap_or_else(billing_now_ms)
+                } else {
+                    d.expires_at_ms.unwrap_or_else(billing_now_ms)
+                };
+                tracing::info!(
+                    "tombstone walk: closing {}#{sid} ({} B) at persisted {}",
+                    d.name,
+                    meta.owned_frame_bytes_current,
+                    close_ms
+                );
+                if let Err(e) = engine.submit_billing_close(hash, close_ms).await {
+                    tracing::warn!("tombstone-walk close failed for {}: {e}", d.name);
+                } else {
+                    WALK_CLOSE_SUBMITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+            } else if retained
+                && !meta.retained_by_forks
+                && let Err(e) = engine.submit_billing_retained(hash, true).await
+            {
+                tracing::warn!("tombstone-walk retain failed for {}: {e}", d.name);
+            }
+            if ours {
+                // Scheduler-opened for this descriptor: close it or
+                // keep it as an indebted budgeted resident NOW —
+                // never accumulate walk opens across the page.
+                let prefix = state.shards.prefix_for(&route);
+                walk_settle(state, &prefix).await;
+            }
+        }
     }
+    if page.exhausted || page.next_after.is_none() {
+        // Full circle from wherever we started: wrap.
+        state.billing.set_sweep_walk_cursor(None);
+        return;
+    }
+    // One provider page is the pass budget. Only completed pages advance;
+    // cancellation or a deferred segment replays the current page.
+    state.billing.set_sweep_walk_cursor(page.next_after);
 }
 
 // ---------------------------------------------------------------------

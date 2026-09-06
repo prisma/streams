@@ -22,6 +22,9 @@ mod admission_memory;
 #[path = "tests/billing_attribution.rs"]
 mod billing_attribution;
 
+#[path = "tests/billing_controller.rs"]
+mod billing_controller;
+
 #[path = "tests/billing_maintenance.rs"]
 mod billing_maintenance;
 

@@ -30,23 +30,29 @@ struct DrainProgress {
     rows_after: std::collections::HashMap<String, [u8; 16]>,
 }
 
-/// Volatile, optional-mode batches remain owned until the ledger accepts
-/// them. Cancellation at any await requeues exactly these batches.
-pub(crate) struct ReadDrain {
-    service: BillingService,
+/// Volatile batches remain owned until the spool or optional-mode ledger
+/// accepts them durably. Cancellation requeues exactly these batches.
+pub(crate) struct ReadDrain<'a> {
+    accumulator: &'a ReadUsageAccumulator,
     pub batches: Vec<ReadBatch>,
 }
 
-impl ReadDrain {
+impl<'a> ReadDrain<'a> {
+    pub(crate) fn new(accumulator: &'a ReadUsageAccumulator, max: usize) -> Self {
+        Self {
+            accumulator,
+            batches: accumulator.drain_sealed(max),
+        }
+    }
+
     pub fn accepted(&mut self) {
         self.batches.clear();
     }
 }
 
-impl Drop for ReadDrain {
+impl Drop for ReadDrain<'_> {
     fn drop(&mut self) {
-        self.service
-            .requeue_reads(std::mem::take(&mut self.batches));
+        self.accumulator.requeue(std::mem::take(&mut self.batches));
     }
 }
 
@@ -103,11 +109,8 @@ impl BillingService {
         self.inner.reads.seal_if_aged(max_age_ms);
     }
 
-    pub(crate) fn read_drain(&self, max: usize) -> ReadDrain {
-        ReadDrain {
-            service: self.clone(),
-            batches: self.drain_sealed_reads(max),
-        }
+    pub(crate) fn read_drain(&self, max: usize) -> ReadDrain<'_> {
+        ReadDrain::new(&self.inner.reads, max)
     }
 
     /// Fair bounded engine visits; cursors are advisory and durable outbox
@@ -153,12 +156,14 @@ impl BillingService {
         }
     }
 
-    /// Take up to `max` sealed read batches for the ledger.
+    /// Tests only: inspect/remove sealed batches without a guarded handoff.
+    #[cfg(test)]
     pub fn drain_sealed_reads(&self, max: usize) -> Vec<ReadBatch> {
         self.inner.reads.drain_sealed(max)
     }
 
-    /// Return batches the ledger did not accept.
+    /// Tests only: install a batch at the accumulator head.
+    #[cfg(test)]
     pub fn requeue_reads(&self, batches: Vec<ReadBatch>) {
         self.inner.reads.requeue(batches);
     }

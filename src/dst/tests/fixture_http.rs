@@ -167,7 +167,7 @@ pub(super) async fn http_rig_cold_absorb(
     store: Arc<dyn ObjectStore>,
     prefixes: Vec<String>,
 ) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
-    http_rig_build(
+    let rig = http_rig_build(
         store,
         RigRuntime::first(),
         HttpRigOptions {
@@ -176,8 +176,16 @@ pub(super) async fn http_rig_cold_absorb(
             ..Default::default()
         },
     )
-    .await
-    .parts()
+    .await;
+    // Recovery deliberately backdates discovered tails, so a large age
+    // threshold alone cannot promise "never due" during startup races.
+    // Pause this rig's owned absorber resource before callers create debt.
+    rig.state
+        .runtime
+        .history
+        .paused
+        .store(true, std::sync::atomic::Ordering::Relaxed);
+    rig.parts()
 }
 
 /// A rig with an explicit auth service (MT Stage 5 shadow tests).
