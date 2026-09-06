@@ -481,10 +481,11 @@ fn decode_json<T: for<'a> Deserialize<'a>>(raw: &[u8]) -> anyhow::Result<T> {
 }
 
 #[cfg(test)]
-fn read_faults() -> &'static std::sync::Mutex<std::collections::HashSet<(usize, Vec<u8>)>> {
-    static FAULTS: std::sync::OnceLock<
-        std::sync::Mutex<std::collections::HashSet<(usize, Vec<u8>)>>,
-    > = std::sync::OnceLock::new();
+type ReadFaults = std::sync::Mutex<std::collections::HashSet<(usize, Vec<u8>)>>;
+
+#[cfg(test)]
+fn read_faults() -> &'static ReadFaults {
+    static FAULTS: std::sync::OnceLock<ReadFaults> = std::sync::OnceLock::new();
     FAULTS.get_or_init(Default::default)
 }
 
@@ -703,12 +704,11 @@ impl UsageRollup {
         let floor = match sources.get(&boot) {
             Some(v) => *v,
             None => {
-                let stored = read_bytes(&self.db, &k_source(&boot))
+                read_bytes(&self.db, &k_source(&boot))
                     .await?
                     .map(|v| crate::shard::decode_cursor(&v))
                     .transpose()?
-                    .unwrap_or(u64::MAX);
-                stored
+                    .unwrap_or(u64::MAX)
             }
         };
         if floor != u64::MAX && rb.seq <= floor {
