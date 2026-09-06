@@ -16,6 +16,7 @@ use object_store::UpdateVersion;
 use serde::{Deserialize, Serialize};
 use std::sync::Arc;
 
+mod outbox;
 /// PR 6.1.1-C: the coordination store lives in its own module — this
 /// file is already the fleet loop's home and must not also be the
 /// storage layer.
@@ -1092,81 +1093,17 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
     });
 }
 
-/// Drain the fleet CAS outboxes (§12.4): append `desired.json` and
-/// `overrides.json` pending events to `_ops_events`, then CAS-clear
-/// exactly the emitted ids. A lost clear re-emits deterministic ids
-/// the downstream rollup deduplicates; a CAS conflict retries next
-/// tick. Called from the telemetry task.
+/// Drain the durable fleet CAS outboxes through append-before-clear ownership.
 pub async fn drain_fleet_events(
     state: &std::sync::Arc<crate::http::AppState>,
 ) -> Result<usize, String> {
-    if !state.fleet.enabled() {
+    let Some(key) = state.billing.usage_key() else {
         return Ok(0);
-    }
-    let mut emitted = 0usize;
-    for doc in [FleetDocument::Desired, FleetDocument::Overrides] {
-        let Some((bytes, version)) = state.fleet.read_doc(doc).await else {
-            continue;
-        };
-        let pending: Vec<crate::ops::OpsEvent> = if doc == FleetDocument::Desired {
-            serde_json::from_slice::<Desired>(&bytes)
-                .map(|d| d.pending_events)
-                .unwrap_or_default()
-        } else {
-            serde_json::from_slice::<Overrides>(&bytes)
-                .map(|o| o.pending_events)
-                .unwrap_or_default()
-        };
-        if pending.is_empty() {
-            continue;
-        }
-        let ids: std::collections::HashSet<String> =
-            pending.iter().map(|e| e.event_id.clone()).collect();
-        // Round-21 ordering fix: the events reach `_ops_events`
-        // DURABLY before the CAS outbox is cleared — a crash between
-        // the two re-emits deterministic ids the rollup deduplicates,
-        // never loses the transition.
-        let Some(sys_key) = state.billing.usage_key() else {
-            continue;
-        };
-        let mut stamped = pending.clone();
-        for ev in &mut stamped {
-            if ev.cell.is_empty() {
-                ev.cell = state.deployment.cell_id().as_str().to_string();
-            }
-        }
-        let body = match serde_json::to_vec(&stamped) {
-            Ok(b) => b,
-            Err(_) => continue,
-        };
-        if crate::billing::system_append(state, crate::billing::OPS_EVENTS_STREAM, &sys_key, body)
-            .await
-            .is_err()
-        {
-            continue; // outbox stays; retry next tick
-        }
-        emitted += ids.len();
-        // Clear EXACTLY the drained ids under CAS; concurrent writers'
-        // new events survive.
-        let cleared: Vec<u8> = if doc == FleetDocument::Desired {
-            let Ok(mut d) = serde_json::from_slice::<Desired>(&bytes) else {
-                continue;
-            };
-            d.pending_events.retain(|e| !ids.contains(&e.event_id));
-            serde_json::to_vec(&d).unwrap_or_default()
-        } else {
-            let Ok(mut o) = serde_json::from_slice::<Overrides>(&bytes) else {
-                continue;
-            };
-            o.pending_events.retain(|e| !ids.contains(&e.event_id));
-            serde_json::to_vec(&o).unwrap_or_default()
-        };
-        let _ = state
-            .fleet
-            .replace_document(doc, cleared, Some(version))
-            .await;
-    }
-    Ok(emitted)
+    };
+    outbox::drain_events(&state.fleet, state.deployment.cell_id(), |body| {
+        crate::billing::system_append(state, crate::billing::OPS_EVENTS_STREAM, &key, body)
+    })
+    .await
 }
 
 #[cfg(test)]

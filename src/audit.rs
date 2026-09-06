@@ -149,6 +149,70 @@ pub fn observe_denial(
     g.push_back(ev);
 }
 
+// Own the removed events across every await. Dropping the drain future,
+// serialization failure, and append failure all restore the same event IDs.
+struct PendingAudit<'a> {
+    queue: &'a Mutex<VecDeque<AuditEvent>>,
+    dropped: &'a AtomicU64,
+    gap: &'a AtomicU64,
+    events: Vec<AuditEvent>,
+}
+impl<'a> PendingAudit<'a> {
+    fn take(
+        queue: &'a Mutex<VecDeque<AuditEvent>>,
+        dropped: &'a AtomicU64,
+        gap: &'a AtomicU64,
+    ) -> Self {
+        let events = {
+            let mut guard = queue.lock().unwrap();
+            let len = guard.len().min(512);
+            guard.drain(..len).collect()
+        };
+        Self {
+            queue,
+            dropped,
+            gap,
+            events,
+        }
+    }
+}
+impl Drop for PendingAudit<'_> {
+    fn drop(&mut self) {
+        if self.events.is_empty() {
+            return;
+        }
+        let mut queue = self.queue.lock().unwrap();
+        for event in self.events.drain(..).rev() {
+            if queue.len() < AUDIT_QUEUE_CAP {
+                queue.push_front(event);
+            } else {
+                let represented_gap = event.dropped;
+                if let Some(count) = represented_gap {
+                    // The represented events were counted at their first loss.
+                    self.gap.fetch_add(count, Ordering::Relaxed);
+                } else {
+                    self.dropped.fetch_add(1, Ordering::Relaxed);
+                    self.gap.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+    }
+}
+async fn persist_audit_batch<F, Fut>(
+    mut batch: PendingAudit<'_>,
+    append: F,
+) -> Result<usize, String>
+where
+    F: FnOnce(Vec<u8>) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let body = serde_json::to_vec(&batch.events).map_err(|error| error.to_string())?;
+    append(body).await?;
+    let count = batch.events.len();
+    batch.events.clear(); // The durable append now owns these events.
+    Ok(count)
+}
+
 /// Drain queued denials to `_audit_events`. Called from the telemetry
 /// task; requeues on failure (order preserved).
 pub async fn drain_audit_once(
@@ -157,18 +221,14 @@ pub async fn drain_audit_once(
     let Some(key) = state.billing.usage_key() else {
         return Ok(0);
     };
-    let mut batch: Vec<AuditEvent> = {
-        let mut g = q().lock().unwrap();
-        let n = g.len().min(512);
-        g.drain(..n).collect()
-    };
+    let mut batch = PendingAudit::take(q(), &AUDIT_DROPPED, &GAP_PENDING);
     let gap = GAP_PENDING.swap(0, Ordering::Relaxed);
     if gap > 0 {
         // The id uses the shared SEQ, never the drop count: two gap
         // episodes with equal counts must not collide under the
         // mandatory dedupe-by-id, and the magnitude rides in the
         // `dropped` field so a requeue overflow can restore it.
-        batch.push(AuditEvent {
+        batch.events.push(AuditEvent {
             v: 1,
             event_id: format!(
                 "deny-gap/{}/{}",
@@ -185,30 +245,124 @@ pub async fn drain_audit_once(
             dropped: Some(gap),
         });
     }
-    if batch.is_empty() {
+    if batch.events.is_empty() {
         return Ok(0);
     }
-    let body = serde_json::to_vec(&batch).map_err(|e| e.to_string())?;
-    match crate::billing::system_append(state, crate::billing::AUDIT_EVENTS_STREAM, &key, body)
-        .await
-    {
-        Ok(()) => Ok(batch.len()),
-        Err(e) => {
-            let mut g = q().lock().unwrap();
-            for ev in batch.into_iter().rev() {
-                if g.len() < AUDIT_QUEUE_CAP {
-                    g.push_front(ev);
-                } else if let Some(n) = ev.dropped {
-                    // A displaced gap MARKER: restore its magnitude to
-                    // the pending counter (the events it summarized
-                    // were already counted when they dropped).
-                    GAP_PENDING.fetch_add(n, Ordering::Relaxed);
-                } else {
-                    AUDIT_DROPPED.fetch_add(1, Ordering::Relaxed);
-                    GAP_PENDING.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-            Err(e)
+    persist_audit_batch(batch, |body| {
+        crate::billing::system_append(state, crate::billing::AUDIT_EVENTS_STREAM, &key, body)
+    })
+    .await
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    fn event(id: &str) -> AuditEvent {
+        AuditEvent {
+            v: 1,
+            event_id: id.into(),
+            event_time_ms: 1,
+            cell: "cell-test".into(),
+            code: "denied".into(),
+            project_id: None,
+            route: String::new(),
+            method: "GET".into(),
+            status: 403,
+            dropped: None,
         }
+    }
+    fn local_queue() -> Mutex<VecDeque<AuditEvent>> {
+        Mutex::new(VecDeque::new())
+    }
+    #[tokio::test]
+    async fn cancelled_audit_append_restores_batch_order_and_retry_ids() {
+        let queue = local_queue();
+        let dropped = AtomicU64::new(0);
+        let gap = AtomicU64::new(0);
+        queue
+            .lock()
+            .unwrap()
+            .extend([event("first"), event("second")]);
+        let entered = tokio::sync::Notify::new();
+        let entered_sink = &entered;
+        let mut drain = Box::pin(persist_audit_batch(
+            PendingAudit::take(&queue, &dropped, &gap),
+            |body| async move {
+                let sent: Vec<AuditEvent> = serde_json::from_slice(&body).unwrap();
+                assert_eq!(
+                    sent.iter()
+                        .map(|event| event.event_id.as_str())
+                        .collect::<Vec<_>>(),
+                    ["first", "second"]
+                );
+                entered_sink.notify_one();
+                std::future::pending::<Result<(), String>>().await
+            },
+        ));
+        tokio::select! {
+            _ = &mut drain => panic!("held append cannot finish"),
+            _ = entered.notified() => {}
+        }
+        assert!(
+            queue.lock().unwrap().is_empty(),
+            "entered the real batch sink after dequeue"
+        );
+        queue.lock().unwrap().push_back(event("newer"));
+        drop(drain); // Cooperative cancellation drops the actual owned batch.
+        let ids = || {
+            queue
+                .lock()
+                .unwrap()
+                .iter()
+                .map(|event| event.event_id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(), ["first", "second", "newer"]);
+        let failed = persist_audit_batch(PendingAudit::take(&queue, &dropped, &gap), |_| async {
+            Err("retry".into())
+        })
+        .await;
+        assert!(failed.is_err());
+        assert_eq!(ids(), ["first", "second", "newer"]);
+        assert_eq!(
+            persist_audit_batch(PendingAudit::take(&queue, &dropped, &gap), |_| async {
+                Ok(())
+            })
+            .await
+            .unwrap(),
+            3
+        );
+        assert!(ids().is_empty(), "durable success must disarm requeue");
+        assert_eq!(dropped.load(Ordering::Relaxed), 0);
+        assert_eq!(gap.load(Ordering::Relaxed), 0);
+    }
+    #[test]
+    fn cancelled_audit_batch_overflow_preserves_full_gap_magnitude() {
+        let queue = local_queue();
+        let dropped = AtomicU64::new(0);
+        let gap = AtomicU64::new(0);
+        queue.lock().unwrap().push_back(event("pending"));
+        let mut batch = PendingAudit::take(&queue, &dropped, &gap);
+        batch.events.push({
+            let mut event = event("gap-id");
+            event.dropped = Some(17);
+            event
+        });
+        queue
+            .lock()
+            .unwrap()
+            .extend((0..AUDIT_QUEUE_CAP).map(|_| event("newer")));
+        drop(batch);
+        assert_eq!(queue.lock().unwrap().len(), AUDIT_QUEUE_CAP);
+        assert_eq!(
+            dropped.load(Ordering::Relaxed),
+            1,
+            "only the newly lost event is a new drop"
+        );
+        assert_eq!(
+            gap.load(Ordering::Relaxed),
+            18,
+            "restore the prior 17-event gap plus the new loss"
+        );
     }
 }

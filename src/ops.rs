@@ -146,6 +146,70 @@ pub fn recent(limit: usize) -> Vec<OpsEvent> {
     g.recent.iter().rev().take(limit).cloned().collect()
 }
 
+// Own the removed events across every await. Dropping the drain future,
+// serialization failure, and append failure all restore the same event IDs.
+struct PendingOps<'a> {
+    queue: &'a Mutex<OpsQueue>,
+    dropped: &'a AtomicU64,
+    gap: &'a AtomicU64,
+    events: Vec<OpsEvent>,
+}
+impl<'a> PendingOps<'a> {
+    fn take(queue: &'a Mutex<OpsQueue>, dropped: &'a AtomicU64, gap: &'a AtomicU64) -> Self {
+        let events = {
+            let mut guard = queue.lock().unwrap();
+            let len = guard.queue.len().min(512);
+            guard.queue.drain(..len).collect()
+        };
+        Self {
+            queue,
+            dropped,
+            gap,
+            events,
+        }
+    }
+}
+impl Drop for PendingOps<'_> {
+    fn drop(&mut self) {
+        if self.events.is_empty() {
+            return;
+        }
+        let mut queue = self.queue.lock().unwrap();
+        for event in self.events.drain(..).rev() {
+            if queue.queue.len() < OPS_QUEUE_CAP {
+                queue.queue.push_front(event);
+            } else {
+                let represented_gap = (event.event_type == "telemetry_gap")
+                    .then(|| {
+                        event
+                            .fields
+                            .get("dropped")
+                            .and_then(serde_json::Value::as_u64)
+                    })
+                    .flatten();
+                if let Some(count) = represented_gap {
+                    // The represented events were counted at their first loss.
+                    self.gap.fetch_add(count, Ordering::Relaxed);
+                } else {
+                    self.dropped.fetch_add(1, Ordering::Relaxed);
+                    self.gap.fetch_add(1, Ordering::Relaxed);
+                }
+            }
+        }
+    }
+}
+async fn persist_ops_batch<F, Fut>(mut batch: PendingOps<'_>, append: F) -> Result<usize, String>
+where
+    F: FnOnce(Vec<u8>) -> Fut,
+    Fut: std::future::Future<Output = Result<(), String>>,
+{
+    let body = serde_json::to_vec(&batch.events).map_err(|error| error.to_string())?;
+    append(body).await?;
+    let count = batch.events.len();
+    batch.events.clear(); // The durable append now owns these events.
+    Ok(count)
+}
+
 /// Drain queued events to `_ops_events`. Called from the telemetry
 /// task; requeues on failure (order preserved).
 pub async fn drain_ops_once(
@@ -154,15 +218,11 @@ pub async fn drain_ops_once(
     let Some(key) = state.billing.usage_key() else {
         return Ok(0);
     };
-    let mut batch: Vec<OpsEvent> = {
-        let mut g = q().lock().unwrap();
-        let n = g.queue.len().min(512);
-        g.queue.drain(..n).collect()
-    };
+    let mut batch = PendingOps::take(q(), &EVENTS_DROPPED, &GAP_PENDING);
     // Report any drop gap once capacity exists again.
     let gap = GAP_PENDING.swap(0, Ordering::Relaxed);
     if gap > 0 {
-        batch.push(
+        batch.events.push(
             OpsEvent::new(
                 "telemetry_gap",
                 format!("gap/{}/{}", state.runtime.identity.boot_id, gap),
@@ -171,30 +231,15 @@ pub async fn drain_ops_once(
             .fields(serde_json::json!({ "dropped": gap })),
         );
     }
-    if batch.is_empty() {
+    if batch.events.is_empty() {
         return Ok(0);
     }
-    for ev in &mut batch {
+    for ev in &mut batch.events {
         if ev.cell.is_empty() {
             ev.cell = state.deployment.cell_id().as_str().to_string();
         }
     }
-    let body = serde_json::to_vec(&batch).map_err(|e| e.to_string())?;
-    match ops_ledger_append(state, &key, body).await {
-        Ok(()) => Ok(batch.len()),
-        Err(e) => {
-            let mut g = q().lock().unwrap();
-            for ev in batch.into_iter().rev() {
-                if g.queue.len() < OPS_QUEUE_CAP {
-                    g.queue.push_front(ev);
-                } else {
-                    EVENTS_DROPPED.fetch_add(1, Ordering::Relaxed);
-                    GAP_PENDING.fetch_add(1, Ordering::Relaxed);
-                }
-            }
-            Err(e)
-        }
-    }
+    persist_ops_batch(batch, |body| ops_ledger_append(state, &key, body)).await
 }
 
 async fn ops_ledger_append(
@@ -646,4 +691,111 @@ pub async fn evaluate_alerts(state: &std::sync::Arc<crate::http::AppState>, snap
 
 fn usage_outbox_alert_threshold(cfg: &crate::config::BillingConfig) -> u64 {
     cfg.alert_usage_outbox_dirty
+}
+
+#[cfg(test)]
+mod cancellation_tests {
+    use super::*;
+    fn event(id: &str) -> OpsEvent {
+        OpsEvent::new("event", id.into())
+    }
+    fn local_queue() -> Mutex<OpsQueue> {
+        Mutex::new(OpsQueue {
+            queue: VecDeque::new(),
+            recent: VecDeque::new(),
+        })
+    }
+    #[tokio::test]
+    async fn cancelled_ops_append_restores_batch_order_and_retry_ids() {
+        let queue = local_queue();
+        let dropped = AtomicU64::new(0);
+        let gap = AtomicU64::new(0);
+        queue
+            .lock()
+            .unwrap()
+            .queue
+            .extend([event("first"), event("second")]);
+        let entered = tokio::sync::Notify::new();
+        let entered_sink = &entered;
+        let mut drain = Box::pin(persist_ops_batch(
+            PendingOps::take(&queue, &dropped, &gap),
+            |body| async move {
+                let sent: Vec<OpsEvent> = serde_json::from_slice(&body).unwrap();
+                assert_eq!(
+                    sent.iter()
+                        .map(|event| event.event_id.as_str())
+                        .collect::<Vec<_>>(),
+                    ["first", "second"]
+                );
+                entered_sink.notify_one();
+                std::future::pending::<Result<(), String>>().await
+            },
+        ));
+        tokio::select! {
+            _ = &mut drain => panic!("held append cannot finish"),
+            _ = entered.notified() => {}
+        }
+        assert!(
+            queue.lock().unwrap().queue.is_empty(),
+            "entered the real batch sink after dequeue"
+        );
+        queue.lock().unwrap().queue.push_back(event("newer"));
+        drop(drain); // Cooperative cancellation drops the actual owned batch.
+        let ids = || {
+            queue
+                .lock()
+                .unwrap()
+                .queue
+                .iter()
+                .map(|event| event.event_id.clone())
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(), ["first", "second", "newer"]);
+        let failed = persist_ops_batch(PendingOps::take(&queue, &dropped, &gap), |_| async {
+            Err("retry".into())
+        })
+        .await;
+        assert!(failed.is_err());
+        assert_eq!(ids(), ["first", "second", "newer"]);
+        assert_eq!(
+            persist_ops_batch(PendingOps::take(&queue, &dropped, &gap), |_| async {
+                Ok(())
+            })
+            .await
+            .unwrap(),
+            3
+        );
+        assert!(ids().is_empty(), "durable success must disarm requeue");
+        assert_eq!(dropped.load(Ordering::Relaxed), 0);
+        assert_eq!(gap.load(Ordering::Relaxed), 0);
+    }
+    #[test]
+    fn cancelled_ops_batch_overflow_preserves_full_gap_magnitude() {
+        let queue = local_queue();
+        let dropped = AtomicU64::new(0);
+        let gap = AtomicU64::new(0);
+        queue.lock().unwrap().queue.push_back(event("pending"));
+        let mut batch = PendingOps::take(&queue, &dropped, &gap);
+        batch.events.push(
+            OpsEvent::new("telemetry_gap", "gap-id".into())
+                .fields(serde_json::json!({"dropped": 17})),
+        );
+        queue
+            .lock()
+            .unwrap()
+            .queue
+            .extend((0..OPS_QUEUE_CAP).map(|_| event("newer")));
+        drop(batch);
+        assert_eq!(queue.lock().unwrap().queue.len(), OPS_QUEUE_CAP);
+        assert_eq!(
+            dropped.load(Ordering::Relaxed),
+            1,
+            "only the newly lost event is a new drop"
+        );
+        assert_eq!(
+            gap.load(Ordering::Relaxed),
+            18,
+            "restore the prior 17-event gap plus the new loss"
+        );
+    }
 }
