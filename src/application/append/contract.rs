@@ -38,6 +38,7 @@ pub(crate) enum AppendCode {
     RecordTooLarge,
     PayloadTooLarge,
     Sealed,
+    #[cfg(test)]
     Failpoint,
     SegmentTransition,
     StreamOverloaded,
@@ -52,7 +53,6 @@ pub(crate) enum AppendCode {
     ProducerSequenceReused,
     ShardMoving,
     NotOwner,
-    ShardOpening,
     ShardOpen,
     RateLimited(&'static str),
 }
@@ -81,6 +81,7 @@ impl AppendCode {
             Self::RecordTooLarge => "record_too_large",
             Self::PayloadTooLarge => "payload_too_large",
             Self::Sealed => "sealed",
+            #[cfg(test)]
             Self::Failpoint => "failpoint",
             Self::SegmentTransition => "segment_transition",
             Self::StreamOverloaded => "stream_overloaded",
@@ -95,11 +96,24 @@ impl AppendCode {
             Self::ProducerSequenceReused => "producer_sequence_reused",
             Self::ShardMoving => "shard_moving",
             Self::NotOwner => "not_ring_owner",
-            Self::ShardOpening => "shard_opening",
             Self::ShardOpen => "shard_open",
             Self::RateLimited(code) => code,
         }
     }
+}
+
+#[derive(Debug)]
+enum AppendConflict {
+    Closed {
+        segment: u32,
+        next: u64,
+        materialized: bool,
+    },
+    ProducerGap {
+        expected: u64,
+        received: u64,
+    },
+    ProducerEpoch(u64),
 }
 
 #[derive(Debug)]
@@ -109,10 +123,7 @@ pub(crate) struct AppendFailure {
     pub(crate) message: String,
     pub(crate) retry_after: Option<u64>,
     pub(crate) owner: Option<String>,
-    pub(crate) closed_at: Option<(u32, u64, bool)>,
-    pub(crate) expected: Option<u64>,
-    pub(crate) received: Option<u64>,
-    pub(crate) producer_epoch: Option<u64>,
+    conflict: Option<Box<AppendConflict>>,
 }
 impl AppendFailure {
     pub(crate) fn new(class: FailureClass, code: AppendCode, message: impl Into<String>) -> Self {
@@ -122,10 +133,35 @@ impl AppendFailure {
             message: message.into(),
             retry_after: None,
             owner: None,
-            closed_at: None,
-            expected: None,
-            received: None,
-            producer_epoch: None,
+            conflict: None,
+        }
+    }
+    pub(crate) fn closed_at(&self) -> Option<(u32, u64, bool)> {
+        match self.conflict.as_deref() {
+            Some(AppendConflict::Closed {
+                segment,
+                next,
+                materialized,
+            }) => Some((*segment, *next, *materialized)),
+            _ => None,
+        }
+    }
+    pub(crate) fn expected(&self) -> Option<u64> {
+        match self.conflict.as_deref() {
+            Some(AppendConflict::ProducerGap { expected, .. }) => Some(*expected),
+            _ => None,
+        }
+    }
+    pub(crate) fn received(&self) -> Option<u64> {
+        match self.conflict.as_deref() {
+            Some(AppendConflict::ProducerGap { received, .. }) => Some(*received),
+            _ => None,
+        }
+    }
+    pub(crate) fn producer_epoch(&self) -> Option<u64> {
+        match self.conflict.as_deref() {
+            Some(AppendConflict::ProducerEpoch(epoch)) => Some(*epoch),
+            _ => None,
         }
     }
     pub(crate) fn retry(mut self, seconds: u64) -> Self {
@@ -176,18 +212,21 @@ impl AppendFailure {
             ),
             AppendErr::Closed { next_offset } => {
                 let mut e = Self::new(Conflict, AppendCode::StreamClosed, "stream is closed");
-                e.closed_at = Some((segment, next_offset, materialized));
+                e.conflict = Some(Box::new(AppendConflict::Closed {
+                    segment,
+                    next: next_offset,
+                    materialized,
+                }));
                 e
             }
             AppendErr::ProducerGap { expected, received } => {
                 let mut e = Self::new(Conflict, AppendCode::ProducerGap, "sequence gap");
-                e.expected = Some(expected);
-                e.received = Some(received);
+                e.conflict = Some(Box::new(AppendConflict::ProducerGap { expected, received }));
                 e
             }
             AppendErr::ProducerStale { current_epoch } => {
                 let mut e = Self::new(Denied, AppendCode::ProducerStale, "stale epoch");
-                e.producer_epoch = Some(current_epoch);
+                e.conflict = Some(Box::new(AppendConflict::ProducerEpoch(current_epoch)));
                 e
             }
             AppendErr::ProducerEpochSeq => Self::new(
@@ -361,7 +400,7 @@ pub(crate) fn product_request_hash(
     hx.update(routing_key.as_bytes());
     hx.update(content_type.as_bytes());
     hx.update([u8::from(seal)]); // seal flag (spec Stage 5 §7)
-    hx.update(&body);
+    hx.update(body);
     hx.finalize()[..16].try_into().unwrap()
 }
 
