@@ -22,6 +22,9 @@ use tokio::sync::mpsc;
 use crate::crypto::{RouteHash, SegmentHash, StreamKey, hex};
 use crate::shard::{AbsorbSignal, ShardEngine, read_frames_range};
 
+#[cfg(test)]
+mod controller_tests;
+
 // ---- block transformer: AES-256-GCM with a random nonce per block ----
 
 /// Operator pause for the whole absorber (fleet runbook).
@@ -855,6 +858,19 @@ impl Absorber {
         self.observe_gather_transient(batch_bytes);
     }
 
+    /// Production and composed fixtures register the task before publishing
+    /// the engine, so its termination includes absorption as well as commits.
+    pub(crate) fn start_owned(
+        data_store: Arc<dyn ObjectStore>,
+        shard: Arc<ShardEngine>,
+        keys: Arc<KeyCache>,
+        cfg: AbsorberConfig,
+        rx: mpsc::Receiver<AbsorbSignal>,
+    ) {
+        let task = Self::start(data_store, shard.clone(), keys, cfg, rx);
+        shard.register_task("absorber", task);
+    }
+
     pub fn start(
         data_store: Arc<dyn ObjectStore>,
         shard: Arc<ShardEngine>,
@@ -865,6 +881,13 @@ impl Absorber {
         let absorber = Self::new(data_store, shard, keys, cfg);
         tokio::spawn(async move {
             let mut pending: HashMap<[u8; 16], PendingAbsorb> = HashMap::new();
+            // Dropping the active pass releases owned reservations and reads.
+            // Dirty markers and committed absorbed frontiers remain the
+            // restart source of truth, including accepted-but-unflushed work.
+            tokio::select! {
+                biased;
+                _ = absorber.shard.closed() => {}
+                _ = async {
             let mut classify_after: Option<[u8; 16]> = None;
             // Restart rediscovery (static audit P1, hardened round 4):
             // seed from the durable dirty-stream index so work left
@@ -895,42 +918,6 @@ impl Absorber {
                 tokio::time::interval_at(tokio::time::Instant::now() + phase, absorber.cfg.tick);
             let mut tick_n: u32 = 0;
             loop {
-                // Lifecycle: this task holds the engine Arc, so the signal
-                // channel can never close on its own — without this check a
-                // fenced shard's absorber survives as a zombie, retrying
-                // forever against a dead db (the absorption war's fuel).
-                if absorber.shard.is_closed() {
-                    let dropped: u64 = pending.values().map(|p| p.bytes).sum();
-                    tracing::info!(
-                        shard = %absorber.shard.prefix,
-                        pending_bytes = dropped,
-                        "absorber exiting: shard fenced/closed"
-                    );
-                    // The new owner absorbs this backlog; leaving the lag
-                    // entries frozen here reads as phantom absorb-lag on
-                    // the heartbeat forever (and would re-trigger the
-                    // rebalancer's alarm view after the move).
-                    for h in pending.keys() {
-                        absorber
-                            .shard
-                            .usage
-                            .clear_absorb_lag(crate::crypto::SegmentHash(*h));
-                    }
-                    absorber.shard.usage.clear_shard_lag(&absorber.shard.prefix);
-                    // The per-shard pending-summary row too (review round
-                    // 4): after a shard moves, the old owner's frozen row
-                    // double-counts against the new owner's — the
-                    // instance rollup reports phantom backlog, and
-                    // wide-report treats that rollup as its drain proof.
-                    absorber
-                        .shard
-                        .usage
-                        .clear_absorb_pending_summary(&absorber.shard.prefix);
-                    // R25-C: no global maintenance map to clear — the
-                    // engine owns its state, and it leaves the instance
-                    // aggregate the moment it leaves state.shards.
-                    return;
-                }
                 tokio::select! {
                     sig = rx.recv() => {
                         let Some(sig) = sig else { return };
@@ -1245,6 +1232,23 @@ impl Absorber {
                     }
                 }
             }
+                } => {}
+            }
+            tracing::info!(
+                shard = %absorber.shard.prefix,
+                pending_bytes = pending.values().map(|item| item.bytes).sum::<u64>(),
+                "absorber exited; durable debt belongs to the next owner"
+            );
+            // Clear transient accounting on every exit, so a moved shard's
+            // previous owner cannot leave phantom backlog in runtime views.
+            for hash in pending.keys() {
+                absorber.shard.usage.clear_absorb_lag(SegmentHash(*hash));
+            }
+            absorber.shard.usage.clear_shard_lag(&absorber.shard.prefix);
+            absorber
+                .shard
+                .usage
+                .clear_absorb_pending_summary(&absorber.shard.prefix);
         })
     }
 

@@ -1731,6 +1731,20 @@ impl ShardEngine {
         engine
     }
 
+    pub(crate) fn register_task(&self, name: &'static str, task: tokio::task::JoinHandle<()>) {
+        self.tasks.lock().unwrap().push((name, task));
+    }
+
+    /// Level-triggered notification also covers subscription after close.
+    pub(crate) async fn closed(&self) {
+        let mut closed = self.close_tx.subscribe();
+        while !self.is_closed() {
+            if closed.changed().await.is_err() {
+                return;
+            }
+        }
+    }
+
     /// Await every background task this engine spawned, up to `timeout`.
     ///
     /// `JoinHandle::is_finished()` is not evidence of clean termination —

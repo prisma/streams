@@ -39,3 +39,13 @@ the eventual database; successful handoff transfers that responsibility to the
 caller. The worker retains an in-progress SlateDB open to completion, preserving
 the existing OpenGate/reaper contract instead of aborting partially constructed
 storage actors. Two real-Db controls exercise delayed and queued abandonment.
+
+The R09 absorber follow-up registers production and composed-fixture pumps with
+their shard engine, so `await_terminated` includes absorption. A level-triggered
+close signal cancels an active discovery, reservation or gather and clears the
+runtime's transient lag rows. Durable dirty markers and absorbed frontiers
+remain the retry boundary. Two new controls park the real pump after it consumes
+the last gather slot while bytes are held, and inside an actual history SST PUT.
+Both require joined termination before releasing the hold, exact permit return,
+and restart rediscovery/catch-up without another customer append. Final execution
+receipts, rather than the presence of these tests, establish their results.

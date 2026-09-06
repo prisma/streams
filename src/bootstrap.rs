@@ -506,7 +506,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
                         Some(on_close),
                         maintenance,
                     );
-                    Absorber::start(
+                    Absorber::start_owned(
                         data_store,
                         engine.clone(),
                         keys,

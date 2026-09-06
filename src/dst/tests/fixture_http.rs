@@ -272,7 +272,7 @@ pub(super) fn rig_opener(
                     Some(on_close),
                     __maint,
                 );
-                crate::history::Absorber::start(
+                crate::history::Absorber::start_owned(
                     store,
                     engine.clone(),
                     keys,
