@@ -457,7 +457,7 @@ impl StreamDesc {
         }
     }
 }
-
+// mt-lint: allow(name-param-shared-core): corruption diagnostic only; formats the already-loaded descriptor name without deriving identity
 fn invalid_descriptor(name: &str, reason: &str) -> object_store::Error {
     object_store::Error::Generic {
         store: "registry",
