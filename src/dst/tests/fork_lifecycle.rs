@@ -788,3 +788,102 @@ async fn fork_lifecycle_is_idempotent_and_epoch_checked() {
     assert_eq!(st, 404, "last fork released -> source cascades away");
     engine_shutdown(&state).await;
 }
+
+/// An unavailable child read is not proof that its retention reference can
+/// be released. Check both post-install verification and a concurrent Ready CAS.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn r05_unknown_child_state_preserves_its_source_reference() {
+    let _serial = gap_lock().lock().await;
+    for after_install in [true, false] {
+        let (state, addr) = http_rig(mem()).await;
+        assert_eq!(
+            hreq(
+                addr,
+                "PUT",
+                "/v1/stream/unknown-source",
+                &[("content-type", "application/json")],
+                br#"[{"n":1}]"#
+            )
+            .await
+            .0,
+            201
+        );
+        let name = "unknown-child";
+        let point = if after_install {
+            crate::failpoints::Fp::ForkAfterSourceRef
+        } else {
+            crate::failpoints::Fp::CreateBeforeReady
+        };
+        let before = crate::failpoints::parked(point, name);
+        if after_install {
+            crate::failpoints::park_fork_after_source_ref(name);
+        } else {
+            crate::failpoints::park_create_before_ready(name);
+        }
+        let create = tokio::spawn(async move {
+            hreq(
+                addr,
+                "PUT",
+                "/v1/stream/unknown-child",
+                &[
+                    ("content-type", "application/json"),
+                    ("stream-forked-from", "unknown-source"),
+                ],
+                b"",
+            )
+            .await
+        });
+        tokio::time::timeout(std::time::Duration::from_secs(5), async {
+            while crate::failpoints::parked(point, name) <= before {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        let child_ref = state.deployment.raw_adapter_sref(name);
+        let child = state.registry.get(&child_ref).await.unwrap().unwrap();
+        if !after_install {
+            state
+                .registry
+                .mutate_incarnation(&child_ref, &child.stream_epoch, |current| {
+                    let mut next = current.to_persisted();
+                    next.init = None;
+                    crate::registry::Mutation::Write(next, ())
+                })
+                .await
+                .unwrap();
+        }
+        state.registry.fail_next_get(name);
+        if after_install {
+            crate::failpoints::release_fork_after_source_ref(name);
+        } else {
+            crate::failpoints::release_create_before_ready(name);
+        }
+        let (status, _, _) = create.await.unwrap();
+        assert_eq!(status, 500, "verification failure must be surfaced");
+        let source_ref = state.deployment.raw_adapter_sref("unknown-source");
+        state.registry.invalidate(&source_ref);
+        let source = state.registry.get(&source_ref).await.unwrap().unwrap();
+        assert!(
+            source.fork_children.contains(&child.stream_epoch),
+            "a read failure cannot authorize reference release"
+        );
+        let (status, _, bytes) = hreq(
+            addr,
+            "PUT",
+            "/v1/stream/unknown-child",
+            &[
+                ("content-type", "application/json"),
+                ("stream-forked-from", "unknown-source"),
+            ],
+            b"",
+        )
+        .await;
+        assert!(
+            matches!(status, 200 | 201),
+            "retry completes: {status} {}",
+            String::from_utf8_lossy(&bytes)
+        );
+        engine_shutdown(&state).await;
+    }
+}

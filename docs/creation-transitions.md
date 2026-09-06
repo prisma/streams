@@ -37,3 +37,13 @@ logical close timestamp remains the reconciliation source of truth.
 TTL single-flight tracking is scoped to one creation service/runtime. Its Drop
 guard removes an in-flight entry on success, error or task cancellation; an old
 incarnation's slide cannot update a replacement descriptor.
+
+The coordinator builds one typed `CreatePlan`, then calls focused phases:
+`fork` validates source identity and the inherited boundary; `claim` compares or
+claims initialization; `anchor` stamps the child and retains its exact source;
+`initialization` commits initial content before publishing readiness. `deletion`
+owns tombstones and reference-debt settlement; `product` owns product comparison
+and quota reservation. A failed child/readiness verification retains references
+and reports storage failure: only a conclusive changed/deleted child authorizes
+compensating release. Record-size checks consult the shared admission controller
+at the decision, including after the service has been cached.

@@ -307,7 +307,7 @@ impl AppState {
                     deployment: self.deployment.clone(),
                     auth: self.auth.clone(),
                     quotas: self.quotas.clone(),
-                    record_ceiling: self.admission.record_ceiling(),
+                    admission: self.admission.clone(),
                     sliding: Default::default(),
                 })
             })
