@@ -58,6 +58,10 @@ Regressions: `r09_cancelled_optional_read_drain_requeues_owned_batches`, `r09_bu
 
 R09 execution: the integrated Rust 1.98.1 test binary (793 tests compiled) ran `r09_`: **5 passed**, 0 failed, 788 filtered, 0.03s. A preceding compile exhausted disk space in generated incremental artifacts; after the composition owner removed only those artifacts, the rebuilt binary passed. Work counts and pending capacity are bounded; individual storage request latency remains governed by the backend and controller cancellation.
 
+## R08 — typed absorber error disposition (storage portion)
+
+Absorber fencing now inspects SlateDB `ErrorKind::Closed` through the complete anyhow source chain. Display strings and outer context cannot change fence/retry behavior. `r08_fence_disposition_uses_error_kind_through_context` tests fenced/clean closure with arbitrary messages and misleading fence words on unavailable/untyped errors. Integrated Rust 1.98.1 execution: **1 passed**, 0 failed, 792 filtered. The existing actual two-opener ownership-loss absorber exit scenario remains retained.
+
 ## Implementation commit references
 
 - R12: `78c5940` (remote fixture correction included with R03 tests).
@@ -66,5 +70,6 @@ R09 execution: the integrated Rust 1.98.1 test binary (793 tests compiled) ran `
 - R23: `320478d`.
 - R01: `031ae5b`.
 - R03: `fd1706e`.
+- R09 storage: `01ef5d0`.
 
 All source commits are reviewable changes; the external acceptance conditions above are not marked as passed.

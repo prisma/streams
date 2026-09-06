@@ -1732,7 +1732,7 @@
         "line": 2188
       },
       {
-        "name": "fence_class_errors_are_recognized",
+        "name": "r08_fence_disposition_uses_error_kind_through_context",
         "file": "src/history.rs",
         "line": 2174
       }

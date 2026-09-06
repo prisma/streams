@@ -724,10 +724,12 @@ pub(crate) struct GatherOutcome {
 /// owner's history db in a ping-pong ("the absorption war", 2026-07-20).
 /// The correct move is to DROP the claim; the owner accumulates its own
 /// signals from its own appends.
-fn absorb_error_is_fence(msg: &str) -> bool {
-    msg.contains("detected newer DB client")
-        || msg.contains("Fenced")
-        || msg.contains("Closed error")
+fn absorb_error_is_fence(error: &anyhow::Error) -> bool {
+    error.chain().any(|cause| {
+        cause
+            .downcast_ref::<slatedb::Error>()
+            .is_some_and(|error| matches!(error.kind(), slatedb::ErrorKind::Closed(_)))
+    })
 }
 
 pub struct Absorber {
@@ -1195,7 +1197,7 @@ impl Absorber {
                                 }
                                 Err(e) => {
                                     let msg = e.to_string();
-                                    if absorb_error_is_fence(&msg) {
+                                    if absorb_error_is_fence(&e) {
                                         tracing::warn!(
                                             "v2 gather fence-class ({} streams): {msg}",
                                             v2_lane.len()
@@ -2114,14 +2116,19 @@ mod tests {
     use slatedb::Db;
 
     #[test]
-    fn fence_class_errors_are_recognized() {
-        assert!(absorb_error_is_fence(
-            "error: detected newer DB client at manifest 7"
-        ));
-        assert!(absorb_error_is_fence("Fenced"));
-        assert!(absorb_error_is_fence("io wrapper: Closed error: db closed"));
-        assert!(!absorb_error_is_fence("timeout waiting for PUT"));
-        assert!(!absorb_error_is_fence("connection reset by peer"));
+    fn r08_fence_disposition_uses_error_kind_through_context() {
+        for reason in [slatedb::CloseReason::Fenced, slatedb::CloseReason::Clean] {
+            for message in ["arbitrary new wording", ""] {
+                let error = anyhow::Error::new(slatedb::Error::closed(message.into(), reason))
+                    .context("unrelated gather context");
+                assert!(absorb_error_is_fence(&error));
+            }
+        }
+        for message in ["Fenced", "Closed error", "detected newer DB client"] {
+            let unavailable = anyhow::Error::new(slatedb::Error::unavailable(message.into()));
+            assert!(!absorb_error_is_fence(&unavailable));
+            assert!(!absorb_error_is_fence(&anyhow::anyhow!(message)));
+        }
     }
 
     /// The absorption-war regression test: an absorber whose shard engine
