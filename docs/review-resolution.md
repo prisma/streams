@@ -33,6 +33,6 @@ This work addresses the 24 findings in the supplied `prisma-streams-code-review.
 
 ## Verification status
 
-The source freeze passed all-target Clippy with no new warning fingerprints, formatting, the architecture ratchet and the multitenancy audit. Per-owner documents record focused executed checks and their mechanisms. The final combined release, capacity, SDK and conformance results are recorded after execution below; these focused checks are not substitutes for that combined run.
+The source freeze passed all-target Clippy with no new warning fingerprints, formatting, the architecture ratchet and the multitenancy audit. Per-owner documents record focused executed checks and their mechanisms. Final combined release, capacity, SDK and conformance execution receipts live outside the source checkout so they cannot change the tree they certify. The task handoff reports their results and locations; these focused checks are not substitutes for that combined run.
 
 Independent cryptographic review, retained production-ciphertext auditing, and live Prisma Compute/Tigris workload/field campaigns are not certified by this local remediation. The scenario map retains partial, external and unmapped obligations explicitly. No local test result is presented as those external acceptance legs.
