@@ -1196,8 +1196,13 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
             }
         };
         for (hash, version) in dirty {
-            let Some(mut meta) = engine.billing_meta(hash).await else {
-                continue;
+            let mut meta = match engine.load_billing_meta(hash).await {
+                Ok(Some(meta)) => meta,
+                Ok(None) => continue,
+                Err(error) => {
+                    tracing::error!("billing drain metadata read failed: {error}");
+                    continue;
+                }
             };
             // Defense in depth for §8.4: a reserved stream's row (none
             // should exist) is acked away, never emitted.
@@ -2699,8 +2704,14 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
                     return;
                 };
                 let hash = d.dynamic_segment_identity(sid);
-                let Some(meta) = engine.billing_meta(hash).await else {
-                    continue;
+                let meta = match engine.load_billing_meta(hash).await {
+                    Ok(Some(meta)) => meta,
+                    Ok(None) => continue,
+                    Err(error) => {
+                        tracing::error!("billing sweep metadata read failed: {error}");
+                        state.billing.set_sweep_walk_cursor(after.clone());
+                        return;
+                    }
                 };
                 if meta.stream_id != d.stream_epoch {
                     continue;

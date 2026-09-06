@@ -118,7 +118,9 @@ fn decode_tail(v: &[u8]) -> Option<TailFields> {
     };
     let trim_safe_to = le8(route_at + 16);
     let unabsorbed_bytes = le8(route_at + 24);
-    if trim_safe_to > absorbed { return None; }
+    if trim_safe_to > absorbed {
+        return None;
+    }
     Some(TailFields {
         next,
         ts,
@@ -142,7 +144,8 @@ fn stored_tail(raw: &[u8]) -> Result<TailFields, slatedb::Error> {
 /// Fixed-width metadata is exactly eight bytes; short and trailing bytes
 /// indicate corruption. Absence is handled separately by the repository.
 pub(crate) fn decode_cursor(raw: &[u8]) -> Result<u64, slatedb::Error> {
-    let bytes: [u8; 8] = raw.try_into()
+    let bytes: [u8; 8] = raw
+        .try_into()
         .map_err(|_| slatedb::Error::data("invalid persisted cursor length".into()))?;
     Ok(u64::from_le_bytes(bytes))
 }
@@ -2164,7 +2167,8 @@ impl ShardEngine {
                 },
             )
             .await?;
-        Ok(v.map(|b| stored_tail(&b)).transpose()?
+        Ok(v.map(|b| stored_tail(&b))
+            .transpose()?
             .map_or((0, false), |t| (t.absorbed, t.history_v2)))
     }
 
@@ -2211,7 +2215,8 @@ impl ShardEngine {
             .db
             .get(crate::queue::cursor_key(&hash, consumer, cgen))
             .await?
-            .map(|v| decode_cursor(&v)).transpose()?
+            .map(|v| decode_cursor(&v))
+            .transpose()?
             .unwrap_or(0))
     }
 
@@ -2551,6 +2556,48 @@ impl ShardEngine {
             }
             return;
         }
+        // Resolve every required accounting read before staging ANY effect.
+        // One group-local snapshot is shared by acknowledgements, lifecycle
+        // changes, and appends; absence alone permits initialization.
+        let mut billing_rows = HashMap::new();
+        let mut billing_failure = None;
+        for op in &ops {
+            let hash = match op {
+                CommitOp::Append(r) if r.billing.is_some() => Some(r.hash),
+                CommitOp::UsageAck { hash, .. }
+                | CommitOp::BillingClose { hash, .. }
+                | CommitOp::BillingRetained { hash, .. } => Some(*hash),
+                _ => None,
+            };
+            if let Some(hash) = hash
+                && !billing_rows.contains_key(&hash)
+            {
+                match self.load_billing_meta(hash).await {
+                    Ok(row) => {
+                        billing_rows.insert(hash, row);
+                    }
+                    Err(error) => {
+                        billing_failure = Some(error);
+                        break;
+                    }
+                }
+            }
+        }
+        if let Some(error) = billing_failure {
+            tracing::error!(shard = %self.prefix, "accounting group read failed: {error}");
+            for op in ops {
+                match op {
+                    CommitOp::Append(r) => {
+                        let _ = r.resp.send(Err(AppendErr::Internal(error.to_string())));
+                    }
+                    CommitOp::Queue { resp, .. } => {
+                        let _ = resp.send(Err(error.to_string()));
+                    }
+                    _ => {}
+                }
+            }
+            return;
+        }
         let group_t0 = std::time::Instant::now();
         let mut oldest_enqueue: Option<std::time::Instant> = None;
         for op in &ops {
@@ -2691,7 +2738,7 @@ impl ShardEngine {
                             appended_frame_bytes: 0,
                             retired_frame_bytes: 0,
                             ring_recs: Vec::new(),
-                            billing: None,
+                            billing: billing_rows.get(&hash).cloned().flatten(),
                             billing_dirty: false,
                             month_finals: Vec::new(),
                         });
@@ -2719,21 +2766,7 @@ impl ShardEngine {
                     // it), else the durable row. A NEWER version stays
                     // dirty — the drain that acked version N must not
                     // erase evidence of N+1.
-                    let cur = match &local.billing {
-                        Some(bm) => bm.usage_version,
-                        None => match self
-                            .db
-                            .get(&crate::billing::billing_meta_key(&hash)[..])
-                            .await
-                        {
-                            Ok(Some(v)) => {
-                                serde_json::from_slice::<crate::billing::SegmentBillingMetaV1>(&v)
-                                    .map(|m| m.usage_version)
-                                    .unwrap_or(0)
-                            }
-                            _ => 0,
-                        },
-                    };
+                    let cur = local.billing.as_ref().map_or(0, |bm| bm.usage_version);
                     if cur <= version {
                         wb.delete(crate::billing::usage_dirty_key(&hash));
                         extra_writes = true;
@@ -2745,14 +2778,7 @@ impl ShardEngine {
                 }
                 CommitOp::BillingClose { close_ms, .. } => {
                     if local.billing.is_none() {
-                        let loaded = match self
-                            .db
-                            .get(&crate::billing::billing_meta_key(&hash)[..])
-                            .await
-                        {
-                            Ok(Some(v)) => serde_json::from_slice(&v).unwrap_or_default(),
-                            _ => crate::billing::SegmentBillingMetaV1::default(),
-                        };
+                        let loaded = crate::billing::SegmentBillingMetaV1::default();
                         local.billing = Some(loaded);
                     }
                     {
@@ -2782,14 +2808,7 @@ impl ShardEngine {
                 }
                 CommitOp::BillingRetained { retained, .. } => {
                     if local.billing.is_none() {
-                        let loaded = match self
-                            .db
-                            .get(&crate::billing::billing_meta_key(&hash)[..])
-                            .await
-                        {
-                            Ok(Some(v)) => serde_json::from_slice(&v).unwrap_or_default(),
-                            _ => crate::billing::SegmentBillingMetaV1::default(),
-                        };
+                        let loaded = crate::billing::SegmentBillingMetaV1::default();
                         local.billing = Some(loaded);
                     }
                     {
@@ -3177,14 +3196,7 @@ impl ShardEngine {
                     // duplicate adds exactly zero by construction.
                     if let Some(bref) = &req.billing {
                         if local.billing.is_none() {
-                            let loaded = match self
-                                .db
-                                .get(&crate::billing::billing_meta_key(&hash)[..])
-                                .await
-                            {
-                                Ok(Some(v)) => serde_json::from_slice(&v).unwrap_or_default(),
-                                _ => crate::billing::SegmentBillingMetaV1::default(),
-                            };
+                            let loaded = crate::billing::SegmentBillingMetaV1::default();
                             local.billing = Some(loaded);
                         }
                         let bm = local.billing.as_mut().unwrap();
@@ -4936,17 +4948,53 @@ impl ShardEngine {
         Ok(out)
     }
 
-    /// The durable billing row for one segment (None = never billed).
+    /// Missing means never billed. Read errors and invalid rows remain errors.
+    pub async fn load_billing_meta(
+        &self,
+        hash: [u8; 16],
+    ) -> anyhow::Result<Option<crate::billing::SegmentBillingMetaV1>> {
+        #[cfg(test)]
+        if billing_read_faults()
+            .lock()
+            .unwrap()
+            .remove(&self.prefix)
+            .is_some()
+        {
+            anyhow::bail!("injected billing metadata read failure");
+        }
+        self.db
+            .get(crate::billing::billing_meta_key(&hash))
+            .await?
+            .map(|v| {
+                let meta: crate::billing::SegmentBillingMetaV1 = serde_json::from_slice(&v)
+                    .map_err(|e| anyhow::anyhow!("invalid billing metadata: {e}"))?;
+                anyhow::ensure!(
+                    meta.v == 1 && !meta.stream_id.is_empty(),
+                    "invalid billing metadata identity/version"
+                );
+                anyhow::ensure!(
+                    meta.month_storage_byte_ms.is_empty()
+                        || meta.month_storage_byte_ms.parse::<u128>().is_ok(),
+                    "invalid billing byte-time"
+                );
+                anyhow::ensure!(
+                    meta.storage_accounted_through_ms == 0 || (1..=12).contains(&meta.month_month),
+                    "invalid billing month"
+                );
+                Ok(meta)
+            })
+            .transpose()
+    }
+
+    /// Legacy test convenience; production must handle missing and failed reads.
+    #[cfg(test)]
     pub async fn billing_meta(
         &self,
         hash: [u8; 16],
     ) -> Option<crate::billing::SegmentBillingMetaV1> {
-        self.db
-            .get(&crate::billing::billing_meta_key(&hash)[..])
+        self.load_billing_meta(hash)
             .await
-            .ok()
-            .flatten()
-            .and_then(|v| serde_json::from_slice(&v).ok())
+            .expect("valid billing metadata in fixture")
     }
 
     /// Closed-month final snapshots awaiting ledger acknowledgment
@@ -5541,8 +5589,14 @@ mod storage_decode_tests {
 
     #[test]
     fn r12_supported_tail_versions_and_extensions() {
-        let tail = TailFields { next: 9, absorbed: 4, trimmed: 2,
-            trim_safe_to: 3, seq: Some("lane".into()), ..Default::default() };
+        let tail = TailFields {
+            next: 9,
+            absorbed: 4,
+            trimmed: 2,
+            trim_safe_to: 3,
+            seq: Some("lane".into()),
+            ..Default::default()
+        };
         let full = encode_tail(&tail);
         let base = 44 + 4;
         for extension in [0, 16, 24, 32] {
@@ -5559,11 +5613,14 @@ mod storage_decode_tests {
                 assert!(stored_tail(&full[..len]).is_err(), "len={len}");
             }
         }
-        let mut invalid = full.clone(); invalid[0] = 99;
+        let mut invalid = full.clone();
+        invalid[0] = 99;
         assert!(stored_tail(&invalid).is_err());
-        let mut invalid = full.clone(); invalid[41] = 4;
+        let mut invalid = full.clone();
+        invalid[41] = 4;
         assert!(stored_tail(&invalid).is_err());
-        let mut invalid = full; invalid[25..33].copy_from_slice(&10u64.to_le_bytes());
+        let mut invalid = full;
+        invalid[25..33].copy_from_slice(&10u64.to_le_bytes());
         assert!(stored_tail(&invalid).is_err());
     }
 
@@ -5578,7 +5635,8 @@ mod storage_decode_tests {
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
     async fn r12_corrupt_tail_refuses_open_without_overwriting_records() {
-        let store: Arc<dyn object_store::ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
         let db = Arc::new(Db::builder("r12", store.clone()).build().await.unwrap());
         let hash = [12; 16];
         let mut wb = WriteBatch::new();
@@ -5586,15 +5644,163 @@ mod storage_decode_tests {
         wb.put(tail_key(&hash), b"broken tail");
         db.write(wb).await.unwrap();
         let (tx, _rx) = mpsc::channel(1);
-        let engine = ShardEngine::start("r12".into(), db.clone(), store,
-            ShardConfig::default(), tx, None, ShardMaintenance::default());
+        let engine = ShardEngine::start(
+            "r12".into(),
+            db.clone(),
+            store,
+            ShardConfig::default(),
+            tx,
+            None,
+            ShardMaintenance::default(),
+        );
         assert!(engine.stream_handle(hash).await.is_err());
         assert!(engine.tail_fields(&hash).await.is_err());
         assert!(engine.durable_absorbed(&hash).await.is_err());
         assert!(engine.seed_fork_tail(hash, [1; 16], 0).await.is_err());
-        assert_eq!(db.get(record_key(&hash, 0)).await.unwrap().unwrap().as_ref(), b"retained ciphertext");
-        assert_eq!(db.get(tail_key(&hash)).await.unwrap().unwrap().as_ref(), b"broken tail");
+        assert_eq!(
+            db.get(record_key(&hash, 0))
+                .await
+                .unwrap()
+                .unwrap()
+                .as_ref(),
+            b"retained ciphertext"
+        );
+        assert_eq!(
+            db.get(tail_key(&hash)).await.unwrap().unwrap().as_ref(),
+            b"broken tail"
+        );
         assert!(!engine.streams.lock().unwrap().contains_key(&hash));
+        engine.begin_close();
+        db.close().await.unwrap();
+    }
+}
+
+#[cfg(test)]
+fn billing_read_faults() -> &'static Mutex<HashMap<String, ()>> {
+    static FAULTS: std::sync::OnceLock<Mutex<HashMap<String, ()>>> = std::sync::OnceLock::new();
+    FAULTS.get_or_init(Default::default)
+}
+
+#[cfg(test)]
+mod billing_read_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r13_failed_accounting_reads_preserve_group_and_newer_dirty_version() {
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        let db = Arc::new(Db::builder("r13", store.clone()).build().await.unwrap());
+        let (tx, _rx) = mpsc::channel(1);
+        let engine = ShardEngine::start(
+            "r13".into(),
+            db.clone(),
+            store,
+            ShardConfig::default(),
+            tx,
+            None,
+            ShardMaintenance::default(),
+        );
+        let hash = [13; 16];
+        let meta = crate::billing::SegmentBillingMetaV1 {
+            v: 1,
+            stream_id: "existing".into(),
+            usage_version: 8,
+            ingest_payload_bytes_total: 923,
+            owned_frame_bytes_current: 876,
+            ..Default::default()
+        };
+        let encoded = serde_json::to_vec(&meta).unwrap();
+        let dirty = crate::billing::usage_dirty_key(&hash);
+        let key = crate::billing::billing_meta_key(&hash);
+        let final_key = crate::billing::usage_month_final_key(&hash, 2026, 7);
+        for corrupt in [false, true] {
+            let before = if corrupt {
+                b"invalid financial state".to_vec()
+            } else {
+                encoded.clone()
+            };
+            let mut wb = WriteBatch::new();
+            wb.put(key.clone(), before.clone());
+            wb.put(dirty.clone(), 8u64.to_le_bytes());
+            wb.put(final_key.clone(), b"owed snapshot");
+            wb.put(record_key(&hash, 0), b"retained record");
+            db.write(wb).await.unwrap();
+            for action in 0..3 {
+                if !corrupt {
+                    billing_read_faults()
+                        .lock()
+                        .unwrap()
+                        .insert("r13".into(), ());
+                }
+                let accounting = match action {
+                    0 => CommitOp::UsageAck {
+                        hash,
+                        version: 7,
+                        month_final_keys: vec![final_key.clone()],
+                    },
+                    1 => CommitOp::BillingClose {
+                        hash,
+                        close_ms: 1000,
+                    },
+                    _ => CommitOp::BillingRetained {
+                        hash,
+                        retained: true,
+                    },
+                };
+                let (tx, rx) = oneshot::channel();
+                engine
+                    .commit_group(
+                        vec![
+                            CommitOp::Queue {
+                                hash,
+                                op: crate::queue::QueueOp::ConfigGet {
+                                    consumer: "c".into(),
+                                },
+                                resp: tx,
+                            },
+                            accounting,
+                        ],
+                        &ShardConfig::default(),
+                    )
+                    .await;
+                assert!(
+                    rx.await.unwrap().is_err(),
+                    "no group success on required read failure"
+                );
+                assert_eq!(db.get(&key).await.unwrap().unwrap().as_ref(), &before);
+                assert_eq!(
+                    db.get(&dirty).await.unwrap().unwrap().as_ref(),
+                    &8u64.to_le_bytes()
+                );
+                assert_eq!(
+                    db.get(&final_key).await.unwrap().unwrap().as_ref(),
+                    b"owed snapshot"
+                );
+                assert_eq!(
+                    db.get(record_key(&hash, 0))
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .as_ref(),
+                    b"retained record"
+                );
+            }
+        }
+        db.put(&key, encoded).await.unwrap();
+        engine
+            .commit_group(
+                vec![CommitOp::UsageAck {
+                    hash,
+                    version: 7,
+                    month_final_keys: vec![],
+                }],
+                &ShardConfig::default(),
+            )
+            .await;
+        assert_eq!(
+            db.get(&dirty).await.unwrap().unwrap().as_ref(),
+            &8u64.to_le_bytes()
+        );
         engine.begin_close();
         db.close().await.unwrap();
     }
