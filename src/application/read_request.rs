@@ -250,7 +250,7 @@ impl ReadService {
             let last = index + 1 == spans.len();
             let live_last = span.sealed_next_offset.is_none() && last;
             if closed && live_last && command.refresh {
-                let _ = self.topology.schedule(&desc);
+                let _ = self.topology.schedule(desc);
                 return self.refreshed_read(command).await;
             }
             let seal_gap = closed
@@ -313,7 +313,7 @@ impl ReadService {
                 (end, closed, durable) = wait_tail(&handle, command.visibility, start, wait).await;
                 waited = end > start;
                 if closed && command.refresh {
-                    let _ = self.topology.schedule(&desc);
+                    let _ = self.topology.schedule(desc);
                     return self.refreshed_read(command).await;
                 }
             }

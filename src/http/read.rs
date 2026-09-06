@@ -199,22 +199,21 @@ pub(crate) async fn read_inner(
     if let Err(error) = crate::application::read::ReadService::authorize_read(&command) {
         return read_failure_response(error);
     }
-    if !head_only {
-        if let Err(error) = state
+    if !head_only
+        && let Err(error) = state
             .creation_service()
             .renew_ttl(&command.descriptor)
             .await
-        {
-            let mut response = err_resp(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "ttl_renewal_unavailable",
-                &error.to_string(),
-            );
-            response
-                .headers_mut()
-                .insert("retry-after", axum::http::HeaderValue::from_static("1"));
-            return response;
-        }
+    {
+        let mut response = err_resp(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "ttl_renewal_unavailable",
+            &error.to_string(),
+        );
+        response
+            .headers_mut()
+            .insert("retry-after", axum::http::HeaderValue::from_static("1"));
+        return response;
     }
     if live == Some("sse") {
         return serve_read_sse(state, command, params, surface).await;

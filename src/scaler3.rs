@@ -476,6 +476,7 @@ pub async fn execute_merge(
     crate::application::topology::execute_merge(&st.topology_service(), sref, a_id, b_id).await
 }
 
+#[cfg(test)]
 pub async fn resume(
     st: &std::sync::Arc<crate::http::AppState>,
     sref: &crate::tenant::TenantStreamRef,
