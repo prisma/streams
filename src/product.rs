@@ -7296,27 +7296,8 @@ async fn product_watch_wait(
         _ => return refuse(),
     };
     let key_hex = key_hex.trim_end_matches('/').to_ascii_lowercase();
-    if key_hex.len() != 16 || u64::from_str_radix(&key_hex, 16).is_err() {
-        return perr(
-            StatusCode::BAD_REQUEST,
-            "invalid_watch_key",
-            "watch key must be 16 hex chars",
-            None,
-            false,
-        );
-    }
-    let q = match strict_query(query, &["cursor", "cap", "timeoutMs"]) {
-        Ok(q) => q,
-        Err(r) => return r,
-    };
     let Some(epoch) = desc.epoch_bytes() else {
-        return perr(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            "descriptor missing epoch",
-            None,
-            true,
-        );
+        return refuse();
     };
     // Auth (§15): a watch-observation CAPABILITY, or the full
     // encryption key. The capability chain is derivable by any
@@ -7331,12 +7312,7 @@ async fn product_watch_wait(
     // Authorization scheme (preferred) or a `cap=` query parameter
     // for EventSource clients. REDACTION: never log the query string
     // or Authorization header of this route.
-    let cap = headers
-        .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Prisma-Watch "))
-        .map(str::to_string)
-        .or_else(|| q.get("cap").cloned());
+    let cap = cap_early;
     let cap_ok = cap.is_some_and(|c| {
         use base64::Engine;
         let Some(stored) = desc.watch_sig_key.as_deref() else {
@@ -7370,6 +7346,22 @@ async fn product_watch_wait(
             return refuse();
         }
     }
+    // Syntax diagnostics are safe only after a credential verifies. In
+    // particular malformed keys and duplicate/unknown query parameters must
+    // never distinguish a real descriptor from a missing one for a prober.
+    if key_hex.len() != 16 || u64::from_str_radix(&key_hex, 16).is_err() {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "invalid_watch_key",
+            "watch key must be 16 hex chars",
+            None,
+            false,
+        );
+    }
+    let q = match strict_query(query, &["cursor", "cap", "timeoutMs"]) {
+        Ok(q) => q,
+        Err(r) => return r,
+    };
     // Authorized from here on: these answers reveal state and must not
     // be reachable by an unauthenticated probe.
     //

@@ -95,3 +95,71 @@ async fn r15_bodyless_and_unauthorized_requests_never_poll_the_body() {
     engine_shutdown(&rig.state).await;
 }
 
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r16_unauthorized_watch_shapes_are_independent_of_existence() {
+    use axum::http::{Method, StatusCode};
+    let rig = http_rig_build(mem(), RigRuntime::first(), HttpRigOptions::default()).await;
+    for name in ["live", "initializing", "deleted"] {
+        let (status, _, body) = preq(
+            rig.addr,
+            "PUT",
+            &format!("/v1/streams/{name}"),
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            br#"{"format":{"kind":"json"},"watches":[{"name":"w","fields":["/id"]}]}"#,
+        )
+        .await;
+        assert_eq!(status, 201, "{}", String::from_utf8_lossy(&body));
+    }
+    let project = crate::tenant::ProjectId::new("proj-test").unwrap();
+    for name in ["initializing", "deleted"] {
+        rig.state
+            .registry
+            .cas_update(&project.stream_ref(name), |d| {
+                if name == "deleted" {
+                    d.deleted = true;
+                } else {
+                    d.init = Some(crate::registry::InitState {
+                        request_hash: "request".into(),
+                        key_fingerprint: d.key_fingerprint.clone(),
+                        claimed_ms: 1,
+                    });
+                }
+                true
+            })
+            .await
+            .unwrap();
+    }
+    for cap in [
+        "proj-test.1.deadbeef",
+        "proj-test.999999999999.00000000000000000000000000000000",
+        "proj-test.bad.signature",
+    ] {
+        for key in ["nothex", "deadbeef", "0000000000000000"] {
+            for query in ["", "?bogus=1", "?cursor=a&cursor=b", "?timeoutMs=bad"] {
+                let mut baseline = None;
+                for name in ["missing", "live", "initializing", "deleted"] {
+                    let response = sentinel_request(
+                        rig.state.clone(),
+                        Method::GET,
+                        &format!("{name}/watches/w/keys/{key}{query}"),
+                        Some(&format!("Prisma-Watch {cap}")),
+                    )
+                    .await;
+                    assert_eq!(response.status(), StatusCode::FORBIDDEN);
+                    let headers = response.headers().clone();
+                    let body = axum::body::to_bytes(response.into_body(), 64 * 1024)
+                        .await
+                        .unwrap();
+                    let current = (headers, body);
+                    if let Some(expected) = &baseline {
+                        assert_eq!(&current, expected, "{name} {key} {query}");
+                    } else {
+                        baseline = Some(current);
+                    }
+                }
+            }
+        }
+    }
+    rig.tasks.shutdown(std::time::Duration::from_secs(2)).await;
+    engine_shutdown(&rig.state).await;
+}
