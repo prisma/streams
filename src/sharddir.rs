@@ -80,6 +80,7 @@ pub struct ShardHealth(Arc<Mutex<OpenHealth>>);
 struct OpenHealth {
     ever_opened: bool,
     // Only the three distinct strikes needed by policy are retained.
+    // mt-lint: allow(name-keyed-map): physical shard prefixes for open-health strikes, never stream names.
     failed: std::collections::BTreeSet<String>,
     last_error: Option<String>,
 }
