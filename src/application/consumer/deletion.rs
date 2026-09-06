@@ -157,7 +157,7 @@ pub(crate) async fn delete(
     })
     .await
     .map_err(|mut error| {
-        error.deletion_debt = Some(target);
+        error.deletion_debt = Some(Box::new(target));
         error
     })
 }

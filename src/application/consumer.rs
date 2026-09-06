@@ -44,12 +44,12 @@ pub(crate) struct ConsumerFailure {
     pub(crate) class: FailureClass,
     pub(crate) code: &'static str,
     pub(crate) message: String,
-    pub(crate) details: Option<serde_json::Value>,
+    pub(crate) details: Option<Box<serde_json::Value>>,
     pub(crate) retryable: bool,
     pub(crate) version: Option<String>,
     pub(crate) owner: Option<String>,
-    pub(crate) auth: Option<crate::auth::AuthError>,
-    pub(crate) deletion_debt: Option<DeletionDebt>,
+    pub(crate) auth: Option<Box<crate::auth::AuthError>>,
+    pub(crate) deletion_debt: Option<Box<DeletionDebt>>,
 }
 fn failure(
     class: FailureClass,
@@ -62,7 +62,7 @@ fn failure(
         class,
         code,
         message: message.to_string(),
-        details,
+        details: details.map(Box::new),
         retryable,
         version: None,
         owner: None,
@@ -109,7 +109,7 @@ impl ConsumerFailure {
             None,
             false,
         );
-        e.auth = Some(error);
+        e.auth = Some(Box::new(error));
         e
     }
 }
