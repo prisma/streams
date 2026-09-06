@@ -165,24 +165,45 @@ struct PendingAudit<'a> {
     dropped: &'a AtomicU64,
     gap: &'a AtomicU64,
     events: Vec<AuditEvent>,
+    body: Vec<u8>,
 }
 impl<'a> PendingAudit<'a> {
     fn take(
         queue: &'a Mutex<VecDeque<AuditEvent>>,
         dropped: &'a AtomicU64,
         gap: &'a AtomicU64,
-    ) -> Self {
-        let events = {
-            let mut guard = queue.lock().unwrap();
-            let len = guard.len().min(512);
-            guard.drain(..len).collect()
+        max_bytes: usize,
+        make_gap: impl FnOnce(u64) -> AuditEvent,
+    ) -> Result<Self, String> {
+        let mut guard = queue.lock().unwrap();
+        let gap_count = gap.load(Ordering::Relaxed);
+        let marker = (gap_count > 0).then(|| make_gap(gap_count));
+        let selection =
+            crate::telemetry_batch::encode_prefix(marker.iter().chain(guard.iter()), max_bytes)?;
+        let crate::telemetry_batch::Selection::Encoded { body, count } = selection else {
+            if marker.is_some() {
+                return Err("journal byte budget cannot encode its gap marker".into());
+            }
+            // This event can never fit. Its loss is explicit and the next pass
+            // durably publishes gap debt; every later event stays queued.
+            let event = guard.pop_front().expect("oversized first event");
+            record_loss(&event, dropped, gap);
+            return Err("oversized journal event dropped; gap debt retained".into());
         };
-        Self {
+        let mut events = Vec::with_capacity(count);
+        if let Some(marker) = marker {
+            gap.fetch_sub(gap_count, Ordering::Relaxed);
+            events.push(marker);
+        }
+        let selected = count - events.len();
+        events.extend(guard.drain(..selected));
+        Ok(Self {
             queue,
             dropped,
             gap,
             events,
-        }
+            body,
+        })
     }
 }
 impl Drop for PendingAudit<'_> {
@@ -195,16 +216,19 @@ impl Drop for PendingAudit<'_> {
             if queue.len() < AUDIT_QUEUE_CAP {
                 queue.push_front(event);
             } else {
-                let represented_gap = event.dropped;
-                if let Some(count) = represented_gap {
-                    // The represented events were counted at their first loss.
-                    self.gap.fetch_add(count, Ordering::Relaxed);
-                } else {
-                    self.dropped.fetch_add(1, Ordering::Relaxed);
-                    self.gap.fetch_add(1, Ordering::Relaxed);
-                }
+                record_loss(&event, self.dropped, self.gap);
             }
         }
+    }
+}
+fn record_loss(event: &AuditEvent, dropped: &AtomicU64, gap: &AtomicU64) {
+    let represented_gap = event.dropped;
+    if let Some(count) = represented_gap {
+        // The represented events were counted at their first loss.
+        gap.fetch_add(count, Ordering::Relaxed);
+    } else {
+        dropped.fetch_add(1, Ordering::Relaxed);
+        gap.fetch_add(1, Ordering::Relaxed);
     }
 }
 async fn persist_audit_batch<F, Fut>(
@@ -215,8 +239,7 @@ where
     F: FnOnce(Vec<u8>) -> Fut,
     Fut: std::future::Future<Output = Result<(), String>>,
 {
-    let body = serde_json::to_vec(&batch.events).map_err(|error| error.to_string())?;
-    append(body).await?;
+    append(std::mem::take(&mut batch.body)).await?;
     let count = batch.events.len();
     batch.events.clear(); // The durable append now owns these events.
     Ok(count)
@@ -231,14 +254,12 @@ pub async fn drain_audit_once(
         return Ok(0);
     };
     let journal = &state.runtime.audit;
-    let mut batch = PendingAudit::take(&journal.queue, &journal.dropped, &journal.gap);
-    let gap = journal.gap.swap(0, Ordering::Relaxed);
-    if gap > 0 {
-        // The id uses the shared SEQ, never the drop count: two gap
-        // episodes with equal counts must not collide under the
-        // mandatory dedupe-by-id, and the magnitude rides in the
-        // `dropped` field so a requeue overflow can restore it.
-        batch.events.push(AuditEvent {
+    let batch = PendingAudit::take(
+        &journal.queue,
+        &journal.dropped,
+        &journal.gap,
+        state.config.cli.max_request_body_bytes,
+        |gap| AuditEvent {
             v: 1,
             event_id: format!(
                 "deny-gap/{}/{}",
@@ -253,8 +274,8 @@ pub async fn drain_audit_once(
             method: String::new(),
             status: 0,
             dropped: Some(gap),
-        });
-    }
+        },
+    )?;
     if batch.events.is_empty() {
         return Ok(0);
     }
@@ -296,7 +317,7 @@ mod cancellation_tests {
         let entered = tokio::sync::Notify::new();
         let entered_sink = &entered;
         let mut drain = Box::pin(persist_audit_batch(
-            PendingAudit::take(&queue, &dropped, &gap),
+            PendingAudit::take(&queue, &dropped, &gap, usize::MAX, |_| unreachable!()).unwrap(),
             |body| async move {
                 let sent: Vec<AuditEvent> = serde_json::from_slice(&body).unwrap();
                 assert_eq!(
@@ -328,16 +349,18 @@ mod cancellation_tests {
                 .collect::<Vec<_>>()
         };
         assert_eq!(ids(), ["first", "second", "newer"]);
-        let failed = persist_audit_batch(PendingAudit::take(&queue, &dropped, &gap), |_| async {
-            Err("retry".into())
-        })
+        let failed = persist_audit_batch(
+            PendingAudit::take(&queue, &dropped, &gap, usize::MAX, |_| unreachable!()).unwrap(),
+            |_| async { Err("retry".into()) },
+        )
         .await;
         assert!(failed.is_err());
         assert_eq!(ids(), ["first", "second", "newer"]);
         assert_eq!(
-            persist_audit_batch(PendingAudit::take(&queue, &dropped, &gap), |_| async {
-                Ok(())
-            })
+            persist_audit_batch(
+                PendingAudit::take(&queue, &dropped, &gap, usize::MAX, |_| unreachable!()).unwrap(),
+                |_| async { Ok(()) }
+            )
             .await
             .unwrap(),
             3
@@ -352,7 +375,8 @@ mod cancellation_tests {
         let dropped = AtomicU64::new(0);
         let gap = AtomicU64::new(0);
         queue.lock().unwrap().push_back(event("pending"));
-        let mut batch = PendingAudit::take(&queue, &dropped, &gap);
+        let mut batch =
+            PendingAudit::take(&queue, &dropped, &gap, usize::MAX, |_| unreachable!()).unwrap();
         batch.events.push({
             let mut event = event("gap-id");
             event.dropped = Some(17);
@@ -376,3 +400,7 @@ mod cancellation_tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "audit/batch_tests.rs"]
+mod batch_tests;
