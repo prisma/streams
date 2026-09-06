@@ -1745,14 +1745,12 @@ async fn read_history2_scan(
     let mut last: Option<u64> = None;
     let mut completed = true;
     let mut total = 0usize;
+    let prefix = hist2_record_key(route, inc, 0);
     let range = hist2_record_key(route, inc, from)..hist2_record_key(route, inc, upto);
     let mut iter = part.scan_with_options(range, &hist_scan_opts()).await?;
     while let Some(kv) = iter.next().await? {
-        let off = u64::from_be_bytes(
-            kv.key[kv.key.len() - 8..]
-                .try_into()
-                .expect("hist2 key tail"),
-        );
+        let frame = crate::shard::record::decode_row(&kv.key, &prefix[..33], &kv.value)?;
+        let off = frame.header.offset;
         total += kv.value.len();
         frames.push(kv.value);
         last = Some(off);
@@ -1934,6 +1932,7 @@ async fn execute_postings_plan(
             let part = part.clone();
             let rk = rk.to_string();
             async move {
+                let prefix = hist2_record_key(route, inc, 0);
                 let range = hist2_record_key(route, inc, span.start)
                     ..hist2_record_key(route, inc, span.end);
                 // Read-ahead sized from the plan's own scan estimate: a
@@ -1957,9 +1956,7 @@ async fn execute_postings_plan(
                 let mut span_trunc = false;
                 while let Some(kv) = iter.next().await? {
                     READ_FRAMES_SCANNED.fetch_add(1, Relaxed);
-                    let Some(f) = crate::crypto::decode_frame(&kv.value) else {
-                        anyhow::bail!("undecodable v2 history frame");
-                    };
+                    let f = crate::shard::record::decode_row(&kv.key, &prefix[..33], &kv.value)?;
                     if f.header.routing_key != rk {
                         continue;
                     }
@@ -2035,12 +2032,11 @@ async fn read_history2_keyed_envelope(
     let mut last: Option<u64> = None;
     let mut completed = true;
     let mut total = 0usize;
+    let prefix = hist2_record_key(route, inc, 0);
     let range = hist2_record_key(route, inc, from)..hist2_record_key(route, inc, upto);
     let mut iter = part.scan_with_options(range, &hist_scan_opts()).await?;
     while let Some(kv) = iter.next().await? {
-        let Some(f) = crate::crypto::decode_frame(&kv.value) else {
-            anyhow::bail!("undecodable v2 history frame");
-        };
+        let f = crate::shard::record::decode_row(&kv.key, &prefix[..33], &kv.value)?;
         let off = f.header.offset;
         if f.header.routing_key != rk {
             // Consumed but not matching: the cursor may advance past it.
@@ -2773,3 +2769,6 @@ mod bounded_discovery_tests {
         let _ = db.close().await;
     }
 }
+
+#[cfg(test)]
+mod record_validation_tests;

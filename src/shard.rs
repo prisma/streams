@@ -13,11 +13,12 @@ use std::sync::{Arc, Mutex};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 use bytes::Bytes;
-use slatedb::config::{DurabilityLevel, ScanOptions, WriteOptions};
+use slatedb::config::{DurabilityLevel, WriteOptions};
 use slatedb::{Db, WriteBatch};
 use tokio::sync::{Notify, mpsc, oneshot};
 
-use crate::crypto::decode_frame;
+pub(crate) mod record;
+pub use record::{FrameReadResult, read_frames, read_frames_range};
 mod commit_plan;
 pub use commit_plan::{AppendFinish, CloseReq, EnqueueError, SealFenceReq, UsageAckScope};
 use commit_plan::{
@@ -4820,6 +4821,7 @@ impl ShardEngine {
                 if *off >= scan_to {
                     break;
                 }
+                record::decode_at(f, *off).ok()?;
                 total += f.len();
                 out.frames.push(f.clone());
                 out.last_offset = Some(*off);
@@ -4891,8 +4893,7 @@ impl ShardEngine {
                 if *off >= scan_to {
                     break;
                 }
-                let matched =
-                    crate::crypto::decode_frame(f).is_some_and(|fr| fr.header.routing_key == rk);
+                let matched = record::decode_at(f, *off).ok()?.header.routing_key == rk;
                 if matched {
                     total += f.len();
                     out.frames.push(f.clone());
@@ -5417,148 +5418,6 @@ impl ShardEngine {
             }
         }
     }
-}
-
-/// Frames with offset in [scan_from, durable_next), optionally filtered by
-/// routing key (frame metadata; no decryption needed).
-pub struct FrameReadResult {
-    pub frames: Vec<Bytes>,
-    pub last_offset: Option<u64>,
-    pub end: u64,
-}
-
-/// Range-bounded frame read: scans `[scan_from, scan_to)` regardless of the
-/// durable frontier. Offsets below the frontier are dense, so disjoint
-/// ranges partition the log exactly — the absorber issues several of these
-/// concurrently to hide per-chunk object-store latency (a serial 8 MB chunk
-/// loop absorbed ~10k rec/s against a 150k rec/s ingest; bench 2026-07-14).
-pub async fn read_frames_range(
-    engine: &ShardEngine,
-    handle: &StreamHandle,
-    scan_from: u64,
-    scan_to: u64,
-    max_bytes: usize,
-) -> Result<FrameReadResult, slatedb::Error> {
-    let hash = handle.hash;
-    let mut out = FrameReadResult {
-        frames: Vec::new(),
-        last_offset: None,
-        end: scan_to,
-    };
-    if scan_from >= scan_to {
-        return Ok(out);
-    }
-    // Durable-tail fast path: live readers chase offsets the ring still
-    // holds; the scan below is the canonical fallback (restart, eviction,
-    // lagging consumers, ring off).
-    if let Some(hit) = engine.ring_read(handle, scan_from, scan_to, max_bytes) {
-        return Ok(hit);
-    }
-    let range = record_key(&hash, scan_from)..record_key(&hash, scan_to);
-    let mut iter = engine
-        .db
-        .scan_with_options(
-            range,
-            &ScanOptions {
-                durability_filter: DurabilityLevel::Remote,
-                read_ahead_bytes: 2 * 1024 * 1024,
-                max_fetch_tasks: 4,
-                ..Default::default()
-            },
-        )
-        .await?;
-    let mut total = 0usize;
-    while let Some(kv) = iter.next().await? {
-        let off = u64::from_be_bytes(kv.key[17..25].try_into().expect("record key"));
-        total += kv.value.len();
-        out.frames.push(kv.value);
-        out.last_offset = Some(off);
-        if total >= max_bytes {
-            break;
-        }
-    }
-    Ok(out)
-}
-
-pub async fn read_frames(
-    engine: &ShardEngine,
-    handle: &StreamHandle,
-    scan_from: u64,
-    key_filter: Option<&str>,
-    max_bytes: usize,
-    deliver: Deliver,
-) -> Result<FrameReadResult, slatedb::Error> {
-    let (hash, end) = {
-        let st = handle.state.lock().unwrap();
-        let end = match deliver {
-            Deliver::Durable => st.durable.next,
-            // max() is defensive: `applied` loads equal to `durable`
-            // and only the committer advances it, but a floor here
-            // means Applied can never see LESS than a durable reader.
-            Deliver::Applied => st.applied.next.max(st.durable.next),
-        };
-        (handle.hash, end)
-    };
-    let mut out = FrameReadResult {
-        frames: Vec::new(),
-        last_offset: None,
-        end,
-    };
-    if scan_from >= end {
-        return Ok(out);
-    }
-    // Durable-tail fast path (see read_frames_range). DURABLE reads
-    // only: the ring holds only durable frames — an Applied read
-    // chasing the just-applied suffix must scan (the suffix is
-    // memtable-resident, so the scan costs no store round-trip).
-    // Filtered reads use the keyed variant (#272): frame headers are
-    // plaintext, so the lane filter runs on the ring copy and the
-    // consumed offset still covers non-matching frames.
-    if deliver == Deliver::Durable {
-        let hit = match key_filter {
-            None => engine.ring_read(handle, scan_from, end, max_bytes),
-            Some(rk) => engine.ring_read_keyed(handle, scan_from, end, rk, max_bytes),
-        };
-        if let Some(hit) = hit {
-            return Ok(hit);
-        }
-    }
-    let range = record_key(&hash, scan_from)..record_key(&hash, end);
-    let mut iter = engine
-        .db
-        .scan_with_options(
-            range,
-            &ScanOptions {
-                durability_filter: match deliver {
-                    Deliver::Durable => DurabilityLevel::Remote,
-                    Deliver::Applied => DurabilityLevel::Memory,
-                },
-                read_ahead_bytes: 2 * 1024 * 1024,
-                max_fetch_tasks: 4,
-                ..Default::default()
-            },
-        )
-        .await?;
-    let mut total = 0usize;
-    while let Some(kv) = iter.next().await? {
-        let off = u64::from_be_bytes(kv.key[17..25].try_into().expect("record key"));
-        if let Some(kf) = key_filter {
-            match decode_frame(&kv.value) {
-                Some(f) if f.header.routing_key == kf => {}
-                _ => {
-                    out.last_offset = Some(off);
-                    continue;
-                }
-            }
-        }
-        total += kv.value.len();
-        out.frames.push(kv.value);
-        out.last_offset = Some(off);
-        if total >= max_bytes {
-            break;
-        }
-    }
-    Ok(out)
 }
 
 #[cfg(test)]
@@ -6473,3 +6332,6 @@ mod durability_frontier_tests;
 
 #[cfg(test)]
 mod queue_codec_tests;
+
+#[cfg(test)]
+mod record_scan_tests;
