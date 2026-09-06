@@ -773,6 +773,41 @@ pub fn media_type(ct: &str) -> String {
         .to_ascii_lowercase()
 }
 
+/// The failed phase is part of the API, not inferred from Display text.
+/// Only Conflict is retried internally. A PUT failure without an explicit
+/// conditional conflict may have committed and is therefore ambiguous.
+#[derive(Debug)]
+pub enum MutationError {
+    ReadUnavailable(object_store::Error),
+    InvalidData(object_store::Error),
+    MissingConditionalToken(object_store::Error),
+    Conflict(object_store::Error),
+    AmbiguousCompletion(object_store::Error),
+}
+impl std::fmt::Display for MutationError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let error = match self {
+            Self::ReadUnavailable(e)
+            | Self::InvalidData(e)
+            | Self::MissingConditionalToken(e)
+            | Self::Conflict(e)
+            | Self::AmbiguousCompletion(e) => e,
+        };
+        std::fmt::Display::fmt(error, f)
+    }
+}
+impl std::error::Error for MutationError {
+    fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
+        Some(match self {
+            Self::ReadUnavailable(e)
+            | Self::InvalidData(e)
+            | Self::MissingConditionalToken(e)
+            | Self::Conflict(e)
+            | Self::AmbiguousCompletion(e) => e,
+        })
+    }
+}
+
 pub struct Registry {
     store: Arc<dyn ObjectStore>,
     /// §10.4 system-root scoping; validated cell id from config.
@@ -841,6 +876,7 @@ fn project_streams_prefix(project: &crate::tenant::ProjectId) -> String {
 /// One page of the stream catalog.
 /// Why a generation-fenced mutation did not apply.
 #[derive(Debug, Clone, Copy, PartialEq)]
+#[cfg(test)]
 pub enum IncarnationCas {
     Applied,
     /// The mutation itself declined (its own precondition failed).
@@ -1114,7 +1150,9 @@ impl Registry {
     }
 
     /// CAS-update the descriptor (delete = tombstone).
-    #[allow(dead_code)] // production callers converted to fenced APIs; kept as the corruption fail-closed probe (tests) pending a Stage-4 cleanup decision
+    #[allow(dead_code)]
+    // production callers converted to fenced APIs; kept as the corruption fail-closed probe (tests) pending a Stage-4 cleanup decision
+    #[cfg(test)]
     pub async fn update<F: Fn(&mut PersistedDescriptor)>(
         &self,
         sref: &crate::tenant::TenantStreamRef,
@@ -1182,6 +1220,7 @@ impl Registry {
     /// Returns `Ok(false)` both when the mutation declined and when the
     /// incarnation changed; callers that must tell those apart use
     /// [`Self::cas_update_incarnation_outcome`].
+    #[cfg(test)]
     pub async fn cas_update_incarnation(
         &self,
         sref: &crate::tenant::TenantStreamRef,
@@ -1195,6 +1234,7 @@ impl Registry {
         ))
     }
 
+    #[cfg(test)]
     pub async fn cas_update_incarnation_outcome(
         &self,
         sref: &crate::tenant::TenantStreamRef,
@@ -1238,9 +1278,9 @@ impl Registry {
         sref: &crate::tenant::TenantStreamRef,
         expected_epoch: &str,
         decide: impl Fn(&StreamDesc) -> Mutation<T>,
-    ) -> anyhow::Result<MutationResult<T>> {
+    ) -> Result<MutationResult<T>, MutationError> {
         let path = desc_path(&self.cell, sref);
-        let mut last: Option<anyhow::Error> = None;
+        let mut last: Option<object_store::Error> = None;
         for attempt in 0..5u32 {
             self.invalidate(sref);
             let got = match self.store.get(&path).await {
@@ -1248,12 +1288,12 @@ impl Registry {
                 Err(object_store::Error::NotFound { .. }) => {
                     return Ok(MutationResult::Missing);
                 }
-                Err(e) => return Err(e.into()),
+                Err(e) => return Err(MutationError::ReadUnavailable(e)),
             };
             let etag = got.meta.e_tag.clone();
-            let bytes = got.bytes().await?;
+            let bytes = got.bytes().await.map_err(MutationError::ReadUnavailable)?;
             let desc: StreamDesc =
-                decode_desc(&bytes, Some(sref)).map_err(|e| anyhow::anyhow!("{e}"))?;
+                decode_desc(&bytes, Some(sref)).map_err(MutationError::InvalidData)?;
             if desc.stream_epoch != expected_epoch {
                 return Ok(MutationResult::IncarnationChanged);
             }
@@ -1261,28 +1301,40 @@ impl Registry {
                 Mutation::Decline(t) => return Ok(MutationResult::Declined(t)),
                 Mutation::Write(next, t) => (next, t),
             };
-            let next = StreamDesc::try_from(next)?;
+            let next = StreamDesc::try_from(next).map_err(MutationError::InvalidData)?;
             if next.sref() != *sref || next.stream_epoch != expected_epoch {
-                return Err(invalid_descriptor(
+                return Err(MutationError::InvalidData(invalid_descriptor(
                     &next.name,
                     "mutation changed incarnation identity",
-                )
-                .into());
+                )));
             }
-            let body = serde_json::to_vec(&next)?;
-            let mode = ConditionalUpdateToken::from_etag(etag)?.mode();
-            match self
-                .store
-                .put_opts(
-                    &path,
-                    PutPayload::from(body),
-                    PutOptions {
-                        mode,
-                        ..Default::default()
-                    },
-                )
-                .await
-            {
+            let body = serde_json::to_vec(&next).map_err(|error| {
+                MutationError::InvalidData(invalid_descriptor(&next.name, &error.to_string()))
+            })?;
+            let mode = ConditionalUpdateToken::from_etag(etag)
+                .map_err(MutationError::MissingConditionalToken)?
+                .mode();
+            let write = async {
+                #[cfg(test)]
+                if self.take_fail_next_put(sref) {
+                    return Err(object_store::Error::Precondition {
+                        path: path.to_string(),
+                        source: "injected registry put conflict".into(),
+                    });
+                }
+                self.store
+                    .put_opts(
+                        &path,
+                        PutPayload::from(body),
+                        PutOptions {
+                            mode,
+                            ..Default::default()
+                        },
+                    )
+                    .await
+            }
+            .await;
+            match write {
                 Ok(_) => {
                     self.invalidate(sref);
                     return Ok(MutationResult::Applied(result));
@@ -1291,17 +1343,20 @@ impl Registry {
                 // descriptor. Re-read and re-decide from scratch —
                 // `decide` is pure, so this is always safe.
                 Err(e @ object_store::Error::Precondition { .. }) => {
-                    last = Some(e.into());
+                    last = Some(e);
                     if attempt < 4 {
                         tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
                     }
                 }
-                Err(e) => return Err(e.into()),
+                Err(e) => return Err(MutationError::AmbiguousCompletion(e)),
             }
         }
-        Err(last.unwrap_or_else(|| anyhow::anyhow!("mutate_incarnation exhausted")))
+        Err(MutationError::Conflict(last.expect(
+            "five exhausted attempts each returned a precondition conflict",
+        )))
     }
 
+    #[cfg(test)]
     pub async fn cas_update_retry(
         &self,
         sref: &crate::tenant::TenantStreamRef,
@@ -1324,6 +1379,7 @@ impl Registry {
         Err(last.unwrap_or_else(|| anyhow::anyhow!("cas_update_retry exhausted")))
     }
 
+    #[cfg(test)]
     pub async fn cas_update(
         &self,
         sref: &crate::tenant::TenantStreamRef,
@@ -1942,6 +1998,9 @@ mod tests {
         gets: std::sync::atomic::AtomicU64,
         conditional: std::sync::atomic::AtomicU64,
         not_modified: std::sync::atomic::AtomicU64,
+        puts: std::sync::atomic::AtomicU64,
+        omit_etag: std::sync::atomic::AtomicBool,
+        lose_put_reply: std::sync::atomic::AtomicBool,
     }
     impl std::fmt::Display for CountingStore {
         fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
@@ -1956,7 +2015,16 @@ mod tests {
             payload: object_store::PutPayload,
             opts: object_store::PutOptions,
         ) -> object_store::Result<object_store::PutResult> {
-            self.inner.put_opts(location, payload, opts).await
+            use std::sync::atomic::Ordering::SeqCst;
+            self.puts.fetch_add(1, SeqCst);
+            let result = self.inner.put_opts(location, payload, opts).await?;
+            if self.lose_put_reply.swap(false, SeqCst) {
+                return Err(object_store::Error::Generic {
+                    store: "test",
+                    source: "arbitrary message after accepted PUT".into(),
+                });
+            }
+            Ok(result)
         }
         async fn put_multipart_opts(
             &self,
@@ -1975,7 +2043,12 @@ mod tests {
             if options.if_none_match.is_some() {
                 self.conditional.fetch_add(1, Relaxed);
             }
-            let r = self.inner.get_opts(location, options).await;
+            let mut r = self.inner.get_opts(location, options).await;
+            if self.omit_etag.load(Relaxed)
+                && let Ok(result) = &mut r
+            {
+                result.meta.e_tag = None;
+            }
             if matches!(&r, Err(object_store::Error::NotModified { .. })) {
                 self.not_modified.fetch_add(1, Relaxed);
             }
@@ -2008,6 +2081,81 @@ mod tests {
         ) -> object_store::Result<()> {
             self.inner.copy_opts(from, to, options).await
         }
+    }
+
+    #[tokio::test]
+    async fn r08_mutation_preserves_conditional_metadata_and_classifies_ambiguous_completion() {
+        use std::sync::atomic::Ordering::SeqCst;
+        let inner: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let store = Arc::new(CountingStore {
+            inner: inner.clone(),
+            gets: Default::default(),
+            conditional: Default::default(),
+            not_modified: Default::default(),
+            puts: Default::default(),
+            omit_etag: Default::default(),
+            lose_put_reply: Default::default(),
+        });
+        let reg = Registry::new(
+            store.clone(),
+            &crate::tenant::CellId::new("test-cell").unwrap(),
+        );
+        let epoch = "00000000000000000000000000000001";
+        reg.create(desc("conditional", epoch, false)).await.unwrap();
+        let decide = |current: &StreamDesc| {
+            let mut next = current.to_persisted();
+            next.seal_gen_counter += 1;
+            Mutation::Write(next, ())
+        };
+        let puts = store.puts.load(SeqCst);
+        store.omit_etag.store(true, SeqCst);
+        assert!(matches!(
+            reg.mutate_incarnation(&ts("conditional"), epoch, decide)
+                .await,
+            Err(MutationError::MissingConditionalToken(_))
+        ));
+        assert_eq!(
+            store.puts.load(SeqCst),
+            puts,
+            "missing metadata cannot issue a PUT"
+        );
+        store.omit_etag.store(false, SeqCst);
+        store.lose_put_reply.store(true, SeqCst);
+        assert!(matches!(
+            reg.mutate_incarnation(&ts("conditional"), epoch, decide)
+                .await,
+            Err(MutationError::AmbiguousCompletion(_))
+        ));
+        assert_eq!(
+            store.puts.load(SeqCst),
+            puts + 1,
+            "an ambiguous write must not be retried"
+        );
+        reg.invalidate(&ts("conditional"));
+        assert_eq!(
+            reg.get(&ts("conditional"))
+                .await
+                .unwrap()
+                .unwrap()
+                .seal_gen_counter,
+            1,
+            "the lost reply's PUT actually landed"
+        );
+        put_raw(&inner, "conditional", b"malformed persisted state").await;
+        assert!(matches!(
+            reg.mutate_incarnation(&ts("conditional"), epoch, decide)
+                .await,
+            Err(MutationError::InvalidData(_))
+        ));
+        assert_eq!(
+            store.puts.load(SeqCst),
+            puts + 1,
+            "corruption cannot replace data"
+        );
+        assert!(matches!(
+            reg.mutate_incarnation(&ts("missing"), epoch, decide).await,
+            Ok(MutationResult::Missing)
+        ));
     }
 
     /// MUTATION CANARY for the typed incarnation API. A real
@@ -2181,6 +2329,9 @@ mod tests {
             gets: Default::default(),
             conditional: Default::default(),
             not_modified: Default::default(),
+            puts: Default::default(),
+            omit_etag: Default::default(),
+            lose_put_reply: Default::default(),
         });
         let reg = Registry::new(
             counting.clone(),

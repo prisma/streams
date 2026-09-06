@@ -85,3 +85,9 @@ R05 additional regression `r05_cancelled_ttl_attempt_releases_only_its_owned_slo
 - R05 creation: `fe2100c`.
 
 All source commits are reviewable changes; the external acceptance conditions above are not marked as passed.
+
+### R08 conditional mutation consolidation
+
+Production registry updates now use one typed `mutate_incarnation` primitive. It distinguishes missing descriptors, replaced incarnations, declined decisions and applied decisions; failures retain typed read, malformed-data, absent-token, exhausted-conflict and ambiguous-write dispositions. Only explicit conditional conflicts retry, with decisions recomputed from fresh state. The four topology mutations now return attempt-local decisions; a stale split/merge plan cannot resume a replacement incarnation. Legacy boolean/captured-output update helpers are test-only.
+
+The real typed write path now consumes the existing conditional-conflict test seam, so saga conflict fixtures exercise the authoritative primitive. A lost-write-reply store regression verifies exactly one accepted write and no retry; absent ETag and corrupt descriptor cases verify zero writes. `r08_mutation_preserves_conditional_metadata_and_classifies_ambiguous_completion` and `typed_mutation_never_leaks_a_lost_attempts_decision`: **2 passed**. Integrated topology/incarnation filters: **29 passed**, including merge-under-sealing and stale-scaler/TTL replacement checks (`/private/tmp/storage-r08-cas-tests.log`, `/private/tmp/storage-r08-topology-tests.log`).
