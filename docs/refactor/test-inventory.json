@@ -4251,6 +4251,61 @@
     "scenarios": []
   },
   {
+    "name": "r09a_cancelled_topology_job_leaves_exact_debt_for_a_fresh_read_owner",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e758088eff626cea21bde2f83c715b11f216f66c1f45a3bbf6048b84a484ed56",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/request_topology_debt.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r09a_old_ttl_cas_cannot_mutate_or_suppress_a_recreated_incarnation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "1dc23d9ab6bbe09412d8b6cdd750c1696c95782e8593036b9bad9672035d9ba3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/runtime_request_work.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r09a_request_ttl_jobs_bound_retained_keys_across_projects",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "eaf99c6608bfc8e47ea396c949ac4c201d26571f9f736db70ef4172418695fea",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/runtime_request_work.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r09a_runtime_shutdown_owns_the_entered_request_cas",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c896284dde2bd151863d5e3061b81540a8e05c4bc8c42faf8741e3e86bae83b3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/runtime_request_work.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r09a_ttl_overflow_returns_retryable_http_refusals_before_append_effects",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "532de1619ad3e929e6fa3c309b428dd7c136e298f5f571cd3f4819e69e393637",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/runtime_request_work.rs",
+    "scenarios": []
+  },
+  {
     "name": "r10_append_admission_and_committed_counters_share_only_their_runtime",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"

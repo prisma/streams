@@ -179,7 +179,23 @@ impl AppendService {
             };
             let seg = desc.resolve_segment(&command.routing_key);
             if desc.segments.as_ref().is_some_and(|m| m.pending.is_some()) {
-                crate::application::topology::resume(&self.lifecycle.topology, &command.sref).await;
+                use crate::application::read::TopologyResume;
+                let ticket = self.lifecycle.topology.schedule(&desc).map_err(|error| {
+                    AppendFailure::new(
+                        FailureClass::Unavailable,
+                        AppendCode::SegmentTransition,
+                        error.to_string(),
+                    )
+                    .retry(1)
+                })?;
+                ticket.wait().await.map_err(|error| {
+                    AppendFailure::new(
+                        FailureClass::Unavailable,
+                        AppendCode::SegmentTransition,
+                        error.to_string(),
+                    )
+                    .retry(1)
+                })?;
             } else if !seg.sealed {
                 return result;
             }
@@ -232,6 +248,14 @@ async fn execute_once(
         state.admission.record_ceiling(),
         close_plan.producer.is_some(),
     )?;
+    state.creation.renew_ttl(&desc).await.map_err(|error| {
+        AppendFailure::new(
+            FailureClass::Unavailable,
+            AppendCode::TtlRenewal,
+            error.to_string(),
+        )
+        .retry(1)
+    })?;
     close::install_intent(state, &desc, command, &content, &mut close_plan).await?;
     let content::ContentPlan { entries, deferred } = content;
     let close_carries_content = !entries.is_empty();

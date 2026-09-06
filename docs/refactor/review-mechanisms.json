@@ -823,8 +823,8 @@
       "finding": "R10",
       "before_commit": "d1131213250624de7dabf79ee3e0b9abce171b23",
       "before_sha256": "dda551518f46524e4b1cf2814ddd00ea3a65d44d845dbf5b7f84b1ee07c4600d",
-      "after_sha256": "ad77898122b56c0eaf613289b841d09f52a2869001f1c0d6172af6c2b7343f10",
-      "reason": "Construct and share each runtime usage/ops capabilities through HTTP append, shard/history and quota owners. Default HTTP admission refill uses the same real protocol clock as transport sleeps; explicit manual shared_usage overrides remain honored. No admission limit or original capacity oracle changed. New body-limit option defaults to None."
+      "after_sha256": "79a759dbdd1a643b0a86c4739bdc1c05157ea216c67668e2cb5fca7aece8dffd",
+      "reason": "Construct and share each runtime usage/ops capabilities through HTTP append, shard/history and quota owners. Default HTTP admission refill uses the same real protocol clock as transport sleeps; explicit manual shared_usage overrides remain honored. No admission limit or original capacity oracle changed. New body-limit option defaults to None. R09-A additionally starts this runtime's bounded request-maintenance worker on the same supervisor before serving. All fixture assertions and existing constructor values remain unchanged."
     },
     {
       "file": "src/dst/tests/fixture_http.rs",
@@ -890,6 +890,15 @@
       "after_sha256": "55db5d661e4c3c4f7b69a7de356a0ddf35964e185b28bf9102ec9f1a10a46867",
       "finding": "R17-A",
       "reason": "Retain the original held-operation, released-reservation, lag and exact dirty-debt replay assertions. Observe worker termination before releasing the held storage barrier, then additionally await the authoritative store-close owner before opening the next writer. The stronger full termination contract must not be bypassed by a second Db.close call."
+    },
+    {
+      "file": "src/application/creation.rs",
+      "name": "r05_cancelled_ttl_attempt_releases_only_its_owned_slot",
+      "before_commit": "24cfdac0dfcf6618fd1ac51eae0ef70d458e29d1",
+      "before_sha256": "0e4cc8642e9644f9e555e502c7977428eed3476c640269edb779ed216397718e",
+      "after_sha256": "aa4fc29e612b51bb634fedf7ee1a667e26fde77e33776b167ac3724a104c1cc3",
+      "finding": "R09-A",
+      "reason": "Replace the obsolete standalone HashSet/Drop guard fixture with the actual supervised request owner: the deadline cancels one entered job, only its key is released, the other job stays admitted, the same key can retry, and runtime shutdown joins the remainder. Held registry-CAS integration tests separately establish real TTL cancellation and recreation fencing. The original key isolation and retry assertions remain explicit; cancellation of a request observer now intentionally leaves its owned job running."
     }
   ]
 }

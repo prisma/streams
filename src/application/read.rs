@@ -364,9 +364,11 @@ use crate::shard_directory::ShardDirectory;
 
 /// Capability for completing a published topology transition. The reader can
 /// request that one operation but cannot reach transport or lifecycle state.
-#[async_trait::async_trait]
 pub(crate) trait TopologyResume: Send + Sync {
-    async fn resume(&self, stream: &crate::tenant::TenantStreamRef);
+    fn schedule(
+        &self,
+        descriptor: &StreamDesc,
+    ) -> Result<super::request_work::Ticket, super::request_work::WorkError>;
 }
 
 /// The query owner: only catalog, physical readers, peer routing and key cache

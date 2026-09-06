@@ -11,12 +11,27 @@ pub(crate) struct TopologyService {
     pub(crate) shards: crate::shard_directory::ShardDirectory,
     pub(crate) peer: crate::peer::PeerClient,
     pub(crate) scaler: Arc<Scaler>,
+    pub(crate) work: Arc<super::request_work::RequestWork>,
 }
 
-#[async_trait::async_trait]
 impl crate::application::read::TopologyResume for TopologyService {
-    async fn resume(&self, stream: &crate::tenant::TenantStreamRef) {
-        let _ = resume(self, stream).await;
+    fn schedule(
+        &self,
+        descriptor: &StreamDesc,
+    ) -> Result<super::request_work::Ticket, super::request_work::WorkError> {
+        use super::request_work::{Action, Key, Kind};
+        let key = Key {
+            stream: descriptor.sref(),
+            epoch: descriptor.stream_epoch.clone(),
+            kind: Kind::Topology,
+        };
+        let action = Action::Topology {
+            service: self.clone(),
+            stream: key.stream.clone(),
+            epoch: key.epoch.clone(),
+        };
+        // Overflow leaves persisted transition debt for a subsequent reader or scaler hint.
+        self.work.submit(key, action)
     }
 }
 

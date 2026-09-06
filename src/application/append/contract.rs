@@ -16,6 +16,7 @@ pub(crate) enum FailureClass {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub(crate) enum AppendCode {
+    TtlRenewal,
     TargetIncarnationChanged,
     Creating,
     NotFound,
@@ -59,6 +60,7 @@ pub(crate) enum AppendCode {
 impl AppendCode {
     pub(crate) fn as_str(self) -> &'static str {
         match self {
+            Self::TtlRenewal => "ttl_renewal_unavailable",
             Self::TargetIncarnationChanged => "target_incarnation_changed",
             Self::Creating => "creating",
             Self::NotFound => "not_found",

@@ -138,9 +138,6 @@ pub(crate) async fn read_inner(
         Ok(None) => return read_failure_response(ReadFailure::Missing),
         Err(error) => return read_failure_response(ReadFailure::Storage(error.to_string())),
     };
-    if !head_only {
-        state.creation_service().touch_ttl(&desc);
-    }
     let live = match params.live.as_deref() {
         None => None,
         Some("long-poll" | "true") => Some("long-poll"),
@@ -201,6 +198,23 @@ pub(crate) async fn read_inner(
     };
     if let Err(error) = crate::application::read::ReadService::authorize_read(&command) {
         return read_failure_response(error);
+    }
+    if !head_only {
+        if let Err(error) = state
+            .creation_service()
+            .renew_ttl(&command.descriptor)
+            .await
+        {
+            let mut response = err_resp(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "ttl_renewal_unavailable",
+                &error.to_string(),
+            );
+            response
+                .headers_mut()
+                .insert("retry-after", axum::http::HeaderValue::from_static("1"));
+            return response;
+        }
     }
     if live == Some("sse") {
         return serve_read_sse(state, command, params, surface).await;
@@ -476,10 +490,7 @@ pub(crate) async fn serve_read_sse(
         .is_some_and(|map| map.pending.is_some())
     {
         let service = state.read_service();
-        let sref = desc.sref();
-        tokio::spawn(async move {
-            service.topology.resume(&sref).await;
-        });
+        let _ = service.topology.schedule(&desc);
         return err_resp(
             StatusCode::SERVICE_UNAVAILABLE,
             "segment_transition",

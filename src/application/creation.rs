@@ -90,7 +90,6 @@ pub(crate) struct CreationService {
     pub auth: Arc<crate::auth::AuthService>,
     pub quotas: crate::quota::QuotaRegistry,
     pub admission: crate::admission::AdmissionController,
-    pub sliding: Arc<std::sync::Mutex<std::collections::HashSet<crate::tenant::TenantStreamRef>>>,
 }
 mod anchor;
 mod claim;
@@ -243,110 +242,61 @@ pub(crate) fn over_record_ceiling(cap: usize, entries: &[Bytes]) -> Option<usize
     }
     entries.iter().map(|e| e.len()).find(|l| *l > cap)
 }
-impl CreationService {
-    pub(crate) fn touch_ttl(self: &Arc<Self>, desc: &StreamDesc) {
-        let Some(ttl) = desc.ttl_secs else { return };
-        let Some(exp) = desc.expires_at_ms else {
-            return;
-        };
-        let window_ms = (ttl as i64).saturating_mul(1000);
-        let now = now_ms();
-        if exp.saturating_sub(now) >= window_ms - window_ms / 4 {
-            return; // window still fresh
-        }
-        // One in-flight slide per stream: without this, every request in
-        // the window between spawn and CAS completion spawns ANOTHER CAS —
-        // a herd against the registry under rapid op sequences.
-        // Søren review: keyed by the PROJECT-QUALIFIED ref — a bare-name
-        // set let same-name projects suppress one another's slides, and
-        // the spawned CAS below extended (or epoch-fenced into a no-op
-        // against) the deployment tenant's descriptor instead of this one.
-        let sref = desc.sref();
-        if !self.sliding.lock().unwrap().insert(sref.clone()) {
-            return; // a slide is already in flight
-        }
-        let target = now + window_ms;
-        let state = self.clone();
-        let expect_epoch = desc.stream_epoch.clone();
-        let slide = TtlSlide {
-            sliding: self.sliding.clone(),
-            sref: sref.clone(),
-        };
-        tokio::spawn(async move {
-            let _slide = slide;
-            // The registry re-decides each typed mutation after a conditional conflict.
-            // Incarnation-fenced: a slide spawned against incarnation A must
-            // not extend the expiry of a replacement created under the same
-            // name while the task sat on the runtime.
-            if let Err(e) = state
-                .registry
-                .mutate_incarnation(&sref, &expect_epoch, |current| {
-                    if current.deleted
-                        || current.ttl_secs.is_none()
-                        || !current.expires_at_ms.is_some_and(|e| e < target)
-                    {
-                        return Mutation::Decline(());
-                    }
-                    let mut next = current.to_persisted();
-                    next.expires_at_ms = Some(target);
-                    Mutation::Write(next, ())
-                })
-                .await
-            {
-                tracing::warn!(
-                    project = %sref.project_id().as_str(),
-                    stream = %sref.name().as_str(),
-                    "ttl slide lost: {e}"
-                );
-            }
-            state.registry.invalidate(&sref);
-        });
-    }
-}
-
-struct TtlSlide {
-    sliding: Arc<std::sync::Mutex<std::collections::HashSet<crate::tenant::TenantStreamRef>>>,
-    sref: crate::tenant::TenantStreamRef,
-}
-impl Drop for TtlSlide {
-    fn drop(&mut self) {
-        self.sliding.lock().unwrap().remove(&self.sref);
-    }
-}
+mod ttl;
+pub(crate) use ttl::TtlMutation;
 
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::application::request_work::{Action, Key, Kind, RequestWork, WorkError};
+    use std::{sync::Arc, time::Duration};
 
     #[tokio::test]
     async fn r05_cancelled_ttl_attempt_releases_only_its_owned_slot() {
         let project = crate::tenant::ProjectId::new("creation-test").unwrap();
-        let source = project.stream_ref("source");
-        let other = project.stream_ref("other");
-        let sliding = Arc::new(std::sync::Mutex::new(std::collections::HashSet::from([
-            source.clone(),
-            other.clone(),
-        ])));
-        let guard = TtlSlide {
-            sliding: sliding.clone(),
-            sref: source.clone(),
+        let source = Key {
+            stream: project.stream_ref("source"),
+            epoch: "first".into(),
+            kind: Kind::Ttl,
         };
-        let (entered, waiting) = oneshot::channel();
-        let task = tokio::spawn(async move {
-            let _guard = guard;
-            entered.send(()).unwrap();
-            std::future::pending::<()>().await;
-        });
-        waiting.await.unwrap();
-        task.abort();
-        assert!(task.await.unwrap_err().is_cancelled());
+        let other = Key {
+            stream: project.stream_ref("other"),
+            epoch: "first".into(),
+            kind: Kind::Ttl,
+        };
+        let work = Arc::new(RequestWork::default());
+        let tasks = crate::tasks::TaskSupervisor::new();
+        work.start(&tasks).unwrap();
+        let first = work
+            .test_admit(
+                source.clone(),
+                Action::Held(Box::pin(std::future::pending())),
+                tokio::time::Instant::now() + Duration::from_millis(10),
+            )
+            .unwrap();
+        let _other = work
+            .submit(
+                other.clone(),
+                Action::Held(Box::pin(std::future::pending())),
+            )
+            .unwrap();
+        assert_eq!(first.wait().await, Err(WorkError::TimedOut));
+        tokio::time::timeout(Duration::from_secs(1), async {
+            while work.test_keys().contains(&source) {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
         assert_eq!(
-            *sliding.lock().unwrap(),
-            std::collections::HashSet::from([other])
+            work.test_keys(),
+            std::collections::HashSet::from([other.clone()])
         );
-        assert!(
-            sliding.lock().unwrap().insert(source),
-            "retry can claim the released slot"
-        );
+        let retry = work
+            .submit(source, Action::Held(Box::pin(async { Ok(()) })))
+            .expect("retry can claim the released slot");
+        retry.wait().await.unwrap();
+        assert_eq!(work.test_keys(), std::collections::HashSet::from([other]));
+        tasks.shutdown(Duration::from_secs(1)).await;
+        assert!(work.test_keys().is_empty());
     }
 }

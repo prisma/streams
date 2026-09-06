@@ -139,6 +139,7 @@ pub struct RuntimeIdentity {
 /// The per-runtime capability bundle owners receive at construction.
 #[derive(Clone)]
 pub struct RuntimeCaps {
+    pub(crate) request_work: Arc<crate::application::request_work::RequestWork>,
     pub store_io: Arc<crate::store_timing::StoreResources>,
     pub ops: Arc<crate::ops::OpsService>,
     pub audit: Arc<crate::audit::AuditJournal>,
@@ -216,6 +217,7 @@ impl RuntimeCaps {
         let mut boot = [0u8; 16];
         identity_source.fill(&mut boot);
         Self {
+            request_work: Arc::new(crate::application::request_work::RequestWork::default()),
             usage: Arc::new(crate::usage::UsageService::new(
                 &crate::config::AdmissionConfig::default(),
                 clock.clone(),

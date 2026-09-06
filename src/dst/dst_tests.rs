@@ -241,3 +241,8 @@ mod read_page_assembly;
 
 #[path = "tests/runtime_engine_lifecycle.rs"]
 mod runtime_engine_lifecycle;
+#[path = "tests/runtime_request_work.rs"]
+mod runtime_request_work;
+
+#[path = "tests/request_topology_debt.rs"]
+mod request_topology_debt;

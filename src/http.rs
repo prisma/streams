@@ -281,7 +281,6 @@ impl AppState {
                     auth: self.auth.clone(),
                     quotas: self.quotas.clone(),
                     admission: self.admission.clone(),
-                    sliding: Default::default(),
                 })
             })
             .clone()
@@ -317,6 +316,7 @@ impl AppState {
             shards: self.shards.clone(),
             peer: self.peer.clone(),
             scaler: self.runtime.scaler.clone(),
+            work: self.runtime.request_work.clone(),
         }
     }
 
@@ -3119,13 +3119,7 @@ async fn sse_response(
     // (fresh split; pending transition) answers the typed retryable
     // and helps the transition along; the retry re-dispatches through
     // the lineage path.
-    {
-        let st = state.clone();
-        let srf = desc.sref();
-        tokio::spawn(async move {
-            crate::scaler3::resume(&st, &srf).await;
-        });
-    }
+    let _ = state.read_service().topology.schedule(&desc);
     err_resp(
         StatusCode::SERVICE_UNAVAILABLE,
         "segment_transition",
@@ -3375,7 +3369,7 @@ pub(crate) use read_adapter::{meter_read_outcome, read_inner, read_payload, serv
 // production application dependency.
 #[cfg(test)]
 pub(crate) fn touch_ttl(state: &Arc<AppState>, desc: &StreamDesc) {
-    state.creation_service().touch_ttl(desc);
+    let _ = state.creation_service().touch_ttl(desc);
 }
 #[cfg(test)]
 impl AppState {

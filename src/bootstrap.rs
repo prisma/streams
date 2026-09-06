@@ -687,6 +687,11 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     // started, so a registration failure returned from `run` with a task
     // already running behind it; and Ctrl-C was not preflighted at all.
     let termination = crate::tasks::signal::TerminationSource::prepare()?;
+    state
+        .runtime
+        .request_work
+        .start(&tasks)
+        .expect("fresh runtime accepts maintenance worker");
     // Every fallible step has passed: the long-lived loops start here.
     // An instance that never becomes ready must exit rather than sit in
     // rotation-limbo (see spawn_unready_watchdog).

@@ -867,7 +867,10 @@ pub(crate) async fn refresh_transition(
             if remaining.is_zero() {
                 return Ok(SourceTransition::RetryLater);
             }
-            let _ = tokio::time::timeout(remaining, state.topology.resume(&sref)).await;
+            let Ok(ticket) = state.topology.schedule(&d) else {
+                return Ok(SourceTransition::RetryLater);
+            };
+            let _ = tokio::time::timeout(remaining, ticket.wait()).await;
             continue;
         }
         if map.segments.len() <= 1 {

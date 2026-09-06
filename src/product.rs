@@ -2715,7 +2715,23 @@ async fn product_read(
         allow_remote: true,
         refresh: true,
     };
-    state.creation_service().touch_ttl(&command.descriptor);
+    if let Err(error) = state
+        .creation_service()
+        .renew_ttl(&command.descriptor)
+        .await
+    {
+        let mut response = perr(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "ttl_renewal_unavailable",
+            &error.to_string(),
+            None,
+            true,
+        );
+        response
+            .headers_mut()
+            .insert("retry-after", axum::http::HeaderValue::from_static("1"));
+        return response;
+    }
     if live == Some("sse") {
         let params = crate::http::ReadParams {
             offset: None,

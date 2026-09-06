@@ -220,9 +220,6 @@ pub(super) async fn complete(
     carries_content: bool,
     outcome: &Result<crate::shard::AppendAck, AppendErr>,
 ) -> Result<(), AppendFailure> {
-    if outcome.is_ok() {
-        state.creation.touch_ttl(desc);
-    }
     if command.close && command.seal_auth.is_none() {
         crate::application::lifecycle::complete_raw_close(
             &state.lifecycle,

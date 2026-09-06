@@ -390,6 +390,7 @@ pub(super) async fn http_rig_build(
     livefeed.set_heartbeat_ms(15_000);
     let bearer = crate::deployment_bearer::DeploymentBearer::new(auth, None);
     let tasks = crate::tasks::TaskSupervisor::new();
+    rig_runtime.request_work.start(&tasks).unwrap();
     let billing = crate::billing_service::BillingService::new(
         Some(PRISMA_KEY.to_string()),
         Arc::new(crate::billing::ReadUsageAccumulator::new(

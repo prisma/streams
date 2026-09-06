@@ -9,6 +9,7 @@ pub(crate) mod lifecycle;
 pub(crate) mod append;
 
 pub(crate) mod creation;
+pub(crate) mod request_work;
 
 pub(crate) mod consumer;
 mod consumer_remote;
