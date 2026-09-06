@@ -57,6 +57,21 @@ have persisted, depending on the store's contract; recover the store's outcome
 before continuing. `bumpEpoch()` intentionally starts a fresh sequence and
 cannot determine whether an earlier uncertain append committed.
 
+## Request failures and endpoint recovery
+
+`WrongCellError` is never retried at the current endpoint, including the
+503 fallback form. Resolve the project's new endpoint and create a client
+for it; refreshing a valid credential cannot fix routing. Ordinary transient
+429/503 responses retry with bounded, abort-aware backoff unless the server
+explicitly marks the error permanent. Subscriptions use the same failure
+classification and retain durable-cursor recovery for applied reads.
+
+Fetch failures are exposed as `StreamsTransportError` with the original
+failure in `cause`. Subscriptions reconnect after these transport failures;
+credential-provider failures propagate unchanged. Concurrent 401 responses
+for the same cached credential share one refresh, and late responses cannot
+invalidate its successor.
+
 ## Consumer cleanup and cancellation
 
 `for await (const message of consumer)` submits recorded `ack`, `retry` and

@@ -307,8 +307,17 @@ export class StreamsError extends Error {
  */
 export class WrongCellError extends StreamsError {
   constructor(status: number, message: string) {
-    super(status, "wrong_cell", message, status === 503);
+    super(status, "wrong_cell", message, false);
     this.name = "WrongCellError";
+  }
+}
+
+/** A fetch transport failure, distinct from credential-provider errors. */
+export class StreamsTransportError extends StreamsError {
+  constructor(cause: unknown) {
+    super(0, "transport_error", "the request transport failed", true);
+    this.name = "StreamsTransportError";
+    this.cause = cause;
   }
 }
 
@@ -408,6 +417,14 @@ function encName(name: string): string {
 }
 
 async function errorFrom(res: Response): Promise<StreamsError> {
+  if (res.status === 421 || res.headers.get("prisma-error-code") === "wrong_cell") {
+    const error = new WrongCellError(res.status,
+      "this cell does not serve the project; re-resolve the project's endpoint (the credential itself is fine)");
+    // Header-only routing failures need no body read. Release even an
+    // unending body before handing endpoint resolution back to the caller.
+    try { await res.body?.cancel(); } catch (cause) { error.cause = cause; }
+    return error;
+  }
   const consumerVersion =
     res.headers.get("prisma-consumer-version") ?? undefined;
   let code = "http_error";
@@ -482,6 +499,12 @@ function sleep(ms: number, signal?: AbortSignal): Promise<void> {
   });
 }
 
+function retryableRequestError(error: unknown): boolean {
+  return error instanceof StreamsTransportError ||
+    (error instanceof StreamsError && error.retryable &&
+      (error.status === 429 || error.status === 503));
+}
+
 async function req(
   ctx: Ctx,
   method: string,
@@ -494,17 +517,30 @@ async function req(
   let rejectedGeneration: number | undefined;
   let refreshed = false;
   for (let attempt = 0; ; attempt++) {
+    signal?.throwIfAborted();
     const auth = await authHeader(ctx, rejectedGeneration);
+    signal?.throwIfAborted();
     rejectedGeneration = undefined;
     if (auth.header) h["authorization"] = auth.header;
     // The signal reaches fetch itself, so an abort ends the in-flight
     // long poll instead of leaving it running until its timeout.
-    const res = await ctx.fetch(`${ctx.base}${path}`, {
-      method,
-      headers: h,
-      body,
-      signal,
-    });
+    let res: Response;
+    try {
+      res = await ctx.fetch(`${ctx.base}${path}`, {
+        method,
+        headers: h,
+        body,
+        signal,
+      });
+    } catch (cause) {
+      signal?.throwIfAborted();
+      throw new StreamsTransportError(cause);
+    }
+    if (res.ok) return res;
+    // Consume/classify failure before applying generic retry. In
+    // particular a 503 routing response is permanent at this endpoint.
+    const error = await errorFrom(res);
+    if (error instanceof WrongCellError) throw error;
     // 401 = the token itself is bad or expired: refresh ONCE through
     // the provider and replay. `wrong_cell` is 421/503 by contract
     // (never 401), so a misdirected request never burns a refresh.
@@ -513,16 +549,16 @@ async function req(
       rejectedGeneration = auth.generation;
       continue;
     }
-    if ((res.status === 429 || res.status === 503) && attempt < 3) {
-      if (signal?.aborted) return res;
+    if (retryableRequestError(error) && attempt < 3) {
+      signal?.throwIfAborted();
       const ra = Number(res.headers.get("retry-after") ?? "1");
       // Abort-aware: a plain setTimeout here made cancellation wait out
       // the backoff — up to ~15 s across three attempts.
-      await sleep(Math.min(ra, 5) * 1000, signal);
-      if (signal?.aborted) return res;
+      await sleep((Number.isFinite(ra) ? Math.max(0, Math.min(ra, 5)) : 1) * 1000, signal);
+      signal?.throwIfAborted();
       continue;
     }
-    return res;
+    throw error;
   }
 }
 
@@ -563,7 +599,6 @@ export class StreamsClient {
       },
       JSON.stringify(doc),
     );
-    if (!res.ok) throw await errorFrom(res);
     return new Stream<T>(this.ctx, name, options.encryptionKey);
   }
 
@@ -576,7 +611,6 @@ export class StreamsClient {
       if (options?.limit) q.set("limit", String(options.limit));
       if (cursor) q.set("cursor", cursor);
       const res = await req(this.ctx, "GET", `/v1/streams?${q}`, {});
-      if (!res.ok) throw await errorFrom(res);
       const body = (await res.json()) as {
         streams: StreamMetadata[];
         cursor?: string;
@@ -648,7 +682,6 @@ export class Stream<T = unknown> {
       h,
       JSON.stringify(values),
     );
-    if (!res.ok) throw await errorFrom(res);
     return (await res.json()) as AppendResult;
   }
 
@@ -665,7 +698,6 @@ export class Stream<T = unknown> {
     };
     if (routingKey) h["prisma-routing-key"] = routingKey;
     const res = await req(this.ctx, "POST", this.path("/records"), h, body);
-    if (!res.ok) throw await errorFrom(res);
     return (await res.json()) as AppendResult;
   }
 
@@ -709,7 +741,6 @@ export class Stream<T = unknown> {
       h,
       payload,
     );
-    if (!res.ok) throw await errorFrom(res);
     return (await res.json()) as AppendResult;
   }
 
@@ -727,7 +758,6 @@ export class Stream<T = unknown> {
       this.path(`/records?${q}`),
       this.kh(),
     );
-    if (!res.ok) throw await errorFrom(res);
     const records =
       res.status === 204 ? [] : ((await res.json()) as T[]) ?? [];
     const page: ReadPage<T> = {
@@ -784,26 +814,18 @@ export class Stream<T = unknown> {
         );
       } catch (e) {
         if (options?.signal?.aborted) return;
-        if (applied && durableCursor !== undefined) cursor = durableCursor;
-        await sleep(1000, options?.signal);
-        continue;
-      }
-      if (res.status === 429 || res.status === 503) {
-        await sleep(1000, options?.signal);
-        if (options?.signal?.aborted) return;
-        continue;
-      }
-      if (!res.ok && res.status !== 204) {
-        const err = await errorFrom(res);
         if (
           applied &&
-          err.code === "cursor_beyond_tail" &&
+          e instanceof StreamsError && e.code === "cursor_beyond_tail" &&
           durableCursor !== undefined
         ) {
           cursor = durableCursor;
           continue;
         }
-        throw err;
+        if (!retryableRequestError(e)) throw e;
+        if (applied && durableCursor !== undefined) cursor = durableCursor;
+        await sleep(1000, options?.signal);
+        continue;
       }
       const records =
         res.status === 204 ? [] : ((await res.json()) as T[]) ?? [];
@@ -830,7 +852,6 @@ export class Stream<T = unknown> {
         this.path(`:scan?${q}`),
         this.kh(),
       );
-      if (!res.ok) throw await errorFrom(res);
       const items = (await res.json()) as ScanRecord<T>[];
       for (const i of items) yield i;
       if (res.headers.get("prisma-scan-complete") === "true") return;
@@ -850,7 +871,6 @@ export class Stream<T = unknown> {
       { ...this.kh(), "content-type": "application/json" },
       JSON.stringify(config ?? {}),
     );
-    if (!res.ok) throw await errorFrom(res);
     // The consumer's incarnation token ({stream epoch, generation},
     // opaque). delete() sends it so a stale retry can never delete a
     // RECREATED consumer of the same name.
@@ -945,7 +965,6 @@ export class Stream<T = unknown> {
 
   async watches(): Promise<WatchDefinition[]> {
     const res = await req(this.ctx, "GET", this.path("/watches"), this.kh());
-    if (!res.ok) throw await errorFrom(res);
     const body = (await res.json()) as { watches: WatchDefinition[] };
     return body.watches;
   }
@@ -954,7 +973,6 @@ export class Stream<T = unknown> {
 
   async metadata(): Promise<StreamMetadata> {
     const res = await req(this.ctx, "GET", this.path(), this.kh());
-    if (!res.ok) throw await errorFrom(res);
     return (await res.json()) as StreamMetadata;
   }
 
@@ -976,7 +994,6 @@ export class Stream<T = unknown> {
         h,
         JSON.stringify(doc),
       );
-      if (!res.ok && res.status !== 204) throw await errorFrom(res);
     };
     // A producer-backed final seal consumes a sequence number, so it has
     // to ride the SAME per-routing-key chain as append/appendMany.
@@ -997,7 +1014,6 @@ export class Stream<T = unknown> {
 
   async delete(): Promise<void> {
     const res = await req(this.ctx, "DELETE", this.path(), this.kh());
-    if (!res.ok && res.status !== 204) throw await errorFrom(res);
   }
 }
 
@@ -1197,7 +1213,6 @@ export class Consumer<T> {
       JSON.stringify(pullOptions),
       signal,
     );
-    if (!res.ok) throw await errorFrom(res);
     const body = (await res.json()) as {
       messages: Array<{
         id: string;
@@ -1235,7 +1250,6 @@ export class Consumer<T> {
         { ...this.stream._kh(), "content-type": "application/json" },
         JSON.stringify({ acks, retries, extends: extends_ }),
       );
-      if (!res2.ok) throw await errorFrom(res2);
       return (await res2.json()) as SettleResult;
     };
     return { messages, backlog: body.backlog, settle: () => settlement ??= submit() };
@@ -1313,7 +1327,6 @@ export class Consumer<T> {
 
   async config(): Promise<ConsumerConfig & { name: string }> {
     const res = await req(this.ctx, "GET", this.base(), this.stream._kh());
-    if (!res.ok) throw await errorFrom(res);
     return (await res.json()) as ConsumerConfig & { name: string };
   }
 
@@ -1330,7 +1343,6 @@ export class Consumer<T> {
       ...this.stream._kh(),
       "prisma-consumer-version": this.version,
     });
-    if (!res.ok && res.status !== 204) throw await errorFrom(res);
   }
 }
 
@@ -1633,7 +1645,6 @@ export class Watch {
       undefined,
       options?.signal,
     );
-    if (!res.ok) throw await errorFrom(res);
     return (await res.json()) as WatchEvent;
   }
 

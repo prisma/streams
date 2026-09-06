@@ -57,13 +57,15 @@ test("settlement failure surfaces on break and remains visible beside handler fa
   const f = await fixture(() => { throw failure; });
   await assert.rejects(async () => {
     for await (const message of f.consumer) { message.ack(); break; }
-  }, e => e === failure);
+  }, e => e.cause === failure);
   const iterator = f.consumer[Symbol.asyncIterator]();
   const handler = new Error("handler failed too");
   await assert.rejects(async () => {
     for await (const message of iterator) { message.ack(); throw handler; }
   }, e => e === handler);
-  assert.deepEqual(await iterator.closed, { status: "failed", error: failure });
+  const outcome = await iterator.closed;
+  assert.equal(outcome.status, "failed");
+  assert.equal(outcome.error.cause, failure);
 });
 
 test("explicit throw retains both processing and settlement failures", async () => {
@@ -72,7 +74,7 @@ test("explicit throw retains both processing and settlement failures", async () 
   const f = await fixture(() => { throw settlement; });
   const iterator = f.consumer[Symbol.asyncIterator]();
   (await iterator.next()).value.ack();
-  await assert.rejects(iterator.throw(handler), e => e instanceof AggregateError && e.errors[0] === handler && e.errors[1] === settlement);
+  await assert.rejects(iterator.throw(handler), e => e instanceof AggregateError && e.errors[0] === handler && e.errors[1].cause === settlement);
 });
 
 test("iterator return cancels an in-flight parked pull", async () => {
@@ -101,6 +103,6 @@ test("batch settlement is idempotent and failed decisions are never reported ack
   const batch = await f.consumer.pull();
   batch.messages[0].ack();
   const results = await Promise.allSettled([batch.settle(), batch.settle()]);
-  assert.ok(results.every(r => r.status === "rejected" && r.reason === failure));
+  assert.ok(results.every(r => r.status === "rejected" && r.reason.cause === failure));
   assert.equal(f.decisions.length, 1);
 });

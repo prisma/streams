@@ -63,4 +63,28 @@ and aborting a parked pull without a timer. Tests prove submitted intentions
 and failure propagation; they do not claim a live server redelivery result.
 
 Verification: pinned SDK typecheck/build and all package tests.
-Commit: see `git log --grep=R21`.
+Commit: `6573da9`.
+
+## R22 — classify before retry
+
+The request owner now consumes and classifies non-success responses once,
+before refresh/retry. All callers receive typed errors directly; duplicate
+caller decoding and subscription status-only retry branches were removed.
+Both wrong-cell forms are non-retryable at this endpoint. Header-only
+responses cancel unused bodies, while ordinary error bodies are consumed
+before retry. Fetch failures carry their original cause in the distinct
+`StreamsTransportError`; credential errors propagate unchanged. Subscription
+recovery uses the shared classifier and preserves applied-cursor rollback.
+
+Before implementation, the metadata and subscription 503/header-only tests
+each failed with 4 requests instead of 1 (the old subscription needed an
+explicit abort to terminate). Afterward the package suite passes 28 tests,
+including 421/header/body routing forms on metadata and subscription, ordinary
+429/503 recovery, body release, provider failure, cancellation, network
+reconnection, durable-cursor rollback and explicitly permanent domain errors.
+Existing `AUTH_BEHAVIOR_OK` and `WATCH_CAPABILITY_VECTOR_OK` scripts pass.
+
+Verification: pinned SDK typecheck, build and `npm test --prefix sdk`.
+Commit: see `git log --grep=R22`. Live Node18/Node22/Bun/Deno smoke requires
+the built Rust server and backend; the existing CI legs remain configured,
+and local injected transport tests do not substitute for those executions.

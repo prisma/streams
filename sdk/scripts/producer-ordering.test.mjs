@@ -45,7 +45,7 @@ test("append, epoch bump, batch append and final seal share one scope order", as
 test("fetch failure propagates and does not poison subsequent producer operations", async () => {
   const failure = new Error("connection lost: append outcome unknown");
   const f = fixture(async n => { if (n === 1) throw failure; });
-  await assert.rejects(f.p.append({ n: 1 }), e => e === failure);
+  await assert.rejects(f.p.append({ n: 1 }), e => e === failure || e.cause === failure);
   await f.p.append({ n: 1 });
   await f.p.bumpEpoch();
   assert.deepEqual(f.calls.map(c => c.headers["producer-seq"]), ["0", "0"]);
