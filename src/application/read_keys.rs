@@ -12,6 +12,8 @@ pub(super) struct ReadKeys<'a> {
     key: &'a StreamKey,
     epoch: &'a [u8; 16],
     segment: [u8; 16],
+    // mt-lint: allow(name-keyed-map): routing keys within this fixed StreamKey, epoch,
+    // and physical segment are data lanes, never unqualified stream identities.
     entries: HashMap<(String, u32), KeyEntry>,
     cached: usize,
 }
