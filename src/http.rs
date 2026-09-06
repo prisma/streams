@@ -2,7 +2,6 @@
 //! shard tail), ciphertext frames by default, server-side decryption for
 //! `format=json`, long-poll tails.
 use crate::application::append::{AppendCode, AppendFailure, FailureClass, fail};
-use crate::application::read::ReadPlan;
 
 pub(crate) fn append_failure_status(error: &AppendFailure) -> StatusCode {
     match error.class {
@@ -60,7 +59,7 @@ pub(crate) fn render_append(result: crate::application::append::AppendResult) ->
             }
             r.body(Body::empty()).unwrap()
         }
-        Err(error) => {
+        Err(mut error) => {
             let mut r = err_resp(
                 append_failure_status(&error),
                 error.code.as_str(),
@@ -68,18 +67,18 @@ pub(crate) fn render_append(result: crate::application::append::AppendResult) ->
             );
             for (name, value) in [
                 ("retry-after", error.retry_after.map(|v| v.to_string())),
-                ("streams-replay-to", error.owner),
+                ("streams-replay-to", error.owner.take()),
                 (
                     "producer-expected-seq",
-                    error.expected.map(|v| v.to_string()),
+                    error.expected().map(|v| v.to_string()),
                 ),
                 (
                     "producer-received-seq",
-                    error.received.map(|v| v.to_string()),
+                    error.received().map(|v| v.to_string()),
                 ),
                 (
                     "producer-epoch",
-                    error.producer_epoch.map(|v| v.to_string()),
+                    error.producer_epoch().map(|v| v.to_string()),
                 ),
             ] {
                 if let Some(value) = value
@@ -88,7 +87,7 @@ pub(crate) fn render_append(result: crate::application::append::AppendResult) ->
                     r.headers_mut().insert(name, value);
                 }
             }
-            if let Some((seg, next, materialized)) = error.closed_at {
+            if let Some((seg, next, materialized)) = error.closed_at() {
                 r.headers_mut().insert(
                     "stream-closed",
                     axum::http::HeaderValue::from_static("true"),
@@ -551,20 +550,13 @@ pub(crate) fn internal_unauthorized() -> Response {
 }
 
 impl AppState {
-    /// Response-free engine lookup for the unified scaler. R29: the
-    /// scaler is INTERNAL — it must not stamp external adoption, or its
-    /// periodic scans would leak sweep-held engines out of the budgeted
-    /// rotation.
-    pub async fn engine_for_scaler(&self, hash: &[u8; 16]) -> Option<Arc<ShardEngine>> {
-        self.shards
-            .resolve(hash, crate::shard_directory::Adoption::Internal)
-            .await
-            .ok()
-    }
-
     /// Internal (non-adopting) resolution: same ownership rules and
     /// on-demand open as engine_for, but never stamps the adoption
     /// sequence — for the tombstone walk and other maintenance.
+    #[allow(
+        clippy::result_large_err,
+        reason = "transport boundary returns Axum wire response directly; application errors stay compact"
+    )]
     pub(crate) async fn engine_for_quiet(
         &self,
         hash: &[u8; 16],
@@ -578,6 +570,10 @@ impl AppState {
     /// Customer-path resolution (stamps external adoption). PR 6-A: a
     /// thin adapter over the shard directory — the policy lives there;
     /// this is the transport's error map, deleted with AppState.
+    #[allow(
+        clippy::result_large_err,
+        reason = "transport boundary returns Axum wire response directly; application errors stay compact"
+    )]
     pub(crate) async fn engine_for(&self, hash: &[u8; 16]) -> Result<Arc<ShardEngine>, Response> {
         self.shards
             .resolve(hash, crate::shard_directory::Adoption::External)
@@ -624,29 +620,6 @@ pub(crate) fn resolve_error_response(e: crate::shard_directory::ResolveError) ->
             &format!("open shard {prefix}: {error}"),
         ),
     }
-}
-
-/// Acquire a per-stream slot, or a scoped 429 when the stream is at its
-/// cap (PR 6-B: the slot policy is the admission controller's; this is
-/// the transport's error map).
-#[allow(clippy::result_large_err)] // Err is the ready-to-send 429 Response, same as engine_for
-fn acquire_stream_slot(
-    state: &Arc<AppState>,
-    hash: [u8; 16],
-) -> Result<Option<crate::admission::StreamSlot>, Response> {
-    state
-        .admission
-        .stream_slot(hash)
-        .map_err(|crate::admission::StreamRefusal| {
-            let mut r = err_resp(
-                StatusCode::TOO_MANY_REQUESTS,
-                "stream_overloaded",
-                "too many concurrent requests for this stream",
-            );
-            r.headers_mut()
-                .insert("retry-after", axum::http::HeaderValue::from_static("1"));
-            r
-        })
 }
 
 /// Per-engine maintenance state for /v1/debug/load (R25-C).
@@ -789,9 +762,6 @@ async fn debug_sleep(
     tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
     "ok".into_response()
 }
-
-/// Live resource gauge for probes: in-flight now, peak since last call,
-/// and RSS.
 
 /// GET /v1/segments/{name} (spec §10): the stream's segment map as an
 /// observability surface — never a control knob. Implicit maps render
@@ -1589,7 +1559,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                             "perGatherReservationBytes":
                                 state.runtime.history.per_gather_reservation_bytes(),
                             "worstFrameTransientBytes":
-                                crate::history::absorb_worst_frame_transient(),
+                                state.runtime.history.worst_frame_transient,
                             "injectedFlushStallMs": crate::history::HISTORY_FLUSH_STALL_MS
                                 .load(std::sync::atomic::Ordering::Relaxed),
                             "shedLineMb": state.admission.rss_shed_mb(),
@@ -1782,6 +1752,8 @@ pub struct ReadParams {
     pub(crate) key: Option<String>,
     // touch wait params
     pub(crate) cursor: Option<String>,
+    #[allow(dead_code)]
+    // Retained in the pinned raw query DTO; touch observation has its own owner.
     pub(crate) sig: Option<String>,
     /// Internal page-budget override (product maxBytes). Skipped by
     /// serde so the raw query string can never set it.
@@ -2441,26 +2413,6 @@ fn creating_resp() -> Response {
     r
 }
 
-/// Not-alive answer per the pinned fork lifecycle: a soft-deleted (or
-/// expired-with-live-forks) stream is GONE (410) — its data still
-/// backs forks and its name cannot be silently reused — while an
-/// ordinary missing/dead stream stays 404.
-pub(crate) fn gone_or_missing(desc: Option<&StreamDesc>) -> Response {
-    if let Some(d) = desc {
-        let expired_with_forks = !d.deleted
-            && !d.fork_children.is_empty()
-            && d.expires_at_ms.map(|e| now_ms() >= e).unwrap_or(false);
-        if d.soft_deleted || expired_with_forks {
-            return err_resp(
-                StatusCode::GONE,
-                "gone",
-                "stream deleted; live forks remain",
-            );
-        }
-    }
-    err_resp(StatusCode::NOT_FOUND, "not_found", "stream not found")
-}
-
 /// `Stream-Fork-Offset` parsing: our own opaque tokens, plus the
 /// reference-format `<hex16>_<hex16>` literals the conformance suite
 /// hardcodes for "zero" and "far beyond".
@@ -2480,32 +2432,10 @@ fn parse_fork_offset(tok: &str) -> Result<u64, String> {
     Offset::parse(tok).map(|o| o.scan_from())
 }
 
-fn key_b64_of(key: &StreamKey) -> String {
-    use base64::Engine;
-    base64::engine::general_purpose::STANDARD.encode(key.0)
-}
-
-/// Sliding idle expiry (protocol Stream-TTL): origin reads and writes
-/// reset the window. Lazy — a slide fires only once at least a quarter
-/// of the window has elapsed, bounding registry CAS traffic; an active
-/// stream only needs SOME slide before expiry.
-pub(crate) fn touch_ttl(state: &Arc<AppState>, desc: &StreamDesc) {
-    state.creation_service().touch_ttl(desc);
-}
-
 /// Strict TTL grammar: canonical non-negative decimal only.
 fn parse_ttl_strict(s: &str) -> Option<u64> {
     let b = s.as_bytes();
     if b.is_empty() || (b[0] == b'0' && b.len() > 1) || !b.iter().all(|c| c.is_ascii_digit()) {
-        return None;
-    }
-    s.parse().ok()
-}
-
-/// Canonical non-negative integer for producer epoch/seq.
-fn parse_uint_strict(s: &str) -> Option<u64> {
-    let b = s.as_bytes();
-    if b.is_empty() || !b.iter().all(|c| c.is_ascii_digit()) {
         return None;
     }
     s.parse().ok()
@@ -2531,23 +2461,6 @@ pub(crate) fn tail_token(next: u64) -> String {
         Offset(Some(next - 1))
     }
     .encode()
-}
-
-/// JSON append batching: top-level array = batch (one message per element);
-/// any other JSON value = a single message. `allow_empty_array` is true only
-/// for PUT bodies.
-pub(crate) use crate::application::creation::json_entries;
-
-/// Round-10 review: the per-RECORD payload ceiling, independent of
-/// the request-body ceiling. Returns the first offending record's
-/// size. 0 = unlimited (dev posture); the release posture requires a
-/// ring-consistent value (main.rs boot validation).
-fn over_record_ceiling(state: &AppState, entries: &[Bytes]) -> Option<usize> {
-    let cap = state.admission.record_ceiling();
-    if cap == 0 {
-        return None;
-    }
-    entries.iter().map(|e| e.len()).find(|l| *l > cap)
 }
 
 fn parse_producer(headers: &HeaderMap) -> Result<Option<crate::shard::ProducerReq>, String> {
@@ -2949,7 +2862,6 @@ pub(crate) async fn fence_segment_for_key(
     .await
 }
 
-#[allow(clippy::too_many_arguments)] // request context, not tunables
 #[cfg(test)]
 pub(crate) use crate::application::read::TEST_ASSERT_KEYED_DENSE;
 #[cfg(test)]
@@ -2987,205 +2899,6 @@ pub(crate) enum StartPos {
     Now,
 }
 
-/// Reads on a FORK (pinned DS fork contract): records below the fork
-/// boundary stitch through the ancestor chain; the stream's own tail
-/// keeps normal read/long-poll/SSE semantics. Forks are single-segment
-/// by construction.
-async fn read_fork_inner(
-    state: Arc<AppState>,
-    desc: StreamDesc,
-    params: ReadParams,
-    headers: HeaderMap,
-    head_only: bool,
-) -> Response {
-    let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
-        KeyCheck::Ok(k, e) => (k, e),
-        KeyCheck::Missing => {
-            return err_resp(
-                StatusCode::BAD_REQUEST,
-                "missing_key",
-                "Stream-Encryption-Key required",
-            );
-        }
-        KeyCheck::Wrong => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
-        KeyCheck::BadDescriptor => {
-            return err_resp(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "bad descriptor",
-            );
-        }
-    };
-    let (_engine, handle) = match state.read_service().handle_of(&desc).await {
-        Ok(v) => v,
-        Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
-    };
-    state.keys.put(handle.hash, key.clone(), epoch);
-    let (mut end, mut closed) = {
-        let st = handle.state.lock().unwrap();
-        (st.durable.next, st.durable.closed)
-    };
-    if head_only {
-        if !params.internal {
-            crate::billing::meter_read(&state, &desc, 0, 0);
-        }
-        let mut r = Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, desc.content_type.clone())
-            .header("Stream-Next-Offset", tail_token(end))
-            .header(header::CACHE_CONTROL, "no-store");
-        if closed {
-            r = r.header("Stream-Closed", "true");
-        }
-        if let (Some(_), Some(exp)) = (desc.ttl_secs, desc.expires_at_ms) {
-            let remaining = ((exp - now_ms()) as f64 / 1000.0).ceil() as i64;
-            if remaining > 0 {
-                r = r.header("Stream-TTL", remaining.to_string());
-            }
-        }
-        return r.body(Body::empty()).unwrap();
-    }
-    let live = match params.live.as_deref() {
-        None => None,
-        Some("long-poll") | Some("true") => Some("long-poll"),
-        Some("sse") => Some("sse"),
-        Some(_) => return err_resp(StatusCode::BAD_REQUEST, "invalid_live", "invalid live mode"),
-    };
-    if live.is_some() && params.offset.is_none() {
-        return err_resp(
-            StatusCode::BAD_REQUEST,
-            "missing_offset",
-            "live reads require offset",
-        );
-    }
-    let scan_from = match params.offset.as_deref() {
-        None => 0,
-        Some("now") => end,
-        Some(raw) => match Offset::parse(raw) {
-            Ok(o) => o.scan_from(),
-            Err(m) => return err_resp(StatusCode::BAD_REQUEST, "invalid_offset", &m),
-        },
-    };
-    if live == Some("sse") {
-        let (engine2, _h) = match state.read_service().handle_of(&desc).await {
-            Ok(v) => v,
-            Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
-        };
-        return sse_response(
-            state,
-            desc,
-            key,
-            epoch,
-            engine2,
-            handle,
-            StartPos::At(scan_from),
-            params,
-            SseSurface::Raw,
-        )
-        .await;
-    }
-    // Long-poll waits only at the OWN tail (inherited data answers
-    // immediately).
-    let is_long_poll = live == Some("long-poll");
-    if is_long_poll && scan_from >= end {
-        if !closed {
-            let wait = params
-                .timeout
-                .as_deref()
-                .and_then(parse_duration)
-                .unwrap_or(Duration::from_secs(3))
-                .min(MAX_LONG_POLL);
-            let deadline = tokio::time::Instant::now() + wait;
-            loop {
-                let notified = handle.notify.notified();
-                let (e2, c2) = {
-                    let st = handle.state.lock().unwrap();
-                    (st.durable.next, st.durable.closed)
-                };
-                end = e2;
-                closed = c2;
-                if end > scan_from || closed {
-                    break;
-                }
-                tokio::select! {
-                    _ = notified => {}
-                    _ = tokio::time::sleep_until(deadline) => break,
-                }
-            }
-        }
-        if end <= scan_from {
-            let mut r = Response::builder()
-                .status(StatusCode::NO_CONTENT)
-                .header("Stream-Next-Offset", tail_token(end))
-                .header("Stream-Up-To-Date", "true")
-                .header("Stream-Cursor", interval_cursor(params.cursor.as_deref()))
-                .header(header::CACHE_CONTROL, "no-store");
-            if closed {
-                r = r.header("Stream-Closed", "true");
-            }
-            return r.body(Body::empty()).unwrap();
-        }
-    }
-    let out = match state
-        .read_service()
-        .read_stitched(&desc, &key, scan_from, MAX_READ_BYTES)
-        .await
-    {
-        Ok(o) => o,
-        Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
-    };
-    let next_token = out
-        .last
-        .map(|o| Offset(Some(o)).encode())
-        .unwrap_or_else(|| match params.offset.as_deref() {
-            Some(raw) if raw != "now" => Offset::parse(raw)
-                .map(|o| o.encode())
-                .unwrap_or_else(|_| tail_token(out.end)),
-            _ if !out.completed => Offset::START.encode(),
-            _ => tail_token(out.end),
-        });
-    let up_to_date = out.completed;
-    let body: Bytes = if desc.is_json() {
-        let mut buf = BytesMut::new();
-        buf.extend_from_slice(b"[");
-        for (i, r) in out.recs.iter().enumerate() {
-            if i > 0 {
-                buf.extend_from_slice(b",");
-            }
-            buf.extend_from_slice(&r.payload);
-        }
-        buf.extend_from_slice(b"]");
-        buf.freeze()
-    } else {
-        let mut buf = BytesMut::new();
-        for r in &out.recs {
-            buf.extend_from_slice(&r.payload);
-        }
-        buf.freeze()
-    };
-    let closed_now = handle.state.lock().unwrap().durable.closed;
-    // §4.2: fork reads bill to the FORK resource requested — `desc`
-    // here is the fork's descriptor even when records were stitched
-    // from the ancestor chain.
-    if !params.internal {
-        let payload: u64 = out.recs.iter().map(|r| r.payload.len() as u64).sum();
-        crate::billing::meter_read(&state, &desc, payload, out.recs.len() as u64);
-    }
-    let mut r = Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, desc.content_type.clone())
-        .header("Stream-Next-Offset", next_token)
-        .header(header::CACHE_CONTROL, "no-store")
-        .header("Cross-Origin-Resource-Policy", "cross-origin");
-    if up_to_date {
-        r = r.header("Stream-Up-To-Date", "true");
-    }
-    if closed_now && up_to_date {
-        r = r.header("Stream-Closed", "true");
-    }
-    r.body(Body::from(body)).unwrap()
-}
-
 async fn read(
     state: Arc<AppState>,
     name: String,
@@ -3219,491 +2932,7 @@ async fn read(
     .await
 }
 
-/// Standard-path closure discriminator: the engine says CLOSED but our
-/// cached descriptor never heard of a transition. Refresh once — if the
-/// fresh descriptor shows successors or a pending transition, the
-/// closure is a split seal and the caller must redispatch instead of
-/// reporting it. `false` = redispatch (the fresh descriptor is cached).
-pub(crate) async fn genuine_closure(
-    state: &Arc<AppState>,
-    sref: &crate::tenant::TenantStreamRef,
-    may_refresh: bool,
-) -> bool {
-    if !may_refresh {
-        return true;
-    }
-    state.registry.invalidate(sref);
-    match state.registry.get(sref).await {
-        Ok(Some(d)) => !d
-            .segments
-            .as_ref()
-            .is_some_and(|m| m.segments.len() > 1 || m.pending.is_some()),
-        _ => true,
-    }
-}
-
-/// `may_refresh`: one stale-descriptor redispatch. A CLOSED engine
-/// handle can mean a user close — or a split's seal racing our cached
-/// descriptor (the transition seals the parent BEFORE publishing its
-/// successors). Only the freshest descriptor tells them apart, and only
-/// genuine closure may reach the client: a topology transition may
-/// delay a reader, but it must never look like permanent end-of-stream.
-#[allow(clippy::too_many_arguments)] // request context, not tunables
-pub(crate) async fn read_inner(
-    state: Arc<AppState>,
-    sref: crate::tenant::TenantStreamRef,
-    params: ReadParams,
-    headers: HeaderMap,
-    head_only: bool,
-    may_refresh: bool,
-    surface: SseSurface,
-) -> Response {
-    let desc = match state.registry.get(&sref).await {
-        Ok(Some(d)) if desc_alive(&d) => d,
-        Ok(d) => return gone_or_missing(d.as_ref()),
-        Err(e) => {
-            return err_resp(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &e.to_string(),
-            );
-        }
-    };
-    if initializing(&desc) {
-        return creating_resp();
-    }
-    if !head_only {
-        touch_ttl(&state, &desc); // sliding idle expiry (HEAD never slides)
-    }
-    if desc.forked_from.is_some() {
-        return read_fork_inner(state, desc, params, headers, head_only).await;
-    }
-    // ROUTING-V3 dynamic maps with successors OR an in-flight transition:
-    // lineage-aware reads (spec §3.4/§9). A pending transition routes
-    // here even at one segment, because the seal-to-publication gap is
-    // exactly where the standard path would mistake the sealed parent
-    // for a user-closed stream. Plain single-segment maps fall through —
-    // byte-identical to the pre-split contract.
-    if desc
-        .segments
-        .as_ref()
-        .is_some_and(|m| m.segments.len() > 1 || m.pending.is_some())
-    {
-        return read_v3_lineage_inner(
-            state,
-            desc,
-            params,
-            headers,
-            head_only,
-            may_refresh,
-            surface,
-        )
-        .await;
-    }
-    // Single-segment streams (every unified-model stream until its
-    // first split, all total-order streams, legacy per-key n=1) serve
-    // the standard totally-ordered read path — byte-identical to the
-    // pre-v3 contract because one segment means one routing key space.
-    let hash = desc.resolve_segment("").identity;
-    let engine = match state
-        .engine_for(&crate::crypto::RouteHash::for_stream(&desc.sref()).0)
-        .await
-    {
-        Ok(e) => e,
-        Err(r) => return r,
-    };
-    let handle = match engine.stream_handle(hash).await {
-        Ok(h) => h,
-        Err(e) => {
-            return err_resp(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &e.to_string(),
-            );
-        }
-    };
-    let deliver = params.deliver;
-    // In Applied mode `end` is the applied watermark (what this mode
-    // makes visible); `durable_floor` tracks the durable frontier for
-    // cursor clamping — a resume cursor handed to a client must never
-    // point past what a crash-restart is guaranteed to still have.
-    let (mut end, mut closed, mut durable_floor) = {
-        let st = handle.state.lock().unwrap();
-        let dur = st.durable.next;
-        let end = match deliver {
-            crate::shard::Deliver::Durable => dur,
-            crate::shard::Deliver::Applied => st.applied.next.max(dur),
-        };
-        (end, st.durable.closed, dur)
-    };
-
-    if head_only {
-        if closed && !genuine_closure(&state, &sref, may_refresh).await {
-            return Box::pin(read_inner(
-                state, sref, params, headers, head_only, false, surface,
-            ))
-            .await;
-        }
-        // §5: HEAD is one read operation with zero data bytes.
-        if !params.internal {
-            crate::billing::meter_read(&state, &desc, 0, 0);
-        }
-        let mut r = Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, desc.content_type.clone())
-            .header("Stream-Next-Offset", tail_token(end))
-            .header(header::CACHE_CONTROL, "no-store");
-        if closed {
-            r = r.header("Stream-Closed", "true");
-        }
-        if let (Some(_), Some(exp)) = (desc.ttl_secs, desc.expires_at_ms) {
-            let remaining = ((exp - now_ms()) as f64 / 1000.0).ceil() as i64;
-            if remaining > 0 {
-                r = r.header("Stream-TTL", remaining.to_string());
-            }
-        }
-        return r.body(Body::empty()).unwrap();
-    }
-
-    // Reads require the key (fingerprint auth + history decryption).
-    let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
-        KeyCheck::Ok(k, e) => (k, e),
-        KeyCheck::Missing => {
-            return err_resp(
-                StatusCode::BAD_REQUEST,
-                "missing_key",
-                "Stream-Encryption-Key required",
-            );
-        }
-        KeyCheck::Wrong => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
-        KeyCheck::BadDescriptor => {
-            return err_resp(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "bad descriptor",
-            );
-        }
-    };
-    state.keys.put(hash, key.clone(), epoch);
-
-    let live = match params.live.as_deref() {
-        None => None,
-        Some("long-poll") | Some("true") => Some("long-poll"),
-        Some("sse") => Some("sse"),
-        Some(_) => return err_resp(StatusCode::BAD_REQUEST, "invalid_live", "invalid live mode"),
-    };
-    if live.is_some() && params.offset.is_none() {
-        return err_resp(
-            StatusCode::BAD_REQUEST,
-            "missing_offset",
-            "live reads require offset",
-        );
-    }
-    let start = match params.offset.as_deref() {
-        None => StartPos::At(0),
-        Some("now") => StartPos::Now,
-        Some(raw) => match Offset::parse(raw) {
-            Ok(o) => StartPos::At(o.scan_from()),
-            Err(m) => return err_resp(StatusCode::BAD_REQUEST, "invalid_offset", &m),
-        },
-    };
-
-    if live == Some("sse") {
-        return sse_response(
-            state, desc, key, epoch, engine, handle, start, params, surface,
-        )
-        .await;
-    }
-
-    let scan_from = match start {
-        StartPos::Now => {
-            // Instant tail snapshot for plain reads; long-poll from `now`
-            // falls through with scan_from = current end.
-            if live.is_none() {
-                if closed && !genuine_closure(&state, &sref, may_refresh).await {
-                    return Box::pin(read_inner(
-                        state, sref, params, headers, head_only, false, surface,
-                    ))
-                    .await;
-                }
-                let body: Body = if desc.is_json() {
-                    Body::from("[]")
-                } else {
-                    Body::empty()
-                };
-                let mut r = Response::builder()
-                    .status(StatusCode::OK)
-                    .header(header::CONTENT_TYPE, desc.content_type.clone())
-                    .header("Stream-Next-Offset", tail_token(end))
-                    .header("Stream-Up-To-Date", "true")
-                    .header(header::CACHE_CONTROL, "no-store")
-                    .header("Cross-Origin-Resource-Policy", "cross-origin");
-                if closed {
-                    r = r.header("Stream-Closed", "true");
-                }
-                return r.body(body).unwrap();
-            }
-            end
-        }
-        StartPos::At(p) => p,
-    };
-    if deliver == crate::shard::Deliver::Applied && scan_from > end {
-        // An Applied-mode cursor can outlive the pre-durability suffix
-        // it was minted in (crash + WAL replay): offsets past the tail
-        // may be REUSED with different content. Refuse instead of
-        // parking at a position that would silently skip the rewritten
-        // range; the client resumes from its durable cursor.
-        return err_resp(
-            StatusCode::CONFLICT,
-            "cursor_beyond_tail",
-            "cursor is ahead of the stream tail; resume from the durable cursor",
-        );
-    }
-
-    let is_long_poll = live == Some("long-poll");
-    let mut live_wake = false;
-    let t_arm = std::time::Instant::now();
-    let mut wake_us: u64 = 0;
-    if is_long_poll && scan_from >= end {
-        if !closed {
-            let wait = params
-                .timeout
-                .as_deref()
-                .and_then(parse_duration)
-                .unwrap_or(Duration::from_secs(3))
-                .min(MAX_LONG_POLL);
-            let deadline = tokio::time::Instant::now() + wait;
-            loop {
-                let notified = handle.notify.notified();
-                let applied_notified = handle.applied_notify.notified();
-                let (e2, c2, d2) = {
-                    let st = handle.state.lock().unwrap();
-                    let dur = st.durable.next;
-                    let e = match deliver {
-                        crate::shard::Deliver::Durable => dur,
-                        crate::shard::Deliver::Applied => st.applied.next.max(dur),
-                    };
-                    (e, st.durable.closed, dur)
-                };
-                end = e2;
-                closed = c2;
-                durable_floor = d2;
-                if end > scan_from || closed {
-                    live_wake = end > scan_from;
-                    wake_us = t_arm.elapsed().as_micros() as u64;
-                    break;
-                }
-                if deliver == crate::shard::Deliver::Applied {
-                    // Applied waiters ALSO watch the durable notify: a
-                    // seal or close publishes there, and applied wakes
-                    // fire only for data.
-                    tokio::select! {
-                        _ = notified => {}
-                        _ = applied_notified => {}
-                        _ = tokio::time::sleep_until(deadline) => break,
-                    }
-                } else {
-                    tokio::select! {
-                        _ = notified => {}
-                        _ = tokio::time::sleep_until(deadline) => break,
-                    }
-                }
-            }
-        }
-        if end <= scan_from {
-            if closed && !genuine_closure(&state, &sref, may_refresh).await {
-                return Box::pin(read_inner(
-                    state, sref, params, headers, head_only, false, surface,
-                ))
-                .await;
-            }
-            // Timeout (or closed-at-tail): 204 with resume state. Metered:
-            // a tail probe is billable work even when it returns no bytes
-            // (run-1 finding: `offset=now` reads were invisible to billing).
-            let mut r = Response::builder()
-                .status(StatusCode::NO_CONTENT)
-                .header("Stream-Next-Offset", tail_token(end))
-                .header("Stream-Up-To-Date", "true")
-                .header("Stream-Cursor", interval_cursor(params.cursor.as_deref()))
-                .header(header::CACHE_CONTROL, "no-store");
-            if deliver == crate::shard::Deliver::Applied {
-                r = r.header("Stream-Durable-Offset", tail_token(durable_floor.min(end)));
-            }
-            if closed {
-                r = r.header("Stream-Closed", "true");
-            }
-            return r.body(Body::empty()).unwrap();
-        }
-    }
-
-    let frames_format = params.format.as_deref() == Some("frames");
-    let t_read = std::time::Instant::now();
-    let out = match ReadPlan::segment(
-        &key,
-        &epoch,
-        &handle,
-        &engine,
-        scan_from,
-        params.key.as_deref(),
-        // Woken live reads carry a fresh commit group, not a backlog:
-        // keep the response (and the client's rearm) proportional to it.
-        params.max_bytes.unwrap_or(if live_wake {
-            tail_max_bytes(&state.config.http)
-        } else {
-            MAX_READ_BYTES
-        }),
-        deliver,
-    )
-    .execute()
-    .await
-    {
-        Ok(o) => o,
-        Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
-    };
-    let read_us = t_read.elapsed().as_micros() as u64;
-    let next_token = out
-        .last
-        .map(|o| Offset(Some(o)).encode())
-        .unwrap_or_else(|| match params.offset.as_deref() {
-            Some(raw) if raw != "now" => Offset::parse(raw)
-                .map(|o| o.encode())
-                .unwrap_or_else(|_| tail_token(out.end)),
-            // No offset given and nothing proven: an INCOMPLETE empty
-            // page must hold the cursor at the start, not teleport it to
-            // the stream end (review blocker: that fallback silently
-            // skipped everything an oversized-run stall failed to serve).
-            _ if !out.completed => Offset::START.encode(),
-            _ => tail_token(out.end),
-        });
-    let up_to_date = out.completed;
-    let etag = read_etag(&desc, scan_from, out.end, closed);
-    if let Some(inm) = hdr(&headers, "if-none-match")
-        && inm == etag
-    {
-        return Response::builder()
-            .status(StatusCode::NOT_MODIFIED)
-            .header("ETag", etag)
-            .body(Body::empty())
-            .unwrap();
-    }
-
-    let body: Bytes = if desc.is_json() && !frames_format {
-        let mut buf = BytesMut::new();
-        buf.extend_from_slice(b"[");
-        for (i, r) in out.recs.iter().enumerate() {
-            if i > 0 {
-                buf.extend_from_slice(b",");
-            }
-            buf.extend_from_slice(&r.payload);
-        }
-        buf.extend_from_slice(b"]");
-        buf.freeze()
-    } else if frames_format {
-        let mut buf = BytesMut::new();
-        let mut subkeys: HashMap<String, [u8; 32]> = HashMap::new();
-        for r in &out.recs {
-            let sk = *subkeys
-                .entry(params.key.clone().unwrap_or_default())
-                .or_insert_with(|| {
-                    derive_subkey(&key, &epoch, params.key.as_deref().unwrap_or(""), 0)
-                });
-            let frame = encrypt_frame(
-                &sk,
-                &hash,
-                &FrameHeader {
-                    offset: r.off,
-                    ts_ms: 0,
-                    key_version: 0,
-                    routing_key: params.key.clone().unwrap_or_default(),
-                },
-                &r.payload,
-                crate::crypto::FrameCompression::from_enabled(state.config.crypto.frame_compress),
-            );
-            buf.extend_from_slice(&frame);
-        }
-        buf.freeze()
-    } else {
-        let mut buf = BytesMut::new();
-        for r in &out.recs {
-            buf.extend_from_slice(&r.payload);
-        }
-        buf.freeze()
-    };
-
-    // A drained read of a closed handle is the response that would carry
-    // Stream-Closed — discriminate a split seal from a user close BEFORE
-    // metering, so a redispatched read is billed exactly once.
-    if up_to_date && closed && !genuine_closure(&state, &sref, may_refresh).await {
-        return Box::pin(read_inner(
-            state, sref, params, headers, head_only, false, surface,
-        ))
-        .await;
-    }
-    let mut r = Response::builder()
-        .status(StatusCode::OK)
-        .header(
-            header::CONTENT_TYPE,
-            if frames_format {
-                "application/x-durable-stream-frames".to_string()
-            } else {
-                desc.content_type.clone()
-            },
-        )
-        .header("Stream-Next-Offset", next_token)
-        .header("ETag", etag)
-        .header("Cross-Origin-Resource-Policy", "cross-origin");
-    if deliver == crate::shard::Deliver::Applied {
-        // Fresh durable floor at response time: the least-stale clamp
-        // for the resume cursor, and the marker for which served
-        // records are still provisional. Staleness is one-sided — a
-        // record marked pending may already be durable, never the
-        // reverse.
-        let floor_now = handle.state.lock().unwrap().durable.next;
-        let next_pos = out.last.map(|o| o + 1).unwrap_or(scan_from);
-        r = r.header("Stream-Durable-Offset", tail_token(floor_now.min(next_pos)));
-        if let Some(i) = out.recs.iter().position(|rec| rec.off >= floor_now) {
-            r = r.header("Stream-Pending-From", i.to_string());
-        }
-    }
-    if up_to_date {
-        r = r.header("Stream-Up-To-Date", "true");
-        if closed {
-            r = r.header("Stream-Closed", "true");
-        }
-    }
-    if is_long_poll {
-        r = r
-            .header("Stream-Cursor", interval_cursor(params.cursor.as_deref()))
-            .header(header::CACHE_CONTROL, "no-store");
-    }
-    if debug_timing(&state.config.http) {
-        r = r.header(
-            "Streams-Debug-Wait",
-            format!(
-                "waited={} arm_us={} read_us={}",
-                live_wake as u8, wake_us, read_us
-            ),
-        );
-    }
-    crate::usage::counters(&crate::crypto::RouteHash::for_stream(&desc.sref()).0)
-        .bytes_out
-        .fetch_add(body.len() as u64, std::sync::atomic::Ordering::Relaxed);
-    // THE read meter (§5/§7): payload bytes only — array brackets,
-    // commas, frame encryption and headers are excluded by summing the
-    // record payloads, not the wire body. An empty long-poll meters the
-    // operation with zero data bytes. Internal relays never meter; the
-    // coordinator that requested them does.
-    if !params.internal {
-        let payload: u64 = out.recs.iter().map(|r| r.payload.len() as u64).sum();
-        crate::billing::meter_read(&state, &desc, payload, out.recs.len() as u64);
-    }
-    r.body(Body::from(body)).unwrap()
-}
-
 // ---- SSE ----
-
-/// sse_control with a pre-encoded (epoch) cursor token — the lineage
-/// streamer's controls name segments, not scalar offsets.
 
 /// #267: bounded-deadline SSE send. The queue is 4 slots and the
 /// correct slow-consumer policy on a durable, cursor-addressable
@@ -3883,8 +3112,7 @@ async fn sse_response(
     };
     // LIVE-FEED Stage 3+/5: the transition engine. Product default-key
     // AND keyed lanes ride it on single-segment streams; FORKS join
-    // here too (read_fork_inner reaches this same producer with the
-    // raw vocabulary, which the session composes byte-identically).
+    // here too through the shared typed read adapter.
     if desc
         .segments
         .as_ref()
@@ -3897,7 +3125,9 @@ async fn sse_response(
             desc: desc.clone(),
             key: key.clone(),
             epoch,
-            route: crate::crypto::RouteHash::for_stream(&desc.sref()).0,
+            route: desc
+                .resolve_segment(params.key.as_deref().unwrap_or(""))
+                .shard_route,
             engine: engine.clone(),
             handle: handle.clone(),
         });
@@ -3943,111 +3173,6 @@ pub(crate) fn replay_peer_url(state: &AppState, r: &Response) -> Option<(String,
         .to_string();
     let url = state.peer.url_for(&owner)?;
     Some((owner, url))
-}
-
-/// Relay one segment-positioned read to the segment's owner and stream
-/// its raw response back verbatim. The peer serves under no_fanout, so
-/// depth is exactly one; any relay failure returns None and the caller
-/// surfaces the original ownership 409 (retryable via the router).
-async fn relay_segment_read(
-    state: &Arc<AppState>,
-    base: String,
-    desc: &StreamDesc,
-    seg_id: u32,
-    scan_from: u64,
-    params: &ReadParams,
-    headers: &HeaderMap,
-    head_only: bool,
-) -> Option<Response> {
-    let tok = if scan_from == u64::MAX {
-        "now".to_string()
-    } else if scan_from == 0 {
-        crate::offsets::encode_ep(seg_id, Offset::START)
-    } else {
-        crate::offsets::encode_ep(seg_id, Offset(Some(scan_from - 1)))
-    };
-    // No urlencoding dep (supply-chain posture): RFC 3986 unreserved
-    // pass-through, everything else percent-encoded.
-    fn pct(s: &str) -> String {
-        let mut out = String::with_capacity(s.len());
-        for b in s.bytes() {
-            match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                    out.push(b as char)
-                }
-                _ => out.push_str(&format!("%{b:02X}")),
-            }
-        }
-        out
-    }
-    let mut q = format!("offset={tok}");
-    if let Some(k) = &params.key {
-        q.push_str(&format!("&key={}", pct(k)));
-    }
-    if let Some(l) = &params.live {
-        q.push_str(&format!("&live={}", pct(l)));
-    }
-    if let Some(t) = &params.timeout {
-        q.push_str(&format!("&timeout={}", pct(t)));
-    }
-    if head_only {
-        q.push_str("&head=1");
-    }
-    // Incarnation binding: the peer refuses outright if this name now
-    // holds a different stream (round-19 ABA).
-    let target = crate::product::InternalTarget::of(desc, seg_id)?;
-    let mk = |bearer: Option<&str>| {
-        let mut req = peer_client()
-            .get(format!(
-                "{base}/v1/internal/segment-read/{}?{q}",
-                encode_stream_name_path(&desc.name)
-            ))
-            .timeout(std::time::Duration::from_secs(40));
-        for (k, v) in target.headers() {
-            req = req.header(k, v);
-        }
-        if let Some(t) = bearer {
-            req = req.header("authorization", format!("Bearer {t}"));
-        }
-        req
-    };
-    let mk = |bearer: Option<&str>| {
-        let mut req = mk(bearer);
-        for h in ["stream-encryption-key", "prisma-encryption-key"] {
-            if let Some(v) = headers.get(h) {
-                req = req.header(h, v.clone());
-            }
-        }
-        if let Some(mb) = params.max_bytes {
-            req = req.header("streams-internal-max-bytes", mb.to_string());
-        }
-        if params.deliver == crate::shard::Deliver::Applied {
-            req = req.header("streams-internal-deliver", "applied");
-        }
-        req
-    };
-    match state.peer.send(mk).await {
-        Ok(r) => {
-            let mut out = Response::builder().status(r.status().as_u16());
-            for (k, v) in r.headers() {
-                let n = k.as_str();
-                if n != "connection" && n != "transfer-encoding" {
-                    out = out.header(k, v);
-                }
-            }
-            use futures_util::TryStreamExt;
-            Some(
-                out.body(axum::body::Body::from_stream(
-                    r.bytes_stream().map_err(std::io::Error::other),
-                ))
-                .unwrap(),
-            )
-        }
-        Err(e) => {
-            tracing::warn!("segment fan-out relay to {base} failed: {e}");
-            None
-        }
-    }
 }
 
 /// Fleet-internal fan-out target: a keyed, segment-positioned read
@@ -4222,619 +3347,6 @@ async fn internal_segment_read(
     .await
 }
 
-/// ROUTING-V3 lineage reads (spec §3.4/§9) for dynamic maps with
-/// successors. Contract:
-///
-/// - `?key=<k>`: ordered read for one routing key. The cursor names a
-///   position in ONE segment of the key's lineage
-///   (`epoch = segment id`); a drained sealed segment hands the next
-///   cursor to the successor containing the key at offset 0. Long-poll
-///   waits only on the key's LIVE segment.
-/// - no key: deterministic whole-stream replay in segment-id order —
-///   every record exactly once, no cross-key ordering.
-/// - live without a key: unsupported (one scalar cursor cannot
-///   represent concurrent segment progress).
-/// - SSE across lineage: not yet wired (single-segment streams keep
-///   full SSE); explicit 400 rather than silent misbehavior.
-/// `may_refresh`: one stale-descriptor retry. Two shapes demand it —
-/// a cursor token naming a segment our cached map does not know yet,
-/// and a CLOSED segment handle our map still calls live-and-last (a
-/// split sealed it after our descriptor read; stopping there would
-/// declare Up-To-Date below the successor's records). A refreshed map
-/// that STILL shows live-and-last with no pending transition is a
-/// genuinely user-closed stream; one whose pending transition names
-/// this segment is mid-split (seal done, successors unpublished) — the
-/// SEAL GAP — and the response may carry records and a resume cursor
-/// but NEVER Stream-Closed and NEVER a final Stream-Up-To-Date.
-async fn read_v3_lineage_inner(
-    state: Arc<AppState>,
-    desc: StreamDesc,
-    params: ReadParams,
-    headers: HeaderMap,
-    head_only: bool,
-    may_refresh: bool,
-    surface: SseSurface,
-) -> Response {
-    let map = desc.segments.clone().expect("dispatch guaranteed a map");
-    let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
-        KeyCheck::Ok(k, e) => (k, e),
-        KeyCheck::Missing => {
-            return err_resp(
-                StatusCode::BAD_REQUEST,
-                "missing_key",
-                "Stream-Encryption-Key required",
-            );
-        }
-        KeyCheck::Wrong => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
-        KeyCheck::BadDescriptor => {
-            return err_resp(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "bad descriptor",
-            );
-        }
-    };
-    let live = match params.live.as_deref() {
-        None => None,
-        Some("long-poll") | Some("true") => Some("long-poll"),
-        Some("sse") if params.key.is_some() => Some("sse"),
-        Some("sse") => {
-            // Keyless SSE has the same scalar-cursor impossibility as
-            // keyless long-poll on a segmented stream.
-            return err_resp(
-                StatusCode::BAD_REQUEST,
-                "keyless_live",
-                "SSE on a segmented stream requires key=",
-            );
-        }
-        Some(_) => return err_resp(StatusCode::BAD_REQUEST, "invalid_live", "invalid live mode"),
-    };
-    if live.is_some() && params.key.is_none() && map.segments.len() > 1 {
-        // Spec §3.4: one scalar cursor cannot represent several
-        // concurrently progressing segments. A single-segment map routed
-        // here for its PENDING transition keeps keyless live until the
-        // successors actually publish — the seal gap must not change the
-        // API surface out from under a poller mid-flight.
-        return err_resp(
-            StatusCode::BAD_REQUEST,
-            "keyless_live",
-            "live reads on a segmented stream require key=",
-        );
-    }
-    #[cfg(test)]
-    if live == Some("sse") {
-        crate::failpoints::pause_sse_before_lease_gate(&desc.name).await;
-    }
-
-    let topology = crate::application::read::ReadTopology::new(&desc, params.key.as_deref());
-    let lineage = &topology.spans;
-    if lineage.is_empty() {
-        return err_resp(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            "empty lineage",
-        );
-    }
-
-    // Cursor → (segment position in lineage, offset).
-    let (mut pos, mut scan_from) = match params.offset.as_deref() {
-        None => (0usize, 0u64),
-        Some("now") => {
-            // Keyed live tail: the lineage's last (live) segment.
-            (lineage.len() - 1, u64::MAX)
-        }
-        Some(raw) => match crate::offsets::parse_ep(raw) {
-            Ok((e, o)) => match lineage.iter().position(|sg| sg.seg_id == e) {
-                Some(p) => (p, o.scan_from()),
-                None if may_refresh => {
-                    // A successor our cached map has not seen yet.
-                    // Søren review blocker 2: refresh the ORIGINAL
-                    // project-qualified identity at the SAME
-                    // incarnation — a name-reconstructed ref adopted
-                    // the deployment tenant's descriptor and served
-                    // its records against this project's cursor.
-                    let orig = desc.sref();
-                    state.registry.invalidate(&orig);
-                    let fresh = match state.registry.get(&orig).await {
-                        Ok(Some(d)) if desc_alive(&d) && d.stream_epoch == desc.stream_epoch => d,
-                        _ => {
-                            return err_resp(
-                                StatusCode::BAD_REQUEST,
-                                "invalid_offset",
-                                "offset names a segment outside this lineage",
-                            );
-                        }
-                    };
-                    return Box::pin(read_v3_lineage_inner(
-                        state, fresh, params, headers, head_only, false, surface,
-                    ))
-                    .await;
-                }
-                None => {
-                    return err_resp(
-                        StatusCode::BAD_REQUEST,
-                        "invalid_offset",
-                        "offset names a segment outside this lineage",
-                    );
-                }
-            },
-            Err(m) => return err_resp(StatusCode::BAD_REQUEST, "invalid_offset", &m),
-        },
-    };
-
-    if live == Some("sse") {
-        // Round-11.3: connect-time lineage through LiveFeed for BOTH
-        // surfaces — raw controls carry epoch/segment tokens, so a
-        // segmented lineage is fully representable on raw. A pending
-        // transition at connect is a typed retryable, and a failed
-        // build is a typed refusal: once LiveFeed is selected, NO
-        // request silently invokes a legacy producer.
-        if desc.segments.as_ref().is_some_and(|m| m.pending.is_some()) {
-            // Round-11.4 fleet finding: HELP the transition along
-            // before refusing (idempotent, non-blocking — the read_v3
-            // pattern). An ORPHANED pending transition (executor died
-            // between intent and publication) otherwise starves the
-            // stream forever: resume() was driven only by sessions,
-            // and no session can exist while every connect refuses.
-            {
-                let st = state.clone();
-                let srf = desc.sref();
-                tokio::spawn(async move {
-                    crate::scaler3::resume(&st, &srf).await;
-                });
-            }
-            return err_resp(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "segment_transition",
-                "a segment transition is in flight; retry",
-            );
-        }
-        {
-            let rk_filter = params.key.clone();
-            match crate::sse::source::LineageSource::build(
-                state.read_service(),
-                desc.clone(),
-                key.clone(),
-                epoch,
-                rk_filter.clone(),
-            )
-            .await
-            {
-                Ok(src) => {
-                    // Convert the segment-local cursor into the
-                    // linearized feed cursor space (logicalize — the
-                    // inverse of locate).
-                    use crate::sse::feed::FeedSourceRead as _;
-                    let start = if scan_from == u64::MAX {
-                        StartPos::Now
-                    } else {
-                        let seg = &lineage[pos];
-                        match src.logicalize(crate::sse::feed::WirePosition {
-                            seg_id: seg.seg_id,
-                            local_after: scan_from,
-                        }) {
-                            Some(l) => StartPos::At(l),
-                            None => {
-                                return err_resp(
-                                    StatusCode::BAD_REQUEST,
-                                    "invalid_offset",
-                                    "offset is outside this lineage's readable range",
-                                );
-                            }
-                        }
-                    };
-                    let slot = match sse_acquire(&state) {
-                        Ok(s) => s,
-                        Err(r) => return *r,
-                    };
-                    return crate::sse::session::serve(
-                        state, desc, key, epoch, src, start, params, rk_filter, surface, slot,
-                    )
-                    .await;
-                }
-                Err(e) => {
-                    // Round-11.2/11.3: connect-time cutoffs carry the
-                    // typed canary telemetry AND a typed HTTP verdict —
-                    // never a silent legacy dispatch. WrongOwner: the
-                    // gateway reroutes the retry; Transient: plain
-                    // retryable; Incompatible: conflict.
-                    use crate::sse::source::LineageBuildError as B;
-                    tracing::warn!(error = %e, "livefeed connect-time lineage build failed");
-                    return match e {
-                        B::WrongOwner { msg, owner } => {
-                            crate::sse::auth::sse_stats::FEED_CUTOFF_WRONG_OWNER
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
-                                .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                            let mut r = err_resp(StatusCode::CONFLICT, "not_ring_owner", &msg);
-                            // Round-11.4: the refusal must carry the
-                            // router-convergence signal — without it the
-                            // product translator maps this 409 to the
-                            // non-retryable cursor_beyond_tail and SDKs
-                            // rewind healthy cursors on ownership moves.
-                            if let Some(o) = owner
-                                && let Ok(v) = axum::http::HeaderValue::from_str(&o)
-                            {
-                                r.headers_mut().insert("streams-replay-to", v);
-                            }
-                            r
-                        }
-                        B::Transient(m) => err_resp(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            "temporarily_unavailable",
-                            &m,
-                        ),
-                        B::IncompatibleTopology(m) => {
-                            err_resp(StatusCode::CONFLICT, "incompatible_topology", &m)
-                        }
-                    };
-                }
-            }
-        }
-        // Round-11.8: the legacy lineage/hub producers are DELETED —
-        // the livefeed block above returns on EVERY dispatch (serve,
-        // typed refusal, or the pending retryable).
-    }
-    // Hop forward over already-drained sealed segments so one request
-    // always serves records when any exist ahead.
-    let seg_tok = |seg_id: u32, last: Option<u64>| match last {
-        None => crate::offsets::encode_ep(seg_id, Offset::START),
-        Some(o) => crate::offsets::encode_ep(seg_id, Offset(Some(o))),
-    };
-    let entry_pos = pos;
-    loop {
-        let sg = &lineage[pos];
-        let identity = desc.dynamic_segment_identity(sg.seg_id);
-        // Each segment lives on ITS OWN shard route (split children get
-        // real routes — review blocker 1); hard-coding the parent route
-        // here read an empty keyspace on the wrong engine for any moved
-        // child.
-        let engine = match state.engine_for(&desc.segment_route(sg)).await {
-            Ok(e) => e,
-            Err(r) => {
-                // Cross-owner lineage fan-out: this segment lives on a
-                // peer. Relay this one segment-positioned page to its
-                // owner and stream the raw response back — the caller
-                // (raw or product wrapper) treats it exactly like a
-                // locally-served page. Depth is one (no_fanout on the
-                // peer). Fallback: surface the ownership 409, which
-                // routers follow via Streams-Replay-To.
-                if !params.no_fanout {
-                    let peer = replay_peer_url(&state, &r).map(|(_, base)| base);
-                    if let Some(base) = peer
-                        && let Some(resp) = relay_segment_read(
-                            &state, base, &desc, sg.seg_id, scan_from, &params, &headers, head_only,
-                        )
-                        .await
-                    {
-                        return resp;
-                    }
-                    return r;
-                }
-                // no_fanout (we ARE the relay target): never relay
-                // again. Hop-forward walked over drained local segments
-                // into a foreign one — hand the cursor to it with an
-                // empty page; the client's next request reaches its
-                // owner and the cursor advances every round (no relay
-                // cycles under ownership churn). If the REQUESTED
-                // segment itself is foreign (ownership moved between
-                // the relayer's pick and now), surface the 409.
-                if pos > entry_pos {
-                    let body: Bytes = if desc.is_json() {
-                        Bytes::from_static(b"[]")
-                    } else {
-                        Bytes::new()
-                    };
-                    return Response::builder()
-                        .status(StatusCode::OK)
-                        .header(header::CONTENT_TYPE, desc.content_type.clone())
-                        .header("Stream-Next-Offset", seg_tok(sg.seg_id, None))
-                        .header(header::CACHE_CONTROL, "no-store")
-                        .header("Cross-Origin-Resource-Policy", "cross-origin")
-                        .body(Body::from(body))
-                        .unwrap();
-                }
-                return r;
-            }
-        };
-        let handle = match engine.stream_handle(identity).await {
-            Ok(h) => h,
-            Err(e) => {
-                return err_resp(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    &e.to_string(),
-                );
-            }
-        };
-        state.keys.put(identity, key.clone(), epoch);
-        let deliver = params.deliver;
-        let (durable_next, closed, applied_next) = {
-            let st = handle.state.lock().unwrap();
-            (
-                st.durable.next,
-                st.durable.closed,
-                st.applied.next.max(st.durable.next),
-            )
-        };
-        let live_and_last = sg.sealed_next_offset.is_none() && pos + 1 >= lineage.len();
-        if closed && live_and_last && may_refresh {
-            // The engine says CLOSED but our map says live-and-last: a
-            // split sealed this segment after our descriptor read. Help
-            // the transition along WITHOUT blocking this read (resume is
-            // idempotent; a parked or failing publication must not turn
-            // a read into a hang), then refresh once — the successor (or
-            // a genuine user close, or a still-pending gap) is in the
-            // fresh map.
-            {
-                let st = state.clone();
-                let srf = desc.sref();
-                tokio::spawn(async move {
-                    crate::scaler3::resume(&st, &srf).await;
-                });
-            }
-            // Søren review blocker 2: the refresh retains the ORIGINAL
-            // project-qualified identity and the incarnation it was
-            // reading — never a name-reconstructed deployment ref, and
-            // never a silently adopted replacement.
-            let orig = desc.sref();
-            state.registry.invalidate(&orig);
-            if let Ok(Some(fresh)) = state.registry.get(&orig).await
-                && desc_alive(&fresh)
-                && fresh.stream_epoch == desc.stream_epoch
-            {
-                return Box::pin(read_v3_lineage_inner(
-                    state, fresh, params, headers, head_only, false, surface,
-                ))
-                .await;
-            }
-        }
-        // The SEAL GAP: this segment is sealed but its successors are
-        // not published yet (the map's pending transition names it).
-        // Records stay servable; closure and finality do not exist —
-        // the reader polls again and finds either the successors or a
-        // genuinely closed stream.
-        let seal_gap = closed
-            && live_and_last
-            && map
-                .pending
-                .as_ref()
-                .is_some_and(|p| p.segs.contains(&sg.seg_id));
-        let seg_end = sg.sealed_next_offset.unwrap_or(match deliver {
-            crate::shard::Deliver::Durable => durable_next,
-            crate::shard::Deliver::Applied => applied_next,
-        });
-        if scan_from == u64::MAX {
-            scan_from = seg_end; // offset=now on the live segment
-        }
-        if deliver == crate::shard::Deliver::Applied && scan_from > seg_end {
-            // A stale Applied cursor (minted past a suffix a crash
-            // discarded — sealed segments included, since a seal can
-            // land below a lost applied tail). See the single-segment
-            // guard: refuse rather than skip rewritten offsets.
-            return err_resp(
-                StatusCode::CONFLICT,
-                "cursor_beyond_tail",
-                "cursor is ahead of the stream tail; resume from the durable cursor",
-            );
-        }
-        let is_last = pos + 1 >= lineage.len();
-        if scan_from >= seg_end && !is_last {
-            // Drained sealed segment: hop to the successor at 0.
-            pos += 1;
-            scan_from = 0;
-            continue;
-        }
-
-        // Long-poll on the live tail only.
-        let mut end = seg_end;
-        let mut live_wake = false;
-        if live.is_some() && is_last && scan_from >= end && !closed {
-            let wait = params
-                .timeout
-                .as_deref()
-                .and_then(parse_duration)
-                .unwrap_or(Duration::from_secs(3))
-                .min(MAX_LONG_POLL);
-            let deadline = tokio::time::Instant::now() + wait;
-            loop {
-                let notified = handle.notify.notified();
-                let applied_notified = handle.applied_notify.notified();
-                let (e2, c2) = {
-                    let st = handle.state.lock().unwrap();
-                    let e = match deliver {
-                        crate::shard::Deliver::Durable => st.durable.next,
-                        crate::shard::Deliver::Applied => st.applied.next.max(st.durable.next),
-                    };
-                    (e, st.durable.closed)
-                };
-                end = e2;
-                if end > scan_from || c2 {
-                    live_wake = end > scan_from;
-                    break;
-                }
-                if deliver == crate::shard::Deliver::Applied {
-                    tokio::select! {
-                        _ = notified => {}
-                        _ = applied_notified => {}
-                        _ = tokio::time::sleep_until(deadline) => break,
-                    }
-                } else {
-                    tokio::select! {
-                        _ = notified => {}
-                        _ = tokio::time::sleep_until(deadline) => break,
-                    }
-                }
-            }
-            if end <= scan_from {
-                // Timed out empty: 204 with a rearm token. A mid-wait
-                // seal (c2) reports nothing here — the next poll's entry
-                // logic classifies it (successor, gap, or genuine close).
-                let mut r = Response::builder()
-                    .status(StatusCode::NO_CONTENT)
-                    .header(
-                        "Stream-Next-Offset",
-                        seg_tok(sg.seg_id, scan_from.checked_sub(1)),
-                    )
-                    .header(header::CACHE_CONTROL, "no-store");
-                if deliver == crate::shard::Deliver::Applied {
-                    let floor_now = handle.state.lock().unwrap().durable.next;
-                    r = r.header(
-                        "Stream-Durable-Offset",
-                        seg_tok(sg.seg_id, floor_now.min(scan_from).checked_sub(1)),
-                    );
-                }
-                if closed && !seal_gap {
-                    r = r.header("Stream-Closed", "true");
-                }
-                return r.body(Body::empty()).unwrap();
-            }
-        }
-
-        if head_only {
-            let mut r = Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, desc.content_type.clone())
-                .header("Stream-Next-Offset", seg_tok(sg.seg_id, end.checked_sub(1)))
-                .header(header::CACHE_CONTROL, "no-store");
-            if closed && is_last && !seal_gap {
-                r = r.header("Stream-Closed", "true");
-            }
-            return r.body(Body::empty()).unwrap();
-        }
-
-        let out = match ReadPlan::segment(
-            &key,
-            &epoch,
-            &handle,
-            &engine,
-            scan_from,
-            params.key.as_deref(),
-            params.max_bytes.unwrap_or(if live_wake {
-                tail_max_bytes(&state.config.http)
-            } else {
-                MAX_READ_BYTES
-            }),
-            deliver,
-        )
-        .execute()
-        .await
-        {
-            Ok(o) => o,
-            Err(m) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
-        };
-        let (next, durable_resume, drained) = topology
-            .page_progress(sg.seg_id, scan_from, &out)
-            .expect("planned segment");
-        let consumed_to = out.scanned_through(scan_from).min(seg_end.max(scan_from));
-        let sealed_mid = sg.sealed_next_offset.is_some() && !is_last;
-        let next_token = seg_tok(next.segment, next.after.checked_sub(1));
-
-        let body: Bytes = if desc.is_json() {
-            let mut buf = BytesMut::new();
-            buf.extend_from_slice(b"[");
-            for (i, r) in out.recs.iter().enumerate() {
-                if i > 0 {
-                    buf.extend_from_slice(b",");
-                }
-                buf.extend_from_slice(&r.payload);
-            }
-            buf.extend_from_slice(b"]");
-            buf.freeze()
-        } else {
-            let mut buf = BytesMut::new();
-            for r in &out.recs {
-                buf.extend_from_slice(&r.payload);
-                buf.extend_from_slice(b"\n");
-            }
-            buf.freeze()
-        };
-        let up_to_date = drained && (is_last || !sealed_mid);
-        let mut r = Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, desc.content_type.clone())
-            .header("Stream-Next-Offset", next_token)
-            .header(header::CACHE_CONTROL, "no-store")
-            .header("Cross-Origin-Resource-Policy", "cross-origin");
-        if deliver == crate::shard::Deliver::Applied {
-            // Fresh durable floor at response time (one-sided staleness:
-            // a record marked pending may already be durable, never the
-            // reverse). A drained sealed hop is all-durable by
-            // construction, so its durable cursor IS the next token.
-            let floor_now = handle.state.lock().unwrap().durable.next;
-            let durable_tok = if drained && sealed_mid {
-                seg_tok(durable_resume.segment, durable_resume.after.checked_sub(1))
-            } else {
-                seg_tok(sg.seg_id, consumed_to.min(floor_now).checked_sub(1))
-            };
-            r = r.header("Stream-Durable-Offset", durable_tok);
-            if let Some(i) = out.recs.iter().position(|rec| rec.off >= floor_now) {
-                r = r.header("Stream-Pending-From", i.to_string());
-            }
-        }
-        if up_to_date && !seal_gap {
-            r = r.header("Stream-Up-To-Date", "true");
-        }
-        if closed && is_last && drained && !seal_gap {
-            r = r.header("Stream-Closed", "true");
-        }
-        return r.body(Body::from(body)).unwrap();
-    }
-}
-
-// ---- queue profile surface (PROFILES.md §7; CF-informed) ----
-
-#[derive(Deserialize, Default)]
-struct QueueSettleBody {
-    #[serde(default)]
-    acks: Vec<QueueTokenRef>,
-    #[serde(default)]
-    retries: Vec<QueueRetryRef>,
-    #[serde(default)]
-    extends: Vec<QueueExtendRef>,
-}
-
-#[derive(Deserialize)]
-struct QueueTokenRef {
-    #[serde(rename = "leaseToken")]
-    lease_token: String,
-}
-
-#[derive(Deserialize)]
-struct QueueRetryRef {
-    #[serde(rename = "leaseToken")]
-    lease_token: String,
-    #[serde(default)]
-    #[serde(rename = "delayMs")]
-    delay_ms: u64,
-}
-
-#[derive(Deserialize)]
-struct QueueExtendRef {
-    #[serde(rename = "leaseToken")]
-    lease_token: String,
-    #[serde(default = "default_visibility")]
-    #[serde(rename = "visibilityMs")]
-    visibility_ms: u64,
-}
-
-fn default_visibility() -> u64 {
-    30_000
-}
-
-#[derive(Deserialize, Default)]
-struct QueueReceiveBody {
-    #[serde(default)]
-    #[serde(rename = "batchSize")]
-    batch_size: Option<usize>,
-    #[serde(default)]
-    #[serde(rename = "visibilityMs")]
-    visibility_ms: Option<u64>,
-    #[serde(default)]
-    #[serde(rename = "waitMs")]
-    wait_ms: Option<u64>,
-}
-
 // ---- internal metrics stream flusher (old-impl pattern: __stream_metrics__) ----
 
 #[cfg(test)]
@@ -4876,4 +3388,24 @@ mod tests {
         assert_eq!(encode_stream_name_path("é"), "%C3%A9");
     }
     use super::*;
+}
+
+#[path = "http/read.rs"]
+mod read_adapter;
+pub(crate) use read_adapter::{meter_read_outcome, read_inner, read_payload, serve_read_sse};
+
+// Fixture adapters preserve existing scenario calls without making AppState a
+// production application dependency.
+#[cfg(test)]
+pub(crate) fn touch_ttl(state: &Arc<AppState>, desc: &StreamDesc) {
+    state.creation_service().touch_ttl(desc);
+}
+#[cfg(test)]
+impl AppState {
+    pub async fn engine_for_scaler(&self, hash: &[u8; 16]) -> Option<Arc<ShardEngine>> {
+        self.shards
+            .resolve(hash, crate::shard_directory::Adoption::Internal)
+            .await
+            .ok()
+    }
 }

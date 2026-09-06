@@ -216,3 +216,6 @@ mod append_application;
 
 #[path = "tests/consumer_dlq.rs"]
 mod consumer_dlq;
+
+#[path = "tests/read_application.rs"]
+mod read_application;

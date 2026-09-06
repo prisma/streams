@@ -50,17 +50,7 @@ impl<'a> ReadPlan<'a> {
         }
     }
     pub(crate) async fn execute(self) -> Result<ReadPage, String> {
-        execute_segment(
-            self.key,
-            self.epoch,
-            self.handle,
-            self.engine,
-            self.from,
-            self.selector,
-            self.max_bytes,
-            self.visibility,
-        )
-        .await
+        execute_segment(self).await
     }
 }
 
@@ -167,16 +157,17 @@ fn decode_frames_into(
 pub(crate) static TEST_ASSERT_KEYED_DENSE: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-async fn execute_segment(
-    key: &StreamKey,
-    epoch: &[u8; 16],
-    handle: &Arc<crate::shard::StreamHandle>,
-    engine: &Arc<ShardEngine>,
-    scan_from: u64,
-    key_filter: Option<&str>,
-    max_bytes: usize,
-    deliver: crate::shard::Deliver,
-) -> Result<ReadPage, String> {
+async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
+    let ReadPlan {
+        key,
+        epoch,
+        handle,
+        engine,
+        from: scan_from,
+        selector: key_filter,
+        max_bytes,
+        visibility: deliver,
+    } = plan;
     // The sub-stream identity (AAD + history-DB path): for total-order
     // streams this is the incarnation hash; for per-key streams, the
     // segment hash. Either way it's the handle's identity.
@@ -234,64 +225,22 @@ async fn execute_segment(
                 // v2 flag cannot exist in a fresh namespace.
                 return Err("unsupported_storage_layout: v1 history".into());
             }
-            let completed = {
-                // v2: the range lives in the shard's SHARED partition,
-                // read through the owner's open Db — no reader open, no
-                // checkpoint, no coverage probe (this Db's flush is what
-                // advanced the boundary). Frames decode like tail frames.
-                // Keyed ranges resolve their postings runs through the
-                // engine's decoded slice cache (spec §7).
-                let part = engine
-                    .history_partition()
-                    .await
-                    .map_err(|e| e.to_string())?;
-                let (frames, scan_last, completed) = match key_filter {
-                    Some(rk) => crate::history::read_history2_keyed_cached(
-                        &engine.postings_cache,
-                        &part,
-                        crate::crypto::RouteHash(route),
-                        crate::crypto::SegmentHash(hash),
-                        rk,
-                        cursor,
-                        hist_upto,
-                        boundary,
-                        budget,
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?,
-                    None => crate::history::read_history2(
-                        &part,
-                        crate::crypto::RouteHash(route),
-                        crate::crypto::SegmentHash(hash),
-                        cursor,
-                        hist_upto,
-                        None,
-                        budget,
-                    )
-                    .await
-                    .map_err(|e| e.to_string())?,
-                };
-                decode_frames_into(
-                    &frames,
-                    key,
-                    epoch,
-                    &hash,
-                    &mut subkeys,
-                    &mut out,
-                    &mut budget,
-                )?;
-                // consumed_to is first-class (review blocker): a partial
-                // keyed page's cursor advances over every range the read
-                // PROVED — index-verified match-free stretches and
-                // mid-run truncation points — never inferred from the
-                // last matching frame alone. Without this, a fat run
-                // that planned zero frames re-polled the same position
-                // forever.
-                if let Some(sl) = scan_last {
-                    out.last = Some(out.last.map_or(sl, |o| o.max(sl)));
-                }
-                completed
-            };
+            let completed = decode_history_range(
+                &ReadPlan::segment(
+                    key, epoch, handle, engine, scan_from, key_filter, max_bytes, deliver,
+                ),
+                HistoryRange {
+                    route,
+                    identity: hash,
+                    from: cursor,
+                    upto: hist_upto,
+                    absorbed: boundary,
+                },
+                &mut subkeys,
+                &mut out,
+                &mut budget,
+            )
+            .await?;
             if !completed {
                 // Byte-truncated, or (v1) the reader cannot prove coverage
                 // of this boundary yet: report the honest partial; the
@@ -331,51 +280,8 @@ async fn execute_segment(
             .map_err(|e| e.to_string())?;
         // Revalidate the scan against concurrent absorption before
         // trusting it.
-        let raced_boundary = if key_filter.is_none() {
-            // Unfiltered offsets below the durable frontier are dense,
-            // so ANY gap in the page IS the absorb/trim race — head OR
-            // MID-PAGE (round-13 CODE-RED: the 2026-07-27 guard checked
-            // only the head; a mid-scan retire produced {..78, 88..}
-            // pages that were consumed as complete, permanently
-            // skipping the seam for every subscriber and every resume —
-            // 11 durable records lost in field leg A1v2, reproduced
-            // deterministically by cut_resume_never_skips_a_durable_record).
-            let gap = if part.frames.is_empty() {
-                cursor < end // nothing at all in a non-empty range
-            } else {
-                // O(1): dense pages satisfy count == last - first + 1,
-                // so one head decode + the page's own last_offset
-                // detects head AND mid-page gaps without touching the
-                // hot path's per-frame budget (the O(n) version cost
-                // the capacity gate ~2%).
-                let first = match decode_frame(&part.frames[0]) {
-                    Some(f) => f.header.offset,
-                    None => return Err("bad frame".into()),
-                };
-                first > cursor
-                    || part
-                        .last_offset
-                        .is_some_and(|l| l + 1 - first != part.frames.len() as u64)
-            };
-            if gap {
-                Some(
-                    engine
-                        .durable_absorbed(&hash)
-                        .await
-                        .map_err(|e| e.to_string())?,
-                )
-            } else {
-                None
-            }
-        } else {
-            // A filtered scan cannot distinguish "trimmed" from "did not
-            // match", so always ask the remotely-durable tracker.
-            let (durable, remote_v2) = engine
-                .durable_absorbed(&hash)
-                .await
-                .map_err(|e| e.to_string())?;
-            (durable > cursor).then_some((durable, remote_v2))
-        };
+        let raced_boundary =
+            absorption_race(engine, hash, &part, cursor, end, key_filter.is_none()).await?;
         if let Some((durable, remote_v2)) = raced_boundary {
             if durable > boundary {
                 // Adopt the remote LAYOUT FLAG with the remote boundary:
@@ -503,12 +409,10 @@ impl ReadService {
 /// epoch bytes). boundary = where the entry's OWN records begin.
 /// Soft-deleted/expired ancestors still serve (their data backs this
 /// fork); a hard-deleted ancestor is an integrity error.
-fn fork_chain_of(
-    state: &ReadService,
-    desc: &StreamDesc,
-) -> std::pin::Pin<
-    Box<dyn std::future::Future<Output = Result<Vec<(StreamDesc, u64, [u8; 16])>, String>> + Send>,
-> {
+type ForkChain = Vec<(StreamDesc, u64, [u8; 16])>;
+type ForkChainFuture =
+    std::pin::Pin<Box<dyn std::future::Future<Output = Result<ForkChain, String>> + Send>>;
+fn fork_chain_of(state: &ReadService, desc: &StreamDesc) -> ForkChainFuture {
     let state_reg = state.registry.clone();
     let desc = desc.clone();
     Box::pin(async move {
@@ -696,7 +600,7 @@ pub(crate) struct ReadTopology {
     pub(crate) spans: Vec<crate::segmap::SegmentDesc>,
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ReadPosition {
     pub(crate) segment: u32,
     /// Exclusive consumed position in this segment, never record count.
@@ -710,6 +614,21 @@ impl ReadTopology {
             .as_ref()
             .map(|m| m.segments.clone())
             .unwrap_or_default();
+        if spans.is_empty() {
+            let resolved = descriptor.resolve_segment(selector.unwrap_or(""));
+            spans.push(crate::segmap::SegmentDesc {
+                seg_id: resolved.seg_id,
+                lo: 0,
+                hi: crate::segmap::KEYSPACE_END,
+                shard_prefix: String::new(),
+                route_hash: resolved.shard_route,
+                created_ms: descriptor.created_ms,
+                predecessors: vec![],
+                successors: vec![],
+                sealed_ms: None,
+                sealed_next_offset: None,
+            });
+        }
         if let Some(key) = selector {
             let point = StreamDesc::key_point(key);
             spans.retain(|s| s.contains(point));
@@ -740,7 +659,7 @@ impl ReadTopology {
         };
         let mut durable = ReadPosition {
             segment,
-            after: consumed.min(page.watermarks.durable),
+            after: page.durable_resume(start).min(cap.max(start)),
         };
         if drained
             && span.sealed_next_offset.is_some()
@@ -800,4 +719,144 @@ mod read_contract_tests {
         };
         assert_eq!(retried.durable_resume(page.durable_resume(0)), 5);
     }
+}
+
+#[path = "read_request.rs"]
+mod request;
+pub(crate) use request::{
+    ReadCommand, ReadFailure, ReadMode, ReadOutcome, ReadResultKind, ReadStart,
+};
+
+/// One history range retains its physical identity and proven boundary while
+/// the canonical postings reader plans bounded parallel envelope fetches.
+struct HistoryRange {
+    route: [u8; 16],
+    identity: [u8; 16],
+    from: u64,
+    upto: u64,
+    absorbed: u64,
+}
+async fn decode_history_range(
+    plan: &ReadPlan<'_>,
+    range: HistoryRange,
+    subkeys: &mut HashMap<(String, u32), [u8; 32]>,
+    out: &mut ReadPage,
+    budget: &mut usize,
+) -> Result<bool, String> {
+    // v2: the range lives in the shard's SHARED partition,
+    // read through the owner's open Db — no reader open, no
+    // checkpoint, no coverage probe (this Db's flush is what
+    // advanced the boundary). Frames decode like tail frames.
+    // Keyed ranges resolve their postings runs through the
+    // plan.engine's decoded slice cache (spec §7).
+    let part = plan
+        .engine
+        .history_partition()
+        .await
+        .map_err(|e| e.to_string())?;
+    let (frames, scan_last, completed) = match plan.selector {
+        Some(rk) => crate::history::read_history2_keyed_cached(
+            &plan.engine.postings_cache,
+            &part,
+            crate::crypto::RouteHash(range.route),
+            crate::crypto::SegmentHash(range.identity),
+            rk,
+            range.from,
+            range.upto,
+            range.absorbed,
+            *budget,
+        )
+        .await
+        .map_err(|e| e.to_string())?,
+        None => crate::history::read_history2(
+            &part,
+            crate::crypto::RouteHash(range.route),
+            crate::crypto::SegmentHash(range.identity),
+            range.from,
+            range.upto,
+            None,
+            *budget,
+        )
+        .await
+        .map_err(|e| e.to_string())?,
+    };
+    decode_frames_into(
+        &frames,
+        plan.key,
+        plan.epoch,
+        &range.identity,
+        subkeys,
+        out,
+        budget,
+    )?;
+    // consumed_to is first-class (review blocker): a partial
+    // keyed page's cursor advances over every range the read
+    // PROVED — index-verified match-free stretches and
+    // mid-run truncation points — never inferred from the
+    // last matching frame alone. Without this, a fat run
+    // that planned zero frames re-polled the same position
+    // forever.
+    if let Some(sl) = scan_last {
+        out.last = Some(out.last.map_or(sl, |o| o.max(sl)));
+    }
+
+    Ok(completed)
+}
+
+/// A tail page is accepted only after ruling out a concurrent durable trim.
+/// Unfiltered density is checked in O(1); filtered scans query the same shared
+/// durable tracker because an empty match cannot prove absence of a trim.
+async fn absorption_race(
+    engine: &Arc<ShardEngine>,
+    hash: [u8; 16],
+    part: &crate::shard::FrameReadResult,
+    cursor: u64,
+    end: u64,
+    unfiltered: bool,
+) -> Result<Option<(u64, bool)>, String> {
+    Ok(if unfiltered {
+        // Unfiltered offsets below the durable frontier are dense,
+        // so ANY gap in the page IS the absorb/trim race — head OR
+        // MID-PAGE (round-13 CODE-RED: the 2026-07-27 guard checked
+        // only the head; a mid-scan retire produced {..78, 88..}
+        // pages that were consumed as complete, permanently
+        // skipping the seam for every subscriber and every resume —
+        // 11 durable records lost in field leg A1v2, reproduced
+        // deterministically by cut_resume_never_skips_a_durable_record).
+        let gap = if part.frames.is_empty() {
+            cursor < end // nothing at all in a non-empty range
+        } else {
+            // O(1): dense pages satisfy count == last - first + 1,
+            // so one head decode + the page's own last_offset
+            // detects head AND mid-page gaps without touching the
+            // hot path's per-frame budget (the O(n) version cost
+            // the capacity gate ~2%).
+            let first = match decode_frame(&part.frames[0]) {
+                Some(f) => f.header.offset,
+                None => return Err("bad frame".into()),
+            };
+            first > cursor
+                || part
+                    .last_offset
+                    .is_some_and(|l| l + 1 - first != part.frames.len() as u64)
+        };
+        if gap {
+            Some(
+                engine
+                    .durable_absorbed(&hash)
+                    .await
+                    .map_err(|e| e.to_string())?,
+            )
+        } else {
+            None
+        }
+    } else {
+        // A filtered scan cannot distinguish "trimmed" from "did not
+        // match", so always ask the remotely-durable tracker.
+        let (durable, remote_v2) = engine
+            .durable_absorbed(&hash)
+            .await
+            .map_err(|e| e.to_string())?;
+        (durable > cursor).then_some((durable, remote_v2))
+    })
 }

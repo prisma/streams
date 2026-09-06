@@ -16,3 +16,5 @@ mod consumer_remote;
 pub(crate) mod names;
 
 pub(crate) mod watch;
+
+pub(crate) mod read_scan;

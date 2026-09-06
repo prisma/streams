@@ -230,8 +230,226 @@ fn parse_scan_page(v: &serde_json::Value) -> Option<super::read::ReadPage> {
             applied: v["end"].as_u64()?,
         },
         recs,
-        last: v["last"].as_u64(),
+        last: match v.get("last")? {
+            serde_json::Value::Null => None,
+            value => Some(value.as_u64()?),
+        },
         end: v["end"].as_u64()?,
         completed: v["completed"].as_bool()?,
     })
+}
+
+/// Bounded peer page DTO. Every resume field is mandatory; decoding a missing
+/// cursor or watermark is a protocol error, never a successful zero position.
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct WireReadPage {
+    epoch: String,
+    records: Vec<WireReadRecord>,
+    next: super::read::ReadPosition,
+    durable: Option<super::read::ReadPosition>,
+    pending_from: Option<usize>,
+    up_to_date: bool,
+    closed: bool,
+    kind: super::read::ReadResultKind,
+    segmented: bool,
+    identity: [u8; 16],
+    scan_from: u64,
+    end: u64,
+}
+#[derive(serde::Serialize, serde::Deserialize)]
+struct WireReadRecord {
+    off: u64,
+    key: String,
+    payload: String,
+}
+impl WireReadPage {
+    pub(crate) fn from_outcome(out: &super::read::ReadOutcome) -> Self {
+        use base64::Engine;
+        Self {
+            epoch: out.descriptor.stream_epoch.clone(),
+            records: out
+                .records
+                .iter()
+                .map(|record| WireReadRecord {
+                    off: record.off,
+                    key: record.rkey.clone(),
+                    payload: base64::engine::general_purpose::STANDARD.encode(&record.payload),
+                })
+                .collect(),
+            next: out.next,
+            durable: out.durable,
+            pending_from: out.pending_from,
+            up_to_date: out.up_to_date,
+            closed: out.closed,
+            kind: out.kind,
+            segmented: out.segmented,
+            identity: out.identity,
+            scan_from: out.scan_from,
+            end: out.end,
+        }
+    }
+    fn into_outcome(
+        self,
+        command: &super::read::ReadCommand,
+    ) -> Result<super::read::ReadOutcome, RemoteSpanError> {
+        use base64::Engine;
+        if self.epoch != command.descriptor.stream_epoch
+            || command
+                .descriptor
+                .segment_route_by_id(self.next.segment)
+                .is_none()
+            || self
+                .durable
+                .is_some_and(|p| command.descriptor.segment_route_by_id(p.segment).is_none())
+        {
+            return Err(RemoteSpanError::TargetMismatch);
+        }
+        if self
+            .pending_from
+            .is_some_and(|index| index >= self.records.len())
+        {
+            return Err(RemoteSpanError::InvalidResponse(
+                "invalid pending record index".into(),
+            ));
+        }
+        let mut records = Vec::with_capacity(self.records.len());
+        for record in self.records {
+            let payload = base64::engine::general_purpose::STANDARD
+                .decode(record.payload)
+                .map_err(|e| RemoteSpanError::InvalidResponse(e.to_string()))?;
+            records.push(super::read::PlainRec {
+                off: record.off,
+                rkey: record.key,
+                payload: Bytes::from(payload),
+            });
+        }
+        Ok(super::read::ReadOutcome {
+            descriptor: command.descriptor.clone(),
+            records,
+            next: self.next,
+            durable: self.durable,
+            pending_from: self.pending_from,
+            up_to_date: self.up_to_date,
+            closed: self.closed,
+            kind: self.kind,
+            segmented: self.segmented,
+            identity: self.identity,
+            scan_from: self.scan_from,
+            end: self.end,
+            waited: false,
+            wait_micros: 0,
+            read_micros: 0,
+        })
+    }
+}
+
+/// The public read coordinator's peer adapter. Bounded pages only; live waits
+/// stay with the effective owner. Redirect destinations come from the trusted
+/// peer table and at most one ownership redirect is followed.
+pub(crate) async fn remote_read_page(
+    peer: &crate::peer::PeerClient,
+    initial_owner: &str,
+    command: &super::read::ReadCommand,
+    segment: u32,
+    from: u64,
+) -> Result<super::read::ReadOutcome, super::read::ReadFailure> {
+    use super::read::ReadFailure;
+    let target =
+        InternalTarget::of(&command.descriptor, segment).ok_or(ReadFailure::InvalidCursor)?;
+    let key = command.key.as_ref().ok_or(ReadFailure::MissingKey)?;
+    use base64::Engine;
+    let key = base64::engine::general_purpose::STANDARD.encode(key.0);
+    let offset = if from == u64::MAX {
+        "now".to_string()
+    } else {
+        crate::offsets::encode_ep(segment, crate::offsets::Offset(from.checked_sub(1)))
+    };
+    let mut owner = initial_owner.to_string();
+    for hop in 0..2 {
+        let base = peer.url_for(&owner).ok_or_else(|| {
+            ReadFailure::Remote(RemoteSpanError::Transport(format!("unknown peer {owner}")))
+        })?;
+        let mut query = vec![("offset", offset.clone())];
+        if let Some(selector) = &command.selector {
+            query.push(("key", selector.clone()));
+        }
+        if matches!(command.mode, super::read::ReadMode::Head) {
+            query.push(("head", "1".into()));
+        }
+        let mut request = crate::peer::client()
+            .get(format!(
+                "{base}/v1/internal/segment-read/{}",
+                crate::peer::encode_stream_name_path(&command.descriptor.name)
+            ))
+            .query(&query)
+            .timeout(std::time::Duration::from_secs(20))
+            .header("streams-internal-read-page", "1")
+            .header("stream-encryption-key", &key)
+            .header("streams-internal-max-bytes", command.max_bytes.to_string());
+        for (name, value) in target.headers() {
+            request = request.header(name, value);
+        }
+        if command.visibility == crate::shard::Deliver::Applied {
+            request = request.header("streams-internal-deliver", "applied");
+        }
+        let response = peer
+            .send(|bearer| {
+                let mut request = request.try_clone().expect("read request is clonable");
+                if let Some(token) = bearer {
+                    request = request.bearer_auth(token);
+                }
+                request
+            })
+            .await
+            .map_err(|e| ReadFailure::Remote(RemoteSpanError::Transport(e.to_string())))?;
+        let status = response.status();
+        if status.as_u16() == 409
+            && let Some(next) = response
+                .headers()
+                .get("streams-replay-to")
+                .and_then(|v| v.to_str().ok())
+                .map(str::to_owned)
+        {
+            if hop == 0 && next != owner && peer.has_peer(&next) {
+                owner = next;
+                continue;
+            }
+            return Err(ReadFailure::Remote(RemoteSpanError::RedirectLoop {
+                first: owner,
+                second: next,
+            }));
+        }
+        if !status.is_success() {
+            return Err(match status.as_u16() {
+                404 => ReadFailure::Missing,
+                410 => ReadFailure::Gone,
+                401 => ReadFailure::Remote(RemoteSpanError::Unauthorized),
+                409 => ReadFailure::ChangedIncarnation,
+                429 | 503 => ReadFailure::Remote(RemoteSpanError::Retryable {
+                    status: status.as_u16(),
+                    code: None,
+                }),
+                _ => ReadFailure::Remote(RemoteSpanError::InvalidResponse(format!(
+                    "read peer status {status}"
+                ))),
+            });
+        }
+        use futures_util::StreamExt;
+        let mut stream = response.bytes_stream();
+        let mut bytes = bytes::BytesMut::new();
+        while let Some(chunk) = stream.next().await {
+            let chunk = chunk
+                .map_err(|e| ReadFailure::Remote(RemoteSpanError::Transport(e.to_string())))?;
+            if bytes.len() + chunk.len() > 24 * 1024 * 1024 {
+                return Err(ReadFailure::Remote(RemoteSpanError::InvalidResponse(
+                    "read peer page exceeds the bound".into(),
+                )));
+            }
+            bytes.extend_from_slice(&chunk);
+        }
+        let page: WireReadPage = serde_json::from_slice(&bytes)
+            .map_err(|e| ReadFailure::Remote(RemoteSpanError::InvalidResponse(e.to_string())))?;
+        return page.into_outcome(command).map_err(ReadFailure::Remote);
+    }
+    unreachable!("two bounded attempts always return")
 }

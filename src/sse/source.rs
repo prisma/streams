@@ -754,7 +754,7 @@ impl FeedSourceRead for LineageSource {
 
 /// Stage 6.3: the ONE descriptor-refresh decision, shared by every
 /// source implementation. Called ONLY under the feed's driver permit.
-/// Genuine-close detection mirrors `http::genuine_closure` exactly
+/// Genuine-close detection uses the read service incarnation boundary
 /// (no materialized map, or a <=1-segment map with nothing pending).
 pub(crate) async fn refresh_transition(
     state: &Arc<crate::application::read::ReadService>,
