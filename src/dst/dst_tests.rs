@@ -238,3 +238,6 @@ mod read_page_limits;
 
 #[path = "tests/read_page_assembly.rs"]
 mod read_page_assembly;
+
+#[path = "tests/runtime_engine_lifecycle.rs"]
+mod runtime_engine_lifecycle;

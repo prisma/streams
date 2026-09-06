@@ -604,7 +604,7 @@
       ],
       "owner": "ShardEngine-owned history absorber",
       "mechanism": "Real active budget reservation and history SST PUT, registered engine task and close watch",
-      "entered_proof": "Reservation slot enters while all bytes are held, or data SST PUT enters; engine joins before release",
+      "entered_proof": "Reservation slot enters while all bytes are held, or data SST PUT enters; actual engine workers join before release and the sole store-close owner joins after release",
       "oracle": "Cancellation releases task/budget and lag state; durable dirty marker remains for a fresh owner to absorb exact data",
       "configuration": {
         "held_modes": [
@@ -631,7 +631,7 @@
         {
           "file": "src/history/controller_tests.rs",
           "name": "active_absorber_cancel",
-          "sha256": "e9cdb62c69ba22f3c357d76e3e70aee900685a21b2fcea6b4b1a54af05b29405"
+          "sha256": "55db5d661e4c3c4f7b69a7de356a0ddf35964e185b28bf9102ec9f1a10a46867"
         }
       ]
     },
@@ -881,6 +881,15 @@
       "before_sha256": "8208d4833c0ade725312fffeb5a1d9b5e2b39a24f3c5d4817280e2b04aa44a54",
       "after_sha256": "a37017dde1939f51da0ffb22dd5302ddba1251ff32c9c38d08ab4bea6c5d0c0c",
       "reason": "The e273 preflight failed because fleet/desired.json is classified Fleet, so the Other hold never entered. Select the actual Fleet class for GET and PUT; preserve all exact deadline, entered-operation, source bytes/version and retry assertions."
+    },
+    {
+      "file": "src/history/controller_tests.rs",
+      "name": "active_absorber_cancel",
+      "before_commit": "93f77ecfdb053850773bb698b3512e3777ce3354",
+      "before_sha256": "e9cdb62c69ba22f3c357d76e3e70aee900685a21b2fcea6b4b1a54af05b29405",
+      "after_sha256": "55db5d661e4c3c4f7b69a7de356a0ddf35964e185b28bf9102ec9f1a10a46867",
+      "finding": "R17-A",
+      "reason": "Retain the original held-operation, released-reservation, lag and exact dirty-debt replay assertions. Observe worker termination before releasing the held storage barrier, then additionally await the authoritative store-close owner before opening the next writer. The stronger full termination contract must not be bypassed by a second Db.close call."
     }
   ]
 }

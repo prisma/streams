@@ -139,6 +139,7 @@ def check() -> list[str]:
         ] for name in names
     }
     required_units[('src/fleet/repository/document_tests.rs', 'r09_fleet_document_deadlines_leave_cas_source_retryable')] = 'e273b3a94f6de769b361f8eeef3433b308c6eb07'
+    required_units[('src/history/controller_tests.rs', 'active_absorber_cancel')] = '93f77ecfdb053850773bb698b3512e3777ce3354'
     for section, required_changes in [('fixture_changes', required_fixtures), ('source_adaptations', required_units)]:
         changes = manifest.get(section, [])
         failures.extend(source_anchor_failures(changes, required_changes))

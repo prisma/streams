@@ -694,7 +694,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         &config.shard,
         state.runtime.clock.clone(),
         &tasks,
-        state.shards.health(),
+        state.shards.clone(),
     );
     // PR 6.1-A: SIGTERM / Ctrl-C request the ordered shutdown — the
     // accept loop returns once cancelled, then every loop is joined.
@@ -896,13 +896,14 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
             &tasks,
         );
     }
+    let shards = state.shards.clone();
     let app = crate::http::router(state);
 
     crate::store_timing::spawn_sentinels();
 
     // #269: bounded h1 buffers — see http::serve_h1.
     let max_buf = config.http.h1_max_buf;
-    crate::http::serve_h1(listener, app, max_buf, tasks.clone()).await?;
+    let served = crate::http::serve_h1(listener, app, max_buf, tasks.clone()).await;
     // PR 6-F / 6.1-A: the accept loop returned because shutdown was
     // requested — its connections are already gone; now every supervised
     // loop is cancelled, joined and reported (WP-15 §9 sequences
@@ -914,5 +915,10 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         panicked = ?report.panicked(),
         "supervised loops stopped"
     );
+    shards
+        .shutdown(std::time::Duration::from_secs(10))
+        .await
+        .map_err(anyhow::Error::msg)?;
+    served?;
     Ok(())
 }

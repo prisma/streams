@@ -14,11 +14,13 @@
 //! state, and a strong edge from the state back to the supervisor would
 //! make a runtime that failed to start immortal.
 
+mod shutdown;
 /// The runtime's termination input, prepared before any task starts.
 pub mod signal;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, Weak};
+#[cfg(test)]
 use std::time::Duration;
 
 use tokio::task::JoinHandle;
@@ -166,12 +168,16 @@ struct SupervisorState {
     completion: Option<tokio::sync::watch::Receiver<Option<Arc<ShutdownReport>>>>,
     /// The terminal report, once the driver has joined everything.
     report: Option<Arc<ShutdownReport>>,
+    /// Workers are joined before resource finalization. This is observable
+    /// separately from full termination and never claims stores are closed.
+    workers: Option<Arc<ShutdownReport>>,
 }
 
 struct Inner {
     state: Mutex<SupervisorState>,
     cancel_tx: tokio::sync::watch::Sender<bool>,
     cancel: Cancellation,
+    workers_done: tokio::sync::Notify,
 }
 
 impl Inner {
@@ -290,9 +296,11 @@ impl TaskSupervisor {
                     tasks: BTreeMap::new(),
                     completion: None,
                     report: None,
+                    workers: None,
                 }),
                 cancel_tx,
                 cancel: Cancellation { rx },
+                workers_done: tokio::sync::Notify::new(),
             }),
         }
     }
@@ -366,124 +374,6 @@ impl TaskSupervisor {
             }
         }
         let _ = self.inner.cancel_tx.send(true);
-    }
-
-    /// Ordered, bounded shutdown: close registration, signal
-    /// cancellation, give every task until one shared deadline, abort
-    /// the survivors, then JOIN every task — aborted ones included — and
-    /// record how each ended. When this returns, no supervised task is
-    /// running.
-    ///
-    /// PR 6.1.1-A: shutdown is SINGLE-FLIGHT and CANCELLATION-SAFE. The
-    /// first caller moves the task handles into one internally spawned
-    /// driver whose lifetime does not depend on any caller; every caller
-    /// (including this one) then awaits that driver's completion and
-    /// receives the SAME terminal report. Dropping a waiting caller
-    /// cannot detach the tasks, because the caller never owned them, and
-    /// only the driver may declare the runtime `Stopped`.
-    pub async fn shutdown(&self, grace: Duration) -> ShutdownReport {
-        let mut rx = {
-            let mut st = self.inner.state.lock().unwrap();
-            if let Some(report) = st.report.clone() {
-                return (*report).clone();
-            }
-            match st.completion.clone() {
-                // A driver is already running: wait for it, do not start
-                // a second one and never declare Stopped ourselves.
-                Some(rx) => rx,
-                None => {
-                    st.phase = Phase::ShuttingDown;
-                    let tasks = std::mem::take(&mut st.tasks);
-                    let (tx, rx) = tokio::sync::watch::channel(None);
-                    st.completion = Some(rx.clone());
-                    let inner = self.inner.clone();
-                    // The DRIVER owns the handles from here. Spawned, so
-                    // cancelling any waiting caller cannot strand them.
-                    tokio::spawn(async move {
-                        let report = Arc::new(drive_shutdown(&inner, tasks, grace).await);
-                        {
-                            let mut st = inner.state.lock().unwrap();
-                            st.phase = Phase::Stopped;
-                            st.report = Some(report.clone());
-                        }
-                        let _ = tx.send(Some(report));
-                    });
-                    rx
-                }
-            }
-        };
-        let _ = self.inner.cancel_tx.send(true);
-        loop {
-            if let Some(report) = rx.borrow().clone() {
-                return (*report).clone();
-            }
-            if rx.changed().await.is_err() {
-                // The driver's sender is gone without a report only if
-                // the runtime is tearing down; report what state holds.
-                return self
-                    .inner
-                    .state
-                    .lock()
-                    .unwrap()
-                    .report
-                    .clone()
-                    .map(|r| (*r).clone())
-                    .unwrap_or_default();
-            }
-        }
-    }
-}
-
-/// The one shutdown sequence, owned by the driver task.
-async fn drive_shutdown(
-    inner: &Arc<Inner>,
-    tasks: BTreeMap<TaskId, Supervised>,
-    grace: Duration,
-) -> ShutdownReport {
-    let _ = inner.cancel_tx.send(true);
-    let deadline = tokio::time::Instant::now() + grace;
-    let mut outcomes: BTreeMap<TaskId, (&'static str, TaskOutcome)> = BTreeMap::new();
-    let mut survivors: Vec<(TaskId, Supervised)> = Vec::new();
-    for (id, mut t) in tasks {
-        match tokio::time::timeout_at(deadline, &mut t.handle).await {
-            Ok(joined) => {
-                outcomes.insert(id, (t.name, classify(joined)));
-            }
-            Err(_elapsed) => {
-                t.handle.abort();
-                survivors.push((id, t));
-            }
-        }
-    }
-    let mut aborted: Vec<(TaskId, &'static str)> = Vec::new();
-    for (id, mut t) in survivors {
-        aborted.push((id, t.name));
-        // Abort only REQUESTS cancellation; joining proves the future
-        // was dropped, its destructors ran and its resources are gone.
-        let joined = (&mut t.handle).await;
-        outcomes.insert(id, (t.name, classify(joined)));
-    }
-    aborted.sort_by_key(|(id, _)| *id);
-    ShutdownReport {
-        outcomes: outcomes.into_values().collect(),
-        aborted: aborted.into_iter().map(|(_, name)| name).collect(),
-    }
-}
-
-fn classify(joined: Result<TaskResult, tokio::task::JoinError>) -> TaskOutcome {
-    match joined {
-        Ok(TaskResult::Done) => TaskOutcome::Finished,
-        Ok(TaskResult::Failed(e)) => TaskOutcome::Failed(e),
-        Err(e) if e.is_panic() => {
-            let p = e.into_panic();
-            let msg = p
-                .downcast_ref::<&str>()
-                .map(|s| s.to_string())
-                .or_else(|| p.downcast_ref::<String>().cloned())
-                .unwrap_or_else(|| "panic".to_string());
-            TaskOutcome::Panicked(msg)
-        }
-        Err(_) => TaskOutcome::Cancelled,
     }
 }
 

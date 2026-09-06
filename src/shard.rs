@@ -20,11 +20,14 @@ use tokio::sync::{Notify, mpsc, oneshot};
 pub(crate) mod record;
 pub use record::{FrameReadResult, read_frames, read_frames_range};
 mod commit_plan;
+mod history_partition;
+mod lifecycle;
 pub use commit_plan::{AppendFinish, CloseReq, EnqueueError, SealFenceReq, UsageAckScope};
 use commit_plan::{
     BillingAckDecision, ConsumerGeneration, DurableEffects, ProducerDecision, decide_billing_ack,
     decide_consumer_generation, decide_producer, seal_authorized,
 };
+pub(crate) use lifecycle::EngineShutdown;
 
 pub fn tail_key(hash: &[u8; 16]) -> Vec<u8> {
     let mut k = Vec::with_capacity(17);
@@ -1141,7 +1144,7 @@ pub struct ShardEngine {
     /// two independent opens would fence each other. Closed with the
     /// engine; a new shard owner's open fences this one at the slatedb
     /// layer, same dynamics as the per-stream v1 DBs.
-    history2: tokio::sync::OnceCell<Arc<Db>>,
+    history2: Arc<history_partition::HistoryPartition>,
     /// Pre-built SlateDB settings for `history2` (history knobs + the
     /// ONE process-wide compactor profile, from the engine's ShardConfig).
     history2_settings: slatedb::config::Settings,
@@ -1277,7 +1280,7 @@ pub struct ShardEngine {
     close_tx: tokio::sync::watch::Sender<bool>,
     /// Handles for every task this engine spawned, so termination is a
     /// provable fact (`await_terminated`) instead of an assumption.
-    tasks: Mutex<Vec<(&'static str, tokio::task::JoinHandle<()>)>>,
+    tasks: lifecycle::EngineTasks,
     flush_wake: Notify,
     /// Group-commit pump wake: one permit means "commits landed since the
     /// pump last looked". Distinct from flush_wake, whose permit the acker
@@ -1361,7 +1364,7 @@ impl ShardEngine {
             maintenance: std::sync::RwLock::new(initial_maintenance),
             maintenance_shard_shed: std::sync::atomic::AtomicBool::new(false),
             data_store,
-            history2: tokio::sync::OnceCell::new(),
+            history2: Arc::new(history_partition::HistoryPartition::default()),
             history2_settings,
             streams: Mutex::new(HashMap::new()),
             seal_fences: Mutex::new(HashMap::new()),
@@ -1438,7 +1441,7 @@ impl ShardEngine {
             on_close,
             closed: std::sync::atomic::AtomicBool::new(false),
             close_tx,
-            tasks: Mutex::new(Vec::new()),
+            tasks: lifecycle::EngineTasks::default(),
             commit_write_started_ms: std::sync::atomic::AtomicI64::new(0),
             stats_appended: AtomicU64::new(0),
             timings: Mutex::new(std::collections::VecDeque::new()),
@@ -1452,7 +1455,6 @@ impl ShardEngine {
         // faster than the gap it enforces the same max SST mint rate as the
         // old tick. SlateDB's own flush_interval stays on as a long
         // failsafe (shard_settings stretches it when the pump is enabled).
-        let mut task_handles: Vec<(&'static str, tokio::task::JoinHandle<()>)> = Vec::new();
         if cfg.wal_group_commit {
             let pump = engine.clone();
             let gap = cfg.wal_flush_gap;
@@ -1465,7 +1467,7 @@ impl ShardEngine {
                 gather_ms = gather.as_millis() as u64,
                 "WAL group-commit pump on"
             );
-            let h = tokio::spawn(async move {
+            engine.spawn_required("pump", async move {
                 use slatedb::config::{FlushOptions, FlushType};
                 let mut status_rx = pump.db.subscribe();
                 let mut last_start: Option<std::time::Instant> = None;
@@ -1655,85 +1657,89 @@ impl ShardEngine {
                     }
                 }
             });
-            task_handles.push(("pump", h));
         }
         let committer = engine.clone();
-        task_handles.push((
-            "committer",
-            tokio::spawn(async move { committer.committer_loop(rx, cfg).await }),
-        ));
+        engine.spawn_required("committer", async move {
+            committer.committer_loop(rx, cfg).await
+        });
         let acker = engine.clone();
-        task_handles.push((
-            "acker",
-            tokio::spawn(async move { acker.acker_loop().await }),
-        ));
+        engine.spawn_required("acker", async move { acker.acker_loop().await });
         // F1 recovery bound: `max_wal_flushes_before_l0_flush` has a 4096
         // upstream floor, so we cap the WAL replay window ourselves with a
         // periodic explicit memtable->L0 flush whenever data accumulated.
         let ticker = engine.clone();
         let mut ticker_closed = engine.close_tx.subscribe();
-        task_handles.push((
-            "flush-ticker",
-            tokio::spawn(async move {
-                use slatedb::config::{FlushOptions, FlushType};
-                let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
-                let mut last_appended = 0u64;
-                loop {
-                    tokio::select! {
-                        _ = ticker_closed.changed() => {
-                            if *ticker_closed.borrow() {
-                                return;
-                            }
-                        }
-                        _ = interval.tick() => {}
-                    }
-                    if ticker.is_closed() {
-                        return;
-                    }
-                    let appended = ticker.stats_appended.load(Ordering::Relaxed);
-                    if appended != last_appended {
-                        last_appended = appended;
-                        if let Err(e) = ticker
-                            .db
-                            .flush_with_options(FlushOptions {
-                                flush_type: FlushType::MemTable,
-                            })
-                            .await
-                        {
-                            tracing::warn!(shard = %ticker.prefix, "memtable flush tick failed: {e}");
+        engine.spawn_required("flush-ticker", async move {
+            use slatedb::config::{FlushOptions, FlushType};
+            let mut interval = tokio::time::interval(std::time::Duration::from_secs(5));
+            let mut last_appended = 0u64;
+            loop {
+                tokio::select! {
+                    _ = ticker_closed.changed() => {
+                        if *ticker_closed.borrow() {
+                            return;
                         }
                     }
-                    let idle = ticker.handle_idle_evict;
-                    if !idle.is_zero() || ticker.handle_max_resident > 0 {
-                        let evicted =
-                            ticker.evict_idle_handles(idle, ticker.handle_max_resident);
-                        if evicted > 0 {
-                            tracing::debug!(
-                                shard = %ticker.prefix,
-                                "evicted {evicted} idle stream handles"
-                            );
-                        }
-                    }
-                    ticker
-                        .postings_cache
-                        .sweep_idle(crate::postings_cache::POSTINGS_CACHE_IDLE);
-                    // Trim maintenance pulse: whenever streams owe
-                    // physical trims, queue one budgeted TrimTick.
-                    // try_send — a full committer queue means the next
-                    // tick retries; trim work is never urgent enough to
-                    // block behind.
-                    if !ticker.trim_debt.lock().unwrap().is_empty() {
-                        let _ = ticker.tx.try_send(CommitOp::TrimTick);
+                    _ = interval.tick() => {}
+                }
+                if ticker.is_closed() {
+                    return;
+                }
+                let appended = ticker.stats_appended.load(Ordering::Relaxed);
+                if appended != last_appended {
+                    last_appended = appended;
+                    if let Err(e) = ticker
+                        .db
+                        .flush_with_options(FlushOptions {
+                            flush_type: FlushType::MemTable,
+                        })
+                        .await
+                    {
+                        tracing::warn!(shard = %ticker.prefix, "memtable flush tick failed: {e}");
                     }
                 }
-            }),
-        ));
-        *engine.tasks.lock().unwrap() = task_handles;
+                let idle = ticker.handle_idle_evict;
+                if !idle.is_zero() || ticker.handle_max_resident > 0 {
+                    let evicted = ticker.evict_idle_handles(idle, ticker.handle_max_resident);
+                    if evicted > 0 {
+                        tracing::debug!(
+                            shard = %ticker.prefix,
+                            "evicted {evicted} idle stream handles"
+                        );
+                    }
+                }
+                ticker
+                    .postings_cache
+                    .sweep_idle(crate::postings_cache::POSTINGS_CACHE_IDLE);
+                // Trim maintenance pulse: whenever streams owe
+                // physical trims, queue one budgeted TrimTick.
+                // try_send — a full committer queue means the next
+                // tick retries; trim work is never urgent enough to
+                // block behind.
+                if !ticker.trim_debt.lock().unwrap().is_empty() {
+                    let _ = ticker.tx.try_send(CommitOp::TrimTick);
+                }
+            }
+        });
         engine
     }
 
-    pub(crate) fn register_task(&self, label: &'static str, task: tokio::task::JoinHandle<()>) {
-        self.tasks.lock().unwrap().push((label, task));
+    pub(crate) fn spawn_required(
+        self: &Arc<Self>,
+        role: &'static str,
+        future: impl std::future::Future<Output = ()> + Send + 'static,
+    ) {
+        self.tasks.required(self, role, future);
+    }
+
+    pub(crate) fn required_task_failure(&self) -> Option<&'static str> {
+        self.tasks.failure()
+    }
+    pub(crate) fn shutdown_handle(&self) -> EngineShutdown {
+        self.tasks.handle()
+    }
+    pub(crate) fn termination_complete(&self) -> bool {
+        self.tasks.terminated()
     }
 
     /// Level-triggered notification also covers subscription after close.
@@ -1746,30 +1752,18 @@ impl ShardEngine {
         }
     }
 
-    /// Await every background task this engine spawned, up to `timeout`.
-    ///
-    /// `JoinHandle::is_finished()` is not evidence of clean termination —
-    /// it is also true after a panic. This joins each task and names the
-    /// stragglers, so "the fenced owner's tasks exited" is a provable
-    /// statement (the committer used to be unprovable: it held the engine,
-    /// the engine held its sender, so the channel could never close).
+    /// Observe the engine's one owned shutdown. Timeout/cancellation only
+    /// stops this observer; workers and storage closure retain their owner.
     pub async fn await_terminated(&self, timeout: std::time::Duration) -> Result<(), String> {
-        let handles: Vec<(&'static str, tokio::task::JoinHandle<()>)> =
-            self.tasks.lock().unwrap().drain(..).collect();
-        let deadline = tokio::time::Instant::now() + timeout;
-        let mut failed: Vec<String> = Vec::new();
-        for (name, h) in handles {
-            match tokio::time::timeout_at(deadline, h).await {
-                Ok(Ok(())) => {}
-                Ok(Err(e)) => failed.push(format!("{name}: panicked ({e})")),
-                Err(_) => failed.push(format!("{name}: still running at timeout")),
-            }
-        }
-        if failed.is_empty() {
-            Ok(())
-        } else {
-            Err(failed.join("; "))
-        }
+        self.begin_close();
+        self.tasks.wait(timeout).await
+    }
+
+    /// Worker reservations may be released while a native store close is
+    /// still blocked. This narrower milestone never reports full termination.
+    pub(crate) async fn await_workers(&self, timeout: std::time::Duration) -> Result<(), String> {
+        self.begin_close();
+        self.tasks.workers(timeout).await
     }
 
     pub fn try_enqueue(&self, req: AppendReq) -> Result<(), EnqueueError> {
@@ -1802,6 +1796,9 @@ impl ShardEngine {
     }
 
     fn try_command(&self, command: CommitOp) -> Result<(), EnqueueError> {
+        if self.is_closed() {
+            return Err(EnqueueError::Closed);
+        }
         self.tx.try_send(command).map_err(|error| match error {
             mpsc::error::TrySendError::Full(_) => EnqueueError::Full,
             mpsc::error::TrySendError::Closed(_) => EnqueueError::Closed,
@@ -1830,17 +1827,15 @@ impl ShardEngine {
     /// propagates — clients sat out their full timeout (ladder D3:
     /// exactly one in-flight batch per worker lost at the move moment).
     pub fn begin_close(&self) {
-        self.ops.emit(
-            crate::ops::OpsEvent::new(
-                "engine_closed",
-                format!(
-                    "engine/{}/closed/{}",
-                    self.prefix,
-                    crate::shard::now_ms() / 1000
-                ),
-            )
-            .shard(&self.prefix),
-        );
+        // Fence before touching shared worker state: a panicked worker can
+        // poison those mutexes. One owner starts even if cleanup then fails.
+        let first = !self.closed.swap(true, Ordering::SeqCst);
+        if first {
+            let _ = self.close_tx.send(true);
+            self.pump_wake.notify_one();
+            self.tasks
+                .begin_close(self.db.clone(), self.history2.clone(), self.prefix.clone());
+        }
         // Wake every parked live reader — on EVERY call, before the
         // double-close guard. A session parked on an idle tail has no
         // traffic to surface the fence to it: its next read re-checks
@@ -1853,16 +1848,24 @@ impl ShardEngine {
         // notifying — the parked session then held keep-alives
         // forever (round-11.4 fleet finding; the guarded-skip variant
         // reproduced only on slow CI runners).
-        for h in self.streams.lock().unwrap().values() {
+        for h in self
+            .streams
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .values()
+        {
             h.notify.notify_waiters();
             h.applied_notify.notify_waiters();
         }
-        if self.closed.swap(true, Ordering::SeqCst) {
+        if !first {
             return; // already closing
         }
-        let _ = self.close_tx.send(true);
-        self.pump_wake.notify_one();
-        let stranded: Vec<InFlightGroup> = self.in_flight.lock().unwrap().drain(..).collect();
+        let stranded: Vec<InFlightGroup> = self
+            .in_flight
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .drain(..)
+            .collect();
         for group in stranded {
             for (resp, _) in group.effects.acks {
                 let _ = resp.send(Err(AppendErr::Moved));
@@ -1874,26 +1877,17 @@ impl ShardEngine {
         if let Some(cb) = &self.on_close {
             cb();
         }
-        // Actually close the slatedb Db. Without this the moved-away
-        // shard keeps a ZOMBIE db: its compactor/GC/flusher run until the
-        // new owner fences it on first routed request — which lazy opening
-        // can delay indefinitely (ladder p3: 92 minutes of unowned zombie
-        // on shard 000, GC racing the eventual open).
-        let db = self.db.clone();
-        let history2 = self.history2.get().cloned();
-        let prefix = self.prefix.clone();
-        tokio::spawn(async move {
-            if let Err(e) = db.close().await {
-                tracing::warn!(shard = %prefix, "db close after move-away: {e}");
-            }
-            // Same zombie logic for the shared history partition: the new
-            // owner's open fences it, but close it deliberately.
-            if let Some(h2) = history2
-                && let Err(e) = h2.close().await
-            {
-                tracing::warn!(shard = %prefix, "history2 close after move-away: {e}");
-            }
-        });
+        self.ops.emit(
+            crate::ops::OpsEvent::new(
+                "engine_closed",
+                format!(
+                    "engine/{}/closed/{}",
+                    self.prefix,
+                    crate::shard::now_ms() / 1000
+                ),
+            )
+            .shard(&self.prefix),
+        );
     }
 
     /// How long the current commit db.write has been blocked (0 = idle).
@@ -1977,7 +1971,7 @@ impl ShardEngine {
     /// must never trigger an open (an idle shard would materialize a
     /// whole partition DB just to report zeros).
     pub fn history_partition_if_open(&self) -> Option<Arc<Db>> {
-        self.history2.get().cloned()
+        self.history2.get()
     }
 
     /// The shard's shared history v2 partition, opened once and shared
@@ -1987,39 +1981,26 @@ impl ShardEngine {
     /// encryption; re-compressing ciphertext is pure waste).
     pub async fn history_partition(&self) -> Result<Arc<Db>, slatedb::Error> {
         if self.is_closed() {
-            return Err(slatedb::Error::data("engine closed".to_string()));
+            return Err(slatedb::Error::closed(
+                "engine closed".into(),
+                slatedb::CloseReason::Clean,
+            ));
         }
-        let part = self
-            .history2
-            .get_or_try_init(|| async {
-                let path = crate::sharddir::history2_path(&self.prefix);
-                let store = self.data_store.clone();
-                let settings = self.history2_settings.clone();
-                let cache = self.history_resources.cache.clone();
-                let db = crate::bootstrap::on_slatedb_rt(async move {
+        let path = crate::sharddir::history2_path(&self.prefix);
+        let store = self.data_store.clone();
+        let settings = self.history2_settings.clone();
+        let cache = self.history_resources.cache.clone();
+        self.history2
+            .open(move || {
+                crate::bootstrap::on_slatedb_rt(async move {
                     Db::builder(path.as_str(), store)
                         .with_settings(settings)
                         .with_db_cache(cache)
                         .build()
                         .await
                 })
-                .await?;
-                Ok::<_, slatedb::Error>(Arc::new(db))
             })
             .await
-            .cloned()?;
-        // Close race (static audit): begin_close snapshots only the
-        // INITIALIZED cell — an open in flight at that instant would
-        // otherwise escape the deliberate close path. Re-check after
-        // init and shut the fresh partition down ourselves.
-        if self.is_closed() {
-            let doomed = part.clone();
-            tokio::spawn(async move {
-                let _ = doomed.close().await;
-            });
-            return Err(slatedb::Error::data("engine closed".to_string()));
-        }
-        Ok(part)
     }
 
     /// Enumerate the durable dirty-stream index: every stream whose last
@@ -2416,13 +2397,9 @@ impl ShardEngine {
     async fn committer_loop(self: Arc<Self>, mut rx: mpsc::Receiver<CommitOp>, cfg: ShardConfig) {
         // The close signal is the ONLY way out: this task holds the engine
         // and the engine holds a sender, so `rx` can never report closed.
-        let mut closed_rx = self.close_tx.subscribe();
         loop {
             let first = tokio::select! {
-                _ = closed_rx.changed() => {
-                    if !*closed_rx.borrow() {
-                        continue;
-                    }
+                _ = self.closed() => {
                     // Fail everything still queued — their clients would
                     // otherwise hang into their own timeouts — then exit.
                     while let Ok(op) = rx.try_recv() {
@@ -5366,49 +5343,21 @@ impl ShardEngine {
     async fn acker_loop(self: Arc<Self>) {
         let mut status_rx = self.db.subscribe();
         loop {
+            if self.is_closed() {
+                return;
+            }
             let durable_seq = {
                 let status = status_rx.borrow_and_update();
                 if let Some(reason) = &status.close_reason {
-                    // Fenced or closed: this shard moved. The process serves
-                    // other shards. Fail every queued group NOW — waiting for
-                    // Arc drops leaves clients hanging into the front door's
-                    // 30 s kill (the absorber holds this engine, so the Arc
-                    // may never drop). Touch waiters wake with stale.
                     tracing::error!(shard = %self.prefix, "shard db closed: {reason:?}");
-                    self.closed.store(true, Ordering::SeqCst);
-                    let _ = self.close_tx.send(true);
-                    // Wake the group-commit pump so it observes closed and
-                    // exits instead of parking on its Notify forever.
-                    self.pump_wake.notify_one();
-                    // And every parked live reader (round-11.4): the
-                    // fence-driven close raced the fleet tick's yield in
-                    // the certification battery — whichever path closes
-                    // the engine first must wake parked SSE sessions
-                    // into their ownership re-check, or a session on an
-                    // idle tail sleeps through the move on keep-alives.
-                    for h in self.streams.lock().unwrap().values() {
-                        h.notify.notify_waiters();
-                        h.applied_notify.notify_waiters();
-                    }
-                    let stranded: Vec<InFlightGroup> =
-                        self.in_flight.lock().unwrap().drain(..).collect();
-                    for group in stranded {
-                        for (resp, _) in group.effects.acks {
-                            let _ = resp.send(Err(AppendErr::Moved));
-                        }
-                        for (resp, _) in group.effects.queue_acks {
-                            let _ = resp.send(Err("shard fenced/moved; retry".into()));
-                        }
-                    }
-                    if let Some(cb) = &self.on_close {
-                        cb();
-                    }
+                    self.begin_close();
                     return;
                 }
                 status.durable_seq
             };
             self.dispatch_durable(durable_seq).await;
             tokio::select! {
+                _ = self.closed() => return,
                 changed = status_rx.changed() => {
                     if changed.is_err() {
                         return;
@@ -6338,3 +6287,13 @@ mod record_scan_tests;
 
 #[cfg(test)]
 mod read_budget_tests;
+
+#[cfg(test)]
+mod task_lifecycle_tests;
+
+#[cfg(test)]
+impl ShardEngine {
+    pub(crate) fn test_abort_task(&self, role: &str) -> tokio::task::AbortHandle {
+        self.tasks.abort(role)
+    }
+}

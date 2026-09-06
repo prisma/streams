@@ -4308,6 +4308,17 @@
     "scenarios": []
   },
   {
+    "name": "r17a_each_required_engine_exit_changes_real_health_and_readyz",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "df46074f0725a81ba9e5b68ca814d20357ef6fbf21b7a65166b0ec2e7b72a8e5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/runtime_engine_lifecycle.rs",
+    "scenarios": []
+  },
+  {
     "name": "r24_exact_set_oracle_rejects_count_preserving_loss_duplicate_swap",
     "attributes": [
       "#[test]"

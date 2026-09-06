@@ -126,7 +126,7 @@ async fn active_absorber_cancel(hold_store: bool) {
     assert_eq!(debt.len(), 1);
     engine.begin_close();
     engine
-        .await_terminated(Duration::from_secs(1))
+        .await_workers(Duration::from_secs(1))
         .await
         .expect("joined absorber must cancel without releasing held operation");
     assert_eq!(resources.budget.inflight(), u64::from(!hold_store));
@@ -138,10 +138,12 @@ async fn active_absorber_cancel(hold_store: bool) {
     assert_eq!(engine.usage.absorb_lag(SegmentHash(hash)), 0);
     data_store.release_hold();
     drop(held_budget);
-    let _ = db.close().await;
-    if let Some(partition) = engine.history_partition_if_open() {
-        let _ = partition.close().await;
-    }
+    // Worker reservations are released before the barrier; the sole close
+    // owner must also finish both stores before a fresh writer starts.
+    engine
+        .await_terminated(Duration::from_secs(10))
+        .await
+        .unwrap();
     let db = Arc::new(open().await);
     let maintenance = crate::shard::load_or_rebuild_maintenance(&db)
         .await

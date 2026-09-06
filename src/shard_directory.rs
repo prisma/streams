@@ -331,6 +331,42 @@ impl ShardDirectory {
         self.inner.shards.read().unwrap().keys().cloned().collect()
     }
 
+    /// Stops admission and observes the same retirement owners on every call.
+    /// A deadline cancels observers only; late opens and database closes remain
+    /// fenced in the gate until their owners establish termination.
+    pub async fn shutdown(&self, grace: Duration) -> Result<(), String> {
+        self.inner.gate.stop();
+        for prefix in self.held_prefixes() {
+            self.retire(&prefix, RetirementReason::Shutdown, |_, _| true);
+        }
+        let deadline = tokio::time::Instant::now() + grace;
+        loop {
+            let (engines, opens) = self.inner.gate.shutdown_pending();
+            let reports = futures_util::future::join_all(engines.iter().map(|engine| {
+                engine.wait(deadline.saturating_duration_since(tokio::time::Instant::now()))
+            }))
+            .await;
+            let pending = engines.iter().filter(|engine| !engine.terminated()).count();
+            if opens == 0 && pending == 0 {
+                let failures: Vec<_> = reports.into_iter().filter_map(Result::err).collect();
+                return if failures.is_empty() {
+                    Ok(())
+                } else {
+                    Err(failures.join("; "))
+                };
+            }
+            if tokio::time::Instant::now() >= deadline {
+                return Err(format!(
+                    "shutdown ongoing or failed: {opens} opens, {pending} engines; owners retained"
+                ));
+            }
+            tokio::time::sleep_until(
+                deadline.min(tokio::time::Instant::now() + Duration::from_millis(10)),
+            )
+            .await;
+        }
+    }
+
     /// PR 6.1.1-B: the ONE retirement protocol. Every explicit removal
     /// — ownership yield, fleet eviction, sweep eviction, teardown —
     /// goes through here, because retiring a shard is three steps that

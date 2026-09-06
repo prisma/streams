@@ -36,7 +36,7 @@
 //!   A sick store gets a trickle of opens, not a storm.
 
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicI64, AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, RwLock};
 use std::time::{Duration, Instant};
 
@@ -71,43 +71,8 @@ static OPENS_DEADLINED: AtomicU64 = AtomicU64::new(0);
 /// reaper instead of installed.
 static OPENS_REAPED: AtomicU64 = AtomicU64::new(0);
 
-/// Per-directory readiness. Process-wide open counters below remain
-/// metrics; another runtime's success can never heal this directory.
-#[derive(Clone, Default)]
-pub struct ShardHealth(Arc<Mutex<OpenHealth>>);
-
-#[derive(Default)]
-struct OpenHealth {
-    ever_opened: bool,
-    // Only the three distinct strikes needed by policy are retained.
-    // mt-lint: allow(name-keyed-map): physical shard prefixes for open-health strikes, never stream names.
-    failed: std::collections::BTreeSet<String>,
-    last_error: Option<String>,
-}
-
-impl ShardHealth {
-    fn succeeded(&self) {
-        self.0.lock().unwrap().ever_opened = true;
-    }
-    fn failed(&self, prefix: &str, error: String) {
-        let mut h = self.0.lock().unwrap();
-        if h.failed.len() < 3 {
-            h.failed.insert(prefix.to_string());
-        }
-        h.last_error = Some(error);
-    }
-    pub fn unready_reason(&self) -> Option<String> {
-        let h = self.0.lock().unwrap();
-        if h.ever_opened || h.failed.len() < 3 {
-            return None;
-        }
-        Some(format!(
-            "no shard has ever opened ({} distinct shards failed); last error: {}",
-            h.failed.len(),
-            h.last_error.as_deref().unwrap_or("unknown")
-        ))
-    }
-}
+mod health;
+pub use health::ShardHealth;
 
 /// How long a never-ready instance may stay unready before it exits.
 ///
@@ -178,7 +143,7 @@ pub fn spawn_unready_watchdog(
     cfg: &crate::config::ShardRuntimeConfig,
     clock: std::sync::Arc<dyn crate::runtime::Clock>,
     tasks: &crate::tasks::TaskSupervisor,
-    health: ShardHealth,
+    directory: crate::shard_directory::ShardDirectory,
 ) {
     let limit = unready_exit_after(cfg);
     if limit.is_zero() {
@@ -194,11 +159,11 @@ pub fn spawn_unready_watchdog(
                     _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
                     _ = clock.sleep(Duration::from_secs(10)) => {}
                 }
-                let reason = health.unready_reason();
+                let reason = directory.unready_reason();
                 match window.observe(reason.is_some(), clock.monotonic(), limit) {
                     WatchdogDecision::Expired { elapsed } => {
                         tracing::error!(
-                            "unready for {:?} and no shard has ever opened ({}); \
+                            "shard readiness failed for {:?} ({}); \
                          exiting so the platform restarts this instance rather than \
                          leaving it in rotation-limbo",
                             elapsed,
@@ -350,6 +315,11 @@ pub(crate) type OpenFn = Box<
 
 #[derive(Default)]
 struct PrefixGate {
+    /// A replacement cannot open until the retired owner's workers AND stores
+    /// terminate. A caller timeout never discards this authority.
+    closing: Option<crate::shard::EngineShutdown>,
+    /// A deadlined open is still owned until its reaper settles it.
+    reaping: bool,
     /// Present while an open task is running: subscribe, don't start.
     inflight: Option<tokio::sync::watch::Receiver<Option<OpenResult>>>,
     /// No new open may start before this instant.
@@ -386,6 +356,7 @@ fn holdoff_for(strikes: u32) -> Duration {
 
 struct GateInner {
     health: ShardHealth,
+    stopping: AtomicBool,
     shards: ServingMap,
     opener: OpenFn,
     /// Incarnations are minted per open attempt, per gate.
@@ -517,13 +488,26 @@ impl OpenGate {
         self.inner.health.clone()
     }
     pub fn unready_reason(&self) -> Option<String> {
-        self.inner.health.unready_reason()
+        self.inner.health.unready_reason().or_else(|| {
+            self.inner
+                .st
+                .lock()
+                .unwrap()
+                .iter()
+                .find_map(|(prefix, gate)| {
+                    gate.closing
+                        .as_ref()?
+                        .failure()
+                        .map(|failure| format!("{prefix}: {failure}"))
+                })
+        })
     }
 
     pub(crate) fn new(shards: ServingMap, opener: OpenFn, open_deadline: Duration) -> Self {
         OpenGate {
             inner: Arc::new(GateInner {
                 health: ShardHealth::default(),
+                stopping: AtomicBool::new(false),
                 shards,
                 opener,
                 next_incarnation: AtomicU64::new(0),
@@ -546,14 +530,36 @@ impl OpenGate {
     /// Get the engine for `prefix`, starting (or joining) a single-flight
     /// open if needed, waiting at most `wait` for it.
     pub async fn get_or_open(&self, prefix: &str, wait: Duration) -> OpenOutcome {
-        if let Some(r) = self.inner.shards.read().unwrap().get(prefix) {
-            return OpenOutcome::Ready(r.engine.clone());
+        if self.inner.stopping.load(Ordering::SeqCst) {
+            return closing_outcome();
         }
+        if let Some(r) = self.inner.shards.read().unwrap().get(prefix) {
+            return if r.engine.is_closed() {
+                closing_outcome()
+            } else {
+                OpenOutcome::Ready(r.engine.clone())
+            };
+        }
+
+        let deadline = tokio::time::Instant::now() + wait;
+        if let Some(outcome) = self.wait_retired(prefix, wait).await {
+            return outcome;
+        }
+        let wait = deadline.saturating_duration_since(tokio::time::Instant::now());
 
         // Decide under the state lock: subscribe, holdoff, or start.
         let mut rx = {
             let mut st = self.inner.st.lock().unwrap();
             let g = st.entry(prefix.to_string()).or_default();
+            if self.inner.stopping.load(Ordering::SeqCst)
+                || g.reaping
+                || g.closing
+                    .as_ref()
+                    .is_some_and(|engine| !engine.terminated())
+            {
+                return closing_outcome();
+            }
+            g.closing = None;
 
             if let Some(rx) = &g.inflight {
                 OPENS_COALESCED.fetch_add(1, Ordering::Relaxed);
@@ -580,7 +586,11 @@ impl OpenGate {
                 // Raced with a completed open? (map insert happens before
                 // the inflight entry clears)
                 if let Some(r) = self.inner.shards.read().unwrap().get(prefix) {
-                    return OpenOutcome::Ready(r.engine.clone());
+                    return if r.engine.is_closed() {
+                        closing_outcome()
+                    } else {
+                        OpenOutcome::Ready(r.engine.clone())
+                    };
                 }
                 let (tx, rx) = tokio::sync::watch::channel(None);
                 g.inflight = Some(rx.clone());
@@ -609,30 +619,8 @@ impl OpenGate {
                         tokio::time::timeout(inner.open_deadline, &mut fut).await;
                     OPENS_IN_FLIGHT.fetch_sub(1, Ordering::Relaxed);
                     let out: OpenResult = match res {
-                        Ok(Ok(engine)) => {
-                            OPENS_COMPLETED.fetch_add(1, Ordering::Relaxed);
-                            inner.health.succeeded();
-                            #[cfg(test)]
-                            inner.c_completed.fetch_add(1, Ordering::Relaxed);
-                            // PR 6.1.2-A: gate state FIRST, serving map
-                            // second. Holding both also publishes the
-                            // resident and clears the in-flight marker as
-                            // one step, so no observer sees a resident
-                            // with an open still nominally in flight.
-                            let mut st = inner.st.lock().unwrap();
-                            inner.shards.write().unwrap().insert(
-                                p.clone(),
-                                Resident {
-                                    engine: engine.clone(),
-                                    incarnation,
-                                },
-                            );
-                            let g = st.entry(p.clone()).or_default();
-                            g.inflight = None;
-                            g.opened_at = Some(Instant::now());
-                            g.holdoff_until = None;
-                            Ok(engine)
-                        }
+                        Ok(Ok(engine)) => publish_open(&inner, &p, incarnation, engine),
+
                         Ok(Err(e)) => {
                             OPENS_FAILED.fetch_add(1, Ordering::Relaxed);
                             #[cfg(test)]
@@ -666,6 +654,7 @@ impl OpenGate {
                                 let mut st = inner.st.lock().unwrap();
                                 let g = st.entry(p.clone()).or_default();
                                 g.inflight = None;
+                                g.reaping = true;
                                 g.strikes = g.strikes.saturating_add(1);
                                 g.holdoff_until = Some(Instant::now() + holdoff_for(g.strikes));
                             }
@@ -677,13 +666,23 @@ impl OpenGate {
                             // whatever it produces — the slot was forfeited
                             // at the deadline.
                             let p2 = p.clone();
+                            let reaper = inner.clone();
                             tokio::spawn(async move {
-                                if let Ok(engine) = fut.await {
+                                use futures_util::FutureExt;
+                                let result = std::panic::AssertUnwindSafe(fut).catch_unwind().await;
+                                let engine = match result {
+                                    Ok(Ok(engine)) => Some(engine),
+                                    Ok(Err(_)) | Err(_) => None,
+                                };
+                                {
+                                    let mut state = reaper.st.lock().unwrap();
+                                    let gate = state.entry(p2.clone()).or_default();
+                                    gate.reaping = false;
+                                    gate.closing =
+                                        engine.as_ref().map(|engine| engine.shutdown_handle());
+                                }
+                                if let Some(engine) = engine {
                                     OPENS_REAPED.fetch_add(1, Ordering::Relaxed);
-                                    tracing::info!(
-                                        prefix = %p2,
-                                        "deadlined open completed late; closing it"
-                                    );
                                     engine.begin_close();
                                 }
                             });
@@ -721,6 +720,34 @@ impl OpenGate {
         }
     }
 
+    async fn wait_retired(&self, prefix: &str, wait: Duration) -> Option<OpenOutcome> {
+        let retiring = {
+            let state = self.inner.st.lock().unwrap();
+            if self.inner.stopping.load(Ordering::SeqCst) {
+                return Some(closing_outcome());
+            }
+            let gate = state.get(prefix)?;
+            if let Some(until) = gate.holdoff_until {
+                if until > Instant::now() {
+                    return Some(OpenOutcome::Wait {
+                        code: "shard_moving",
+                        retry_after_secs: (until - Instant::now()).as_secs().max(1),
+                    });
+                }
+            }
+            gate.closing.clone()
+        };
+        if let Some(engine) = retiring {
+            if !engine.terminated() {
+                let _ = engine.wait(wait).await;
+                if !engine.terminated() {
+                    return Some(closing_outcome());
+                }
+            }
+        }
+        None
+    }
+
     /// Called when a shard engine closes (fenced by a new owner, or a
     /// fatal store error). Evicts it — ONLY if the resident is that very
     /// incarnation; a stale notification for an engine that was already
@@ -732,16 +759,22 @@ impl OpenGate {
         // permitted order (see `ServingMap`). Holding both also makes
         // the eviction and its holdoff one step, exactly as `retire`.
         let mut st = self.inner.st.lock().unwrap();
-        {
+        let engine = {
             let mut map = self.inner.shards.write().unwrap();
             match map.get(prefix) {
-                Some(r) if r.incarnation == incarnation => {
-                    map.remove(prefix);
-                }
+                Some(r) if r.incarnation == incarnation => map.remove(prefix).unwrap().engine,
                 _ => return false,
             }
+        };
+        if let Some(role) = engine.required_task_failure() {
+            self.inner.health.engine_failed(prefix, role);
         }
+        st.entry(prefix.to_string()).or_default().closing = Some(engine.shutdown_handle());
         arm_holdoff_locked(&mut st, prefix);
+        drop(st);
+        // Direct notifications and callbacks use the same owner. Reentrant
+        // callbacks find no resident; no gate/map guard is held while closing.
+        engine.begin_close();
         true
     }
 
@@ -775,7 +808,25 @@ impl OpenGate {
         // Armed while the slot is still held: the removal and the
         // holdoff are one decision, never half-applied.
         arm_holdoff_locked(&mut st, prefix);
+        st.entry(prefix.to_string()).or_default().closing = Some(resident.engine.shutdown_handle());
         Retirement::Retired(resident.engine)
+    }
+
+    pub(crate) fn stop(&self) {
+        let _state = self.inner.st.lock().unwrap();
+        self.inner.stopping.store(true, Ordering::SeqCst);
+    }
+    pub(crate) fn shutdown_pending(&self) -> (Vec<crate::shard::EngineShutdown>, usize) {
+        let state = self.inner.st.lock().unwrap();
+        let engines = state
+            .values()
+            .filter_map(|gate| gate.closing.clone())
+            .collect();
+        let opens = state
+            .values()
+            .filter(|gate| gate.inflight.is_some() || gate.reaping)
+            .count();
+        (engines, opens)
     }
 
     /// The forced-interleaving park for THIS gate (tests only).
@@ -879,5 +930,53 @@ mod health_ownership_tests {
         a.succeeded();
         assert!(a.unready_reason().is_none());
         assert!(ShardHealth::default().unready_reason().is_none());
+    }
+}
+
+fn publish_open(
+    inner: &GateInner,
+    prefix: &str,
+    incarnation: EngineIncarnation,
+    engine: Arc<ShardEngine>,
+) -> OpenResult {
+    let refused = {
+        let mut state = inner.st.lock().unwrap();
+        let gate = state.entry(prefix.to_string()).or_default();
+        gate.inflight = None;
+        if inner.stopping.load(Ordering::SeqCst) || engine.is_closed() {
+            if let Some(role) = engine.required_task_failure() {
+                inner.health.engine_failed(prefix, role);
+            }
+            gate.closing = Some(engine.shutdown_handle());
+            true
+        } else {
+            inner.shards.write().unwrap().insert(
+                prefix.to_string(),
+                Resident {
+                    engine: engine.clone(),
+                    incarnation,
+                },
+            );
+            gate.opened_at = Some(Instant::now());
+            gate.holdoff_until = None;
+            false
+        }
+    };
+    if refused {
+        engine.begin_close();
+        Err("engine closed or directory stopped during open".into())
+    } else {
+        OPENS_COMPLETED.fetch_add(1, Ordering::Relaxed);
+        inner.health.succeeded();
+        #[cfg(test)]
+        inner.c_completed.fetch_add(1, Ordering::Relaxed);
+        Ok(engine)
+    }
+}
+
+fn closing_outcome() -> OpenOutcome {
+    OpenOutcome::Wait {
+        code: "shard_closing",
+        retry_after_secs: 1,
     }
 }
