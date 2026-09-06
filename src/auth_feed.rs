@@ -369,7 +369,10 @@ pub fn spawn_refresher(
                 }
                 tokio::select! {
                     _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
-                    _ = refresh_once(&auth, keys.as_ref(), policies.as_ref(), grants.as_ref()) => {}
+                    report = refresh_once(&auth, keys.as_ref(), policies.as_ref(), grants.as_ref()) => {
+                        tracing::debug!(keys = ?report.keys, policies = ?report.policies,
+                            grants = ?report.grants, "authentication feed pass completed");
+                    }
                 }
             }
         },
