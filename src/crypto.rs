@@ -1,33 +1,28 @@
-//! §3.7 encryption envelope.
+//! Record encryption envelope. New frames use AES-256-GCM-SIV (RFC 8452)
+//! with a stored OS-random 96-bit nonce and a segment-separated HKDF key.
+//! The version, metadata, nonce and segment identity are authenticated.
+//! Retained v2/v3 AES-GCM frames remain readable using their original
+//! offset nonce and original subkey; writers never emit those versions.
 //!
-//! subkey = HKDF-SHA256(ikm = streamKey, salt = streamEpoch,
-//!                      info = routingKey ‖ 0x00 ‖ keyVersion_le)
-//! Record payloads: AES-256-GCM under the subkey with a deterministic nonce
-//! derived from the record offset (unique per (streamKey, epoch, version,
-//! routingKey) by G3), and the frame header bound as AAD. Deterministic
-//! encryption makes re-encryption of the same plaintext byte-identical, so
-//! chunk responses are byte-immutable regardless of serving tier.
-//!
-//! Wire/storage frame (shard log value == wire bytes):
-//!   [ver u8][offset u64 BE][ts_ms i64 BE][key_version u32 BE]
-//!   [rk_len u16 BE][routing key][ct_len u32 BE][ciphertext (payload+16B tag)]
-//!
-//! ver = 2: ciphertext decrypts to the record payload as-is.
-//! ver = 3: payload was zstd-compressed BEFORE encryption (ciphertext never
-//! compresses, so this is the only place compression can live — it shrinks
-//! every downstream copy: WAL, L0, compaction, absorber reads, history).
-//! The version byte sits in the AAD-bound header, so it cannot be flipped
-//! without failing the tag. Writers emit v3 only when FRAME_COMPRESS is on
-//! AND compression actually wins; readers accept both unconditionally.
+//! v4/v5: [ver][offset BE64][ts BE64][key_version BE32][rk_len BE16]
+//!        [routing key][nonce 12 bytes][ct_len BE32][ciphertext+tag]
+//! v4 is uncompressed; v5 compresses before encryption when it wins.
+//! Copies/retries transmit stored bytes; a new encryption invocation has
+//! a fresh nonce, including after rollback or writer replacement.
+//! See docs/crypto-frame-v4.md for domains, bounds and rollout limits.
 
 use aes_gcm::aead::{Aead, KeyInit, Payload};
 use aes_gcm::{Aes256Gcm, Nonce};
+use aes_gcm_siv::Aes256GcmSiv;
+use aes_gcm_siv::aead::{OsRng, rand_core::RngCore};
 use hkdf::Hkdf;
 use sha2::{Digest, Sha256};
 
-pub const FRAME_VER: u8 = 2;
+pub const FRAME_VER: u8 = 4;
+const LEGACY_FRAME_VER: u8 = 2;
+const LEGACY_FRAME_VER_Z: u8 = 3;
 /// Frame whose plaintext is zstd-compressed (compress-then-encrypt).
-pub const FRAME_VER_Z: u8 = 3;
+pub const FRAME_VER_Z: u8 = 5;
 pub const KEY_LEN: usize = 32;
 pub const EPOCH_LEN: usize = 16;
 
@@ -382,16 +377,14 @@ pub struct FrameHeader {
     pub routing_key: String,
 }
 
-fn header_bytes(h: &FrameHeader) -> Vec<u8> {
-    let rk = h.routing_key.as_bytes();
-    let mut buf = Vec::with_capacity(17 + rk.len());
-    buf.push(FRAME_VER);
-    buf.extend_from_slice(&h.offset.to_be_bytes());
-    buf.extend_from_slice(&h.ts_ms.to_be_bytes());
-    buf.extend_from_slice(&h.key_version.to_be_bytes());
-    buf.extend_from_slice(&(rk.len() as u16).to_be_bytes());
-    buf.extend_from_slice(rk);
-    buf
+/// Independent domain from all legacy AES-GCM keys, and from sibling
+/// segments even when their epoch, routing key and local offset match.
+fn segment_frame_key(subkey: &[u8; KEY_LEN], segment: &[u8; 16]) -> [u8; KEY_LEN] {
+    let hk = Hkdf::<Sha256>::new(Some(segment), subkey);
+    let mut key = [0; KEY_LEN];
+    hk.expand(b"prisma-streams/frame/v4/aes-256-gcm-siv", &mut key)
+        .expect("fixed HKDF length");
+    key
 }
 
 fn aad(stream_hash: &[u8; 16], header: &[u8]) -> Vec<u8> {
@@ -401,9 +394,8 @@ fn aad(stream_hash: &[u8; 16], header: &[u8]) -> Vec<u8> {
     a
 }
 
-/// Encrypt one record into its wire/storage frame. Deterministic: identical
-/// (subkey, header, plaintext, compression policy) always yields identical
-/// bytes.
+/// Encrypt a new invocation into its wire/storage frame. Fresh randomness
+/// is persisted in the authenticated header; copy encoded bytes for retries.
 pub fn encrypt_frame(
     subkey: &[u8; KEY_LEN],
     stream_hash: &[u8; 16],
@@ -411,7 +403,7 @@ pub fn encrypt_frame(
     plaintext: &[u8],
     compression: FrameCompression,
 ) -> Vec<u8> {
-    FrameCipher::new(subkey, compression).encrypt(
+    FrameCipher::new(subkey, stream_hash, compression).encrypt(
         stream_hash,
         h.offset,
         h.ts_ms,
@@ -426,14 +418,18 @@ pub fn encrypt_frame(
 /// (the old encrypt_frame path) costs ~2-3 us/record - measurable at 50k
 /// events/s and pure waste inside the serial committer loop.
 pub struct FrameCipher {
-    cipher: Aes256Gcm,
+    cipher: Aes256GcmSiv,
     compression: FrameCompression,
 }
 
 impl FrameCipher {
-    pub fn new(subkey: &[u8; KEY_LEN], compression: FrameCompression) -> FrameCipher {
+    pub fn new(
+        subkey: &[u8; KEY_LEN],
+        segment: &[u8; 16],
+        compression: FrameCompression,
+    ) -> FrameCipher {
         FrameCipher {
-            cipher: Aes256Gcm::new(subkey.into()),
+            cipher: Aes256GcmSiv::new((&segment_frame_key(subkey, segment)).into()),
             compression,
         }
     }
@@ -449,10 +445,34 @@ impl FrameCipher {
         routing_key: &str,
         plaintext: &[u8],
     ) -> Vec<u8> {
+        let mut nonce = [0; 12];
+        OsRng.fill_bytes(&mut nonce);
+        self.encrypt_with_nonce(
+            stream_hash,
+            offset,
+            ts_ms,
+            key_version,
+            routing_key,
+            plaintext,
+            nonce,
+        )
+    }
+
+    // Private: only new random-nonce invocations reach this in production.
+    // Fixed nonces exist solely for codec vectors and misuse regressions.
+    fn encrypt_with_nonce(
+        &self,
+        stream_hash: &[u8; 16],
+        offset: u64,
+        ts_ms: i64,
+        key_version: u32,
+        routing_key: &str,
+        plaintext: &[u8],
+        nonce: [u8; 12],
+    ) -> Vec<u8> {
         // Compress-then-encrypt: attempted only when enabled and the
         // payload is big enough; kept only when it actually shrinks.
-        // zstd at a fixed level is deterministic, preserving the
-        // byte-identical re-encryption property within a deployment.
+        // Compression precedes authenticated encryption.
         let mut ver = FRAME_VER;
         let mut compressed: Option<Vec<u8>> = None;
         if self.compression == FrameCompression::ZstdLevel1
@@ -465,14 +485,14 @@ impl FrameCipher {
         }
         let msg: &[u8] = compressed.as_deref().unwrap_or(plaintext);
         let rk = routing_key.as_bytes();
-        let mut header = Vec::with_capacity(23 + rk.len());
+        let mut header = Vec::with_capacity(35 + rk.len());
         header.push(ver);
         header.extend_from_slice(&offset.to_be_bytes());
         header.extend_from_slice(&ts_ms.to_be_bytes());
         header.extend_from_slice(&key_version.to_be_bytes());
         header.extend_from_slice(&(rk.len() as u16).to_be_bytes());
         header.extend_from_slice(rk);
-        let nonce = nonce_for_offset(offset);
+        header.extend_from_slice(&nonce);
         let ct = self
             .cipher
             .encrypt(
@@ -482,7 +502,7 @@ impl FrameCipher {
                     aad: &aad(stream_hash, &header),
                 },
             )
-            .expect("aes-gcm encrypt");
+            .expect("aes-gcm-siv encrypt");
         let mut frame = header;
         frame.reserve(4 + ct.len());
         frame.extend_from_slice(&(ct.len() as u32).to_be_bytes());
@@ -502,15 +522,21 @@ pub struct DecodedFrame<'a> {
 
 /// Parse a frame without decrypting (routing key and offsets are metadata).
 pub fn decode_frame(buf: &[u8]) -> Option<DecodedFrame<'_>> {
-    if buf.len() < 27 || !(buf[0] == FRAME_VER || buf[0] == FRAME_VER_Z) {
+    if buf.len() < 27
+        || !matches!(
+            buf[0],
+            LEGACY_FRAME_VER | LEGACY_FRAME_VER_Z | FRAME_VER | FRAME_VER_Z
+        )
+    {
         return None;
     }
     let offset = u64::from_be_bytes(buf[1..9].try_into().ok()?);
     let ts_ms = i64::from_be_bytes(buf[9..17].try_into().ok()?);
     let key_version = u32::from_be_bytes(buf[17..21].try_into().ok()?);
     let rk_len = u16::from_be_bytes(buf[21..23].try_into().ok()?) as usize;
-    let header_len = 23 + rk_len;
-    let routing_key = String::from_utf8(buf.get(23..header_len)?.to_vec()).ok()?;
+    let routing_end = 23 + rk_len;
+    let routing_key = String::from_utf8(buf.get(23..routing_end)?.to_vec()).ok()?;
+    let header_len = routing_end + if buf[0] >= FRAME_VER { 12 } else { 0 };
     let ct_len = u32::from_be_bytes(buf.get(header_len..header_len + 4)?.try_into().ok()?) as usize;
     let ciphertext = buf.get(header_len + 4..header_len + 4 + ct_len)?;
     Some(DecodedFrame {
@@ -532,18 +558,27 @@ pub fn decrypt_frame(
     frame: &DecodedFrame<'_>,
     raw: &[u8],
 ) -> Result<Vec<u8>, String> {
-    let cipher = Aes256Gcm::new(subkey.into());
-    let nonce = nonce_for_offset(frame.header.offset);
-    let pt = cipher
-        .decrypt(
-            Nonce::from_slice(&nonce),
-            Payload {
-                msg: frame.ciphertext,
-                aad: &aad(stream_hash, &raw[..frame.header_len]),
-            },
-        )
-        .map_err(|_| "decryption failed (wrong key or tampered record)".to_string())?;
-    if frame.ver == FRAME_VER_Z {
+    let payload = Payload {
+        msg: frame.ciphertext,
+        aad: &aad(stream_hash, &raw[..frame.header_len]),
+    };
+    let pt = match frame.ver {
+        LEGACY_FRAME_VER | LEGACY_FRAME_VER_Z => {
+            let cipher = Aes256Gcm::new(subkey.into());
+            let nonce = nonce_for_offset(frame.header.offset);
+            cipher.decrypt(Nonce::from_slice(&nonce), payload)
+        }
+        FRAME_VER | FRAME_VER_Z => {
+            let cipher = Aes256GcmSiv::new((&segment_frame_key(subkey, stream_hash)).into());
+            let nonce = raw
+                .get(frame.header_len - 12..frame.header_len)
+                .ok_or_else(|| "invalid frame nonce".to_string())?;
+            cipher.decrypt(Nonce::from_slice(nonce), payload)
+        }
+        _ => return Err("unsupported frame version".into()),
+    }
+    .map_err(|_| "decryption failed (wrong key or tampered record)".to_string())?;
+    if frame.ver == FRAME_VER_Z || frame.ver == LEGACY_FRAME_VER_Z {
         // Version byte is AAD-bound, so reaching here means the frame was
         // genuinely written compressed.
         return zstd::stream::decode_all(&pt[..])
@@ -595,7 +630,7 @@ mod tests {
     }
 
     #[test]
-    fn round_trip_and_determinism() {
+    fn round_trip_and_fresh_invocation_nonce() {
         let epoch = [3u8; 16];
         let hash = stream_hash("s1");
         let sub = derive_subkey(&key(), &epoch, "chat-42", 0);
@@ -607,7 +642,7 @@ mod tests {
         };
         let f1 = encrypt_frame(&sub, &hash, &h, b"hello world", FrameCompression::Disabled);
         let f2 = encrypt_frame(&sub, &hash, &h, b"hello world", FrameCompression::Disabled);
-        assert_eq!(f1, f2, "deterministic re-encryption must be byte-identical");
+        assert_ne!(f1, f2, "new invocations must use fresh nonces");
 
         let dec = decode_frame(&f1).unwrap();
         assert_eq!(dec.header.offset, 12345);
@@ -649,13 +684,12 @@ mod compress_tests {
     }
 
     #[test]
-    fn v3_round_trip_compressible() {
+    fn new_compressed_frame_round_trip() {
         let payload = vec![b'x'; 4096];
         let hash = stream_hash("s");
         // The writer side honors the explicit policy: ZstdLevel1 emits a
-        // v3 frame for a compressible payload, byte-identical across calls
-        // (fixed zstd level), and decodes back to the original.
-        let on = FrameCipher::new(&sub(), FrameCompression::ZstdLevel1);
+        // v5 frame for a compressible payload and decodes to the original.
+        let on = FrameCipher::new(&sub(), &hash, FrameCompression::ZstdLevel1);
         let h = hdr(7);
         let frame = on.encrypt(
             &hash,
@@ -677,9 +711,9 @@ mod compress_tests {
             &h.routing_key,
             &payload,
         );
-        assert_eq!(frame, frame2, "fixed-level zstd must be deterministic");
-        // Disabled policy on the same payload stays v2.
-        let off = FrameCipher::new(&sub(), FrameCompression::Disabled);
+        assert_ne!(frame, frame2, "compressed frames also get fresh nonces");
+        // Disabled policy on the same payload stays uncompressed v4.
+        let off = FrameCipher::new(&sub(), &hash, FrameCompression::Disabled);
         let h2 = hdr(8);
         let frame3 = off.encrypt(
             &hash,
@@ -693,13 +727,13 @@ mod compress_tests {
 
         // The decode/decrypt path also handles a hand-built v3 frame
         // (wire-shape pin, independent of the writer policy).
-        let cipher = FrameCipher::new(&sub(), FrameCompression::Disabled);
+        let cipher = Aes256Gcm::new((&sub()).into());
         let z = zstd::bulk::compress(&payload, 1).unwrap();
         assert!(z.len() < payload.len());
         let h = hdr(7);
         let rk = h.routing_key.as_bytes();
         let mut header = Vec::new();
-        header.push(FRAME_VER_Z);
+        header.push(LEGACY_FRAME_VER_Z);
         header.extend_from_slice(&h.offset.to_be_bytes());
         header.extend_from_slice(&h.ts_ms.to_be_bytes());
         header.extend_from_slice(&h.key_version.to_be_bytes());
@@ -707,7 +741,6 @@ mod compress_tests {
         header.extend_from_slice(rk);
         let nonce = nonce_for_offset(h.offset);
         let ct = cipher
-            .cipher
             .encrypt(
                 Nonce::from_slice(&nonce),
                 Payload {
@@ -721,15 +754,15 @@ mod compress_tests {
         frame.extend_from_slice(&ct);
 
         let dec = decode_frame(&frame).expect("v3 decodes");
-        assert_eq!(dec.ver, FRAME_VER_Z);
+        assert_eq!(dec.ver, LEGACY_FRAME_VER_Z);
         let pt = decrypt_frame(&sub(), &hash, &dec, &frame).expect("decrypts");
         assert_eq!(pt, payload);
     }
 
     #[test]
-    fn v2_still_decodes_with_ver_field() {
-        let cipher = FrameCipher::new(&sub(), FrameCompression::Disabled);
+    fn new_uncompressed_frame_round_trip() {
         let hash = stream_hash("s");
+        let cipher = FrameCipher::new(&sub(), &hash, FrameCompression::Disabled);
         let h = hdr(9);
         let frame = cipher.encrypt(
             &hash,
@@ -746,8 +779,8 @@ mod compress_tests {
 
     #[test]
     fn unknown_version_rejected() {
-        let cipher = FrameCipher::new(&sub(), FrameCompression::Disabled);
         let hash = stream_hash("s");
+        let cipher = FrameCipher::new(&sub(), &hash, FrameCompression::Disabled);
         let mut frame = cipher.encrypt(&hash, 1, 0, 0, "rk", b"data");
         frame[0] = 9;
         assert!(decode_frame(&frame).is_none());
@@ -768,4 +801,143 @@ pub(crate) fn secret_eq(a: &str, b: &str) -> bool {
         return false;
     }
     a.iter().zip(b).fold(0u8, |acc, (x, y)| acc | (x ^ y)) == 0
+}
+
+#[cfg(test)]
+mod invocation_tests {
+    use super::*;
+
+    #[test]
+    fn r01_rfc8452_aes256_empty_plaintext_vector() {
+        // RFC 8452 Appendix C.2, first AES-256-GCM-SIV test vector.
+        let mut key = [0; 32];
+        key[0] = 1;
+        let mut nonce = [0; 12];
+        nonce[0] = 3;
+        let cipher = Aes256GcmSiv::new((&key).into());
+        let ct = cipher
+            .encrypt(Nonce::from_slice(&nonce), Payload { msg: b"", aad: b"" })
+            .unwrap();
+        assert_eq!(hex(&ct), "07f5f4169bbf55a8400cd47ea6fd400f");
+    }
+
+    #[test]
+    fn r01_segments_and_reused_offsets_have_safe_invocation_domains() {
+        let sub = derive_subkey(&StreamKey([7; 32]), &[8; 16], "customer-1", 0);
+        let parent = [1; 16];
+        let successor = [2; 16];
+        assert_ne!(
+            segment_frame_key(&sub, &parent),
+            segment_frame_key(&sub, &successor)
+        );
+        let a = FrameCipher::new(&sub, &parent, FrameCompression::Disabled);
+        let b = FrameCipher::new(&sub, &successor, FrameCompression::Disabled);
+        let p1 = [b'A'; 16];
+        let p2 = [b'B'; 16];
+        // Forced identical nonce proves the vetted construction protects
+        // rollback and even RNG-repetition cases; ordinary writes use OsRng.
+        let f1 = a.encrypt_with_nonce(&parent, 0, 1000, 0, "customer-1", &p1, [0; 12]);
+        let sibling = b.encrypt_with_nonce(&successor, 0, 1000, 0, "customer-1", &p2, [0; 12]);
+        let rollback = a.encrypt_with_nonce(&parent, 0, 1000, 0, "customer-1", &p2, [0; 12]);
+        let c1 = decode_frame(&f1).unwrap();
+        for (segment, frame) in [(successor, sibling), (parent, rollback)] {
+            let decoded = decode_frame(&frame).unwrap();
+            let ciphertext_xor: Vec<_> = c1.ciphertext[..16]
+                .iter()
+                .zip(&decoded.ciphertext[..16])
+                .map(|(a, b)| a ^ b)
+                .collect();
+            assert_ne!(ciphertext_xor, vec![3; 16], "no repeated GCM keystream");
+            assert_eq!(decrypt_frame(&sub, &segment, &decoded, &frame).unwrap(), p2);
+        }
+        let retry = f1.clone();
+        assert_eq!(retry, f1, "retransmit encoded durable bytes exactly");
+        let recreated_writer = FrameCipher::new(&sub, &parent, FrameCompression::Disabled);
+        let fresh = recreated_writer.encrypt(&parent, 0, 1000, 0, "customer-1", &p2);
+        assert_ne!(
+            &fresh[c1.header_len - 12..c1.header_len],
+            &f1[c1.header_len - 12..c1.header_len]
+        );
+        assert_eq!(
+            decrypt_frame(&sub, &parent, &decode_frame(&fresh).unwrap(), &fresh).unwrap(),
+            p2
+        );
+    }
+
+    #[test]
+    fn r01_retained_legacy_frames_and_new_versions_read_together() {
+        let sub = [7; 32];
+        let segment = [8; 16];
+        for (version, compressed) in [(LEGACY_FRAME_VER, false), (LEGACY_FRAME_VER_Z, true)] {
+            let payload = vec![b'x'; 1024];
+            let message = if compressed {
+                zstd::bulk::compress(&payload, 1).unwrap()
+            } else {
+                payload.clone()
+            };
+            let mut header = vec![version];
+            header.extend_from_slice(&0u64.to_be_bytes());
+            header.extend_from_slice(&1000i64.to_be_bytes());
+            header.extend_from_slice(&0u32.to_be_bytes());
+            header.extend_from_slice(&1u16.to_be_bytes());
+            header.push(b'k');
+            let ct = Aes256Gcm::new((&sub).into())
+                .encrypt(
+                    Nonce::from_slice(&nonce_for_offset(0)),
+                    Payload {
+                        msg: &message,
+                        aad: &aad(&segment, &header),
+                    },
+                )
+                .unwrap();
+            let mut frame = header;
+            frame.extend_from_slice(&(ct.len() as u32).to_be_bytes());
+            frame.extend_from_slice(&ct);
+            assert_eq!(
+                decrypt_frame(&sub, &segment, &decode_frame(&frame).unwrap(), &frame).unwrap(),
+                payload
+            );
+            let replacement =
+                FrameCipher::new(&sub, &segment, FrameCompression::from_enabled(compressed))
+                    .encrypt(&segment, 0, 1000, 0, "k", &payload);
+            assert_eq!(
+                decode_frame(&replacement).unwrap().ver,
+                if compressed { FRAME_VER_Z } else { FRAME_VER }
+            );
+            assert_eq!(
+                decrypt_frame(
+                    &sub,
+                    &segment,
+                    &decode_frame(&replacement).unwrap(),
+                    &replacement
+                )
+                .unwrap(),
+                payload
+            );
+            let mut forged = replacement.clone();
+            forged[24] ^= 1;
+            assert!(
+                decrypt_frame(&sub, &segment, &decode_frame(&forged).unwrap(), &forged).is_err(),
+                "nonce is authenticated"
+            );
+        }
+    }
+
+    #[test]
+    fn r01_frame_golden_header_and_ciphertext() {
+        let cipher = FrameCipher::new(&[7; 32], &[8; 16], FrameCompression::Disabled);
+        let frame = cipher.encrypt_with_nonce(&[8; 16], 0, 1000, 0, "k", b"hello", [3; 12]);
+        assert_eq!(
+            hex(&frame[..36]),
+            "04000000000000000000000000000003e80000000000016b030303030303030303030303"
+        );
+        assert_eq!(
+            hex(&frame),
+            "04000000000000000000000000000003e80000000000016b03030303030303030303030300000015d484209bdfe8375c81dbafa669e2b57200b50f9346"
+        );
+        assert_eq!(
+            decrypt_frame(&[7; 32], &[8; 16], &decode_frame(&frame).unwrap(), &frame).unwrap(),
+            b"hello"
+        );
+    }
 }

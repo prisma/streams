@@ -32,6 +32,8 @@ zstd = "0.13"
 futures-core = "0.3.32"
 futures-util = "0.3.32"
 aes-gcm = "0.10"
+# RFC 8452 misuse resistance for rollback/re-encryption at a reused offset.
+aes-gcm-siv = "0.11"
 hkdf = "0.12"
 base64 = "0.22.1"
 hmac = "0.12"

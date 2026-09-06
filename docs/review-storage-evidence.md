@@ -31,3 +31,11 @@ Both close passes now pass an exclusive suffix lower bound to pinned SlateDB `sc
 Regressions: `close_seek_tests::r23_seek_boundaries_are_exclusive_and_prefix_bounded`; `r23_close_visits_scale_linearly_across_chunk_restart` interrupts after the committed 1,000-row chunk, recreates the rollup owner over persisted state, and closes 1,001/2,002 segments contributing to one monthly row. It requires exactly N+1 visits and exact summed byte-time. It measures iterator visits, not billed cloud GETs.
 
 R23 execution: `cargo test --locked --lib r23_ -- --nocapture`: **2 passed**, 0 failed, 769 filtered, 1.28s execution. Measured 1,002 and 2,003 row visits for 1,001 and 2,002 segments, including owner restart after the committed first chunk.
+
+## R01 — cryptographic invocation safety
+
+New v4/v5 frames use AES-256-GCM-SIV, segment-separated HKDF keys and stored OS-random nonces. Retained v2/v3 frames use their unchanged legacy reader. `docs/crypto-frame-v4.md` specifies the exact format, invocation domains, coordinated reader/writer migration, bounds and outstanding external review/deployment inventory.
+
+Actual Rust production-source regressions: `crypto::invocation_tests::r01_rfc8452_aes256_empty_plaintext_vector`, `r01_segments_and_reused_offsets_have_safe_invocation_domains`, `r01_retained_legacy_frames_and_new_versions_read_together`, `r01_frame_golden_header_and_ciphertext`; existing compression and authentication round trips updated for fresh encryption invocations. Direct Rust 1.98.1 test harness importing the unmodified repository `src/crypto.rs` and `src/tenant.rs`, linking lockfile-built dependencies, executed **10 crypto tests passed**. This bypassed unrelated concurrent descriptor-fixture compilation failures and is actual Rust execution, not a cryptographic model. Complete repository crypto tests will be rerun after concurrent integration.
+
+No independent cryptographic approval, live split/merge/fork/fencing campaign or operated-ciphertext inventory was performed; those external acceptance items remain explicit. The fixed-nonce integration vector pins the independently specified header plus RustCrypto ciphertext; the primitive is separately checked against the published RFC vector.

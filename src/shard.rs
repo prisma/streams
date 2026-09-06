@@ -1,7 +1,7 @@
 //! Shard log engine: one SlateDB per shard, hash-first keyspace, committer +
 //! durable-watermark acker (§3.4). Record values ARE the wire frames (§3.7):
 //! encryption happens in the committer, after offset assignment, because the
-//! nonce is the offset.
+//! the authenticated metadata includes the assigned offset.
 //!
 //! Keyspace (hash-first so a hash range is one contiguous split range):
 //!   <hash16> 't'                 tail state
@@ -759,7 +759,7 @@ pub struct AppendReq {
     /// a zero route, it just can't range-split those entries.
     pub route: [u8; 16],
     pub enqueued_at: std::time::Instant,
-    /// Plaintext entries; encrypted in the committer with nonce = offset.
+    /// Plaintext entries; encrypted in the committer with fresh stored nonces.
     pub entries: Vec<Bytes>,
     pub routing_key: String,
     /// stream_hash(routing_key), computed once at admission: the
@@ -3159,7 +3159,7 @@ impl ShardEngine {
                     // One key schedule per request, reused across the batch
                     // (was: cipher init + routing-key clone PER RECORD).
                     let cipher =
-                        crate::crypto::FrameCipher::new(&req.subkey, cfg.frame_compression);
+                        crate::crypto::FrameCipher::new(&req.subkey, &hash, cfg.frame_compression);
                     let usage = req.usage.clone();
                     let (mut pt_sum, mut frame_sum) = (0u64, 0u64);
                     for (i, payload) in req.entries.iter().enumerate() {
