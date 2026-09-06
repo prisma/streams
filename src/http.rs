@@ -6,12 +6,12 @@ use std::collections::HashMap;
 use std::sync::Arc;
 use std::time::Duration;
 
-use axum::Router;
 use axum::body::Body;
 use axum::extract::{Path, Query, State};
-use axum::http::{HeaderMap, Method, StatusCode, header};
+use axum::http::{header, HeaderMap, Method, StatusCode};
 use axum::response::{IntoResponse, Response};
 use axum::routing::{any, get, post};
+use axum::Router;
 use bytes::{Bytes, BytesMut};
 use object_store::ObjectStore;
 use serde::Deserialize;
@@ -1660,6 +1660,9 @@ async fn product_list_axum(
 /// opened synchronously at startup, so a 503 here means startup-order
 /// bugs or a lost OnceLock, and the platform should not route yet.
 async fn health_axum(State(state): State<Arc<AppState>>) -> Response {
+    if let Some(reason) = state.tasks.unready_reason() {
+        return (StatusCode::SERVICE_UNAVAILABLE, reason).into_response();
+    }
     // Review item 6: in shadow/enforce an instance is NOT ready until
     // every auth feed has published an INITIAL snapshot — routing
     // traffic to a cell that would fail-closed (or shadow-count

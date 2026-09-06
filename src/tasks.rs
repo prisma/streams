@@ -239,6 +239,24 @@ pub struct TaskMonitor {
 }
 
 impl TaskMonitor {
+    /// Serving requires a live supervisor in its running phase and all
+    /// required loops still running. Recoverable errors inside a loop do
+    /// not change this verdict; permanent task exit does.
+    pub fn unready_reason(&self) -> Option<String> {
+        let Some(inner) = self.inner.upgrade() else {
+            return Some("runtime supervisor unavailable".into());
+        };
+        let state = inner.state.lock().unwrap();
+        match state.phase {
+            Phase::ShuttingDown => Some("runtime shutting down".into()),
+            Phase::Stopped => Some("runtime stopped".into()),
+            Phase::Running => state.tasks.values().find_map(|task| {
+                (task.policy == Policy::Critical && task.handle.is_finished())
+                    .then(|| format!("critical task terminated: {}", task.name))
+            }),
+        }
+    }
+
     pub fn snapshot(&self) -> Vec<TaskStatus> {
         self.inner
             .upgrade()
@@ -474,6 +492,80 @@ mod tests {
     use super::*;
     use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 
+    #[tokio::test]
+    async fn readiness_changes_after_each_kind_of_critical_exit() {
+        for outcome in 0..3 {
+            let supervisor = TaskSupervisor::new();
+            let monitor = supervisor.monitor();
+            let (release, wait) = tokio::sync::oneshot::channel();
+            supervisor
+                .spawn("required", Policy::Critical, |_| async move {
+                    wait.await.unwrap();
+                    match outcome {
+                        0 => TaskResult::Done,
+                        1 => TaskResult::Failed("permanent failure".into()),
+                        _ => panic!("critical panic"),
+                    }
+                })
+                .unwrap();
+            assert_eq!(monitor.unready_reason(), None);
+            release.send(()).unwrap();
+            tokio::time::timeout(Duration::from_secs(1), async {
+                while monitor.unready_reason().is_none() {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .unwrap();
+            assert_eq!(
+                monitor.unready_reason().as_deref(),
+                Some("critical task terminated: required")
+            );
+            supervisor.shutdown(Duration::from_secs(1)).await;
+            assert_eq!(
+                monitor.critical_failure(),
+                None,
+                "shutdown is not an unexpected exit"
+            );
+            assert_eq!(monitor.unready_reason().as_deref(), Some("runtime stopped"));
+        }
+    }
+
+    #[tokio::test]
+    async fn readiness_ignores_best_effort_exit_and_recoverable_loop_errors() {
+        let supervisor = TaskSupervisor::new();
+        let monitor = supervisor.monitor();
+        let (recovered, recovery) = tokio::sync::oneshot::channel();
+        supervisor
+            .spawn("refresh", Policy::Critical, |cancel| async move {
+                let transient: Result<(), &str> = Err("temporary source outage");
+                assert!(transient.is_err());
+                recovered.send(()).unwrap();
+                cancel.cancelled().await;
+                TaskResult::Done
+            })
+            .unwrap();
+        supervisor
+            .spawn("best effort", Policy::Noncritical, |_| async {
+                TaskResult::Failed("optional task stopped".into())
+            })
+            .unwrap();
+        recovery.await.unwrap();
+        tokio::task::yield_now().await;
+        assert_eq!(monitor.unready_reason(), None);
+        supervisor.cancel();
+        assert_eq!(
+            monitor.unready_reason().as_deref(),
+            Some("runtime shutting down")
+        );
+        supervisor.shutdown(Duration::from_secs(1)).await;
+        drop(supervisor);
+        assert_eq!(
+            monitor.unready_reason().as_deref(),
+            Some("runtime supervisor unavailable")
+        );
+    }
+
     /// A cooperative loop stops inside the grace period; one that
     /// ignores cancellation is aborted AND joined; the report names
     /// both; a second shutdown has nothing left to stop; nothing can be
@@ -639,11 +731,9 @@ mod tests {
         assert_eq!(mon.phase(), Some(Phase::Running));
         let report = sup.shutdown(Duration::from_millis(50)).await;
         assert_eq!(report.panicked(), vec!["boom"]);
-        assert!(
-            report
-                .outcomes
-                .contains(&("broken", TaskOutcome::Failed("store gone".into())))
-        );
+        assert!(report
+            .outcomes
+            .contains(&("broken", TaskOutcome::Failed("store gone".into()))));
         assert!(report.finished().contains(&"acker") && report.finished().contains(&"hygiene"));
         assert_eq!(
             mon.critical_failure(),
