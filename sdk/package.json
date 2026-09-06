@@ -25,6 +25,7 @@
   "scripts": {
     "build": "tsc -p tsconfig.build.json",
     "typecheck": "tsc --noEmit -p tsconfig.json",
+    "test": "node --test scripts/*.test.mjs && node scripts/auth-behavior.mjs && node scripts/watch-capability-vector.mjs",
     "prepack": "npm run build"
   },
   "devDependencies": {

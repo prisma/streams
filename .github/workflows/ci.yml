@@ -186,6 +186,7 @@ jobs:
           npm ci
           npx tsc --noEmit -p tsconfig.json
           npm run build
+          npm test
           # npm >=10 does not create the destination directory; without
           # it, pack dies with ENOENT on the tarball path.
           mkdir -p /tmp/pkg

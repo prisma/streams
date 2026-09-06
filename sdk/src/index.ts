@@ -340,37 +340,46 @@ interface Ctx {
   tokenProvider?: () => string | Promise<string>;
   /** tokenProvider cache; single-flight so a burst of requests after
    * expiry fetches ONE token, not one per request. */
-  tokens?: { value?: string; inflight?: Promise<string> };
+  tokens?: { generation: number; value?: string; inflight?: Promise<string> };
   project?: string;
   fetch: typeof fetch;
 }
 
 async function authHeader(
   ctx: Ctx,
-  fresh: boolean,
-): Promise<string | undefined> {
+  rejectedGeneration?: number,
+): Promise<{ header?: string; generation?: number }> {
   if (ctx.tokenProvider) {
-    const cache = (ctx.tokens ??= {});
-    if (fresh) {
+    const cache = (ctx.tokens ??= { generation: 0 });
+    // A 401 can invalidate only the credential that request actually
+    // sent. Concurrent and late 401s join or reuse its successor.
+    if (rejectedGeneration === cache.generation) {
+      cache.generation++;
       cache.value = undefined;
       cache.inflight = undefined;
     }
-    if (cache.value !== undefined) return `Bearer ${cache.value}`;
-    cache.inflight ??= Promise.resolve(ctx.tokenProvider()).then(
+    const generation = cache.generation;
+    if (cache.value !== undefined) {
+      return { header: `Bearer ${cache.value}`, generation };
+    }
+    // Defer invocation so synchronous provider throws also reach every
+    // waiter on the same promise and leave the cache recoverable.
+    cache.inflight ??= Promise.resolve().then(() => ctx.tokenProvider!()).then(
       (t) => {
-        cache.value = t;
-        cache.inflight = undefined;
+        if (cache.generation === generation) {
+          cache.value = t;
+          cache.inflight = undefined;
+        }
         return t;
       },
       (e) => {
-        cache.inflight = undefined;
+        if (cache.generation === generation) cache.inflight = undefined;
         throw e;
       },
     );
-    return `Bearer ${await cache.inflight}`;
+    return { header: `Bearer ${await cache.inflight}`, generation };
   }
-  if (ctx.token) return `Bearer ${ctx.token}`;
-  return undefined;
+  return { header: ctx.token ? `Bearer ${ctx.token}` : undefined };
 }
 
 /** Bytes as a fetch body across the runtimes this SDK supports. */
@@ -469,12 +478,12 @@ async function req(
   signal?: AbortSignal,
 ): Promise<Response> {
   const h: Record<string, string> = { ...headers };
-  let refresh = false;
+  let rejectedGeneration: number | undefined;
   let refreshed = false;
   for (let attempt = 0; ; attempt++) {
-    const auth = await authHeader(ctx, refresh);
-    refresh = false;
-    if (auth) h["authorization"] = auth;
+    const auth = await authHeader(ctx, rejectedGeneration);
+    rejectedGeneration = undefined;
+    if (auth.header) h["authorization"] = auth.header;
     // The signal reaches fetch itself, so an abort ends the in-flight
     // long poll instead of leaving it running until its timeout.
     const res = await ctx.fetch(`${ctx.base}${path}`, {
@@ -488,7 +497,7 @@ async function req(
     // (never 401), so a misdirected request never burns a refresh.
     if (res.status === 401 && ctx.tokenProvider && !refreshed) {
       refreshed = true;
-      refresh = true;
+      rejectedGeneration = auth.generation;
       continue;
     }
     if ((res.status === 429 || res.status === 503) && attempt < 3) {
