@@ -504,31 +504,8 @@ pub(crate) async fn close_segment_on_engine(
     seal_gen: Option<u64>,
 ) -> Option<u64> {
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let req = crate::shard::AppendReq {
-        enqueued_at: std::time::Instant::now(),
-        hash: identity,
-        route: *route,
-        entries: Vec::new(),
-        usage: crate::usage::counters(route),
-        routing_key: String::new(),
-        key_hash: crate::crypto::stream_hash(""),
-        producer_lineage: Vec::new(),
-        key_version: 0,
-        subkey: [0u8; 32],
-        ts_hint_ms: None,
-        seq: None,
-        bytes: 0,
-        close: true,
-        producer: None,
-        deferred_error: None,
-        sealed_reject_new: None,
-        touch: None,
-        seal_gen,
-        seal_fence_to: None,
-        billing: None,
-        resp: tx,
-    };
-    if let Err(_req) = engine.try_enqueue(req) {
+    let req = crate::shard::CloseReq { hash: identity, generation: seal_gen, resp: tx };
+    if let Err(_req) = engine.try_close(req) {
         tracing::error!(
             seg_id,
             ?route,

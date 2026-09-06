@@ -3742,7 +3742,7 @@ pub(crate) async fn create_stream(
             ts_hint_ms: None,
             seq: None,
             bytes,
-            close,
+            finish: if close { crate::shard::AppendFinish::Close } else { crate::shard::AppendFinish::Open },
             // Exactly-once initial content (audit P0): the append
             // carries a synthetic producer identity derived from the
             // creation-request hash, so concurrent joiners and resumed
@@ -3760,7 +3760,6 @@ pub(crate) async fn create_stream(
             touch: None,
             usage: crate::usage::counters(&crate::crypto::RouteHash::for_stream(&desc.sref()).0),
             seal_gen: None,
-            seal_fence_to: None,
             billing: (!crate::billing::is_reserved_stream(&desc.name)).then(|| {
                 std::sync::Arc::new(crate::billing::BillingRef {
                     identity: crate::billing::identity_of(&state, &desc),
@@ -4507,33 +4506,9 @@ pub(crate) async fn fence_segment_for_key(
         .await
         .map_err(|_| "segment engine unavailable".to_string())?;
     let (tx, rx) = tokio::sync::oneshot::channel();
-    let req = AppendReq {
-        enqueued_at: std::time::Instant::now(),
-        hash: identity,
-        route,
-        entries: Vec::new(),
-        routing_key: String::new(),
-        key_hash: crate::crypto::stream_hash(""),
-        producer_lineage: Vec::new(),
-        key_version: 0,
-        subkey: [0u8; 32],
-        ts_hint_ms: None,
-        seq: None,
-        bytes: 0,
-        close: false,
-        seal_gen: None,
-        seal_fence_to: Some(fence_to),
-        producer: None,
-        deferred_error: None,
-        sealed_reject_new: None,
-        touch: None,
-        usage: crate::usage::counters(&route),
-        billing: None,
-        resp: tx,
-    };
-    engine
-        .try_enqueue(req)
-        .map_err(|_| "append queue full; fence not placed".to_string())?;
+    engine.try_seal_fence(crate::shard::SealFenceReq {
+        hash: identity, generation: fence_to, resp: tx,
+    }).map_err(|_| "append queue full; fence not placed".to_string())?;
     match rx.await {
         Ok(Ok(ack)) => Ok(ack.closed),
         Ok(Err(e)) => Err(format!("fence refused: {e:?}")),
@@ -5249,13 +5224,12 @@ async fn append_core(
         ts_hint_ms: parse_ts_hint(&headers),
         seq: hdr(&headers, "stream-seq"),
         bytes,
-        close,
+        finish: if close { crate::shard::AppendFinish::Close } else { crate::shard::AppendFinish::Open },
         producer: producer.clone(),
         deferred_error: deferred,
         sealed_reject_new,
         touch,
         seal_gen: raw_seal_gen,
-        seal_fence_to: None,
         // Reserved system streams bill nothing (§8.4) — without this,
         // every `_usage` emission would dirty `_usage` itself and the
         // drainer would feed back forever. BILLING_METER=off exists for

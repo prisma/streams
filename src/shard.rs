@@ -18,6 +18,9 @@ use slatedb::{Db, WriteBatch};
 use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::crypto::decode_frame;
+mod commit_plan;
+pub use commit_plan::{AppendFinish, CloseReq, EnqueueError, SealFenceReq};
+use commit_plan::{DurableEffects, ProducerDecision, decide_producer, seal_authorized};
 
 pub fn tail_key(hash: &[u8; 16]) -> Vec<u8> {
     let mut k = Vec::with_capacity(17);
@@ -776,7 +779,7 @@ pub struct AppendReq {
     pub ts_hint_ms: Option<i64>,
     pub seq: Option<String>,
     pub bytes: usize,
-    pub close: bool,
+    pub finish: AppendFinish,
     /// Billing attribution (docs/OBSERVABILITY-BILLING.md §6): when
     /// present, the committer updates the durable SegmentBillingMeta
     /// row in the SAME WriteBatch as the records. None on internal
@@ -790,12 +793,6 @@ pub struct AppendReq {
     /// or the close applied: a stale generation means the claim this
     /// append belonged to was taken over, and its write must not land.
     pub seal_gen: Option<u64>,
-    /// Control message: raise the segment's seal fence to this
-    /// generation and report whether the segment is closed. Processed
-    /// in queue order, so by the time it answers, every append enqueued
-    /// before it has been decided — the answer is a barrier, not a
-    /// snapshot. Entries/close are ignored on fence messages.
-    pub seal_fence_to: Option<u64>,
     pub producer: Option<ProducerReq>,
     pub deferred_error: Option<DeferredErr>,
     /// The COLLECTION is sealing or sealed while this physical segment
@@ -859,6 +856,10 @@ pub enum AppendErr {
 
 pub enum CommitOp {
     Append(AppendReq),
+    /// Close without payload, encryption key, producer lane, or billing placeholders.
+    Close(CloseReq),
+    /// Queue-ordered takeover barrier without meaningless append fields.
+    SealFence(SealFenceReq),
     /// Usage-outbox acknowledgment (§6.3): `_usage` durably holds the
     /// snapshot at `version` — delete the dirty marker iff no NEWER
     /// version exists, and delete the exact listed closed-month rows.
@@ -1089,20 +1090,7 @@ struct InFlightGroup {
     reqs: u32,
     records_n: u32,
     bytes: u64,
-    acks: Vec<(
-        oneshot::Sender<Result<AppendAck, AppendErr>>,
-        Result<AppendAck, AppendErr>,
-    )>,
-    queue_acks: Vec<(
-        oneshot::Sender<Result<crate::queue::QueueOut, String>>,
-        crate::queue::QueueOut,
-    )>,
-    tails: Vec<(Arc<StreamHandle>, TailFields)>,
-    /// Frames to publish into the durable-tail ring at dispatch time,
-    /// BEFORE tail state moves and acks are sent.
-    ring_pub: Vec<(Arc<StreamHandle>, Vec<(u64, Bytes)>)>,
-    signals: Vec<AbsorbSignal>,
-    touches: Vec<TouchFeed>,
+    effects: DurableEffects,
 }
 
 pub struct ShardEngine {
@@ -1737,13 +1725,42 @@ impl ShardEngine {
         }
     }
 
-    pub fn try_enqueue(&self, req: AppendReq) -> Result<(), AppendReq> {
+    pub fn try_enqueue(&self, req: AppendReq) -> Result<(), EnqueueError> {
+        // Control-only closes enter the actor as a different command. Data
+        // appends retain final-record completion atomically with their data.
+        let command = if req.finish == AppendFinish::Close
+            && req.entries.is_empty()
+            && req.producer.is_none()
+            && req.seq.is_none()
+            && req.deferred_error.is_none()
+            && req.sealed_reject_new.is_none()
+        {
+            CommitOp::Close(CloseReq {
+                hash: req.hash,
+                generation: req.seal_gen,
+                resp: req.resp,
+            })
+        } else {
+            CommitOp::Append(req)
+        };
+        self.try_command(command)
+    }
+
+    pub fn try_close(&self, req: CloseReq) -> Result<(), EnqueueError> {
+        self.try_command(CommitOp::Close(req))
+    }
+
+    pub fn try_seal_fence(&self, req: SealFenceReq) -> Result<(), EnqueueError> {
+        self.try_command(CommitOp::SealFence(req))
+    }
+
+    fn try_command(&self, command: CommitOp) -> Result<(), EnqueueError> {
+        self.tx.try_send(command).map_err(|error| match error {
+            mpsc::error::TrySendError::Full(_) => EnqueueError::Full,
+            mpsc::error::TrySendError::Closed(_) => EnqueueError::Closed,
+        })?;
         #[cfg(test)]
-        self.appends_enqueued
-            .fetch_add(1, std::sync::atomic::Ordering::SeqCst);
-        // Ack->next-enqueue probe (armed by the pump at ack dispatch): the
-        // first request after an ack wave stamps how fast the closed-loop
-        // herd reacts — the number the gather window is sized against.
+        self.appends_enqueued.fetch_add(1, Ordering::SeqCst);
         let armed = self.ack_armed_at_us.swap(0, Ordering::Relaxed);
         if armed != 0 {
             let now = self.epoch.elapsed().as_micros() as u64;
@@ -1751,13 +1768,7 @@ impl ShardEngine {
                 .fetch_add(now.saturating_sub(armed), Ordering::Relaxed);
             self.ack_to_enqueue_count.fetch_add(1, Ordering::Relaxed);
         }
-        self.tx
-            .try_send(CommitOp::Append(req))
-            .map_err(|e| match e {
-                mpsc::error::TrySendError::Full(CommitOp::Append(r)) => r,
-                mpsc::error::TrySendError::Closed(CommitOp::Append(r)) => r,
-                _ => unreachable!(),
-            })
+        Ok(())
     }
 
     /// True once the shard db reported closed (fenced by a new owner or a
@@ -1806,10 +1817,10 @@ impl ShardEngine {
         self.pump_wake.notify_one();
         let stranded: Vec<InFlightGroup> = self.in_flight.lock().unwrap().drain(..).collect();
         for group in stranded {
-            for (resp, _) in group.acks {
+            for (resp, _) in group.effects.acks {
                 let _ = resp.send(Err(AppendErr::Moved));
             }
-            for (resp, _) in group.queue_acks {
+            for (resp, _) in group.effects.queue_acks {
                 let _ = resp.send(Err("shard fenced/moved; retry".into()));
             }
         }
@@ -2351,6 +2362,9 @@ impl ShardEngine {
                             CommitOp::Append(r) => {
                                 let _ = r.resp.send(Err(AppendErr::Moved));
                             }
+                    CommitOp::Close(CloseReq { resp, .. }) | CommitOp::SealFence(SealFenceReq { resp, .. }) => {
+                        let _ = resp.send(Err(AppendErr::Moved));
+                    }
                             CommitOp::Queue { resp, .. } => {
                                 let _ = resp.send(Err("shard fenced/moved; retry".into()));
                             }
@@ -2377,6 +2391,10 @@ impl ShardEngine {
                     CommitOp::Append(r) => {
                         let _ = r.resp.send(Err(AppendErr::Moved));
                     }
+                    CommitOp::Close(CloseReq { resp, .. })
+                    | CommitOp::SealFence(SealFenceReq { resp, .. }) => {
+                        let _ = resp.send(Err(AppendErr::Moved));
+                    }
                     CommitOp::Queue { resp, .. } => {
                         let _ = resp.send(Err("shard fenced/moved; retry".into()));
                     }
@@ -2392,6 +2410,10 @@ impl ShardEngine {
                     match op {
                         CommitOp::Append(r) => {
                             let _ = r.resp.send(Err(AppendErr::Moved));
+                        }
+                        CommitOp::Close(CloseReq { resp, .. })
+                        | CommitOp::SealFence(SealFenceReq { resp, .. }) => {
+                            let _ = resp.send(Err(AppendErr::Moved));
                         }
                         CommitOp::Queue { resp, .. } => {
                             let _ = resp.send(Err("shard fenced/moved; retry".into()));
@@ -2479,12 +2501,12 @@ impl ShardEngine {
             crate::queue::QueueOut,
         )>,
     ) {
-        for (resp, _) in pending {
-            let _ = resp.send(Err(AppendErr::Internal(msg.to_string())));
+        DurableEffects {
+            acks: pending,
+            queue_acks: queue_pending,
+            ..Default::default()
         }
-        for (resp, _) in queue_pending {
-            let _ = resp.send(Err(msg.to_string()));
-        }
+        .reject(AppendErr::Internal(msg.to_string()));
     }
 
     async fn commit_group(&self, ops: Vec<CommitOp>, cfg: &ShardConfig) {
@@ -2542,6 +2564,10 @@ impl ShardEngine {
                     CommitOp::Append(r) => {
                         let _ = r.resp.send(Err(AppendErr::Moved));
                     }
+                    CommitOp::Close(CloseReq { resp, .. })
+                    | CommitOp::SealFence(SealFenceReq { resp, .. }) => {
+                        let _ = resp.send(Err(AppendErr::Moved));
+                    }
                     CommitOp::Queue { resp, .. } => {
                         let _ = resp.send(Err("shard fenced/moved; retry".into()));
                     }
@@ -2589,6 +2615,10 @@ impl ShardEngine {
                 match op {
                     CommitOp::Append(r) => {
                         let _ = r.resp.send(Err(AppendErr::Internal(error.to_string())));
+                    }
+                    CommitOp::Close(CloseReq { resp, .. })
+                    | CommitOp::SealFence(SealFenceReq { resp, .. }) => {
+                        let _ = resp.send(Err(AppendErr::Internal(error.to_string())));
                     }
                     CommitOp::Queue { resp, .. } => {
                         let _ = resp.send(Err(error.to_string()));
@@ -2692,6 +2722,7 @@ impl ShardEngine {
         let mut locals: HashMap<[u8; 16], Local> = HashMap::new();
         let mut records = 0u64;
         let mut touches: Vec<TouchFeed> = Vec::new();
+        let mut usage_effects = Vec::new();
         let mut queue_pending: Vec<(
             oneshot::Sender<Result<crate::queue::QueueOut, String>>,
             crate::queue::QueueOut,
@@ -2713,6 +2744,8 @@ impl ShardEngine {
         for op in ops {
             let hash = match &op {
                 CommitOp::Append(r) => r.hash,
+                CommitOp::Close(r) => r.hash,
+                CommitOp::SealFence(r) => r.hash,
                 CommitOp::Absorbed { hash, .. } => *hash,
                 CommitOp::Queue { hash, .. } => *hash,
                 CommitOp::TrimStep { hash } => *hash,
@@ -2744,8 +2777,18 @@ impl ShardEngine {
                         });
                     }
                     Err(e) => {
-                        if let CommitOp::Append(r) = op {
-                            let _ = r.resp.send(Err(AppendErr::Internal(e.to_string())));
+                        match op {
+                            CommitOp::Append(r) => {
+                                let _ = r.resp.send(Err(AppendErr::Internal(e.to_string())));
+                            }
+                            CommitOp::Close(CloseReq { resp, .. })
+                            | CommitOp::SealFence(SealFenceReq { resp, .. }) => {
+                                let _ = resp.send(Err(AppendErr::Internal(e.to_string())));
+                            }
+                            CommitOp::Queue { resp, .. } => {
+                                let _ = resp.send(Err(e.to_string()));
+                            }
+                            _ => {}
                         }
                         continue;
                     }
@@ -2823,39 +2866,52 @@ impl ShardEngine {
                         }
                     }
                 }
+                CommitOp::SealFence(req) => {
+                    let mut fences = self.seal_fences.lock().unwrap();
+                    let current = fences.entry(hash).or_insert(0);
+                    *current = (*current).max(req.generation);
+                    // A fence-only group joins the prior applied group's
+                    // durable barrier; its answer never publishes staged state.
+                    fence_acks.push((
+                        req.resp,
+                        Ok(AppendAck {
+                            last_offset: local.fields.next.wrapping_sub(1),
+                            next_offset: local.fields.next,
+                            closed: local.fields.closed,
+                            producer: None,
+                            duplicate: false,
+                        }),
+                    ));
+                }
+                CommitOp::Close(req) => {
+                    #[cfg(test)]
+                    client_append_hashes.insert(hash);
+                    let fence = self
+                        .seal_fences
+                        .lock()
+                        .unwrap()
+                        .get(&hash)
+                        .copied()
+                        .unwrap_or(0);
+                    if !local.fields.closed && !seal_authorized(req.generation, true, fence) {
+                        let _ = req.resp.send(Err(AppendErr::SealSuperseded));
+                        continue;
+                    }
+                    local.fields.closed = true;
+                    pending.push((
+                        req.resp,
+                        Ok(AppendAck {
+                            last_offset: local.fields.next.wrapping_sub(1),
+                            next_offset: local.fields.next,
+                            closed: true,
+                            producer: None,
+                            duplicate: false,
+                        }),
+                    ));
+                }
                 CommitOp::Append(req) => {
                     #[cfg(test)]
                     client_append_hashes.insert(hash);
-                    // Fence message: a takeover raising the segment's
-                    // minimum claim generation. The RAISE is immediate
-                    // (later ops in this very group already see it),
-                    // but the RESPONSE is durability-barriered: it
-                    // rides the group ack pipeline, so it reaches the
-                    // taking-over operation only after the durable
-                    // watermark covers every write decided before it.
-                    // Answering from staged state let a takeover read
-                    // closed=true off a WriteBatch that had not been
-                    // written — publish Sealed — and then watch the
-                    // write fail; the closed-report must be a fact
-                    // about DURABLE state or it is not a fact at all.
-                    if let Some(g) = req.seal_fence_to {
-                        {
-                            let mut f = self.seal_fences.lock().unwrap();
-                            let e = f.entry(hash).or_insert(0);
-                            *e = (*e).max(g);
-                        }
-                        fence_acks.push((
-                            req.resp,
-                            Ok(AppendAck {
-                                last_offset: local.fields.next.wrapping_sub(1),
-                                next_offset: local.fields.next,
-                                closed: local.fields.closed,
-                                producer: None,
-                                duplicate: false,
-                            }),
-                        ));
-                        continue;
-                    }
                     // Producer state: ensure loaded (durable `q` key) into
                     // the batch-local staging map.
                     if let Some(pr) = &req.producer {
@@ -2897,119 +2953,23 @@ impl ShardEngine {
                     // (204, before everything below) -> epoch/seq rules ->
                     // gap (409) -> closed (409) -> deferred ct/body errors ->
                     // Stream-Seq -> append.
-                    let mut prod_echo: Option<(u64, u64)> = None;
-                    if let Some(pr) = &req.producer {
-                        match local.producers.get(&(req.key_hash, pr.id.clone())).copied() {
-                            Some((ce, cs, coff, chash)) => {
-                                if pr.epoch < ce {
-                                    pending.push((
-                                        req.resp,
-                                        Err(AppendErr::ProducerStale { current_epoch: ce }),
-                                    ));
-                                    continue;
-                                }
-                                if pr.epoch == ce && pr.seq <= cs {
-                                    // Product-surface reuse check (spec
-                                    // Stage 5 §7): the SAME tuple with a
-                                    // DIFFERENT request is a caller bug,
-                                    // not a duplicate. Only enforceable
-                                    // for the latest sequence (older
-                                    // hashes are not retained), and only
-                                    // when both sides recorded a hash —
-                                    // the raw protocol's duplicate
-                                    // contract never compares bodies.
-                                    if pr.seq == cs
-                                        && chash != [0u8; 16]
-                                        && req
-                                            .producer
-                                            .as_ref()
-                                            .and_then(|p| p.request_hash)
-                                            .is_some_and(|h| h != chash)
-                                    {
-                                        pending.push((req.resp, Err(AppendErr::ProducerSeqReused)));
-                                        continue;
-                                    }
-                                    // Duplicate: answer with the ORIGINAL
-                                    // committed offset when the stored
-                                    // producer row carries it (24-byte
-                                    // format; offset 0 is valid). Only a
-                                    // legacy 16-byte row (coff == MAX)
-                                    // degrades to the tail-based answer.
-                                    let last = if pr.seq == cs && coff != u64::MAX {
-                                        coff
-                                    } else {
-                                        local.fields.next.wrapping_sub(1)
-                                    };
-                                    // DURABILITY-BARRIERED (round 10):
-                                    // this success is a statement that
-                                    // the original write is durable —
-                                    // but the row it was read from may
-                                    // be batch-local staging (same
-                                    // group) or applied-not-yet-durable
-                                    // state. The ack rides the group
-                                    // pipeline like every other
-                                    // success: answered after the
-                                    // barrier that actually covers it,
-                                    // failed with the group if its
-                                    // write fails.
-                                    pending.push((
-                                        req.resp,
-                                        Ok(AppendAck {
-                                            last_offset: last,
-                                            next_offset: local.fields.next,
-                                            closed: local.fields.closed,
-                                            producer: Some((ce, cs)),
-                                            duplicate: true,
-                                        }),
-                                    ));
-                                    continue;
-                                }
-                                if pr.epoch > ce && pr.seq != 0 {
-                                    pending.push((req.resp, Err(AppendErr::ProducerEpochSeq)));
-                                    continue;
-                                }
-                                if pr.epoch == ce && pr.seq > cs + 1 {
-                                    pending.push((
-                                        req.resp,
-                                        Err(AppendErr::ProducerGap {
-                                            expected: cs + 1,
-                                            received: pr.seq,
-                                        }),
-                                    ));
-                                    continue;
-                                }
-                            }
-                            None => {
-                                if pr.seq != 0 {
-                                    pending.push((
-                                        req.resp,
-                                        Err(AppendErr::ProducerGap {
-                                            expected: 0,
-                                            received: pr.seq,
-                                        }),
-                                    ));
-                                    continue;
-                                }
+                    let prod_echo = if let Some(pr) = &req.producer {
+                        let current = local.producers.get(&(req.key_hash, pr.id.clone())).copied();
+                        match decide_producer(pr, current, &local.fields, req.sealed_reject_new) {
+                            ProducerDecision::Accept(echo) => Some(echo),
+                            ProducerDecision::Reply(reply) => {
+                                pending.push((req.resp, reply));
+                                continue;
                             }
                         }
-                        // Past every duplicate/gap answer above, this is a
-                        // NEW sequence. If the collection is sealing or
-                        // sealed, it must not land: the descriptor-level
-                        // gate cannot make this call, because it cannot
-                        // tell a retry from a new record.
-                        if req.sealed_reject_new.is_some() {
-                            pending.push((
-                                req.resp,
-                                Err(AppendErr::Closed {
-                                    next_offset: local.fields.next,
-                                }),
-                            ));
-                            continue;
-                        }
-                        prod_echo = Some((pr.epoch, pr.seq));
-                    }
+                    } else {
+                        None
+                    };
                     if local.fields.closed {
-                        if req.close && req.entries.is_empty() && req.producer.is_none() {
+                        if (req.finish == AppendFinish::Close)
+                            && req.entries.is_empty()
+                            && req.producer.is_none()
+                        {
                             // Idempotent close-only — but "the segment
                             // is closed" may have been established by
                             // an earlier op in THIS group or by an
@@ -3097,7 +3057,7 @@ impl ShardEngine {
                     // BEFORE anything is staged, so a superseded
                     // operation can neither write its record nor close
                     // the segment.
-                    if req.seal_gen.is_some() || req.close {
+                    if req.seal_gen.is_some() || (req.finish == AppendFinish::Close) {
                         let fence = self
                             .seal_fences
                             .lock()
@@ -3105,11 +3065,11 @@ impl ShardEngine {
                             .get(&hash)
                             .copied()
                             .unwrap_or(0);
-                        let stale = match (req.seal_gen, req.close) {
-                            (Some(g), _) => g < fence,
-                            (None, true) => fence > 0,
-                            (None, false) => false,
-                        };
+                        let stale = !seal_authorized(
+                            req.seal_gen,
+                            req.finish == AppendFinish::Close,
+                            fence,
+                        );
                         if stale {
                             let _ = req.resp.send(Err(AppendErr::SealSuperseded));
                             continue;
@@ -3138,7 +3098,7 @@ impl ShardEngine {
                         v.extend_from_slice(&rhash);
                         wb.put(producer_key(&hash, &req.key_hash, &pr.id), v);
                     }
-                    if req.close {
+                    if req.finish == AppendFinish::Close {
                         local.fields.closed = true;
                     }
                     if req.entries.is_empty() {
@@ -3184,12 +3144,7 @@ impl ShardEngine {
                         local.fields.logical += payload.len() as u64;
                         local.appended_bytes += payload.len() as u64;
                     }
-                    usage
-                        .plaintext_bytes
-                        .fetch_add(pt_sum, std::sync::atomic::Ordering::Relaxed);
-                    usage
-                        .frame_bytes
-                        .fetch_add(frame_sum, std::sync::atomic::Ordering::Relaxed);
+                    usage_effects.push((usage, pt_sum, frame_sum));
                     // DURABLE billing state (§6.1), same WriteBatch as
                     // the records above. Duplicates never reach here
                     // (the producer-dedupe arm answered earlier), so a
@@ -4377,7 +4332,7 @@ impl ShardEngine {
             } else {
                 let mut infl = self.in_flight.lock().unwrap();
                 if let Some(last) = infl.last_mut() {
-                    last.acks.append(&mut fence_acks);
+                    last.effects.acks.append(&mut fence_acks);
                 } else {
                     drop(infl);
                     for (resp, res) in fence_acks.drain(..) {
@@ -4403,8 +4358,8 @@ impl ShardEngine {
             // state already durable and the answer immediate.
             let mut infl = self.in_flight.lock().unwrap();
             if let Some(last) = infl.last_mut() {
-                last.acks.append(&mut pending);
-                last.queue_acks.append(&mut queue_pending);
+                last.effects.acks.append(&mut pending);
+                last.effects.queue_acks.append(&mut queue_pending);
             } else {
                 drop(infl);
                 for (resp, res) in pending {
@@ -4586,12 +4541,15 @@ impl ShardEngine {
                     reqs: group_reqs,
                     records_n: records as u32,
                     bytes: group_bytes,
-                    acks: pending,
-                    queue_acks: queue_pending,
-                    tails,
-                    ring_pub,
-                    signals,
-                    touches,
+                    effects: DurableEffects {
+                        acks: pending,
+                        queue_acks: queue_pending,
+                        tails,
+                        ring_pub,
+                        signals,
+                        touches,
+                        usage: usage_effects,
+                    },
                 });
                 self.flush_wake.notify_one();
                 self.pump_wake.notify_one();
@@ -5121,7 +5079,7 @@ impl ShardEngine {
             // then an ack) makes that offset visible, or a reader woken
             // by the ack would miss the fast path — or worse, serve a
             // truncated range.
-            for (handle, recs) in &group.ring_pub {
+            for (handle, recs) in &group.effects.ring_pub {
                 self.ring_publish(handle, recs);
             }
             {
@@ -5141,22 +5099,28 @@ impl ShardEngine {
                     t.pop_front();
                 }
             }
-            for (handle, fields) in &group.tails {
+            for (handle, fields) in &group.effects.tails {
                 handle.state.lock().unwrap().durable = fields.clone();
                 handle.notify.notify_waiters();
             }
-            for (resp, res) in group.acks {
+            for (usage, plaintext, frames) in group.effects.usage {
+                usage
+                    .plaintext_bytes
+                    .fetch_add(plaintext, Ordering::Relaxed);
+                usage.frame_bytes.fetch_add(frames, Ordering::Relaxed);
+            }
+            for (resp, res) in group.effects.acks {
                 let _ = resp.send(res);
             }
-            for (resp, out) in group.queue_acks {
+            for (resp, out) in group.effects.queue_acks {
                 let _ = resp.send(Ok(out));
             }
-            for s in group.signals {
+            for s in group.effects.signals {
                 let _ = self.absorb_tx.try_send(s);
             }
             // H2: feed touch journals only after the data is durable and
             // reader-visible, so an invalidation always finds fresh data.
-            for t in group.touches {
+            for t in group.effects.touches {
                 t.journal.ingest(&t.key_ids, t.next_offset);
             }
         }
@@ -5193,10 +5157,10 @@ impl ShardEngine {
                     let stranded: Vec<InFlightGroup> =
                         self.in_flight.lock().unwrap().drain(..).collect();
                     for group in stranded {
-                        for (resp, _) in group.acks {
+                        for (resp, _) in group.effects.acks {
                             let _ = resp.send(Err(AppendErr::Moved));
                         }
-                        for (resp, _) in group.queue_acks {
+                        for (resp, _) in group.effects.queue_acks {
                             let _ = resp.send(Err("shard fenced/moved; retry".into()));
                         }
                     }
@@ -5642,7 +5606,7 @@ mod storage_decode_tests {
         let mut wb = WriteBatch::new();
         wb.put(record_key(&hash, 0), b"retained ciphertext");
         wb.put(tail_key(&hash), b"broken tail");
-        db.write(wb).await.unwrap();
+        db.write(wb).await.unwrap().await_durable().await.unwrap();
         let (tx, _rx) = mpsc::channel(1);
         let engine = ShardEngine::start(
             "r12".into(),
@@ -5671,7 +5635,7 @@ mod storage_decode_tests {
         );
         assert!(!engine.streams.lock().unwrap().contains_key(&hash));
         engine.begin_close();
-        db.close().await.unwrap();
+        let _ = db.close().await;
     }
 }
 
@@ -5802,6 +5766,206 @@ mod billing_read_tests {
             &8u64.to_le_bytes()
         );
         engine.begin_close();
-        db.close().await.unwrap();
+        let _ = db.close().await;
+    }
+}
+
+#[cfg(test)]
+mod commit_command_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r03_close_and_fence_wait_for_write_remote_durability_and_dispatch() {
+        let store = crate::dst::FaultStore::new(
+            Arc::new(object_store::memory::InMemory::new()),
+            303,
+            crate::dst::FaultProfile::clean(),
+        );
+        let db = Arc::new(
+            Db::builder("r03-barriers", store.clone())
+                .with_settings(slatedb::config::Settings {
+                    flush_interval: Some(std::time::Duration::from_millis(5)),
+                    ..Default::default()
+                })
+                .build()
+                .await
+                .unwrap(),
+        );
+        let (tx, _rx) = mpsc::channel(1);
+        let engine = ShardEngine::start(
+            "r03-barriers".into(),
+            db.clone(),
+            store.clone(),
+            ShardConfig::default(),
+            tx,
+            None,
+            ShardMaintenance::default(),
+        );
+        let hash = [3; 16];
+        let handle = engine.stream_handle(hash).await.unwrap();
+        let commit_gate = engine.test_hold_commit().await;
+        let dispatch_gate = engine.test_hold_dispatch().await;
+        let engaged = store.hold_class(crate::dst::StoreOp::Put, crate::dst::ObjClass::Wal, 1);
+        let (ctx, mut close) = oneshot::channel();
+        let (ftx, mut fence) = oneshot::channel();
+        engine
+            .try_close(CloseReq {
+                hash,
+                generation: Some(1),
+                resp: ctx,
+            })
+            .unwrap();
+        engine
+            .try_seal_fence(SealFenceReq {
+                hash,
+                generation: 2,
+                resp: ftx,
+            })
+            .unwrap();
+        assert!(matches!(
+            close.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(
+            !handle.state.lock().unwrap().applied.closed,
+            "nothing applied before write gate"
+        );
+        drop(commit_gate);
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while engaged.load(Ordering::SeqCst) == 0 {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(handle.state.lock().unwrap().applied.closed);
+        let remote = slatedb::config::ReadOptions {
+            durability_filter: DurabilityLevel::Remote,
+            ..Default::default()
+        };
+        assert!(
+            db.get_with_options(tail_key(&hash), &remote)
+                .await
+                .unwrap()
+                .is_none()
+        );
+        assert!(matches!(
+            close.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        assert!(matches!(
+            fence.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        store.release_hold();
+        tokio::time::timeout(std::time::Duration::from_secs(10), async {
+            while db
+                .get_with_options(tail_key(&hash), &remote)
+                .await
+                .unwrap()
+                .is_none()
+            {
+                tokio::task::yield_now().await;
+            }
+        })
+        .await
+        .unwrap();
+        assert!(
+            matches!(close.try_recv(), Err(oneshot::error::TryRecvError::Empty)),
+            "remote durability alone does not bypass dispatch"
+        );
+        assert!(matches!(
+            fence.try_recv(),
+            Err(oneshot::error::TryRecvError::Empty)
+        ));
+        drop(dispatch_gate);
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(10), close)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .closed
+        );
+        assert!(
+            tokio::time::timeout(std::time::Duration::from_secs(10), fence)
+                .await
+                .unwrap()
+                .unwrap()
+                .unwrap()
+                .closed
+        );
+        engine.begin_close();
+        engine
+            .await_terminated(std::time::Duration::from_secs(5))
+            .await
+            .unwrap();
+        let _ = db.close().await;
+        let reopened = Db::builder("r03-barriers", store).build().await.unwrap();
+        assert!(
+            stored_tail(&reopened.get(tail_key(&hash)).await.unwrap().unwrap())
+                .unwrap()
+                .closed
+        );
+        reopened.close().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r03_failed_group_discards_close_and_fence_effects_together() {
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        let db = Arc::new(
+            Db::builder("r03-reject", store.clone())
+                .build()
+                .await
+                .unwrap(),
+        );
+        let (tx, _rx) = mpsc::channel(1);
+        let engine = ShardEngine::start(
+            "r03-reject".into(),
+            db.clone(),
+            store,
+            ShardConfig::default(),
+            tx,
+            None,
+            ShardMaintenance::default(),
+        );
+        let hash = [4; 16];
+        let (ctx, close) = oneshot::channel();
+        let (ftx, fence) = oneshot::channel();
+        engine.fail_next_group_for(hash);
+        engine
+            .commit_group(
+                vec![
+                    CommitOp::Close(CloseReq {
+                        hash,
+                        generation: Some(1),
+                        resp: ctx,
+                    }),
+                    CommitOp::SealFence(SealFenceReq {
+                        hash,
+                        generation: 2,
+                        resp: ftx,
+                    }),
+                ],
+                &ShardConfig::default(),
+            )
+            .await;
+        assert!(close.await.unwrap().is_err());
+        assert!(fence.await.unwrap().is_err());
+        assert!(db.get(tail_key(&hash)).await.unwrap().is_none());
+        assert!(
+            !engine
+                .stream_handle(hash)
+                .await
+                .unwrap()
+                .state
+                .lock()
+                .unwrap()
+                .applied
+                .closed
+        );
+        engine.begin_close();
+        let _ = db.close().await;
     }
 }
