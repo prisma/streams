@@ -1987,37 +1987,11 @@ impl ShardEngine {
         Ok(part)
     }
 
-    /// Streams this engine holds open whose durable log extends past their
-    /// absorbed boundary — the absorber's re-discovery sweep. Signals are
-    /// the fast path; this closes their gaps (a bounded `try_send` channel
-    /// drops under a wide backlog, and a restarted instance has no signals
-    /// for data absorbed-before-crash): any stream a signal missed is
-    /// re-found here as long as its handle is resident. Handles are
-    /// snapshotted under the lock and inspected outside it.
-    pub fn absorb_backlog(&self) -> Vec<([u8; 16], u64)> {
-        let handles: Vec<([u8; 16], Arc<StreamHandle>)> = self
-            .streams
-            .lock()
-            .unwrap()
-            .iter()
-            .map(|(h, e)| (*h, e.clone()))
-            .collect();
-        handles
-            .into_iter()
-            .filter_map(|(h, e)| {
-                let st = e.state.lock().unwrap();
-                let backlog = st.durable.next.saturating_sub(st.durable.absorbed);
-                (backlog > 0).then_some((h, backlog))
-            })
-            .collect()
-    }
-
     /// Enumerate the durable dirty-stream index: every stream whose last
     /// committed batch left `absorbed < next`, with those two boundaries
     /// as of that batch. This is how a fresh owner rediscovers unabsorbed
     /// tails after restart/handoff WITHOUT materializing stream handles
-    /// (the resident-handle sweep in `absorb_backlog` only sees streams
-    /// something already touched) and without customer keys.
+    /// and without customer keys.
     /// Producer-state lookup through the routing key's predecessor
     /// chain (ROUTING-V3 §3.6): own identity first, then each sealed
     /// predecessor. A hit on a predecessor means the producer's last
