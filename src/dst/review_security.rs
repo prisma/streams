@@ -91,6 +91,52 @@ async fn r15_bodyless_and_unauthorized_requests_never_poll_the_body() {
         assert_eq!(response.status(), expected, "{path}");
         assert_eq!(response.headers()["access-control-allow-origin"], "*");
     }
+    let (status, _, body) = preq(
+        rig.addr,
+        "PUT",
+        "/v1/streams/valid-watch",
+        &[
+            ("authorization", "Bearer secret"),
+            ("prisma-encryption-key", PRISMA_KEY),
+        ],
+        br#"{"format":{"kind":"json"},"watches":[{"name":"w","fields":["/id"]}]}"#,
+    )
+    .await;
+    assert_eq!(status, 201, "{}", String::from_utf8_lossy(&body));
+    let project = crate::tenant::ProjectId::new("proj-test").unwrap();
+    let desc = rig
+        .state
+        .registry
+        .get(&project.stream_ref("valid-watch"))
+        .await
+        .unwrap()
+        .unwrap();
+    let epoch = desc.epoch_bytes().unwrap();
+    let signing_key =
+        crate::crypto::wait_sig_key(&crate::crypto::touch_token(&skey(), &epoch), &epoch);
+    for (expires, expected) in [
+        (crate::shard::now_ms() / 1000 + 60, StatusCode::OK),
+        (crate::shard::now_ms() / 1000 - 60, StatusCode::FORBIDDEN),
+    ] {
+        let signature = crate::crypto::watch_capability_sig(
+            &signing_key,
+            &desc.sref(),
+            &desc.stream_epoch,
+            "w",
+            "0000000000000000",
+            "GET",
+            expires,
+        );
+        let capability = format!("Prisma-Watch proj-test.{expires}.{signature}");
+        let response = sentinel_request(
+            rig.state.clone(),
+            Method::GET,
+            "valid-watch/watches/w/keys/0000000000000000?cursor=now&timeoutMs=1",
+            Some(&capability),
+        )
+        .await;
+        assert_eq!(response.status(), expected);
+    }
     rig.tasks.shutdown(std::time::Duration::from_secs(2)).await;
     engine_shutdown(&rig.state).await;
 }
