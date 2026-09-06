@@ -1431,10 +1431,8 @@ impl Registry {
         }
     }
 
-    /// Paginated catalog (audit P0): ONE listing continued at the
-    /// provider, and a GET only for the descriptors on THIS page.
-    /// Streams outside any fixed prefix window are reachable, and a
-    /// page costs O(limit) Class B requests instead of O(all streams).
+    /// Visible and reconciliation catalogs share provider progress,
+    /// bounded ordered fetches, decoding and continuation semantics.
     pub async fn list_page(
         &self,
         project: &crate::tenant::ProjectId,
@@ -1442,127 +1440,127 @@ impl Registry {
         limit: usize,
     ) -> Result<CatalogPage, object_store::Error> {
         if self.fail_next_list.lock().unwrap().remove(project.as_str()) {
-            return Err(object_store::Error::Generic {
-                store: "registry",
-                source: "armed list failpoint".into(),
-            });
+            return Err(catalog_error("armed list failpoint"));
         }
-
-        use futures_util::TryStreamExt;
-        // §10.3: a project catalog scans ONLY its own prefix — other
-        // projects' keys are unreachable by construction.
-        let root = project_streams_prefix(project);
-        let prefix = ObjPath::from(root.trim_end_matches('/'));
-        // The offset is exclusive and compares by key, which sorts
-        // exactly as the name does under the hex encoding.
-        let offset = after.map(|n| ObjPath::from(format!("{root}{}.json", hex(n.as_bytes()))));
-        let mut stream = match &offset {
-            Some(o) => self.store.list_with_offset(Some(&prefix), o),
-            None => self.store.list(Some(&prefix)),
-        };
-        let mut out = Vec::new();
-        let mut last_name = None;
-        // Only streams a caller can actually use: not tombstoned, not
-        // fork-retained, not expired, and not still being built. The
-        // walk is capped so one page cannot scan the world, and the cap
-        // is why `exhausted` exists — stopping early is a pause, not an
-        // end.
-        let mut scanned = 0usize;
-        let mut exhausted = false;
-        let now = crate::shard::now_ms();
-        while out.len() < limit && scanned < limit.saturating_mul(8) + 64 {
-            let Some(meta) = stream.try_next().await? else {
-                exhausted = true;
-                break;
-            };
-            scanned += 1;
-            // A descriptor that vanished between the listing and the GET
-            // is genuinely gone; anything else is a real failure and
-            // must not silently advance the cursor past a live stream.
-            // The continuation follows the PROVIDER's key, not the last
-            // descriptor we managed to decode. Advancing only on success
-            // meant a page whose objects all vanished between LIST and
-            // GET ended with no cursor and `exhausted == false`, which
-            // the handler can only report as end-of-catalog.
-            last_name = name_from_desc_path(&meta.location).or(last_name);
-            let raw = match self.store.get(&meta.location).await {
-                Ok(r) => r.bytes().await?,
-                Err(object_store::Error::NotFound { .. }) => continue,
-                Err(e) => return Err(e),
-            };
-            let expect = name_from_desc_path(&meta.location)
-                .and_then(|n| crate::tenant::CanonicalStreamName::new(&n).ok())
-                .map(|n| crate::tenant::TenantStreamRef::new(project.clone(), n))
-                .ok_or_else(|| object_store::Error::Generic {
-                    store: "registry",
-                    source: format!("catalog: non-canonical key at {}", meta.location).into(),
-                })?;
-            let d = decode_desc(&raw, Some(&expect)).map_err(|e| object_store::Error::Generic {
-                store: "registry",
-                source: format!("catalog: undecodable descriptor at {}: {e}", meta.location).into(),
-            })?;
-            let expired = d.expires_at_ms.is_some_and(|e| now >= e);
-            if !d.deleted && !d.soft_deleted && !expired && d.init.is_none() {
-                out.push(d);
-            }
-        }
-        Ok(CatalogPage {
-            streams: out,
-            next_after: last_name,
-            exhausted,
-        })
+        self.catalog_page(project, after, limit, false).await
     }
 
-    /// Unfiltered catalog page for RECONCILERS (round-22 item 7):
-    /// tombstoned, expired, fork-retained and initializing descriptors
-    /// included — the billing tombstone walk needs exactly the rows
-    /// `list_page` hides. Same pagination contract.
     pub async fn list_page_raw(
         &self,
         project: &crate::tenant::ProjectId,
         after: Option<&str>,
         limit: usize,
     ) -> Result<CatalogPage, object_store::Error> {
-        use futures_util::TryStreamExt;
+        self.catalog_page(project, after, limit, true).await
+    }
+
+    async fn catalog_page(
+        &self,
+        project: &crate::tenant::ProjectId,
+        after: Option<&str>,
+        limit: usize,
+        include_inactive: bool,
+    ) -> Result<CatalogPage, object_store::Error> {
+        use futures_util::{StreamExt, TryStreamExt};
+        if limit == 0 {
+            return Err(catalog_error("catalog limit must be positive"));
+        }
+        let limit = limit.min(1000);
+        let max_scan = limit.saturating_mul(8) + 64;
+        const MAX_DESCRIPTOR_BYTES: usize = 4 * 1024 * 1024;
+        const MAX_PAGE_BYTES: usize = 16 * 1024 * 1024;
         let root = project_streams_prefix(project);
         let prefix = ObjPath::from(root.trim_end_matches('/'));
         let offset = after.map(|n| ObjPath::from(format!("{root}{}.json", hex(n.as_bytes()))));
-        let mut stream = match &offset {
+        let listing = match &offset {
             Some(o) => self.store.list_with_offset(Some(&prefix), o),
             None => self.store.list(Some(&prefix)),
         };
-        let mut out = Vec::new();
-        let mut last_name = None;
-        let mut exhausted = false;
-        while out.len() < limit {
-            let Some(meta) = stream.try_next().await? else {
-                exhausted = true;
-                break;
-            };
-            last_name = name_from_desc_path(&meta.location).or(last_name);
-            let raw = match self.store.get(&meta.location).await {
-                Ok(r) => r.bytes().await?,
-                Err(object_store::Error::NotFound { .. }) => continue,
-                Err(e) => return Err(e),
-            };
-            let expect = name_from_desc_path(&meta.location)
-                .and_then(|n| crate::tenant::CanonicalStreamName::new(&n).ok())
-                .map(|n| crate::tenant::TenantStreamRef::new(project.clone(), n))
-                .ok_or_else(|| object_store::Error::Generic {
-                    store: "registry",
-                    source: format!("catalog: non-canonical key at {}", meta.location).into(),
-                })?;
-            let d = decode_desc(&raw, Some(&expect)).map_err(|e| object_store::Error::Generic {
-                store: "registry",
-                source: format!("catalog: undecodable descriptor at {}: {e}", meta.location).into(),
-            })?;
-            out.push(d);
-        }
-        Ok(CatalogPage {
-            streams: out,
-            next_after: last_name,
-            exhausted,
-        })
+        let pass = async {
+            let mut reads = listing
+                .take(max_scan)
+                .map(|meta| async move {
+                    let meta = meta?;
+                    let name = name_from_desc_path(&meta.location)
+                        .ok_or_else(|| catalog_error("non-canonical catalog key"))?;
+                    if meta.size > MAX_DESCRIPTOR_BYTES as u64 {
+                        return Err(catalog_error("descriptor exceeds catalog byte budget"));
+                    }
+                    let raw = match self.store.get(&meta.location).await {
+                        Ok(result) => {
+                            let mut chunks = result.into_stream();
+                            let mut raw = Vec::new();
+                            while let Some(chunk) = chunks.try_next().await? {
+                                if raw.len().saturating_add(chunk.len()) > MAX_DESCRIPTOR_BYTES {
+                                    return Err(catalog_error(
+                                        "descriptor exceeds catalog byte budget",
+                                    ));
+                                }
+                                raw.extend_from_slice(&chunk);
+                            }
+                            raw
+                        }
+                        Err(object_store::Error::NotFound { .. }) => return Ok((name, None, 0)),
+                        Err(error) => return Err(error),
+                    };
+                    if raw.len() > MAX_DESCRIPTOR_BYTES {
+                        return Err(catalog_error("descriptor exceeds catalog byte budget"));
+                    }
+                    let canonical = crate::tenant::CanonicalStreamName::new(&name)
+                        .map_err(|_| catalog_error("non-canonical catalog name"))?;
+                    let expect = crate::tenant::TenantStreamRef::new(project.clone(), canonical);
+                    let desc = decode_desc(&raw, Some(&expect)).map_err(|error| {
+                        catalog_error(&format!(
+                            "catalog: undecodable descriptor at {}: {error}",
+                            meta.location
+                        ))
+                    })?;
+                    Ok((name, Some(desc), raw.len()))
+                })
+                .buffered(8);
+            let (mut out, mut last_name, mut scanned, mut bytes) =
+                (Vec::new(), None, 0usize, 0usize);
+            let now = crate::shard::now_ms();
+            let mut exhausted = false;
+            while out.len() < limit {
+                let Some((name, desc, size)) = reads.try_next().await? else {
+                    exhausted = scanned < max_scan;
+                    break;
+                };
+                if bytes.saturating_add(size) > MAX_PAGE_BYTES {
+                    break;
+                }
+                bytes += size;
+                scanned += 1;
+                // Advance only through consumed provider results. Prefetched
+                // results beyond the output/byte limit are retried next page.
+                last_name = Some(name);
+                if let Some(desc) = desc {
+                    let active = !desc.deleted
+                        && !desc.soft_deleted
+                        && desc.init.is_none()
+                        && !desc.expires_at_ms.is_some_and(|expires| now >= expires);
+                    if include_inactive || active {
+                        out.push(desc);
+                    }
+                }
+            }
+            Ok(CatalogPage {
+                streams: out,
+                next_after: last_name,
+                exhausted,
+            })
+        };
+        tokio::time::timeout(Duration::from_secs(10), pass)
+            .await
+            .map_err(|_| catalog_error("catalog page deadline exceeded"))?
+    }
+}
+
+fn catalog_error(message: &str) -> object_store::Error {
+    object_store::Error::Generic {
+        store: "registry",
+        source: message.to_string().into(),
     }
 }
 
@@ -2243,6 +2241,62 @@ mod tests {
         assert!(reg.get(&ts("s")).await.unwrap().unwrap().deleted);
         reg.expire_for_tests(&ts("s"));
         assert!(reg.get(&ts("s")).await.unwrap().unwrap().deleted);
+    }
+
+    #[tokio::test]
+    async fn catalog_provider_progress_survives_empty_filtered_pages_and_prefetch() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let reg = Registry::new(
+            store,
+            &crate::tenant::CellId::new("catalog-budget").unwrap(),
+        );
+        for n in 0..100 {
+            reg.create(desc(
+                &format!("stream-{n:03}"),
+                "00000000000000000000000000000001",
+                n < 90,
+            ))
+            .await
+            .unwrap();
+        }
+        let first = reg.list_page(&tp(), None, 2).await.unwrap();
+        assert!(first.streams.is_empty());
+        assert!(first.next_after.is_some());
+        assert!(!first.exhausted);
+        let mut after = first.next_after;
+        let mut names = Vec::new();
+        loop {
+            let page = reg.list_page(&tp(), after.as_deref(), 2).await.unwrap();
+            names.extend(page.streams.iter().map(|d| d.name.clone()));
+            if page.exhausted {
+                break;
+            }
+            assert_ne!(page.next_after, after);
+            after = page.next_after;
+        }
+        assert_eq!(
+            names,
+            (90..100)
+                .map(|n| format!("stream-{n:03}"))
+                .collect::<Vec<_>>()
+        );
+        assert!(reg.list_page_raw(&tp(), None, 0).await.is_err());
+        let mut after = None;
+        let mut all = Vec::new();
+        loop {
+            let page = reg.list_page_raw(&tp(), after.as_deref(), 3).await.unwrap();
+            all.extend(page.streams.iter().map(|d| d.name.clone()));
+            if page.exhausted {
+                break;
+            }
+            after = page.next_after;
+        }
+        assert_eq!(
+            all,
+            (0..100)
+                .map(|n| format!("stream-{n:03}"))
+                .collect::<Vec<_>>()
+        );
     }
 
     /// Round-22 item 7: the tombstone write carries the logical close

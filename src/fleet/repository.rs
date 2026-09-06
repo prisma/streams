@@ -10,7 +10,7 @@
 use std::sync::Arc;
 
 use bytes::Bytes;
-use futures_util::StreamExt;
+use futures_util::{StreamExt, TryStreamExt};
 use object_store::{
     ObjectStore, ObjectStoreExt, PutMode, PutOptions, PutPayload, UpdateVersion,
     path::Path as ObjPath,
@@ -53,57 +53,84 @@ impl FleetRepository {
         Ok(())
     }
 
-    /// Every instance heartbeat currently published (the coordination
-    /// documents that share the prefix are skipped).
-    pub async fn read_heartbeat_set(&self) -> Vec<Heartbeat> {
-        let Some(store) = self.store.as_ref() else {
-            return Vec::new();
-        };
-        let mut paths = Vec::new();
-        let mut listing = store.list(Some(&ObjPath::from("fleet")));
-        while let Some(meta) = listing.next().await {
-            let Ok(meta) = meta else { continue };
-            let loc = meta.location.as_ref();
-            if loc.ends_with(".json")
-                && !loc.ends_with("desired.json")
-                && !loc.ends_with("overrides.json")
-                && !loc.ends_with("urls.json")
-            {
-                paths.push(meta.location);
-            }
-        }
-        let mut out = Vec::new();
-        for p in paths {
-            let Ok(r) = store.get(&p).await else { continue };
-            let Ok(raw) = r.bytes().await else { continue };
-            if let Ok(hb) = serde_json::from_slice::<Heartbeat>(&raw) {
-                out.push(hb);
-            }
-        }
-        out
+    /// Complete bounded populations. An incomplete/invalid snapshot is
+    /// an error, so the controller retains its prior ownership view.
+    pub async fn read_heartbeat_set(&self) -> anyhow::Result<Vec<Heartbeat>> {
+        self.read_population("fleet", true).await
     }
 
-    /// Router reports: the edge's client-observed latency, invisible to
-    /// server-side acks.
-    pub async fn read_router_reports(&self) -> Vec<serde_json::Value> {
+    pub async fn read_router_reports(&self) -> anyhow::Result<Vec<serde_json::Value>> {
+        self.read_population("routers", false).await
+    }
+
+    async fn read_population<T: serde::de::DeserializeOwned>(
+        &self,
+        prefix: &str,
+        heartbeat: bool,
+    ) -> anyhow::Result<Vec<T>> {
+        const MAX_OBJECTS: usize = 4096;
+        const MAX_OBJECT_BYTES: usize = 128 * 1024;
+        const MAX_TOTAL_BYTES: usize = 8 * 1024 * 1024;
         let Some(store) = self.store.as_ref() else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
-        let mut paths = Vec::new();
-        let mut listing = store.list(Some(&ObjPath::from("routers")));
-        while let Some(meta) = listing.next().await {
-            let Ok(meta) = meta else { continue };
-            paths.push(meta.location);
-        }
-        let mut out = Vec::new();
-        for p in paths {
-            let Ok(r) = store.get(&p).await else { continue };
-            let Ok(raw) = r.bytes().await else { continue };
-            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(&raw) {
-                out.push(v);
+        let pass = async {
+            let mut paths = Vec::new();
+            let mut listed = 0usize;
+            let prefix = ObjPath::from(prefix);
+            let mut listing = store.list(Some(&prefix));
+            while let Some(meta) = listing.try_next().await? {
+                listed += 1;
+                anyhow::ensure!(
+                    listed <= MAX_OBJECTS,
+                    "fleet population exceeds {MAX_OBJECTS} objects"
+                );
+                let loc = meta.location.as_ref();
+                if heartbeat
+                    && (!loc.ends_with(".json")
+                        || ["desired.json", "overrides.json", "urls.json"]
+                            .iter()
+                            .any(|n| loc.ends_with(n)))
+                {
+                    continue;
+                }
+                anyhow::ensure!(
+                    meta.size <= MAX_OBJECT_BYTES as u64,
+                    "fleet document too large: {loc}"
+                );
+                paths.push(meta.location);
             }
-        }
-        out
+            paths.sort();
+            let mut reads = futures_util::stream::iter(paths)
+                .map(|path| async move {
+                    let result = store.get(&path).await?;
+                    let mut chunks = result.into_stream();
+                    let mut raw = Vec::new();
+                    while let Some(chunk) = chunks.try_next().await? {
+                        anyhow::ensure!(
+                            raw.len().saturating_add(chunk.len()) <= MAX_OBJECT_BYTES,
+                            "fleet document exceeds byte budget: {path}"
+                        );
+                        raw.extend_from_slice(&chunk);
+                    }
+                    Ok::<_, anyhow::Error>(raw)
+                })
+                .buffered(8);
+            let mut bytes = 0usize;
+            let mut out = Vec::new();
+            while let Some(raw) = reads.try_next().await? {
+                bytes += raw.len();
+                anyhow::ensure!(
+                    bytes <= MAX_TOTAL_BYTES,
+                    "fleet population exceeds byte budget"
+                );
+                out.push(serde_json::from_slice(&raw)?);
+            }
+            Ok(out)
+        };
+        tokio::time::timeout(std::time::Duration::from_secs(10), pass)
+            .await
+            .map_err(|_| anyhow::anyhow!("fleet population read timed out"))?
     }
 
     // -- coordination documents ----------------------------------------
@@ -179,17 +206,17 @@ impl FleetRepository {
         if !self.enabled() {
             return (None, None);
         }
-        let heartbeats = self
-            .read_heartbeat_set()
-            .await
-            .into_iter()
-            .filter_map(|hb| serde_json::to_value(hb).ok())
-            .collect();
+        let heartbeats = self.read_heartbeat_set().await.ok().map(|items| {
+            items
+                .into_iter()
+                .filter_map(|hb| serde_json::to_value(hb).ok())
+                .collect()
+        });
         let desired = self
             .read_typed::<serde_json::Value>(DESIRED_DOC)
             .await
             .and_then(|(doc, _)| doc);
-        (Some(heartbeats), desired)
+        (heartbeats, desired)
     }
 
     async fn read_typed<T: serde::de::DeserializeOwned>(
@@ -229,5 +256,79 @@ impl FleetDocument {
             FleetDocument::Desired => DESIRED_DOC,
             FleetDocument::Overrides => OVERRIDES_DOC,
         }
+    }
+}
+
+#[cfg(test)]
+mod population_tests {
+    use super::*;
+
+    #[tokio::test]
+    async fn population_reads_are_ordered_and_corruption_is_not_empty_membership() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let repository = FleetRepository::new(Some(store.clone()));
+        for n in [3, 1, 2] {
+            store
+                .put(
+                    &ObjPath::from(format!("routers/{n}.json")),
+                    PutPayload::from(format!("{{\"n\":{n}}}")),
+                )
+                .await
+                .unwrap();
+        }
+        let rows = repository.read_router_reports().await.unwrap();
+        assert_eq!(
+            rows.iter()
+                .map(|r| r["n"].as_i64().unwrap())
+                .collect::<Vec<_>>(),
+            vec![1, 2, 3]
+        );
+        store
+            .put(
+                &ObjPath::from("routers/2.json"),
+                PutPayload::from("invalid".to_string()),
+            )
+            .await
+            .unwrap();
+        assert!(repository.read_router_reports().await.is_err());
+    }
+
+    #[tokio::test]
+    async fn population_object_and_byte_budgets_fail_closed() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let repository = FleetRepository::new(Some(store.clone()));
+        store
+            .put(
+                &ObjPath::from("routers/large"),
+                PutPayload::from(vec![b' '; 128 * 1024 + 1]),
+            )
+            .await
+            .unwrap();
+        assert!(
+            repository
+                .read_router_reports()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("large")
+        );
+        store.delete(&ObjPath::from("routers/large")).await.unwrap();
+        for n in 0..4097 {
+            store
+                .put(
+                    &ObjPath::from(format!("routers/{n:04}")),
+                    PutPayload::from("{}".to_string()),
+                )
+                .await
+                .unwrap();
+        }
+        assert!(
+            repository
+                .read_router_reports()
+                .await
+                .unwrap_err()
+                .to_string()
+                .contains("4096")
+        );
     }
 }

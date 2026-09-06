@@ -270,38 +270,73 @@ impl GrantSource for FileGrantSource {
 // ---------------------------------------------------------------------
 // The refresher
 
-/// Fetch all three feeds once, publishing whatever succeeds. Each feed
-/// fails independently: a broken grants file must not stop key
-/// rotation from landing.
+/// A single pass has exactly three independent operations and a fixed
+/// per-source deadline. Each successful source publishes immediately.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RefreshOutcome {
+    Published,
+    Refused,
+    Unavailable,
+    TimedOut,
+}
+
+#[derive(Debug)]
+pub struct RefreshReport {
+    pub keys: RefreshOutcome,
+    pub policies: RefreshOutcome,
+    pub grants: RefreshOutcome,
+}
+
+const SOURCE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
+
+async fn refresh_source<T>(
+    name: &str,
+    fetch: impl std::future::Future<Output = anyhow::Result<T>>,
+    publish: impl FnOnce(T) -> Result<(), String>,
+) -> RefreshOutcome {
+    match tokio::time::timeout(SOURCE_DEADLINE, fetch).await {
+        Ok(Ok(snapshot)) => match publish(snapshot) {
+            Ok(()) => RefreshOutcome::Published,
+            Err(why) => {
+                tracing::warn!(source = name, %why, "auth snapshot refused; previous snapshot retained");
+                RefreshOutcome::Refused
+            }
+        },
+        Ok(Err(error)) => {
+            tracing::warn!(source = name, %error, "auth fetch failed; previous snapshot retained");
+            RefreshOutcome::Unavailable
+        }
+        Err(_) => {
+            tracing::warn!(
+                source = name,
+                "auth fetch timed out; previous snapshot retained"
+            );
+            RefreshOutcome::TimedOut
+        }
+    }
+}
+
 pub async fn refresh_once(
     auth: &AuthService,
     keys: &dyn KeySource,
     policies: &dyn PolicySource,
     grants: &dyn GrantSource,
-) {
-    match keys.fetch().await {
-        Ok(s) => {
-            if let Err(why) = auth.publish_jwks(s) {
-                tracing::warn!("auth feed: keys snapshot REFUSED ({why}); previous ages");
-            }
-        }
-        Err(e) => tracing::warn!("auth feed: keys fetch failed (previous snapshot ages): {e}"),
-    }
-    match policies.fetch().await {
-        Ok(s) => {
-            if let Err(why) = auth.publish_policies(s) {
-                tracing::warn!("auth feed: policy snapshot REFUSED ({why}); previous ages");
-            }
-        }
-        Err(e) => tracing::warn!("auth feed: policy fetch failed (previous snapshot ages): {e}"),
-    }
-    match grants.fetch().await {
-        Ok(s) => {
-            if let Err(why) = auth.publish_grants(s) {
-                tracing::warn!("auth feed: grants snapshot REFUSED ({why}); previous ages");
-            }
-        }
-        Err(e) => tracing::warn!("auth feed: grants fetch failed (previous snapshot ages): {e}"),
+) -> RefreshReport {
+    let (keys, policies, grants) = tokio::join!(
+        refresh_source("keys", keys.fetch(), |s| auth
+            .publish_jwks(s)
+            .map_err(|e| e.to_string())),
+        refresh_source("policies", policies.fetch(), |s| auth
+            .publish_policies(s)
+            .map_err(|e| e.to_string())),
+        refresh_source("grants", grants.fetch(), |s| auth
+            .publish_grants(s)
+            .map_err(|e| e.to_string())),
+    );
+    RefreshReport {
+        keys,
+        policies,
+        grants,
     }
 }
 
@@ -332,7 +367,10 @@ pub fn spawn_refresher(
                     _ = tick.tick() => {}
                     _ = auth.kid_wakeup.notified() => {}
                 }
-                refresh_once(&auth, keys.as_ref(), policies.as_ref(), grants.as_ref()).await;
+                tokio::select! {
+                    _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
+                    _ = refresh_once(&auth, keys.as_ref(), policies.as_ref(), grants.as_ref()) => {}
+                }
             }
         },
     );
@@ -341,6 +379,67 @@ pub fn spawn_refresher(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    struct ParkedKeys;
+    #[async_trait::async_trait]
+    impl KeySource for ParkedKeys {
+        async fn fetch(&self) -> anyhow::Result<JwksSnapshot> {
+            std::future::pending().await
+        }
+    }
+    struct EmptyPolicies;
+    #[async_trait::async_trait]
+    impl PolicySource for EmptyPolicies {
+        async fn fetch(&self) -> anyhow::Result<PolicySnapshot> {
+            parse_policies(r#"{"feed_version":1,"projects":[]}"#, unix_now())
+        }
+    }
+    struct EmptyGrants;
+    #[async_trait::async_trait]
+    impl GrantSource for EmptyGrants {
+        async fn fetch(&self) -> anyhow::Result<GrantSnapshot> {
+            parse_grants(r#"{"feed_version":1,"credentials":[]}"#, unix_now())
+        }
+    }
+
+    #[tokio::test(start_paused = true)]
+    async fn slow_keys_do_not_delay_other_publications_and_pass_is_bounded() {
+        let svc = AuthService::new(crate::auth::AuthMode::Shadow, "issuer".into(), "cell").unwrap();
+        let pass = refresh_once(&svc, &ParkedKeys, &EmptyPolicies, &EmptyGrants);
+        tokio::pin!(pass);
+        tokio::select! {
+            _ = &mut pass => panic!("parked source must not complete yet"),
+            _ = tokio::task::yield_now() => {}
+        }
+        let feeds = svc.feed_json(unix_now());
+        assert!(!feeds["policies"]["ageSecs"].is_null());
+        assert!(!feeds["grants"]["ageSecs"].is_null());
+        tokio::time::advance(SOURCE_DEADLINE).await;
+        let report = pass.await;
+        assert_eq!(report.keys, RefreshOutcome::TimedOut);
+        assert_eq!(report.policies, RefreshOutcome::Published);
+        assert_eq!(report.grants, RefreshOutcome::Published);
+    }
+
+    #[tokio::test]
+    async fn cancelling_refresh_does_not_wait_for_source_deadline() {
+        let svc = Arc::new(
+            AuthService::new(crate::auth::AuthMode::Shadow, "issuer".into(), "cell").unwrap(),
+        );
+        let tasks = crate::tasks::TaskSupervisor::new();
+        spawn_refresher(
+            svc,
+            Box::new(ParkedKeys),
+            Box::new(EmptyPolicies),
+            Box::new(EmptyGrants),
+            std::time::Duration::from_secs(1),
+            &tasks,
+        );
+        tokio::task::yield_now().await;
+        let report = tasks.shutdown(std::time::Duration::from_millis(100)).await;
+        assert!(report.aborted.is_empty());
+        assert_eq!(report.finished(), vec!["auth-refresher"]);
+    }
 
     #[tokio::test]
     async fn refresh_once_publishes_from_files_and_survives_a_broken_one() {

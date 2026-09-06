@@ -523,19 +523,52 @@ pub fn open_alerts() -> Vec<AlertState> {
 pub async fn evaluate_alerts(state: &std::sync::Arc<crate::http::AppState>, snap: &OpsSnapshot) {
     let g = |k: &str| snap.gauges.get(k).copied().unwrap_or(0);
     // (fingerprint, breached, human summary)
-    let dirty_total = {
-        let engines: Vec<_> = state.shards.engines();
-        let mut n = 0usize;
-        for e in engines {
-            n += e.usage_dirty_scan().await.map(|v| v.len()).unwrap_or(0);
+    let threshold = usage_outbox_alert_threshold(&state.config.billing);
+    let (dirty_total, debt_unknown) = {
+        let mut n = 0u64;
+        let mut unknown = false;
+        'engines: for engine in state.shards.engines() {
+            let mut after = None;
+            loop {
+                if n > threshold {
+                    break 'engines;
+                }
+                if n >= 4096 {
+                    unknown = true;
+                    break 'engines;
+                }
+                let limit = (threshold.saturating_add(1).saturating_sub(n))
+                    .min(256)
+                    .min(4096 - n) as usize;
+                match engine.usage_dirty_page(after, limit).await {
+                    Ok((rows, more)) => {
+                        n += rows.len() as u64;
+                        after = rows.last().map(|(hash, _)| *hash);
+                        if !more {
+                            break;
+                        }
+                        if after.is_none() {
+                            unknown = true;
+                            break;
+                        }
+                    }
+                    Err(error) => {
+                        tracing::warn!(%error, "usage debt unreadable; alert remains open");
+                        unknown = true;
+                        break;
+                    }
+                }
+            }
         }
-        n as u64
+        (n, unknown)
     };
     let rules: Vec<(String, bool, String)> = vec![
         (
             "usage_outbox_lag".into(),
-            dirty_total > usage_outbox_alert_threshold(&state.config.billing),
-            format!("{dirty_total} unacknowledged usage snapshots"),
+            dirty_total > threshold || debt_unknown,
+            format!(
+                "at least {dirty_total} unacknowledged usage snapshots (discovery incomplete={debt_unknown})"
+            ),
         ),
         (
             "read_meter_backpressure".into(),

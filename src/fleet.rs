@@ -411,6 +411,7 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
         let repository = state.fleet.clone();
         let mut ewma_rps = 0.0f64;
         let mut last_ops = 0u64;
+        let mut eager_after: Option<String> = None;
         let mut last_tick = Instant::now();
         let mut below_since: Option<Instant> = None;
         let mut lat_breach_since: Option<Instant> = None;
@@ -539,7 +540,15 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
             let mut peer_urls: std::collections::HashMap<String, String> =
                 std::collections::HashMap::new();
             // (cpu, effective lag secs incl. wedge)
-            for other in repository.read_heartbeat_set().await {
+            let heartbeats = tokio::select! {
+                _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
+                result = repository.read_heartbeat_set() => result,
+            };
+            let heartbeats = match heartbeats {
+                Ok(items) => items,
+                Err(error) => { tracing::warn!(%error, "fleet snapshot deferred; ownership view retained"); continue; }
+            };
+            for other in heartbeats {
                 hb_age_ms.insert(other.instance.clone(), now_ms() - other.ts_ms);
                 if now_ms() - other.ts_ms < 10_000 && !other.draining {
                     let eff_lag = other
@@ -578,7 +587,15 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
             // routers. Edge congestion is invisible to server-side acks.
             let mut edge_p50 = 0.0f64;
             {
-                for v in repository.read_router_reports().await {
+                let reports = tokio::select! {
+                    _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
+                    result = repository.read_router_reports() => result,
+                };
+                let reports = match reports {
+                    Ok(items) => items,
+                    Err(error) => { tracing::warn!(%error, "router snapshot deferred; scale decision deferred"); continue; }
+                };
+                for v in reports {
                     let fresh = now_ms() - v["ts_ms"].as_i64().unwrap_or(0) < 10_000;
                     if fresh {
                         edge_p50 = edge_p50.max(v["client_p50_ms"].as_f64().unwrap_or(0.0));
@@ -794,34 +811,34 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
                 // lazy opening left a moved shard unowned for 92 minutes
                 // while the loser's zombie compactor/GC kept running).
                 {
-                    let mine: Vec<String> = ov
-                        .entries
-                        .iter()
-                        .filter(|(_, e)| e.to == cfg.instance)
-                        .map(|(p, _)| p.clone())
-                        .collect();
-                    for prefix in mine {
-                        let have = state.shards.is_open(&prefix);
-                        if !have {
-                            // Through the gate: single-flight with the
-                            // request path, honoring the same holdoffs.
-                            match state
-                                .shards
-                                .open_or_wait(&prefix, std::time::Duration::from_secs(300))
-                                .await
-                            {
-                                crate::sharddir::OpenOutcome::Ready(_) => {
-                                    tracing::info!(
-                                        "rebalancer: eagerly opened moved-in shard {prefix}"
-                                    );
-                                }
-                                crate::sharddir::OpenOutcome::Wait { code, .. } => {
-                                    tracing::info!("eager open of {prefix} deferred ({code})");
-                                }
-                                crate::sharddir::OpenOutcome::Failed(e) => {
-                                    tracing::warn!("eager open of {prefix} failed: {e}");
-                                }
-                            }
+                    let mut mine: Vec<String> = ov.entries.iter()
+                        .filter(|(prefix, e)| e.to == cfg.instance && !state.shards.is_open(prefix))
+                        .map(|(p, _)| p.clone()).collect();
+                    mine.sort();
+                    if let Some(after) = &eager_after {
+                        let pivot = mine.partition_point(|p| p <= after);
+                        mine.rotate_left(pivot);
+                    }
+                    mine.truncate(16);
+                    eager_after = mine.last().cloned();
+                    use futures_util::StreamExt;
+                    let mut opens = futures_util::stream::iter(mine).map(|prefix| {
+                        let shards = state.shards.clone();
+                        async move {
+                            let outcome = shards.open_or_wait(&prefix, Duration::from_secs(1)).await;
+                            (prefix, outcome)
+                        }
+                    }).buffer_unordered(4);
+                    loop {
+                        let next = tokio::select! {
+                            _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
+                            next = opens.next() => next,
+                        };
+                        let Some((prefix, outcome)) = next else { break; };
+                        match outcome {
+                            crate::sharddir::OpenOutcome::Ready(_) => tracing::info!(%prefix, "moved-in shard opened"),
+                            crate::sharddir::OpenOutcome::Wait { code, .. } => tracing::info!(%prefix, code, "eager open deferred"),
+                            crate::sharddir::OpenOutcome::Failed(error) => tracing::warn!(%prefix, %error, "eager open failed"),
                         }
                     }
                 }
