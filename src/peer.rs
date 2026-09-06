@@ -118,6 +118,7 @@ impl PeerClient {
 /// URL turned the rest of the name into a query, fragment, or invalid
 /// escape and addressed the wrong stream (round-19 fleet-contract
 /// finding). Every internal relay must route its name through this.
+// mt-lint: allow(name-param-shared-core): pure URL path encoding; no tenant, lookup, routing, or identity derivation
 pub(crate) fn encode_stream_name_path(name: &str) -> String {
     let mut out = String::with_capacity(name.len() + 8);
     for seg in name.split('/') {

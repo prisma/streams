@@ -247,3 +247,64 @@ async fn r06_cross_owner_replay_and_scan_share_typed_pages_and_bill_once() {
     engine_shutdown(&a).await;
     engine_shutdown(&b).await;
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r06_peer_target_is_bound_before_peer_resolution() {
+    use crate::application::read_remote::{InternalTarget, RemoteSpanError, remote_span_page};
+    let (state, addr) = http_rig(mem()).await;
+    assert_eq!(
+        preq(
+            addr,
+            "PUT",
+            "/v1/streams/peer-binding",
+            &[("prisma-encryption-key", PRISMA_KEY)],
+            br#"{"format":{"kind":"json"}}"#
+        )
+        .await
+        .0,
+        201
+    );
+    let desc = state
+        .registry
+        .get(&state.deployment.raw_adapter_sref("peer-binding"))
+        .await
+        .unwrap()
+        .unwrap();
+    for component in 0..4 {
+        let mut target = InternalTarget::of(&desc, 0).unwrap();
+        match component {
+            0 => target.project_id = crate::tenant::ProjectId::new("other-project").unwrap(),
+            1 => target.stream_epoch[0] ^= 1,
+            2 => target.seg_id = u32::MAX,
+            _ => target.identity[0] ^= 1,
+        }
+        assert!(matches!(
+            remote_span_page(
+                &state.peer,
+                "no-such-peer",
+                &desc,
+                &target,
+                0,
+                4096,
+                PRISMA_KEY
+            )
+            .await,
+            Err(RemoteSpanError::TargetMismatch)
+        ));
+    }
+    let target = InternalTarget::of(&desc, 0).unwrap();
+    assert!(matches!(
+        remote_span_page(
+            &state.peer,
+            "no-such-peer",
+            &desc,
+            &target,
+            0,
+            4096,
+            PRISMA_KEY
+        )
+        .await,
+        Err(RemoteSpanError::Transport(_))
+    ));
+    engine_shutdown(&state).await;
+}

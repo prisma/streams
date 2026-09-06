@@ -199,7 +199,7 @@ impl ReadService {
         super::read_remote::remote_span_page(
             &self.peer,
             owner,
-            &desc.name,
+            desc,
             &target,
             from,
             budget,

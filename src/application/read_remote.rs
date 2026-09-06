@@ -92,12 +92,21 @@ pub(crate) struct RemoteSpanPage {
 pub(crate) async fn remote_span_page(
     peer: &crate::peer::PeerClient,
     initial_owner: &str,
-    name: &str,
+    desc: &StreamDesc,
     target: &InternalTarget,
     from: u64,
     max_bytes: usize,
     key_b64: &str,
 ) -> Result<RemoteSpanPage, RemoteSpanError> {
+    // Bind every wire field to the same validated incarnation before looking up
+    // a peer. A caller cannot pair one stream path with another stream's target.
+    if target.project_id != desc.project_id
+        || target.stream_epoch != desc.epoch()
+        || desc.segment_route_by_id(target.seg_id).is_none()
+        || target.identity != desc.dynamic_segment_identity(target.seg_id)
+    {
+        return Err(RemoteSpanError::TargetMismatch);
+    }
     let mut owner = initial_owner.to_string();
     for hop in 0..2u8 {
         let Some(base) = peer.url_for(&owner) else {
@@ -105,7 +114,7 @@ pub(crate) async fn remote_span_page(
                 "owner {owner} has no entry in the trusted peer table"
             )));
         };
-        match scan_page_once(peer, &base, name, target, from, max_bytes, key_b64).await {
+        match scan_page_once(peer, &base, desc, target, from, max_bytes, key_b64).await {
             Ok(out) => return Ok(RemoteSpanPage { out, owner }),
             Err(RemoteSpanError::WrongOwner { owner: next }) => {
                 if hop == 1 {
@@ -128,10 +137,10 @@ pub(crate) async fn remote_span_page(
 }
 
 /// One page against ONE peer base, with the full response mapping.
-pub(crate) async fn scan_page_once(
+async fn scan_page_once(
     peer: &crate::peer::PeerClient,
     base: &str,
-    name: &str,
+    desc: &StreamDesc,
     target: &InternalTarget,
     from: u64,
     max_bytes: usize,
@@ -140,7 +149,7 @@ pub(crate) async fn scan_page_once(
     let mut req = crate::peer::client()
         .get(format!(
             "{base}/v1/internal/segment-scan/{}",
-            crate::peer::encode_stream_name_path(name)
+            crate::peer::encode_stream_name_path(&desc.name)
         ))
         .timeout(std::time::Duration::from_secs(20))
         .header("streams-internal-from", from.to_string())

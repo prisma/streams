@@ -477,7 +477,7 @@ impl LineageSource {
         match crate::application::read_remote::remote_span_page(
             &self.state.peer,
             &owner,
-            &self.desc.name,
+            &self.desc,
             target,
             local_from,
             budget,
