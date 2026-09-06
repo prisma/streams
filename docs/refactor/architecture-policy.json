@@ -102,26 +102,12 @@
       "rationale": "Existing exact financial reconciliation test adapts to required state/finality reads without removing its original assertions or scenario.",
       "source_obligation": "Exact monthly delta application and close replay assertions"
     },
-    "file:src/shard.rs": {
-      "limit": 6475,
-      "owner": "Shard actor durability transaction",
-      "finding": "R03/R09/R12/R13/R10",
-      "rationale": "Retained actor protocol and one batch commit owner now use validated tails, typed after-commit replies and bounded accounting pages. Most growth is direct corruption, read-failure and real remote-frontier regressions; no new responsibility is granted by this cap. R09/R12 follow-ups preserve 16/24/32-byte recovery marker compatibility and the frozen v2/v3 tail byte codecs; validation remains mandatory at stored-state reads, with a separate corruption regression. Share explicit usage/ops capabilities with shard/history; register and join the active absorber under the engine close signal instead of detaching it.",
-      "source_obligation": "R03 group failure/fence publication; R09 bounded page accounting; R12 tail corruption; R13 accounting read failures; r12_byte_compatibility_does_not_bypass_stored_state_validation; r09_committer_dirty_markers_survive_bounded_discovery; runtime isolation and active-controller cancellation regressions"
-    },
     "function:src/shard.rs::start": {
       "limit": 399,
       "owner": "Shard actor startup",
       "finding": "R03/R10",
       "rationale": "The shared runtime maintenance controller and typed transaction publication are explicitly constructed at engine startup. Resolve explicit usage and ops capabilities once per engine; no added per-append scan or policy duplication.",
       "source_obligation": "Two-runtime isolation and committer startup/readiness tests; runtime isolation and active-controller cancellation regressions"
-    },
-    "function:src/shard.rs::commit_group": {
-      "limit": 2137,
-      "owner": "Shard batch transaction",
-      "finding": "R03",
-      "rationale": "One atomic transaction still orders append/queue/close/fence storage effects. Typed prepared states and a single publication plan remove booleans and poison-prone temporary success replies; retained match arms remain explicit transaction debt instead of an arbitrary helper split. This fixed ceiling requires separate review for future growth.",
-      "source_obligation": "r03_close_and_fence_wait_for_write_remote_durability_and_dispatch; r03_failed_group_discards_close_and_fence_effects_together; r03_queue_refusal_from_staged_generation_shares_group_failure_and_dispatch"
     },
     "file:src/sse/feed.rs": {
       "limit": 2270,
