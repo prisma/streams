@@ -44,6 +44,7 @@ impl ConditionalUpdateToken {
     }
 }
 
+#[cfg(test)]
 fn retryable_cas_error(error: &anyhow::Error) -> bool {
     matches!(
         error.downcast_ref::<object_store::Error>(),
@@ -1194,46 +1195,7 @@ impl Registry {
         })
     }
 
-    /// CAS-mutate a live descriptor (ROUTING-V3 scaler transitions):
-    /// fresh read (bypassing the cache) → mutate → conditional PUT on
-    /// the store etag. Returns Ok(true) when OUR write landed, Ok(false)
-    /// when `mutate` declined or the descriptor is gone; etag conflicts
-    /// error and the caller re-evaluates (another instance decided
-    /// first — the same discipline segmap.json used).
-    /// `cas_update` with a bounded retry on the benign precondition
-    /// conflict (another writer touched the descriptor between our read
-    /// and our put). Single-shot CAS lost races three separate times in
-    /// review — the TTL slide, the readiness publication, and fork
-    /// reference accounting — so the retry lives here once.
-    /// A descriptor mutation FENCED to one incarnation.
-    ///
-    /// `cas_update`/`cas_update_retry` address a stream by NAME, and a
-    /// name outlives the resource: delete it, recreate it, and the same
-    /// name now holds a different stream. Any operation that paused in
-    /// between — a creator about to publish readiness, a seal about to
-    /// close, a delete about to tombstone — would then apply its
-    /// decision to the REPLACEMENT. That is the classic ABA, and no
-    /// amount of per-call-site care fixes it, so the fence lives here:
-    /// every lifecycle mutation states the incarnation it belongs to,
-    /// and a descriptor that has moved on refuses it.
-    ///
-    /// Returns `Ok(false)` both when the mutation declined and when the
-    /// incarnation changed; callers that must tell those apart use
-    /// [`Self::cas_update_incarnation_outcome`].
-    #[cfg(test)]
-    pub async fn cas_update_incarnation(
-        &self,
-        sref: &crate::tenant::TenantStreamRef,
-        expected_epoch: &str,
-        mutate: impl FnMut(&mut PersistedDescriptor) -> bool,
-    ) -> anyhow::Result<bool> {
-        Ok(matches!(
-            self.cas_update_incarnation_outcome(sref, expected_epoch, mutate)
-                .await?,
-            IncarnationCas::Applied
-        ))
-    }
-
+    /// Test compatibility adapter for old incarnation-outcome fixtures.
     #[cfg(test)]
     pub async fn cas_update_incarnation_outcome(
         &self,
