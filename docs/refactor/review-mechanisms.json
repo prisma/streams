@@ -691,7 +691,9 @@
         "document_deadline_secs": 10,
         "pass_deadline_secs": 45,
         "max_members": 4096,
-        "max_document_bytes": 8388608
+        "max_document_bytes": 8388608,
+        "heartbeat_provider_entries": 4099,
+        "publication_validation": "same semantic validators as reads, before storage"
       },
       "limitations": "Controlled local runtime/object-store execution; external Prisma Compute/Tigris and production performance remain separate acceptance legs.",
       "execution": "requires_final_head_receipt",
@@ -709,12 +711,22 @@
         {
           "file": "src/fleet/repository/document_tests.rs",
           "name": "r09_fleet_document_deadlines_leave_cas_source_retryable",
-          "sha256": "8208d4833c0ade725312fffeb5a1d9b5e2b39a24f3c5d4817280e2b04aa44a54"
+          "sha256": "a37017dde1939f51da0ffb22dd5302ddba1251ff32c9c38d08ab4bea6c5d0c0c"
         },
         {
           "file": "src/fleet/repository/document_tests.rs",
           "name": "r09_fleet_configuration_cannot_publish_an_unreadable_population",
           "sha256": "0e2f5a9425bb0361a2f545b8bf1cad36d5f3c2e4ac258094eb9e3e01bddfed45"
+        },
+        {
+          "file": "src/fleet/repository/document_tests.rs",
+          "name": "r09_fleet_write_caps_preserve_readable_document_and_exact_cas_version",
+          "sha256": "0c0e71ba73bca15eab87579a4349185a14fad5b0f7bad5bf26dec09404cc53eb"
+        },
+        {
+          "file": "src/fleet/repository/document_tests.rs",
+          "name": "r09_fleet_population_budget_includes_its_coordination_documents",
+          "sha256": "aadd100817e5c00247290e5a26516fda3ab81b7927906c2092fc360106100ba2"
         }
       ]
     },
@@ -860,6 +872,15 @@
       "before_sha256": "77113ca753571ec370b94d6d74707dd87b73ebb820001aa53ea09c182aada4bd",
       "after_sha256": "5876d21431e04c20d81ac04b82f6f8c9e7d66aa0373dcdeb91b3ab1c2ba796c0",
       "reason": "Use an explicitly owned journal and the new byte-budget selection constructor with usize::MAX in these original cancellation controls. Inputs, exact ordering/retry IDs, overflow magnitude and cancellation assertions remain unchanged."
+    },
+    {
+      "file": "src/fleet/repository/document_tests.rs",
+      "name": "r09_fleet_document_deadlines_leave_cas_source_retryable",
+      "finding": "R09",
+      "before_commit": "e273b3a94f6de769b361f8eeef3433b308c6eb07",
+      "before_sha256": "8208d4833c0ade725312fffeb5a1d9b5e2b39a24f3c5d4817280e2b04aa44a54",
+      "after_sha256": "a37017dde1939f51da0ffb22dd5302ddba1251ff32c9c38d08ab4bea6c5d0c0c",
+      "reason": "The e273 preflight failed because fleet/desired.json is classified Fleet, so the Other hold never entered. Select the actual Fleet class for GET and PUT; preserve all exact deadline, entered-operation, source bytes/version and retry assertions."
     }
   ]
 }

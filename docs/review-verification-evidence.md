@@ -195,3 +195,12 @@ confirming the final scan introduces none: removed transport identity helpers,
 the unused scaler compatibility path, and obsolete usage-map comments. The
 remaining 71 fingerprints are narrower than the prior set; the strict typed
 identity lint remains independently required.
+
+The fleet CAS writer and reader now share semantic validators. New controls
+reject a 4,097th override while preserving exact bytes/version, accept the
+same-version bounded retry, and check desired epoch/outbox/byte ceilings. The
+4,096-member positive population includes its three coordination documents;
+provider traversal stops at 4,099 entries. The initial e273 deadline preflight
+failed because its hold used `Other` for a `Fleet` object. Its exact source
+adaptation is pinned to e273: both GET/PUT select the actual Fleet class, with
+all entered-operation, deadline and retry assertions unchanged.
