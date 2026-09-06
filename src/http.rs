@@ -130,7 +130,7 @@ pub struct AppState {
     /// refuses a nonzero value unless STREAMS_CERTIFICATION_MODE=1;
     /// zero = inert (production). Atomic so certification rigs can
     /// arm it on a live state.
-    pub cert_sealed_publish_delay_ms: std::sync::atomic::AtomicU64,
+    pub cert_sealed_publish_delay_ms: Arc<std::sync::atomic::AtomicU64>,
     /// WP-02 / PR 6-A: ring ownership (this instance's name, the active
     /// set, the rebalancer overrides) behind narrow methods.
     pub ownership: crate::ownership::OwnershipService,
@@ -153,21 +153,38 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub(crate) fn lifecycle_service(&self) -> crate::application::lifecycle::LifecycleService {
+        crate::application::lifecycle::LifecycleService {
+            registry: self.registry.clone(),
+            topology: self.topology_service(),
+            clock: self.runtime.clock.clone(),
+            cert_sealed_publish_delay_ms: self.cert_sealed_publish_delay_ms.clone(),
+        }
+    }
+
     pub(crate) fn topology_service(&self) -> crate::application::topology::TopologyService {
         crate::application::topology::TopologyService {
-            registry: self.registry.clone(), shards: self.shards.clone(),
-            peer: self.peer.clone(), scaler: self.runtime.scaler.clone(),
+            registry: self.registry.clone(),
+            shards: self.shards.clone(),
+            peer: self.peer.clone(),
+            scaler: self.runtime.scaler.clone(),
         }
     }
 
     pub(crate) fn read_service(self: &Arc<Self>) -> Arc<crate::application::read::ReadService> {
-        self.reads.get_or_init(|| Arc::new(crate::application::read::ReadService::new(
-            self.registry.clone(), self.shards.clone(), self.peer.clone(),
-            self.ownership.clone(), self.keys.clone(),
-            Arc::new(self.topology_service()),
-        ))).clone()
+        self.reads
+            .get_or_init(|| {
+                Arc::new(crate::application::read::ReadService::new(
+                    self.registry.clone(),
+                    self.shards.clone(),
+                    self.peer.clone(),
+                    self.ownership.clone(),
+                    self.keys.clone(),
+                    Arc::new(self.topology_service()),
+                ))
+            })
+            .clone()
     }
-
 }
 
 fn bearer(headers: &HeaderMap) -> Option<&str> {
@@ -4227,50 +4244,9 @@ pub(crate) async fn append(
     )
 }
 
-/// What a refused FINAL append does to the seal intent it belongs to
-/// — ONE policy, shared verbatim by the raw and product surfaces
-/// (they previously kept separate stringly-typed lists, which drifted:
-/// the product list named codes its own translator never produces, so
-/// stale-epoch was "retained" in the comment and definitive in fact).
-///
-/// After round 11 every one of these verdicts is durability-barriered,
-/// and after round 8 every claim is generation-fenced — so releasing a
-/// definitively-refused generation's intent can never destroy a
-/// concurrent exact retry (the retry renewed to a newer generation the
-/// release cannot name).
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub(crate) enum FinalDisposition {
-    /// About the moment or the ordering, not the request: the exact
-    /// retry can still succeed, so the intent stays. Producer gaps
-    /// (the predecessor may already be inside the server) and
-    /// epoch-must-start-at-zero (the producer's epoch can advance and
-    /// make this sequence meaningful) are ordering; timeouts,
-    /// throttles, write failures and ownership moves are the moment.
-    AmbiguousOrTransient,
-    /// About THIS request, forever: epochs never decrease (stale),
-    /// bodies and content types do not change on retry, a reused or
-    /// conflicting sequence row is durable, and a segment closed by
-    /// another operation stays closed. The uncommitted intent comes
-    /// down NOW — retaining it held the collection Sealing behind a
-    /// promise that could never be delivered, renewable indefinitely
-    /// by the very request that can never deliver it.
-    DefinitivelyRejected,
-}
+pub(crate) use crate::application::lifecycle::FinalDisposition;
 
-pub(crate) fn final_err_disposition(e: &crate::shard::AppendErr) -> FinalDisposition {
-    use crate::shard::AppendErr::*;
-    match e {
-        ProducerGap { .. } | ProducerEpochSeq => FinalDisposition::AmbiguousOrTransient,
-        ProducerStale { .. }
-        | ProducerSeqReused
-        | CtMismatch
-        | BadBody(_)
-        | SeqConflict { .. }
-        | Closed { .. }
-        | SealSuperseded => FinalDisposition::DefinitivelyRejected,
-        _ => FinalDisposition::AmbiguousOrTransient,
-    }
-}
+pub(crate) use crate::application::lifecycle::final_err_disposition;
 
 /// The same policy over the PRODUCT surface's translated wire codes —
 /// the product handler holds a translated Response, not the AppendErr.
@@ -4296,26 +4272,8 @@ pub(crate) fn final_code_disposition(status: StatusCode, code: Option<&str>) -> 
     }
 }
 
-/// The TRUSTED execution token a product seal's final append carries:
-/// the operation, the claim generation, and the incarnation the whole
-/// seal was validated against. The append refuses to run unless the
-/// CURRENT descriptor still matches all three — an epoch-less token
-/// let a seal claimed on incarnation A write its final record into
-/// (and physically close a segment of) a same-name, same-key
-/// replacement created while the request was in flight.
-#[derive(Debug, Clone)]
-pub(crate) struct SealAuthz {
-    pub op_id: String,
-    pub generation: u64,
-    pub epoch: String,
-}
+pub(crate) use crate::application::lifecycle::SealAuthz;
 
-/// Raise the seal fence on the segment a routing key resolves to, and
-/// report whether that segment is closed. The message travels the same
-/// queue as appends, so the committer answers it only after deciding
-/// every append enqueued before it — the reply is a BARRIER: after a
-/// `false`, no append below the fence can ever close the segment; a
-/// `true` means the old operation's close already committed.
 pub(crate) async fn fence_segment_for_key(
     state: &Arc<AppState>,
     sref: &crate::tenant::TenantStreamRef,
@@ -4323,34 +4281,15 @@ pub(crate) async fn fence_segment_for_key(
     routing_key: &str,
     fence_to: u64,
 ) -> Result<bool, String> {
-    state.registry.invalidate(sref);
-    let desc = match state.registry.get(sref).await {
-        Ok(Some(d)) if d.stream_epoch == expect_epoch => d,
-        Ok(_) => return Err("the collection this seal was issued against no longer exists".into()),
-        Err(e) => return Err(e.to_string()),
-    };
-    let seg = desc.resolve_segment(routing_key);
-    let identity = desc.dynamic_segment_identity(seg.seg_id);
-    let route = desc
-        .segment_route_by_id(seg.seg_id)
-        .ok_or("unknown segment")?;
-    let engine = state
-        .engine_for(&route)
-        .await
-        .map_err(|_| "segment engine unavailable".to_string())?;
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    engine
-        .try_seal_fence(crate::shard::SealFenceReq {
-            hash: identity,
-            generation: fence_to,
-            resp: tx,
-        })
-        .map_err(|_| "append queue full; fence not placed".to_string())?;
-    match rx.await {
-        Ok(Ok(ack)) => Ok(ack.closed),
-        Ok(Err(e)) => Err(format!("fence refused: {e:?}")),
-        Err(_) => Err("fence dropped".into()),
-    }
+    crate::application::lifecycle::fence_segment_for_key(
+        &state.lifecycle_service(),
+        sref,
+        expect_epoch,
+        routing_key,
+        fence_to,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 #[allow(clippy::too_many_arguments)] // request context, not tunables

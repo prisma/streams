@@ -266,9 +266,8 @@ async fn merge_phase_b_declines_under_sealing() {
         .collect();
     assert_eq!(live.len(), 2);
 
-    // Park the merge between parent seal and publication; plant a
-    // sealing claim in the window (planting bypasses the entry guard
-    // on purpose — the guard is the OTHER direction of this fence).
+    // Park after durable parent closure. A stale phase-B executor must
+    // decline even when another legal descriptor transition owns the stream.
     let pbefore = crate::failpoints::parked(crate::failpoints::Fp::ScalerBeforePublish, "sel019");
     crate::failpoints::arm_scaler_before_publish("sel019");
     let (st2, a, b) = (state.clone(), live[0], live[1]);
@@ -283,7 +282,44 @@ async fn merge_phase_b_declines_under_sealing() {
     }
     state
         .registry
+        .invalidate(&state.deployment.raw_adapter_sref("sel019"));
+    let pending = state
+        .registry
+        .get(&state.deployment.raw_adapter_sref("sel019"))
+        .await
+        .unwrap()
+        .unwrap()
+        .segments
+        .as_ref()
+        .unwrap()
+        .pending
+        .clone();
+    // The serving-domain boundary now refuses the original impossible
+    // fixture (simultaneous topology and seal claims) before it can persist.
+    let invalid = state
+        .registry
         .cas_update(&state.deployment.raw_adapter_sref("sel019"), |d| {
+            d.seal_gen_counter += 1;
+            d.sealing = Some(crate::registry::SealState {
+                operation_id: "seal-x".into(),
+                intent: crate::registry::SealIntent::Empty,
+                claimed_ms: crate::shard::now_ms(),
+                claim_generation: d.seal_gen_counter,
+            });
+            true
+        })
+        .await;
+    assert!(
+        invalid.is_err(),
+        "overlapping claims crossed the validated boundary"
+    );
+    // A legal competing state removes the pending marker while claiming.
+    // The fixture retains the original intent to test its subsequent retry;
+    // production sealing always resumes topology before installing its claim.
+    state
+        .registry
+        .cas_update(&state.deployment.raw_adapter_sref("sel019"), |d| {
+            d.segments.as_mut().unwrap().pending = None;
             d.seal_gen_counter += 1;
             d.sealing = Some(crate::registry::SealState {
                 operation_id: "seal-x".into(),
@@ -311,8 +347,14 @@ async fn merge_phase_b_declines_under_sealing() {
         .unwrap()
         .unwrap();
     assert!(
-        d.segments.as_ref().is_some_and(|m| m.pending.is_some()),
-        "the pending merge was lost instead of retained"
+        d.sealing.is_some()
+            && d.segments.as_ref().is_some_and(|m| m.pending.is_none()
+                && m.segments
+                    .iter()
+                    .filter(|segment| segment.is_live())
+                    .count()
+                    == 2),
+        "stale phase B changed the competing claim or published its successor"
     );
 
     // Clear the claim; the merge resumes to completion.
@@ -320,6 +362,7 @@ async fn merge_phase_b_declines_under_sealing() {
         .registry
         .cas_update(&state.deployment.raw_adapter_sref("sel019"), |d| {
             d.sealing = None;
+            d.segments.as_mut().unwrap().pending = pending.clone();
             true
         })
         .await

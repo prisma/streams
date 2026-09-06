@@ -2149,54 +2149,8 @@ async fn product_seal(
     product_seal_only(state, tenant, name, headers, validated_epoch).await
 }
 
-/// Enter Sealing for a seal-with-final operation. A different seal
-/// already in flight is a conflict; the SAME operation resumes.
-/// What a seal-intent CAS actually did. A declined CAS is not a
-/// failure and not a success — it is information, and treating it as
-/// either is how a collection ends up stuck (Sealing over a pending
-/// split, which phase B then refuses to finish) or how a client is told
-/// `{"sealed": true}` about a descriptor that is still mid-transition.
-#[derive(Debug, Clone, PartialEq)]
-pub(crate) enum EnterSeal {
-    /// The claim is ours, with the generation every claim-authorized
-    /// append must carry. Installation ALLOCATES the generation and a
-    /// same-operation re-entry RE-allocates it (renewal): the claim is
-    /// a lease, and an actively retrying owner must always hold a
-    /// generation no fence can be above.
-    Installed {
-        generation: u64,
-    },
-    /// This exact operation already owns the IN-FLIGHT transition. The
-    /// re-entry renewed the claim (fresh timestamp, fresh generation).
-    AlreadyOurs {
-        generation: u64,
-    },
-    /// This exact operation already finished: answer idempotent success.
-    AlreadyCompleted,
-    /// Somebody else's seal is already terminal.
-    AlreadySealed,
-    /// A topology transition is in flight; resolve it and retry.
-    PendingTopology,
-    /// Somebody else's seal owns the collection.
-    Conflicting(String),
-    /// The live claim's lease lapsed. Takeover is PERMITTED but not
-    /// performed by the CAS: the old operation's final append may still
-    /// be queued inside the committer, so the old generation must be
-    /// fenced there — and the fence's closed-report consulted — before
-    /// anything replaces this claim. [`claim_seal`] runs that protocol.
-    AbandonedClaim {
-        old_op: String,
-        old_gen: u64,
-        old_intent: crate::registry::SealIntent,
-    },
-    Missing,
-}
+pub(crate) use crate::application::lifecycle::EnterSeal;
 
-/// Install a seal intent, classifying every outcome. THE serialization
-/// point: it installs only over a descriptor that is open, unclaimed
-/// and topologically quiet, so once it wins, phase A cannot start a new
-/// transition (phase A refuses sealing) and phase B cannot publish one
-/// (phase B refuses sealing).
 pub(crate) async fn enter_sealing_cas(
     state: &Arc<AppState>,
     sref: &crate::tenant::TenantStreamRef,
@@ -2204,125 +2158,17 @@ pub(crate) async fn enter_sealing_cas(
     intent: &crate::registry::SealIntent,
     expect_epoch: &str,
 ) -> Result<EnterSeal, String> {
-    let mut outcome = EnterSeal::Missing;
-    // Round-4 review (seal-500 root cause): this was the ONE bare
-    // single-shot cas_update on the seal path. A concurrent descriptor
-    // writer — the touch_ttl slide, a fork release, any late CAS, all
-    // of which RETRY their own conflicts — landing inside this
-    // read-modify-write window failed the etag precondition ONCE and
-    // surfaced as an immediate 500 on a lifecycle endpoint
-    // (~1/56 solo runs, load-sensitive). Retry the benign conflict
-    // from a fresh read like every other descriptor mutator; every
-    // mutate branch reassigns `outcome`, so a re-decision against the
-    // freshest state is correct by construction, and a conflicted
-    // attempt's generation increment dies with its unwritten batch.
-    let installed = state
-        .registry
-        .cas_update_retry(sref, |d| {
-            // A seal belongs to the incarnation it was issued
-            // against. The name can be deleted and recreated
-            // while this operation is in flight, and sealing the
-            // replacement closes a stream nobody asked to close.
-            if d.stream_epoch != expect_epoch {
-                outcome = EnterSeal::Missing;
-                return false;
-            }
-            if !crate::http::desc_alive(d) {
-                outcome = EnterSeal::Missing;
-                return false;
-            }
-            if d.sealed {
-                outcome = if d.seal_op.as_deref() == Some(op_id) && !op_id.is_empty() {
-                    EnterSeal::AlreadyCompleted
-                } else {
-                    EnterSeal::AlreadySealed
-                };
-                return false;
-            }
-            if let Some(sl) = &d.sealing {
-                // An owed final belongs to the operation that promised
-                // it — until that operation is demonstrably gone. A
-                // claim older than SEAL_CLAIM_MS is ELIGIBLE for
-                // takeover, but the CAS never performs one: the old
-                // operation's append may still be queued, so its
-                // generation has to be fenced through the committer
-                // first (claim_seal owns that protocol).
-                let abandoned =
-                    crate::shard::now_ms() - sl.claimed_ms > crate::registry::SEAL_CLAIM_MS;
-                if sl.operation_id == op_id && !op_id.is_empty() {
-                    // RENEWAL: the owner is demonstrably alive, so the
-                    // lease and the generation both refresh. The fresh
-                    // generation is what protects an active owner from
-                    // a fence left by an aborted takeover reservation —
-                    // every allocation is above every earlier fence.
-                    d.seal_gen_counter += 1;
-                    let g = d.seal_gen_counter;
-                    let sl = d.sealing.as_mut().unwrap();
-                    sl.claim_generation = g;
-                    sl.claimed_ms = crate::shard::now_ms();
-                    outcome = EnterSeal::AlreadyOurs { generation: g };
-                    return true;
-                }
-                if sl.operation_id == op_id || (op_id.is_empty() && !sl.owes_final()) {
-                    // A plain close JOINS a non-owing sealing — and the
-                    // join RENEWS, exactly like an owner's retry. A
-                    // standing generation can sit below a fence left
-                    // by a takeover race that lost after fencing; a
-                    // joiner that merely shared it would inherit that
-                    // wedge. Renewal allocates above every fence ever
-                    // set, so whoever actually drives the transition
-                    // can always close the segments.
-                    d.seal_gen_counter += 1;
-                    let g = d.seal_gen_counter;
-                    let sl = d.sealing.as_mut().unwrap();
-                    sl.claim_generation = g;
-                    sl.claimed_ms = crate::shard::now_ms();
-                    outcome = EnterSeal::AlreadyOurs { generation: g };
-                    return true;
-                }
-                outcome = if sl.owes_final() && abandoned {
-                    EnterSeal::AbandonedClaim {
-                        old_op: sl.operation_id.clone(),
-                        old_gen: sl.claim_generation,
-                        old_intent: sl.intent.clone(),
-                    }
-                } else if sl.owes_final() {
-                    EnterSeal::Conflicting(
-                        "a seal with a final record is in flight; retry that request to finish it"
-                            .into(),
-                    )
-                } else {
-                    EnterSeal::Conflicting("a different seal operation is in flight".into())
-                };
-                return false;
-            }
-            // Topology must be quiet BEFORE the intent exists. Installing
-            // over a pending transition deadlocks the collection.
-            if d.segments.as_ref().is_some_and(|m| m.pending.is_some()) {
-                outcome = EnterSeal::PendingTopology;
-                return false;
-            }
-            d.seal_gen_counter += 1;
-            d.sealing = Some(crate::registry::SealState {
-                operation_id: op_id.to_string(),
-                intent: intent.clone(),
-                claimed_ms: crate::shard::now_ms(),
-                claim_generation: d.seal_gen_counter,
-            });
-            outcome = EnterSeal::Installed {
-                generation: d.seal_gen_counter,
-            };
-            true
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    state.registry.invalidate(sref);
-    let _ = installed;
-    Ok(outcome)
+    crate::application::lifecycle::enter_sealing_cas(
+        &state.lifecycle_service(),
+        sref,
+        op_id,
+        intent,
+        expect_epoch,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
-/// Drive [`enter_sealing_cas`] to a decision, resolving topology when it
-/// is what stands in the way.
 pub(crate) async fn claim_seal(
     state: &Arc<AppState>,
     sref: &crate::tenant::TenantStreamRef,
@@ -2330,152 +2176,17 @@ pub(crate) async fn claim_seal(
     intent: &crate::registry::SealIntent,
     expect_epoch: &str,
 ) -> Result<EnterSeal, String> {
-    for _ in 0..6 {
-        match enter_sealing_cas(state, sref, op_id, intent, expect_epoch).await? {
-            EnterSeal::PendingTopology => {
-                // Finish the transition, then race for the intent again.
-                crate::scaler3::resume(state, sref).await;
-                state.registry.invalidate(sref);
-            }
-            EnterSeal::AbandonedClaim {
-                old_op,
-                old_gen,
-                old_intent,
-            } => {
-                match take_over_abandoned(
-                    state,
-                    sref,
-                    expect_epoch,
-                    op_id,
-                    intent,
-                    &old_op,
-                    old_gen,
-                    &old_intent,
-                )
-                .await?
-                {
-                    Some(outcome) => return Ok(outcome),
-                    // The claim moved while we were fencing (renewed,
-                    // completed, replaced): whatever it is now decides.
-                    None => state.registry.invalidate(sref),
-                }
-            }
-            other => return Ok(other),
-        }
-    }
-    Err("a split or merge kept the collection busy; the seal is resumable".into())
-}
-
-/// Take over a lapsed final-bearing claim — the ONLY way one is ever
-/// replaced, and the wall clock is never the whole argument. Order:
-///
-/// 1. RESERVE a generation above the old one (a descriptor CAS that
-///    only bumps the allocator; the claim is untouched and must still
-///    be exactly the lapsed one we saw).
-/// 2. FENCE the old generation through the committer of the segment
-///    the old final targeted. The fence is processed in queue order,
-///    so its answer proves every append enqueued before it — the old
-///    operation's final included, however long it sat — has been
-///    decided, and no append below the reservation can commit after.
-/// 3. Consult the fence's closed-report. CLOSED means the old final
-///    won its race after all: its record is durable and the segment is
-///    shut, so the old transition is COMPLETED on its behalf and the
-///    caller is told the collection sealed under the other operation.
-///    NOT CLOSED means it can never commit now — only then does the
-///    new claim replace the old, expecting it unchanged.
-///
-/// A timestamp decides only when this protocol may START; whether the
-/// old operation is really gone is decided by the fence.
-#[allow(clippy::too_many_arguments)]
-async fn take_over_abandoned(
-    state: &Arc<AppState>,
-    sref: &crate::tenant::TenantStreamRef,
-    expect_epoch: &str,
-    op_id: &str,
-    intent: &crate::registry::SealIntent,
-    old_op: &str,
-    old_gen: u64,
-    old_intent: &crate::registry::SealIntent,
-) -> Result<Option<EnterSeal>, String> {
-    // 1. Reserve.
-    let mut reserved = 0u64;
-    let same_claim = |sl: &crate::registry::SealState| {
-        sl.operation_id == old_op && sl.claim_generation == old_gen
-    };
-    let ok = state
-        .registry
-        .cas_update_incarnation(sref, expect_epoch, |d| match &d.sealing {
-            Some(sl) if same_claim(sl) => {
-                d.seal_gen_counter += 1;
-                reserved = d.seal_gen_counter;
-                true
-            }
-            _ => false,
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    state.registry.invalidate(sref);
-    if !ok {
-        return Ok(None);
-    }
-    // 2/3. Fence the old final's segment and read the verdict.
-    let routing_key = match old_intent {
-        crate::registry::SealIntent::Final { routing_key, .. } => routing_key.clone(),
-        // Only owed finals are ever taken over.
-        crate::registry::SealIntent::Empty => String::new(),
-    };
-    let closed =
-        crate::http::fence_segment_for_key(state, sref, expect_epoch, &routing_key, reserved)
-            .await?;
-    if closed {
-        // The old operation's close committed: its record is durable
-        // and its segment shut. Finish ITS transition — the record must
-        // not be stranded behind an unmarked intent — and report the
-        // collection sealed under the other operation.
-        mark_final_committed(state, sref, old_op, expect_epoch, old_gen).await?;
-        // Boxed: completing the old transition re-enters run_seal ->
-        // claim_seal, and the compiler needs the cycle broken.
-        Box::pin(run_seal(
-            state,
-            sref,
-            Some(old_op.to_string()),
-            expect_epoch,
-            Some(old_gen),
-        ))
-        .await?;
-        return Ok(Some(EnterSeal::AlreadySealed));
-    }
-    // 4. Install the new claim over the (still unchanged) old one.
-    if install_reserved_claim(
-        state,
+    crate::application::lifecycle::claim_seal(
+        &state.lifecycle_service(),
         sref,
-        expect_epoch,
-        old_op,
-        old_gen,
         op_id,
         intent,
-        reserved,
+        expect_epoch,
     )
-    .await?
-    {
-        return Ok(Some(EnterSeal::Installed {
-            generation: reserved,
-        }));
-    }
-    Ok(None)
+    .await
+    .map_err(|error| error.to_string())
 }
 
-/// The takeover's installation CAS: replace the (still unchanged)
-/// lapsed claim with the new one — and ONLY if the caller's
-/// reservation is still the NEWEST allocation. Two takeovers can
-/// reserve against the same lapsed claim (the reservation deliberately
-/// leaves it in place); both fence, and the segment keeps the higher
-/// fence. If the LOWER reservation then installed, the live claim's
-/// generation would sit below the fence and every close it issues
-/// would be refused: a collection held Sealing by its own recovery
-/// protocol. The counter check makes the newest reservation the only
-/// installable one; an older one restarts the protocol from the top.
-#[allow(clippy::too_many_arguments)]
 pub(crate) async fn install_reserved_claim(
     state: &Arc<AppState>,
     sref: &crate::tenant::TenantStreamRef,
@@ -2486,39 +2197,21 @@ pub(crate) async fn install_reserved_claim(
     intent: &crate::registry::SealIntent,
     reserved: u64,
 ) -> Result<bool, String> {
-    let installed = state
-        .registry
-        .cas_update_incarnation(sref, expect_epoch, |d| match &d.sealing {
-            Some(sl)
-                if sl.operation_id == old_op
-                    && sl.claim_generation == old_gen
-                    && d.seal_gen_counter == reserved =>
-            {
-                d.sealing = Some(crate::registry::SealState {
-                    operation_id: op_id.to_string(),
-                    intent: intent.clone(),
-                    claimed_ms: crate::shard::now_ms(),
-                    claim_generation: reserved,
-                });
-                true
-            }
-            _ => false,
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    state.registry.invalidate(sref);
-    Ok(installed)
+    crate::application::lifecycle::install_reserved_claim(
+        &state.lifecycle_service(),
+        sref,
+        expect_epoch,
+        old_op,
+        old_gen,
+        op_id,
+        intent,
+        reserved,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
-/// The execution token a claimed seal operates under: the incarnation
-/// it was issued against and the generation its appends must carry.
-/// Everything after the claim — the final append, the mark, the
-/// segment closes, the publication — is fenced by BOTH.
-#[derive(Debug, Clone)]
-pub(crate) struct SealTicket {
-    pub epoch: String,
-    pub generation: u64,
-}
+pub(crate) use crate::application::lifecycle::SealTicket;
 
 async fn enter_sealing(
     state: &Arc<AppState>,
@@ -2527,24 +2220,18 @@ async fn enter_sealing(
     intent: crate::registry::SealIntent,
     expect_epoch: &str,
 ) -> Result<SealTicket, String> {
-    // The epoch is the caller's VALIDATED one — never re-fetched here.
-    // A second lookup between validation and claim was the ABA window.
-    match claim_seal(state, sref, op_id, &intent, expect_epoch).await? {
-        EnterSeal::Installed { generation } | EnterSeal::AlreadyOurs { generation } => {
-            Ok(SealTicket {
-                epoch: expect_epoch.to_string(),
-                generation,
-            })
-        }
-        // Empty message = this exact seal already completed.
-        EnterSeal::AlreadyCompleted => Err(String::new()),
-        EnterSeal::AlreadySealed => Err("collection is already sealed".into()),
-        EnterSeal::Conflicting(m) => Err(m),
-        EnterSeal::Missing => Err("collection not found".into()),
-        EnterSeal::PendingTopology => {
-            Err("a split or merge is in flight; the seal is resumable".into())
-        }
-        EnterSeal::AbandonedClaim { .. } => unreachable!("claim_seal resolves abandoned claims"),
+    match crate::application::lifecycle::enter_sealing(
+        &state.lifecycle_service(),
+        sref,
+        op_id,
+        intent,
+        expect_epoch,
+    )
+    .await
+    .map_err(|error| error.to_string())?
+    {
+        crate::application::lifecycle::SealClaim::Active(ticket) => Ok(ticket),
+        crate::application::lifecycle::SealClaim::Completed => Err(String::new()),
     }
 }
 
@@ -2557,55 +2244,9 @@ where
     T::deserialize(d).map(Some)
 }
 
-/// Identity of a seal-with-final operation: the record it promised,
-/// under the routing key it promised it for. A retry of the same seal
-/// derives the same id and resumes; anything else is a different
-/// operation and may not finish this one.
-pub(crate) fn seal_op_id_full(
-    final_value: &serde_json::Value,
-    routing_key: &str,
-    producer: Option<(&str, &str, &str)>,
-) -> String {
-    use sha2::{Digest, Sha256};
-    // The identity covers the WHOLE attempt, not just the record. Two
-    // requests carrying the same final value under the same key but
-    // different producer coordination are different operations: sharing
-    // one id let a request that was definitively refused tear down the
-    // intent a concurrent valid attempt was still committing under.
-    let record = final_value.to_string();
-    let (pid, pep, pseq) = producer.unwrap_or(("", "", ""));
-    let mut h = Sha256::new();
-    h.update(b"prisma-seal-v2\0");
-    for part in [routing_key, &record, pid, pep, pseq] {
-        h.update((part.len() as u64).to_le_bytes());
-        h.update(part.as_bytes());
-    }
-    crate::crypto::hex(&h.finalize()[..16])
-}
+pub(crate) use crate::application::lifecycle::seal_op_id_full;
 
-/// Identity of a raw close that carries content. The raw surface has
-/// no typed final record, so the identity is the create-request hash
-/// plus EVERY coordination input the committer can rule on: producer
-/// trio, explicit sequence, timestamp. Two closes that agree on all of
-/// it are the same operation and may resume each other; anything else
-/// is a different one and may not finish this seal.
-pub(crate) fn seal_op_id_semantic(
-    request_hash: &str,
-    routing_key: &str,
-    coordination: &[String],
-) -> String {
-    use sha2::{Digest, Sha256};
-    let mut h = Sha256::new();
-    h.update(b"prisma-seal-raw-v2\0");
-    for part in std::iter::once(routing_key)
-        .chain(std::iter::once(request_hash))
-        .chain(coordination.iter().map(|s| s.as_str()))
-    {
-        h.update((part.len() as u64).to_le_bytes());
-        h.update(part.as_bytes());
-    }
-    crate::crypto::hex(&h.finalize()[..16])
-}
+pub(crate) use crate::application::lifecycle::seal_op_id_semantic;
 
 /// Read an error response's `error.code` without consuming it: the
 /// committer's verdict is only in the body, and the caller still has to
@@ -2624,74 +2265,38 @@ async fn take_error_code(resp: Response) -> (Response, Option<String>) {
     (Response::from_parts(parts, Body::from(bytes)), code)
 }
 
-/// Publish the Sealing intent for a RAW close, before the physical
-/// segment closes. Refuses when another operation still owes a final
-/// record — that seal must finish first, or its record would be lost.
 pub(crate) async fn begin_sealing_for_close(
     state: &Arc<AppState>,
     sref: &crate::tenant::TenantStreamRef,
     intent: crate::registry::SealIntent,
     expect_epoch: &str,
 ) -> Result<Option<u64>, String> {
-    // The intent's request_hash IS the operation id: one identity,
-    // computed once by the request that owns it. The epoch is the
-    // ADMISSION descriptor's — the close is fenced to the incarnation
-    // it was admitted against, like every other lifecycle decision.
-    let op = match &intent {
-        crate::registry::SealIntent::Empty => String::new(),
-        crate::registry::SealIntent::Final { request_hash, .. } => request_hash.clone(),
-    };
-    match claim_seal(state, sref, &op, &intent, expect_epoch).await? {
-        EnterSeal::Installed { generation } | EnterSeal::AlreadyOurs { generation } => {
-            Ok(Some(generation))
-        }
-        EnterSeal::AlreadyCompleted => Ok(None),
-        EnterSeal::AlreadySealed => Ok(None), // already terminal; the close is a no-op
-        EnterSeal::Missing => Ok(None),
-        EnterSeal::Conflicting(m) => Err(m),
-        EnterSeal::PendingTopology => Err("a split or merge is in flight; retry the close".into()),
-        EnterSeal::AbandonedClaim { .. } => unreachable!("claim_seal resolves abandoned claims"),
-    }
+    crate::application::lifecycle::begin_sealing_for_close(
+        &state.lifecycle_service(),
+        sref,
+        intent,
+        expect_epoch,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
-/// Renew an owed-final claim for its OWN exact retry: fresh lease,
-/// fresh generation. Returns the new generation, or None when the
-/// claim is no longer this operation's to renew.
 pub(crate) async fn renew_owed_claim(
     state: &Arc<AppState>,
     sref: &crate::tenant::TenantStreamRef,
     op_id: &str,
     expect_epoch: &str,
 ) -> Result<Option<u64>, String> {
-    let mut renewed = None;
-    state
-        .registry
-        .cas_update_incarnation(sref, expect_epoch, |d| {
-            let counter = &mut d.seal_gen_counter;
-            *counter += 1;
-            let g = *counter;
-            match d.sealing.as_mut() {
-                Some(sl) if sl.operation_id == op_id && sl.owes_final() => {
-                    sl.claim_generation = g;
-                    sl.claimed_ms = crate::shard::now_ms();
-                    renewed = Some(g);
-                    true
-                }
-                _ => {
-                    renewed = None;
-                    false
-                }
-            }
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    state.registry.invalidate(sref);
-    Ok(renewed)
+    crate::application::lifecycle::renew_owed_claim(
+        &state.lifecycle_service(),
+        sref,
+        op_id,
+        expect_epoch,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
-/// Release an intent this operation owns and has NOT committed. Only
-/// ever our own, only ever while it still owes its record — a seal that
-/// already wrote its final is finished by `run_seal`, not undone here.
 pub(crate) async fn abandon_seal_intent(
     state: &Arc<AppState>,
     sref: &crate::tenant::TenantStreamRef,
@@ -2699,41 +2304,17 @@ pub(crate) async fn abandon_seal_intent(
     expect_epoch: &str,
     expect_gen: u64,
 ) -> Result<(), String> {
-    // Epoch- and generation-fenced: operation ids do not embed the
-    // incarnation, so a name-scoped release could clear an EQUIVALENT
-    // intent installed on a recreated stream — or one a takeover had
-    // since re-issued under a new generation. Releasable while the
-    // promise is UNDELIVERED (an owed final, or an Empty claim whose
-    // close turned out to be a spent producer tuple); a final that is
-    // already durable is finished by run_seal, never undone here.
-    state
-        .registry
-        .cas_update_incarnation(sref, expect_epoch, |d| match &d.sealing {
-            Some(sl)
-                if sl.operation_id == op_id
-                    && sl.claim_generation == expect_gen
-                    && !matches!(
-                        sl.intent,
-                        crate::registry::SealIntent::Final {
-                            final_committed: true,
-                            ..
-                        }
-                    ) =>
-            {
-                d.sealing = None;
-                true
-            }
-            _ => false,
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    state.registry.invalidate(sref);
-    Ok(())
+    crate::application::lifecycle::abandon_seal_intent(
+        &state.lifecycle_service(),
+        sref,
+        op_id,
+        expect_epoch,
+        expect_gen,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
-/// Record that a final-bearing seal's record is durable. Must happen
-/// before any segment closes: after this the transition can be finished
-/// by anyone, and before it, only by the operation that owes the record.
 pub(crate) async fn mark_final_committed(
     state: &Arc<AppState>,
     sref: &crate::tenant::TenantStreamRef,
@@ -2741,92 +2322,15 @@ pub(crate) async fn mark_final_committed(
     expect_epoch: &str,
     expect_gen: u64,
 ) -> Result<(), String> {
-    let mut already = false;
-    // The epoch is the one this OPERATION was issued against — never a
-    // fresh read. Reading the current incarnation here only proved the
-    // CAS raced nothing between the read and itself; a stale operation
-    // reading the replacement's epoch would then happily mark (and go
-    // on to seal) a collection it was never part of.
-    let marked = state
-        .registry
-        .cas_update_incarnation(sref, expect_epoch, |d| match &mut d.sealing {
-            Some(sl) if sl.operation_id == op_id && sl.claim_generation == expect_gen => {
-                match &mut sl.intent {
-                    crate::registry::SealIntent::Final {
-                        final_committed, ..
-                    } if !*final_committed => {
-                        *final_committed = true;
-                        true
-                    }
-                    _ => {
-                        already = true; // ours, already marked
-                        false
-                    }
-                }
-            }
-            _ => false,
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    state.registry.invalidate(sref);
-    if marked || already {
-        return Ok(());
-    }
-    // Declined and not ours: the intent we were completing is gone,
-    // belongs to someone else, or lives on a different incarnation.
-    // Saying nothing here let the caller close segments for a record
-    // this operation never owned — and the ONLY acceptable silent
-    // answer is "OUR seal already completed on OUR incarnation".
-    match state.registry.get(sref).await {
-        Ok(Some(d))
-            if d.sealed
-                && d.stream_epoch == expect_epoch
-                && d.seal_op.as_deref() == Some(op_id) =>
-        {
-            Ok(())
-        }
-        Ok(Some(_)) => Err("the seal intent this record belongs to is no longer in flight".into()),
-        Ok(None) => Ok(()),
-        Err(e) => Err(e.to_string()),
-    }
-}
-
-/// Descriptor-side collection seal, shared by the product seal route
-/// and the RAW close path (spec Stage 8 §7.4: a raw close seals the
-/// entire collection; §16.3: product seal and raw close agree on one
-/// monotonic state). Idempotent; errors are logged by callers that
-/// cannot surface them.
-pub(crate) async fn seal_descriptor(
-    state: &Arc<AppState>,
-    sref: &crate::tenant::TenantStreamRef,
-) -> Result<(), String> {
-    let desc = match state.registry.get(sref).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => {
-            if crate::http::initializing(&d) {
-                return Err("stream is still being created".into());
-            }
-            d
-        }
-        Ok(_) => return Ok(()),
-        Err(e) => return Err(e.to_string()),
-    };
-    if desc.sealed {
-        return Ok(());
-    }
-    // Round-4 review: retried like the claim path — same benign-conflict
-    // class, same lifecycle endpoint.
-    state
-        .registry
-        .cas_update_retry(sref, |d| {
-            if d.sealed {
-                return false;
-            }
-            d.sealed = true;
-            true
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    crate::application::lifecycle::mark_final_committed(
+        &state.lifecycle_service(),
+        sref,
+        op_id,
+        expect_epoch,
+        expect_gen,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 async fn product_seal_only(
@@ -2889,14 +2393,6 @@ pub(crate) fn seal_error_response(stream: &str, m: &str) -> Response {
     perr(status, code, m, None, true)
 }
 
-/// The collection seal transition (audit P0). Open -> Sealing -> every
-/// live segment closed -> Sealed. Idempotent and resumable: any request
-/// that observes Sealing finishes the same transition, so a crash
-/// between the final append, the segment closes and publication can
-/// never leave a descriptor claiming sealed over writable segments.
-///
-/// `op` names the seal operation when a final record is part of it, so
-/// a retry resumes instead of appending a second final record.
 pub(crate) async fn run_seal(
     state: &Arc<AppState>,
     sref: &crate::tenant::TenantStreamRef,
@@ -2904,235 +2400,15 @@ pub(crate) async fn run_seal(
     expect_epoch: &str,
     claim_gen: Option<u64>,
 ) -> Result<(), String> {
-    let desc = match state.registry.get(sref).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
-        Ok(_) => return Ok(()),
-        Err(e) => return Err(e.to_string()),
-    };
-    // The transition this call drives belongs to ONE incarnation. A
-    // name-scoped run_seal re-fetched whatever descriptor owned the
-    // name and could claim and seal a replacement created while the
-    // caller was in flight.
-    if desc.stream_epoch != expect_epoch {
-        return Err("the collection this seal was issued against no longer exists".into());
-    }
-    if desc.sealed {
-        // Terminal — but only OUR terminal counts as our success. A
-        // caller driving a specific operation must not report
-        // completion because somebody else's seal got there first.
-        if let Some(o) = op.as_deref()
-            && !o.is_empty()
-            && desc.seal_op.as_deref() != Some(o)
-        {
-            return Err("the collection sealed under a different operation".into());
-        }
-        return Ok(());
-    }
-    // An OWED final is decided by the claim path below, not by a
-    // pre-read: a live claim answers Conflicting (the caller must let
-    // that operation finish), and a lapsed one goes through the
-    // takeover protocol — which is what makes a plain `:seal` a real
-    // recovery tool instead of a permanent 409. The one caller who may
-    // proceed while its claim is a Final is the OWNER after its mark
-    // (final_committed=true no longer owes); an owner that has not
-    // marked cannot get here, because segment closes and publication
-    // both refuse an owing claim.
-    if let Some(sl) = &desc.sealing
-        && sl.owes_final()
-        && op.as_deref() == Some(sl.operation_id.as_str())
-    {
-        return Err("this seal has not committed its final record yet".into());
-    }
-    // A topology transition in flight is resolved BEFORE the seal
-    // takes its snapshot of live segments. Otherwise the two interleave:
-    // the seal closes what it can see, publishes Sealed, and the
-    // transition's phase B then publishes a fresh live child. Phase B
-    // now refuses once the lifecycle has moved, and this is the other
-    // half — finish the transition first so the snapshot is complete.
-    // 1. Claim the transition. This CAS — not a preceding read — is the
-    //    serialization point: it installs only over an open, unclaimed,
-    //    topologically quiet descriptor, resolving a pending split or
-    //    merge first. Installing Sealing over pending work deadlocked
-    //    the collection, because phase B then refuses to finish it.
-    let op_id = op.clone().unwrap_or_default();
-    // The generation every close this call issues will carry. Owners
-    // arrive with theirs (their claim is installed and, for a final,
-    // already marked); everyone else claims here and uses what the
-    // claim allocates.
-    let mut our_gen = claim_gen;
-    // Resuming a claim that is already ours by identity (a planted
-    // recovery, a plain close joining a plain sealing): adopt its
-    // standing generation — the segment closes below must carry it.
-    if our_gen.is_none()
-        && let Some(sl) = &desc.sealing
-        && sl.operation_id == op_id
-    {
-        our_gen = Some(sl.claim_generation);
-    }
-    if desc.sealing.is_none()
-        || desc
-            .sealing
-            .as_ref()
-            .is_some_and(|s| s.operation_id != op_id)
-    {
-        match claim_seal(
-            state,
-            sref,
-            &op_id,
-            &crate::registry::SealIntent::Empty,
-            expect_epoch,
-        )
-        .await?
-        {
-            EnterSeal::Installed { generation } | EnterSeal::AlreadyOurs { generation } => {
-                our_gen = Some(generation);
-            }
-            EnterSeal::AlreadyCompleted | EnterSeal::AlreadySealed => return Ok(()),
-            EnterSeal::Missing => {}
-            EnterSeal::Conflicting(m) => return Err(m),
-            EnterSeal::PendingTopology => {
-                return Err(
-                    "a split or merge is in flight and did not settle; the seal is resumable"
-                        .into(),
-                );
-            }
-            EnterSeal::AbandonedClaim { .. } => {
-                unreachable!("claim_seal resolves abandoned claims")
-            }
-        }
-    }
-    // 2. Close every live segment identity. Idempotent per segment.
-    state.registry.invalidate(sref);
-    let d = match state.registry.get(sref).await {
-        Ok(Some(d)) => d,
-        Ok(None) => return Ok(()),
-        Err(e) => return Err(e.to_string()),
-    };
-    if d.stream_epoch != expect_epoch {
-        return Err("the collection this seal was issued against no longer exists".into());
-    }
-    let live: Vec<u32> = match &d.segments {
-        Some(m) => m
-            .segments
-            .iter()
-            .filter(|s| s.is_live())
-            .map(|s| s.seg_id)
-            .collect(),
-        None => vec![0],
-    };
-    for seg_id in live {
-        if crate::scaler3::seal_segment_identity(state, &d, seg_id, our_gen)
-            .await
-            .is_none()
-        {
-            // A segment that would not close leaves the collection in
-            // Sealing; the next seal request (or retry) resumes it.
-            // (This includes a close refused by a seal fence: the claim
-            // generation lapsed, and a retry — which renews it — is the
-            // correct way back in.)
-            return Err(format!("segment {seg_id} did not close; seal is resumable"));
-        }
-    }
-    #[cfg(test)]
-    if crate::failpoints::should_stop_before_sealed_publish(sref.name().as_str()) {
-        // DST crash boundary: every live segment's close is durable,
-        // the collection is NOT yet Sealed — the exact state a crash
-        // between step 2 and step 3 leaves. The retry contract under
-        // test: a plain :seal observes Sealing with closed segments,
-        // renews the claim, re-closes idempotently, and publishes.
-        return Err("stopped before the sealed publication; seal is resumable".into());
-    }
-    // Round-11.6 field canary: hold the close→publication window open
-    // for the configured delay so the seal-herd campaign observes the
-    // two-step gap on a real release binary. Boot refuses a nonzero
-    // value outside STREAMS_CERTIFICATION_MODE=1; zero is inert.
-    {
-        let ms = state
-            .cert_sealed_publish_delay_ms
-            .load(std::sync::atomic::Ordering::Relaxed);
-        if ms > 0 {
-            tokio::time::sleep(std::time::Duration::from_millis(ms)).await;
-        }
-    }
-    // 3. Publish SEALED only now — and only if no topology transition
-    //    reappeared while the segments were closing.
-    let published = state
-        .registry
-        .cas_update_incarnation(sref, expect_epoch, |d| {
-            if d.sealed {
-                return false;
-            }
-            if d.segments.as_ref().is_some_and(|m| m.pending.is_some()) {
-                return false;
-            }
-            // Publication requires the claim to still be THE ONE this
-            // call drove. The generation is the whole identity — every
-            // install, join and renewal hands out (or shares) exactly
-            // one, so equality here means "the claim I closed segments
-            // under still stands". A plain close that JOINED another
-            // operation's non-owing claim carries that claim's
-            // generation and may finish it; a caller whose claim was
-            // taken over holds a stale generation and may not stamp
-            // Sealed over the successor's still-working transition.
-            match (&d.sealing, our_gen) {
-                (Some(sl), Some(g)) => {
-                    if sl.claim_generation != g || sl.owes_final() {
-                        return false;
-                    }
-                }
-                _ => return false,
-            }
-            d.sealed = true;
-            d.seal_op = d
-                .sealing
-                .as_ref()
-                .map(|s| s.operation_id.clone())
-                .or(op.clone());
-            d.sealing = None;
-            true
-        })
-        .await
-        .map_err(|e| e.to_string())?;
-    state.registry.invalidate(sref);
-    // Success is PROVEN, never assumed. The CAS above declines when a
-    // transition reappeared or another writer moved the state, and
-    // returning Ok regardless told clients `{"sealed": true}` about a
-    // descriptor that was still Sealing with a split pending.
-    let final_state = match state.registry.get(sref).await {
-        Ok(Some(d)) => d,
-        Ok(None) => return Ok(()), // gone: nothing left to seal
-        Err(e) => return Err(e.to_string()),
-    };
-    if !crate::http::desc_alive(&final_state) {
-        return Ok(());
-    }
-    // The proof is about THIS incarnation and THIS operation. A
-    // replacement created (and even sealed) under the same name
-    // between publication and this read is somebody else's resource;
-    // reporting success against it violates the very guarantee the
-    // rest of the machine establishes.
-    if final_state.stream_epoch != expect_epoch {
-        return Err("the collection this seal was issued against no longer exists".into());
-    }
-    if final_state.sealed && final_state.sealing.is_none() {
-        if let Some(o) = op.as_deref()
-            && !o.is_empty()
-            && final_state.seal_op.as_deref() != Some(o)
-        {
-            return Err("the collection sealed under a different operation".into());
-        }
-        return Ok(());
-    }
-    let _ = published;
-    Err(format!(
-        "the seal did not reach a terminal state (sealed={}, sealing={}, pending={}); it is resumable",
-        final_state.sealed,
-        final_state.sealing.is_some(),
-        final_state
-            .segments
-            .as_ref()
-            .is_some_and(|m| m.pending.is_some())
-    ))
+    crate::application::lifecycle::run_seal(
+        &state.lifecycle_service(),
+        sref,
+        op,
+        expect_epoch,
+        claim_gen,
+    )
+    .await
+    .map_err(|error| error.to_string())
 }
 
 // ---- Stage 4: append and appendMany ---------------------------------
@@ -5673,9 +4949,17 @@ pub(crate) async fn relay_segment_scan(
     max_bytes: usize,
     key_b64: &str,
 ) -> Option<crate::application::read::ReadPage> {
-    crate::application::read_remote::scan_page_once(&state.peer, base, name, target, from, max_bytes, key_b64)
-        .await
-        .ok()
+    crate::application::read_remote::scan_page_once(
+        &state.peer,
+        base,
+        name,
+        target,
+        from,
+        max_bytes,
+        key_b64,
+    )
+    .await
+    .ok()
 }
 
 /// Relay a segment-tail probe (scan snapshot creation) via the internal

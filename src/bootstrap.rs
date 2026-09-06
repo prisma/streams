@@ -675,10 +675,10 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         billing,
         rollup: crate::rollup::RollupSlot::default(),
         tasks: tasks.monitor(),
-        cert_sealed_publish_delay_ms: std::sync::atomic::AtomicU64::new(
+        cert_sealed_publish_delay_ms: Arc::new(std::sync::atomic::AtomicU64::new(
             // PR 3.2: proven by validate(); no panic path in bootstrap.
             cert_sealed_publish_delay_ms,
-        ),
+        )),
         ownership,
         data_store,
         keys,
