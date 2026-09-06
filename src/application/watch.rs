@@ -229,12 +229,11 @@ impl WatchService {
         if !capability_ok && key.is_none() {
             return Err(WatchFailure::Unauthorized(None));
         }
-        if let WatchAccess::AdmittedAccount(principal) = &access {
-            if principal.project_id != descriptor.project_id
-                || principal.require_stream(&descriptor.name).is_err()
-            {
-                return Err(WatchFailure::Unauthorized(None));
-            }
+        if let WatchAccess::AdmittedAccount(principal) = &access
+            && (principal.project_id != descriptor.project_id
+                || principal.require_stream(&descriptor.name).is_err())
+        {
+            return Err(WatchFailure::Unauthorized(None));
         }
         if key_hex.len() != 16 || u64::from_str_radix(&key_hex, 16).is_err() {
             return Err(WatchFailure::InvalidKey);
@@ -402,6 +401,7 @@ fn watch_arg(v: Option<&serde_json::Value>) -> Option<String> {
 /// The 64-bit watch key for (definition, extracted values), hex16 on
 /// the wire. Field order is significant and preserved (spec §3.2) —
 /// the definition id hashes fields AS DECLARED.
+#[cfg(test)]
 pub(crate) fn watch_key_hex(name: &str, fields: &[String], values: &[String]) -> String {
     let tid = crate::touch_keys::template_id(name, fields);
     crate::touch_keys::key_hex(crate::touch_keys::watch_key(tid, values))
