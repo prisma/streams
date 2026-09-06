@@ -1547,7 +1547,7 @@ async fn tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch() {
 
     // Pause absorption while the workloads run so the final
     // "absorbed == next" comparison is not racing a mid-workload pass.
-    crate::history::absorb_pause_flag().store(true, Ordering::Relaxed);
+    engine.history_resources.paused.store(true, Ordering::Relaxed);
     let mut tiny_log = OpLog::default();
     let mut w1 = Workload::new(cov.clone());
     // ~2 small frames pending: far under the deleted 256 KiB floor —
@@ -1562,7 +1562,7 @@ async fn tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch() {
         engine.maintenance_snapshot().unabsorbed_frame_bytes > 0,
         "workloads committed but the durable ledger shows no backlog"
     );
-    crate::history::absorb_pause_flag().store(false, Ordering::Relaxed);
+    engine.history_resources.paused.store(false, Ordering::Relaxed);
 
     // BOTH streams must age-absorb — the tiny one especially.
     for (name, hash) in [("tiny", tiny), ("fat", fat)] {
@@ -2964,10 +2964,9 @@ async fn idle_engine_store_traffic_is_bounded_by_the_poll_cadence() {
 /// load balancer keeps sending traffic.
 #[tokio::test(flavor = "current_thread", start_paused = true)]
 async fn health_reports_unready_when_no_shard_has_ever_opened() {
-    use crate::sharddir::{OpenGate, unready_reason};
+    use crate::sharddir::OpenGate;
     let _serial = gate_lock().lock().await;
     OpenGate::reset_counters_for_tests();
-    assert!(unready_reason().is_none(), "a fresh process is ready");
 
     let shards = Arc::new(std::sync::RwLock::new(HashMap::new()));
     let gate = OpenGate::new(
@@ -3004,14 +3003,14 @@ async fn health_reports_unready_when_no_shard_has_ever_opened() {
         // single failure is a store blip, not a broken deploy.
         if i < 2 {
             assert!(
-                unready_reason().is_none(),
+                gate.unready_reason().is_none(),
                 "evicted from rotation after only {} failure(s)",
                 i + 1
             );
         }
     }
 
-    let reason = unready_reason().expect("three failures, zero successes => unready");
+    let reason = gate.unready_reason().expect("three failures, zero successes => unready");
     assert!(
         reason.contains("max_unflushed_bytes"),
         "readiness must carry the diagnosis, got: {reason}"
@@ -5292,7 +5291,7 @@ async fn the_first_advance_seals_the_history_layout() {
     let (abs, flag) = wait_absorbed(&engine, a, 3).await;
     assert_eq!((abs, flag), (3, true), "first v2 advance seals v2");
     engine.submit_absorbed(a, 5, 0).await; // cross-layout v1 advance
-    // Sentinel append proves the committer processed the op above.
+                                           // Sentinel append proves the committer processed the op above.
     append_sized(&engine, a, &key, "", 64).await;
     tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     let h = engine.stream_handle(a).await.unwrap();
@@ -6834,7 +6833,6 @@ async fn http_rig_build(
     let touch = Arc::new(crate::touch::TouchRegistry::with_entropy(touch_entropy));
     let opener_store = store.clone();
     let opener_keys = keys.clone();
-    let opener_shard_cfg = shard_cfg.clone();
     let opener_absorber = absorber_cfg.clone();
     // The rig's owned configuration (WP-01 PR 3.1): the no-environment
     // knob posture — every knob default, no env overlay. PR 4.1.1.1:
@@ -6857,6 +6855,12 @@ async fn http_rig_build(
         },
         &crate::config::MapEnvironment::empty(),
     ));
+    let mut rig_runtime = rig_runtime.with_config(&rig_config);
+    let mut opener_shard_cfg = shard_cfg.clone();
+    if let Some(shared) = &opener_shard_cfg.shared_history { rig_runtime.history = shared.clone(); }
+    if let Some(shared) = &opener_shard_cfg.shared_postings_cache { rig_runtime.postings = shared.clone(); }
+    opener_shard_cfg.shared_history = Some(rig_runtime.history.clone());
+    opener_shard_cfg.shared_postings_cache = Some(rig_runtime.postings.clone());
     let ownership = crate::ownership::OwnershipService::new(instance_name.unwrap_or_default());
     let (fleet_static_token, fleet_token_source) = match fleet_auth {
         Some((t, s)) => (t, s),
@@ -10842,7 +10846,7 @@ async fn product_consumer_drains_lineage_across_split() {
             total += 1;
             acks.push(serde_json::json!({"leaseToken": m["leaseToken"]}));
         }
-        let body = serde_json::json!({"acks": acks}).to_string();
+        let body = serde_json::json!({ "acks": acks }).to_string();
         let (st, _, _) = preq(
             addr,
             "POST",
@@ -15610,7 +15614,7 @@ async fn scaler_heat_and_terminal_proof_are_incarnation_scoped() {
     for i in 0..32 {
         let sg = old.resolve_segment(&format!("k{i}"));
         for _ in 0..8 {
-            crate::scaler3::note_append(&old, &sg, 50_000_000, 10_000);
+            state.runtime.scaler.note_append(&old, &sg, 50_000_000, 10_000);
         }
     }
     // Recreate; ONE feed under B resets the sketch cold.
@@ -15633,9 +15637,9 @@ async fn scaler_heat_and_terminal_proof_are_incarnation_scoped() {
     // the hot streak a split decision needs — with the reset in place,
     // nothing ever forms; without it, the dead incarnation's traffic
     // drives a decision within a few passes.
-    crate::scaler3::note_append(&fresh, &fseg, 10, 1);
+    state.runtime.scaler.note_append(&fresh, &fseg, 10, 1);
     for _ in 0..12 {
-        let (decisions, _) = crate::scaler3::evaluate(crate::shard::now_ms());
+        let (decisions, _) = state.runtime.scaler.evaluate();
         assert!(
             !decisions
                 .iter()
@@ -26771,11 +26775,9 @@ async fn ops_events_journal_end_to_end() {
         .await
         .unwrap();
     let events: Vec<crate::ops::OpsEvent> = serde_json::from_slice(&body).unwrap();
-    assert!(
-        events
-            .iter()
-            .any(|e| e.event_id == created_id && e.event_type == "stream_created")
-    );
+    assert!(events
+        .iter()
+        .any(|e| e.event_id == created_id && e.event_type == "stream_created"));
     assert!(events.iter().any(|e| e.event_id == deleted_id));
     assert!(events.iter().all(|e| !e.cell.is_empty()), "cell stamped");
 
@@ -27935,7 +27937,7 @@ async fn overloaded_engine_sheds_while_sibling_admits() {
 /// no-progress age at bay; zero progress trips the lag bound.
 #[test]
 fn progress_clock_trips_only_without_progress() {
-    use crate::backpressure::{Limits, Snapshot, next_state};
+    use crate::backpressure::{next_state, Limits, Snapshot};
     let l = Limits {
         absorb_lag_secs: 60,
         release_pct: 75,
@@ -28419,7 +28421,7 @@ async fn debug_load_reports_typed_limiter_and_frame_totals() {
     // One request over the record-bucket CAPACITY (5,000/s x 2 s burst)
     // trips the ordinary limiter — the refusal must carry its own code
     // and count under its own counter, never the maintenance one.
-    let over: Vec<serde_json::Value> = (0..10_001).map(|n| serde_json::json!({"n": n})).collect();
+    let over: Vec<serde_json::Value> = (0..10_001).map(|n| serde_json::json!({ "n": n })).collect();
     let (st, _, body) = hreq(
         addr,
         "POST",
@@ -29210,7 +29212,7 @@ async fn tombstone_walk_fairness_under_occupied_budget() {
     let pref_refs: Vec<&str> = prefixes.iter().map(String::as_str).collect();
     drain_billing_clean(&state, &pref_refs).await;
     // Pin the maintenance debt: paused absorbers never retire it.
-    crate::history::absorb_pause_flag().store(true, std::sync::atomic::Ordering::Relaxed);
+    state.runtime.history.paused.store(true, std::sync::atomic::Ordering::Relaxed);
     let engines: Vec<_> = prefixes
         .iter()
         .filter_map(|p| {
@@ -29250,7 +29252,7 @@ async fn tombstone_walk_fairness_under_occupied_budget() {
         }
         tokio::time::sleep(std::time::Duration::from_millis(100)).await;
     }
-    crate::history::absorb_pause_flag().store(false, std::sync::atomic::Ordering::Relaxed);
+    state.runtime.history.paused.store(false, std::sync::atomic::Ordering::Relaxed);
     assert!(
         ok,
         "expired shards starved: walk close submits {} -> {}",
@@ -38131,10 +38133,10 @@ async fn project_memory_pressure_throttles_new_appends_only() {
 /// it in the field.)
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn frame_debt_survives_restart_via_tail_seed() {
-    let _l = gap_lock().lock().await; // global absorb-pause flag
+    let _l = gap_lock().lock().await; // shared failpoint schedule
     let store = mem();
     let (state, addr, bearer, pid) = pm_enforce_rig(store.clone(), RigRuntime::first()).await;
-    crate::history::absorb_pause_flag().store(true, Ordering::Relaxed);
+    state.runtime.history.paused.store(true, Ordering::Relaxed);
     let auth = ("authorization", bearer.as_str());
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
     let ct = ("content-type", "application/json");
@@ -38173,6 +38175,7 @@ async fn frame_debt_survives_restart_via_tail_seed() {
     // New incarnation on the SAME store: the first pressured append
     // binds and seeds from the durable tail — never from zero.
     let (state2, addr2, bearer2, pid2) = pm_enforce_rig(store, RigRuntime::incarnation(1)).await;
+    state2.runtime.history.paused.store(true, Ordering::Relaxed);
     let auth2 = ("authorization", bearer2.as_str());
     let (st, _, b) = preq(
         addr2,
@@ -38196,7 +38199,7 @@ async fn frame_debt_survives_restart_via_tail_seed() {
     assert!(adm2.dirty_streams_now() >= 1);
 
     // Unpause: absorption retires the debt to exactly zero.
-    crate::history::absorb_pause_flag().store(false, Ordering::Relaxed);
+    state2.runtime.history.paused.store(false, Ordering::Relaxed);
     let mut zeroed = false;
     for _ in 0..600 {
         if adm2.unabsorbed_frame_bytes_now() == 0 && adm2.dirty_streams_now() == 0 {
@@ -38220,7 +38223,7 @@ async fn frame_debt_survives_restart_via_tail_seed() {
 /// subscribers reconciled EXACTLY against the acked set.
 #[tokio::test(flavor = "multi_thread", worker_threads = 8)]
 async fn cut_resume_never_skips_a_durable_record() {
-    let _l = gap_lock().lock().await; // absorb-pause flag is global
+    let _l = gap_lock().lock().await; // shared failpoint schedule
     let store: Arc<dyn ObjectStore> =
         Arc::new(FaultStore::uniform(mem(), 41, FaultPlan::new(0, 0, 25)));
     let (state, addr) = http_rig(store).await;
@@ -38326,14 +38329,15 @@ async fn cut_resume_never_skips_a_durable_record() {
 
     // Absorb-boundary swinger: WAL->history retirement races reads.
     let stop2 = stopf.clone();
+    let swinger_resources = state.runtime.history.clone();
     let swinger = tokio::spawn(async move {
         let mut on = false;
         while !stop2.load(std::sync::atomic::Ordering::Relaxed) {
             on = !on;
-            crate::history::absorb_pause_flag().store(on, Ordering::Relaxed);
+            swinger_resources.paused.store(on, Ordering::Relaxed);
             tokio::time::sleep(std::time::Duration::from_millis(47)).await;
         }
-        crate::history::absorb_pause_flag().store(false, Ordering::Relaxed);
+        swinger_resources.paused.store(false, Ordering::Relaxed);
     });
 
     // Continuous appends: 1 KiB records, serial, as fast as the rig
@@ -38368,7 +38372,7 @@ async fn cut_resume_never_skips_a_durable_record() {
     for t in subtasks {
         let _ = tokio::time::timeout(std::time::Duration::from_secs(10), t).await;
     }
-    crate::history::absorb_pause_flag().store(false, Ordering::Relaxed);
+    state.runtime.history.paused.store(false, Ordering::Relaxed);
 
     let cuts = crate::sse::auth::sse_stats::FEED_LAG_DISCONNECTS
         .load(std::sync::atomic::Ordering::Relaxed);

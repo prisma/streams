@@ -168,7 +168,7 @@ pub async fn drain_ops_once(
                 format!("gap/{}/{}", state.runtime.identity.boot_id, gap),
             )
             .warn()
-            .fields(serde_json::json!({"dropped": gap})),
+            .fields(serde_json::json!({ "dropped": gap })),
         );
     }
     if batch.is_empty() {
@@ -299,11 +299,11 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
     let ord = Ordering::Relaxed;
     gauges.insert(
         "absorb_reserved_bytes".into(),
-        crate::history::absorb_reserved_bytes(),
+        state.runtime.history.budget.reserved_bytes(),
     );
     gauges.insert(
         "absorb_gathers_inflight".into(),
-        crate::history::absorb_gathers_inflight(),
+        state.runtime.history.budget.inflight(),
     );
     gauges.insert(
         "gather_last_reserved_bytes".into(),
@@ -585,7 +585,7 @@ pub async fn evaluate_alerts(state: &std::sync::Arc<crate::http::AppState>, snap
                     a.resolved_at_ms = Some(now);
                     emit(
                         OpsEvent::new("alert_resolved", format!("alert/{fp}/resolved/{now}"))
-                            .fields(serde_json::json!({"fingerprint": fp})),
+                            .fields(serde_json::json!({ "fingerprint": fp })),
                     );
                 }
             }

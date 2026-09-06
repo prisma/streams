@@ -759,7 +759,7 @@ async fn debug_load(
             "disconnect_client_closed": crate::sse::auth::sse_stats::DISCONNECT_CLIENT_CLOSED.load(std::sync::atomic::Ordering::Relaxed),
             "delivered_records": crate::sse::auth::sse_stats::DELIVERED_RECORDS.load(std::sync::atomic::Ordering::Relaxed),
         },
-        "absorb_reserved_bytes_now": crate::history::absorb_reserved_bytes(),
+        "absorb_reserved_bytes_now": state.runtime.history.budget.reserved_bytes(),
         "shed_line_mb": adm.rss_shed_mb,
         "maintenance_backpressure": state.admission.maintenance_stats_json(),
         // #266 field attribution: the wc sampler reads THIS endpoint —
@@ -834,7 +834,7 @@ async fn debug_load(
                 .map(|e| e.postings_cache.stats())
                 .unwrap_or(serde_json::json!(null)),
         },
-        "scaler": crate::scaler3::stats_json(),
+        "scaler": state.runtime.scaler.stats_json(),
         // Routing state as THIS instance sees it — the fleet
         // certification harness waits on real override convergence
         // instead of guessing at tick cadence.
@@ -1250,7 +1250,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                         );
                     }
                     let on = q.get("on").map(|v| v == "1").unwrap_or(false);
-                    crate::history::absorb_pause_flag()
+                    state.runtime.history.paused
                         .store(on, std::sync::atomic::Ordering::Relaxed);
                     axum::Json(serde_json::json!({"absorb_paused": on})).into_response()
                 },
@@ -1368,16 +1368,16 @@ pub fn router(state: Arc<AppState>) -> Router {
                             "manifestId": mid,
                         })
                     });
-                    let budget = crate::history::absorb_budget();
+                    let budget = &state.runtime.history.budget;
                     axum::Json(serde_json::json!({
                         "historyPartitions": parts,
                         "budget": {
                             "capacityBytes": budget.capacity(),
                             "gatherSlots": budget.gather_slots(),
                             "effectiveGatherConcurrency":
-                                crate::history::effective_gather_concurrency(),
+                                state.runtime.history.effective_gather_concurrency(),
                             "perGatherReservationBytes":
-                                crate::history::per_gather_reservation_bytes(),
+                                state.runtime.history.per_gather_reservation_bytes(),
                             "worstFrameTransientBytes":
                                 crate::history::absorb_worst_frame_transient(),
                             "injectedFlushStallMs": crate::history::HISTORY_FLUSH_STALL_MS
@@ -1385,8 +1385,8 @@ pub fn router(state: Arc<AppState>) -> Router {
                             "shedLineMb": state.admission.rss_shed_mb(),
                         },
                         "absorber": {
-                            "reservedBytes": crate::history::absorb_reserved_bytes(),
-                            "gathersInflight": crate::history::absorb_gathers_inflight(),
+                            "reservedBytes": state.runtime.history.budget.reserved_bytes(),
+                            "gathersInflight": state.runtime.history.budget.inflight(),
                             "lastReservedBytes": crate::history::GATHER_LAST_RESERVED.load(ord),
                             "lastActualBytes": crate::history::GATHER_LAST_ACTUAL.load(ord),
                             "lastReadMs": crate::history::GATHER_LAST_READ_MS.load(ord),
@@ -1412,7 +1412,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                             "sweepResidentEngines":
                                 crate::billing::sweep_resident_engines(&state),
                         },
-                        "config": crate::history::RESOLVED_MEMORY_CONFIG.get(),
+                        "config": state.runtime.history.resolved_memory_config.get(),
                         "process": {
                             "rssMb": state.admission.rss_mb(),
                             "cgroupCurrentMb": std::fs::read_to_string("/sys/fs/cgroup/memory.current")
@@ -1689,7 +1689,7 @@ async fn health_axum(State(state): State<Arc<AppState>>) -> Response {
     // A process that has never opened a shard cannot serve a single
     // append; answering `ok` keeps it in the load balancer forever
     // (CHAOS-2). Report unready so rollouts halt and traffic drains.
-    if let Some(reason) = crate::sharddir::unready_reason() {
+    if let Some(reason) = state.shards.unready_reason() {
         return (
             StatusCode::SERVICE_UNAVAILABLE,
             format!("shard storage unavailable: {reason}"),
@@ -4652,7 +4652,7 @@ async fn append_core(
     // memory does.
     if state
         .admission
-        .admit_write_memory(crate::history::absorb_reserved_bytes())
+        .admit_write_memory(state.runtime.history.budget.reserved_bytes())
         .is_err()
     {
         tokio::time::sleep(std::time::Duration::from_millis(25)).await;
@@ -5138,7 +5138,7 @@ async fn append_core(
     // Unified-scaler sketch feed (spec §5.1): admitted appends only.
     if !close_only && deferred.is_none() {
         let fed: usize = entries.iter().map(|e| e.len()).sum();
-        crate::scaler3::note_append(&desc, &seg, fed as u64, entries.len() as u64);
+        state.runtime.scaler.note_append(&desc, &seg, fed as u64, entries.len() as u64);
     }
     // Usage counters key by the name hash; the absorber keys lag by this
     // engine hash. Record the alias so /v1/debug/usage can join them.

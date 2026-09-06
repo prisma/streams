@@ -142,6 +142,13 @@ impl ShardCloseNotifier {
 }
 
 impl ShardDirectory {
+    pub fn health(&self) -> crate::sharddir::ShardHealth {
+        self.inner.gate.health()
+    }
+    pub fn unready_reason(&self) -> Option<String> {
+        self.inner.gate.unready_reason()
+    }
+
     /// Build the directory, its serving map and its open gate together.
     /// `opener` receives the close notifier it must wire into every
     /// engine it produces; it captures nothing else of the runtime.

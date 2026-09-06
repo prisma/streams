@@ -25,30 +25,6 @@ use crate::shard::{AbsorbSignal, ShardEngine, read_frames_range};
 // ---- block transformer: AES-256-GCM with a random nonce per block ----
 
 /// Operator pause for the whole absorber (fleet runbook).
-static ABSORB_PAUSE_INITIAL: std::sync::atomic::AtomicBool =
-    std::sync::atomic::AtomicBool::new(false);
-
-/// Composition-root seed for the pause flag (WP-01 PR 3.1): the flag
-/// itself stays a process-wide debug control (the /v1/debug endpoint
-/// and DST toggles it live), but its INITIAL value now arrives from the
-/// owned ServerConfig instead of an env read at first use.
-pub fn init_absorb_pause(initial: bool) {
-    ABSORB_PAUSE_INITIAL.store(initial, std::sync::atomic::Ordering::Relaxed);
-}
-
-pub fn absorb_pause_flag() -> &'static std::sync::atomic::AtomicBool {
-    static F: std::sync::OnceLock<std::sync::atomic::AtomicBool> = std::sync::OnceLock::new();
-    F.get_or_init(|| {
-        std::sync::atomic::AtomicBool::new(
-            ABSORB_PAUSE_INITIAL.load(std::sync::atomic::Ordering::Relaxed),
-        )
-    })
-}
-
-pub fn absorb_paused() -> bool {
-    absorb_pause_flag().load(std::sync::atomic::Ordering::Relaxed)
-}
-
 /// Scan options for history reads: without readahead, slatedb fetches one
 /// (compressed, ~200B) block per sequential GET — thousands of round-trips
 /// per page on a 25ms store. 2MB readahead turns that into a few large GETs.
@@ -221,37 +197,52 @@ pub fn worst_frame_transient_for(body_limit: usize) -> usize {
 /// The gather packing limit AS RESOLVED at startup — after the clamp to
 /// `capacity / ABSORB_BUILD_MULTIPLIER`. Published so the concurrency
 /// arithmetic below matches what the absorber actually does.
-pub static RESOLVED_GATHER_PACKING_BYTES: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-
-/// The startup clamp, as one function so the absorber config, the
-/// startup log, and the debug surface cannot disagree about it.
-pub fn resolved_gather_packing_bytes(configured: usize) -> usize {
-    configured.min(absorb_budget().capacity() / ABSORB_BUILD_MULTIPLIER)
+/// Runtime-scoped resources shared by every engine of that runtime.
+/// Construction captures validated capacities; no first caller can select
+/// configuration for a different runtime.
+pub struct HistoryResources {
+    pub budget: AbsorbBudget,
+    pub cache: Arc<slatedb::db_cache::foyer::FoyerCache>,
+    pub paused: std::sync::atomic::AtomicBool,
+    pub packing_bytes: usize,
+    pub resolved_memory_config: std::sync::OnceLock<serde_json::Value>,
 }
-
-/// What ONE gather actually reserves.
-///
-/// R23-3: the reservation is `max(packing x multiplier, worst_frame)`
-/// clamped to capacity — NOT the worst frame alone. Reporting
-/// `capacity / worst_frame` as the concurrency (as the debug surface and
-/// the first chaos report did) overstates it whenever the packing term
-/// dominates, which is the common case: at bare defaults the packing
-/// limit clamps to capacity/3, so `packing x 3` IS the whole capacity
-/// and only one gather can ever run.
-pub fn per_gather_reservation_bytes() -> usize {
-    let cap = absorb_budget().capacity();
-    let packing = RESOLVED_GATHER_PACKING_BYTES.load(std::sync::atomic::Ordering::Relaxed);
-    let by_packing = packing.saturating_mul(ABSORB_BUILD_MULTIPLIER);
-    by_packing.max(absorb_worst_frame_transient()).clamp(1, cap)
+impl std::fmt::Debug for HistoryResources {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("HistoryResources")
+            .field("capacity", &self.budget.capacity())
+            .field("packing_bytes", &self.packing_bytes)
+            .finish_non_exhaustive()
+    }
 }
-
-/// Gathers that can genuinely run at once: the configured slot count,
-/// bounded by how many whole reservations fit in the budget.
-pub fn effective_gather_concurrency() -> usize {
-    let cap = absorb_budget().capacity();
-    let per = per_gather_reservation_bytes().max(1);
-    absorb_budget().gather_slots().min((cap / per).max(1))
+impl HistoryResources {
+    pub fn new(cfg: &crate::config::HistoryConfig, packing_bytes: usize) -> Self {
+        let capacity =
+            floored_budget_capacity(cfg.absorb_global_budget_bytes).min(u32::MAX as usize);
+        Self {
+            budget: AbsorbBudget::new(capacity, cfg.absorb_global_gathers),
+            cache: Arc::new(slatedb::db_cache::foyer::FoyerCache::new_with_opts(
+                slatedb::db_cache::foyer::FoyerCacheOptions {
+                    max_capacity: cfg.cache_bytes as u64,
+                    ..Default::default()
+                },
+            )),
+            paused: std::sync::atomic::AtomicBool::new(cfg.absorb_pause_initial),
+            packing_bytes: packing_bytes.min(capacity / ABSORB_BUILD_MULTIPLIER),
+            resolved_memory_config: std::sync::OnceLock::new(),
+        }
+    }
+    pub fn per_gather_reservation_bytes(&self) -> usize {
+        self.packing_bytes
+            .saturating_mul(ABSORB_BUILD_MULTIPLIER)
+            .max(absorb_worst_frame_transient())
+            .clamp(1, self.budget.capacity())
+    }
+    pub fn effective_gather_concurrency(&self) -> usize {
+        self.budget
+            .gather_slots()
+            .min((self.budget.capacity() / self.per_gather_reservation_bytes().max(1)).max(1))
+    }
 }
 
 /// Injected history-flush slowdown, ms per gather flush (0 = off).
@@ -267,64 +258,6 @@ pub fn floored_budget_capacity(configured: usize) -> usize {
     configured.max(absorb_worst_frame_transient())
 }
 
-/// The RESOLVED memory posture, captured once at startup from the same
-/// values the budget summary logs — the acceptance campaign's
-/// verify-before-load reads this via /v1/debug/absorb and requires
-/// EXACT equality with deploy/profiles/compute-1g.env. A verifier that
-/// checks four of twelve knobs proves nothing about the other eight.
-pub static RESOLVED_MEMORY_CONFIG: std::sync::OnceLock<serde_json::Value> =
-    std::sync::OnceLock::new();
-
-static ABSORB_BUDGET_BYTES_INIT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-static ABSORB_GATHERS_INIT: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(0);
-
-/// Composition-root seed for the process-global absorber budget (WP-01
-/// PR 3.1): sized once from the owned ServerConfig. Un-seeded callers
-/// (tests) get the same defaults the old env-unset OnceLock produced.
-pub fn init_absorb_budget(cfg: &crate::config::HistoryConfig) {
-    ABSORB_BUDGET_BYTES_INIT.store(
-        cfg.absorb_global_budget_bytes,
-        std::sync::atomic::Ordering::Relaxed,
-    );
-    ABSORB_GATHERS_INIT.store(
-        cfg.absorb_global_gathers.max(1),
-        std::sync::atomic::Ordering::Relaxed,
-    );
-}
-
-pub fn absorb_budget() -> &'static AbsorbBudget {
-    static B: std::sync::OnceLock<AbsorbBudget> = std::sync::OnceLock::new();
-    B.get_or_init(|| {
-        let default_bytes: usize = if cfg!(test) {
-            4 * 1024 * 1024 * 1024
-        } else {
-            64 * 1024 * 1024
-        };
-        let default_gathers: usize = if cfg!(test) { 64 } else { 2 };
-        let configured = match ABSORB_BUDGET_BYTES_INIT.load(std::sync::atomic::Ordering::Relaxed) {
-            0 => default_bytes,
-            v => v,
-        };
-        // The floor makes the envelope claim TRUE for oversized
-        // frames: capacity always covers one worst-case build.
-        let bytes = floored_budget_capacity(configured);
-        if bytes > configured {
-            tracing::warn!(
-                "ABSORB_GLOBAL_BUDGET_BYTES raised {configured} -> {bytes}: the budget \
-                 must cover one worst-case frame build ({} B frame x{})",
-                crate::http::MAX_BODY_BYTES,
-                ABSORB_BUILD_MULTIPLIER,
-            );
-        }
-        let gathers = match ABSORB_GATHERS_INIT.load(std::sync::atomic::Ordering::Relaxed) {
-            0 => default_gathers,
-            v => v,
-        };
-        AbsorbBudget::new(bytes, gathers)
-    })
-}
-
 /// The shed expression (OOM review P2), factored for a deterministic
 /// test: pressure = sampled RSS + absorber bytes ALREADY RESERVED —
 /// the reservation is visible the instant it is granted, so admission
@@ -333,17 +266,17 @@ pub fn memory_pressure_mb(rss_mb: u64, reserved_bytes: u64) -> u64 {
     rss_mb.saturating_add(reserved_bytes / (1024 * 1024))
 }
 
-pub struct AbsorbReservation {
+pub struct AbsorbReservation<'a> {
     bytes: usize,
-    budget: &'static AbsorbBudget,
+    budget: &'a AbsorbBudget,
     // RAII permits (review: cancellation safety). If reserve() is
     // cancelled mid-acquire — engine shutdown aborting the absorber, a
     // timed-out test dropping the future, a future select! — the
     // already-held permit drops and returns to its semaphore on its
     // own. forget()/add_permits bookkeeping leaked a gather slot
     // permanently in exactly that window.
-    _gather: tokio::sync::SemaphorePermit<'static>,
-    _bytes: tokio::sync::SemaphorePermit<'static>,
+    _gather: tokio::sync::SemaphorePermit<'a>,
+    _bytes: tokio::sync::SemaphorePermit<'a>,
 }
 
 impl AbsorbBudget {
@@ -377,7 +310,7 @@ impl AbsorbBudget {
     /// once on a 1 GiB instance. Cancellation-safe: permits are RAII,
     /// so a reservation future dropped at ANY await point returns
     /// whatever it already held.
-    pub async fn reserve(&'static self, estimate: usize) -> AbsorbReservation {
+    pub async fn reserve(&self, estimate: usize) -> AbsorbReservation<'_> {
         let want = estimate.clamp(1, self.capacity);
         // capacity <= u32::MAX by construction, so this is total.
         let want_permits = u32::try_from(want).expect("capacity clamped to u32 range");
@@ -403,6 +336,10 @@ impl AbsorbBudget {
         }
     }
 
+    pub fn inflight(&self) -> u64 {
+        self.inflight.load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub fn reserved_bytes(&self) -> u64 {
         self.reserved.load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -413,7 +350,7 @@ impl AbsorbBudget {
     }
 }
 
-impl AbsorbReservation {
+impl AbsorbReservation<'_> {
     /// Bytes actually GRANTED (post-clamp) — what the gauges report.
     pub fn granted(&self) -> usize {
         self.bytes
@@ -448,7 +385,7 @@ impl AbsorbReservation {
     }
 }
 
-impl Drop for AbsorbReservation {
+impl Drop for AbsorbReservation<'_> {
     fn drop(&mut self) {
         // Permits return themselves; only the observability counters
         // need bookkeeping here.
@@ -459,21 +396,6 @@ impl Drop for AbsorbReservation {
             .inflight
             .fetch_sub(1, std::sync::atomic::Ordering::Relaxed);
     }
-}
-
-/// Bytes currently reserved by in-flight gathers — the admission shed
-/// adds this to sampled RSS (a gather can allocate tens of MiB between
-/// RSS samples; the reservation is visible the instant it is granted).
-pub fn absorb_reserved_bytes() -> u64 {
-    absorb_budget()
-        .reserved
-        .load(std::sync::atomic::Ordering::Relaxed)
-}
-
-pub fn absorb_gathers_inflight() -> u64 {
-    absorb_budget()
-        .inflight
-        .load(std::sync::atomic::Ordering::Relaxed)
 }
 
 // Gather observability (OOM review instrumentation): last-gather phase
@@ -491,32 +413,6 @@ pub static GATHER_LAST_PACE_MS: AtomicU64 = AtomicU64::new(0);
 pub static GATHER_LAST_WRITE_MS: AtomicU64 = AtomicU64::new(0);
 pub static GATHER_LAST_FLUSH_MS: AtomicU64 = AtomicU64::new(0);
 pub static HISTORY_FLUSH_WAIT_MS_MAX: AtomicU64 = AtomicU64::new(0);
-
-static HISTORY_CACHE_BYTES_INIT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(32 * 1024 * 1024);
-
-/// Composition-root seed for the shared history cache (WP-01 PR 3.1):
-/// sized once from the owned ServerConfig; un-seeded tests get the
-/// same 32 MiB default the old env-unset OnceLock produced.
-pub fn init_history_cache(bytes: usize) {
-    HISTORY_CACHE_BYTES_INIT.store(bytes, std::sync::atomic::Ordering::Relaxed);
-}
-
-pub(crate) fn history_cache() -> Arc<slatedb::db_cache::foyer::FoyerCache> {
-    static CACHE: std::sync::OnceLock<Arc<slatedb::db_cache::foyer::FoyerCache>> =
-        std::sync::OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            let bytes = HISTORY_CACHE_BYTES_INIT.load(std::sync::atomic::Ordering::Relaxed) as u64;
-            Arc::new(slatedb::db_cache::foyer::FoyerCache::new_with_opts(
-                slatedb::db_cache::foyer::FoyerCacheOptions {
-                    max_capacity: bytes,
-                    ..Default::default()
-                },
-            ))
-        })
-        .clone()
-}
 
 /// Settings for the SHARED history v2 partition (docs/HISTORY-V2.md).
 /// Differences from v1 per-stream DBs, each deliberate: NO compression
@@ -1107,7 +1003,7 @@ impl Absorber {
                         // restart, and a restart hands the instance's
                         // shards to its peers — the paused instance then
                         // has no absorber to lag (ladder p8 D3).
-                        if absorb_paused() {
+                        if absorber.shard.history_resources.paused.load(std::sync::atomic::Ordering::Relaxed) {
                             continue;
                         }
                         // Due = byte threshold OR old enough. Age
@@ -1225,7 +1121,7 @@ impl Absorber {
                             // bound exact when reality outruns the
                             // estimate.
                             let est = absorber.adaptive_gather_est();
-                            let mut _reservation = absorb_budget().reserve(est).await;
+                            let mut _reservation = absorber.shard.history_resources.budget.reserve(est).await;
                             GATHER_LAST_RESERVED.store(
                                 _reservation.granted() as u64,
                                 std::sync::atomic::Ordering::Relaxed,
@@ -1431,14 +1327,19 @@ impl Absorber {
         &self,
         streams: &[[u8; 16]],
     ) -> anyhow::Result<GatherOutcome> {
-        let mut reservation = absorb_budget().reserve(self.adaptive_gather_est()).await;
+        let mut reservation = self
+            .shard
+            .history_resources
+            .budget
+            .reserve(self.adaptive_gather_est())
+            .await;
         self.absorb_gather_v2_with(streams, &mut reservation).await
     }
 
     pub(crate) async fn absorb_gather_v2_with(
         &self,
         streams: &[[u8; 16]],
-        reservation: &mut AbsorbReservation,
+        reservation: &mut AbsorbReservation<'_>,
     ) -> anyhow::Result<GatherOutcome> {
         // Rough WriteBatch bookkeeping cost per entry, on top of key+value.
         const ENTRY_OVERHEAD: usize = 64;
@@ -2423,14 +2324,15 @@ mod tests {
     /// first chaos report as if it were a measured result.
     #[test]
     fn reported_concurrency_matches_what_the_budget_admits() {
-        let cap = absorb_budget().capacity();
-        let per = per_gather_reservation_bytes();
-        let reported = effective_gather_concurrency();
+        let resources = HistoryResources::new(&crate::config::HistoryConfig::default(), usize::MAX);
+        let cap = resources.budget.capacity();
+        let per = resources.per_gather_reservation_bytes();
+        let reported = resources.effective_gather_concurrency();
 
         assert!(per <= cap, "a reservation may never exceed capacity");
         assert!(reported >= 1, "at least one gather must always run");
         assert!(
-            reported <= absorb_budget().gather_slots(),
+            reported <= resources.budget.gather_slots(),
             "cannot exceed configured slots"
         );
         // The defining identity: this many reservations fit at once.

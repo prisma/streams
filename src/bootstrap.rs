@@ -163,7 +163,8 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     // WP-15/PR 4: this runtime's capabilities — clock, entropy, boot
     // identity — minted HERE, owned by this runtime, handed to owners
     // at construction. No process-global once-cell is involved.
-    let runtime_caps = crate::runtime::RuntimeCaps::production(&config.cli.instance_name);
+    let runtime_caps =
+        crate::runtime::RuntimeCaps::production(&config.cli.instance_name).with_config(&config);
     tracing::info!(
         boot_id = %runtime_caps.identity.boot_id,
         instance = %runtime_caps.identity.instance,
@@ -212,13 +213,8 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     // store egress gates, and the debug pause flag's INITIAL value.
     // Each holder documents why it is process-global; un-seeded tests
     // get the old defaults.
-    crate::history::init_absorb_pause(config.history.absorb_pause_initial);
-    crate::history::init_absorb_budget(&config.history);
-    crate::history::init_history_cache(config.history.cache_bytes);
     crate::billing::init_telemetry_cache(config.billing.telemetry_cache_bytes);
-    crate::postings_cache::init_postings_cache(config.postings.cache_bytes);
     crate::usage::init_limits(&config.admission);
-    crate::scaler3::init_policy(&config.scaler);
     crate::store_timing::configure(&config.storage);
 
     // FIRST: the body ceiling sizes the absorber's worst-frame
@@ -420,12 +416,8 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         // clamping. Clamp the PACKING LIMIT (not the reservation) and
         // say so loudly.
         let absorb_gather_max_bytes = {
-            let budget = crate::history::absorb_budget().capacity();
+            let budget = runtime_caps.history.budget.capacity();
             let max_allowed = budget / crate::history::ABSORB_BUILD_MULTIPLIER;
-            crate::history::RESOLVED_GATHER_PACKING_BYTES.store(
-                crate::history::resolved_gather_packing_bytes(config.cli.absorb_gather_max_bytes),
-                std::sync::atomic::Ordering::Relaxed,
-            );
             if config.cli.absorb_gather_max_bytes > max_allowed {
                 tracing::warn!(
                     "ABSORB_GATHER_MAX_BYTES {} x{} exceeds the process budget {} — \
@@ -468,9 +460,13 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         let opener_history = config.history.clone();
         let opener_compactor = config.engine.compactor_options();
         let opener_frame_compress = config.crypto.frame_compress;
+        let shared_history = runtime_caps.history.clone();
+        let shared_postings = runtime_caps.postings.clone();
         Box::new(
             move |prefix: String, incarnation: crate::sharddir::EngineIncarnation| {
                 let shard_store = shard_store.clone();
+                let shared_history = shared_history.clone();
+                let shared_postings = shared_postings.clone();
                 let shared_cache = shared_cache.clone();
                 let data_store = data_store.clone();
                 let keys = keys.clone();
@@ -542,7 +538,8 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
                             tail_ring_bytes,
                             handle_idle_evict: Duration::from_secs(handle_idle_evict_secs),
                             handle_max_resident,
-                            shared_postings_cache: Some(crate::postings_cache::process_cache()),
+                            shared_postings_cache: Some(shared_postings),
+                            shared_history: Some(shared_history),
                             frame_compression: crate::crypto::FrameCompression::from_enabled(
                                 opener_frame_compress,
                             ),
@@ -733,7 +730,12 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     // Every fallible step has passed: the long-lived loops start here.
     // An instance that never becomes ready must exit rather than sit in
     // rotation-limbo (see spawn_unready_watchdog).
-    crate::sharddir::spawn_unready_watchdog(&config.shard, state.runtime.clock.clone(), &tasks);
+    crate::sharddir::spawn_unready_watchdog(
+        &config.shard,
+        state.runtime.clock.clone(),
+        &tasks,
+        state.shards.health(),
+    );
     // PR 6.1-A: SIGTERM / Ctrl-C request the ordered shutdown — the
     // accept loop returns once cancelled, then every loop is joined.
     // The task waits on sources that are ALREADY installed (above), so
@@ -868,7 +870,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         let history = cfg.history.cache_bytes;
         let postings = cfg.postings.cache_bytes;
         let telemetry = cfg.billing.telemetry_cache_bytes;
-        let budget = crate::history::absorb_budget();
+        let budget = &runtime_caps.history.budget;
         let absorb_budget = budget.capacity();
         let gathers = budget.gather_slots();
         // Every gather reserves at least the worst-frame transient, so
@@ -879,12 +881,8 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         // surface, and the campaign verification cannot disagree. A
         // gather reserves max(packing x multiplier, worst_frame), not
         // the worst frame alone.
-        crate::history::RESOLVED_GATHER_PACKING_BYTES.store(
-            crate::history::resolved_gather_packing_bytes(config.cli.absorb_gather_max_bytes),
-            std::sync::atomic::Ordering::Relaxed,
-        );
-        let per_gather = crate::history::per_gather_reservation_bytes();
-        let effective_gathers = crate::history::effective_gather_concurrency();
+        let per_gather = runtime_caps.history.per_gather_reservation_bytes();
+        let effective_gathers = runtime_caps.history.effective_gather_concurrency();
         let rt_threads = cfg.engine.slatedb_rt_threads;
         let mib = |b: usize| b / (1024 * 1024);
         tracing::info!(
@@ -902,23 +900,26 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
             rt_threads,
             config.cli.admit_rss_shed_mb,
         );
-        let _ = crate::history::RESOLVED_MEMORY_CONFIG.set(serde_json::json!({
-            "gatherPackingLimitBytes": config.cli
-                .absorb_gather_max_bytes
-                .min(absorb_budget / crate::history::ABSORB_BUILD_MULTIPLIER),
-            "absorbBudgetBytes": absorb_budget,
-            "gatherSlots": gathers,
-            "effectiveGatherConcurrency": effective_gathers,
-            "slatedbRuntimeThreads": rt_threads,
-            "sharedCacheBytes": shared,
-            "historyCacheBytes": history,
-            "postingsCacheBytes": postings,
-            "telemetryCacheBytes": telemetry,
-            "maxUnflushedBytes": config.cli.max_unflushed_bytes,
-            "l0SstSizeBytes": config.cli.l0_sst_size_bytes,
-            "l0MaxSsts": config.cli.l0_max_ssts,
-            "shedLineMb": config.cli.admit_rss_shed_mb,
-        }));
+        let _ = runtime_caps
+            .history
+            .resolved_memory_config
+            .set(serde_json::json!({
+                "gatherPackingLimitBytes": config.cli
+                    .absorb_gather_max_bytes
+                    .min(absorb_budget / crate::history::ABSORB_BUILD_MULTIPLIER),
+                "absorbBudgetBytes": absorb_budget,
+                "gatherSlots": gathers,
+                "effectiveGatherConcurrency": effective_gathers,
+                "slatedbRuntimeThreads": rt_threads,
+                "sharedCacheBytes": shared,
+                "historyCacheBytes": history,
+                "postingsCacheBytes": postings,
+                "telemetryCacheBytes": telemetry,
+                "maxUnflushedBytes": config.cli.max_unflushed_bytes,
+                "l0SstSizeBytes": config.cli.l0_sst_size_bytes,
+                "l0MaxSsts": config.cli.l0_max_ssts,
+                "shedLineMb": config.cli.admit_rss_shed_mb,
+            }));
         let fixed_mb = mib(shared + history + postings + telemetry + absorb_budget) as u64;
         if config.cli.admit_rss_shed_mb > 0 && fixed_mb + 100 > config.cli.admit_rss_shed_mb {
             tracing::warn!(

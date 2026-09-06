@@ -71,82 +71,41 @@ static OPENS_DEADLINED: AtomicU64 = AtomicU64::new(0);
 /// reaper instead of installed.
 static OPENS_REAPED: AtomicU64 = AtomicU64::new(0);
 
-/// Message from the most recent open failure, for the readiness surface.
-static LAST_OPEN_ERROR: Mutex<Option<String>> = Mutex::new(None);
+/// Per-directory readiness. Process-wide open counters below remain
+/// metrics; another runtime's success can never heal this directory.
+#[derive(Clone, Default)]
+pub struct ShardHealth(Arc<Mutex<OpenHealth>>);
 
-/// DISTINCT shard prefixes that have failed to open, and never opened.
-///
-/// R23-5: readiness previously counted failed ATTEMPTS, so one poison
-/// shard retried three times could evict a whole never-used instance
-/// from rotation — contradicting the "one poison stream must not evict a
-/// healthy instance" property the code claimed. Counting distinct
-/// prefixes makes the claim true: three DIFFERENT shards failing with
-/// zero lifetime successes is a broken data plane; one shard failing
-/// three times is one broken shard.
-// mt-lint: allow(name-keyed-map): shard prefixes, not stream names
-static FAILED_PREFIXES: Mutex<Option<std::collections::BTreeSet<String>>> = Mutex::new(None);
-
-fn note_failed_prefix(prefix: &str) {
-    if let Ok(mut g) = FAILED_PREFIXES.lock() {
-        g.get_or_insert_with(Default::default)
-            .insert(prefix.to_string());
-    }
+#[derive(Default)]
+struct OpenHealth {
+    ever_opened: bool,
+    // Only the three distinct strikes needed by policy are retained.
+    failed: std::collections::BTreeSet<String>,
+    last_error: Option<String>,
 }
 
-fn distinct_failed_prefixes() -> u64 {
-    FAILED_PREFIXES
-        .lock()
-        .ok()
-        .and_then(|g| g.as_ref().map(|s| s.len() as u64))
-        .unwrap_or(0)
-}
-
-/// DISTINCT shards that must fail before an instance which has NEVER
-/// served a shard declares itself unready. Three different shards
-/// failing with zero successes is not a flaky store — it is a broken
-/// instance.
-const NEVER_OPENED_STRIKES: u64 = 3;
-
-/// Readiness verdict: `Some(reason)` when this process has never
-/// successfully opened a single shard while THREE DISTINCT shards have
-/// failed to open.
-///
-/// CHAOS-2 (2026-08-09): a broken-from-boot data plane presents
-/// identically at the edge whatever the cause — the process boots,
-/// binds, answers `/health` with `ok`, and returns 500 to every append
-/// forever, with one WARN per attempt as the only evidence. A load
-/// balancer keeps such an instance in rotation indefinitely.
-///
-/// **R23-5 scope correction.** An earlier version of this comment (and
-/// of the campaign report) claimed the check covers "every" such cause
-/// including wrong bucket and bad credentials. It does not. This signal
-/// only fires for failures that REACH A SHARD OPEN. A registry or
-/// control-plane storage failure refuses the request earlier, leaving
-/// `started == 0` and this check silent — verified in the field by
-/// killing the object store after boot. The startup storage canary is
-/// what covers that class; this is the runtime half of the pair.
-///
-/// Two conditions, both required, and both deliberately narrow:
-///   * ZERO lifetime successful opens — an instance that has served
-///     shards and later starts failing stays ready, so a mid-life store
-///     blip cannot cascade a whole fleet out of rotation.
-///   * THREE DISTINCT shard prefixes failed — counting attempts instead
-///     would let one poison shard, retried three times, evict a
-///     never-used instance. That was the actual behaviour before R23-5,
-///     and it contradicted the property this comment claimed.
-pub fn unready_reason() -> Option<String> {
-    let distinct = distinct_failed_prefixes();
-    if OPENS_COMPLETED.load(Ordering::Relaxed) > 0 || distinct < NEVER_OPENED_STRIKES {
-        return None;
+impl ShardHealth {
+    fn succeeded(&self) {
+        self.0.lock().unwrap().ever_opened = true;
     }
-    let last = LAST_OPEN_ERROR
-        .lock()
-        .ok()
-        .and_then(|g| g.clone())
-        .unwrap_or_else(|| "unknown".into());
-    Some(format!(
-        "no shard has ever opened ({distinct} distinct shards failed); last error: {last}"
-    ))
+    fn failed(&self, prefix: &str, error: String) {
+        let mut h = self.0.lock().unwrap();
+        if h.failed.len() < 3 {
+            h.failed.insert(prefix.to_string());
+        }
+        h.last_error = Some(error);
+    }
+    pub fn unready_reason(&self) -> Option<String> {
+        let h = self.0.lock().unwrap();
+        if h.ever_opened || h.failed.len() < 3 {
+            return None;
+        }
+        Some(format!(
+            "no shard has ever opened ({} distinct shards failed); last error: {}",
+            h.failed.len(),
+            h.last_error.as_deref().unwrap_or("unknown")
+        ))
+    }
 }
 
 /// How long a never-ready instance may stay unready before it exits.
@@ -218,6 +177,7 @@ pub fn spawn_unready_watchdog(
     cfg: &crate::config::ShardRuntimeConfig,
     clock: std::sync::Arc<dyn crate::runtime::Clock>,
     tasks: &crate::tasks::TaskSupervisor,
+    health: ShardHealth,
 ) {
     let limit = unready_exit_after(cfg);
     if limit.is_zero() {
@@ -233,7 +193,7 @@ pub fn spawn_unready_watchdog(
                     _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
                     _ = clock.sleep(Duration::from_secs(10)) => {}
                 }
-                let reason = unready_reason();
+                let reason = health.unready_reason();
                 match window.observe(reason.is_some(), clock.monotonic(), limit) {
                     WatchdogDecision::Expired { elapsed } => {
                         tracing::error!(
@@ -335,8 +295,6 @@ mod watchdog_policy_tests {
 
 pub fn stats_json() -> serde_json::Value {
     serde_json::json!({
-        "unready": unready_reason(),
-        "distinct_failed_prefixes": distinct_failed_prefixes(),
         "started": OPENS_STARTED.load(Ordering::Relaxed),
         "completed": OPENS_COMPLETED.load(Ordering::Relaxed),
         "failed": OPENS_FAILED.load(Ordering::Relaxed),
@@ -426,6 +384,7 @@ fn holdoff_for(strikes: u32) -> Duration {
 }
 
 struct GateInner {
+    health: ShardHealth,
     shards: ServingMap,
     opener: OpenFn,
     /// Incarnations are minted per open attempt, per gate.
@@ -553,9 +512,17 @@ pub struct OpenGate {
 }
 
 impl OpenGate {
+    pub fn health(&self) -> ShardHealth {
+        self.inner.health.clone()
+    }
+    pub fn unready_reason(&self) -> Option<String> {
+        self.inner.health.unready_reason()
+    }
+
     pub(crate) fn new(shards: ServingMap, opener: OpenFn, open_deadline: Duration) -> Self {
         OpenGate {
             inner: Arc::new(GateInner {
+                health: ShardHealth::default(),
                 shards,
                 opener,
                 next_incarnation: AtomicU64::new(0),
@@ -643,6 +610,7 @@ impl OpenGate {
                     let out: OpenResult = match res {
                         Ok(Ok(engine)) => {
                             OPENS_COMPLETED.fetch_add(1, Ordering::Relaxed);
+                            inner.health.succeeded();
                             #[cfg(test)]
                             inner.c_completed.fetch_add(1, Ordering::Relaxed);
                             // PR 6.1.2-A: gate state FIRST, serving map
@@ -670,10 +638,7 @@ impl OpenGate {
                             inner.c_failed.fetch_add(1, Ordering::Relaxed);
                             let msg = format!("{e:#}");
                             tracing::warn!(prefix = %p, "shard open failed: {msg}");
-                            if let Ok(mut slot) = LAST_OPEN_ERROR.lock() {
-                                *slot = Some(format!("{p}: {msg}"));
-                            }
-                            note_failed_prefix(&p);
+                            inner.health.failed(&p, format!("{p}: {msg}"));
                             let mut st = inner.st.lock().unwrap();
                             let g = st.entry(p.clone()).or_default();
                             g.inflight = None;
@@ -692,13 +657,10 @@ impl OpenGate {
                                  abandoning under supervision",
                                 inner.open_deadline
                             );
-                            if let Ok(mut slot) = LAST_OPEN_ERROR.lock() {
-                                *slot = Some(format!(
-                                    "{p}: open exceeded deadline {:?}",
-                                    inner.open_deadline
-                                ));
-                            }
-                            note_failed_prefix(&p);
+                            inner.health.failed(
+                                &p,
+                                format!("{p}: open exceeded deadline {:?}", inner.open_deadline),
+                            );
                             {
                                 let mut st = inner.st.lock().unwrap();
                                 let g = st.entry(p.clone()).or_default();
@@ -849,12 +811,6 @@ impl OpenGate {
         OPENS_FAILED.store(0, Ordering::Relaxed);
         OPENS_COALESCED.store(0, Ordering::Relaxed);
         OPENS_IN_FLIGHT.store(0, Ordering::Relaxed);
-        if let Ok(mut slot) = LAST_OPEN_ERROR.lock() {
-            *slot = None;
-        }
-        if let Ok(mut g) = FAILED_PREFIXES.lock() {
-            *g = None;
-        }
     }
 
     /// This gate's OWN counters — immune to other tests' engine opens.
@@ -901,5 +857,26 @@ mod path_tests {
         assert_eq!(shard_db_path("01"), "shards/01");
         assert_eq!(history2_path("01"), "shards/01/history2");
         assert_eq!(history2_path("a/b"), "a/b/history2");
+    }
+}
+
+#[cfg(test)]
+mod health_ownership_tests {
+    use super::*;
+    #[test]
+    fn runtimes_cannot_inherit_or_heal_each_others_health() {
+        let a = ShardHealth::default();
+        let b = ShardHealth::default();
+        for n in 0..100 {
+            a.failed(&format!("shard-{n}"), "unavailable".into());
+        }
+        assert_eq!(a.0.lock().unwrap().failed.len(), 3);
+        assert!(a.unready_reason().is_some());
+        assert!(b.unready_reason().is_none());
+        b.succeeded();
+        assert!(a.unready_reason().is_some());
+        a.succeeded();
+        assert!(a.unready_reason().is_none());
+        assert!(ShardHealth::default().unready_reason().is_none());
     }
 }

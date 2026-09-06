@@ -17,71 +17,47 @@
 //! the clean switch).
 
 use std::collections::HashMap;
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
 
 use crate::crypto::RoutingKeyHash;
 use crate::registry::StreamDesc;
 use crate::shard::ShardEngine;
 use crate::sketch::KeyDistribution;
 
-use std::sync::OnceLock as PolicyOnceLock;
+type ScalePolicy = crate::config::ScaleConfig;
 
-/// Scaling policy knobs (moved from the deleted legacy scaler module;
-/// the unified scaler is the only consumer).
-pub struct ScalePolicy {
-    pub eval_secs: u64,
-    /// EWMA window (Pravega-style two-minute rate by default).
-    pub rate_window_secs: f64,
-    pub hot_pct: f64,
-    pub cold_pct: f64,
-    pub hot_evals: u32,
-    pub cold_evals: u32,
-    pub cooldown_secs: i64,
-    pub max_segments: usize,
+/// Runtime-owned policy, sketches and monotonic cooldown clock.
+pub struct Scaler {
+    state: Mutex<State>,
+    policy: ScalePolicy,
+    limits: crate::usage::Limits,
+    clock: Arc<dyn crate::runtime::Clock>,
 }
-
-static POLICY_EVAL_SECS_INIT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(10);
-static POLICY_RATE_WINDOW_SECS_INIT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(120.0f64.to_bits());
-static POLICY_HOT_PCT_INIT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0.75f64.to_bits());
-static POLICY_COLD_PCT_INIT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0.15f64.to_bits());
-static POLICY_HOT_EVALS_INIT: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(2);
-static POLICY_COLD_EVALS_INIT: std::sync::atomic::AtomicU32 =
-    std::sync::atomic::AtomicU32::new(180);
-static POLICY_COOLDOWN_SECS_INIT: std::sync::atomic::AtomicI64 =
-    std::sync::atomic::AtomicI64::new(600);
-static POLICY_MAX_SEGMENTS_INIT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(64);
-
-/// Composition-root seed (WP-01 PR 3.1): sized once from the owned
-/// ServerConfig; un-seeded tests get the old env-unset defaults.
-pub fn init_policy(cfg: &crate::config::ScaleConfig) {
-    use std::sync::atomic::Ordering::Relaxed;
-    POLICY_EVAL_SECS_INIT.store(cfg.eval_secs, Relaxed);
-    POLICY_RATE_WINDOW_SECS_INIT.store(cfg.rate_window_secs.to_bits(), Relaxed);
-    POLICY_HOT_PCT_INIT.store(cfg.hot_pct.to_bits(), Relaxed);
-    POLICY_COLD_PCT_INIT.store(cfg.cold_pct.to_bits(), Relaxed);
-    POLICY_HOT_EVALS_INIT.store(cfg.hot_evals, Relaxed);
-    POLICY_COLD_EVALS_INIT.store(cfg.cold_evals, Relaxed);
-    POLICY_COOLDOWN_SECS_INIT.store(cfg.cooldown_secs, Relaxed);
-    POLICY_MAX_SEGMENTS_INIT.store(cfg.max_segments, Relaxed);
+impl std::fmt::Debug for Scaler {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("Scaler")
+            .field("policy", &self.policy)
+            .finish_non_exhaustive()
+    }
 }
-
-pub fn policy() -> &'static ScalePolicy {
-    use std::sync::atomic::Ordering::Relaxed;
-    static P: PolicyOnceLock<ScalePolicy> = PolicyOnceLock::new();
-    P.get_or_init(|| ScalePolicy {
-        eval_secs: POLICY_EVAL_SECS_INIT.load(Relaxed),
-        rate_window_secs: f64::from_bits(POLICY_RATE_WINDOW_SECS_INIT.load(Relaxed)),
-        hot_pct: f64::from_bits(POLICY_HOT_PCT_INIT.load(Relaxed)),
-        cold_pct: f64::from_bits(POLICY_COLD_PCT_INIT.load(Relaxed)),
-        hot_evals: POLICY_HOT_EVALS_INIT.load(Relaxed),
-        cold_evals: POLICY_COLD_EVALS_INIT.load(Relaxed),
-        cooldown_secs: POLICY_COOLDOWN_SECS_INIT.load(Relaxed),
-        max_segments: POLICY_MAX_SEGMENTS_INIT.load(Relaxed),
-    })
+impl Scaler {
+    pub fn new(
+        policy: &ScalePolicy,
+        admission: &crate::config::AdmissionConfig,
+        clock: Arc<dyn crate::runtime::Clock>,
+    ) -> Self {
+        Self {
+            state: Mutex::new(State::default()),
+            policy: policy.clone(),
+            clock,
+            limits: crate::usage::Limits {
+                bytes_per_sec: admission.limit_bytes_per_sec,
+                reqs_per_sec: admission.limit_reqs_per_sec,
+                recs_per_sec: admission.limit_recs_per_sec,
+                burst_secs: admission.limit_burst_secs,
+            },
+        }
+    }
 }
 
 /// Counters (spec §14).
@@ -120,10 +96,10 @@ struct SegSketch {
 const SKETCH_MAX: usize = 4_096;
 const SKETCH_IDLE_MS: i64 = 600_000;
 const SKETCH_SWEEP_EVERY: u64 = 4_096;
-static SKETCH_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 #[derive(Default)]
 struct State {
+    tick: u64,
     sketches: HashMap<(crate::tenant::TenantStreamRef, u32), SegSketch>,
     /// Per-stream cooldown clock (ms of the last transition we drove or
     /// observed).
@@ -136,11 +112,11 @@ impl State {
     /// Sketches, summaries, and cooldowns each have a finite retention
     /// budget. Cooldowns may survive a parent's retirement until a child
     /// receives traffic, but never beyond their useful horizon or capacity.
-    fn prune(&mut self, now: i64) {
+    fn prune(&mut self, now: i64, policy: &ScalePolicy) {
         self.sketches
             .retain(|_, sk| now.saturating_sub(sk.last_fed_ms) < SKETCH_IDLE_MS);
         self.last_transition_ms.retain(|_, at| {
-            now.saturating_sub(*at) < (policy().cooldown_secs * 1000).max(SKETCH_IDLE_MS)
+            now.saturating_sub(*at) < (policy.cooldown_secs * 1000).max(SKETCH_IDLE_MS)
         });
         while self.last_transition_ms.len() > SKETCH_MAX {
             let victim = self
@@ -178,123 +154,123 @@ impl State {
     }
 }
 
-fn state() -> &'static Mutex<State> {
-    static S: OnceLock<Mutex<State>> = OnceLock::new();
-    S.get_or_init(|| {
-        Mutex::new(State {
-            sketches: HashMap::new(),
-            last_transition_ms: HashMap::new(),
-            hot_keys: HashMap::new(),
-        })
-    })
-}
-
-/// The detected hot key for a stream, if any (observability + the
-/// per-key limit surface).
-pub fn hot_key(sref: &crate::tenant::TenantStreamRef) -> Option<RoutingKeyHash> {
-    state().lock().unwrap().hot_keys.get(sref).copied()
-}
-
-pub fn hot_keys_all() -> Vec<(crate::tenant::TenantStreamRef, RoutingKeyHash)> {
-    state()
-        .lock()
-        .unwrap()
-        .hot_keys
-        .iter()
-        .map(|(n, k)| (n.clone(), *k))
-        .collect()
-}
-
-/// Feed one admitted append into the segment's sketch. Cheap: one map
-/// lookup + a few EWMA bumps under a short lock.
-pub fn note_append(desc: &StreamDesc, seg: &crate::registry::SegRoute, bytes: u64, records: u64) {
-    // Fork chains stay single-segment (audit P0): stitched fork
-    // reads resolve each ancestor through its ONE empty-key segment,
-    // so a post-fork split would make inherited data unreadable.
-    // Both a fork and a stream that HAS forks are pinned.
-    if desc.forked_from.is_some() || !desc.fork_children.is_empty() {
-        return;
-    }
-    let now = crate::shard::now_ms();
-    let mut g = state().lock().unwrap();
-    // Amortized idle sweep keeps the population honest without a
-    // per-append scan.
-    if SKETCH_TICK
-        .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
-        .is_multiple_of(SKETCH_SWEEP_EVERY)
-    {
-        g.prune(now);
-    }
-    g.forget_previous_incarnation(&desc.sref(), &desc.stream_epoch);
-    let key = (desc.sref(), seg.seg_id);
-    if !g.sketches.contains_key(&key) && g.sketches.len() >= SKETCH_MAX {
-        // Automatic scaling must not silently stop at the cap (review
-        // finding 8): evict the least-recently-fed sketch to admit the
-        // new segment. A displaced hot segment re-enters on its next
-        // append immediately.
-        match g
-            .sketches
+impl Scaler {
+    pub fn hot_keys_all(&self) -> Vec<(crate::tenant::TenantStreamRef, RoutingKeyHash)> {
+        let mut hot: Vec<_> = self
+            .state
+            .lock()
+            .unwrap()
+            .hot_keys
             .iter()
-            .min_by_key(|((name, seg_id), e)| {
-                (
-                    e.last_fed_ms,
-                    name.project_id().as_str(),
-                    name.name().as_str(),
-                    *seg_id,
-                )
-            })
-            .map(|(k, _)| k.clone())
-        {
-            Some(victim) => {
-                g.sketches.remove(&victim);
-                g.prune(now);
-                SKETCH_EVICTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-            }
-            None => {
-                UNTRACKED_APPENDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                return;
+            .map(|(n, k)| (n.clone(), *k))
+            .collect();
+        hot.sort_by(|a, b| {
+            (a.0.project_id().as_str(), a.0.name().as_str())
+                .cmp(&(b.0.project_id().as_str(), b.0.name().as_str()))
+        });
+        hot
+    }
+
+    /// Feed one admitted append into the segment's sketch. Cheap: one map
+    /// lookup + a few EWMA bumps under a short lock.
+    pub fn note_append(
+        &self,
+        desc: &StreamDesc,
+        seg: &crate::registry::SegRoute,
+        bytes: u64,
+        records: u64,
+    ) {
+        // Fork chains stay single-segment (audit P0): stitched fork
+        // reads resolve each ancestor through its ONE empty-key segment,
+        // so a post-fork split would make inherited data unreadable.
+        // Both a fork and a stream that HAS forks are pinned.
+        if desc.forked_from.is_some() || !desc.fork_children.is_empty() {
+            return;
+        }
+        let now = self.clock.monotonic().millis();
+        let mut g = self.state.lock().unwrap();
+        // Amortized idle sweep keeps the population honest without a
+        // per-append scan.
+        g.tick = g.tick.wrapping_add(1);
+        if g.tick.is_multiple_of(SKETCH_SWEEP_EVERY) {
+            g.prune(now, &self.policy);
+        }
+        g.forget_previous_incarnation(&desc.sref(), &desc.stream_epoch);
+        let key = (desc.sref(), seg.seg_id);
+        if !g.sketches.contains_key(&key) && g.sketches.len() >= SKETCH_MAX {
+            // Automatic scaling must not silently stop at the cap (review
+            // finding 8): evict the least-recently-fed sketch to admit the
+            // new segment. A displaced hot segment re-enters on its next
+            // append immediately.
+            match g
+                .sketches
+                .iter()
+                .min_by_key(|((name, seg_id), e)| {
+                    (
+                        e.last_fed_ms,
+                        name.project_id().as_str(),
+                        name.name().as_str(),
+                        *seg_id,
+                    )
+                })
+                .map(|(k, _)| k.clone())
+            {
+                Some(victim) => {
+                    g.sketches.remove(&victim);
+                    g.prune(now, &self.policy);
+                    SKETCH_EVICTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                }
+                None => {
+                    UNTRACKED_APPENDS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+                    return;
+                }
             }
         }
+        let fresh = || SegSketch {
+            epoch: desc.stream_epoch.clone(),
+            dist: KeyDistribution::new(seg.lo, seg.hi, self.policy.rate_window_secs),
+            hot_streak: 0,
+            cold_streak: 0,
+            last_fed_ms: now,
+        };
+        let e = g.sketches.entry(key).or_insert_with(fresh);
+        if e.epoch != desc.stream_epoch {
+            // The name was recreated: the accumulated heat belongs to a
+            // collection that no longer exists. Start cold.
+            *e = fresh();
+        }
+        e.last_fed_ms = now;
+        e.dist.note(now, seg.point, seg.key_hash.0, bytes, records);
     }
-    let fresh = || SegSketch {
-        epoch: desc.stream_epoch.clone(),
-        dist: KeyDistribution::new(seg.lo, seg.hi, policy().rate_window_secs),
-        hot_streak: 0,
-        cold_streak: 0,
-        last_fed_ms: now,
-    };
-    let e = g.sketches.entry(key).or_insert_with(fresh);
-    if e.epoch != desc.stream_epoch {
-        // The name was recreated: the accumulated heat belongs to a
-        // collection that no longer exists. Start cold.
-        *e = fresh();
-    }
-    e.last_fed_ms = now;
-    e.dist.note(now, seg.point, seg.key_hash.0, bytes, records);
-}
 
-/// One evaluation pass over every sketched segment. Returns the split
-/// decisions taken (stream, seg_id) — the driver executes them.
-pub(crate) fn evaluate(
-    now_ms: i64,
-) -> (
-    Vec<(crate::tenant::TenantStreamRef, String, u32, u64)>,
-    Vec<(crate::tenant::TenantStreamRef, String)>,
-) {
-    evaluate_state(&mut state().lock().unwrap(), now_ms)
+    /// One evaluation pass over every sketched segment. Returns the split
+    /// decisions taken (stream, seg_id) — the driver executes them.
+    pub(crate) fn evaluate(
+        &self,
+    ) -> (
+        Vec<(crate::tenant::TenantStreamRef, String, u32, u64)>,
+        Vec<(crate::tenant::TenantStreamRef, String)>,
+    ) {
+        evaluate_state(
+            &mut self.state.lock().unwrap(),
+            self.clock.monotonic().millis(),
+            &self.policy,
+            &self.limits,
+        )
+    }
 }
 
 fn evaluate_state(
     g: &mut State,
     now_ms: i64,
+    pol: &ScalePolicy,
+    lim: &crate::usage::Limits,
 ) -> (
     Vec<(crate::tenant::TenantStreamRef, String, u32, u64)>,
     Vec<(crate::tenant::TenantStreamRef, String)>,
 ) {
-    let pol = policy();
-    let lim = crate::usage::limits();
     let mut out = Vec::new();
-    g.prune(now_ms);
+    g.prune(now_ms, pol);
     let mut hot_updates: HashMap<crate::tenant::TenantStreamRef, RoutingKeyHash> = HashMap::new();
     let State {
         sketches,
@@ -412,7 +388,7 @@ fn evaluate_state(
         g.last_transition_ms
             .insert((name.clone(), epoch.clone()), now_ms);
     }
-    g.prune(now_ms);
+    g.prune(now_ms, pol);
     out.sort_by(|a, b| {
         (a.0.project_id().as_str(), a.0.name().as_str(), &a.1, a.2).cmp(&(
             b.0.project_id().as_str(),
@@ -891,7 +867,9 @@ pub async fn resume(
         SEGMENT_SPLITS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         // Fresh sketches for the children start on first appends; the
         // parent's sketch is retired.
-        state()
+        st.runtime
+            .scaler
+            .state
             .lock()
             .unwrap()
             .sketches
@@ -963,7 +941,7 @@ async fn resume_merge(
     if published {
         SEGMENT_MERGES.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         {
-            let mut g = state().lock().unwrap();
+            let mut g = st.runtime.scaler.state.lock().unwrap();
             g.sketches.remove(&(desc.sref(), a_id));
             g.sketches.remove(&(desc.sref(), b_id));
         }
@@ -976,7 +954,9 @@ async fn resume_merge(
 /// The evaluation loop (one per instance).
 pub fn start(st: std::sync::Weak<crate::http::AppState>, tasks: &crate::tasks::TaskSupervisor) {
     let _ = tasks.spawn("scaler", crate::tasks::Policy::Critical, move |cancel| async move {
-        let eval = policy().eval_secs.max(1);
+        let Some(initial) = st.upgrade() else { return crate::tasks::TaskResult::Done; };
+        let eval = initial.config.scaler.eval_secs.max(1);
+        drop(initial);
         loop {
             tokio::select! {
                 _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
@@ -985,7 +965,7 @@ pub fn start(st: std::sync::Weak<crate::http::AppState>, tasks: &crate::tasks::T
             let Some(st) = st.upgrade() else {
                 return crate::tasks::TaskResult::Done;
             };
-            let (decisions, merges) = evaluate(crate::shard::now_ms());
+            let (decisions, merges) = st.runtime.scaler.evaluate();
             for (name, epoch, seg_id, split_at) in decisions {
                 // Fenced to the incarnation the HEAT belongs to — a
                 // decision computed from a deleted collection's
@@ -1033,7 +1013,7 @@ pub fn start(st: std::sync::Weak<crate::http::AppState>, tasks: &crate::tasks::T
                 }
                 let mut live: Vec<_> = map.segments.iter().filter(|s| s.is_live()).collect();
                 live.sort_by_key(|s| s.lo);
-                let min_age = policy().cooldown_secs * 1000;
+                let min_age = st.config.scaler.cooldown_secs * 1000;
                 let now = crate::shard::now_ms();
                 let pair = live.windows(2).find(|w| {
                     w[0].hi == w[1].lo
@@ -1060,31 +1040,33 @@ pub fn start(st: std::sync::Weak<crate::http::AppState>, tasks: &crate::tasks::T
     });
 }
 
-pub fn stats_json() -> serde_json::Value {
-    use std::sync::atomic::Ordering::Relaxed;
-    let hot: Vec<String> = hot_keys_all()
-        .into_iter()
-        .map(|(n, k)| {
-            format!(
-                "{}/{}:{}",
-                n.project_id().as_str(),
-                n.name().as_str(),
-                crate::crypto::hex(&k.0[..4])
-            )
+impl Scaler {
+    pub fn stats_json(&self) -> serde_json::Value {
+        use std::sync::atomic::Ordering::Relaxed;
+        let hot: Vec<String> = self
+            .hot_keys_all()
+            .into_iter()
+            .map(|(n, k)| {
+                format!(
+                    "{}/{}:{}",
+                    n.project_id().as_str(),
+                    n.name().as_str(),
+                    crate::crypto::hex(&k.0[..4])
+                )
+            })
+            .collect();
+        serde_json::json!({
+            "segment_splits": SEGMENT_SPLITS.load(Relaxed),
+            "segment_merges": SEGMENT_MERGES.load(Relaxed),
+            "ineffective_split_avoided": INEFFECTIVE_SPLIT_AVOIDED.load(Relaxed),
+            "segment_map_refreshes": SEGMENT_MAP_REFRESHES.load(Relaxed),
+            "sketches": self.state.lock().unwrap().sketches.len(),
+            "sketch_evictions": SKETCH_EVICTIONS.load(Relaxed),
+            "untracked_appends": UNTRACKED_APPENDS.load(Relaxed),
+            "hot_keys": hot,
         })
-        .collect();
-    serde_json::json!({
-        "segment_splits": SEGMENT_SPLITS.load(Relaxed),
-        "segment_merges": SEGMENT_MERGES.load(Relaxed),
-        "ineffective_split_avoided": INEFFECTIVE_SPLIT_AVOIDED.load(Relaxed),
-        "segment_map_refreshes": SEGMENT_MAP_REFRESHES.load(Relaxed),
-        "sketches": state().lock().unwrap().sketches.len(),
-        "sketch_evictions": SKETCH_EVICTIONS.load(Relaxed),
-        "untracked_appends": UNTRACKED_APPENDS.load(Relaxed),
-        "hot_keys": hot,
-    })
+    }
 }
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1120,8 +1102,37 @@ mod tests {
         .expect("valid descriptor fixture")
     }
 
+    #[test]
+    fn runtime_scalers_use_owned_monotonic_time() {
+        let clock = Arc::new(crate::runtime::ManualClock::at(1000));
+        let a = Scaler::new(
+            &ScalePolicy::default(),
+            &crate::config::AdmissionConfig::default(),
+            clock.clone(),
+        );
+        let b = Scaler::new(
+            &ScalePolicy::default(),
+            &crate::config::AdmissionConfig::default(),
+            clock.clone(),
+        );
+        let desc = test_desc("owned");
+        let seg = desc.resolve_segment("key");
+        a.note_append(&desc, &seg, 10, 1);
+        assert_eq!(a.state.lock().unwrap().sketches.len(), 1);
+        assert!(b.state.lock().unwrap().sketches.is_empty());
+        clock.jump_wall(10_000_000);
+        a.evaluate();
+        assert_eq!(a.state.lock().unwrap().sketches.len(), 1);
+        clock.jump_wall(-20_000_000);
+        a.evaluate();
+        assert_eq!(a.state.lock().unwrap().sketches.len(), 1);
+        clock.advance_monotonic(std::time::Duration::from_millis(SKETCH_IDLE_MS as u64));
+        a.evaluate();
+        assert!(a.state.lock().unwrap().sketches.is_empty());
+    }
+
     fn sketch(epoch: &str, now: i64, hot: bool, key: u8) -> SegSketch {
-        let mut dist = KeyDistribution::new(0, u64::MAX, policy().rate_window_secs);
+        let mut dist = KeyDistribution::new(0, u64::MAX, ScalePolicy::default().rate_window_secs);
         dist.note(
             now,
             1,
@@ -1132,7 +1143,7 @@ mod tests {
         SegSketch {
             epoch: epoch.into(),
             dist,
-            hot_streak: policy().hot_evals,
+            hot_streak: ScalePolicy::default().hot_evals,
             cold_streak: 0,
             last_fed_ms: now,
         }
@@ -1147,11 +1158,11 @@ mod tests {
                 .insert((name.clone(), "old".into()), i as i64);
             s.hot_keys.insert(name, RoutingKeyHash([1; 16]));
         }
-        s.prune(SKETCH_MAX as i64 * 2);
+        s.prune(SKETCH_MAX as i64 * 2, &ScalePolicy::default());
         assert_eq!(s.last_transition_ms.len(), SKETCH_MAX);
         assert!(s.hot_keys.is_empty());
         assert!(s.sketches.len() <= SKETCH_MAX);
-        s.prune(10_000_000);
+        s.prune(10_000_000, &ScalePolicy::default());
         assert!(s.last_transition_ms.is_empty());
     }
 
@@ -1182,7 +1193,12 @@ mod tests {
                     sketch("epoch", 1000, seg != 0, seg as u8),
                 );
             }
-            let (splits, merges) = evaluate_state(&mut s, 1001);
+            let (splits, merges) = evaluate_state(
+                &mut s,
+                1001,
+                &ScalePolicy::default(),
+                crate::usage::limits(),
+            );
             assert!(splits.is_empty());
             assert!(merges.is_empty());
             assert_eq!(s.hot_keys.get(&name), Some(&RoutingKeyHash([1; 16])));
@@ -1194,15 +1210,20 @@ mod tests {
     /// never a silent refusal to track.
     #[test]
     fn sketch_cap_evicts_instead_of_starving() {
+        let scaler = Scaler::new(
+            &ScalePolicy::default(),
+            &crate::config::AdmissionConfig::default(),
+            Arc::new(crate::runtime::SystemClock::default()),
+        );
         let over = SKETCH_MAX + 8;
         for i in 0..over {
             let desc = test_desc(&format!("cap-seg-{i}"));
             let seg = desc.resolve_segment("k");
-            note_append(&desc, &seg, 100, 1);
+            scaler.note_append(&desc, &seg, 100, 1);
         }
         let newest_key = (test_desc(&format!("cap-seg-{}", over - 1)).sref(), 0);
         let (tracked, has_newest) = {
-            let g = state().lock().unwrap();
+            let g = scaler.state.lock().unwrap();
             (g.sketches.len(), g.sketches.contains_key(&newest_key))
         };
         assert!(tracked <= SKETCH_MAX, "population bounded: {tracked}");
