@@ -42,6 +42,13 @@ async fn r06a_compressed_local_and_peer_pages_have_identical_complete_sequences(
     )
     .await;
     let state = &rig.state;
+    // Recovery backdates discovered debt, so age thresholds alone cannot
+    // keep this tail-page fixture cold under a delayed startup schedule.
+    state
+        .runtime
+        .history
+        .paused
+        .store(true, std::sync::atomic::Ordering::Relaxed);
     let headers = [("prisma-encryption-key", PRISMA_KEY)];
     assert_eq!(
         preq(
