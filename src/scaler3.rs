@@ -122,13 +122,60 @@ const SKETCH_IDLE_MS: i64 = 600_000;
 const SKETCH_SWEEP_EVERY: u64 = 4_096;
 static SKETCH_TICK: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
+#[derive(Default)]
 struct State {
     sketches: HashMap<(crate::tenant::TenantStreamRef, u32), SegSketch>,
     /// Per-stream cooldown clock (ms of the last transition we drove or
     /// observed).
-    last_transition_ms: HashMap<crate::tenant::TenantStreamRef, i64>,
+    last_transition_ms: HashMap<(crate::tenant::TenantStreamRef, String), i64>,
     /// Detected unsplittable hot keys: stream → key hash.
     hot_keys: HashMap<crate::tenant::TenantStreamRef, RoutingKeyHash>,
+}
+
+impl State {
+    /// Sketches, summaries, and cooldowns each have a finite retention
+    /// budget. Cooldowns may survive a parent's retirement until a child
+    /// receives traffic, but never beyond their useful horizon or capacity.
+    fn prune(&mut self, now: i64) {
+        self.sketches
+            .retain(|_, sk| now.saturating_sub(sk.last_fed_ms) < SKETCH_IDLE_MS);
+        self.last_transition_ms.retain(|_, at| {
+            now.saturating_sub(*at) < (policy().cooldown_secs * 1000).max(SKETCH_IDLE_MS)
+        });
+        while self.last_transition_ms.len() > SKETCH_MAX {
+            let victim = self
+                .last_transition_ms
+                .iter()
+                .min_by_key(|((name, epoch), at)| {
+                    (
+                        **at,
+                        name.project_id().as_str(),
+                        name.name().as_str(),
+                        epoch.as_str(),
+                    )
+                })
+                .map(|(key, _)| key.clone())
+                .unwrap();
+            self.last_transition_ms.remove(&victim);
+        }
+        let live: std::collections::HashSet<_> =
+            self.sketches.keys().map(|(name, _)| name).collect();
+        self.hot_keys.retain(|name, _| live.contains(name));
+    }
+
+    fn forget_previous_incarnation(&mut self, name: &crate::tenant::TenantStreamRef, epoch: &str) {
+        let changed = self
+            .sketches
+            .iter()
+            .any(|((n, _), sk)| n == name && sk.epoch != epoch);
+        if changed {
+            self.sketches
+                .retain(|(n, _), sk| n != name || sk.epoch == epoch);
+            self.hot_keys.remove(name);
+        }
+        self.last_transition_ms
+            .retain(|(n, e), _| n != name || e == epoch);
+    }
 }
 
 fn state() -> &'static Mutex<State> {
@@ -176,9 +223,9 @@ pub fn note_append(desc: &StreamDesc, seg: &crate::registry::SegRoute, bytes: u6
         .fetch_add(1, std::sync::atomic::Ordering::Relaxed)
         .is_multiple_of(SKETCH_SWEEP_EVERY)
     {
-        g.sketches
-            .retain(|_, e| now - e.last_fed_ms < SKETCH_IDLE_MS);
+        g.prune(now);
     }
+    g.forget_previous_incarnation(&desc.sref(), &desc.stream_epoch);
     let key = (desc.sref(), seg.seg_id);
     if !g.sketches.contains_key(&key) && g.sketches.len() >= SKETCH_MAX {
         // Automatic scaling must not silently stop at the cap (review
@@ -188,11 +235,19 @@ pub fn note_append(desc: &StreamDesc, seg: &crate::registry::SegRoute, bytes: u6
         match g
             .sketches
             .iter()
-            .min_by_key(|(_, e)| e.last_fed_ms)
+            .min_by_key(|((name, seg_id), e)| {
+                (
+                    e.last_fed_ms,
+                    name.project_id().as_str(),
+                    name.name().as_str(),
+                    *seg_id,
+                )
+            })
             .map(|(k, _)| k.clone())
         {
             Some(victim) => {
                 g.sketches.remove(&victim);
+                g.prune(now);
                 SKETCH_EVICTIONS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             }
             None => {
@@ -226,13 +281,27 @@ pub(crate) fn evaluate(
     Vec<(crate::tenant::TenantStreamRef, String, u32, u64)>,
     Vec<(crate::tenant::TenantStreamRef, String)>,
 ) {
+    evaluate_state(&mut state().lock().unwrap(), now_ms)
+}
+
+fn evaluate_state(
+    g: &mut State,
+    now_ms: i64,
+) -> (
+    Vec<(crate::tenant::TenantStreamRef, String, u32, u64)>,
+    Vec<(crate::tenant::TenantStreamRef, String)>,
+) {
     let pol = policy();
     let lim = crate::usage::limits();
     let mut out = Vec::new();
-    let mut g = state().lock().unwrap();
-    let cooldowns = g.last_transition_ms.clone();
-    let mut hot_updates: Vec<(crate::tenant::TenantStreamRef, Option<RoutingKeyHash>)> = Vec::new();
-    for ((name, seg_id), sk) in g.sketches.iter_mut() {
+    g.prune(now_ms);
+    let mut hot_updates: HashMap<crate::tenant::TenantStreamRef, RoutingKeyHash> = HashMap::new();
+    let State {
+        sketches,
+        last_transition_ms: cooldowns,
+        ..
+    } = &mut *g;
+    for ((name, seg_id), sk) in sketches.iter_mut() {
         let bytes_rate = sk.dist.bytes.value(now_ms);
         let reqs_rate = sk.dist.reqs.value(now_ms);
         let recs_rate = sk.dist.recs.value(now_ms);
@@ -250,7 +319,6 @@ pub(crate) fn evaluate(
             || recs_rate > lim.recs_per_sec * pol.hot_pct;
         if !hot {
             sk.hot_streak = 0;
-            hot_updates.push((name.clone(), None));
             continue;
         }
         sk.cold_streak = 0;
@@ -268,13 +336,26 @@ pub(crate) fn evaluate(
         let plural = top.keys_above(0.15) >= 2 || sk.dist.distinct_windowed() >= 8.0;
         if dominated && !plural {
             if let Some((k, _)) = top.top_share() {
-                hot_updates.push((name.clone(), Some(RoutingKeyHash(k))));
+                hot_updates
+                    .entry(name.clone())
+                    .and_modify(|prior| {
+                        if k < prior.0 {
+                            *prior = RoutingKeyHash(k);
+                        }
+                    })
+                    .or_insert(RoutingKeyHash(k));
             }
             INEFFECTIVE_SPLIT_AVOIDED.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
             continue;
         }
         // Cooldown.
-        if now_ms - cooldowns.get(name).copied().unwrap_or(0) < pol.cooldown_secs * 1000 {
+        if now_ms
+            - cooldowns
+                .get(&(name.clone(), sk.epoch.clone()))
+                .copied()
+                .unwrap_or(i64::MIN / 2)
+            < pol.cooldown_secs * 1000
+        {
             continue;
         }
         // Both predicted children need meaningful load (≥ 15%).
@@ -289,18 +370,13 @@ pub(crate) fn evaluate(
         out.push((name.clone(), sk.epoch.clone(), *seg_id, split_at));
         sk.hot_streak = 0;
     }
-    for (name, hk) in hot_updates {
-        match hk {
-            Some(k) => {
-                g.hot_keys.insert(name, k);
-            }
-            None => {
-                g.hot_keys.remove(&name);
-            }
-        }
-    }
-    for (name, _, _, _) in &out {
-        g.last_transition_ms.insert(name.clone(), now_ms);
+    // Publish one aggregate per stream after every segment was observed.
+    // Cold segments contribute no key; they cannot erase another segment's
+    // hot observation. Multiple hot keys use a stable hash tie-break.
+    g.hot_keys = hot_updates;
+    for (name, epoch, _, _) in &out {
+        g.last_transition_ms
+            .insert((name.clone(), epoch.clone()), now_ms);
     }
     // Merge candidates: streams with >= 2 sketched segments, EVERY one
     // cold for 4x the split patience, respecting the same cooldown. The
@@ -319,16 +395,39 @@ pub(crate) fn evaluate(
     }
     let merge_candidates: Vec<(crate::tenant::TenantStreamRef, String)> = per_stream
         .into_iter()
-        .filter(|(name, (n, all_cold, _))| {
+        .filter(|(name, (n, all_cold, epoch))| {
             *n >= 2
                 && *all_cold
-                && now_ms - cooldowns.get(*name).copied().unwrap_or(0) >= pol.cooldown_secs * 1000
+                && now_ms
+                    - g.last_transition_ms
+                        .get(&((*name).clone(), epoch.clone()))
+                        .copied()
+                        .unwrap_or(i64::MIN / 2)
+                    >= pol.cooldown_secs * 1000
         })
         .map(|(name, (_, _, epoch))| (name.clone(), epoch))
         .collect();
-    for (name, _) in &merge_candidates {
-        g.last_transition_ms.insert(name.clone(), now_ms);
+    let mut merge_candidates = merge_candidates;
+    for (name, epoch) in &merge_candidates {
+        g.last_transition_ms
+            .insert((name.clone(), epoch.clone()), now_ms);
     }
+    g.prune(now_ms);
+    out.sort_by(|a, b| {
+        (a.0.project_id().as_str(), a.0.name().as_str(), &a.1, a.2).cmp(&(
+            b.0.project_id().as_str(),
+            b.0.name().as_str(),
+            &b.1,
+            b.2,
+        ))
+    });
+    merge_candidates.sort_by(|a, b| {
+        (a.0.project_id().as_str(), a.0.name().as_str(), &a.1).cmp(&(
+            b.0.project_id().as_str(),
+            b.0.name().as_str(),
+            &b.1,
+        ))
+    });
     (out, merge_candidates)
 }
 
@@ -1035,6 +1134,75 @@ mod tests {
             sealing: None,
             seal_op: None,
             layout_version: crate::registry::LAYOUT_VERSION,
+        }
+    }
+
+    fn sketch(epoch: &str, now: i64, hot: bool, key: u8) -> SegSketch {
+        let mut dist = KeyDistribution::new(0, u64::MAX, policy().rate_window_secs);
+        dist.note(
+            now,
+            1,
+            [key; 16],
+            if hot { 1_000_000_000_000 } else { 1 },
+            1,
+        );
+        SegSketch {
+            epoch: epoch.into(),
+            dist,
+            hot_streak: policy().hot_evals,
+            cold_streak: 0,
+            last_fed_ms: now,
+        }
+    }
+
+    #[test]
+    fn all_scaler_state_is_bounded_and_idle_state_expires() {
+        let mut s = State::default();
+        for i in 0..SKETCH_MAX * 2 {
+            let name = test_desc(&format!("churn-{i}")).sref();
+            s.last_transition_ms
+                .insert((name.clone(), "old".into()), i as i64);
+            s.hot_keys.insert(name, RoutingKeyHash([1; 16]));
+        }
+        s.prune(SKETCH_MAX as i64 * 2);
+        assert_eq!(s.last_transition_ms.len(), SKETCH_MAX);
+        assert!(s.hot_keys.is_empty());
+        assert!(s.sketches.len() <= SKETCH_MAX);
+        s.prune(10_000_000);
+        assert!(s.last_transition_ms.is_empty());
+    }
+
+    #[test]
+    fn recreated_stream_discards_all_old_segment_heat_and_cooldown() {
+        let name = test_desc("recreated").sref();
+        let mut s = State::default();
+        for seg in 0..3 {
+            s.sketches
+                .insert((name.clone(), seg), sketch("old", 1, true, 1));
+        }
+        s.last_transition_ms.insert((name.clone(), "old".into()), 1);
+        s.hot_keys.insert(name.clone(), RoutingKeyHash([1; 16]));
+        s.forget_previous_incarnation(&name, "replacement");
+        assert!(s.sketches.is_empty());
+        assert!(s.last_transition_ms.is_empty());
+        assert!(s.hot_keys.is_empty());
+    }
+
+    #[test]
+    fn segment_order_cannot_erase_a_hot_key_or_change_decisions() {
+        let name = test_desc("hot-and-cold").sref();
+        for order in [[0, 1, 2], [2, 1, 0], [1, 0, 2], [2, 0, 1]] {
+            let mut s = State::default();
+            for seg in order {
+                s.sketches.insert(
+                    (name.clone(), seg),
+                    sketch("epoch", 1000, seg != 0, seg as u8),
+                );
+            }
+            let (splits, merges) = evaluate_state(&mut s, 1001);
+            assert!(splits.is_empty());
+            assert!(merges.is_empty());
+            assert_eq!(s.hot_keys.get(&name), Some(&RoutingKeyHash([1; 16])));
         }
     }
 
