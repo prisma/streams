@@ -375,7 +375,7 @@ fn delete_lifecycle(
         // Ops journal (§12.3): the lifecycle transition, id'd by the
         // incarnation — a retried delete re-emits the same id and the
         // rollup deduplicates.
-        crate::ops::emit(
+        state.runtime.ops.emit(
             crate::ops::OpsEvent::new(
                 "stream_hard_deleted",
                 format!("life/{}/hard_deleted", d.stream_epoch),

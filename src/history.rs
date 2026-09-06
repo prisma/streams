@@ -911,15 +911,21 @@ impl Absorber {
                     // the heartbeat forever (and would re-trigger the
                     // rebalancer's alarm view after the move).
                     for h in pending.keys() {
-                        crate::usage::clear_absorb_lag(crate::crypto::SegmentHash(*h));
+                        absorber
+                            .shard
+                            .usage
+                            .clear_absorb_lag(crate::crypto::SegmentHash(*h));
                     }
-                    crate::usage::clear_shard_lag(&absorber.shard.prefix);
+                    absorber.shard.usage.clear_shard_lag(&absorber.shard.prefix);
                     // The per-shard pending-summary row too (review round
                     // 4): after a shard moves, the old owner's frozen row
                     // double-counts against the new owner's — the
                     // instance rollup reports phantom backlog, and
                     // wide-report treats that rollup as its drain proof.
-                    crate::usage::clear_absorb_pending_summary(&absorber.shard.prefix);
+                    absorber
+                        .shard
+                        .usage
+                        .clear_absorb_pending_summary(&absorber.shard.prefix);
                     // R25-C: no global maintenance map to clear — the
                     // engine owns its state, and it leaves the instance
                     // aggregate the moment it leaves state.shards.
@@ -1025,16 +1031,16 @@ impl Absorber {
                             let age = p.since.elapsed().as_secs();
                             eligible += 1;
                             oldest_eligible = oldest_eligible.max(age);
-                            crate::usage::set_absorb_lag(crate::crypto::SegmentHash(*h), age);
+                            absorber.shard.usage.set_absorb_lag(crate::crypto::SegmentHash(*h), age);
                         }
-                        crate::usage::set_absorb_pending_summary(
+                        absorber.shard.usage.set_absorb_pending_summary(
                             &absorber.shard.prefix,
                             eligible,
                             oldest_eligible,
                         );
                         // Per-shard lag: the rebalancer picks its victim
                         // from THIS, keyed by the shard we actually serve.
-                        crate::usage::set_shard_lag(&absorber.shard.prefix, oldest_eligible);
+                        absorber.shard.usage.set_shard_lag(&absorber.shard.prefix, oldest_eligible);
                         // Test hook (SCALING.md D3): pause absorption so
                         // lag grows while the tick keeps publishing it.
                         // RUNTIME-togglable: pausing via env needs a
@@ -1182,7 +1188,7 @@ impl Absorber {
                                             continue;
                                         }
                                         pending.remove(h);
-                                        crate::usage::clear_absorb_lag(crate::crypto::SegmentHash(*h));
+                                        absorber.shard.usage.clear_absorb_lag(crate::crypto::SegmentHash(*h));
                                     }
                                     for (h, remaining) in &partial {
                                         let est = remaining.saturating_mul(1024);
@@ -1206,7 +1212,7 @@ impl Absorber {
                                     }
                                     for h in &outcome.no_work {
                                         pending.remove(h);
-                                        crate::usage::clear_absorb_lag(crate::crypto::SegmentHash(*h));
+                                        absorber.shard.usage.clear_absorb_lag(crate::crypto::SegmentHash(*h));
                                     }
                                 }
                                 Err(e) => {

@@ -1030,6 +1030,8 @@ pub struct ShardConfig {
     /// for hermetic per-engine caches (counters stay isolated).
     pub shared_postings_cache: Option<Arc<crate::postings_cache::PostingsCache>>,
     pub shared_history: Option<Arc<crate::history::HistoryResources>>,
+    pub shared_usage: Option<Arc<crate::usage::UsageService>>,
+    pub shared_ops: Option<Arc<crate::ops::OpsService>>,
     /// Writer-side frame compression policy for this engine (explicit,
     /// selected at engine construction — the codec does no ambient
     /// lookup). Readers accept both frame versions unconditionally.
@@ -1060,6 +1062,8 @@ impl Default for ShardConfig {
             postings_cache_bytes: crate::postings_cache::POSTINGS_CACHE_BYTES,
             shared_postings_cache: None,
             shared_history: None,
+            shared_usage: None,
+            shared_ops: None,
             wal_gather_skip_reqs: 32,
             wal_gather_skip_bytes: 1024 * 1024,
             tail_ring_bytes: 0,
@@ -1266,6 +1270,8 @@ pub struct ShardEngine {
     /// pay the index once per active window.
     pub postings_cache: Arc<crate::postings_cache::PostingsCache>,
     pub history_resources: Arc<crate::history::HistoryResources>,
+    pub usage: Arc<crate::usage::UsageService>,
+    pub ops: Arc<crate::ops::OpsService>,
     /// Level-triggered close signal for background tasks (see start()).
     close_tx: tokio::sync::watch::Sender<bool>,
     /// Handles for every task this engine spawned, so termination is a
@@ -1406,6 +1412,16 @@ impl ShardEngine {
             trim_deletes_max_batch: AtomicU64::new(0),
             trim_deletes_total: AtomicU64::new(0),
             absorb_lane_dropped: AtomicU64::new(0),
+            usage: cfg.shared_usage.clone().unwrap_or_else(|| {
+                Arc::new(crate::usage::UsageService::new(
+                    &crate::config::AdmissionConfig::default(),
+                    Arc::new(crate::runtime::SystemClock::default()),
+                ))
+            }),
+            ops: cfg
+                .shared_ops
+                .clone()
+                .unwrap_or_else(|| Arc::new(crate::ops::OpsService::new())),
             history_resources: cfg.shared_history.clone().unwrap_or_else(|| {
                 Arc::new(crate::history::HistoryResources::new(
                     &cfg.history,
@@ -1799,7 +1815,7 @@ impl ShardEngine {
     /// propagates — clients sat out their full timeout (ladder D3:
     /// exactly one in-flight batch per worker lost at the move moment).
     pub fn begin_close(&self) {
-        crate::ops::emit(
+        self.ops.emit(
             crate::ops::OpsEvent::new(
                 "engine_closed",
                 format!(

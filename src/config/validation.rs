@@ -500,10 +500,9 @@ pub(crate) fn validate_engine_settings(what: &str, s: &Settings) -> anyhow::Resu
 }
 
 /// Bounds for the effective request-body ceiling (PR 3.2.1: pure and
-/// proven BEFORE any process-global initialization; the wire pin and
-/// usable floor live in [`crate::protocol_pin`]). The runtime installer
-/// (`http::install_max_body_bytes`) is infallible by design — this is
-/// the only place the bounds are asserted.
+/// proven before runtime construction; the wire pin and usable floor
+/// live in [`crate::protocol_pin`]). Each server keeps its validated
+/// ceiling in its immutable config; this is where bounds are asserted.
 pub(crate) fn validate_body_ceiling(v: usize) -> Result<(), String> {
     let pin = crate::protocol_pin::MAX_BODY_BYTES;
     let floor = crate::protocol_pin::MIN_BODY_BYTES;

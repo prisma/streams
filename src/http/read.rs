@@ -324,7 +324,10 @@ fn render_raw_read(
     if !params.internal {
         meter_read_outcome(state, &out);
     }
-    crate::usage::counters(&crate::crypto::RouteHash::for_stream(&out.descriptor.sref()).0)
+    state
+        .runtime
+        .usage
+        .counters(&crate::crypto::RouteHash::for_stream(&out.descriptor.sref()).0)
         .bytes_out
         .fetch_add(payload.len() as u64, std::sync::atomic::Ordering::Relaxed);
     let mut response = Response::builder()

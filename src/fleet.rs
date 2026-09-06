@@ -516,7 +516,7 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
                 out_inflight_peak,
                 owned_shards: owned,
                 draining: false,
-                absorb_lag_max_secs: crate::usage::absorb_lag_max(),
+                absorb_lag_max_secs: state.runtime.usage.absorb_lag_max(),
                 wedge_max_ms,
                 url: state.config.fleet.self_url.clone(),
             };
@@ -870,7 +870,7 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
                         let healthy = peer_load
                             .get(&home)
                             .map(|(_, lag)| *lag == 0)
-                            .unwrap_or(home == cfg.instance && crate::usage::absorb_lag_max() == 0);
+                            .unwrap_or(home == cfg.instance && state.runtime.usage.absorb_lag_max() == 0);
                         if !healthy {
                             continue;
                         }
@@ -962,7 +962,7 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
                         // actually serves (never re-derived from a stream
                         // hash — see usage::shard_lag_map).
                         let served: Vec<String> = state.shards.held_prefixes();
-                        pick_victim_shard(&crate::usage::shard_lag_all(), &served)
+                        pick_victim_shard(&state.runtime.usage.shard_lag_all(), &served)
                             // No committed backlog anywhere (shed-before-
                             // commit): move the WEDGED shard itself.
                             .or_else(|| {

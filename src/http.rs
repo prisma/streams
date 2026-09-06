@@ -130,33 +130,6 @@ use crate::shard::{ShardEngine, now_ms};
 /// without a transport edge).
 pub(crate) use crate::protocol_pin::MAX_BODY_BYTES;
 
-/// Effective request-body ceiling, set once at startup from
-/// MAX_REQUEST_BODY_BYTES.
-///
-/// CHAOS-3 (2026-08-09): this number is not only an input validator — it
-/// sizes the absorber's worst-case frame-build reservation
-/// ([`crate::history::absorb_worst_frame_transient`]), which every
-/// gather holds against the admission shed line. At the pinned 32 MiB
-/// ceiling that reservation is 96.2 MiB, or 19% of the 1 GiB posture's
-/// 500 MB shed line, held whenever a gather is in flight — measured in
-/// Singapore against gathers whose ACTUAL size averaged 6 MB. A
-/// deployment that caps bodies at 1 MiB reserves ~3 MiB instead and
-/// buys back ~93 MiB of admission headroom.
-static MAX_BODY_LIMIT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(MAX_BODY_BYTES);
-
-pub(crate) fn max_body_bytes() -> usize {
-    MAX_BODY_LIMIT.load(std::sync::atomic::Ordering::Relaxed)
-}
-
-/// Install the effective body ceiling. Infallible by design (PR 3.2.1):
-/// the bounds (pin ceiling, usable floor) are PROVEN by
-/// `config::validation::validate_body_ceiling` before a
-/// `ValidatedServerConfig` can exist, so no assertion is repeated here.
-pub(crate) fn install_max_body_bytes(v: usize) {
-    MAX_BODY_LIMIT.store(v, std::sync::atomic::Ordering::Relaxed);
-}
-
 const MAX_READ_BYTES: usize = 8 * 1024 * 1024;
 
 /// Budget for a read that was WOKEN by a long-poll wait — the live-tail
@@ -260,6 +233,7 @@ pub struct AppState {
 impl AppState {
     pub(crate) fn append_service(self: &Arc<Self>) -> crate::application::append::AppendService {
         crate::application::append::AppendService {
+            usage: self.runtime.usage.clone(),
             registry: self.registry.clone(),
             shards: self.shards.clone(),
             admission: self.admission.clone(),
@@ -979,10 +953,10 @@ async fn debug_load(
         "stream_shed": adm.shed.stream,
         "wedge_shed": adm.shed.wedge,
         "streams_tracked": adm.streams_tracked,
-        "absorb_lag_max_secs": crate::usage::absorb_lag_max(),
+        "absorb_lag_max_secs": state.runtime.usage.absorb_lag_max(),
         "cardinality": {
             "resident_handles": resident_handles,
-            "usage_tracked": crate::usage::tracked_streams(),
+            "usage_tracked": state.runtime.usage.tracked_streams(),
             "keycache": state.keys.len(),
             "registry_cache": state.registry.cache_len(),
             "seal_fence_entries": fence_entries,
@@ -1067,7 +1041,7 @@ async fn debug_store(
         .unwrap_or(60)
         .clamp(1, 300);
     let swap = q.get("swap").map(|v| v == "1").unwrap_or(false);
-    let mut snap = crate::store_timing::snapshot(window, swap);
+    let mut snap = crate::store_timing::snapshot(window, swap, &state.runtime.store_io);
     if let Some(_obj) = snap.as_object_mut() {
         // History DbReader service: hits vs misses shows how much
         // per-request manifest traffic the cache absorbs; stale_reopens
@@ -1107,8 +1081,8 @@ async fn debug_usage(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
             "bearer token required",
         );
     }
-    let l = crate::usage::limits();
-    let streams: Vec<serde_json::Value> = crate::usage::snapshot()
+    let l = state.runtime.usage.limits();
+    let streams: Vec<serde_json::Value> = state.runtime.usage.snapshot()
         .into_iter()
         .map(|(h, _gen, req, rec, bi, bo, pt, fr)| {
             serde_json::json!({
@@ -1122,14 +1096,14 @@ async fn debug_usage(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
                 "compression_ratio": if fr > 0 { pt as f64 / fr as f64 } else { 0.0 },
                 // Counters key by name hash, lag by engine hash; the
                 // linked join (usage.rs) is what makes this nonzero.
-                "absorb_lag_secs": crate::usage::absorb_lag_for_usage(crate::crypto::RouteHash(h)),
+                "absorb_lag_secs": state.runtime.usage.absorb_lag_for_usage(crate::crypto::RouteHash(h)),
             })
         })
         .collect();
-    let (backlog_streams, backlog_max) = crate::usage::absorb_backlog_summary();
-    let (eligible, oldest_eligible) = crate::usage::absorb_pending_summary();
+    let (backlog_streams, backlog_max) = state.runtime.usage.absorb_backlog_summary();
+    let (eligible, oldest_eligible) = state.runtime.usage.absorb_pending_summary();
     let (overflow_admits, overflow_requests, overflow_records, overflow_bytes) =
-        crate::usage::overflow_stats();
+        state.runtime.usage.overflow_stats();
     axum::Json(serde_json::json!({
         "limits": {
             "bytes_per_sec": l.bytes_per_sec,
@@ -1150,7 +1124,7 @@ async fn debug_usage(State(state): State<Arc<AppState>>, headers: HeaderMap) -> 
         // aggregate counters those streams accrue. `streams` below is
         // capped at MAX_TRACKED entries — use these plus absorb_backlog
         // for population-level truth.
-        "tracked_streams": crate::usage::tracked_streams(),
+        "tracked_streams": state.runtime.usage.tracked_streams(),
         "overflow": {
             "admits": overflow_admits,
             "requests": overflow_requests,
@@ -1173,11 +1147,11 @@ async fn debug_ops_events(State(state): State<Arc<AppState>>, headers: HeaderMap
             "bearer token required",
         );
     }
-    let recent = crate::ops::recent(128);
+    let recent = state.runtime.ops.recent(128);
     axum::Json(serde_json::json!({
         "events": recent,
-        "alerts": crate::ops::open_alerts(),
-        "dropped": crate::ops::EVENTS_DROPPED.load(std::sync::atomic::Ordering::Relaxed),
+        "alerts": state.runtime.ops.open_alerts(),
+        "dropped": state.runtime.ops.dropped(),
     }))
     .into_response()
 }
@@ -1588,7 +1562,7 @@ pub fn router(state: Arc<AppState>) -> Router {
                             "spool": spool,
                             "rollupDb": rollup_db,
                             "cacheCapacityBytes":
-                                crate::billing::TELEMETRY_CACHE_CAPACITY.load(ord),
+                                state.runtime.telemetry.capacity_bytes(),
                             "sweepResidentEngines":
                                 crate::billing::sweep_resident_engines(&state),
                         },
@@ -1921,10 +1895,11 @@ async fn billing_readiness_axum(
         );
     }
     use std::sync::atomic::Ordering;
-    let now = crate::shard::now_ms();
+    let now = state.runtime.clock.now().ms();
     let (spool_open, quarantined, depth) = state.billing.read_spool_health().await;
-    let last_drain = crate::billing::LAST_DRAIN_OK_MS.load(Ordering::Relaxed);
-    let last_apply = crate::billing::LAST_ROLLUP_APPLY_MS.load(Ordering::Relaxed);
+    let progress = state.runtime.telemetry.progress();
+    let last_drain = progress.last_drain_ok_ms;
+    let last_apply = progress.last_rollup_apply_ms;
     let mut rollup_info = serde_json::json!({ "running": false });
     if let Some(r) = state.rollup.get() {
         let pending = r
@@ -1971,7 +1946,7 @@ async fn billing_readiness_axum(
             crate::billing::ARTIFACT_MISMATCHES.load(Ordering::Relaxed),
         "tombstoneWalkCloseSubmits":
             crate::billing::WALK_CLOSE_SUBMITS.load(Ordering::Relaxed),
-        "openAlerts": crate::ops::open_alerts(),
+        "openAlerts": state.runtime.ops.open_alerts(),
     }))
     .into_response()
 }
@@ -2122,7 +2097,7 @@ pub(crate) async fn product_entry_axum_inner(
     let (body, _body_charge) = if method == Method::POST || method == Method::PUT {
         match buffer_body_charged(
             req.into_body(),
-            max_body_bytes(),
+            state.config.cli.max_request_body_bytes,
             principal.and_then(|p| state.quotas.pressure_handle(&p.project_id)),
         )
         .await
@@ -2225,7 +2200,9 @@ async fn stream_entry_inner(
     }
     match method {
         Method::PUT => {
-            let body = match axum::body::to_bytes(body, max_body_bytes()).await {
+            let body = match axum::body::to_bytes(body, state.config.cli.max_request_body_bytes)
+                .await
+            {
                 Ok(b) => b,
                 Err(_) => {
                     return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large");
@@ -2246,7 +2223,7 @@ async fn stream_entry_inner(
                     .get(&state.deployment.raw_adapter_sref(&name))
                     .await
             {
-                crate::ops::emit(
+                state.runtime.ops.emit(
                     crate::ops::OpsEvent::new(
                         "stream_created",
                         format!("life/{}/created", d.stream_epoch),
@@ -2747,7 +2724,7 @@ pub(crate) async fn append_typed(
         .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<usize>().ok())
-        && declared > max_body_bytes()
+        && declared > state.config.cli.max_request_body_bytes
     {
         const DRAIN_CAP: usize = 8 * 1024 * 1024;
         if declared <= DRAIN_CAP {
@@ -2766,14 +2743,14 @@ pub(crate) async fn append_typed(
             AppendCode::BodyTooLarge,
             &format!(
                 "request body {declared} exceeds the {}-byte limit",
-                max_body_bytes()
+                state.config.cli.max_request_body_bytes
             ),
         );
     }
     service.check_memory().await?;
     let (body, body_charge) = buffer_body_charged(
         body,
-        max_body_bytes(),
+        state.config.cli.max_request_body_bytes,
         state.quotas.pressure_handle(sref.project_id()),
     )
     .await

@@ -3,6 +3,7 @@ use crate::registry::StreamDesc;
 use std::sync::Arc;
 
 pub(super) fn admit_usage(
+    usage: &crate::usage::UsageService,
     desc: &StreamDesc,
     close_only: bool,
     valid_content: bool,
@@ -11,10 +12,10 @@ pub(super) fn admit_usage(
 ) -> Result<Arc<crate::usage::Counters>, AppendFailure> {
     let name_hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
     let counters = if !close_only && valid_content {
-        match crate::usage::admit_append(&name_hash, body_bytes as u64, record_count as u64) {
+        match usage.admit_append(&name_hash, body_bytes as u64, record_count as u64) {
             Err(hit) => {
                 crate::usage::note_limit_refusal(&hit);
-                let l = crate::usage::limits();
+                let l = usage.limits();
                 if matches!(hit, crate::usage::LimitHit::Bytes { .. })
                     && body_bytes as f64 > l.bytes_per_sec * l.burst_secs
                 {
@@ -29,7 +30,7 @@ pub(super) fn admit_usage(
                 return fail(
                     FailureClass::Capacity,
                     AppendCode::RateLimited(hit.code()),
-                    &hit.message(),
+                    &hit.message(l),
                 )
                 .map_err(|e| e.retry(hit.retry_ms().div_ceil(1000).max(1)));
             }
@@ -46,7 +47,7 @@ pub(super) fn admit_usage(
     } else {
         // Close-only / deferred-error requests skip admission; a single
         // resolve here still beats the old two-site double resolve.
-        crate::usage::counters(&name_hash)
+        usage.counters(&name_hash)
     };
 
     Ok(counters)

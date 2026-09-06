@@ -12,9 +12,11 @@
 //! as records on one internal stream (BILLING_STREAM / BILLING_STREAM_KEY).
 
 use crate::crypto::{RouteHash, SegmentHash};
+use crate::runtime::{Clock, MonotonicNow};
 use std::collections::HashMap;
 use std::sync::atomic::{AtomicU64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex};
+#[cfg(test)]
 use std::time::Instant;
 
 /// Bound on distinct streams tracked (same discipline as the per-stream
@@ -36,59 +38,18 @@ const EVICT_IDLE: std::time::Duration = std::time::Duration::from_secs(600);
 /// full-map scan on every hot-path admit at cap would be O(65k).
 const EVICT_SCAN_EVERY: u64 = 64;
 
-/// Shared token bucket for ALL streams past the cap: conservative by
-/// construction (the whole overflow population shares one stream's
-/// allowance) and visible, never silently unlimited.
-fn overflow_bucket() -> &'static Mutex<Bucket> {
-    static B: OnceLock<Mutex<Bucket>> = OnceLock::new();
-    B.get_or_init(|| {
-        let l = limits();
-        Mutex::new(Bucket {
-            bytes: l.bytes_per_sec * l.burst_secs,
-            reqs: l.reqs_per_sec * l.burst_secs,
-            recs: l.recs_per_sec * l.burst_secs,
-            last: Instant::now(),
-        })
-    })
-}
-
-/// Aggregate counters for every stream past the cap. Both counters()
-/// call sites on the append path resolve to this same Arc, so overflow
-/// traffic is accounted (in aggregate) instead of written into
-/// unrelated temporaries and dropped.
-fn overflow_counters() -> &'static std::sync::Arc<Counters> {
-    static C: OnceLock<std::sync::Arc<Counters>> = OnceLock::new();
-    C.get_or_init(Counters::fresh)
-}
-
-static OVERFLOW_ADMITS: AtomicU64 = AtomicU64::new(0);
-static OVERFLOW_SCAN_TICK: AtomicU64 = AtomicU64::new(0);
-
-/// (admissions routed through the shared overflow bucket, aggregate
-/// overflow counter totals) — the visibility half of never-fail-open.
-pub fn overflow_stats() -> (u64, u64, u64, u64) {
-    let c = overflow_counters();
-    (
-        OVERFLOW_ADMITS.load(Ordering::Relaxed),
-        c.requests.load(Ordering::Relaxed),
-        c.records.load(Ordering::Relaxed),
-        c.bytes_in.load(Ordering::Relaxed),
-    )
-}
-
-pub fn tracked_streams() -> usize {
-    map().lock().unwrap().len()
-}
-
 /// Evict one entry idle >= `idle` from a full map. Returns whether a
 /// slot was freed. Cumulative counters for an evicted stream restart at
 /// zero if it returns; the billing emitter handles that as a counter
 /// reset.
-fn evict_one_idle(m: &mut HashMap<[u8; 16], StreamUsage>, idle: std::time::Duration) -> bool {
-    let now = Instant::now();
+fn evict_one_idle_at(
+    m: &mut HashMap<[u8; 16], StreamUsage>,
+    idle: std::time::Duration,
+    now: MonotonicNow,
+) -> bool {
     let victim = m
         .iter()
-        .find(|(_, u)| now.duration_since(u.bucket.last) >= idle)
+        .find(|(_, u)| now.since(u.bucket.last) >= idle)
         .map(|(h, _)| *h);
     match victim {
         Some(h) => {
@@ -99,38 +60,7 @@ fn evict_one_idle(m: &mut HashMap<[u8; 16], StreamUsage>, idle: std::time::Durat
     }
 }
 
-#[cfg(test)]
-pub(crate) fn evict_idle_for_test(idle: std::time::Duration) -> bool {
-    evict_one_idle(&mut map().lock().unwrap(), idle)
-}
-
-/// Whether a request this size can EVER be admitted — capacity, not
-/// current tokens. Waiting cannot fix a body larger than the bucket
-/// itself, so this is a permanent 413 rather than a 429, and callers
-/// that publish durable intent must consult it BEFORE promising
-/// anything.
-///
-/// A rate of zero means the limit is disabled, exactly as the admission
-/// path reads it; treating zero as "capacity zero" would reject every
-/// non-empty record on a deployment that turned the limiter off.
-pub fn permanently_unadmittable(bytes: u64, records: u64) -> Option<&'static str> {
-    let l = limits();
-    if l.bytes_per_sec > 0.0 && bytes as f64 > l.bytes_per_sec * l.burst_secs {
-        return Some("bytes");
-    }
-    if l.recs_per_sec > 0.0 && records as f64 > l.recs_per_sec * l.burst_secs {
-        return Some("records");
-    }
-    // The REQUEST bucket too: rates are floats, so a configuration like
-    // 0.1 req/s over a 2 s burst holds 0.2 tokens and can never admit
-    // the one token every request costs. Publishing an intent against
-    // that leaves the collection sealing behind a permanent 429.
-    if l.reqs_per_sec > 0.0 && l.reqs_per_sec * l.burst_secs < 1.0 {
-        return Some("requests");
-    }
-    None
-}
-
+#[derive(Debug, Clone)]
 pub struct Limits {
     pub bytes_per_sec: f64,
     pub reqs_per_sec: f64,
@@ -138,41 +68,11 @@ pub struct Limits {
     pub burst_secs: f64,
 }
 
-static LIMIT_BYTES_PER_SEC_INIT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(5_000_000.0f64.to_bits());
-static LIMIT_REQS_PER_SEC_INIT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(1_000.0f64.to_bits());
-static LIMIT_RECS_PER_SEC_INIT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(5_000.0f64.to_bits());
-static LIMIT_BURST_SECS_INIT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(2.0f64.to_bits());
-
-/// Composition-root seed (WP-01 PR 3.1): sized once from the owned
-/// ServerConfig; un-seeded tests get the old env-unset defaults.
-pub fn init_limits(cfg: &crate::config::AdmissionConfig) {
-    use std::sync::atomic::Ordering;
-    LIMIT_BYTES_PER_SEC_INIT.store(cfg.limit_bytes_per_sec.to_bits(), Ordering::Relaxed);
-    LIMIT_REQS_PER_SEC_INIT.store(cfg.limit_reqs_per_sec.to_bits(), Ordering::Relaxed);
-    LIMIT_RECS_PER_SEC_INIT.store(cfg.limit_recs_per_sec.to_bits(), Ordering::Relaxed);
-    LIMIT_BURST_SECS_INIT.store(cfg.limit_burst_secs.to_bits(), Ordering::Relaxed);
-}
-
-pub fn limits() -> &'static Limits {
-    use std::sync::atomic::Ordering;
-    static L: OnceLock<Limits> = OnceLock::new();
-    L.get_or_init(|| Limits {
-        bytes_per_sec: f64::from_bits(LIMIT_BYTES_PER_SEC_INIT.load(Ordering::Relaxed)),
-        reqs_per_sec: f64::from_bits(LIMIT_REQS_PER_SEC_INIT.load(Ordering::Relaxed)),
-        recs_per_sec: f64::from_bits(LIMIT_RECS_PER_SEC_INIT.load(Ordering::Relaxed)),
-        burst_secs: f64::from_bits(LIMIT_BURST_SECS_INIT.load(Ordering::Relaxed)),
-    })
-}
-
 struct Bucket {
     bytes: f64,
     reqs: f64,
     recs: f64,
-    last: Instant,
+    last: MonotonicNow,
 }
 
 #[derive(Default)]
@@ -209,11 +109,6 @@ impl Counters {
 struct StreamUsage {
     bucket: Bucket,
     counters: std::sync::Arc<Counters>,
-}
-
-fn map() -> &'static Mutex<HashMap<[u8; 16], StreamUsage>> {
-    static M: OnceLock<Mutex<HashMap<[u8; 16], StreamUsage>>> = OnceLock::new();
-    M.get_or_init(|| Mutex::new(HashMap::new()))
 }
 
 /// Cumulative per-code rate-limit refusals (R26-7). A campaign must be
@@ -260,8 +155,7 @@ impl LimitHit {
             LimitHit::Records { .. } => "limit_records_per_sec",
         }
     }
-    pub fn message(&self) -> String {
-        let l = limits();
+    pub fn message(&self, l: &Limits) -> String {
         match self {
             LimitHit::Bytes { .. } => format!(
                 "stream ingest limit exceeded: {:.1} MB/s per stream shard",
@@ -289,9 +183,14 @@ impl LimitHit {
 /// Refill-and-consume against one bucket. Returns Err(the first limit
 /// hit) without consuming anything when any bucket is short — the
 /// request is rejected whole.
-fn admit_on(bucket: &mut Bucket, l: &Limits, bytes: u64, records: u64) -> Result<(), LimitHit> {
-    let now = Instant::now();
-    let dt = now.duration_since(bucket.last).as_secs_f64();
+fn admit_on(
+    bucket: &mut Bucket,
+    l: &Limits,
+    bytes: u64,
+    records: u64,
+    now: MonotonicNow,
+) -> Result<(), LimitHit> {
+    let dt = now.since(bucket.last).as_secs_f64();
     bucket.last = now;
     bucket.bytes = (bucket.bytes + dt * l.bytes_per_sec).min(l.bytes_per_sec * l.burst_secs);
     bucket.reqs = (bucket.reqs + dt * l.reqs_per_sec).min(l.reqs_per_sec * l.burst_secs);
@@ -325,32 +224,350 @@ fn admit_on(bucket: &mut Bucket, l: &Limits, bytes: u64, records: u64) -> Result
     Ok(())
 }
 
-/// Admission for one append request: `bytes` of body carrying `records`
-/// records. Past MAX_TRACKED distinct streams this NEVER fails open:
-/// an idle tracked entry is evicted (amortized scan) to make room, and
-/// otherwise the request is admitted through the shared conservative
-/// overflow bucket.
-///
-/// On success returns the counters object the request must account
-/// into — chosen ATOMICALLY with the admission decision. The caller
-/// carries this one Arc through both count sites (request-side and
-/// committed-side); re-resolving by hash mid-request used to race a
-/// concurrent eviction/promotion and split one request's accounting
-/// across the overflow aggregate and a fresh tracked entry (review
-/// round 4).
+/// One runtime's usage policy, admission state and maintenance signals.
+/// Every engine and transport in that runtime shares this handle; another
+/// runtime cannot consume its tokens, counters or backlog state.
+pub struct UsageService {
+    limits: Limits,
+    clock: Arc<dyn Clock>,
+    map: Mutex<HashMap<[u8; 16], StreamUsage>>,
+    overflow_bucket: Mutex<Bucket>,
+    overflow_counters: Arc<Counters>,
+    overflow_admits: AtomicU64,
+    overflow_scan_tick: AtomicU64,
+    lag_map: Mutex<HashMap<SegmentHash, u64>>,
+    storage_links: Mutex<HashMap<RouteHash, std::collections::HashSet<SegmentHash>>>,
+    // mt-lint: allow(name-keyed-map): owned shard engine prefix -> pending work
+    pending_summary: Mutex<HashMap<String, (u64, u64)>>,
+    // mt-lint: allow(name-keyed-map): owned shard engine prefix -> lag
+    shard_lag_map: Mutex<HashMap<String, u64>>,
+}
+impl std::fmt::Debug for UsageService {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("UsageService")
+            .field("limits", &self.limits)
+            .finish_non_exhaustive()
+    }
+}
+impl UsageService {
+    pub fn new(cfg: &crate::config::AdmissionConfig, clock: Arc<dyn Clock>) -> Self {
+        let limits = Limits {
+            bytes_per_sec: cfg.limit_bytes_per_sec,
+            reqs_per_sec: cfg.limit_reqs_per_sec,
+            recs_per_sec: cfg.limit_recs_per_sec,
+            burst_secs: cfg.limit_burst_secs,
+        };
+        let overflow_bucket = Mutex::new(Bucket {
+            bytes: limits.bytes_per_sec * limits.burst_secs,
+            reqs: limits.reqs_per_sec * limits.burst_secs,
+            recs: limits.recs_per_sec * limits.burst_secs,
+            last: clock.monotonic(),
+        });
+        Self {
+            limits,
+            clock,
+            overflow_bucket,
+            map: Mutex::new(HashMap::new()),
+            overflow_counters: Counters::fresh(),
+            overflow_admits: AtomicU64::new(0),
+            overflow_scan_tick: AtomicU64::new(0),
+            lag_map: Mutex::new(HashMap::new()),
+            storage_links: Mutex::new(HashMap::new()),
+            pending_summary: Mutex::new(HashMap::new()),
+            shard_lag_map: Mutex::new(HashMap::new()),
+        }
+    }
+    pub fn limits(&self) -> &Limits {
+        &self.limits
+    }
+    pub fn overflow_stats(&self) -> (u64, u64, u64, u64) {
+        let c = &self.overflow_counters;
+        (
+            self.overflow_admits.load(Ordering::Relaxed),
+            c.requests.load(Ordering::Relaxed),
+            c.records.load(Ordering::Relaxed),
+            c.bytes_in.load(Ordering::Relaxed),
+        )
+    }
+
+    pub fn tracked_streams(&self) -> usize {
+        self.map.lock().unwrap().len()
+    }
+
+    #[cfg(test)]
+    pub(crate) fn evict_idle_for_test(&self, idle: std::time::Duration) -> bool {
+        evict_one_idle_at(&mut self.map.lock().unwrap(), idle, self.clock.monotonic())
+    }
+
+    /// Permanent capacity check used before publishing lifecycle intent.
+    pub fn permanently_unadmittable(&self, bytes: u64, records: u64) -> Option<&'static str> {
+        let l = self.limits();
+        if l.bytes_per_sec > 0.0 && bytes as f64 > l.bytes_per_sec * l.burst_secs {
+            return Some("bytes");
+        }
+        if l.recs_per_sec > 0.0 && records as f64 > l.recs_per_sec * l.burst_secs {
+            return Some("records");
+        }
+        // The REQUEST bucket too: rates are floats, so a configuration like
+        // 0.1 req/s over a 2 s burst holds 0.2 tokens and can never admit
+        // the one token every request costs. Publishing an intent against
+        // that leaves the collection sealing behind a permanent 429.
+        if l.reqs_per_sec > 0.0 && l.reqs_per_sec * l.burst_secs < 1.0 {
+            return Some("requests");
+        }
+        None
+    }
+
+    /// Choose the accounting handle atomically with whole-request admission.
+    /// Overflow shares one conservative bucket and one accounted counter set.
+    pub fn admit_append(
+        &self,
+        hash: &[u8; 16],
+        bytes: u64,
+        records: u64,
+    ) -> Result<std::sync::Arc<Counters>, LimitHit> {
+        self.admit_append_in(&self.map, &self.overflow_bucket, hash, bytes, records)
+    }
+
+    fn admit_append_in(
+        &self,
+        map: &Mutex<HashMap<[u8; 16], StreamUsage>>,
+        overflow: &Mutex<Bucket>,
+        hash: &[u8; 16],
+        bytes: u64,
+        records: u64,
+    ) -> Result<std::sync::Arc<Counters>, LimitHit> {
+        let l = self.limits();
+        let mut m = map.lock().unwrap();
+        let n = m.len();
+        if !m.contains_key(hash) && n >= MAX_TRACKED {
+            let tick = self.overflow_scan_tick.fetch_add(1, Ordering::Relaxed);
+            let freed = tick.is_multiple_of(EVICT_SCAN_EVERY)
+                && evict_one_idle_at(&mut m, EVICT_IDLE, self.clock.monotonic());
+            if !freed {
+                drop(m);
+                admit_on(
+                    &mut overflow.lock().unwrap(),
+                    l,
+                    bytes,
+                    records,
+                    self.clock.monotonic(),
+                )?;
+                self.overflow_admits.fetch_add(1, Ordering::Relaxed);
+                return Ok(self.overflow_counters.clone());
+            }
+        }
+        let u = m.entry(*hash).or_insert_with(|| StreamUsage {
+            bucket: Bucket {
+                bytes: l.bytes_per_sec * l.burst_secs,
+                reqs: l.reqs_per_sec * l.burst_secs,
+                recs: l.recs_per_sec * l.burst_secs,
+                last: self.clock.monotonic(),
+            },
+            counters: Counters::fresh(),
+        });
+        admit_on(&mut u.bucket, l, bytes, records, self.clock.monotonic())?;
+        Ok(u.counters.clone())
+    }
+
+    /// Resolve a counter without charging tokens, for read/deferred/close paths.
+    pub fn counters(&self, hash: &[u8; 16]) -> std::sync::Arc<Counters> {
+        let l = self.limits();
+        let mut m = self.map.lock().unwrap();
+        let n = m.len();
+        match m.get(hash) {
+            Some(u) => u.counters.clone(),
+            // Past the cap, all untracked streams account into ONE shared
+            // aggregate — both hot-path counters() calls resolve to the same
+            // Arc, so nothing vanishes into unrelated temporaries.
+            None if n >= MAX_TRACKED => self.overflow_counters.clone(),
+            None => m
+                .entry(*hash)
+                .or_insert_with(|| StreamUsage {
+                    bucket: Bucket {
+                        bytes: l.bytes_per_sec * l.burst_secs,
+                        reqs: l.reqs_per_sec * l.burst_secs,
+                        recs: l.recs_per_sec * l.burst_secs,
+                        last: self.clock.monotonic(),
+                    },
+                    counters: Counters::fresh(),
+                })
+                .counters
+                .clone(),
+        }
+    }
+
+    pub fn set_absorb_lag(&self, hash: SegmentHash, secs: u64) {
+        self.lag_map.lock().unwrap().insert(hash, secs);
+    }
+
+    pub fn clear_absorb_lag(&self, hash: SegmentHash) {
+        self.lag_map.lock().unwrap().remove(&hash);
+    }
+
+    /// Join tenant route identity to segment identities within this runtime.
+    pub fn link_storage(&self, usage_hash: RouteHash, storage_hash: SegmentHash) {
+        let mut m = self.storage_links.lock().unwrap();
+        if m.len() >= MAX_TRACKED && !m.contains_key(&usage_hash) {
+            return;
+        }
+        m.entry(usage_hash).or_default().insert(storage_hash);
+    }
+
+    pub fn absorb_lag_for_usage(&self, usage_hash: RouteHash) -> u64 {
+        let links = self.storage_links.lock().unwrap();
+        let Some(set) = links.get(&usage_hash) else {
+            return 0;
+        };
+        let lags = self.lag_map.lock().unwrap();
+        set.iter()
+            .filter_map(|h| lags.get(h).copied())
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub fn absorb_backlog_summary(&self) -> (usize, u64) {
+        let m = self.lag_map.lock().unwrap();
+        let lagging = m.values().filter(|v| **v > 0).count();
+        let max = m.values().copied().max().unwrap_or(0);
+        (lagging, max)
+    }
+
+    /// One row per engine; closing that engine removes its contribution.
+    pub fn set_absorb_pending_summary(
+        &self,
+        shard_prefix: &str,
+        eligible: u64,
+        oldest_eligible_secs: u64,
+    ) {
+        self.pending_summary
+            .lock()
+            .unwrap()
+            .insert(shard_prefix.to_string(), (eligible, oldest_eligible_secs));
+    }
+
+    pub fn clear_absorb_pending_summary(&self, shard_prefix: &str) {
+        self.pending_summary.lock().unwrap().remove(shard_prefix);
+    }
+
+    #[cfg(test)]
+    pub fn absorb_pending_summary_for(&self, shard_prefix: &str) -> Option<(u64, u64)> {
+        self.pending_summary
+            .lock()
+            .unwrap()
+            .get(shard_prefix)
+            .copied()
+    }
+
+    pub fn absorb_pending_summary(&self) -> (u64, u64) {
+        self.pending_summary
+            .lock()
+            .unwrap()
+            .values()
+            .fold((0, 0), |acc, v| (acc.0 + v.0, acc.1.max(v.1)))
+    }
+
+    #[cfg(test)]
+    pub fn absorb_lag(&self, hash: SegmentHash) -> u64 {
+        self.lag_map
+            .lock()
+            .unwrap()
+            .get(&hash)
+            .copied()
+            .unwrap_or(0)
+    }
+
+    pub fn absorb_lag_max(&self) -> u64 {
+        self.lag_map
+            .lock()
+            .unwrap()
+            .values()
+            .copied()
+            .max()
+            .unwrap_or(0)
+    }
+
+    pub fn set_shard_lag(&self, prefix: &str, secs: u64) {
+        self.shard_lag_map
+            .lock()
+            .unwrap()
+            .insert(prefix.to_string(), secs);
+    }
+
+    pub fn clear_shard_lag(&self, prefix: &str) {
+        self.shard_lag_map.lock().unwrap().remove(prefix);
+    }
+
+    pub fn shard_lag_all(&self) -> Vec<(String, u64)> {
+        self.shard_lag_map
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(p, s)| (p.clone(), *s))
+            .collect()
+    }
+
+    /// Per-stream counters from this owner; overflow is explicitly aggregated.
+    pub fn snapshot(&self) -> Vec<([u8; 16], u64, u64, u64, u64, u64, u64, u64)> {
+        self.map
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(h, u)| {
+                (
+                    *h,
+                    u.counters.generation,
+                    u.counters.requests.load(Ordering::Relaxed),
+                    u.counters.records.load(Ordering::Relaxed),
+                    u.counters.bytes_in.load(Ordering::Relaxed),
+                    u.counters.bytes_out.load(Ordering::Relaxed),
+                    u.counters.plaintext_bytes.load(Ordering::Relaxed),
+                    u.counters.frame_bytes.load(Ordering::Relaxed),
+                )
+            })
+            .collect()
+    }
+}
+
+// Compatibility for direct storage fixtures only; production has no global
+// usage getter and every admission/read/absorber uses the runtime handle.
+#[cfg(test)]
+fn test_usage() -> &'static UsageService {
+    static OWNER: std::sync::OnceLock<UsageService> = std::sync::OnceLock::new();
+    OWNER.get_or_init(|| {
+        UsageService::new(
+            &crate::config::AdmissionConfig::default(),
+            Arc::new(crate::runtime::SystemClock::default()),
+        )
+    })
+}
+#[cfg(test)]
+pub fn limits() -> &'static Limits {
+    test_usage().limits()
+}
+#[cfg(test)]
+fn overflow_counters() -> &'static Arc<Counters> {
+    &test_usage().overflow_counters
+}
+#[cfg(test)]
+fn evict_one_idle(m: &mut HashMap<[u8; 16], StreamUsage>, idle: std::time::Duration) -> bool {
+    evict_one_idle_at(m, idle, test_usage().clock.monotonic())
+}
+#[cfg(test)]
+pub fn overflow_stats() -> (u64, u64, u64, u64) {
+    test_usage().overflow_stats()
+}
+
+#[cfg(test)]
 pub fn admit_append(
     hash: &[u8; 16],
     bytes: u64,
     records: u64,
 ) -> Result<std::sync::Arc<Counters>, LimitHit> {
-    admit_append_in(map(), overflow_bucket(), hash, bytes, records)
+    test_usage().admit_append(hash, bytes, records)
 }
 
-/// The admission core, parametric over the tracked map and the shared
-/// overflow bucket. Production calls bind the process statics; the
-/// past-the-cap test binds PRIVATE instances so filling a map to
-/// MAX_TRACKED cannot starve concurrent tests' streams through the
-/// real shared bucket (2026-07-31 parallel-suite 429 flake).
+#[cfg(test)]
 pub(crate) fn admit_append_in(
     map: &Mutex<HashMap<[u8; 16], StreamUsage>>,
     overflow: &Mutex<Bucket>,
@@ -358,256 +575,62 @@ pub(crate) fn admit_append_in(
     bytes: u64,
     records: u64,
 ) -> Result<std::sync::Arc<Counters>, LimitHit> {
-    let l = limits();
-    let mut m = map.lock().unwrap();
-    let n = m.len();
-    if !m.contains_key(hash) && n >= MAX_TRACKED {
-        let tick = OVERFLOW_SCAN_TICK.fetch_add(1, Ordering::Relaxed);
-        let freed = tick.is_multiple_of(EVICT_SCAN_EVERY) && evict_one_idle(&mut m, EVICT_IDLE);
-        if !freed {
-            drop(m);
-            admit_on(&mut overflow.lock().unwrap(), l, bytes, records)?;
-            OVERFLOW_ADMITS.fetch_add(1, Ordering::Relaxed);
-            return Ok(overflow_counters().clone());
-        }
-    }
-    let u = m.entry(*hash).or_insert_with(|| StreamUsage {
-        bucket: Bucket {
-            bytes: l.bytes_per_sec * l.burst_secs,
-            reqs: l.reqs_per_sec * l.burst_secs,
-            recs: l.recs_per_sec * l.burst_secs,
-            last: Instant::now(),
-        },
-        counters: Counters::fresh(),
-    });
-    admit_on(&mut u.bucket, l, bytes, records)?;
-    Ok(u.counters.clone())
+    test_usage().admit_append_in(map, overflow, hash, bytes, records)
 }
 
-/// Counters handle for a stream (shared Arc; cheap to hold on hot paths).
+#[cfg(test)]
 pub fn counters(hash: &[u8; 16]) -> std::sync::Arc<Counters> {
-    let l = limits();
-    let mut m = map().lock().unwrap();
-    let n = m.len();
-    match m.get(hash) {
-        Some(u) => u.counters.clone(),
-        // Past the cap, all untracked streams account into ONE shared
-        // aggregate — both hot-path counters() calls resolve to the same
-        // Arc, so nothing vanishes into unrelated temporaries.
-        None if n >= MAX_TRACKED => overflow_counters().clone(),
-        None => m
-            .entry(*hash)
-            .or_insert_with(|| StreamUsage {
-                bucket: Bucket {
-                    bytes: l.bytes_per_sec * l.burst_secs,
-                    reqs: l.reqs_per_sec * l.burst_secs,
-                    recs: l.recs_per_sec * l.burst_secs,
-                    last: Instant::now(),
-                },
-                counters: Counters::fresh(),
-            })
-            .counters
-            .clone(),
-    }
+    test_usage().counters(hash)
 }
 
-/// Absorption lag gauge (seconds behind), fed by the absorber's tick:
-/// per-stream age of the oldest unabsorbed bytes. THE scale-out signal
-/// (rebalance shards off a host when this exceeds ~60 s).
-fn lag_map() -> &'static Mutex<HashMap<SegmentHash, u64>> {
-    static M: OnceLock<Mutex<HashMap<SegmentHash, u64>>> = OnceLock::new();
-    M.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
+#[cfg(test)]
 pub fn set_absorb_lag(hash: SegmentHash, secs: u64) {
-    lag_map().lock().unwrap().insert(hash, secs);
+    test_usage().set_absorb_lag(hash, secs)
 }
 
+#[cfg(test)]
 pub fn clear_absorb_lag(hash: SegmentHash) {
-    lag_map().lock().unwrap().remove(&hash);
+    test_usage().clear_absorb_lag(hash)
 }
 
-/// Usage counters are keyed by the NAME hash (`stream_hash(&desc.name)`,
-/// the shard-routing key), while the absorber publishes lag under the
-/// ENGINE hash (storage/segment hash). The /v1/debug/usage join used to
-/// look lag up by the name hash and therefore always read 0 — the wide
-/// tests' "absorb lag is invisible" finding (docs/COST-WIDE2.md §4).
-/// This alias map, fed by the append path where both hashes are in hand,
-/// closes the join; RouteHash/SegmentHash make the two key spaces
-/// uncrossable at compile time. Per-key streams link one usage entry to
-/// many segment hashes; the join takes the max.
-fn storage_links() -> &'static Mutex<HashMap<RouteHash, std::collections::HashSet<SegmentHash>>> {
-    static M: OnceLock<Mutex<HashMap<RouteHash, std::collections::HashSet<SegmentHash>>>> =
-        OnceLock::new();
-    M.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
+#[cfg(test)]
 pub fn link_storage(usage_hash: RouteHash, storage_hash: SegmentHash) {
-    let mut m = storage_links().lock().unwrap();
-    if m.len() >= MAX_TRACKED && !m.contains_key(&usage_hash) {
-        return;
-    }
-    m.entry(usage_hash).or_default().insert(storage_hash);
+    test_usage().link_storage(usage_hash, storage_hash)
 }
 
-/// Absorb lag for a usage entry: the max across its linked engine
-/// hashes (a per-key stream has one per touched segment).
+#[cfg(test)]
 pub fn absorb_lag_for_usage(usage_hash: RouteHash) -> u64 {
-    let links = storage_links().lock().unwrap();
-    let Some(set) = links.get(&usage_hash) else {
-        return 0;
-    };
-    let lags = lag_map().lock().unwrap();
-    set.iter()
-        .filter_map(|h| lags.get(h).copied())
-        .max()
-        .unwrap_or(0)
+    test_usage().absorb_lag_for_usage(usage_hash)
 }
 
-/// Aggregate backlog view, independent of per-stream listing caps:
-/// (streams with nonzero lag, max lag secs). Complements the
-/// per-instance `absorb_lag_max` the heartbeat already carries.
+#[cfg(test)]
 pub fn absorb_backlog_summary() -> (usize, u64) {
-    let m = lag_map().lock().unwrap();
-    let lagging = m.values().filter(|v| **v > 0).count();
-    let max = m.values().copied().max().unwrap_or(0);
-    (lagging, max)
+    test_usage().absorb_backlog_summary()
 }
 
-/// Absorber pending-set summary, published each absorber tick PER
-/// SHARD (one absorber per shard engine — a single global gauge would
-/// be last-writer-wins across shards and report one shard's quarter of
-/// the truth, which is exactly how the first version shipped):
-/// (eligible streams, oldest eligible age secs). Every pending stream
-/// is eligible — the interim sparse-deferral policy was deleted in
-/// R26-1 because an ineligible residual stalls the durable no-progress
-/// clock into the instance-wide maintenance latch.
-// mt-lint: allow(name-keyed-map): shard prefix -> pending-absorb summary
-static PENDING_SUMMARY: OnceLock<Mutex<HashMap<String, (u64, u64)>>> = OnceLock::new();
-
-pub fn set_absorb_pending_summary(shard_prefix: &str, eligible: u64, oldest_eligible_secs: u64) {
-    PENDING_SUMMARY
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap()
-        .insert(shard_prefix.to_string(), (eligible, oldest_eligible_secs));
-}
-
-/// Remove one shard's pending-summary row. MUST run when an absorber
-/// exits (shard fenced/moved/evicted): the frozen row would otherwise
-/// double-count against the new owner's live row and the instance
-/// rollup reports phantom backlog forever (review round 4 — the fleet
-/// campaign reads that rollup as its drain proof).
-pub fn clear_absorb_pending_summary(shard_prefix: &str) {
-    PENDING_SUMMARY
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap()
-        .remove(shard_prefix);
-}
-
-/// One shard's pending-summary row (None once cleared/never published).
-pub fn absorb_pending_summary_for(shard_prefix: &str) -> Option<(u64, u64)> {
-    PENDING_SUMMARY
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap()
-        .get(shard_prefix)
-        .copied()
-}
-
-/// Instance-wide rollup: sums across shards, max for the oldest age.
-pub fn absorb_pending_summary() -> (u64, u64) {
-    PENDING_SUMMARY
-        .get_or_init(|| Mutex::new(HashMap::new()))
-        .lock()
-        .unwrap()
-        .values()
-        .fold((0, 0), |acc, v| (acc.0 + v.0, acc.1.max(v.1)))
-}
-
+#[cfg(test)]
 pub fn absorb_lag(hash: SegmentHash) -> u64 {
-    lag_map().lock().unwrap().get(&hash).copied().unwrap_or(0)
+    test_usage().absorb_lag(hash)
 }
 
+#[cfg(test)]
 pub fn absorb_lag_max() -> u64 {
-    lag_map()
-        .lock()
-        .unwrap()
-        .values()
-        .copied()
-        .max()
-        .unwrap_or(0)
+    test_usage().absorb_lag_max()
 }
 
-/// Per-SHARD absorb lag, published by each shard's absorber (which knows
-/// its own prefix). The rebalancer must not re-derive a shard from a
-/// stream hash: records are keyed by storage_hash while the shard is
-/// chosen by stream_hash(name), so that mapping is simply wrong (ladder
-/// p6b D3: victim selection never matched, no move ever fired).
-fn shard_lag_map() -> &'static Mutex<HashMap<String, u64>> {
-    // mt-lint: allow(name-keyed-map): shard prefix -> absorb lag
-    static M: OnceLock<Mutex<HashMap<String, u64>>> = OnceLock::new();
-    M.get_or_init(|| Mutex::new(HashMap::new()))
-}
-
+#[cfg(test)]
 pub fn set_shard_lag(prefix: &str, secs: u64) {
-    shard_lag_map()
-        .lock()
-        .unwrap()
-        .insert(prefix.to_string(), secs);
+    test_usage().set_shard_lag(prefix, secs)
 }
 
+#[cfg(test)]
 pub fn clear_shard_lag(prefix: &str) {
-    shard_lag_map().lock().unwrap().remove(prefix);
+    test_usage().clear_shard_lag(prefix)
 }
 
-/// (shard_prefix, lag_secs) for every shard with unabsorbed bytes.
+#[cfg(test)]
 pub fn shard_lag_all() -> Vec<(String, u64)> {
-    shard_lag_map()
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|(p, s)| (p.clone(), *s))
-        .collect()
-}
-
-/// Every stream with unabsorbed bytes and its lag — the rebalancer maps
-/// these to shard prefixes to choose which shard to move off a laggard.
-pub fn absorb_lag_all() -> Vec<(SegmentHash, u64)> {
-    lag_map()
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|(h, s)| (*h, *s))
-        .collect()
-}
-
-/// Snapshot every stream's cumulative counters (for /v1/debug/usage and
-/// the billing emitter). The second field is the counters object's
-/// generation id — the emitter uses it to detect evict-and-return
-/// incarnations. NOTE (accepted best-effort posture): the shared
-/// overflow aggregate is deliberately NOT a row here — it has no
-/// per-stream attribution to bill against; it is visible via
-/// overflow_stats() / /v1/debug/usage instead.
-pub fn snapshot() -> Vec<([u8; 16], u64, u64, u64, u64, u64, u64, u64)> {
-    map()
-        .lock()
-        .unwrap()
-        .iter()
-        .map(|(h, u)| {
-            (
-                *h,
-                u.counters.generation,
-                u.counters.requests.load(Ordering::Relaxed),
-                u.counters.records.load(Ordering::Relaxed),
-                u.counters.bytes_in.load(Ordering::Relaxed),
-                u.counters.bytes_out.load(Ordering::Relaxed),
-                u.counters.plaintext_bytes.load(Ordering::Relaxed),
-                u.counters.frame_bytes.load(Ordering::Relaxed),
-            )
-        })
-        .collect()
+    test_usage().shard_lag_all()
 }
 
 #[cfg(test)]
@@ -699,7 +722,7 @@ mod tests {
         if let Err(hit) = e {
             assert!(hit.retry_ms() >= 1);
             assert!(!hit.code().is_empty());
-            assert!(!hit.message().is_empty());
+            assert!(!hit.message(limits()).is_empty());
         }
         // ...and reject-whole means nothing was consumed: a normal request
         // still passes immediately.
@@ -751,7 +774,7 @@ mod tests {
             bytes: l0.bytes_per_sec * l0.burst_secs,
             reqs: l0.reqs_per_sec * l0.burst_secs,
             recs: l0.recs_per_sec * l0.burst_secs,
-            last: Instant::now(),
+            last: test_usage().clock.monotonic(),
         });
         // Fill the map to the cap with distinct hashes.
         {
@@ -767,7 +790,7 @@ mod tests {
                         bytes: l.bytes_per_sec * l.burst_secs,
                         reqs: l.reqs_per_sec * l.burst_secs,
                         recs: l.recs_per_sec * l.burst_secs,
-                        last: Instant::now(),
+                        last: test_usage().clock.monotonic(),
                     },
                     counters: Default::default(),
                 });
@@ -845,3 +868,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "usage/runtime_tests.rs"]
+mod runtime_tests;

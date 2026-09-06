@@ -1712,8 +1712,10 @@ async fn product_seal(
             // bytes longer than the value itself, and a value on the
             // boundary would otherwise pass here and be refused there,
             // leaving the intent behind.
-            if let Some(kind) =
-                crate::usage::permanently_unadmittable(fin.to_string().len() as u64 + 2, 1)
+            if let Some(kind) = state
+                .runtime
+                .usage
+                .permanently_unadmittable(fin.to_string().len() as u64 + 2, 1)
             {
                 return perr(
                     StatusCode::PAYLOAD_TOO_LARGE,

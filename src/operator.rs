@@ -105,7 +105,7 @@ pub async fn data(State(state): State<Arc<AppState>>, headers: axum::http::Heade
         "rss_mb": crate::fleet::rss_bytes() as f64 / 1048576.0,
         "rss_shed_mb": adm.rss_shed_mb,
         // per-op-class store latency, sentinels, steal — non-destructive read
-        "store": crate::store_timing::snapshot(60, false),
+        "store": crate::store_timing::snapshot(60, false, &state.runtime.store_io),
     });
 
     axum::Json(json!({

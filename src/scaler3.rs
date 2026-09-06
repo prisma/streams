@@ -526,7 +526,7 @@ pub fn start(st: std::sync::Weak<crate::http::AppState>, tasks: &crate::tasks::T
                     // §12.3 topology journal: deterministic per
                     // (incarnation, parent segment) — a replayed
                     // execution is the same transition.
-                    crate::ops::emit(
+                    st.runtime.ops.emit(
                         crate::ops::OpsEvent::new(
                             "split_committed",
                             format!("split/{epoch}/{seg_id}"),
@@ -574,7 +574,7 @@ pub fn start(st: std::sync::Weak<crate::http::AppState>, tasks: &crate::tasks::T
                     let (a, b) = (w[0].seg_id, w[1].seg_id);
                     let done = execute_merge_fenced(&st, &name, &epoch, a, b).await;
                     if done {
-                        crate::ops::emit(
+                        st.runtime.ops.emit(
                             crate::ops::OpsEvent::new(
                                 "merge_committed",
                                 format!("merge/{epoch}/{a}/{b}"),

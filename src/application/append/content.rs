@@ -8,6 +8,7 @@ pub(super) struct ContentPlan {
 }
 
 pub(super) fn parse_content(
+    usage: &crate::usage::UsageService,
     desc: &StreamDesc,
     command: &AppendCommand,
     record_ceiling: usize,
@@ -103,8 +104,7 @@ pub(super) fn parse_content(
         // record bucket can ever hold is just as permanently refused as
         // an oversized body, and publishing an intent for it stranded
         // the collection at 429 forever.
-        if let Some(kind) =
-            crate::usage::permanently_unadmittable(body.len() as u64, entries.len() as u64)
+        if let Some(kind) = usage.permanently_unadmittable(body.len() as u64, entries.len() as u64)
         {
             return fail(
                 FailureClass::Invalid,

@@ -4,7 +4,7 @@
 //! who was denied what, when, on which cell — without trusting
 //! instance logs.
 //!
-//! Same discipline as `_ops_events` (src/ops.rs): a bounded process
+//! Same discipline as `_ops_events` (src/ops.rs): a bounded runtime
 //! queue that NEVER blocks or fails the refused request, a durable
 //! drop counter, and a gap event once capacity returns. The journal
 //! records only facts: `project_id` is filled exclusively from a
@@ -93,13 +93,21 @@ pub struct AuditEvent {
     pub dropped: Option<u64>,
 }
 
-static SEQ: AtomicU64 = AtomicU64::new(0);
-pub static AUDIT_DROPPED: AtomicU64 = AtomicU64::new(0);
-static GAP_PENDING: AtomicU64 = AtomicU64::new(0);
-
-fn q() -> &'static Mutex<VecDeque<AuditEvent>> {
-    static Q: std::sync::OnceLock<Mutex<VecDeque<AuditEvent>>> = std::sync::OnceLock::new();
-    Q.get_or_init(|| Mutex::new(VecDeque::new()))
+/// A denial journal belongs to one server runtime and its durable cell ledger.
+#[derive(Default)]
+pub struct AuditJournal {
+    sequence: AtomicU64,
+    dropped: AtomicU64,
+    gap: AtomicU64,
+    queue: Mutex<VecDeque<AuditEvent>>,
+}
+impl AuditJournal {
+    pub fn new() -> Self {
+        Self::default()
+    }
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
+    }
 }
 
 /// Observe a product-surface response on its way out. Enforce-mode
@@ -111,6 +119,7 @@ pub fn observe_denial(
     method: &axum::http::Method,
     resp: &axum::response::Response,
 ) {
+    let journal = &state.runtime.audit;
     if state.auth.mode != crate::auth::AuthMode::Enforce {
         return;
     }
@@ -118,10 +127,10 @@ pub fn observe_denial(
         return;
     };
     // No usage key = no drain will EVER run: count the loss instead of
-    // pinning the queue at cap for the process lifetime. The boot path
+    // pinning the queue at cap for the runtime lifetime. The boot path
     // warns loudly that enforce without a usage key voids the journal.
     if state.billing.usage_key().is_none() {
-        AUDIT_DROPPED.fetch_add(1, Ordering::Relaxed);
+        journal.dropped.fetch_add(1, Ordering::Relaxed);
         return;
     }
     let ev = AuditEvent {
@@ -129,7 +138,7 @@ pub fn observe_denial(
         event_id: format!(
             "deny/{}/{}",
             state.runtime.identity.boot_id,
-            SEQ.fetch_add(1, Ordering::Relaxed)
+            journal.sequence.fetch_add(1, Ordering::Relaxed)
         ),
         event_time_ms: state.runtime.clock.now().ms(),
         cell: state.deployment.cell_id().as_str().to_string(),
@@ -140,10 +149,10 @@ pub fn observe_denial(
         status: resp.status().as_u16(),
         dropped: None,
     };
-    let mut g = q().lock().unwrap();
+    let mut g = journal.queue.lock().unwrap();
     if g.len() >= AUDIT_QUEUE_CAP {
-        AUDIT_DROPPED.fetch_add(1, Ordering::Relaxed);
-        GAP_PENDING.fetch_add(1, Ordering::Relaxed);
+        journal.dropped.fetch_add(1, Ordering::Relaxed);
+        journal.gap.fetch_add(1, Ordering::Relaxed);
         return;
     }
     g.push_back(ev);
@@ -221,8 +230,9 @@ pub async fn drain_audit_once(
     let Some(key) = state.billing.usage_key() else {
         return Ok(0);
     };
-    let mut batch = PendingAudit::take(q(), &AUDIT_DROPPED, &GAP_PENDING);
-    let gap = GAP_PENDING.swap(0, Ordering::Relaxed);
+    let journal = &state.runtime.audit;
+    let mut batch = PendingAudit::take(&journal.queue, &journal.dropped, &journal.gap);
+    let gap = journal.gap.swap(0, Ordering::Relaxed);
     if gap > 0 {
         // The id uses the shared SEQ, never the drop count: two gap
         // episodes with equal counts must not collide under the
@@ -233,7 +243,7 @@ pub async fn drain_audit_once(
             event_id: format!(
                 "deny-gap/{}/{}",
                 state.runtime.identity.boot_id,
-                SEQ.fetch_add(1, Ordering::Relaxed)
+                journal.sequence.fetch_add(1, Ordering::Relaxed)
             ),
             event_time_ms: state.runtime.clock.now().ms(),
             cell: state.deployment.cell_id().as_str().to_string(),

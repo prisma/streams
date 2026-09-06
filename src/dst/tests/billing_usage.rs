@@ -614,7 +614,7 @@ async fn ops_events_journal_end_to_end() {
     };
 
     // The recent ring already shows both, newest first.
-    let recent = crate::ops::recent(64);
+    let recent = state.runtime.ops.recent(64);
     let created_id = format!("life/{epoch}/created");
     let deleted_id = format!("life/{epoch}/hard_deleted");
     assert!(recent.iter().any(|e| e.event_id == created_id));
@@ -732,7 +732,7 @@ async fn ops_metrics_and_alerts_flow() {
     }
     let snap = crate::ops::collect_snapshot(&state);
     crate::ops::evaluate_alerts(&state, &snap).await;
-    let open = crate::ops::open_alerts();
+    let open = state.runtime.ops.open_alerts();
     assert!(
         open.iter()
             .any(|a| a.fingerprint == "read_meter_backpressure"),
@@ -743,13 +743,16 @@ async fn ops_metrics_and_alerts_flow() {
     let snap2 = crate::ops::collect_snapshot(&state);
     crate::ops::evaluate_alerts(&state, &snap2).await;
     assert!(
-        !crate::ops::open_alerts()
+        !state
+            .runtime
+            .ops
+            .open_alerts()
             .iter()
             .any(|a| a.fingerprint == "read_meter_backpressure"),
         "alert must resolve once the queue drains"
     );
     // Both transitions are journaled.
-    let recent = crate::ops::recent(64);
+    let recent = state.runtime.ops.recent(64);
     assert!(recent.iter().any(|e| e.event_type == "alert_opened"));
     assert!(recent.iter().any(|e| e.event_type == "alert_resolved"));
     engine_shutdown(&state).await;

@@ -17,6 +17,9 @@ use std::fmt;
 use std::sync::Arc;
 use std::time::Duration;
 
+pub mod telemetry;
+pub use telemetry::TelemetryResources;
+
 /// A server-trusted WALL-clock reading, milliseconds since the Unix
 /// epoch — for external timestamps (records, descriptors, billing).
 /// A DISTINCT type from customer-supplied timestamps (which stay raw
@@ -136,9 +139,14 @@ pub struct RuntimeIdentity {
 /// The per-runtime capability bundle owners receive at construction.
 #[derive(Clone)]
 pub struct RuntimeCaps {
+    pub store_io: Arc<crate::store_timing::StoreResources>,
+    pub ops: Arc<crate::ops::OpsService>,
+    pub audit: Arc<crate::audit::AuditJournal>,
     pub scaler: Arc<crate::scaler3::Scaler>,
+    pub usage: Arc<crate::usage::UsageService>,
     pub history: Arc<crate::history::HistoryResources>,
     pub postings: Arc<crate::postings_cache::PostingsCache>,
+    pub telemetry: Arc<TelemetryResources>,
     pub clock: Arc<dyn Clock>,
     pub entropy: Arc<dyn Entropy>,
     pub identity: RuntimeIdentity,
@@ -155,6 +163,11 @@ impl fmt::Debug for RuntimeCaps {
 
 impl RuntimeCaps {
     pub fn with_config(mut self, config: &crate::config::ServerConfig) -> Self {
+        self.usage = Arc::new(crate::usage::UsageService::new(
+            &config.admission,
+            self.clock.clone(),
+        ));
+        self.store_io = Arc::new(crate::store_timing::StoreResources::new(&config.storage));
         self.scaler = Arc::new(crate::scaler3::Scaler::new(
             &config.scaler,
             &config.admission,
@@ -166,6 +179,9 @@ impl RuntimeCaps {
             config.cli.max_request_body_bytes,
         ));
         self.postings = crate::postings_cache::PostingsCache::new(config.postings.cache_bytes);
+        self.telemetry = Arc::new(TelemetryResources::new(
+            config.billing.telemetry_cache_bytes,
+        ));
         self
     }
 
@@ -200,6 +216,15 @@ impl RuntimeCaps {
         let mut boot = [0u8; 16];
         identity_source.fill(&mut boot);
         Self {
+            usage: Arc::new(crate::usage::UsageService::new(
+                &crate::config::AdmissionConfig::default(),
+                clock.clone(),
+            )),
+            store_io: Arc::new(crate::store_timing::StoreResources::new(
+                &crate::config::StorageConfig::default(),
+            )),
+            ops: Arc::new(crate::ops::OpsService::new()),
+            audit: Arc::new(crate::audit::AuditJournal::new()),
             history: Arc::new(crate::history::HistoryResources::new(
                 &crate::config::HistoryConfig::default(),
                 usize::MAX,
@@ -207,6 +232,9 @@ impl RuntimeCaps {
             postings: crate::postings_cache::PostingsCache::new(
                 crate::postings_cache::POSTINGS_CACHE_BYTES,
             ),
+            telemetry: Arc::new(TelemetryResources::new(
+                crate::config::BillingConfig::default().telemetry_cache_bytes,
+            )),
             scaler: Arc::new(crate::scaler3::Scaler::new(
                 &crate::config::ScaleConfig::default(),
                 &crate::config::AdmissionConfig::default(),

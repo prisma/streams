@@ -1484,11 +1484,12 @@ pub async fn open_read_spool(state: &std::sync::Arc<crate::http::AppState>) -> a
         .path_prefix_env
         .clone()
         .unwrap_or_default();
-    let sp = ReadSpool::open(
+    let sp = ReadSpool::open_with_cache(
         state.data_store.clone(),
         &prefix,
         state.ownership.instance(),
         &state.config,
+        state.runtime.telemetry.cache.clone(),
     )
     .await?;
     let _ = state.billing.install_read_spool(std::sync::Arc::new(sp));
@@ -1546,7 +1547,7 @@ pub fn spawn_telemetry(
         crate::tasks::Policy::Critical,
         move |cancel| async move {
             let mut tick = tokio::time::interval(std::time::Duration::from_secs(secs.max(1)));
-            let mut last_metrics = 0i64;
+            let mut last_metrics = None;
             loop {
                 tokio::select! {
                     _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
@@ -1556,29 +1557,31 @@ pub fn spawn_telemetry(
                     biased;
                     _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
                     _ = async {
-    match drain_once(&state).await {
-        Ok(_) => {
-            LAST_DRAIN_OK_MS.store(crate::shard::now_ms(), std::sync::atomic::Ordering::Relaxed);
-        }
-        Err(e) => tracing::warn!("usage drain: {e}"),
-    }
-    if let Err(e) = crate::ops::drain_ops_once(&state).await {
-        tracing::warn!("ops drain: {e}");
-    }
-    if let Err(e) = crate::audit::drain_audit_once(&state).await {
-        tracing::warn!("audit drain: {e}");
-    }
-    if let Err(e) = crate::fleet::drain_fleet_events(&state).await {
-        tracing::warn!("fleet event drain: {e}");
-    }
-    let now = crate::shard::now_ms();
-    if now - last_metrics >= (metrics_secs as i64) * 1000 {
-        last_metrics = now;
-        if let Err(e) = crate::ops::emit_metrics_once(&state).await {
-            tracing::warn!("ops metrics emit: {e}");
-        }
-    }
-} => {}
+                        match drain_once(&state).await {
+                            Ok(_) => {
+                                state.runtime.telemetry.drain_succeeded(state.runtime.clock.now());
+                            }
+                            Err(e) => tracing::warn!("usage drain: {e}"),
+                        }
+                        if let Err(e) = crate::ops::drain_ops_once(&state).await {
+                            tracing::warn!("ops drain: {e}");
+                        }
+                        if let Err(e) = crate::audit::drain_audit_once(&state).await {
+                            tracing::warn!("audit drain: {e}");
+                        }
+                        if let Err(e) = crate::fleet::drain_fleet_events(&state).await {
+                            tracing::warn!("fleet event drain: {e}");
+                        }
+                        let now = state.runtime.clock.monotonic();
+                        if last_metrics.is_none_or(|previous| {
+                            now.since(previous) >= std::time::Duration::from_secs(metrics_secs)
+                        }) {
+                            last_metrics = Some(now);
+                            if let Err(e) = crate::ops::emit_metrics_once(&state).await {
+                                tracing::warn!("ops metrics emit: {e}");
+                            }
+                        }
+                    } => {}
                 }
             }
         },
@@ -1626,10 +1629,9 @@ pub async fn rollup_step(state: &std::sync::Arc<crate::http::AppState>) -> Resul
         .apply_page(&envelopes, &next)
         .await
         .map_err(|e| e.to_string())?;
-    LAST_ROLLUP_APPLY_MS.store(crate::shard::now_ms(), std::sync::atomic::Ordering::Relaxed);
-    ROLLUP_APPLY_DURATION_MS.store(
+    state.runtime.telemetry.rollup_applied(
+        state.runtime.clock.now(),
         t_apply.elapsed().as_millis() as u64,
-        std::sync::atomic::Ordering::Relaxed,
     );
     Ok(envelopes.len())
 }
@@ -1670,14 +1672,7 @@ pub async fn ops_rollup_step(
     Ok(snaps.len())
 }
 
-/// Billing-readiness telemetry (round-22 item 10): recency of the
-/// last successful drain (ledger reachable) and rollup apply (cursor
-/// progressing), and the tombstone walk's lifetime close submissions.
-pub static LAST_DRAIN_OK_MS: std::sync::atomic::AtomicI64 = std::sync::atomic::AtomicI64::new(0);
-pub static LAST_ROLLUP_APPLY_MS: std::sync::atomic::AtomicI64 =
-    std::sync::atomic::AtomicI64::new(0);
-pub static ROLLUP_APPLY_DURATION_MS: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
+/// Process-wide lifetime count of tombstone closure submissions.
 pub static WALK_CLOSE_SUBMITS: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
 /// Monthly-artifact content mismatches observed at publication (an
@@ -1808,8 +1803,13 @@ pub async fn open_rollup(
     if state.rollup.get().is_some() {
         return Ok(());
     }
-    let r =
-        crate::rollup::UsageRollup::open(state.data_store.clone(), prefix, &state.config).await?;
+    let r = crate::rollup::UsageRollup::open_with_cache(
+        state.data_store.clone(),
+        prefix,
+        &state.config,
+        state.runtime.telemetry.cache.clone(),
+    )
+    .await?;
     let _ = state.rollup.install(std::sync::Arc::new(r));
     Ok(())
 }
@@ -1830,7 +1830,7 @@ pub fn spawn_rollup(
             }
             tracing::info!("usage rollup running");
             let grace_ms: i64 = state.config.billing.month_close_grace_ms;
-            let mut last_close = 0i64;
+            let mut last_close = None;
             loop {
                 if cancel.is_cancelled() {
                     return crate::tasks::TaskResult::Done;
@@ -1855,9 +1855,12 @@ pub fn spawn_rollup(
                         _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
                     }
                 }
-                let now = crate::shard::now_ms();
-                if now - last_close > 3_600_000 {
-                    last_close = now;
+                let monotonic = state.runtime.clock.monotonic();
+                if last_close.is_none_or(|previous| {
+                    monotonic.since(previous) > std::time::Duration::from_secs(3600)
+                }) {
+                    last_close = Some(monotonic);
+                    let now = state.runtime.clock.now().ms();
                     let rollup2 = state.rollup.get().unwrap().clone();
                     let store2 = state.data_store.clone();
                     let pfx = prefix.clone();
@@ -1898,52 +1901,8 @@ pub fn spawn_rollup(
 // Durable read spool (round-21 blocker 3)
 // ---------------------------------------------------------------------
 
-/// Per-instance durable spool for sealed read batches. A sealed batch
-/// is written HERE before anything else forgets it; it leaves only
-/// after `_usage` acknowledged. This makes the design's loss bound
-/// true: a hard crash loses at most the active interval plus one drain
-/// cadence of sealed-but-unspooled batches — never the sealed backlog,
-/// and a LEDGER OUTAGE accumulates on disk, not in process memory.
-/// ONE small shared cache + bounded settings for BOTH telemetry
-/// SlateDB databases (read spool + usage rollup). OOM review item 3:
-/// these two DBs previously used `Db::builder(..).build()` bare and
-/// inherited SlateDB's per-DB defaults — a 512 MB-class cache and the
-/// default L0/compaction posture — bypassing the process's carefully
-/// bounded shared caches (192 MiB shard + 32 MiB history + 64 MiB
-/// postings). One extra default-cached DB put the process at the
-/// Compute kill line; two (ROLLUP=1) explained the local 1 GiB climb.
-static TELEMETRY_CACHE_BYTES_INIT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(16 * 1024 * 1024);
-
-/// Composition-root seed (WP-01 PR 3.1): sized once from the owned
-/// ServerConfig; un-seeded tests get the old env-unset default (16 MiB).
-pub fn init_telemetry_cache(bytes: usize) {
-    TELEMETRY_CACHE_BYTES_INIT.store(bytes, std::sync::atomic::Ordering::Relaxed);
-}
-
-pub(crate) fn telemetry_cache() -> std::sync::Arc<slatedb::db_cache::foyer::FoyerCache> {
-    static CACHE: std::sync::OnceLock<std::sync::Arc<slatedb::db_cache::foyer::FoyerCache>> =
-        std::sync::OnceLock::new();
-    CACHE
-        .get_or_init(|| {
-            let bytes =
-                TELEMETRY_CACHE_BYTES_INIT.load(std::sync::atomic::Ordering::Relaxed) as u64;
-            TELEMETRY_CACHE_CAPACITY.store(bytes, std::sync::atomic::Ordering::Relaxed);
-            std::sync::Arc::new(slatedb::db_cache::foyer::FoyerCache::new_with_opts(
-                slatedb::db_cache::foyer::FoyerCacheOptions {
-                    max_capacity: bytes,
-                    ..Default::default()
-                },
-            ))
-        })
-        .clone()
-}
-
-/// Observable cache bound (ops snapshot): capacity, since foyer does
-/// not expose resident bytes cheaply — the BOUND is the safety claim.
-pub static TELEMETRY_CACHE_CAPACITY: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
+/// Telemetry databases use a shared, runtime-owned cache supplied by their
+/// caller. Their settings remain bounded separately from shard/history DBs.
 /// Telemetry DBs are tiny and quiet next to shard/history DBs: small
 /// memtables, small L0 targets, long metadata polls, and the same slow
 /// GC cadence as history. Never SlateDB defaults.
@@ -1990,6 +1949,9 @@ pub(crate) fn telemetry_settings(
     }
 }
 
+/// Sealed read batches enter durable custody here before the usage ledger;
+/// removal follows only a durable ledger acknowledgement. The runtime shares
+/// one bounded cache between this database and its usage rollup.
 pub struct ReadSpool {
     db: std::sync::Arc<slatedb::Db>,
     next: std::sync::atomic::AtomicU64,
@@ -2026,11 +1988,31 @@ impl Drop for SpoolOpenGuard {
 }
 
 impl ReadSpool {
+    /// Test-only convenience: a fresh cache, with no ambient shared state.
+    #[cfg(test)]
     pub async fn open(
         store: std::sync::Arc<dyn object_store::ObjectStore>,
         prefix: &str,
         instance: &str,
         cfg: &crate::config::ServerConfig,
+    ) -> anyhow::Result<Self> {
+        Self::open_with_cache(
+            store,
+            prefix,
+            instance,
+            cfg,
+            crate::runtime::TelemetryResources::new(cfg.billing.telemetry_cache_bytes).cache,
+        )
+        .await
+    }
+
+    /// Production callers supply their runtime's shared telemetry cache.
+    pub async fn open_with_cache(
+        store: std::sync::Arc<dyn object_store::ObjectStore>,
+        prefix: &str,
+        instance: &str,
+        cfg: &crate::config::ServerConfig,
+        cache: std::sync::Arc<slatedb::db_cache::foyer::FoyerCache>,
     ) -> anyhow::Result<Self> {
         let inst = if instance.is_empty() {
             "solo"
@@ -2046,7 +2028,7 @@ impl ReadSpool {
         let db = crate::bootstrap::on_slatedb_rt(async move {
             slatedb::Db::builder(path.as_str(), store)
                 .with_settings(settings)
-                .with_db_cache(telemetry_cache())
+                .with_db_cache(cache)
                 .build()
                 .await
         })

@@ -10,7 +10,7 @@
 //!     safe because ids are deterministic.
 //!   - Descriptor-backed transitions (create/seal/split/delete) are
 //!     durably recorded in the descriptor itself; their events emit
-//!     through the process queue with ids derived from the incarnation
+//!     through the runtime queue with ids derived from the incarnation
 //!     and transition, so a replay deduplicates and the descriptor
 //!     remains the recovery source.
 //!   - Observations (instance dark/live, fences, stalls) derive their
@@ -105,45 +105,64 @@ impl OpsEvent {
     }
 }
 
+#[derive(Default)]
 struct OpsQueue {
     queue: VecDeque<OpsEvent>,
     recent: VecDeque<OpsEvent>,
 }
 
-fn q() -> &'static Mutex<OpsQueue> {
-    static Q: std::sync::OnceLock<Mutex<OpsQueue>> = std::sync::OnceLock::new();
-    Q.get_or_init(|| {
-        Mutex::new(OpsQueue {
-            queue: VecDeque::new(),
-            recent: VecDeque::new(),
-        })
-    })
+/// Runtime-owned journal, recent view, drop debt and alert lifecycle.
+/// A second server cannot drain or resolve this server's observations.
+#[derive(Default)]
+pub struct OpsService {
+    queue: Mutex<OpsQueue>,
+    dropped: AtomicU64,
+    gap: AtomicU64,
+    sequence: AtomicU64,
+    // mt-lint: allow(name-keyed-map): alert kind, not stream identity
+    alerts: Mutex<std::collections::HashMap<String, AlertState>>,
 }
-
-pub static EVENTS_DROPPED: AtomicU64 = AtomicU64::new(0);
-static GAP_PENDING: AtomicU64 = AtomicU64::new(0);
-
-/// Enqueue one event. NEVER blocks and never fails the caller: at the
-/// cap the event drops into a durable counter and a later
-/// `telemetry_gap` event reports the loss (§12.4).
-pub fn emit(ev: OpsEvent) {
-    let mut g = q().lock().unwrap();
-    g.recent.push_back(ev.clone());
-    if g.recent.len() > RECENT_CAP {
-        g.recent.pop_front();
+impl OpsService {
+    pub fn new() -> Self {
+        Self::default()
     }
-    if g.queue.len() >= OPS_QUEUE_CAP {
-        EVENTS_DROPPED.fetch_add(1, Ordering::Relaxed);
-        GAP_PENDING.fetch_add(1, Ordering::Relaxed);
-        return;
+    pub fn dropped(&self) -> u64 {
+        self.dropped.load(Ordering::Relaxed)
     }
-    g.queue.push_back(ev);
-}
-
-/// The operator's recent-events view.
-pub fn recent(limit: usize) -> Vec<OpsEvent> {
-    let g = q().lock().unwrap();
-    g.recent.iter().rev().take(limit).cloned().collect()
+    /// Never fails the transition: bounded overflow becomes durable gap debt.
+    pub fn emit(&self, ev: OpsEvent) {
+        let mut g = self.queue.lock().unwrap();
+        g.recent.push_back(ev.clone());
+        if g.recent.len() > RECENT_CAP {
+            g.recent.pop_front();
+        }
+        if g.queue.len() >= OPS_QUEUE_CAP {
+            self.dropped.fetch_add(1, Ordering::Relaxed);
+            self.gap.fetch_add(1, Ordering::Relaxed);
+            return;
+        }
+        g.queue.push_back(ev);
+    }
+    pub fn recent(&self, limit: usize) -> Vec<OpsEvent> {
+        self.queue
+            .lock()
+            .unwrap()
+            .recent
+            .iter()
+            .rev()
+            .take(limit)
+            .cloned()
+            .collect()
+    }
+    pub fn open_alerts(&self) -> Vec<AlertState> {
+        self.alerts
+            .lock()
+            .unwrap()
+            .values()
+            .filter(|alert| alert.resolved_at_ms.is_none())
+            .cloned()
+            .collect()
+    }
 }
 
 // Own the removed events across every await. Dropping the drain future,
@@ -218,14 +237,19 @@ pub async fn drain_ops_once(
     let Some(key) = state.billing.usage_key() else {
         return Ok(0);
     };
-    let mut batch = PendingOps::take(q(), &EVENTS_DROPPED, &GAP_PENDING);
+    let journal = &state.runtime.ops;
+    let mut batch = PendingOps::take(&journal.queue, &journal.dropped, &journal.gap);
     // Report any drop gap once capacity exists again.
-    let gap = GAP_PENDING.swap(0, Ordering::Relaxed);
+    let gap = journal.gap.swap(0, Ordering::Relaxed);
     if gap > 0 {
         batch.events.push(
             OpsEvent::new(
                 "telemetry_gap",
-                format!("gap/{}/{}", state.runtime.identity.boot_id, gap),
+                format!(
+                    "gap/{}/{}",
+                    state.runtime.identity.boot_id,
+                    journal.sequence.fetch_add(1, Ordering::Relaxed)
+                ),
             )
             .warn()
             .fields(serde_json::json!({ "dropped": gap })),
@@ -259,17 +283,12 @@ mod tests {
     /// the gap exactly once.
     #[test]
     fn overflow_counts_and_reports() {
-        // Isolate: drain whatever other tests queued.
-        {
-            let mut g = q().lock().unwrap();
-            g.queue.clear();
-        }
+        let service = OpsService::new();
         for i in 0..(OPS_QUEUE_CAP + 10) {
-            emit(OpsEvent::new("t", format!("t/{i}")));
+            service.emit(OpsEvent::new("t", format!("t/{i}")));
         }
-        let dropped = EVENTS_DROPPED.load(Ordering::Relaxed);
-        assert!(dropped >= 10, "overflow must count drops, saw {dropped}");
-        let g = q().lock().unwrap();
+        assert_eq!(service.dropped(), 10);
+        let g = service.queue.lock().unwrap();
         assert_eq!(g.queue.len(), OPS_QUEUE_CAP, "cap enforced");
         assert!(g.recent.len() <= RECENT_CAP);
     }
@@ -310,11 +329,11 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
     counters.insert("fleet_ops_total".into(), state.admission.fleet_ops());
     counters.insert(
         "ops_events_dropped_total".into(),
-        EVENTS_DROPPED.load(Ordering::Relaxed),
+        state.runtime.ops.dropped(),
     );
     counters.insert(
         "audit_events_dropped_total".into(),
-        crate::audit::AUDIT_DROPPED.load(Ordering::Relaxed),
+        state.runtime.audit.dropped(),
     );
     counters.insert(
         "unowned_meter_events_total".into(),
@@ -339,7 +358,7 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
         gauges.insert("read_spool_pending_bytes".into(), sp.pending_bytes);
     }
     // ---- OOM-review causal metrics ------------------------------------
-    // Absorber: process-wide budget + last-gather phases. reserved vs
+    // Absorber: runtime-owned budget + last-gather phases. reserved vs
     // actual is the review's "is the multiplier honest" check.
     let ord = Ordering::Relaxed;
     gauges.insert(
@@ -425,7 +444,7 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
     );
     gauges.insert(
         "telemetry_cache_capacity_bytes".into(),
-        crate::billing::TELEMETRY_CACHE_CAPACITY.load(ord),
+        state.runtime.telemetry.capacity_bytes(),
     );
     // Telemetry-DB L0 posture (OOM review I3): the bounded settings
     // must be OBSERVABLY holding, not just configured.
@@ -440,7 +459,7 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
     }
     gauges.insert(
         "rollup_apply_duration_ms".into(),
-        crate::billing::ROLLUP_APPLY_DURATION_MS.load(ord),
+        state.runtime.telemetry.progress().rollup_apply_duration_ms,
     );
     // Process memory: sampled RSS + peak-since-scrape (the 250 ms
     // sampler keeps the peak; inter-snapshot SST-build spikes survive),
@@ -495,7 +514,7 @@ pub fn collect_snapshot(state: &std::sync::Arc<crate::http::AppState>) -> OpsSna
     }
     OpsSnapshot {
         v: 1,
-        ts_ms: crate::shard::now_ms(),
+        ts_ms: state.protocol_clock.now().ms(),
         cell: state.deployment.cell_id().as_str().to_string(),
         region: state.deployment.region().to_string(),
         instance: state.ownership.instance().to_string(),
@@ -541,24 +560,6 @@ pub struct AlertState {
     pub last_seen_ms: i64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub resolved_at_ms: Option<i64>,
-}
-
-fn alerts_map() -> &'static Mutex<std::collections::HashMap<String, AlertState>> {
-    // mt-lint: allow(name-keyed-map): alert kind, not stream identity
-    static A: std::sync::OnceLock<Mutex<std::collections::HashMap<String, AlertState>>> =
-        std::sync::OnceLock::new();
-    A.get_or_init(|| Mutex::new(std::collections::HashMap::new()))
-}
-
-/// Open alerts for the operator surface.
-pub fn open_alerts() -> Vec<AlertState> {
-    alerts_map()
-        .lock()
-        .unwrap()
-        .values()
-        .filter(|a| a.resolved_at_ms.is_none())
-        .cloned()
-        .collect()
 }
 
 /// Evaluate the initial rule set against one snapshot; open/resolve
@@ -642,7 +643,7 @@ pub async fn evaluate_alerts(state: &std::sync::Arc<crate::http::AppState>, snap
         ),
     ];
     let now = snap.ts_ms;
-    let mut map = alerts_map().lock().unwrap();
+    let mut map = state.runtime.ops.alerts.lock().unwrap();
     for (fp, breached, summary) in rules {
         match (map.get_mut(&fp), breached) {
             (Some(a), true) => {
@@ -651,7 +652,7 @@ pub async fn evaluate_alerts(state: &std::sync::Arc<crate::http::AppState>, snap
                     // Re-opened.
                     a.opened_at_ms = now;
                     a.resolved_at_ms = None;
-                    emit(
+                    state.runtime.ops.emit(
                         OpsEvent::new("alert_opened", format!("alert/{fp}/{now}"))
                             .warn()
                             .fields(serde_json::json!({"fingerprint": fp, "summary": summary})),
@@ -661,7 +662,7 @@ pub async fn evaluate_alerts(state: &std::sync::Arc<crate::http::AppState>, snap
             (Some(a), false) => {
                 if a.resolved_at_ms.is_none() {
                     a.resolved_at_ms = Some(now);
-                    emit(
+                    state.runtime.ops.emit(
                         OpsEvent::new("alert_resolved", format!("alert/{fp}/resolved/{now}"))
                             .fields(serde_json::json!({ "fingerprint": fp })),
                     );
@@ -678,7 +679,7 @@ pub async fn evaluate_alerts(state: &std::sync::Arc<crate::http::AppState>, snap
                         resolved_at_ms: None,
                     },
                 );
-                emit(
+                state.runtime.ops.emit(
                     OpsEvent::new("alert_opened", format!("alert/{fp}/{now}"))
                         .warn()
                         .fields(serde_json::json!({"fingerprint": fp, "summary": summary})),

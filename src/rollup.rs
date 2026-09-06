@@ -489,10 +489,28 @@ fn read_faults() -> &'static ReadFaults {
 }
 
 impl UsageRollup {
+    /// Test-only convenience: independent tests construct independent caches.
+    #[cfg(test)]
     pub async fn open(
         store: Arc<dyn object_store::ObjectStore>,
         prefix: &str,
         cfg: &crate::config::ServerConfig,
+    ) -> anyhow::Result<Self> {
+        Self::open_with_cache(
+            store,
+            prefix,
+            cfg,
+            crate::runtime::TelemetryResources::new(cfg.billing.telemetry_cache_bytes).cache,
+        )
+        .await
+    }
+
+    /// The runtime shares one telemetry cache across spool and rollup DBs.
+    pub async fn open_with_cache(
+        store: Arc<dyn object_store::ObjectStore>,
+        prefix: &str,
+        cfg: &crate::config::ServerConfig,
+        cache: Arc<slatedb::db_cache::foyer::FoyerCache>,
     ) -> anyhow::Result<Self> {
         let path = if prefix.is_empty() {
             ROLLUP_PATH.to_string()
@@ -504,7 +522,7 @@ impl UsageRollup {
         let db = crate::bootstrap::on_slatedb_rt(async move {
             Db::builder(path.as_str(), store)
                 .with_settings(settings)
-                .with_db_cache(crate::billing::telemetry_cache())
+                .with_db_cache(cache)
                 .build()
                 .await
         })

@@ -222,3 +222,9 @@ mod consumer_dlq;
 
 #[path = "tests/read_application.rs"]
 mod read_application;
+
+#[path = "tests/runtime_journals.rs"]
+mod runtime_journals;
+
+#[path = "tests/runtime_usage.rs"]
+mod runtime_usage;

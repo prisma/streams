@@ -6,13 +6,13 @@
 //!     at the platform egress budget (~50)  → egress-slot exhaustion
 //!   - acks spike with no store-side spike  → our scheduling/watermark path
 //!
-//! One global registry (all stores, all roles) because the egress budget is
-//! per *instance*: only the summed outbound concurrency means anything.
+//! Admission is shared across the stores of one runtime. Diagnostic latency
+//! and physical process-egress counters remain process-wide measurements.
 
 use std::collections::VecDeque;
 use std::ops::Range;
 use std::sync::atomic::{AtomicI64, Ordering};
-use std::sync::{Mutex, OnceLock};
+use std::sync::{Arc, Mutex, OnceLock};
 use std::time::{Instant, SystemTime, UNIX_EPOCH};
 
 use async_trait::async_trait;
@@ -71,208 +71,10 @@ pub struct StoreStats {
 pub static GET_COUNT: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 pub static GET_BYTES: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
 
-static STORE_MAX_CONCURRENT_INIT: std::sync::atomic::AtomicUsize =
-    std::sync::atomic::AtomicUsize::new(0);
-static BULK_NOMINAL_GET_BYTES_INIT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(8 * 1024 * 1024);
-static BULK_INFLIGHT_MAX_BYTES_INIT: std::sync::atomic::AtomicU64 =
-    std::sync::atomic::AtomicU64::new(0);
-
-/// Composition-root seed (WP-01 PR 3.1): the process-global egress
-/// gates (per-instance by design — the egress budget belongs to the
-/// whole process, not to one store) sized once from the owned
-/// ServerConfig; un-seeded tests get the old env-unset defaults.
-pub fn configure(cfg: &crate::config::StorageConfig) {
-    STORE_MAX_CONCURRENT_INIT.store(cfg.store_max_concurrent, Ordering::Relaxed);
-    BULK_NOMINAL_GET_BYTES_INIT.store(cfg.bulk_nominal_get_bytes, Ordering::Relaxed);
-    BULK_INFLIGHT_MAX_BYTES_INIT.store(cfg.bulk_inflight_max_bytes, Ordering::Relaxed);
-}
-
-/// Optional instance-wide cap on concurrent object-store ops
-/// (STORE_MAX_CONCURRENT, 0/unset = off). Run-12 found ack excursions are
-/// broad client-side slowdowns: HTTP/1.1 to Tigris + 4 s pool pruning means
-/// every op burst past the warm set pays a fresh TLS handshake through the
-/// egress NAT — the outbound edition of the platform's Conduit bug. Capping
-/// concurrency keeps a small connection set continuously busy (never idle,
-/// never pruned, no handshake storms); bursts queue for milliseconds
-/// instead. List/delete streams are exempt (long-lived, low-volume).
-fn sem() -> Option<&'static tokio::sync::Semaphore> {
-    static S: OnceLock<Option<tokio::sync::Semaphore>> = OnceLock::new();
-    S.get_or_init(|| {
-        let n: usize = STORE_MAX_CONCURRENT_INIT.load(Ordering::Relaxed);
-        if n == 0 {
-            None
-        } else {
-            Some(tokio::sync::Semaphore::new(n))
-        }
-    })
-    .as_ref()
-}
-
-async fn permit() -> Option<tokio::sync::SemaphorePermit<'static>> {
-    match sem() {
-        // acquire() only errs on close; we never close it
-        Some(s) => s.acquire().await.ok(),
-        None => None,
-    }
-}
-
-/// R27-4: instance-wide byte bound on in-flight BULK store transfers.
-///
-/// SCOPE (R29 review): this is an SST LEAF-I/O OVERLAP LIMITER, not a
-/// complete memory budget. It bounds bytes concurrently inside store
-/// calls; it does NOT bound payloads already built and queued at the
-/// gate, completed read-ahead buffers, compactor merge state, or
-/// output builders — those are bounded by the compaction-worker
-/// profile (COMPACT_* knobs) and task-count posture. The full 1 GiB
-/// survival story is the COMBINATION, never this gate alone.
-///
-/// The SIN incompressible campaign OOM-killed (exit 137) with the
-/// maintenance ledger healthy at 50-86 MB: RSS jumped ~250 MB in one
-/// 5 s window exactly as concurrent store ops burst 14→22 (peak 53).
-/// The latency-injected local repro shows the same wave. The driver is
-/// SST-class transfers — flush + compaction across EVERY resident
-/// SlateDB (4 shard DBs + history + telemetry + registry…) each buffer
-/// MB-scale payloads, and per-DB compactor limits do not compose: at
-/// WAN RTT every DB's compaction lives long enough to overlap all the
-/// others', so the instance-wide buffered-byte peak scales with store
-/// latency. This wrapper is the only point all DBs share, so the
-/// global admission bound lives here.
-///
-/// Rules (deadlock-freedom): a permit is held ONLY across the leaf
-/// await of the inner store call — never across stream consumption —
-/// so every waiter is eventually satisfied by ops that complete on
-/// pure network I/O. WAL/manifest/fleet classes NEVER wait (ack path
-/// and cluster liveness); only sst-class ops are gated. An op larger
-/// than the cap clamps to the whole cap (serializes, never starves).
-pub struct BulkGate {
-    sem: tokio::sync::Semaphore,
-    cap: u32,
-    pub inflight_bytes: AtomicI64,
-    /// High-water mark of concurrently held bytes (non-destructive).
-    pub inflight_peak: AtomicI64,
-    pub waits: std::sync::atomic::AtomicU64,
-    pub wait_ms: std::sync::atomic::AtomicU64,
-    /// Ops whose weight clamped to the whole cap (larger than the gate).
-    pub oversized: std::sync::atomic::AtomicU64,
-}
-
-impl BulkGate {
-    pub fn new(cap_bytes: u32) -> Self {
-        BulkGate {
-            sem: tokio::sync::Semaphore::new(cap_bytes as usize),
-            cap: cap_bytes,
-            inflight_bytes: AtomicI64::new(0),
-            inflight_peak: AtomicI64::new(0),
-            waits: std::sync::atomic::AtomicU64::new(0),
-            wait_ms: std::sync::atomic::AtomicU64::new(0),
-            oversized: std::sync::atomic::AtomicU64::new(0),
-        }
-    }
-
-    /// Acquire `bytes` worth of the gate (clamped to the cap). Counts a
-    /// wait only when the fast path fails, so steady-state overhead is
-    /// one try_acquire. The returned hold decrements the inflight gauge
-    /// and returns capacity on drop.
-    pub async fn acquire(&self, bytes: u64) -> BulkHold<'_> {
-        if bytes > self.cap as u64 {
-            self.oversized.fetch_add(1, Ordering::Relaxed);
-        }
-        let w = bytes.min(self.cap as u64).max(1) as u32;
-        let p = match self.sem.try_acquire_many(w) {
-            Ok(p) => p,
-            Err(_) => {
-                self.waits.fetch_add(1, Ordering::Relaxed);
-                let t0 = Instant::now();
-                // only errs on close; we never close it
-                let p = self.sem.acquire_many(w).await.expect("gate never closed");
-                self.wait_ms
-                    .fetch_add(t0.elapsed().as_millis() as u64, Ordering::Relaxed);
-                p
-            }
-        };
-        let now = self.inflight_bytes.fetch_add(w as i64, Ordering::Relaxed) + w as i64;
-        self.inflight_peak.fetch_max(now, Ordering::Relaxed);
-        BulkHold {
-            _p: p,
-            gate: self,
-            w: w as i64,
-        }
-    }
-
-    pub fn stats_json(&self) -> serde_json::Value {
-        serde_json::json!({
-            "cap_bytes": self.cap,
-            "inflight_bytes": self.inflight_bytes.load(Ordering::Relaxed),
-            "inflight_peak_bytes": self.inflight_peak.load(Ordering::Relaxed),
-            "waits_total": self.waits.load(Ordering::Relaxed),
-            "wait_ms_total": self.wait_ms.load(Ordering::Relaxed),
-            "oversized_total": self.oversized.load(Ordering::Relaxed),
-            // Gated class set is fixed by design: sst only (WAL,
-            // manifest and fleet are ack/liveness paths and never
-            // queue behind compaction).
-            "classes": "sst",
-        })
-    }
-}
-
-/// Nominal weight for an sst GET whose length we cannot know up front
-/// (full-object or open-ended range). R29: sized to the resolved
-/// compaction OUTPUT roll (COMPACT_MAX_SST_SIZE_BYTES) — the largest
-/// object compaction writes and may later re-read — instead of a
-/// fixed 8 MiB that understated the certified 32 MiB rolls.
-fn bulk_nominal_get() -> u64 {
-    static N: OnceLock<u64> = OnceLock::new();
-    *N.get_or_init(|| BULK_NOMINAL_GET_BYTES_INIT.load(Ordering::Relaxed))
-}
-
-fn bulk_gate() -> Option<&'static BulkGate> {
-    static G: OnceLock<Option<BulkGate>> = OnceLock::new();
-    G.get_or_init(|| {
-        let n: u64 = BULK_INFLIGHT_MAX_BYTES_INIT.load(Ordering::Relaxed);
-        if n == 0 {
-            None
-        } else {
-            Some(BulkGate::new(n.min(u32::MAX as u64) as u32))
-        }
-    })
-    .as_ref()
-}
-
-/// RAII hold on gate capacity: semaphore permits + inflight gauge,
-/// both returned on drop.
-pub struct BulkHold<'a> {
-    _p: tokio::sync::SemaphorePermit<'a>,
-    gate: &'a BulkGate,
-    w: i64,
-}
-
-impl Drop for BulkHold<'_> {
-    fn drop(&mut self) {
-        self.gate
-            .inflight_bytes
-            .fetch_sub(self.w, Ordering::Relaxed);
-    }
-}
-
-/// Permit for an sst-class transfer of `bytes`; None when the gate is
-/// off or the class is exempt.
-async fn bulk_permit(class: u8, bytes: u64) -> Option<BulkHold<'static>> {
-    // sst only: WAL is the ack path, manifest is CAS liveness, fleet is
-    // cluster liveness — none of them may queue behind compaction.
-    if class != 2 {
-        return None;
-    }
-    let g = bulk_gate()?;
-    Some(g.acquire(bytes).await)
-}
-
-pub fn bulk_gate_stats() -> serde_json::Value {
-    match bulk_gate() {
-        Some(g) => g.stats_json(),
-        None => serde_json::json!({"cap_bytes": 0}),
-    }
-}
+mod resources;
+#[cfg(test)]
+use resources::BulkGate;
+pub use resources::StoreResources;
 
 pub fn stats() -> &'static StoreStats {
     static S: OnceLock<StoreStats> = OnceLock::new();
@@ -519,11 +321,12 @@ impl Drop for OpGuard {
 #[derive(Debug)]
 pub struct TimingStore<T: ObjectStore> {
     inner: T,
+    resources: Arc<StoreResources>,
 }
 
 impl<T: ObjectStore> TimingStore<T> {
-    pub fn new(inner: T) -> Self {
-        TimingStore { inner }
+    pub fn new(inner: T, resources: Arc<StoreResources>) -> Self {
+        TimingStore { inner, resources }
     }
 }
 
@@ -541,8 +344,11 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         payload: PutPayload,
         opts: PutOptions,
     ) -> Result<PutResult> {
-        let _b = bulk_permit(classify(location.as_ref()), payload.content_length() as u64).await;
-        let _p = permit().await;
+        let _b = self
+            .resources
+            .bulk_permit(classify(location.as_ref()), payload.content_length() as u64)
+            .await;
+        let _p = self.resources.permit().await;
         let g = OpGuard::new(0, location);
         let r = self.inner.put_opts(location, payload, opts).await;
         g.finish(r.is_ok());
@@ -554,7 +360,7 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         location: &Path,
         opts: PutMultipartOptions,
     ) -> Result<Box<dyn MultipartUpload>> {
-        let _p = permit().await;
+        let _p = self.resources.permit().await;
         let g = OpGuard::new(1, location);
         let class = classify(location.as_ref());
         match self.inner.put_multipart_opts(location, opts).await {
@@ -562,6 +368,7 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
                 inner: up,
                 guard: Some(g),
                 class,
+                resources: self.resources.clone(),
             })),
             Err(e) => {
                 g.finish(false);
@@ -580,11 +387,13 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
         } else {
             let w = match &options.range {
                 Some(object_store::GetRange::Bounded(r)) => r.end.saturating_sub(r.start),
-                _ => bulk_nominal_get(),
+                _ => self.resources.nominal_get_bytes(),
             };
-            bulk_permit(classify(location.as_ref()), w).await
+            self.resources
+                .bulk_permit(classify(location.as_ref()), w)
+                .await
         };
-        let _p = permit().await;
+        let _p = self.resources.permit().await;
         let is_head = options.head;
         let g = OpGuard::new(if is_head { 3 } else { 2 }, location);
         let r = self.inner.get_opts(location, options).await;
@@ -635,12 +444,14 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
     async fn get_ranges(&self, location: &Path, ranges: &[Range<u64>]) -> Result<Vec<Bytes>> {
         // Bulk gate: the buffers materialize inside this call, so the
         // exact requested byte total is the honest weight.
-        let _b = bulk_permit(
-            classify(location.as_ref()),
-            ranges.iter().map(|r| r.end.saturating_sub(r.start)).sum(),
-        )
-        .await;
-        let _p = permit().await;
+        let _b = self
+            .resources
+            .bulk_permit(
+                classify(location.as_ref()),
+                ranges.iter().map(|r| r.end.saturating_sub(r.start)).sum(),
+            )
+            .await;
+        let _p = self.resources.permit().await;
         let g = OpGuard::new(2, location);
         let r = self.inner.get_ranges(location, ranges).await;
         g.finish(r.is_ok());
@@ -685,7 +496,7 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
     }
 
     async fn list_with_delimiter(&self, prefix: Option<&Path>) -> Result<ListResult> {
-        let _p = permit().await;
+        let _p = self.resources.permit().await;
         let g = OpGuard::new(5, prefix.unwrap_or(&Path::default()));
         let r = self.inner.list_with_delimiter(prefix).await;
         g.finish(r.is_ok());
@@ -693,7 +504,7 @@ impl<T: ObjectStore> ObjectStore for TimingStore<T> {
     }
 
     async fn copy_opts(&self, from: &Path, to: &Path, options: CopyOptions) -> Result<()> {
-        let _p = permit().await;
+        let _p = self.resources.permit().await;
         let g = OpGuard::new(6, from);
         let r = self.inner.copy_opts(from, to, options).await;
         g.finish(r.is_ok());
@@ -769,6 +580,7 @@ impl Drop for TimedDeleteStream {
 }
 
 struct TimedMpu {
+    resources: Arc<StoreResources>,
     inner: Box<dyn MultipartUpload>,
     guard: Option<OpGuard>,
     class: u8,
@@ -793,8 +605,9 @@ impl MultipartUpload for TimedMpu {
         if class != 2 {
             return inner;
         }
+        let resources = self.resources.clone();
         Box::pin(async move {
-            let _b = bulk_permit(class, bytes).await;
+            let _b = resources.bulk_permit(class, bytes).await;
             inner.await
         })
     }
@@ -825,7 +638,11 @@ fn pct(sorted_us: &[u32], q: f64) -> u64 {
 
 /// Snapshot for /v1/debug/store: per (op,class) percentiles over
 /// `window_secs`, the slow-op ring, and the outbound gauge.
-pub fn snapshot(window_secs: u64, swap_peak: bool) -> serde_json::Value {
+pub fn snapshot(
+    window_secs: u64,
+    swap_peak: bool,
+    resources: &StoreResources,
+) -> serde_json::Value {
     let s = stats();
     let cutoff = now_ms().saturating_sub(window_secs * 1000);
     let mut cells: std::collections::HashMap<(u8, u8), Vec<u32>> = std::collections::HashMap::new();
@@ -949,7 +766,7 @@ pub fn snapshot(window_secs: u64, swap_peak: bool) -> serde_json::Value {
         "window_secs": window_secs,
         "out_inflight_now": inflight_now,
         "out_inflight_peak": peak,
-        "bulk_gate": bulk_gate_stats(),
+        "bulk_gate": resources.bulk_stats(),
         "timer_thread": drift_stats(&drift().thread, cutoff),
         "timer_tokio": drift_stats(&drift().tokio, cutoff),
         "steal_pct": steal_pct,
@@ -1274,8 +1091,7 @@ mod tests {
     }
 
     // ---- R27-4 bulk gate ---------------------------------------------------
-    // Tests construct BulkGate directly (the process-wide instance is
-    // env-configured through a OnceLock and can't vary per test).
+    // Gate mechanisms can be tested independently of runtime assembly.
 
     /// N tasks each transfer `op_bytes` through the gate; the observed
     /// peak of concurrently-held bytes must never exceed the cap.
@@ -1335,9 +1151,11 @@ mod tests {
     /// gate is configured — they can never queue behind compaction.
     #[tokio::test]
     async fn bulk_gate_exempts_non_sst_classes() {
-        // The process-wide gate is off in tests (env unset), so
-        // bulk_permit returns None for both reasons; assert the class
-        // check alone by exercising classify against the gate rule.
+        let resources = StoreResources::new(&crate::config::StorageConfig {
+            bulk_inflight_max_bytes: 8 << 20,
+            ..Default::default()
+        });
+        let _held = resources.bulk_permit(2, 8 << 20).await.unwrap();
         for (path, gated) in [
             ("pilot/shards/root-3/wal/00000042.sst", false), // class wal
             ("pilot/manifest/00000007.manifest", false),
@@ -1349,7 +1167,7 @@ mod tests {
             assert_eq!(class == 2, gated, "path {path} class {class}");
             if !gated {
                 assert!(
-                    bulk_permit(class, 8 << 20).await.is_none(),
+                    resources.bulk_permit(class, 8 << 20).await.is_none(),
                     "non-sst class {class} must never take a permit"
                 );
             }

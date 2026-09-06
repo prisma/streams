@@ -24,6 +24,7 @@ pub(crate) struct AppendService {
     pub(crate) admission: crate::admission::AdmissionController,
     pub(crate) quotas: crate::quota::QuotaRegistry,
     pub(crate) history: Arc<crate::history::HistoryResources>,
+    pub(crate) usage: Arc<crate::usage::UsageService>,
     pub(crate) scaler: Arc<crate::scaler3::Scaler>,
     pub(crate) keys: Arc<crate::history::KeyCache>,
     pub(crate) watches: Arc<crate::application::watch::WatchService>,
@@ -225,6 +226,7 @@ async fn execute_once(
     let close_only = close && body.is_empty();
     let mut close_plan = close::prepare_close(state, &desc, command, producer).await?;
     let content = content::parse_content(
+        &state.usage,
         &desc,
         command,
         state.admission.record_ceiling(),
@@ -234,6 +236,7 @@ async fn execute_once(
     let content::ContentPlan { entries, deferred } = content;
     let close_carries_content = !entries.is_empty();
     let usage_c = admission::admit_usage(
+        &state.usage,
         &desc,
         close_only,
         deferred.is_none(),
@@ -275,7 +278,7 @@ async fn execute_once(
             .scaler
             .note_append(&desc, &seg, fed as u64, entries.len() as u64);
     }
-    crate::usage::link_storage(
+    state.usage.link_storage(
         crate::crypto::RouteHash::for_stream(&desc.sref()),
         crate::crypto::SegmentHash(hash),
     );

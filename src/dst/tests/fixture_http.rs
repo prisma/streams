@@ -17,6 +17,7 @@ pub(super) struct HttpRigOptions {
     pub(super) prefixes: Vec<String>,
     pub(super) shard: crate::shard::ShardConfig,
     pub(super) per_segment_slots: i64,
+    pub(super) max_request_body_bytes: Option<usize>,
     /// Static account bearer (the negative authorization matrix).
     pub(super) auth: Option<String>,
     /// A NAMED instance makes ring ownership real: setting
@@ -42,6 +43,7 @@ impl Default for HttpRigOptions {
             prefixes: vec!["00".to_string()],
             shard: crate::shard::ShardConfig::default(),
             per_segment_slots: 0,
+            max_request_body_bytes: None,
             auth: None,
             instance: None,
             open_park: None,
@@ -303,6 +305,7 @@ pub(super) async fn http_rig_build(
         prefixes,
         shard: shard_cfg,
         per_segment_slots,
+        max_request_body_bytes,
         auth,
         instance: instance_name,
         open_park,
@@ -344,6 +347,9 @@ pub(super) async fn http_rig_build(
     let rig_config = Arc::new(crate::config::ServerConfig::load(
         {
             let mut cli = crate::config::CliArgs::deterministic();
+            if let Some(limit) = max_request_body_bytes {
+                cli.max_request_body_bytes = limit;
+            }
             if let Some(name) = instance_name.clone() {
                 cli.instance_name = name;
             }
@@ -352,6 +358,16 @@ pub(super) async fn http_rig_build(
         &crate::config::MapEnvironment::empty(),
     ));
     let mut rig_runtime = rig_runtime.with_config(&rig_config);
+    let protocol_clock: Arc<dyn crate::runtime::Clock> =
+        Arc::new(crate::runtime::SystemClock::default());
+    // Wire deadlines and rate refill follow real transport time in HTTP rigs.
+    // Tests that drive time explicitly may supply the shared usage capability.
+    rig_runtime.usage = shard_cfg.shared_usage.clone().unwrap_or_else(|| {
+        Arc::new(crate::usage::UsageService::new(
+            &rig_config.admission,
+            protocol_clock.clone(),
+        ))
+    });
     let mut opener_shard_cfg = shard_cfg.clone();
     if let Some(shared) = &opener_shard_cfg.shared_history {
         rig_runtime.history = shared.clone();
@@ -359,6 +375,8 @@ pub(super) async fn http_rig_build(
     if let Some(shared) = &opener_shard_cfg.shared_postings_cache {
         rig_runtime.postings = shared.clone();
     }
+    opener_shard_cfg.shared_usage = Some(rig_runtime.usage.clone());
+    opener_shard_cfg.shared_ops = Some(rig_runtime.ops.clone());
     opener_shard_cfg.shared_history = Some(rig_runtime.history.clone());
     opener_shard_cfg.shared_postings_cache = Some(rig_runtime.postings.clone());
     let ownership = crate::ownership::OwnershipService::new(instance_name.unwrap_or_default());
@@ -386,7 +404,7 @@ pub(super) async fn http_rig_build(
         runtime: rig_runtime.clone(),
         // These fixtures mint external JWTs, policies and watch capabilities
         // with real wall time; their seeded manual clock controls local tests.
-        protocol_clock: Arc::new(crate::runtime::SystemClock::default()),
+        protocol_clock,
         config: rig_config.clone(),
         registry: Arc::new(registry),
         watches: std::sync::OnceLock::new(),
@@ -451,7 +469,7 @@ pub(super) async fn http_rig_build(
                 .unwrap(),
             )
         }),
-        quotas: crate::quota::QuotaRegistry::default(),
+        quotas: crate::quota::QuotaRegistry::new(rig_runtime.ops.clone()),
         catalog_cursor_key: None,
     });
     let app = crate::http::router(state.clone());

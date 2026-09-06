@@ -717,7 +717,11 @@ async fn pending_summary_clears_on_shard_close() {
     let mut published = false;
     for _ in 0..200 {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        if crate::usage::absorb_pending_summary_for("dst-sumclear").is_some() {
+        if engine
+            .usage
+            .absorb_pending_summary_for("dst-sumclear")
+            .is_some()
+        {
             published = true;
             break;
         }
@@ -728,7 +732,11 @@ async fn pending_summary_clears_on_shard_close() {
     let mut cleared = false;
     for _ in 0..200 {
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-        if crate::usage::absorb_pending_summary_for("dst-sumclear").is_none() {
+        if engine
+            .usage
+            .absorb_pending_summary_for("dst-sumclear")
+            .is_none()
+        {
             cleared = true;
             break;
         }

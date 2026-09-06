@@ -51,11 +51,14 @@ impl crate::config::ServerConfig {
             .context("build s3 object store")
     }
 
-    // TimingStore sits beneath PrefixStore so it times final, fully-prefixed
-    // paths (O14a split: our pipeline vs egress path vs Tigris). All stores
-    // share one global gauge — the egress budget is per instance.
-    fn store_for(&self, bucket: &Option<String>) -> anyhow::Result<Arc<dyn ObjectStore>> {
-        let s3 = crate::store_timing::TimingStore::new(self.raw_store(bucket)?);
+    // All stores share this runtime's admission handle. Physical-process
+    // diagnostic counters remain aggregated separately from that policy.
+    fn store_for(
+        &self,
+        bucket: &Option<String>,
+        resources: &Arc<crate::store_timing::StoreResources>,
+    ) -> anyhow::Result<Arc<dyn ObjectStore>> {
+        let s3 = crate::store_timing::TimingStore::new(self.raw_store(bucket)?, resources.clone());
         Ok(match &self.cli.path_prefix {
             Some(p) => Arc::new(object_store::prefix::PrefixStore::new(s3, p.as_str())),
             None => Arc::new(s3),
@@ -64,11 +67,14 @@ impl crate::config::ServerConfig {
 
     /// Fleet-coordination store (heartbeats, desired.json): shared across
     /// instances, so prefixed by --fleet-prefix, not --path-prefix.
-    fn fleet_store(&self) -> anyhow::Result<Option<Arc<dyn ObjectStore>>> {
+    fn fleet_store(
+        &self,
+        resources: &Arc<crate::store_timing::StoreResources>,
+    ) -> anyhow::Result<Option<Arc<dyn ObjectStore>>> {
         let Some(p) = &self.cli.fleet_prefix else {
             return Ok(None);
         };
-        let s3 = crate::store_timing::TimingStore::new(self.raw_store(&None)?);
+        let s3 = crate::store_timing::TimingStore::new(self.raw_store(&None)?, resources.clone());
         Ok(Some(Arc::new(object_store::prefix::PrefixStore::new(
             s3,
             p.as_str(),
@@ -76,27 +82,8 @@ impl crate::config::ServerConfig {
     }
 }
 
-static SLATEDB_RT_THREADS: std::sync::atomic::AtomicUsize = std::sync::atomic::AtomicUsize::new(2);
-
-/// Composition-root call, before the first SlateDB opens: size the
-/// dedicated runtime from the process configuration. Tests never call
-/// this and get the default (2), matching the old env-unset default.
-pub fn init_slatedb_runtime_threads(threads: usize) {
-    SLATEDB_RT_THREADS.store(threads, std::sync::atomic::Ordering::Relaxed);
-}
-
-pub fn slatedb_runtime() -> &'static tokio::runtime::Runtime {
-    static RT: std::sync::OnceLock<tokio::runtime::Runtime> = std::sync::OnceLock::new();
-    RT.get_or_init(|| {
-        let threads = SLATEDB_RT_THREADS.load(std::sync::atomic::Ordering::Relaxed);
-        tokio::runtime::Builder::new_multi_thread()
-            .worker_threads(threads)
-            .thread_name("slatedb-rt")
-            .enable_all()
-            .build()
-            .expect("build slatedb runtime")
-    })
-}
+mod process_executor;
+pub use process_executor::{init_slatedb_runtime_threads, slatedb_runtime};
 
 mod runtime_handoff;
 pub use runtime_handoff::on_slatedb_rt;
@@ -108,27 +95,17 @@ pub use runtime_handoff::on_slatedb_rt;
 /// owners and serves. Called from the binary's `run` facade; tests
 /// drive owners directly, not this.
 pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
-    // Transitional posture (WP-01 PR 3.2, pending WP-02): several
-    // subsystems still read process-global init-once holders (absorb
-    // budget/pause, history/telemetry/postings caches, usage limits,
-    // scaler policy, store gates), seeded once below. Two ServerConfig
-    // VALUES coexist fine, but a second running server in this process
-    // would silently observe the first one's seeds — so run() enforces
-    // its process-singleton contract loudly until WP-02 moves those
-    // policies into per-runtime owners.
-    // PR 3.2.1 naming review: this is a once-EVER process latch, not
-    // "a server is currently running" — even a failed first invocation
-    // consumes the right to call run() again, because the process-global
-    // holders it may have partially seeded cannot be un-seeded. Do not
-    // add reset-on-error logic here; WP-02 removes the holders instead.
+    // The executable has one process bootstrap: OS-resource setup, the
+    // shared physical SlateDB executor, and process instrumentation start
+    // once. Runtime policy, caches, journals, and admission state are owned
+    // independently by RuntimeCaps; their tests do not call this entry point.
+    // A failed bootstrap still cannot start a second set of process sentinels.
     static RUN_WAS_INVOKED: std::sync::atomic::AtomicBool =
         std::sync::atomic::AtomicBool::new(false);
     if RUN_WAS_INVOKED.swap(true, std::sync::atomic::Ordering::SeqCst) {
         anyhow::bail!(
-            "run() is process-singleton in the current transitional posture: \
-             process-global policy holders (caches, budgets, limits, scaler) are \
-             seeded once per process; a second runtime would observe the first \
-             one's seeds (WP-02 replaces these with per-runtime owners)"
+            "run() starts process infrastructure once; construct independent \
+             RuntimeCaps owners when embedding or testing multiple runtimes"
         );
     }
     let crate::config::validation::BootstrapParts {
@@ -194,26 +171,10 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         model = %crate::quota::pressure_model_json(),
         "project memory-pressure model (round-13; weights are code-versioned)"
     );
-    init_slatedb_runtime_threads(config.engine.slatedb_rt_threads);
-    // Process-global infrastructure sized once from the owned config
-    // (WP-01 PR 3.1): the absorber budget, the shared caches (history,
-    // telemetry, postings), the usage limits, the scaler policy, the
-    // store egress gates, and the debug pause flag's INITIAL value.
-    // Each holder documents why it is process-global; un-seeded tests
-    // get the old defaults.
-    crate::billing::init_telemetry_cache(config.billing.telemetry_cache_bytes);
-    crate::usage::init_limits(&config.admission);
-    crate::store_timing::configure(&config.storage);
-
-    // FIRST: the body ceiling sizes the absorber's worst-frame
-    // reservation, which floors the process-wide budget. It must be
-    // fixed before anything reads either (CHAOS-3). Engine-settings
-    // validity (CHAOS-2) was proven by `validate()` before run().
-    crate::http::install_max_body_bytes(config.cli.max_request_body_bytes);
-
-    let ops_store = config.store_for(&config.cli.ops_bucket)?;
-    let shard_store = config.store_for(&config.cli.shard_bucket)?;
-    let data_store = config.store_for(&config.cli.data_bucket)?;
+    init_slatedb_runtime_threads(config.engine.slatedb_rt_threads)?;
+    let ops_store = config.store_for(&config.cli.ops_bucket, &runtime_caps.store_io)?;
+    let shard_store = config.store_for(&config.cli.shard_bucket, &runtime_caps.store_io)?;
+    let data_store = config.store_for(&config.cli.data_bucket, &runtime_caps.store_io)?;
 
     // R23-5: a synchronous storage canary, BEFORE we bind.
     //
@@ -448,11 +409,15 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         let opener_history = config.history.clone();
         let opener_compactor = config.engine.compactor_options();
         let opener_frame_compress = config.crypto.frame_compress;
+        let shared_usage = runtime_caps.usage.clone();
+        let shared_ops = runtime_caps.ops.clone();
         let shared_history = runtime_caps.history.clone();
         let shared_postings = runtime_caps.postings.clone();
         Box::new(
             move |prefix: String, incarnation: crate::sharddir::EngineIncarnation| {
                 let shard_store = shard_store.clone();
+                let shared_usage = shared_usage.clone();
+                let shared_ops = shared_ops.clone();
                 let shared_history = shared_history.clone();
                 let shared_postings = shared_postings.clone();
                 let shared_cache = shared_cache.clone();
@@ -528,6 +493,8 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
                             handle_max_resident,
                             shared_postings_cache: Some(shared_postings),
                             shared_history: Some(shared_history),
+                            shared_usage: Some(shared_usage),
+                            shared_ops: Some(shared_ops),
                             frame_compression: crate::crypto::FrameCompression::from_enabled(
                                 opener_frame_compress,
                             ),
@@ -566,7 +533,8 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     // PR 6.1.1-C: ONE fleet repository per runtime. The loop, the event
     // drainer and the operator surface all receive this same owner, so
     // no caller can be paired with a different coordination store.
-    let fleet_repository = crate::fleet::FleetRepository::new(config.fleet_store()?);
+    let fleet_repository =
+        crate::fleet::FleetRepository::new(config.fleet_store(&runtime_caps.store_io)?);
     // WP-02 / PR 6-A: the ownership and shard-directory OWNERS take their
     // own configuration here, before the composition root. PR 6.1-B: the
     // directory builds its serving map and gate itself, from the opener
@@ -680,7 +648,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
             config.cli.instance_name.clone()
         },
         auth: auth_service.clone(),
-        quotas: crate::quota::QuotaRegistry::default(),
+        quotas: crate::quota::QuotaRegistry::new(runtime_caps.ops.clone()),
         catalog_cursor_key,
     });
     // PR 6.1-A: the LAST fallible startup steps come before the first

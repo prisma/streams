@@ -122,18 +122,8 @@ async fn enforce_denials_journal_to_audit_events() {
     let auth = ("authorization", auth.as_str());
     let ekey = ("prisma-encryption-key", PRISMA_KEY);
 
-    // The queue is process-global and other enforce tests enqueue their
-    // own denials concurrently; empty the backlog first so this test's
-    // probes cannot hit the cap and drop.
-    for _ in 0..40 {
-        if crate::audit::drain_audit_once(&state)
-            .await
-            .expect("pre-drain")
-            == 0
-        {
-            break;
-        }
-    }
+    // A fresh runtime owns an empty journal; another rig cannot drain into it.
+    assert_eq!(crate::audit::drain_audit_once(&state).await.unwrap(), 0);
 
     // Compliant create: no denial, no journal entry.
     let (st, _, _) = preq(
@@ -204,7 +194,7 @@ async fn enforce_denials_journal_to_audit_events() {
         "expired must journal"
     );
 
-    // Drain the (process-global) queue to this rig's `_audit_events`.
+    // Drain this runtime's queue to its `_audit_events`.
     let mut appended = 0usize;
     for _ in 0..40 {
         let n = crate::audit::drain_audit_once(&state)

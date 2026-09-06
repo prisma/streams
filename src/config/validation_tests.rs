@@ -418,7 +418,9 @@ mod config_validation_tests {
         // real admission headroom and not a floor that clamps back.
         assert_eq!(
             crate::history::absorb_worst_frame_transient(),
-            worst_frame_transient_for(crate::http::max_body_bytes())
+            worst_frame_transient_for(
+                crate::config::CliArgs::deterministic().max_request_body_bytes
+            )
         );
         assert_eq!(
             crate::history::floored_budget_capacity(0),
@@ -431,9 +433,9 @@ mod config_validation_tests {
         );
         assert!(validate_body_ceiling(1024).is_err(), "floor holds");
         assert_eq!(
-            crate::http::max_body_bytes(),
+            crate::config::CliArgs::deterministic().max_request_body_bytes,
             pinned,
-            "nothing was installed by validation (it is pure)"
+            "validation does not change independently constructed config"
         );
     }
 

@@ -114,7 +114,10 @@ pub(super) async fn seed(
             deferred_error: None,
             sealed_reject_new: None,
             touch: None,
-            usage: crate::usage::counters(&crate::crypto::RouteHash::for_stream(&desc.sref()).0),
+            usage: state
+                .runtime
+                .usage
+                .counters(&crate::crypto::RouteHash::for_stream(&desc.sref()).0),
             seal_gen: None,
             billing: (!crate::billing::is_reserved_stream(&desc.name)).then(|| {
                 std::sync::Arc::new(crate::billing::BillingRef {

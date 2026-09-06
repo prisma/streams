@@ -238,7 +238,10 @@ pub(crate) async fn serve(
         crate::sse::auth::sse_stats::FEED_TOPOLOGY_DISCONNECTS
             .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
         drop(subscription);
-        let usage = crate::usage::counters(&crate::crypto::RouteHash::for_stream(&desc.sref()).0);
+        let usage = state
+            .runtime
+            .usage
+            .counters(&crate::crypto::RouteHash::for_stream(&desc.sref()).0);
         let mt = crate::registry::media_type(&desc.content_type);
         return response_from_stream(
             futures_util::stream::empty::<Result<Bytes, std::io::Error>>(),
@@ -282,7 +285,10 @@ pub(crate) async fn serve(
         let mt = crate::registry::media_type(&desc.content_type);
         mt != "application/json" && !mt.starts_with("text/")
     };
-    let usage = crate::usage::counters(&crate::crypto::RouteHash::for_stream(&desc.sref()).0);
+    let usage = state
+        .runtime
+        .usage
+        .counters(&crate::crypto::RouteHash::for_stream(&desc.sref()).0);
     let (tx, rx) = tokio::sync::mpsc::channel::<crate::sse::auth::SseChunk>(4);
     crate::billing::meter_read(&state, &desc, 0, 0);
     let body_state = state.clone();

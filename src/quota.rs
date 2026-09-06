@@ -74,6 +74,7 @@ impl Bucket {
 }
 
 pub struct ProjectAdmission {
+    ops: Arc<crate::ops::OpsService>,
     /// Last admission attempt (ms) — the idle-eviction clock.
     last_seen_ms: std::sync::atomic::AtomicI64,
     bucket: Mutex<Bucket>,
@@ -193,7 +194,7 @@ impl ProjectAdmission {
                     .is_ok()
             {
                 self.memory_engage_count.fetch_add(1, Ordering::Relaxed);
-                crate::ops::emit(
+                self.ops.emit(
                     crate::ops::OpsEvent::new(
                         "project_memory_pressure_engaged",
                         format!("pmp-e/{}/{}", project.as_str(), p),
@@ -218,7 +219,7 @@ impl ProjectAdmission {
                 .compare_exchange(1, 0, Ordering::Relaxed, Ordering::Relaxed)
                 .is_ok()
             {
-                crate::ops::emit(
+                self.ops.emit(
                     crate::ops::OpsEvent::new(
                         "project_memory_pressure_released",
                         format!("pmp-r/{}/{}", project.as_str(), p),
@@ -512,10 +513,18 @@ impl Drop for SubscriptionGuard {
 
 #[derive(Default, Clone)]
 pub struct QuotaRegistry {
+    ops: Arc<crate::ops::OpsService>,
     projects: Arc<Mutex<HashMap<ProjectId, Arc<ProjectAdmission>>>>,
 }
 
 impl QuotaRegistry {
+    pub fn new(ops: Arc<crate::ops::OpsService>) -> Self {
+        Self {
+            ops,
+            projects: Default::default(),
+        }
+    }
+
     /// Acquire admission for one request of `project` under `quotas`
     /// (from the CURRENT policy snapshot — never token claims, §17.2).
     /// Quota value 0 = not configured at this level (cell safety
@@ -555,6 +564,7 @@ impl QuotaRegistry {
                         }
                     }
                     let a = Arc::new(ProjectAdmission {
+                        ops: self.ops.clone(),
                         last_seen_ms: std::sync::atomic::AtomicI64::new(now_ms),
                         bucket: Mutex::new(Bucket {
                             // A fresh project starts with a full

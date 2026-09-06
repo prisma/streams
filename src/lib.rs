@@ -80,9 +80,8 @@ pub use config::{CliArgs, Environment, ProcessEnvironment, ServerConfig};
 /// the binary composition root with the PROVEN configuration —
 /// [`ServerConfig::validate`] is the only way to construct the
 /// argument, so validation precedes every startup side effect by type,
-/// not by convention. `run` is process-singleton in the current
-/// transitional posture (see `bootstrap::run`); a second invocation in
-/// one process fails loudly.
+/// not by convention. Process infrastructure starts once (see
+/// `bootstrap::run`); a second invocation in one process fails loudly.
 pub async fn run(config: ValidatedServerConfig) -> anyhow::Result<()> {
     bootstrap::run(config).await
 }

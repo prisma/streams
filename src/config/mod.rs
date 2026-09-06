@@ -7,11 +7,9 @@
 //! `bootstrap::ValidatedServerConfig` is the only type `run()`
 //! accepts). It is then handed to owners at construction. There is
 //! deliberately no process-global config slot (`install`/`current`
-//! are gone): two configuration VALUES coexist independently in one
-//! process. That claim is about values, not runtimes — several
-//! subsystems still read process-global init-once holders, so `run()`
-//! enforces a process-singleton contract until WP-02 moves those
-//! policies into per-runtime owners.
+//! are gone). Independent RuntimeCaps owners construct their caches,
+//! journals and admission policies from these values. The executable's
+//! `run()` entry starts physical process infrastructure only once.
 //!
 //! Layout:
 //! - [`cli`]: the 84-flag command-line surface (clap DTO);
