@@ -159,6 +159,17 @@ export interface PullOptions {
   max?: number;
   waitMs?: number;
   visibilityMs?: number;
+  signal?: AbortSignal;
+}
+
+export type ConsumerIteratorOutcome =
+  | { status: "closed" }
+  | { status: "failed"; error: unknown };
+
+export interface ConsumerIterator<T> extends AsyncIterableIterator<ConsumerMessage<T>> {
+  /** Always resolves, including when JavaScript preserves a loop body's
+   * exception over a concurrent settlement failure during return(). */
+  readonly closed: Promise<ConsumerIteratorOutcome>;
 }
 
 export interface PullBatch<T> {
@@ -1177,12 +1188,14 @@ export class Consumer<T> {
   }
 
   async pull(options?: PullOptions): Promise<PullBatch<T>> {
+    const { signal, ...pullOptions } = options ?? {};
     const res = await req(
       this.ctx,
       "POST",
       `${this.base()}:pull`,
       { ...this.stream._kh(), "content-type": "application/json" },
-      JSON.stringify(options ?? {}),
+      JSON.stringify(pullOptions),
+      signal,
     );
     if (!res.ok) throw await errorFrom(res);
     const body = (await res.json()) as {
@@ -1198,15 +1211,23 @@ export class Consumer<T> {
     const acks: Array<{ leaseToken: string }> = [];
     const retries: Array<{ leaseToken: string; delayMs?: number }> = [];
     const extends_: Array<{ leaseToken: string; visibilityMs: number }> = [];
+    let settlement: Promise<SettleResult> | undefined;
+    const decide = (record: () => void) => {
+      if (settlement) throw new Error("this batch's settlement has already started");
+      record();
+    };
     const messages: ConsumerMessage<T>[] = body.messages.map((m) => ({
       ...m,
-      ack: () => acks.push({ leaseToken: m.leaseToken }),
+      ack: () => decide(() => { acks.push({ leaseToken: m.leaseToken }); }),
       retry: (o?: { delayMs?: number }) =>
-        retries.push({ leaseToken: m.leaseToken, delayMs: o?.delayMs }),
+        decide(() => { retries.push({ leaseToken: m.leaseToken, delayMs: o?.delayMs }); }),
       extend: (o: { visibilityMs: number }) =>
-        extends_.push({ leaseToken: m.leaseToken, visibilityMs: o.visibilityMs }),
+        decide(() => { extends_.push({ leaseToken: m.leaseToken, visibilityMs: o.visibilityMs }); }),
     }));
-    const settle = async (): Promise<SettleResult> => {
+    const submit = async (): Promise<SettleResult> => {
+      if (acks.length + retries.length + extends_.length === 0) {
+        return { acked: 0, retried: 0, extended: 0, dlq: 0, stale: 0, backlog: body.backlog };
+      }
       const res2 = await req(
         this.ctx,
         "POST",
@@ -1217,16 +1238,77 @@ export class Consumer<T> {
       if (!res2.ok) throw await errorFrom(res2);
       return (await res2.json()) as SettleResult;
     };
-    return { messages, backlog: body.backlog, settle };
+    return { messages, backlog: body.backlog, settle: () => settlement ??= submit() };
   }
 
   /** Pull-process-settle loop: `for await (const msg of consumer) { ...; msg.ack(); }` */
-  async *[Symbol.asyncIterator](): AsyncIterator<ConsumerMessage<T>> {
-    for (;;) {
-      const batch = await this.pull({ waitMs: 20000 });
-      for (const m of batch.messages) yield m;
-      if (batch.messages.length > 0) await batch.settle();
-    }
+  [Symbol.asyncIterator](): ConsumerIterator<T> {
+    return this.messages();
+  }
+
+  /** An iterator whose return() immediately cancels a parked pull.
+   * Recorded decisions are settled independently of pull cancellation. */
+  messages(options?: { signal?: AbortSignal }): ConsumerIterator<T> {
+    const controller = new AbortController();
+    const abort = () => controller.abort(options?.signal?.reason);
+    if (options?.signal?.aborted) abort();
+    else options?.signal?.addEventListener("abort", abort, { once: true });
+    let complete!: (outcome: ConsumerIteratorOutcome) => void;
+    const closed = new Promise<ConsumerIteratorOutcome>(resolve => { complete = resolve; });
+    const finish = (outcome: ConsumerIteratorOutcome) => {
+      options?.signal?.removeEventListener("abort", abort);
+      complete(outcome);
+    };
+    const consumer = this;
+    const generator = (async function* () {
+      while (!controller.signal.aborted) {
+        let batch: PullBatch<T>;
+        try {
+          batch = await consumer.pull({ waitMs: 20000, signal: controller.signal });
+        } catch (error) {
+          if (controller.signal.aborted && error === controller.signal.reason) return;
+          throw error;
+        }
+        let processingFailed = false;
+        let processingError: unknown;
+        try {
+          for (const message of batch.messages) {
+            if (controller.signal.aborted) return;
+            yield message;
+          }
+        } catch (error) {
+          processingFailed = true;
+          processingError = error;
+          throw error;
+        } finally {
+          try {
+            await batch.settle();
+          } catch (error) {
+            if (processingFailed) {
+              throw new AggregateError([processingError, error], "consumer processing and settlement failed");
+            }
+            throw error;
+          }
+        }
+      }
+    })();
+    const observe = async (operation: Promise<IteratorResult<ConsumerMessage<T>, void>>) => {
+      try {
+        const result = await operation;
+        if (result.done) finish({ status: "closed" });
+        return result;
+      } catch (error) {
+        finish({ status: "failed", error });
+        throw error;
+      }
+    };
+    return {
+      closed,
+      [Symbol.asyncIterator]() { return this; },
+      next: () => observe(generator.next()),
+      return: () => { controller.abort(); return observe(generator.return()); },
+      throw: (error?: unknown) => { controller.abort(); return observe(generator.throw(error)); },
+    };
   }
 
   async config(): Promise<ConsumerConfig & { name: string }> {

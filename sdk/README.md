@@ -57,6 +57,42 @@ have persisted, depending on the store's contract; recover the store's outcome
 before continuing. `bumpEpoch()` intentionally starts a fresh sequence and
 cannot determine whether an earlier uncertain append committed.
 
+## Consumer cleanup and cancellation
+
+`for await (const message of consumer)` submits recorded `ack`, `retry` and
+`extend` decisions when a batch finishes, the loop breaks, or the iterator
+closes. Unseen and undecided messages are never acknowledged. Each batch's
+`settle()` submits once and retains its result, including failure; decisions
+cannot change after settlement starts. Failed or uncertain settlement is
+surfaced to the caller; leases without a successful acknowledgement remain
+subject to server expiry/redelivery. A transport failure can occur after the
+server applied a settlement, so an error is not proof of non-application.
+
+Use `consumer.messages({ signal })` to cancel a parked pull, or call the
+iterator's `return()`; both abort the pull immediately. Cleanup still submits
+decisions already recorded, using a separate request from the cancelled pull.
+
+JavaScript keeps an exception thrown by a `for await` loop body even if
+iterator cleanup also fails. Keep the iterator when both outcomes matter:
+
+```ts
+const messages = consumer.messages({ signal });
+try {
+  for await (const message of messages) {
+    await process(message);
+    message.ack();
+  }
+} finally {
+  const outcome = await messages.closed;
+  if (outcome.status === "failed") reportCleanupFailure(outcome.error);
+}
+```
+
+`closed` always resolves to `{status:"closed"}` or `{status:"failed",error}`;
+normal `next()`/`return()` calls also reject on settlement failure. Passing a
+processing exception explicitly with `iterator.throw(error)` combines it and
+any settlement failure in an `AggregateError`.
+
 Authentication (`token`) belongs to the client; encryption
 (`encryptionKey`) belongs to the stream handle. Zero dependencies.
 
