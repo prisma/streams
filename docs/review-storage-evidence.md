@@ -10,6 +10,8 @@ Regressions: `storage_decode_tests::r12_supported_tail_versions_and_extensions`,
 
 Initial execution: `cargo test --locked --lib r12_ -- --nocapture` blocked by preinstalled Cargo 1.84.1 lacking edition2024. A current isolated toolchain is being provisioned; final execution results will be appended.
 
+Final compatibility audit separates byte decoding from stored-state validation: the byte codec retains v2/v3 and unknown bytes after a complete known extension; `stored_tail` rejects inconsistent offsets before every serving or maintenance-rebuild use. Partial known extensions remain errors. This preserves the original golden fixtures, whose distinct byte patterns deliberately do not describe a valid live tail. The added `r12_byte_compatibility_does_not_bypass_stored_state_validation` checks both versions and all three inconsistent cursor relationships. Rust 1.98.1 release execution passed **11 tests** across the unchanged tail golden corpus and all `r12_` regressions (`/private/tmp/storage-r12-compatibility-tests.log`; 816 compiled).
+
 ## R13 — shard billing reads
 
 Accounting reads return `Result<Option<SegmentBillingMetaV1>>`, validating the persisted version, identity, month and decimal byte-time. The committer loads each required row before staging any group effect, then shares that validated snapshot in its overlay. A failed read/decode rejects every response in the group and commits nothing. Drain and sweep callers retain dirty work and log failures.

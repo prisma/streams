@@ -103,13 +103,10 @@ fn decode_tail(v: &[u8]) -> Option<TailFields> {
     };
     let route_at = seq_at + 2 + seq_len;
     // Historical tails end after seq, route, or trim_safe_to. A partial
-    // extension is corruption, not an absent optional field.
+    // known extension is corruption. Once the complete known suffix is
+    // present, preserve the layout's forward-compatible trailing bytes.
     let extension_len = v.len().checked_sub(route_at)?;
-    if !matches!(extension_len, 0 | 16 | 24 | 32)
-        || flags & !3 != 0
-        || trimmed > absorbed
-        || absorbed > next
-    {
+    if (!matches!(extension_len, 0 | 16 | 24) && extension_len < 32) || flags & !3 != 0 {
         return None;
     }
     let route: [u8; 16] = v
@@ -124,9 +121,6 @@ fn decode_tail(v: &[u8]) -> Option<TailFields> {
     };
     let trim_safe_to = le8(route_at + 16);
     let unabsorbed_bytes = le8(route_at + 24);
-    if trim_safe_to > absorbed {
-        return None;
-    }
     Some(TailFields {
         next,
         ts,
@@ -144,7 +138,17 @@ fn decode_tail(v: &[u8]) -> Option<TailFields> {
 
 /// Existing malformed bytes must never initialize a fresh segment.
 fn stored_tail(raw: &[u8]) -> Result<TailFields, slatedb::Error> {
-    decode_tail(raw).ok_or_else(|| slatedb::Error::data("invalid persisted tail".into()))
+    let tail = decode_tail(raw)
+        .ok_or_else(|| slatedb::Error::data("invalid persisted tail encoding".into()))?;
+    // Decoding owns byte compatibility; every serving/recovery reader also
+    // validates the state before it can authorize an offset or a repair.
+    if tail.trimmed > tail.absorbed
+        || tail.absorbed > tail.next
+        || tail.trim_safe_to > tail.absorbed
+    {
+        return Err(slatedb::Error::data("inconsistent persisted tail".into()));
+    }
+    Ok(tail)
 }
 
 /// Fixed-width metadata is exactly eight bytes; short and trailing bytes
@@ -502,9 +506,7 @@ async fn rebuild_maintenance_from_tails(db: &Db) -> anyhow::Result<ShardMaintena
         let Some(tail_raw) = db.get(tail_key(&h)).await? else {
             anyhow::bail!("dirty stream missing tail during maintenance rebuild");
         };
-        let Some(mut tail) = decode_tail(&tail_raw) else {
-            anyhow::bail!("undecodable tail during maintenance rebuild");
-        };
+        let mut tail = stored_tail(&tail_raw)?;
         if tail.absorbed < tail.next && tail.unabsorbed_bytes == 0 {
             let mut sum = 0u64;
             let mut frames = db
@@ -5798,6 +5800,32 @@ mod storage_decode_tests {
             assert_eq!(result.is_ok(), len == 8, "len={len}");
         }
         assert_eq!(decode_cursor(&123u64.to_le_bytes()).unwrap(), 123);
+    }
+
+    #[test]
+    fn r12_byte_compatibility_does_not_bypass_stored_state_validation() {
+        let tail = TailFields {
+            next: 9,
+            absorbed: 4,
+            trimmed: 2,
+            trim_safe_to: 3,
+            ..Default::default()
+        };
+        for version in [2, 3] {
+            let mut encoded = encode_tail(&tail);
+            if version == 2 {
+                encoded[0] = 2;
+                encoded.remove(41);
+            }
+            encoded.extend_from_slice(&[0xee; 7]);
+            assert_eq!(stored_tail(&encoded).unwrap().next, tail.next);
+            for (at, value) in [(25, 10u64), (33, 5), (encoded.len() - 23, 5)] {
+                let mut inconsistent = encoded.clone();
+                inconsistent[at..at + 8].copy_from_slice(&value.to_le_bytes());
+                assert!(decode_tail(&inconsistent).is_some(), "byte layout is valid");
+                assert!(stored_tail(&inconsistent).is_err(), "state is invalid");
+            }
+        }
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
