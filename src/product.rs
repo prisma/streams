@@ -965,18 +965,43 @@ fn quota_refusal_response(refusal: &crate::quota::QuotaRefusal) -> Response {
     )
 }
 
+/// Authentication state at the transport boundary. A capability carrier is
+/// deliberately unverified: it cannot supply tenant admission or attribution.
+pub(crate) enum ProductAuthorization {
+    Preflight,
+    CapabilityCarrier,
+    Principal(crate::auth::RequestPrincipal),
+    Deployment,
+}
+
+impl ProductAuthorization {
+    pub(crate) fn principal(&self) -> Option<&crate::auth::RequestPrincipal> {
+        match self {
+            Self::Principal(principal) => Some(principal),
+            _ => None,
+        }
+    }
+
+    fn into_principal(self) -> Option<crate::auth::RequestPrincipal> {
+        match self {
+            Self::Principal(principal) => Some(principal),
+            _ => None,
+        }
+    }
+}
+
 pub(crate) fn product_auth_gate(
     state: &AppState,
     path: &str,
     method: &Method,
     query: &str,
     headers: &HeaderMap,
-) -> Result<Option<crate::auth::RequestPrincipal>, Response> {
+) -> Result<ProductAuthorization, Response> {
     if method == Method::OPTIONS {
-        return Ok(None); // preflights carry no credentials, by definition
+        return Ok(ProductAuthorization::Preflight);
     }
     if watch_capability_carrier(path, method, query, headers) {
-        return Ok(None); // §15: the capability is the credential
+        return Ok(ProductAuthorization::CapabilityCarrier);
     }
     if state.auth.mode == crate::auth::AuthMode::Enforce {
         // §9 order: the exact route parses FIRST (grammar errors are
@@ -1000,10 +1025,10 @@ pub(crate) fn product_auth_gate(
                 &principal.project_id,
             ));
         }
-        return Ok(Some(principal));
+        return Ok(ProductAuthorization::Principal(principal));
     }
     if crate::http::authorized(state, headers) {
-        return Ok(None);
+        return Ok(ProductAuthorization::Deployment);
     }
     Err(perr(
         StatusCode::UNAUTHORIZED,
@@ -1106,7 +1131,7 @@ pub async fn product_entry(
     // and keeps direct callers safe. The wrapper's principal (if any)
     // wins; the re-run only re-derives one for direct callers.
     let principal = match product_auth_gate(&state, &path, &method, &query, &headers) {
-        Ok(p2) => principal.or(p2),
+        Ok(p2) => principal.or(p2.into_principal()),
         Err(r) => return r,
     };
     // Stage 5d: the VERIFIED principal selects the tenant-qualified

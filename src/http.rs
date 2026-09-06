@@ -1879,7 +1879,7 @@ async fn product_entry_axum(
     resp
 }
 
-async fn product_entry_axum_inner(
+pub(crate) async fn product_entry_axum_inner(
     state: Arc<AppState>,
     name: String,
     method: Method,
@@ -1891,15 +1891,16 @@ async fn product_entry_axum_inner(
     // let an unauthenticated caller make the server allocate 32 MiB per
     // request; the gate needs only the path, method, query and headers.
     crate::product::shadow_observe_request(&state, &name, &method, &query, &headers);
-    let principal =
+    let authorization =
         match crate::product::product_auth_gate(&state, &name, &method, &query, &headers) {
             Ok(p) => p,
             Err(r) => return crate::product::with_product_cors(r),
         };
+    let principal = authorization.principal();
     // §17.3: acquire project admission BEFORE reading the body. Only
     // enforce-mode requests carry a verified project; the guard holds
     // the inflight slot for the handler's lifetime.
-    let _quota_guard = match crate::product::project_admission(&state, principal.as_ref()) {
+    let _quota_guard = match crate::product::project_admission(&state, principal) {
         Ok(g) => g,
         Err(r) => return crate::product::with_product_cors(r),
     };
@@ -1908,7 +1909,7 @@ async fn product_entry_axum_inner(
     // work. Reads and established SSE delivery continue while a
     // project is engaged.
     if method == Method::POST
-        && let Some(r) = crate::product::project_memory_gate(&state, principal.as_ref())
+        && let Some(r) = crate::product::project_memory_gate(&state, principal)
     {
         return crate::product::with_product_cors(r);
     }
@@ -1929,30 +1930,34 @@ async fn product_entry_axum_inner(
             ),
             "reserved_stream",
         );
-        if let Some(p) = principal.as_ref() {
+        if let Some(p) = principal {
             r = crate::audit::tag_project(r, &p.project_id);
         }
         return crate::product::with_product_cors(r);
     }
-    let (body, _body_charge) = match buffer_body_charged(
-        req.into_body(),
-        max_body_bytes(),
-        principal
-            .as_ref()
-            .and_then(|p| state.quotas.pressure_handle(&p.project_id)),
-    )
-    .await
-    {
-        Ok(b) => b,
-        Err(_) => {
-            return crate::product::with_product_cors(crate::product::perr(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "body_too_large",
-                "request body exceeds the limit",
-                None,
-                false,
-            ));
+    // Only mutations consume a body. GET/HEAD/watch and OPTIONS discard it
+    // without polling; an unverified watch claim never acquires body memory.
+    let (body, _body_charge) = if method == Method::POST || method == Method::PUT {
+        match buffer_body_charged(
+            req.into_body(),
+            max_body_bytes(),
+            principal.and_then(|p| state.quotas.pressure_handle(&p.project_id)),
+        )
+        .await
+        {
+            Ok(b) => b,
+            Err(_) => {
+                return crate::product::with_product_cors(crate::product::perr(
+                    StatusCode::PAYLOAD_TOO_LARGE,
+                    "body_too_large",
+                    "request body exceeds the limit",
+                    None,
+                    false,
+                ));
+            }
         }
+    } else {
+        (Bytes::new(), None)
     };
     // Round-13: this surface's queued/committer accounting takes over
     // beyond this point (product_append charges queued bytes) — the
@@ -1961,9 +1966,17 @@ async fn product_entry_axum_inner(
     // §10.4: fill the VERIFIED principal's project into any tagged
     // denial the handlers produced (fill-only-if-absent), so classifier
     // sites never need identity plumbing of their own.
-    let proj = principal.as_ref().map(|p| p.project_id.clone());
-    let mut resp =
-        crate::product::product_entry(state, name, method, headers, query, body, principal).await;
+    let proj = principal.map(|p| p.project_id.clone());
+    let mut resp = crate::product::product_entry(
+        state,
+        name,
+        method,
+        headers,
+        query,
+        body,
+        principal.cloned(),
+    )
+    .await;
     if let Some(p) = proj {
         resp = crate::audit::tag_project(resp, &p);
     }
