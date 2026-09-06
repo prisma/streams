@@ -149,7 +149,16 @@ impl Fixture {
     async fn assert_quiet(&mut self) {
         assert_eq!(self.usage.plaintext_bytes.load(Ordering::SeqCst), 0);
         assert_eq!(self.usage.frame_bytes.load(Ordering::SeqCst), 0);
-        assert_eq!(self.journal.meta()["totals"]["touches"], 0);
+        assert!(matches!(
+            self.journal
+                .wait(
+                    &format!("{}:0", self.journal.epoch),
+                    vec![3],
+                    Duration::ZERO
+                )
+                .await,
+            crate::touch::WaitOutcome::Timeout { end_offset: 0, .. }
+        ));
         assert!(self.signals.try_recv().is_err());
         for hash in [HASH, FINAL] {
             let handle = self.engine.stream_handle(hash).await.unwrap();
@@ -367,7 +376,17 @@ async fn r03a_mixed_transaction_preserves_every_row_reply_and_publication() {
         let _dispatch_finished = engine.test_hold_dispatch().await;
         assert_eq!(fixture.usage.plaintext_bytes.load(Ordering::SeqCst), 14);
         assert_eq!(fixture.usage.frame_bytes.load(Ordering::SeqCst), total);
-        assert_eq!(fixture.journal.meta()["totals"]["touches"], 2);
+        assert!(matches!(
+            fixture
+                .journal
+                .wait(
+                    &format!("{}:0", fixture.journal.epoch),
+                    vec![3],
+                    Duration::from_secs(1)
+                )
+                .await,
+            crate::touch::WaitOutcome::Touched { end_offset: 1, .. }
+        ));
         let mut signals = BTreeMap::new();
         for _ in 0..2 {
             let signal = fixture.signals.try_recv().unwrap();
