@@ -420,7 +420,7 @@ impl TryFrom<PersistedDescriptor> for StreamDesc {
 pub enum Lifecycle<'a> {
     Active,
     Initializing(&'a InitState),
-    Sealing(&'a SealState),
+    Sealing,
     Sealed,
     RetainedForks,
     Deleted { parent_ref_pending: bool },
@@ -448,8 +448,8 @@ impl StreamDesc {
             Lifecycle::RetainedForks
         } else if let Some(init) = &self.init {
             Lifecycle::Initializing(init)
-        } else if let Some(seal) = &self.sealing {
-            Lifecycle::Sealing(seal)
+        } else if self.sealing.is_some() {
+            Lifecycle::Sealing
         } else if self.sealed {
             Lifecycle::Sealed
         } else {
@@ -598,13 +598,13 @@ pub(crate) fn decode_desc(
     let persisted: PersistedDescriptor = serde_json::from_slice(raw)
         .map_err(|error| invalid_descriptor("<unknown>", &format!("parse: {error}")))?;
     let desc = StreamDesc::try_from(persisted)?;
-    if let Some(expected) = expect {
-        if desc.project_id != *expected.project_id() || desc.name != expected.name().as_str() {
-            return Err(invalid_descriptor(
-                &desc.name,
-                &format!("identity mismatch with path {expected}"),
-            ));
-        }
+    if let Some(expected) = expect
+        && (desc.project_id != *expected.project_id() || desc.name != expected.name().as_str())
+    {
+        return Err(invalid_descriptor(
+            &desc.name,
+            &format!("identity mismatch with path {expected}"),
+        ));
     }
     Ok(desc)
 }
@@ -2762,7 +2762,7 @@ mod tests {
             !j.contains("\"segments\""),
             "implicit map must cost zero bytes"
         );
-        let legacy: StreamDesc = serde_json::from_str(&j.replace("\"name\"", "\"name\"")).unwrap();
+        let legacy: StreamDesc = serde_json::from_str(&j).unwrap();
         assert!(legacy.segments.is_none());
 
         let mut with_map = desc("s2", "00000000000000000000000000000005", false);
