@@ -290,7 +290,7 @@ pub struct RefreshReport {
 const SOURCE_DEADLINE: std::time::Duration = std::time::Duration::from_secs(10);
 
 async fn refresh_source<T>(
-    name: &str,
+    source_label: &str,
     fetch: impl std::future::Future<Output = anyhow::Result<T>>,
     publish: impl FnOnce(T) -> Result<(), String>,
 ) -> RefreshOutcome {
@@ -298,17 +298,17 @@ async fn refresh_source<T>(
         Ok(Ok(snapshot)) => match publish(snapshot) {
             Ok(()) => RefreshOutcome::Published,
             Err(why) => {
-                tracing::warn!(source = name, %why, "auth snapshot refused; previous snapshot retained");
+                tracing::warn!(source = source_label, %why, "auth snapshot refused; previous snapshot retained");
                 RefreshOutcome::Refused
             }
         },
         Ok(Err(error)) => {
-            tracing::warn!(source = name, %error, "auth fetch failed; previous snapshot retained");
+            tracing::warn!(source = source_label, %error, "auth fetch failed; previous snapshot retained");
             RefreshOutcome::Unavailable
         }
         Err(_) => {
             tracing::warn!(
-                source = name,
+                source = source_label,
                 "auth fetch timed out; previous snapshot retained"
             );
             RefreshOutcome::TimedOut
