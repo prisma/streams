@@ -210,3 +210,6 @@ mod review_readiness;
 
 #[path = "tests/watch_admission.rs"]
 mod watch_admission;
+
+#[path = "tests/append_application.rs"]
+mod append_application;

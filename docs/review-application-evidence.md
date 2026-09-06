@@ -41,3 +41,11 @@ Rust 1.98.1 checks: typed read progress tests 2 passed; product read/scan scenar
 ### R04 fixture follow-up
 
 Four seal coordination/recovery fixtures now allocate `seal_gen_counter` before installing a claim, matching the validated durable descriptor contract instead of inserting an impossible claim generation. The unchanged assertions pass: seal coordination 8, fencing 6, recovery 7, incarnation 4, and convergence 6.
+
+## R02 — typed append application contract
+
+`AppendService` owns authorization-bound append preparation, validation, quota and memory admission, routing, topology retry, producer decisions, shard submission, sealing and TTL/watch side effects through explicit capabilities. `AppendCommand`, `AppendOutcome`, and typed `AppendFailure` replace raw HTTP requests and response parsing between the standards/product/consumer surfaces. The product renderer signs the exact committed or duplicate offsets returned by the owner; missing headers can no longer fabricate offset zero or a successful unsigned cursor. Final-seal retry disposition matches error variants, never display text. A command pins its initial incarnation through refresh/retry, and consumer DLQ commands additionally fence the configured target incarnation.
+
+The old HTTP append implementation and product response translator were removed. Pure producer parsing and product request hashing have a single owner, shared with consumer DLQ delivery. The raw adapter authorizes before polling its body and transfers its buffer guard at shard admission. Product body buffering retains its existing authorized entry guard; the refactor adds no request-body copy.
+
+Validation: two direct application tests prove duplicate acknowledgements retain original positions after later writes and that a same-name recreation cannot accept a stale target command. Two boundary tests prove disposition is independent of display text and producer parsing rejects incomplete/reserved/malformed values. Existing protocol tests pass: producer 8, producer handoff 3, seal coordination 8, fencing 6, recovery 7, incarnation 4, convergence 6, quotas 9, memory admission 5, maintenance admission 9, and security refusal/body-poll 2. Logs: `/private/tmp/r02-integration-tests-final.log` and `/private/tmp/r02-integration-tests.log`.

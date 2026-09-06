@@ -1,6 +1,108 @@
 //! HTTP surface (spec §3.4/§3.5): keyed appends, merged reads (history +
 //! shard tail), ciphertext frames by default, server-side decryption for
 //! `format=json`, long-poll tails.
+use crate::application::append::{AppendCode, AppendFailure, FailureClass, fail};
+use crate::application::read::ReadPlan;
+
+pub(crate) fn append_failure_status(error: &AppendFailure) -> StatusCode {
+    match error.class {
+        FailureClass::Invalid
+            if matches!(
+                error.code,
+                AppendCode::BodyTooLarge
+                    | AppendCode::TooLarge
+                    | AppendCode::PayloadTooLarge
+                    | AppendCode::RecordTooLarge
+            ) =>
+        {
+            StatusCode::PAYLOAD_TOO_LARGE
+        }
+        FailureClass::Invalid => StatusCode::BAD_REQUEST,
+        FailureClass::Denied => StatusCode::FORBIDDEN,
+        FailureClass::Missing => StatusCode::NOT_FOUND,
+        FailureClass::Gone => StatusCode::GONE,
+        FailureClass::Conflict => StatusCode::CONFLICT,
+        FailureClass::Capacity => StatusCode::TOO_MANY_REQUESTS,
+        FailureClass::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+        FailureClass::Timeout => StatusCode::REQUEST_TIMEOUT,
+        FailureClass::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+    }
+}
+fn append_position(seg: u32, next: u64, materialized: bool) -> String {
+    if materialized {
+        crate::offsets::encode_ep(seg, Offset(next.checked_sub(1)))
+    } else {
+        tail_token(next)
+    }
+}
+pub(crate) fn render_append(result: crate::application::append::AppendResult) -> Response {
+    match result {
+        Ok(out) => {
+            let status = if out.duplicate || out.appended_records == 0 || out.producer.is_none() {
+                StatusCode::NO_CONTENT
+            } else {
+                StatusCode::OK
+            };
+            let mut r = Response::builder()
+                .status(status)
+                .header(
+                    "Stream-Next-Offset",
+                    append_position(out.seg_id, out.next_offset, out.materialized),
+                )
+                .header("x-ack-closed", if out.closed { "true" } else { "false" });
+            if let Some((epoch, seq)) = out.producer {
+                r = r
+                    .header("Producer-Epoch", epoch.to_string())
+                    .header("Producer-Seq", seq.to_string());
+            }
+            if out.closed {
+                r = r.header("Stream-Closed", "true");
+            }
+            r.body(Body::empty()).unwrap()
+        }
+        Err(error) => {
+            let mut r = err_resp(
+                append_failure_status(&error),
+                error.code.as_str(),
+                &error.message,
+            );
+            for (name, value) in [
+                ("retry-after", error.retry_after.map(|v| v.to_string())),
+                ("streams-replay-to", error.owner),
+                (
+                    "producer-expected-seq",
+                    error.expected.map(|v| v.to_string()),
+                ),
+                (
+                    "producer-received-seq",
+                    error.received.map(|v| v.to_string()),
+                ),
+                (
+                    "producer-epoch",
+                    error.producer_epoch.map(|v| v.to_string()),
+                ),
+            ] {
+                if let Some(value) = value
+                    && let Ok(value) = axum::http::HeaderValue::from_str(&value)
+                {
+                    r.headers_mut().insert(name, value);
+                }
+            }
+            if let Some((seg, next, materialized)) = error.closed_at {
+                r.headers_mut().insert(
+                    "stream-closed",
+                    axum::http::HeaderValue::from_static("true"),
+                );
+                r.headers_mut().insert(
+                    "stream-next-offset",
+                    axum::http::HeaderValue::from_str(&append_position(seg, next, materialized))
+                        .unwrap(),
+                );
+            }
+            r
+        }
+    }
+}
 
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -16,13 +118,12 @@ use bytes::{Bytes, BytesMut};
 use object_store::ObjectStore;
 use serde::Deserialize;
 use serde_json::json;
-use tokio::sync::oneshot;
 
-use crate::crypto::{FrameHeader, StreamKey, derive_subkey, encrypt_frame, hex};
+use crate::crypto::{FrameHeader, StreamKey, derive_subkey, encrypt_frame};
 use crate::history::KeyCache;
 use crate::offsets::Offset;
 use crate::registry::{Registry, StreamDesc};
-use crate::shard::{AppendErr, AppendReq, ShardEngine, now_ms};
+use crate::shard::{ShardEngine, now_ms};
 
 /// Protocol ceiling on a request body — the wire pin, re-exported from
 /// [`crate::protocol_pin`] (PR 3.2.1: the pin moved beside the other
@@ -74,7 +175,6 @@ pub fn debug_timing(cfg: &crate::config::HttpConfig) -> bool {
 pub fn tail_max_bytes(cfg: &crate::config::HttpConfig) -> usize {
     cfg.tail_max_bytes
 }
-const APPEND_TIMEOUT: Duration = Duration::from_secs(10);
 // The platform front door kills any request at ~30 s with a 502 (measured
 // 30.16 s on Prisma Compute). Every server-side wait must conclude below it
 // so clients see clean empty responses instead of gateway errors.
@@ -159,6 +259,27 @@ pub struct AppState {
 }
 
 impl AppState {
+    pub(crate) fn append_service(self: &Arc<Self>) -> crate::application::append::AppendService {
+        crate::application::append::AppendService {
+            registry: self.registry.clone(),
+            shards: self.shards.clone(),
+            admission: self.admission.clone(),
+            quotas: self.quotas.clone(),
+            history: self.runtime.history.clone(),
+            scaler: self.runtime.scaler.clone(),
+            keys: self.keys.clone(),
+            watches: self.watch_service(),
+            lifecycle: self.lifecycle_service(),
+            creation: self.creation_service(),
+            auth: self.auth.clone(),
+            deployment: self.deployment.clone(),
+            admission_config: self.config.admission.clone(),
+            meter_enabled: self.config.billing.meter_enabled,
+        }
+    }
+}
+
+impl AppState {
     pub(crate) fn creation_service(
         self: &Arc<Self>,
     ) -> Arc<crate::application::creation::CreationService> {
@@ -180,8 +301,6 @@ impl AppState {
             })
             .clone()
     }
-
-
 
     pub(crate) fn watch_service(&self) -> Arc<crate::application::watch::WatchService> {
         self.watches
@@ -2420,39 +2539,11 @@ fn over_record_ceiling(state: &AppState, entries: &[Bytes]) -> Option<usize> {
 }
 
 fn parse_producer(headers: &HeaderMap) -> Result<Option<crate::shard::ProducerReq>, String> {
-    let id = hdr(headers, "producer-id");
-    let epoch = hdr(headers, "producer-epoch");
-    let seq = hdr(headers, "producer-seq");
-    match (id, epoch, seq) {
-        (None, None, None) => Ok(None),
-        (Some(id), Some(e), Some(s)) => {
-            if id.is_empty() {
-                return Err("Producer-Id must not be empty".into());
-            }
-            // The seal machinery synthesizes producer identities for
-            // records a client never coordinates itself. They share the
-            // durable producer keyspace, so the wire must not be able to
-            // name one: a caller who pre-created `prisma.seal.<op>` at
-            // sequence 0 would make a later seal's final append look
-            // like a duplicate — the seal would then "complete" without
-            // ever writing its record.
-            if id.starts_with(crate::shard::INTERNAL_PRODUCER_PREFIX) {
-                return Err(format!(
-                    "Producer-Id must not begin with '{}' (reserved)",
-                    crate::shard::INTERNAL_PRODUCER_PREFIX
-                ));
-            }
-            let epoch = parse_uint_strict(&e).ok_or("invalid Producer-Epoch")?;
-            let seq = parse_uint_strict(&s).ok_or("invalid Producer-Seq")?;
-            Ok(Some(crate::shard::ProducerReq {
-                id,
-                epoch,
-                seq,
-                request_hash: None,
-            }))
-        }
-        _ => Err("Producer-Id, Producer-Epoch and Producer-Seq must be sent together".into()),
-    }
+    crate::application::append::parse_producer(
+        hdr(headers, "producer-id"),
+        hdr(headers, "producer-epoch"),
+        hdr(headers, "producer-seq"),
+    )
 }
 
 /// Product DELETE maps to the one collection-delete implementation.
@@ -2689,20 +2780,10 @@ pub(crate) async fn append(
     body: Body,
     product_hash: Option<[u8; 16]>,
     product_key: Option<String>,
-    // TRUSTED, internal only: this call is the final record a seal
-    // intent owes, identified by its operation id. Never derived from a
-    // request header — see the `x-seal-final` refusal in append_core.
     seal_auth: Option<SealAuthz>,
 ) -> Response {
-    let wrapped = matches!(
-        state.registry.get(&sref).await,
-        Ok(Some(d)) if d
-            .segments
-            .as_ref()
-            .is_some_and(|m| m.segments.len() > 1 || m.pending.is_some())
-    );
-    if !wrapped {
-        return append_core(
+    render_append(
+        append_typed(
             state,
             sref,
             headers,
@@ -2711,98 +2792,10 @@ pub(crate) async fn append(
             product_key,
             seal_auth,
         )
-        .await;
-    }
-    let body_bytes = match axum::body::to_bytes(body, max_body_bytes()).await {
-        Ok(b) => b,
-        Err(_) => return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large"),
-    };
-    for attempt in 0..4u32 {
-        let r = append_core(
-            state.clone(),
-            sref.clone(),
-            headers.clone(),
-            Body::from(body_bytes.clone()),
-            product_hash,
-            product_key.clone(),
-            seal_auth.clone(),
-        )
-        .await;
-        if !(r.status() == StatusCode::CONFLICT && r.headers().contains_key("stream-closed")) {
-            return r;
-        }
-        state.registry.invalidate(&sref);
-        let Ok(Some(d)) = state.registry.get(&sref).await else {
-            return r;
-        };
-        let rk = product_key.clone().unwrap_or_default();
-        let seg = d.resolve_segment(&rk);
-        let pending = d.segments.as_ref().is_some_and(|m| m.pending.is_some());
-        if pending {
-            crate::scaler3::resume(&state, &sref).await;
-        } else if !seg.sealed {
-            // Live segment, no transition: the stream really is closed.
-            return r;
-        }
-        tokio::time::sleep(std::time::Duration::from_millis(10 * (attempt as u64 + 1))).await;
-    }
-    err_resp(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "segment_transition",
-        "segment map transition did not converge; retry",
+        .await,
     )
 }
-
-pub(crate) use crate::application::lifecycle::FinalDisposition;
-
-pub(crate) use crate::application::lifecycle::final_err_disposition;
-
-/// The same policy over the PRODUCT surface's translated wire codes —
-/// the product handler holds a translated Response, not the AppendErr.
-/// The names here are the translator's OUTPUT names, asserted by the
-/// stale-epoch regression on both surfaces.
-pub(crate) fn final_code_disposition(status: StatusCode, code: Option<&str>) -> FinalDisposition {
-    if !status.is_client_error()
-        || status == StatusCode::TOO_MANY_REQUESTS
-        || status == StatusCode::REQUEST_TIMEOUT
-    {
-        return FinalDisposition::AmbiguousOrTransient;
-    }
-    match code {
-        // No readable code — an unreadable/absent error body — is
-        // UNKNOWN, and unknown keeps the intent (matching
-        // take_error_code's own contract). Only a NAMED verdict about
-        // the request is definitive; ordering codes stay ambiguous.
-        None => FinalDisposition::AmbiguousOrTransient,
-        Some("producer_gap") | Some("producer_epoch_must_start_at_zero") => {
-            FinalDisposition::AmbiguousOrTransient
-        }
-        Some(_) => FinalDisposition::DefinitivelyRejected,
-    }
-}
-
-pub(crate) use crate::application::lifecycle::SealAuthz;
-
-pub(crate) async fn fence_segment_for_key(
-    state: &Arc<AppState>,
-    sref: &crate::tenant::TenantStreamRef,
-    expect_epoch: &str,
-    routing_key: &str,
-    fence_to: u64,
-) -> Result<bool, String> {
-    crate::application::lifecycle::fence_segment_for_key(
-        &state.lifecycle_service(),
-        sref,
-        expect_epoch,
-        routing_key,
-        fence_to,
-    )
-    .await
-    .map_err(|error| error.to_string())
-}
-
-#[allow(clippy::too_many_arguments)] // request context, not tunables
-async fn append_core(
+pub(crate) async fn append_typed(
     state: Arc<AppState>,
     sref: crate::tenant::TenantStreamRef,
     headers: HeaderMap,
@@ -2810,95 +2803,23 @@ async fn append_core(
     product_hash: Option<[u8; 16]>,
     product_key: Option<String>,
     seal_auth: Option<SealAuthz>,
-) -> Response {
-    // SR-6 (dual-identity-params): the ref is the ONLY identity input;
-    // the canonical name below exists for display, failpoints and the
-    // legacy child-name composition, never for registry lookups.
-    let name = sref.name().as_str().to_string();
-    // Scaled-stream routing (SCALING.md): a parent stream with scaling on
-    // never takes appends itself — the routing key maps through the
-    // segment map to an internal child stream "<parent>#<seg_id>". The
-    // child is sealed (closed) during a split/merge transition; the retry
-    // loop refreshes the map and follows the successor, so clients never
-    // observe the transition beyond a few ms of latency.
-    // (LEGACY path, pre-v3 descriptors only; unified-model streams
-    // resolve segments in-process below — docs/ROUTING-V3.md §2.)
-    let mut desc = match state.registry.get(&sref).await {
-        Ok(Some(d)) if desc_alive(&d) && initializing(&d) => {
-            return creating_resp();
-        }
-        Ok(Some(d)) if desc_alive(&d) => d,
-        Ok(d) => {
-            return gone_or_missing(d.as_ref());
-        }
-        Err(e) => {
-            return err_resp(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &e.to_string(),
-            );
-        }
+) -> crate::application::append::AppendResult {
+    use crate::application::append::{AppendCommand, AppendKey};
+    let service = state.append_service();
+    let credential = match raw_key(&headers, &state) {
+        None => AppendKey::Missing,
+        Some(raw) => match StreamKey::from_b64(raw) {
+            Ok(key) => AppendKey::Provided(key),
+            Err(_) => AppendKey::Invalid,
+        },
     };
-    // Capacity admission is PER SEGMENT (review blocker 1: after a
-    // split, each child must get its own inflight budget — a shared
-    // per-stream bucket would cap the pair at one segment's capacity).
-    // Contractual accounting (usage counters, admit_append) stays keyed
-    // by the stream name below. The slot is acquired after segment
-    // resolution, further down.
-    let (key, epoch) = match check_key(raw_key(&headers, &state), &desc) {
-        KeyCheck::Ok(k, e) => (k, e),
-        KeyCheck::Missing => {
-            return err_resp(
-                StatusCode::BAD_REQUEST,
-                "missing_key",
-                "Stream-Encryption-Key required",
-            );
-        }
-        KeyCheck::Wrong => return err_resp(StatusCode::FORBIDDEN, "wrong_key", "key mismatch"),
-        KeyCheck::BadDescriptor => {
-            return err_resp(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                "bad descriptor",
-            );
-        }
-    };
-
-    // Round-13: the ordinary inflight admission gate, AFTER bearer +
-    // stream-key auth (it lived in pre-auth middleware; see
-    // track_inflight). Writes only — R24-B settled that shedding reads
-    // hides the instance from its own operators.
-    if state.admission.admit_write_inflight().is_err() {
-        // Tarpit: a ~25 ms pause before the 429 bounds the reject rate a
-        // non-compliant closed-loop client can generate (an instant 429
-        // invites an instant retry — measured as a CPU-starving reject
-        // storm). Compliant clients never see this path twice in a row.
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        let mut r = err_resp(
-            StatusCode::TOO_MANY_REQUESTS,
-            "overloaded",
-            "instance at admission capacity; retry",
-        );
-        r.headers_mut()
-            .insert("retry-after", axum::http::HeaderValue::from_static("1"));
-        return r;
-    }
-    let mut producer = match parse_producer(&headers) {
-        Ok(p) => p,
-        Err(m) => return err_resp(StatusCode::BAD_REQUEST, "invalid_producer", &m),
-    };
-    if let (Some(p), Some(h)) = (producer.as_mut(), product_hash) {
-        p.request_hash = Some(h);
-    }
+    let prepared = service.prepare(&sref, credential).await?;
+    let producer = parse_producer(&headers).map_err(|message| {
+        AppendFailure::new(FailureClass::Invalid, AppendCode::InvalidProducer, message)
+    })?;
     let close = want_close(&headers);
-    // R25-E: oversized-body refusal, now AFTER bearer + stream-key auth.
-    // Answering mid-upload closes the connection and the edge reports
-    // 502 (measured in Singapore: 2 MiB vs a 1 MiB ceiling), so we drain
-    // a BOUNDED amount before answering — but only for callers who have
-    // already authenticated; an unauthenticated caller got its 401 above
-    // without the server reading a byte.
     if let Some(declared) = headers
-        .get(axum::http::header::CONTENT_LENGTH)
+        .get(header::CONTENT_LENGTH)
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<usize>().ok())
         && declared > max_body_bytes()
@@ -2907,83 +2828,64 @@ async fn append_core(
         if declared <= DRAIN_CAP {
             use futures_util::StreamExt;
             let mut stream = body.into_data_stream();
-            let mut seen = 0usize;
-            while let Some(chunk) = stream.next().await {
-                match chunk {
-                    Ok(b) => {
-                        seen += b.len();
-                        if seen > DRAIN_CAP {
-                            break;
-                        }
-                    }
-                    Err(_) => break,
+            let mut seen = 0;
+            while let Some(Ok(chunk)) = stream.next().await {
+                seen += chunk.len();
+                if seen > DRAIN_CAP {
+                    break;
                 }
             }
         }
-        return err_resp(
-            StatusCode::PAYLOAD_TOO_LARGE,
-            "body_too_large",
+        return fail(
+            FailureClass::Invalid,
+            AppendCode::BodyTooLarge,
             &format!(
-                "request body {} exceeds the {}-byte limit",
-                declared,
+                "request body {declared} exceeds the {}-byte limit",
                 max_body_bytes()
             ),
         );
     }
-    // R25-E: RSS write-shed, moved from pre-auth middleware. Writes
-    // only — reads don't grow memtables, and shedding them would hide
-    // the instance from its own operators. The guard considers sampled
-    // RSS PLUS reserved absorber bytes so the line moves BEFORE the
-    // memory does.
-    if state
-        .admission
-        .admit_write_memory(state.runtime.history.budget.reserved_bytes())
-        .is_err()
-    {
-        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
-        let mut r = err_resp(
-            StatusCode::TOO_MANY_REQUESTS,
-            "overloaded",
-            "instance memory pressure; retry",
-        );
-        r.headers_mut()
-            .insert("retry-after", axum::http::HeaderValue::from_static("2"));
-        return r;
-    }
-    let (body, _body_charge) = match buffer_body_charged(
+    service.check_memory().await?;
+    let (body, body_charge) = buffer_body_charged(
         body,
         max_body_bytes(),
         state.quotas.pressure_handle(sref.project_id()),
     )
     .await
-    {
-        Ok(v) => v,
-        Err(()) => return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "too_large", "body too large"),
-    };
-    let close_only = close && body.is_empty();
-    // This request's own seal identity: content hash + routing key, the
-    // same envelope the intent stores. An exact retry of a crashed raw
-    // close therefore recognises ITSELF as the owed final — no private
-    // header, no producer opt-in required.
-    // The identity of THIS close: the whole semantic request, not just
-    // its payload. Two closes with the same body and routing key but
-    // different producer coordination are different operations — sharing
-    // one id let a request that was refused tear down the intent another
-    // one owned, and the promised final record was lost.
-    let this_close_op = {
-        let hv = |h: &str| hdr(&headers, h).unwrap_or_default();
-        // EVERY input that can change what the committer persists or
-        // how it rules is part of the identity. The content type is
-        // the REQUEST's own header — hashing the descriptor's
-        // configured type let a close with the wrong type share the
-        // valid close's identity, join its intent, collect the
-        // deferred ct-mismatch verdict, and tear down an intent that
-        // was never its own. Key version likewise: it is stored in the
-        // frame, so two closes differing only there are different
-        // operations.
-        crate::product::seal_op_id_semantic(
-            &create_request_hash(&desc.content_type, None, None, true, &body, None),
-            &product_key.clone().unwrap_or_default(),
+    .map_err(|_| {
+        AppendFailure::new(
+            FailureClass::Invalid,
+            AppendCode::TooLarge,
+            "body too large",
+        )
+    })?;
+    if headers.contains_key("x-seal-final") {
+        return fail(
+            FailureClass::Invalid,
+            AppendCode::UnknownField,
+            "x-seal-final is not a request header",
+        );
+    }
+    if headers.contains_key("stream-key") {
+        return fail(
+            FailureClass::Invalid,
+            AppendCode::UnknownField,
+            "Stream-Key was removed: routing keys live on /v1/streams (Prisma-Routing-Key)",
+        );
+    }
+    let routing_key = product_key.unwrap_or_default();
+    let close_identity = {
+        let hv = |name: &str| hdr(&headers, name).unwrap_or_default();
+        crate::application::lifecycle::seal_op_id_semantic(
+            &create_request_hash(
+                &prepared.descriptor().content_type,
+                None,
+                None,
+                true,
+                &body,
+                None,
+            ),
+            &routing_key,
             &[
                 hv("producer-id"),
                 hv("producer-epoch"),
@@ -2995,906 +2897,47 @@ async fn append_core(
             ],
         )
     };
-    // Owed-final authorization: either this request IS the intent's
-    // record (computed identity matches) or an internal caller passed
-    // the trusted operation id. Nothing a client sends can assert it.
-    // A TRUSTED product final proves its whole execution token before
-    // anything else: same incarnation, same claim, same generation. It
-    // owns a typed transition — if the token no longer matches (the
-    // collection was deleted and recreated, or the claim was taken
-    // over), the append must not run at all: not write the record, not
-    // close a segment, and never fall through into the raw-close claim
-    // path on a stranger's descriptor.
-    if let Some(auth) = &seal_auth {
-        let holds = desc.stream_epoch == auth.epoch
-            && desc.sealing.as_ref().is_some_and(|sl| {
-                sl.operation_id == auth.op_id && sl.claim_generation == auth.generation
-            });
-        if !holds {
-            return err_resp(
-                StatusCode::CONFLICT,
-                "seal_superseded",
-                "the seal this final record belongs to no longer holds its claim",
-            );
-        }
-    }
-    let is_owed_final = desc.sealing.as_ref().is_some_and(|sl| {
-        sl.owes_final()
-            && (sl.operation_id == this_close_op
-                || Some(sl.operation_id.as_str()) == seal_auth.as_ref().map(|a| a.op_id.as_str()))
-    });
-    // The generation this request's claim-authorized writes will carry.
-    // Filled by whichever path holds the claim: the trusted internal
-    // seal (its ticket), an owed-final resume (renewed below), or a
-    // fresh close (begin_sealing_for_close's install).
-    let mut raw_seal_gen: Option<u64> = seal_auth.as_ref().map(|a| a.generation);
-    if is_owed_final && seal_auth.is_none() {
-        // RESUME of a crashed close: renew the claim before appending.
-        // Renewal re-allocates the generation, so the resume can never
-        // be fenced out by a takeover reservation that aborted after
-        // this operation's original attempt.
-        match crate::product::renew_owed_claim(
-            &state,
-            &desc.sref(),
-            &this_close_op,
-            &desc.stream_epoch,
-        )
-        .await
-        {
-            Ok(Some(g)) => raw_seal_gen = Some(g),
-            Ok(None) => {
-                // The claim moved between the descriptor read and the
-                // renewal: whoever holds it now decides. Answer as a
-                // conflict rather than write under a claim we lost.
-                return err_resp(
-                    StatusCode::CONFLICT,
-                    "sealed",
-                    "the seal this close was resuming has been superseded",
-                );
-            }
-            Err(e) => return err_resp(StatusCode::SERVICE_UNAVAILABLE, "internal", &e),
-        }
-    }
-
-    // A raw close that carries content and brings no producer of its own
-    // gets a SYNTHETIC one, derived from its operation identity. Without
-    // it the second crash boundary is unrecoverable: once the records
-    // are durable and the segment is closed, an exact retry reaches the
-    // committer's closed-stream check (which only forgives an empty
-    // close-only) and is refused — so `final_committed` is never
-    // written and the collection stays Sealing over records it already
-    // holds. With it, the retry is recognised as a duplicate BEFORE the
-    // closed check, and can finish the transition.
-    let synthetic_producer = close && !body.is_empty() && producer.is_none();
-    if synthetic_producer {
-        producer = Some(crate::shard::ProducerReq {
-            id: format!(
-                "{}rawseal.{this_close_op}",
-                crate::shard::INTERNAL_PRODUCER_PREFIX
-            ),
-            epoch: 1,
-            seq: 0,
-            request_hash: None,
-        });
-    }
-
-    // Collection lifecycle (audit P0): the DESCRIPTOR is authoritative,
-    // so a sealed collection refuses NEW records even when a segment
-    // engine has not observed its close yet. Requests whose pinned
-    // answer is idempotent success — close-only retries and producer
-    // requests, whose duplicate check must still return 204 — are
-    // deferred to the committer, which owns that decision and answers
-    // 409 with Stream-Next-Offset when they are genuinely new writes.
-    // A producer request rides through so the committer can recognise a
-    // retry and answer it with its original result — but it carries the
-    // refusal with it, and the committer applies it to anything that
-    // turns out to be a NEW sequence. Without that, a novel producer
-    // write was accepted while the descriptor said Sealing or Sealed.
-    // The seal's OWN final record is the one write a Sealing collection
-    // still owes. Its identity is COMPUTED from this request — content
-    // hash and routing key — and compared with the durable intent.
-    //
-    // It used to be asserted by an `x-seal-final` request header, which
-    // was wrong twice over: any caller could send it (knowing the id was
-    // enough to smuggle an arbitrary record into a sealing collection),
-    // and no ordinary client sends it, so an exact retry after a crash
-    // was rejected as a new write and the collection stayed stuck owing
-    // a record nobody could deliver.
-    if headers.contains_key("x-seal-final") {
-        return err_resp(
-            StatusCode::BAD_REQUEST,
-            "unknown_field",
-            "x-seal-final is not a request header",
-        );
-    }
-    let sealed_reject_new =
-        if (desc.sealed || desc.sealing.is_some()) && !close_only && !is_owed_final {
-            Some(if desc.sealed {
-                crate::shard::SealedReject::Sealed
-            } else {
-                crate::shard::SealedReject::Sealing
-            })
-        } else {
-            None
-        };
-    if sealed_reject_new.is_some() && producer.is_none() {
-        // The pinned closure contract requires Stream-Next-Offset on
-        // the 409, so read the sealed tail before answering.
-        let seg0 = desc.resolve_segment("");
-        let next = match state.engine_for(&seg0.shard_route).await {
-            Ok(e) => match e.stream_handle(seg0.identity).await {
-                Ok(h) => h.state.lock().unwrap().durable.next,
-                Err(_) => 0,
-            },
-            Err(_) => 0,
-        };
-        let mut r = err_resp(StatusCode::CONFLICT, "stream_closed", "stream is closed");
-        r.headers_mut().insert(
-            "stream-closed",
-            axum::http::HeaderValue::from_static("true"),
-        );
-        if let Ok(v) = axum::http::HeaderValue::from_str(&tail_token(next)) {
-            r.headers_mut().insert("stream-next-offset", v);
-        }
-        return r;
-    }
-
-    // A raw close seals the whole COLLECTION, so the intent has to be
-    // durable before any physical segment closes. Publishing it
-    // afterwards left a window where other routing keys' segments were
-    // still writable while this one was already closed, and a failure
-    // in between produced a permanently split-brained collection that
-    // still answered the close with success.
-
-    // (the raw close intent is published further down, once every
-    // deterministic error has been ruled out — see `close_intent`)
-
-    // Content-Type: required on POST with a body; must match the stream's
-    // configured media type (case-insensitive; parameters ignored). A
-    // close-only POST ignores content type entirely. With producer headers
-    // the mismatch is deferred so duplicates still return 204.
-    let ct = hdr(&headers, "content-type");
-    let mut deferred: Option<crate::shard::DeferredErr> = None;
-    if !close_only {
-        match &ct {
-            None => {
-                if producer.is_some() {
-                    deferred = Some(crate::shard::DeferredErr::BadBody(
-                        "missing Content-Type".into(),
-                    ));
-                } else {
-                    return err_resp(
-                        StatusCode::BAD_REQUEST,
-                        "missing_content_type",
-                        "Content-Type required",
-                    );
-                }
-            }
-            Some(c) => {
-                if crate::registry::media_type(c) != crate::registry::media_type(&desc.content_type)
-                {
-                    if producer.is_some() {
-                        deferred = Some(crate::shard::DeferredErr::CtMismatch);
-                    } else {
-                        return err_resp(
-                            StatusCode::CONFLICT,
-                            "content_type_mismatch",
-                            "content type mismatch",
-                        );
-                    }
-                }
-            }
-        }
-    }
-
-    // Body -> entries (batching rules); errors deferred with producers.
-    let mut entries: Vec<Bytes> = Vec::new();
-    if !close_only && deferred.is_none() {
-        if body.is_empty() {
-            if producer.is_some() {
-                deferred = Some(crate::shard::DeferredErr::BadBody("empty body".into()));
-            } else {
-                return err_resp(StatusCode::BAD_REQUEST, "empty_body", "empty body");
-            }
-        } else if desc.is_json() {
-            match json_entries(&body, false) {
-                Ok(v) => entries = v,
-                Err(m) => {
-                    if producer.is_some() {
-                        deferred = Some(crate::shard::DeferredErr::BadBody(m));
-                    } else {
-                        return err_resp(StatusCode::BAD_REQUEST, "invalid_json", &m);
-                    }
-                }
-            }
-        } else {
-            entries = vec![body.clone()];
-        }
-        if deferred.is_none()
-            && let Some(over) = over_record_ceiling(&state, &entries)
-        {
-            let m = format!(
-                "record of {over} bytes exceeds the per-record ceiling \
-                 (MAX_RECORD_PAYLOAD_BYTES)"
-            );
-            if producer.is_some() {
-                deferred = Some(crate::shard::DeferredErr::BadBody(m));
-            } else {
-                return err_resp(StatusCode::PAYLOAD_TOO_LARGE, "record_too_large", &m);
-            }
-        }
-    }
-
-    let close_carries_content = !entries.is_empty();
-    // A body larger than the ingest bucket's CAPACITY can never be
-    // admitted — that is a permanent 413, and it must be decided BEFORE
-    // the lifecycle intent, or the collection is left sealing forever
-    // owing a record the limiter will always refuse.
-    if close && close_carries_content && deferred.is_none() {
-        // Bytes AND records: a batched close with more records than the
-        // record bucket can ever hold is just as permanently refused as
-        // an oversized body, and publishing an intent for it stranded
-        // the collection at 429 forever.
-        if let Some(kind) =
-            crate::usage::permanently_unadmittable(body.len() as u64, entries.len() as u64)
-        {
-            return err_resp(
-                StatusCode::PAYLOAD_TOO_LARGE,
-                "payload_too_large",
-                &format!("request exceeds the per-stream ingest {kind} capacity"),
-            );
-        }
-    }
-    // The raw close publishes its lifecycle intent HERE: after content
-    // type, body parsing and every other deterministic refusal, so a
-    // request that answers 400 can never leave the collection stuck in
-    // Sealing owing a record nobody will write.
-    //
-    // A close that CARRIES CONTENT is a final-bearing seal, exactly like
-    // the product's seal-with-final: the promise is "these records, then
-    // closed". Publishing Empty for it meant a crash after the intent
-    // let a later close-only finish the seal without them.
-    if close && !desc.sealed && !is_owed_final && deferred.is_none() && seal_auth.is_none() {
-        let intent = if entries.is_empty() {
-            crate::registry::SealIntent::Empty
-        } else {
-            crate::registry::SealIntent::Final {
-                routing_key: product_key.clone().unwrap_or_default(),
-                // THE operation id — the same semantic identity the
-                // append computes for itself, so a retry recognises its
-                // own intent and nothing else can claim it.
-                request_hash: this_close_op.clone(),
-                final_committed: false,
-            }
-        };
-        match crate::product::begin_sealing_for_close(
-            &state,
-            &desc.sref(),
-            intent,
-            &desc.stream_epoch,
-        )
-        .await
-        {
-            Ok(g) => {
-                if let Some(g) = g {
-                    raw_seal_gen = Some(g);
-                }
-            }
-            Err(e) => return err_resp(StatusCode::CONFLICT, "sealed", &e),
-        }
-        #[cfg(test)]
-        if crate::failpoints::should_stop_after_seal_intent(&name) {
-            // The crash boundary: intent durable, records not written.
-            return err_resp(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "failpoint",
-                "stopped after the seal intent",
-            );
-        }
-    }
-
-    // Per-shard service limits (usage.rs): token buckets over request rate,
-    // record rate, and ingest bytes. Reject-whole with the limit named.
-    // Admission also picks THE counters object for this request — one Arc
-    // carried through both count sites (here and the committer), so a
-    // concurrent eviction/promotion can never split one request's
-    // accounting across two objects (review round 4).
-    let name_hash = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
-    let usage_c = if !close_only && deferred.is_none() {
-        match crate::usage::admit_append(&name_hash, body.len() as u64, entries.len() as u64) {
-            Err(hit) => {
-                crate::usage::note_limit_refusal(&hit);
-                let l = crate::usage::limits();
-                if matches!(hit, crate::usage::LimitHit::Bytes { .. })
-                    && body.len() as f64 > l.bytes_per_sec * l.burst_secs
-                {
-                    // Larger than the bucket's CAPACITY: no retry can
-                    // ever admit it — that is 413, not 429.
-                    return err_resp(
-                        StatusCode::PAYLOAD_TOO_LARGE,
-                        "payload_too_large",
-                        "request exceeds the per-stream ingest capacity",
-                    );
-                }
-                let mut r = err_resp(StatusCode::TOO_MANY_REQUESTS, hit.code(), &hit.message());
-                if let Ok(v) = axum::http::HeaderValue::from_str(&format!(
-                    "{}",
-                    hit.retry_ms().div_ceil(1000).max(1)
-                )) {
-                    r.headers_mut().insert("retry-after", v);
-                }
-                return r;
-            }
-            Ok(c) => {
-                c.requests
-                    .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
-                c.records
-                    .fetch_add(entries.len() as u64, std::sync::atomic::Ordering::Relaxed);
-                c.bytes_in
-                    .fetch_add(body.len() as u64, std::sync::atomic::Ordering::Relaxed);
-                c
-            }
-        }
-    } else {
-        // Close-only / deferred-error requests skip admission; a single
-        // resolve here still beats the old two-site double resolve.
-        crate::usage::counters(&name_hash)
-    };
-
-    // STANDARDS ISOLATION (audit P0): the singular route IS the
-    // default-key Durable Stream — one strict sequence before and after
-    // any product split. Routing keys belong to the plural product
-    // route; the removed extension is rejected, never honored, so the
-    // raw sequence can never absorb another key's records.
-    if hdr(&headers, "stream-key").is_some() {
-        return err_resp(
-            StatusCode::BAD_REQUEST,
-            "unknown_field",
-            "Stream-Key was removed: routing keys live on /v1/streams (Prisma-Routing-Key)",
-        );
-    }
-    // The product route passes its routing key as an internal
-    // PARAMETER; the raw route has none and is therefore always the
-    // default-key sequence.
-    let routing_key = product_key.clone().unwrap_or_default();
-    // ROUTING-V3 §1: an absent key is the empty/default key, and the
-    // sole ordering guarantee is per-routing-key order. Resolution
-    // picks the owning segment — the implicit single segment for every
-    // stream born under the unified model (splits arrive with the
-    // sketch scaler), the ordinal segment for legacy per-key layouts.
-    let mut seg = desc.resolve_segment(&routing_key);
-    if seg.sealed {
-        // Mid-transition (a split/merge sealed this segment): refresh
-        // the descriptor once and re-resolve; the successor is in the
-        // CAS'd map. Still sealed after a fresh read = the transition
-        // is mid-publish — tell the client to retry rather than hang.
-        // Søren review blocker 2: the refresh must retain the request's
-        // project-qualified identity AND its incarnation. Rebuilding
-        // state.sref(name) adopted the DEPLOYMENT tenant's same-named
-        // descriptor mid-flight, writing this project's ciphertext into
-        // the other project's segments. An epoch change means the
-        // collection was replaced — fall through to the 503 retry and
-        // let the client re-authorize against the new incarnation.
-        state.registry.invalidate(&sref);
-        match state.registry.get(&sref).await {
-            Ok(Some(d2)) if desc_alive(&d2) && d2.stream_epoch == desc.stream_epoch => {
-                desc = d2;
-                seg = desc.resolve_segment(&routing_key);
-            }
-            _ => {}
-        }
-        if seg.sealed {
-            let mut r = err_resp(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "segment_transition",
-                "segment map transition in progress; retry",
-            );
-            if let Ok(v) = axum::http::HeaderValue::from_str("1") {
-                r.headers_mut().insert("retry-after", v);
-            }
-            return r;
-        }
-    }
-    let seg = seg;
-    let hash = seg.identity;
-    // Per-SEGMENT capacity slot (see the note at the removed per-stream
-    // acquisition above).
-    let _stream_slot = match acquire_stream_slot(&state, seg.identity) {
-        Ok(s) => s,
-        Err(r) => return r,
-    };
-    // Predecessor identities for this routing key (nearest-first) —
-    // only multi-segment dynamic maps have any.
-    let producer_lineage: Vec<[u8; 16]> = match &desc.segments {
-        Some(map) if map.segments.len() > 1 => {
-            let mut preds: Vec<&crate::segmap::SegmentDesc> = map
-                .segments
-                .iter()
-                .filter(|sg| sg.seg_id != seg.seg_id && sg.contains(seg.point) && !sg.is_live())
-                .collect();
-            preds.sort_by_key(|sg| std::cmp::Reverse((sg.created_ms, sg.seg_id)));
-            preds
-                .into_iter()
-                .map(|sg| desc.dynamic_segment_identity(sg.seg_id))
-                .collect()
-        }
-        _ => Vec::new(),
-    };
-    // Unified-scaler sketch feed (spec §5.1): admitted appends only.
-    if !close_only && deferred.is_none() {
-        let fed: usize = entries.iter().map(|e| e.len()).sum();
-        state
-            .runtime
-            .scaler
-            .note_append(&desc, &seg, fed as u64, entries.len() as u64);
-    }
-    // Usage counters key by the name hash; the absorber keys lag by this
-    // engine hash. Record the alias so /v1/debug/usage can join them.
-    crate::usage::link_storage(
-        crate::crypto::RouteHash::for_stream(&desc.sref()),
-        crate::crypto::SegmentHash(hash),
-    );
-    let kv = key_version(&headers);
-    let subkey = derive_subkey(&key, &epoch, &routing_key, kv);
-    state.keys.put(hash, key, epoch);
-
-    // Watch hook (H1 position, H2 delivery): capability-registered by
-    // the descriptor's immutable watch definitions, never by a profile.
-    let touch = if !desc.watch_definitions.is_empty() && desc.is_json() && !entries.is_empty() {
-        // Product watches (spec Stage 2 §3): derive watch keys from the
-        // committed JSON records via the immutable definitions; the
-        // journal ingests only after durability (H2 hook), preserving
-        // the invalidation-after-visibility invariant. One aggregate
-        // journal per COLLECTION (storage identity), coarse across
-        // segments (§3.7).
-        let journal = state.touch.journal(
-            desc.storage_hash(),
-            crate::crypto::RouteHash::for_stream(&desc.sref()),
-            &crate::product::watch_pinned(&desc),
-        );
-        let mut key_ids: Vec<u32> = Vec::new();
-        for raw in &entries {
-            if let Ok(v) = serde_json::from_slice::<serde_json::Value>(raw) {
-                key_ids.extend(crate::product::product_watch_ids(
-                    &desc.watch_definitions,
-                    &v,
-                ));
-            }
-        }
-        key_ids.sort_unstable();
-        key_ids.dedup();
-        if key_ids.is_empty() {
-            None
-        } else {
-            Some(crate::shard::TouchFeed {
-                journal,
-                key_ids,
-                next_offset: 0,
-            })
-        }
-    } else {
-        None
-    };
-
-    let bytes = entries.iter().map(|e| e.len()).sum();
-    let _metric_bytes = bytes as u64;
-    #[cfg(test)]
-    if !close {
-        crate::failpoints::pause_append_before_enqueue(&name).await;
-    } else {
-        crate::failpoints::pause_close_before_enqueue(&name).await;
-    }
-    // Round-13 transfer point: the parsed entries are the queued
-    // representation from here on — the buffering charge ends so the
-    // queued/committer accounting (and the shard ledger) own the
-    // bytes without a transient double charge.
-    drop(_body_charge);
-    let (tx, rx) = oneshot::channel();
-    let has_entries = !entries.is_empty();
-    let req = AppendReq {
-        enqueued_at: std::time::Instant::now(),
-        hash,
-        // The SEGMENT's physical route, not the parent's: frames, tail
-        // state and postings group under the shard that owns them, and
-        // for split children that is a different shard than the parent
-        // (usage counters stay keyed by the stream name above).
-        route: seg.shard_route,
-        entries,
-        usage: usage_c,
+    let command = AppendCommand {
+        sref,
+        expected_epoch: Some(prepared.descriptor().epoch()),
+        key: prepared.key().clone(),
+        body,
+        producer,
+        content_type: hdr(&headers, "content-type"),
         routing_key,
-        key_hash: seg.key_hash.0,
-        // Producer state resolves through the key's sealed predecessors
-        // after a split (ROUTING-V3 §3.6); single-segment streams carry
-        // an empty chain.
-        producer_lineage: producer_lineage.clone(),
-        key_version: kv,
-        subkey,
+        close,
+        seal_auth,
+        request_hash: product_hash,
+        sequence: hdr(&headers, "stream-seq"),
         ts_hint_ms: parse_ts_hint(&headers),
-        seq: hdr(&headers, "stream-seq"),
-        bytes,
-        finish: if close {
-            crate::shard::AppendFinish::Close
-        } else {
-            crate::shard::AppendFinish::Open
-        },
-        producer: producer.clone(),
-        deferred_error: deferred,
-        sealed_reject_new,
-        touch,
-        seal_gen: raw_seal_gen,
-        // Reserved system streams bill nothing (§8.4) — without this,
-        // every `_usage` emission would dirty `_usage` itself and the
-        // drainer would feed back forever. BILLING_METER=off exists for
-        // A/B isolation in benchmarks only.
-        billing: (!crate::billing::is_reserved_stream(&desc.name)
-            && state.config.billing.meter_enabled)
-            .then(|| {
-                std::sync::Arc::new(crate::billing::BillingRef {
-                    identity: crate::billing::identity_of(&state, &desc),
-                    segment_id: seg.seg_id,
-                })
-            }),
-        resp: tx,
+        key_version: key_version(&headers),
+        close_identity: Some(close_identity),
+        body_charge,
     };
-    let engine = match state.engine_for(&seg.shard_route).await {
-        Ok(e) => e,
-        Err(r) => return r,
-    };
-    // Round-13: bind this SEGMENT's durable-write pressure attribution
-    // to the project's admission entry (once per resident handle
-    // incarnation; seeded from the applied tail's exact
-    // unabsorbed_bytes — never from zero when durable debt exists).
-    if let Some(adm) = state.quotas.pressure_handle(sref.project_id())
-        && let Ok(h) = engine.stream_handle(hash).await
-    {
-        h.bind_pressure(adm);
-    }
-    // R25-C: THE maintenance admission point — one, in the shared append
-    // core, after `engine_for` resolved ownership. A non-owner already
-    // received its Streams-Replay-To above and never reaches this, so a
-    // stale local latch cannot answer for someone else's backlog. Both
-    // public append surfaces converge here (raw /v1/stream/{*name}
-    // including hierarchical names, product append and appendMany, every
-    // routing key, split children on their own shard routes), so there
-    // is no second copy of the route grammar to drift.
-    //
-    // Skips: close-only operations carry no entries and must stay
-    // admitted (an operator closing a stream is REDUCING future work),
-    // and reserved system streams stay admitted because overload
-    // recovery must not deadlock on its own system-of-record writes.
-    if !close_only && has_entries && !crate::billing::is_reserved_stream(&name) {
-        let limits = crate::backpressure::Limits::from_config(&state.config.admission);
-        if let Some(cause) = state.admission.admit_maintenance(&engine, &limits) {
-            state.admission.note_maintenance_shed();
-            let mut r = err_resp(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "maintenance_backpressure",
-                &format!("{}; retry after maintenance catches up", cause.as_str()),
-            );
-            r.headers_mut()
-                .insert("retry-after", axum::http::HeaderValue::from_static("5"));
-            return r;
-        }
-    }
-    // Wedge shed: if the shard's durability pipeline is stalled — either
-    // the commit db.write is blocked (unflushed-full) or committed groups
-    // have waited on the durable watermark beyond the threshold (WAL flush
-    // stalled behind L0-full) — reject with a retryable 429 instead of
-    // queueing. Without this, appends hang until the platform front door
-    // kills them at ~30 s (8-minute wedge, 2026-07-21; detector missed the
-    // stale-durability mode on 2026-07-22 when it watched db.write only).
-    // 5 s: healthy durable waits under load peak ~1.5 s; a real wedge
-    // climbs to 30 s+, so 5 s discriminates cleanly without false sheds.
-    let blocked = engine.wedge_ms();
-    if blocked > 5_000 {
-        state.admission.note_wedge_shed();
-        let mut r = err_resp(
-            StatusCode::TOO_MANY_REQUESTS,
-            "engine_backpressure",
-            "commit pipeline blocked (compaction lag); retry",
-        );
-        r.headers_mut()
-            .insert("retry-after", axum::http::HeaderValue::from_static("2"));
-        return r;
-    }
-    if engine.try_enqueue(req).is_err() {
-        return err_resp(
-            StatusCode::TOO_MANY_REQUESTS,
-            "overloaded",
-            "append queue full",
-        );
-    }
-    let outcome = match tokio::time::timeout(APPEND_TIMEOUT, rx).await {
-        Ok(Ok(o)) => o,
-        _ => {
-            return err_resp(
-                StatusCode::REQUEST_TIMEOUT,
-                "append_timeout",
-                "append timed out; outcome unknown",
-            );
-        }
-    };
-
-    // Ack-token shape is client-visible: single-segment streams (every
-    // unified-model stream until its first split, and all total-order
-    // streams) keep the plain token byte-for-byte; legacy per-key
-    // layouts keep their epoch-prefixed tokens (epoch 0 when n == 1,
-    // exactly as before).
-    let segmented = desc.segments.is_some();
-    let tok = |next: u64| {
-        if segmented {
-            crate::offsets::encode_ep(
-                seg.seg_id,
-                if next == 0 {
-                    Offset::START
-                } else {
-                    Offset(Some(next - 1))
-                },
-            )
-        } else {
-            tail_token(next)
-        }
-    };
-    // A definitive committer refusal of a raw close means the promised
-    // records can never land, so this operation must take its own
-    // uncommitted intent back down — otherwise the collection is left
-    // Sealing: ordinary writes refused, and a plain close unable to
-    // finish because the intent still owes a record. Only OUR claim, and
-    // only while it still owes; 429/408 keep it, because the write may
-    // yet succeed on a retry.
-    if let Err(e) = &outcome {
-        // A gap is NOT terminal: the missing predecessor may already be
-        // admitted and staging inside this very commit group, which
-        // would make an exact retry succeed. Tearing the intent down on
-        // that verdict can drop a final record another request is still
-        // completing. Gaps and stale epochs therefore keep the intent
-        // and let the client retry exactly; only verdicts about the
-        // REQUEST ITSELF — a malformed body, the wrong content type, a
-        // sequence reused with different content — are terminal.
-        let definitive = final_err_disposition(e) == FinalDisposition::DefinitivelyRejected;
-        if close
-            && close_carries_content
-            && definitive
-            && let Some(g) = raw_seal_gen
-            && let Err(m) = crate::product::abandon_seal_intent(
-                &state,
-                &desc.sref(),
-                &this_close_op,
-                &desc.stream_epoch,
-                g,
-            )
-            .await
-        {
-            tracing::error!(stream = %name, "abandoning a refused raw close intent: {m}");
-        }
-    }
-    match outcome {
-        Ok(ack) => {
-            touch_ttl(&state, &desc); // writes slide the idle window
-            // A DUPLICATE that did not close: the producer tuple was
-            // spent by an earlier NON-closing operation, so this close
-            // can never deliver what its intent promised — the tuple
-            // it would deliver under is gone, and every exact retry
-            // will meet the same duplicate answer. The claim this
-            // request installed comes down NOW (epoch- and
-            // generation-fenced, so only our own), or the collection
-            // sits Sealing behind an undeliverable promise until a
-            // takeover discards it. The response stays the protocol's
-            // duplicate answer; the collection stays open.
-            if close
-                && ack.duplicate
-                && !ack.closed
-                && let Some(g) = raw_seal_gen
-                && let Err(m) = crate::product::abandon_seal_intent(
-                    &state,
-                    &desc.sref(),
-                    &this_close_op,
-                    &desc.stream_epoch,
-                    g,
-                )
-                .await
-            {
-                tracing::error!(
-                    stream = %name,
-                    "releasing a non-closing duplicate's seal intent: {m}"
-                );
-            }
-            // The seal's own final record also carries `close`, but that
-            // operation finishes the transition itself — it marks the
-            // record committed first, which is what lets the seal
-            // complete at all. Sealing here would run with no operation
-            // id and be refused by its own intent.
-            // Who finishes the collection transition:
-            //   * the PRODUCT seal completes its own (it marks the
-            //     record durable, then seals) — recognised by the
-            //     trusted seal_auth parameter;
-            //   * a raw close owns whatever intent matches its own
-            //     computed identity, including a retry that is resuming
-            //     one published before a crash;
-            //   * a plain close-only just seals.
-            if close && ack.closed && seal_auth.is_none() {
-                // Who owns the completion:
-                //   * a FRESH close that carried content (its write is
-                //     the ack) — it marks and seals;
-                //   * a DUPLICATE only when the descriptor says OUR
-                //     operation still owes the record (the crashed
-                //     close's exact retry). A duplicate whose identity
-                //     is NOT the owed one — the protocol's
-                //     close-with-different-body retry, deduplicated by
-                //     producer sequence against an already-sealed
-                //     collection — must answer as the duplicate it is,
-                //     not attempt (and fail) somebody else's mark.
-                let owns_final = is_owed_final || (close_carries_content && !ack.duplicate);
-                #[cfg(test)]
-                if owns_final {
-                    crate::failpoints::pause_close_before_mark(&name).await;
-                }
-                #[cfg(test)]
-                if owns_final && crate::failpoints::should_stop_before_mark_committed(&name) {
-                    return err_resp(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "seal_incomplete",
-                        "failpoint: stopped before marking the final durable",
-                    );
-                }
-                if owns_final {
-                    let g = raw_seal_gen.unwrap_or_default();
-                    if let Err(e) = crate::product::mark_final_committed(
-                        &state,
-                        &desc.sref(),
-                        &this_close_op,
-                        &desc.stream_epoch,
-                        g,
-                    )
-                    .await
-                    {
-                        // The record is durable and the segment closed,
-                        // but the transition could not be recorded as
-                        // owning it — the claim moved, or the whole
-                        // incarnation did. NEVER continue into run_seal
-                        // here: a close issued against a deleted
-                        // incarnation would claim and seal the
-                        // replacement. The transition (whoever owns it
-                        // now) stays resumable.
-                        tracing::error!(stream = %name, "marking the close's final durable: {e}");
-                        return err_resp(
-                            StatusCode::SERVICE_UNAVAILABLE,
-                            "seal_incomplete",
-                            &format!(
-                                "the final record is durable but the seal could not be recorded: {e}; retry the close"
-                            ),
-                        );
-                    }
-                }
-                let op = owns_final.then(|| this_close_op.clone());
-                // An owner drives the transition under ITS generation
-                // (the one its marked claim holds). A plain close-only
-                // passes None and adopts whatever generation the shared
-                // Empty claim holds NOW — concurrent plain closes renew
-                // the claim as they join, and a close that pinned its
-                // own admission-time generation would fail publication
-                // against a sibling's renewal.
-                let run_gen = if owns_final { raw_seal_gen } else { None };
-                if let Err(e) =
-                    crate::product::run_seal(&state, &desc.sref(), op, &desc.stream_epoch, run_gen)
-                        .await
-                {
-                    // The segment is closed but the collection is not
-                    // sealed. Answering success is how the two surfaces
-                    // end up permanently disagreeing; the transition
-                    // stays resumable, so say it failed.
-                    tracing::error!(stream = %name, "collection seal after raw close: {e}");
-                    return err_resp(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "seal_incomplete",
-                        &format!("the collection seal did not complete: {e}; retry the close"),
-                    );
-                }
-            }
-            // The synthetic identity is INTERNAL: it must not change
-            // what the protocol says on the wire, so the response is
-            // shaped as if the caller had sent no producer at all.
-            let status = if ack.duplicate || close_only || producer.is_none() || synthetic_producer
-            {
-                StatusCode::NO_CONTENT
-            } else {
-                StatusCode::OK
-            };
-            let mut r = Response::builder()
-                .status(status)
-                .header("Stream-Next-Offset", tok(ack.next_offset));
-            if product_hash.is_some() {
-                r = r.header("x-ack-last-offset", ack.last_offset.to_string());
-            }
-            // Internal: did THIS ack close the stream? A duplicate of an
-            // earlier non-closing append also answers 2xx, and the seal
-            // must tell those apart before treating the write as its
-            // final record. Unconditional — a seal without a caller
-            // producer carries no product hash.
-            r = r.header("x-ack-closed", if ack.closed { "true" } else { "false" });
-            if let Some((pe, ps)) = ack.producer.filter(|_| !synthetic_producer) {
-                r = r
-                    .header("Producer-Epoch", pe.to_string())
-                    .header("Producer-Seq", ps.to_string());
-            }
-            if ack.closed {
-                r = r.header("Stream-Closed", "true");
-            }
-            r.body(Body::empty()).unwrap()
-        }
-        Err(AppendErr::SeqConflict { current }) => err_resp(
-            StatusCode::CONFLICT,
-            "seq_conflict",
-            &format!("Stream-Seq must exceed {}", current.unwrap_or_default()),
-        ),
-        Err(AppendErr::SealSuperseded) => err_resp(
-            StatusCode::CONFLICT,
-            "seal_superseded",
-            "the seal claim authorizing this write was taken over;              retry the close to re-enter the claim",
-        ),
-        Err(AppendErr::Closed { next_offset }) => {
-            let mut r = Response::builder()
-                .status(StatusCode::CONFLICT)
-                .header("Stream-Closed", "true")
-                .header("Stream-Next-Offset", tok(next_offset))
-                .header(header::CONTENT_TYPE, "application/json");
-            r = r.header(header::CACHE_CONTROL, "no-store");
-            r.body(Body::from(
-                json!({"error": {"code": "stream_closed", "message": "stream is closed"}})
-                    .to_string(),
-            ))
-            .unwrap()
-        }
-        Err(AppendErr::ProducerGap { expected, received }) => Response::builder()
-            .status(StatusCode::CONFLICT)
-            .header("Producer-Expected-Seq", expected.to_string())
-            .header("Producer-Received-Seq", received.to_string())
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(
-                json!({"error": {"code": "producer_seq_gap", "message": "sequence gap"}})
-                    .to_string(),
-            ))
-            .unwrap(),
-        Err(AppendErr::ProducerStale { current_epoch }) => Response::builder()
-            .status(StatusCode::FORBIDDEN)
-            .header("Producer-Epoch", current_epoch.to_string())
-            .header(header::CONTENT_TYPE, "application/json")
-            .body(Body::from(
-                json!({"error": {"code": "producer_stale_epoch", "message": "stale epoch"}})
-                    .to_string(),
-            ))
-            .unwrap(),
-        Err(AppendErr::ProducerEpochSeq) => err_resp(
-            StatusCode::BAD_REQUEST,
-            "producer_epoch_seq",
-            "a new epoch must start at seq 0",
-        ),
-        Err(AppendErr::ProducerSeqReused) => err_resp(
-            StatusCode::CONFLICT,
-            "producer_sequence_reused",
-            "same producer sequence with a different request",
-        ),
-        Err(AppendErr::CtMismatch) => err_resp(
-            StatusCode::CONFLICT,
-            "content_type_mismatch",
-            "content type mismatch",
-        ),
-        Err(AppendErr::BadBody(m)) => err_resp(StatusCode::BAD_REQUEST, "invalid_body", &m),
-        Err(AppendErr::Internal(m)) => err_resp(StatusCode::INTERNAL_SERVER_ERROR, "internal", &m),
-        Err(AppendErr::Moved) => {
-            let mut r = err_resp(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "shard_moving",
-                "shard fenced by a new owner; retry",
-            );
-            r.headers_mut()
-                .insert("retry-after", axum::http::HeaderValue::from_static("1"));
-            r
-        }
-    }
+    service.execute_prepared(prepared, command).await
 }
 
-use crate::application::read::ReadPlan;
+pub(crate) use crate::application::lifecycle::SealAuthz;
+
+#[cfg(test)]
+pub(crate) async fn fence_segment_for_key(
+    state: &Arc<AppState>,
+    sref: &crate::tenant::TenantStreamRef,
+    epoch: &str,
+    key: &str,
+    generation: u64,
+) -> Result<bool, crate::application::lifecycle::SealError> {
+    crate::application::lifecycle::fence_segment_for_key(
+        &state.lifecycle_service(),
+        sref,
+        epoch,
+        key,
+        generation,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)] // request context, not tunables
 #[cfg(test)]
 pub(crate) use crate::application::read::TEST_ASSERT_KEYED_DENSE;
 #[cfg(test)]

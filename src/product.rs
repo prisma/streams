@@ -1819,256 +1819,65 @@ async fn product_seal(
                 doc.routing_key.as_deref().unwrap_or_default(),
                 (!pid.is_empty()).then_some((pid.as_str(), pep.as_str(), pseq.as_str())),
             );
-            let intent = crate::registry::SealIntent::Final {
-                routing_key: doc.routing_key.clone().unwrap_or_default(),
-                request_hash: op_id.clone(),
-                final_committed: false,
-            };
-            #[cfg(test)]
-            crate::failpoints::pause_product_seal_before_claim(&name).await;
-            let ticket = match enter_sealing(
-                &state,
-                &tenant.stream_ref(&name),
-                &op_id,
-                intent,
-                &validated_epoch,
-            )
-            .await
-            {
-                Ok(t) => t,
-                // Empty message = this exact seal already completed.
-                Err(m) if m.is_empty() => {
-                    return Response::builder()
-                        .status(StatusCode::OK)
-                        .header(header::CONTENT_TYPE, "application/json")
-                        .header(header::CACHE_CONTROL, "no-store")
-                        .body(Body::from(json!({ "sealed": true }).to_string()))
-                        .unwrap();
-                }
-                Err(m) => return perr(StatusCode::CONFLICT, "sealed", &m, None, false),
-            };
-            let mut ih = HeaderMap::new();
-            if let Ok(v) = axum::http::HeaderValue::from_str(&key_b64) {
-                ih.insert("prisma-encryption-key", v);
-            }
-            if let Some(rk) = &doc.routing_key
-                && let Ok(v) = axum::http::HeaderValue::from_str(rk)
-            {
-                ih.insert("prisma-routing-key", v);
-            }
-            for h in ["producer-id", "producer-epoch", "producer-seq"] {
-                if let Some(v) = headers.get(h) {
-                    ih.insert(h, v.clone());
-                }
-            }
-            #[cfg(test)]
-            crate::failpoints::pause_product_final_before_append(&name).await;
-            let resp = product_append_sealing(
-                state.clone(),
-                &tenant.stream_ref(&name),
-                ih,
-                Bytes::from(fin.to_string()),
-                op_id.clone(),
-                ticket.generation,
-                ticket.epoch.clone(),
-            )
-            .await;
-            if !resp.status().is_success() {
-                // Definitive rejection: this seal can never deliver the
-                // record it promised, so it must not leave the intent
-                // behind — a collection stuck Sealing refuses ordinary
-                // appends AND cannot be finished by a plain seal.
-                // Producer state (gap, stale epoch, sequence reuse) and
-                // capacity verdicts are only knowable in the committer,
-                // which is why the pre-checks cannot cover them.
-                //
-                // Ambiguous or transient outcomes keep the intent: the
-                // record may yet be durable, and the transition stays
-                // resumable by an exact retry.
-                let st = resp.status();
-                let (resp, code) = take_error_code(resp).await;
-                // ONE policy with the raw surface (round 12): the old
-                // inline list here named codes the product translator
-                // never emits, so stale-epoch was "retained" on paper
-                // and definitive in fact.
-                let definitive = crate::http::final_code_disposition(st, code.as_deref())
-                    == crate::http::FinalDisposition::DefinitivelyRejected;
-                if definitive
-                    && let Err(e) = abandon_seal_intent(
-                        &state,
-                        &tenant.stream_ref(&name),
-                        &op_id,
-                        &ticket.epoch,
-                        ticket.generation,
+            let sref = tenant.stream_ref(&name);
+            let lifecycle = state.lifecycle_service();
+            let routing_key = doc.routing_key.clone().unwrap_or_default();
+            let mut final_headers = headers.clone();
+            final_headers.insert(
+                "prisma-routing-key",
+                axum::http::HeaderValue::from_str(&routing_key).expect("validated routing key"),
+            );
+            let result = crate::application::lifecycle::seal_final(
+                &lifecycle,
+                crate::application::lifecycle::FinalSealRequest {
+                    stream: &sref,
+                    epoch: &validated_epoch,
+                    operation: &op_id,
+                    routing_key: &routing_key,
+                },
+                |auth| async {
+                    #[cfg(test)]
+                    crate::failpoints::pause_product_final_before_append(&name).await;
+                    product_append_sealing(
+                        state.clone(),
+                        &sref,
+                        &validated,
+                        &final_headers,
+                        Bytes::from(fin.to_string()),
+                        auth,
                     )
                     .await
-                {
-                    tracing::error!(stream = %name, "abandoning a refused seal intent: {e}");
+                    .map(|ack| crate::application::lifecycle::FinalRecordAck { closed: ack.closed })
+                    .map_err(|error| {
+                        let disposition = if error.definitively_rejected() {
+                            crate::application::lifecycle::FinalDisposition::DefinitivelyRejected
+                        } else {
+                            crate::application::lifecycle::FinalDisposition::AmbiguousOrTransient
+                        };
+                        crate::application::lifecycle::FinalRecordFailure { error, disposition }
+                    })
+                },
+            )
+            .await;
+            return match result {
+                Ok(()) => json_ok(json!({"sealed":true})),
+                Err(crate::application::lifecycle::SealFinalError::Append(error)) => {
+                    render_product_append_error(error)
                 }
-                return resp;
-            }
-            // A success is not enough: it must be OUR final write. A
-            // duplicate of some earlier append that did not close the
-            // segment answers 2xx too, and treating that as the final
-            // would seal the collection without ever writing the record
-            // this operation promised.
-            let closed_by_us = resp
-                .headers()
-                .get("x-ack-closed")
-                .and_then(|v| v.to_str().ok())
-                == Some("true");
-            if !closed_by_us {
-                if let Err(e) = abandon_seal_intent(
-                    &state,
-                    &tenant.stream_ref(&name),
-                    &op_id,
-                    &ticket.epoch,
-                    ticket.generation,
-                )
-                .await
-                {
-                    tracing::error!(stream = %name, "abandoning a non-closing seal attempt: {e}");
+                Err(crate::application::lifecycle::SealFinalError::Lifecycle(error)) => {
+                    seal_error_response(&name, &error)
                 }
-                return perr(
+                Err(crate::application::lifecycle::SealFinalError::SequenceReused) => perr(
                     StatusCode::CONFLICT,
                     "producer_sequence_reused",
-                    "this producer sequence already committed a record that did not seal the \
-                     collection; use a fresh sequence for the final record",
+                    "this producer sequence already committed a record that did not seal the collection; use a fresh sequence for the final record",
                     None,
                     false,
-                );
-            }
-            // The record is durable: record that BEFORE any segment
-            // closes, so the transition can be finished by anyone from
-            // here on and by nobody else before.
-            if let Err(e) = mark_final_committed(
-                &state,
-                &tenant.stream_ref(&name),
-                &op_id,
-                &ticket.epoch,
-                ticket.generation,
-            )
-            .await
-            {
-                // The record is durable but the transition could not be
-                // recorded as owning it — a takeover or a recreation
-                // moved the state. NEVER proceed to run_seal from here:
-                // sealing under a claim this operation no longer holds
-                // is exactly the ABA the fence exists to stop.
-                return perr(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "seal_incomplete",
-                    &e,
-                    None,
-                    true,
-                );
-            }
-            return match run_seal(
-                &state,
-                &tenant.stream_ref(&name),
-                Some(op_id),
-                &ticket.epoch,
-                Some(ticket.generation),
-            )
-            .await
-            {
-                Ok(()) => Response::builder()
-                    .status(StatusCode::OK)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .header(header::CACHE_CONTROL, "no-store")
-                    .body(Body::from(json!({ "sealed": true }).to_string()))
-                    .unwrap(),
-                Err(m) => seal_error_response(&name, &m),
+                ),
             };
         }
     }
     product_seal_only(state, tenant, name, headers, validated_epoch).await
-}
-
-pub(crate) use crate::application::lifecycle::EnterSeal;
-
-pub(crate) async fn enter_sealing_cas(
-    state: &Arc<AppState>,
-    sref: &crate::tenant::TenantStreamRef,
-    op_id: &str,
-    intent: &crate::registry::SealIntent,
-    expect_epoch: &str,
-) -> Result<EnterSeal, String> {
-    crate::application::lifecycle::enter_sealing_cas(
-        &state.lifecycle_service(),
-        sref,
-        op_id,
-        intent,
-        expect_epoch,
-    )
-    .await
-    .map_err(|error| error.to_string())
-}
-
-pub(crate) async fn claim_seal(
-    state: &Arc<AppState>,
-    sref: &crate::tenant::TenantStreamRef,
-    op_id: &str,
-    intent: &crate::registry::SealIntent,
-    expect_epoch: &str,
-) -> Result<EnterSeal, String> {
-    crate::application::lifecycle::claim_seal(
-        &state.lifecycle_service(),
-        sref,
-        op_id,
-        intent,
-        expect_epoch,
-    )
-    .await
-    .map_err(|error| error.to_string())
-}
-
-pub(crate) async fn install_reserved_claim(
-    state: &Arc<AppState>,
-    sref: &crate::tenant::TenantStreamRef,
-    expect_epoch: &str,
-    old_op: &str,
-    old_gen: u64,
-    op_id: &str,
-    intent: &crate::registry::SealIntent,
-    reserved: u64,
-) -> Result<bool, String> {
-    crate::application::lifecycle::install_reserved_claim(
-        &state.lifecycle_service(),
-        sref,
-        expect_epoch,
-        old_op,
-        old_gen,
-        op_id,
-        intent,
-        reserved,
-    )
-    .await
-    .map_err(|error| error.to_string())
-}
-
-pub(crate) use crate::application::lifecycle::SealTicket;
-
-async fn enter_sealing(
-    state: &Arc<AppState>,
-    sref: &crate::tenant::TenantStreamRef,
-    op_id: &str,
-    intent: crate::registry::SealIntent,
-    expect_epoch: &str,
-) -> Result<SealTicket, String> {
-    match crate::application::lifecycle::enter_sealing(
-        &state.lifecycle_service(),
-        sref,
-        op_id,
-        intent,
-        expect_epoch,
-    )
-    .await
-    .map_err(|error| error.to_string())?
-    {
-        crate::application::lifecycle::SealClaim::Active(ticket) => Ok(ticket),
-        crate::application::lifecycle::SealClaim::Completed => Err(String::new()),
-    }
 }
 
 /// Distinguishes an ABSENT field from one present as `null`.
@@ -2078,95 +1887,6 @@ where
     T: serde::Deserialize<'de>,
 {
     T::deserialize(d).map(Some)
-}
-
-pub(crate) use crate::application::lifecycle::seal_op_id_full;
-
-pub(crate) use crate::application::lifecycle::seal_op_id_semantic;
-
-/// Read an error response's `error.code` without consuming it: the
-/// committer's verdict is only in the body, and the caller still has to
-/// return the response verbatim.
-async fn take_error_code(resp: Response) -> (Response, Option<String>) {
-    let (parts, body) = resp.into_parts();
-    let bytes = match axum::body::to_bytes(body, 64 * 1024).await {
-        Ok(b) => b,
-        // Unreadable body: no verdict, so the caller treats it as one
-        // it cannot classify — which keeps the intent.
-        Err(_) => return (Response::from_parts(parts, Body::empty()), None),
-    };
-    let code = serde_json::from_slice::<serde_json::Value>(&bytes)
-        .ok()
-        .and_then(|v| v.get("error")?.get("code")?.as_str().map(|s| s.to_string()));
-    (Response::from_parts(parts, Body::from(bytes)), code)
-}
-
-pub(crate) async fn begin_sealing_for_close(
-    state: &Arc<AppState>,
-    sref: &crate::tenant::TenantStreamRef,
-    intent: crate::registry::SealIntent,
-    expect_epoch: &str,
-) -> Result<Option<u64>, String> {
-    crate::application::lifecycle::begin_sealing_for_close(
-        &state.lifecycle_service(),
-        sref,
-        intent,
-        expect_epoch,
-    )
-    .await
-    .map_err(|error| error.to_string())
-}
-
-pub(crate) async fn renew_owed_claim(
-    state: &Arc<AppState>,
-    sref: &crate::tenant::TenantStreamRef,
-    op_id: &str,
-    expect_epoch: &str,
-) -> Result<Option<u64>, String> {
-    crate::application::lifecycle::renew_owed_claim(
-        &state.lifecycle_service(),
-        sref,
-        op_id,
-        expect_epoch,
-    )
-    .await
-    .map_err(|error| error.to_string())
-}
-
-pub(crate) async fn abandon_seal_intent(
-    state: &Arc<AppState>,
-    sref: &crate::tenant::TenantStreamRef,
-    op_id: &str,
-    expect_epoch: &str,
-    expect_gen: u64,
-) -> Result<(), String> {
-    crate::application::lifecycle::abandon_seal_intent(
-        &state.lifecycle_service(),
-        sref,
-        op_id,
-        expect_epoch,
-        expect_gen,
-    )
-    .await
-    .map_err(|error| error.to_string())
-}
-
-pub(crate) async fn mark_final_committed(
-    state: &Arc<AppState>,
-    sref: &crate::tenant::TenantStreamRef,
-    op_id: &str,
-    expect_epoch: &str,
-    expect_gen: u64,
-) -> Result<(), String> {
-    crate::application::lifecycle::mark_final_committed(
-        &state.lifecycle_service(),
-        sref,
-        op_id,
-        expect_epoch,
-        expect_gen,
-    )
-    .await
-    .map_err(|error| error.to_string())
 }
 
 async fn product_seal_only(
@@ -2213,38 +1933,18 @@ async fn product_seal_only(
 ///     topology busy, publication declined, resolution failed)
 ///     -> 503 seal_incomplete, retryable;
 ///   * everything else (invariant/corruption/store) -> 500 internal.
-pub(crate) fn seal_error_response(stream: &str, m: &str) -> Response {
-    let conflict = m.contains("final record is in flight");
-    let resumable = !conflict && m.contains("resumable");
-    let (status, code) = if conflict {
-        (StatusCode::CONFLICT, "sealing")
-    } else if resumable {
-        (StatusCode::SERVICE_UNAVAILABLE, "seal_incomplete")
-    } else {
-        (StatusCode::INTERNAL_SERVER_ERROR, "internal")
+pub(crate) fn seal_error_response(
+    stream: &str,
+    error: &crate::application::lifecycle::SealError,
+) -> Response {
+    use crate::application::lifecycle::SealError;
+    let (status, code) = match error {
+        SealError::Conflict(_) => (StatusCode::CONFLICT, "sealing"),
+        SealError::Resumable(_) => (StatusCode::SERVICE_UNAVAILABLE, "seal_incomplete"),
+        _ => (StatusCode::INTERNAL_SERVER_ERROR, "internal"),
     };
-    // Every occurrence names its cause in the server log — the
-    // response body alone dies with the test process.
-    tracing::error!(stream = %stream, status = %status, code, "seal failed: {m}");
-    perr(status, code, m, None, true)
-}
-
-pub(crate) async fn run_seal(
-    state: &Arc<AppState>,
-    sref: &crate::tenant::TenantStreamRef,
-    op: Option<String>,
-    expect_epoch: &str,
-    claim_gen: Option<u64>,
-) -> Result<(), String> {
-    crate::application::lifecycle::run_seal(
-        &state.lifecycle_service(),
-        sref,
-        op,
-        expect_epoch,
-        claim_gen,
-    )
-    .await
-    .map_err(|error| error.to_string())
+    tracing::error!(stream = %stream, status = %status, code, "seal failed: {error}");
+    perr(status, code, &error.to_string(), None, true)
 }
 
 // ---- Stage 4: append and appendMany ---------------------------------
@@ -2262,28 +1962,43 @@ const MAX_ROUTING_KEY_BYTES: usize = 1_024;
 async fn product_append_sealing(
     state: Arc<AppState>,
     sref: &crate::tenant::TenantStreamRef,
-    headers: HeaderMap,
+    desc: &StreamDesc,
+    headers: &HeaderMap,
     body: Bytes,
-    op_id: String,
-    generation: u64,
-    epoch: String,
-) -> Response {
-    product_append_inner(
+    auth: crate::application::lifecycle::SealAuthz,
+) -> crate::application::append::AppendResult {
+    use crate::application::append::{AppendCode, AppendFailure, FailureClass};
+    let key_b64 = product_key(headers).ok_or_else(|| {
+        AppendFailure::new(
+            FailureClass::Invalid,
+            AppendCode::MissingKey,
+            "Prisma-Encryption-Key required",
+        )
+    })?;
+    let routing_key = headers
+        .get("prisma-routing-key")
+        .and_then(|v| v.to_str().ok())
+        .unwrap_or("");
+    let wire_body = if desc.is_json() {
+        let mut bytes = Vec::with_capacity(body.len() + 2);
+        bytes.push(b'[');
+        bytes.extend_from_slice(&body);
+        bytes.push(b']');
+        Bytes::from(bytes)
+    } else {
+        body.clone()
+    };
+    submit_product_append(
         state,
-        sref.project_id(),
-        sref.name().as_str().to_string(),
+        sref,
+        desc,
+        &key_b64,
+        routing_key,
         headers,
-        body,
+        &body,
+        wire_body,
         false,
-        true,
-        Some(crate::http::SealAuthz {
-            op_id,
-            generation,
-            epoch,
-        }),
-        // Internal: the seal's final record is lifecycle work, not
-        // customer append volume.
-        None,
+        Some(auth),
     )
     .await
 }
@@ -2339,7 +2054,7 @@ async fn product_append_inner(
     seal_after: bool,
     // TRUSTED: the seal operation whose final record this is, with the
     // claim generation and incarnation its write is fenced under.
-    seal_auth: Option<crate::http::SealAuthz>,
+    seal_auth: Option<crate::application::lifecycle::SealAuthz>,
     principal: Option<&crate::auth::RequestPrincipal>,
 ) -> Response {
     let Some(key_b64) = product_key(&headers) else {
@@ -2517,275 +2232,219 @@ async fn product_append_inner(
         return r;
     }
 
-    // Drive the ONE shared append path with internally-constructed
-    // inputs (this is product parsing feeding the engine surface, not a
-    // legacy-input translator).
-    let mut ih = HeaderMap::new();
-    if let Ok(v) = axum::http::HeaderValue::from_str(&key_b64) {
-        ih.insert("stream-encryption-key", v);
-    }
-    if let Ok(v) = axum::http::HeaderValue::from_str(&desc.content_type) {
-        ih.insert("content-type", v);
-    }
-    for h in ["producer-id", "producer-epoch", "producer-seq"] {
-        if let Some(v) = headers.get(h) {
-            ih.insert(h, v.clone());
+    let key = match crate::crypto::StreamKey::from_b64(&key_b64) {
+        Ok(key) => key,
+        Err(_) => {
+            return render_product_append_error(crate::application::append::AppendFailure::new(
+                crate::application::append::FailureClass::Denied,
+                crate::application::append::AppendCode::WrongKey,
+                "key mismatch",
+            ));
         }
-    }
-    if seal_after {
-        ih.insert(
-            "stream-closed",
-            axum::http::HeaderValue::from_static("true"),
-        );
-    }
+    };
+    let result = submit_product_append(
+        state.clone(),
+        &tenant.stream_ref(&name),
+        &desc,
+        &key_b64,
+        &routing_key,
+        &headers,
+        &body,
+        wire_body,
+        batch,
+        seal_auth,
+    )
+    .await;
+    render_product_append(&desc, &key, &routing_key, count, result)
+}
+
+async fn submit_product_append(
+    state: Arc<AppState>,
+    sref: &crate::tenant::TenantStreamRef,
+    desc: &StreamDesc,
+    key_b64: &str,
+    routing_key: &str,
+    headers: &HeaderMap,
+    body: &Bytes,
+    wire_body: Bytes,
+    batch: bool,
+    seal_auth: Option<crate::application::lifecycle::SealAuthz>,
+) -> crate::application::append::AppendResult {
+    let seal_after = seal_auth.is_some();
     let has_producer = headers.contains_key("producer-id");
     // Stage 5 §7: the product request hash covers (operation kind,
     // routing key, content type, body bytes, seal flag) — computed over
     // the PRODUCT body, before any wire re-shaping.
-    let request_hash: [u8; 16] = {
-        use sha2::{Digest, Sha256};
-        let mut hx = Sha256::new();
-        hx.update(if batch {
-            b"\x01batch\x00".as_slice()
-        } else {
-            b"\x01single\x00".as_slice()
-        });
-        hx.update((routing_key.len() as u64).to_le_bytes());
-        hx.update(routing_key.as_bytes());
-        hx.update(desc.content_type.as_bytes());
-        hx.update([u8::from(seal_after)]); // seal flag (spec Stage 5 §7)
-        hx.update(&body);
-        hx.finalize()[..16].try_into().unwrap()
-    };
-    let raw = crate::http::append(
-        state.clone(),
-        tenant.stream_ref(&name),
-        ih,
-        axum::body::Body::from(wire_body),
-        has_producer.then_some(request_hash),
-        Some(routing_key.clone()),
-        // The seal's own final record authorizes itself through this
-        // trusted parameter, not through a header a client could send.
-        seal_auth.clone(),
+    let request_hash = crate::application::append::product_request_hash(
+        batch,
+        routing_key,
+        &desc.content_type,
+        body,
+        seal_after,
+    );
+    use crate::application::append::{AppendCode, AppendCommand, AppendFailure, FailureClass};
+    let key = crate::crypto::StreamKey::from_b64(key_b64).map_err(|_| {
+        AppendFailure::new(FailureClass::Denied, AppendCode::WrongKey, "key mismatch")
+    })?;
+    let service = state.append_service();
+    let prepared = service
+        .prepare(
+            sref,
+            crate::application::append::AppendKey::Provided(key.clone()),
+        )
+        .await?;
+    let producer = crate::application::append::parse_producer(
+        headers
+            .get("producer-id")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
+        headers
+            .get("producer-epoch")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
+        headers
+            .get("producer-seq")
+            .and_then(|v| v.to_str().ok())
+            .map(str::to_string),
     )
-    .await;
-    translate_append_response(
-        &state,
-        &desc,
-        &key_b64,
-        &routing_key,
-        count,
-        has_producer,
-        raw,
-    )
-    .await
+    .map_err(|message| {
+        AppendFailure::new(FailureClass::Invalid, AppendCode::InvalidProducer, message)
+    })?;
+    service.check_memory().await?;
+    service
+        .execute_prepared(
+            prepared,
+            AppendCommand {
+                sref: sref.clone(),
+                expected_epoch: Some(desc.epoch()),
+                key,
+                body: wire_body,
+                producer,
+                content_type: Some(desc.content_type.clone()),
+                routing_key: routing_key.to_string(),
+                close: seal_after,
+                seal_auth,
+                request_hash: has_producer.then_some(request_hash),
+                sequence: None,
+                ts_hint_ms: None,
+                key_version: 0,
+                close_identity: None,
+                body_charge: None,
+            },
+        )
+        .await
 }
 
 /// Map the shared path's protocol response into the product contract:
 /// {cursor, count, duplicate, sealed} on success, the stable product
 /// error schema otherwise.
 #[allow(clippy::too_many_arguments)]
-async fn translate_append_response(
-    state: &Arc<AppState>,
+fn render_product_append(
     desc: &StreamDesc,
-    key_b64: &str,
+    key: &crate::crypto::StreamKey,
     routing_key: &str,
     count: usize,
-    has_producer: bool,
-    raw: Response,
+    result: crate::application::append::AppendResult,
 ) -> Response {
-    let status = raw.status();
-    // The raw route answers 204 for every non-producer append; only a
-    // PRODUCER 204 means duplicate.
-    let dup = has_producer && status == StatusCode::NO_CONTENT;
-    if status.is_success() {
-        let next_tok = raw
-            .headers()
-            .get("stream-next-offset")
-            .and_then(|v| v.to_str().ok())
-            .unwrap_or("")
-            .to_string();
-        let sealed = raw.headers().contains_key("stream-closed");
-        // Decode the raw token into (seg_id, next) — plain tokens are
-        // segment 0, epoch tokens carry their segment.
-        let (seg_id, tail_next) = match crate::offsets::parse_ep(&next_tok) {
-            Ok((e, o)) => (e, o.scan_from()),
-            Err(_) => match crate::offsets::Offset::parse(&next_tok) {
-                Ok(o) => (0, o.scan_from()),
-                Err(_) => (0, 0),
-            },
-        };
-        // The internal ack header carries the ORIGINAL commit offset —
-        // on a duplicate that is the first attempt's position, which is
-        // what read-your-write resumes from (spec Stage 5 §7 "return
-        // the original result"). Clamped to the live tail: a duplicate
-        // answered from a sealed predecessor's row reports an offset in
-        // the predecessor's space, and a cursor past the live tail
-        // would silently skip records.
-        let next = raw
-            .headers()
-            .get("x-ack-last-offset")
-            .and_then(|v| v.to_str().ok())
-            .and_then(|v| v.parse::<u64>().ok())
-            .filter(|_| dup)
-            .map(|last| (last.wrapping_add(1)).min(tail_next))
-            .unwrap_or(tail_next);
-        let cursor = match crate::crypto::StreamKey::from_b64(key_b64) {
-            Ok(k) => {
-                let epoch = desc.epoch();
-                crate::product_cursor::KeyCursor {
-                    epoch,
-                    key_hash: crate::crypto::stream_hash(routing_key),
-                    seg_id,
-                    offset: next,
-                }
-                .encode(&desc.project_id, &k)
-            }
-            Err(_) => String::new(),
-        };
-        let _ = state;
-        return Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::CACHE_CONTROL, "no-store")
-            // Internal, stripped at the edge: whether THIS ack closed the
-            // stream. The seal needs it to tell its own final write from
-            // a duplicate of an earlier, non-closing append.
-            .header(
-                "x-ack-closed",
-                raw.headers()
-                    .get("x-ack-closed")
-                    .and_then(|v| v.to_str().ok())
-                    .unwrap_or("false"),
-            )
-            .body(Body::from(
-                json!({
-                    "cursor": cursor,
-                    "count": if dup { 0 } else { count },
-                    "duplicate": dup,
-                    "sealed": sealed,
-                })
-                .to_string(),
-            ))
-            .unwrap();
+    let out = match result {
+        Ok(out) => out,
+        Err(error) => return render_product_append_error(error),
+    };
+    let next = if out.duplicate {
+        out.last_offset.saturating_add(1).min(out.next_offset)
+    } else {
+        out.next_offset
+    };
+    let cursor = crate::product_cursor::KeyCursor {
+        epoch: desc.epoch(),
+        key_hash: crate::crypto::stream_hash(routing_key),
+        seg_id: out.seg_id,
+        offset: next,
     }
-    // Error translation: lift the machine code from the shared path's
-    // error body where one exists (the producer taxonomy — spec Stage 5
-    // §9 — depends on it), else map by status.
-    //
-    // Ownership bounce first: an append routed to a segment another
-    // instance owns must keep Streams-Replay-To visible, or routers
-    // cannot converge and every post-split append to a foreign child
-    // fails as an opaque "conflict" (the two-instance rig lost every
-    // such record silently — the client saw 409, the hammer didn't
-    // check, and the child segments stayed empty).
-    if status.as_u16() == 409
-        && let Some(to) = raw.headers().get("streams-replay-to").cloned()
-    {
-        let mut r = perr(
-            status,
+    .encode(&desc.project_id, key);
+    Response::builder().status(StatusCode::OK).header(header::CONTENT_TYPE,"application/json").header(header::CACHE_CONTROL,"no-store")
+        .body(Body::from(json!({"cursor":cursor,"count":if out.duplicate {0}else{count},"duplicate":out.duplicate,"sealed":out.closed}).to_string())).unwrap()
+}
+
+fn render_product_append_error(error: crate::application::append::AppendFailure) -> Response {
+    use crate::application::append::{AppendCode as C, FailureClass as F};
+    let status = crate::http::append_failure_status(&error);
+    let (code, message, details, retryable) = match error.code {
+        C::NotOwner => (
             "not_stream_owner",
             "another instance owns the target segment; retry through the router",
             None,
             true,
-        );
-        r.headers_mut().insert("streams-replay-to", to);
-        return r;
-    }
-    let retry_after = raw.headers().get("retry-after").cloned();
-    let sealed_hdr = raw.headers().contains_key("stream-closed");
-    let expected = raw
-        .headers()
-        .get("producer-expected-seq")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok());
-    let received = raw
-        .headers()
-        .get("producer-received-seq")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok());
-    let cur_epoch = raw
-        .headers()
-        .get("producer-epoch")
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.parse::<u64>().ok());
-    let raw_code = match axum::body::to_bytes(raw.into_body(), 64 * 1024).await {
-        Ok(b) => serde_json::from_slice::<serde_json::Value>(&b)
-            .ok()
-            .and_then(|v| v["error"]["code"].as_str().map(str::to_string)),
-        Err(_) => None,
+        ),
+        C::ProducerGap => (
+            "producer_gap",
+            "producer sequence gap",
+            Some(json!({"expected":error.expected,"received":error.received})),
+            false,
+        ),
+        C::ProducerStale => (
+            "stale_producer_epoch",
+            "producer epoch is stale",
+            Some(json!({"currentEpoch":error.producer_epoch})),
+            false,
+        ),
+        C::ProducerSequenceReused => (
+            "producer_sequence_reused",
+            "same producer sequence with a different request",
+            None,
+            false,
+        ),
+        C::ProducerEpochSeq => (
+            "producer_epoch_must_start_at_zero",
+            "a new producer epoch must start at sequence 0",
+            None,
+            false,
+        ),
+        C::StreamClosed => ("sealed", "collection is sealed", None, false),
+        C::MaintenanceBackpressure => (
+            "maintenance_backpressure",
+            "maintenance backlog exceeds its bound; retry after it drains",
+            None,
+            true,
+        ),
+        C::ContentTypeMismatch => (
+            "content_type_mismatch",
+            "content type mismatch",
+            None,
+            false,
+        ),
+        _ => match error.class {
+            F::Missing => ("not_found", "stream not found", None, false),
+            F::Denied => ("stale_or_wrong_credentials", "forbidden", None, false),
+            F::Conflict => (
+                "conflict",
+                "producer or configuration conflict",
+                None,
+                false,
+            ),
+            F::Invalid if status == StatusCode::PAYLOAD_TOO_LARGE => (
+                "body_too_large",
+                "request body exceeds the limit",
+                None,
+                false,
+            ),
+            F::Capacity => ("rate_limited", "admission or rate limit", None, true),
+            F::Unavailable => ("temporarily_unavailable", "retry shortly", None, true),
+            _ => ("append_failed", "append failed", None, false),
+        },
     };
-    let (code, message, details, retryable): (&str, &str, Option<serde_json::Value>, bool) =
-        match raw_code.as_deref() {
-            Some("producer_seq_gap") => (
-                "producer_gap",
-                "producer sequence gap",
-                Some(json!({"expected": expected, "received": received})),
-                false,
-            ),
-            Some("producer_stale_epoch") => (
-                "stale_producer_epoch",
-                "producer epoch is stale",
-                Some(json!({ "currentEpoch": cur_epoch })),
-                false,
-            ),
-            Some("producer_sequence_reused") => (
-                "producer_sequence_reused",
-                "same producer sequence with a different request",
-                None,
-                false,
-            ),
-            Some("producer_epoch_seq") => (
-                "producer_epoch_must_start_at_zero",
-                "a new producer epoch must start at sequence 0",
-                None,
-                false,
-            ),
-            Some("stream_closed") => ("sealed", "collection is sealed", None, false),
-            // R25-H: the maintenance refusal is a TYPED contract —
-            // clients key retry policy off this code, and the generic
-            // 503 translation was erasing it on the product surface
-            // while the raw surface kept it. One refusal, one name.
-            Some("maintenance_backpressure") => (
-                "maintenance_backpressure",
-                "maintenance backlog exceeds its bound; retry after it drains",
-                None,
-                true,
-            ),
-            Some("content_type_mismatch") => (
-                "content_type_mismatch",
-                "content type mismatch",
-                None,
-                false,
-            ),
-            _ => match status.as_u16() {
-                404 => ("not_found", "stream not found", None, false),
-                403 => ("stale_or_wrong_credentials", "forbidden", None, false),
-                409 if sealed_hdr => ("sealed", "collection is sealed", None, false),
-                409 => (
-                    "conflict",
-                    "producer or configuration conflict",
-                    None,
-                    false,
-                ),
-                413 => (
-                    "body_too_large",
-                    "request body exceeds the limit",
-                    None,
-                    false,
-                ),
-                429 => ("rate_limited", "admission or rate limit", None, true),
-                503 => ("temporarily_unavailable", "retry shortly", None, true),
-                _ => ("append_failed", "append failed", None, false),
-            },
-        };
     let mut r = perr(status, code, message, details, retryable);
-    if let Some(ra) = retry_after {
-        r.headers_mut().insert("retry-after", ra.clone());
+    if let Some(retry) = error.retry_after {
+        r.headers_mut().insert(
+            "retry-after",
+            axum::http::HeaderValue::from_str(&retry.to_string()).unwrap(),
+        );
     }
-    // §10.4: the shared append core answers key mismatches as a bare
-    // 403, restated here — key-guessing probes on the append path
-    // journal like every other denial.
+    if let Some(owner) = error.owner
+        && let Ok(owner) = axum::http::HeaderValue::from_str(&owner)
+    {
+        r.headers_mut().insert("streams-replay-to", owner);
+    }
     if code == "stale_or_wrong_credentials" {
         r = crate::audit::tag(r, "stale_or_wrong_credentials");
     }
@@ -6869,4 +6528,162 @@ fn watch_failure_response(error: crate::application::watch::WatchFailure) -> Res
             true,
         ),
     }
+}
+
+pub(crate) use crate::application::lifecycle::{
+    EnterSeal, SealTicket, seal_op_id_full, seal_op_id_semantic,
+};
+pub(crate) async fn enter_sealing_cas(
+    state: &Arc<AppState>,
+    sref: &crate::tenant::TenantStreamRef,
+    op_id: &str,
+    intent: &crate::registry::SealIntent,
+    expect_epoch: &str,
+) -> Result<EnterSeal, crate::application::lifecycle::SealError> {
+    crate::application::lifecycle::enter_sealing_cas(
+        &state.lifecycle_service(),
+        sref,
+        op_id,
+        intent,
+        expect_epoch,
+    )
+    .await
+}
+
+pub(crate) async fn claim_seal(
+    state: &Arc<AppState>,
+    sref: &crate::tenant::TenantStreamRef,
+    op_id: &str,
+    intent: &crate::registry::SealIntent,
+    expect_epoch: &str,
+) -> Result<EnterSeal, crate::application::lifecycle::SealError> {
+    crate::application::lifecycle::claim_seal(
+        &state.lifecycle_service(),
+        sref,
+        op_id,
+        intent,
+        expect_epoch,
+    )
+    .await
+}
+
+pub(crate) async fn install_reserved_claim(
+    state: &Arc<AppState>,
+    sref: &crate::tenant::TenantStreamRef,
+    expect_epoch: &str,
+    old_op: &str,
+    old_gen: u64,
+    op_id: &str,
+    intent: &crate::registry::SealIntent,
+    reserved: u64,
+) -> Result<bool, crate::application::lifecycle::SealError> {
+    crate::application::lifecycle::install_reserved_claim(
+        &state.lifecycle_service(),
+        sref,
+        expect_epoch,
+        old_op,
+        old_gen,
+        op_id,
+        intent,
+        reserved,
+    )
+    .await
+}
+
+async fn enter_sealing(
+    state: &Arc<AppState>,
+    sref: &crate::tenant::TenantStreamRef,
+    op_id: &str,
+    intent: crate::registry::SealIntent,
+    expect_epoch: &str,
+) -> Result<crate::application::lifecycle::SealClaim, crate::application::lifecycle::SealError> {
+    crate::application::lifecycle::enter_sealing(
+        &state.lifecycle_service(),
+        sref,
+        op_id,
+        intent,
+        expect_epoch,
+    )
+    .await
+}
+
+pub(crate) async fn begin_sealing_for_close(
+    state: &Arc<AppState>,
+    sref: &crate::tenant::TenantStreamRef,
+    intent: crate::registry::SealIntent,
+    expect_epoch: &str,
+) -> Result<Option<u64>, crate::application::lifecycle::SealError> {
+    crate::application::lifecycle::begin_sealing_for_close(
+        &state.lifecycle_service(),
+        sref,
+        intent,
+        expect_epoch,
+    )
+    .await
+}
+
+pub(crate) async fn renew_owed_claim(
+    state: &Arc<AppState>,
+    sref: &crate::tenant::TenantStreamRef,
+    op_id: &str,
+    expect_epoch: &str,
+) -> Result<Option<u64>, crate::application::lifecycle::SealError> {
+    crate::application::lifecycle::renew_owed_claim(
+        &state.lifecycle_service(),
+        sref,
+        op_id,
+        expect_epoch,
+    )
+    .await
+}
+
+pub(crate) async fn abandon_seal_intent(
+    state: &Arc<AppState>,
+    sref: &crate::tenant::TenantStreamRef,
+    op_id: &str,
+    expect_epoch: &str,
+    expect_gen: u64,
+) -> Result<(), crate::application::lifecycle::SealError> {
+    crate::application::lifecycle::abandon_seal_intent(
+        &state.lifecycle_service(),
+        sref,
+        op_id,
+        expect_epoch,
+        expect_gen,
+    )
+    .await
+}
+
+pub(crate) async fn mark_final_committed(
+    state: &Arc<AppState>,
+    sref: &crate::tenant::TenantStreamRef,
+    op_id: &str,
+    expect_epoch: &str,
+    expect_gen: u64,
+) -> Result<(), crate::application::lifecycle::SealError> {
+    crate::application::lifecycle::mark_final_committed(
+        &state.lifecycle_service(),
+        sref,
+        op_id,
+        expect_epoch,
+        expect_gen,
+    )
+    .await
+}
+
+pub(crate) async fn run_seal(
+    state: &Arc<AppState>,
+    sref: &crate::tenant::TenantStreamRef,
+    op: Option<String>,
+    expect_epoch: &str,
+    claim_gen: Option<u64>,
+) -> Result<(), crate::application::lifecycle::SealError> {
+    crate::application::lifecycle::run_seal(
+        &state.lifecycle_service(),
+        sref,
+        op,
+        expect_epoch,
+        claim_gen,
+    )
+    .await
 }
