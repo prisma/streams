@@ -86,6 +86,51 @@ pub fn ack_key(hash: &[u8; 16], consumer: &str, cgen: u64, off: u64) -> Vec<u8> 
     k
 }
 
+/// Canonical decoder for generation-qualified queue keys. Truncated or foreign
+/// rows are corruption, never evidence that a generation has been deleted.
+pub fn decode_state_key<'a>(
+    hash: &[u8; 16],
+    tag: u8,
+    key: &'a [u8],
+) -> Result<(&'a str, u64, Option<u64>), &'static str> {
+    if key.get(..16) != Some(hash.as_slice()) || key.get(16) != Some(&tag) {
+        return Err("queue key identity mismatch");
+    }
+    let rest = &key[17..];
+    let sep = rest
+        .iter()
+        .position(|b| *b == 0)
+        .ok_or("queue key missing separator")?;
+    let name = std::str::from_utf8(&rest[..sep]).map_err(|_| "queue key name is not UTF-8")?;
+    if name.is_empty() {
+        return Err("queue key name is empty");
+    }
+    let tail = &rest[sep + 1..];
+    let width = match tag {
+        b'c' => 8,
+        b'l' | b'x' => 16,
+        _ => return Err("unknown queue key tag"),
+    };
+    if tail.len() != width {
+        return Err("queue key has invalid width");
+    }
+    let generation = u64::from_be_bytes(tail[..8].try_into().expect("checked width"));
+    let offset =
+        (width == 16).then(|| u64::from_be_bytes(tail[8..].try_into().expect("checked width")));
+    Ok((name, generation, offset))
+}
+
+pub fn decode_counter(raw: &[u8]) -> Result<u64, &'static str> {
+    Ok(u64::from_le_bytes(
+        raw.try_into()
+            .map_err(|_| "queue counter has invalid width")?,
+    ))
+}
+
+pub fn decode_consumer_record(raw: &[u8]) -> Result<ConsumerRecord, serde_json::Error> {
+    serde_json::from_slice(raw)
+}
+
 pub fn encode_lease(l: &Lease) -> Vec<u8> {
     let mut v = Vec::with_capacity(32);
     v.extend_from_slice(&l.deadline_ms.to_le_bytes());
@@ -96,7 +141,7 @@ pub fn encode_lease(l: &Lease) -> Vec<u8> {
 }
 
 pub fn decode_lease(v: &[u8]) -> Option<Lease> {
-    if v.len() < 16 {
+    if !matches!(v.len(), 16 | 32) {
         return None;
     }
     let mut key_hash = [0u8; 16];

@@ -21,8 +21,8 @@ use crate::crypto::decode_frame;
 mod commit_plan;
 pub use commit_plan::{AppendFinish, CloseReq, EnqueueError, SealFenceReq, UsageAckScope};
 use commit_plan::{
-    BillingAckDecision, decide_billing_ack, ConsumerGeneration, DurableEffects, ProducerDecision, decide_consumer_generation,
-    decide_producer, seal_authorized,
+    BillingAckDecision, ConsumerGeneration, DurableEffects, ProducerDecision, decide_billing_ack,
+    decide_consumer_generation, decide_producer, seal_authorized,
 };
 
 pub fn tail_key(hash: &[u8; 16]) -> Vec<u8> {
@@ -3442,20 +3442,40 @@ impl ShardEngine {
                                         // ignored, never merged; a
                                         // HIGHER generation replaces
                                         // the state wholesale.
-                                        let rest = &kv.key[17..];
-                                        let Some(sep) = rest.iter().position(|b| *b == 0) else {
-                                            continue;
+                                        let (consumer, cgen, offset) =
+                                            match decode_state_key(&hash, tag, &kv.key) {
+                                                Ok(decoded) => decoded,
+                                                Err(e) => {
+                                                    load_err = Some(e.into());
+                                                    break 'tags;
+                                                }
+                                            };
+                                        // Validate even dead-generation rows before marking a scan complete.
+                                        let cursor = if tag == b'c' {
+                                            match decode_counter(&kv.value) {
+                                                Ok(v) => Some(v),
+                                                Err(e) => {
+                                                    load_err = Some(e.into());
+                                                    break 'tags;
+                                                }
+                                            }
+                                        } else {
+                                            None
                                         };
-                                        let consumer =
-                                            String::from_utf8_lossy(&rest[..sep]).into_owned();
-                                        let tail = &rest[sep + 1..];
-                                        if tail.len() < 8 {
-                                            continue;
-                                        }
-                                        let cgen = u64::from_be_bytes(
-                                            tail[..8].try_into().unwrap_or([0; 8]),
-                                        );
-                                        let cs = fresh.consumers.entry(consumer).or_default();
+                                        let lease = if tag == b'l' {
+                                            match decode_lease(&kv.value) {
+                                                Some(v) => Some(v),
+                                                None => {
+                                                    load_err =
+                                                        Some("invalid queue lease width".into());
+                                                    break 'tags;
+                                                }
+                                            }
+                                        } else {
+                                            None
+                                        };
+                                        let cs =
+                                            fresh.consumers.entry(consumer.to_owned()).or_default();
                                         if cs.cgen > cgen {
                                             continue;
                                         }
@@ -3465,26 +3485,14 @@ impl ShardEngine {
                                                 ..Default::default()
                                             };
                                         }
-                                        match tag {
-                                            b'c' => {
-                                                cs.cursor = u64::from_le_bytes(
-                                                    kv.value[..8].try_into().unwrap_or([0; 8]),
-                                                );
-                                            }
-                                            _ => {
-                                                if tail.len() < 16 {
-                                                    continue;
-                                                }
-                                                let off = u64::from_be_bytes(
-                                                    tail[8..16].try_into().unwrap_or([0; 8]),
-                                                );
-                                                if tag == b'l' {
-                                                    if let Some(l) = decode_lease(&kv.value) {
-                                                        cs.leases.insert(off, l);
-                                                    }
-                                                } else {
-                                                    cs.acked.insert(off);
-                                                }
+                                        if let Some(cursor) = cursor {
+                                            cs.cursor = cursor;
+                                        }
+                                        if let Some(off) = offset {
+                                            if let Some(lease) = lease {
+                                                cs.leases.insert(off, lease);
+                                            } else {
+                                                cs.acked.insert(off);
                                             }
                                         }
                                     }
@@ -3529,21 +3537,33 @@ impl ShardEngine {
                             // tombstone allocates generation+1, which
                             // is what makes any dead generation's
                             // residue inert (round 16).
-                            let existing: Option<ConsumerRecord> =
-                                match local.queue_configs.get(&consumer) {
-                                    Some(staged) => Some(staged.clone()),
-                                    None => {
-                                        match self.db.get(&config_key(&hash, &consumer)[..]).await {
-                                            Ok(v) => v.and_then(|v| {
-                                                serde_json::from_slice::<ConsumerRecord>(&v).ok()
-                                            }),
+                            let existing: Option<ConsumerRecord> = match local
+                                .queue_configs
+                                .get(&consumer)
+                            {
+                                Some(staged) => Some(staged.clone()),
+                                None => {
+                                    match self.db.get(&config_key(&hash, &consumer)[..]).await {
+                                        Ok(v) => match v
+                                            .map(|v| decode_consumer_record(&v))
+                                            .transpose()
+                                        {
+                                            Ok(rec) => rec,
                                             Err(e) => {
-                                                queue_pending.push((resp, Err(e.to_string())));
+                                                queue_pending.push((
+                                                    resp,
+                                                    Err(format!("consumer_config_corrupt: {e}")),
+                                                ));
                                                 continue;
                                             }
+                                        },
+                                        Err(e) => {
+                                            queue_pending.push((resp, Err(e.to_string())));
+                                            continue;
                                         }
                                     }
-                                };
+                                }
+                            };
                             let out = match existing {
                                 Some(rec)
                                     if rec.state == ConsumerLifecycle::Active
@@ -3577,7 +3597,15 @@ impl ShardEngine {
                                     // create at a strictly higher
                                     // generation than any that ever
                                     // lived under this name.
-                                    let cgen = other.map(|r| r.generation + 1).unwrap_or(1);
+                                    let Some(cgen) =
+                                        other.map_or(Some(1), |r| r.generation.checked_add(1))
+                                    else {
+                                        queue_pending.push((
+                                            resp,
+                                            Err("consumer generation exhausted".into()),
+                                        ));
+                                        continue;
+                                    };
                                     let rec = ConsumerRecord {
                                         generation: cgen,
                                         state: ConsumerLifecycle::Active,
@@ -3602,7 +3630,19 @@ impl ShardEngine {
                                 Some(staged) => Some(staged.clone()),
                                 None => {
                                     match self.db.get(&config_key(&hash, &consumer)[..]).await {
-                                        Ok(v) => v.and_then(|v| serde_json::from_slice(&v).ok()),
+                                        Ok(v) => match v
+                                            .map(|v| decode_consumer_record(&v))
+                                            .transpose()
+                                        {
+                                            Ok(rec) => rec,
+                                            Err(e) => {
+                                                queue_pending.push((
+                                                    resp,
+                                                    Err(format!("consumer_config_corrupt: {e}")),
+                                                ));
+                                                continue;
+                                            }
+                                        },
                                         Err(e) => {
                                             queue_pending.push((resp, Err(e.to_string())));
                                             continue;
@@ -3625,21 +3665,33 @@ impl ShardEngine {
                             expect_gen,
                             deleting,
                         } => {
-                            let existing: Option<ConsumerRecord> =
-                                match local.queue_configs.get(&consumer) {
-                                    Some(staged) => Some(staged.clone()),
-                                    None => {
-                                        match self.db.get(&config_key(&hash, &consumer)[..]).await {
-                                            Ok(v) => v.and_then(|v| {
-                                                serde_json::from_slice::<ConsumerRecord>(&v).ok()
-                                            }),
+                            let existing: Option<ConsumerRecord> = match local
+                                .queue_configs
+                                .get(&consumer)
+                            {
+                                Some(staged) => Some(staged.clone()),
+                                None => {
+                                    match self.db.get(&config_key(&hash, &consumer)[..]).await {
+                                        Ok(v) => match v
+                                            .map(|v| decode_consumer_record(&v))
+                                            .transpose()
+                                        {
+                                            Ok(rec) => rec,
                                             Err(e) => {
-                                                queue_pending.push((resp, Err(e.to_string())));
+                                                queue_pending.push((
+                                                    resp,
+                                                    Err(format!("consumer_config_corrupt: {e}")),
+                                                ));
                                                 continue;
                                             }
+                                        },
+                                        Err(e) => {
+                                            queue_pending.push((resp, Err(e.to_string())));
+                                            continue;
                                         }
                                     }
-                                };
+                                }
+                            };
                             let Some(rec) = existing else {
                                 queue_pending.push((resp, Err(
                                     "consumer_not_found: no record for lifecycle change".into(),
@@ -3734,10 +3786,24 @@ impl ShardEngine {
                             {
                                 let fk = crate::queue::fence_key(&hash, &consumer);
                                 let cur = match self.db.get(&fk[..]).await {
-                                    Ok(Some(v)) => {
-                                        u64::from_le_bytes(v[..8].try_into().unwrap_or([0; 8]))
+                                    Ok(Some(v)) => match decode_counter(&v) {
+                                        Ok(value) => value,
+                                        Err(e) => {
+                                            queue_pending.push((
+                                                resp,
+                                                Err(format!("consumer_fence_unverified: {e}")),
+                                            ));
+                                            continue;
+                                        }
+                                    },
+                                    Ok(None) => 0,
+                                    Err(e) => {
+                                        queue_pending.push((
+                                            resp,
+                                            Err(format!("consumer_fence_unverified: {e}")),
+                                        ));
+                                        continue;
                                     }
-                                    _ => 0,
                                 };
                                 if fence_below > cur {
                                     wb.put(&fk[..], &fence_below.to_le_bytes()[..]);
@@ -3760,17 +3826,6 @@ impl ShardEngine {
                             // unbounded Vec or WriteBatch — the step
                             // reports `more` and the saga steps again
                             // from the durably reduced row set.
-                            let pfx_gen = |key: &[u8], pfx_len: usize| -> u64 {
-                                key.get(pfx_len..pfx_len + 8)
-                                    .and_then(|b| b.try_into().ok())
-                                    .map(u64::from_be_bytes)
-                                    // A row too short to carry a
-                                    // generation cannot belong to a
-                                    // LIVE one (live writers always
-                                    // encode it): treat as gen 0,
-                                    // i.e. dead residue.
-                                    .unwrap_or(0)
-                            };
                             let scan_cap = max_rows.saturating_mul(4).max(1024);
                             let mut dead: Vec<Vec<u8>> = Vec::new();
                             let mut dead_bytes = 0usize;
@@ -3796,7 +3851,23 @@ impl ShardEngine {
                                             match iter.next().await {
                                                 Ok(Some(kv)) => {
                                                     scanned += 1;
-                                                    if pfx_gen(&kv.key, pfx.len()) < fence_below {
+                                                    let generation =
+                                                        match decode_state_key(&hash, tag, &kv.key)
+                                                        {
+                                                            Ok((name, generation, _))
+                                                                if name == consumer =>
+                                                            {
+                                                                generation
+                                                            }
+                                                            _ => {
+                                                                scan_err = Some(
+                                                                    "invalid queue cleanup key"
+                                                                        .into(),
+                                                                );
+                                                                break 'scans;
+                                                            }
+                                                        };
+                                                    if generation < fence_below {
                                                         dead_bytes += kv.key.len();
                                                         dead.push(kv.key.to_vec());
                                                     }
@@ -3952,9 +4023,16 @@ impl ShardEngine {
                                 None => {
                                     let fk = crate::queue::fence_key(&hash, &cname);
                                     let durable = match self.db.get(&fk[..]).await {
-                                        Ok(Some(v)) => {
-                                            u64::from_le_bytes(v[..8].try_into().unwrap_or([0; 8]))
-                                        }
+                                        Ok(Some(v)) => match decode_counter(&v) {
+                                            Ok(value) => value,
+                                            Err(e) => {
+                                                queue_pending.push((
+                                                    resp,
+                                                    Err(format!("consumer_fence_unverified: {e}")),
+                                                ));
+                                                continue;
+                                            }
+                                        },
                                         // A failed read must NOT be
                                         // read as "unfenced": refuse
                                         // the op and let the client
@@ -6353,3 +6431,6 @@ mod queue_publication_tests {
         let _ = db.close().await;
     }
 }
+
+#[cfg(test)]
+mod queue_codec_tests;

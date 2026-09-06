@@ -2017,7 +2017,7 @@ impl ReadSpool {
         })
         .await?;
         let next = match db.get(&b"meta/next-seq"[..]).await? {
-            Some(v) => u64::from_le_bytes(v[..8].try_into().unwrap_or([0; 8])),
+            Some(v) => crate::shard::decode_cursor(&v)?,
             None => 0,
         };
         // Rows quarantined by earlier boots stay on the books: the
