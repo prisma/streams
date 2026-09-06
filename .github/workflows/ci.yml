@@ -24,6 +24,9 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
+        with:
+          # Mechanism provenance compares immutable ancestor source, not only HEAD.
+          fetch-depth: 0
       - name: Scanner self-test
         run: python3 scripts/architecture-report.py --self-test
       - name: Architecture budgets and owner boundaries (hard gate)
@@ -43,6 +46,8 @@ jobs:
           python3 scripts/review-evidence.py --self-test
           python3 scripts/review-evidence.py --check
           python3 scripts/verify-rc-evidence.py --self-test --repo .
+      - name: Evidence provenance from fresh full and shallow checkouts
+        run: python3 scripts/review-evidence-checkout.py
   # Job: rust build + full suite (product conformance, dual-surface
   # equivalence corpus, DST safety/liveness, request-cost budgets).
   rust:

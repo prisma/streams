@@ -35,6 +35,17 @@ def git(*args: str) -> str:
     return subprocess.check_output(['git', *args], cwd=ROOT, text=True).strip()
 
 
+def historical_source(commit: str, path: str) -> tuple[str | None, str | None]:
+    """Missing ancestor objects must fail the gate, with actionable provenance."""
+    anchor = f'{commit}:{path}'
+    result = subprocess.run(['git', 'show', anchor], cwd=ROOT, text=True, capture_output=True)
+    if result.returncode:
+        return None, (f'missing historical provenance: {anchor}; obtain the pinned ancestor '
+                      'objects (CI actions/checkout fetch-depth: 0, or git fetch --unshallow). '
+                      'Historical source verification was not performed; checks are not skipped.')
+    return result.stdout, None
+
+
 def validate_dispositions(scenarios: list, dispositions: list) -> list[str]:
     failures, by_id = [], {}
     for disposition in dispositions:
@@ -138,7 +149,10 @@ def check() -> list[str]:
                 continue
             if change.get('before_commit') != required_changes.get((change.get('file'), change.get('name'))):
                 continue
-            original_source = git('show', f'{change["before_commit"]}:{change["file"]}')
+            original_source, missing = historical_source(change['before_commit'], change['file'])
+            if missing:
+                failures.append(missing)
+                continue
             failures.extend(fixture_change_failures(change, original_source, path.read_text()))
     obligations = set()
     for entry in manifest['mechanisms']:
