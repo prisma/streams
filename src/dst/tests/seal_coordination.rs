@@ -79,6 +79,7 @@ async fn a_plain_seal_cannot_finish_someone_elses_final() {
     state
         .registry
         .cas_update(&state.deployment.raw_adapter_sref("sealint"), |d| {
+            d.seal_gen_counter += 1;
             d.sealing = Some(crate::registry::SealState {
                 operation_id: crate::product::seal_op_id_full(
                     &serde_json::json!({"done": true}),
@@ -95,7 +96,7 @@ async fn a_plain_seal_cannot_finish_someone_elses_final() {
                     final_committed: false,
                 },
                 claimed_ms: crate::shard::now_ms(),
-                claim_generation: 1,
+                claim_generation: d.seal_gen_counter,
             });
             true
         })
@@ -191,11 +192,12 @@ async fn producers_cannot_write_new_records_while_sealing() {
     state
         .registry
         .cas_update(&state.deployment.raw_adapter_sref("prodseal"), |d| {
+            d.seal_gen_counter += 1;
             d.sealing = Some(crate::registry::SealState {
                 operation_id: String::new(),
                 intent: crate::registry::SealIntent::Empty,
                 claimed_ms: crate::shard::now_ms(),
-                claim_generation: 1,
+                claim_generation: d.seal_gen_counter,
             });
             true
         })
@@ -247,11 +249,12 @@ async fn topology_transitions_are_fenced_by_sealing() {
     state
         .registry
         .cas_update(&state.deployment.raw_adapter_sref("fenced"), |d| {
+            d.seal_gen_counter += 1;
             d.sealing = Some(crate::registry::SealState {
                 operation_id: String::new(),
                 intent: crate::registry::SealIntent::Empty,
                 claimed_ms: crate::shard::now_ms(),
-                claim_generation: 1,
+                claim_generation: d.seal_gen_counter,
             });
             true
         })

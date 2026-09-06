@@ -699,11 +699,12 @@ async fn seal_is_a_resumable_transition() {
     state
         .registry
         .cas_update_retry(&state.deployment.raw_adapter_sref("sealtx"), |d| {
+            d.seal_gen_counter += 1;
             d.sealing = Some(crate::registry::SealState {
                 intent: crate::registry::SealIntent::Empty,
                 operation_id: "op-1".into(),
                 claimed_ms: crate::shard::now_ms(),
-                claim_generation: 1,
+                claim_generation: d.seal_gen_counter,
             });
             true
         })

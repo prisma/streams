@@ -37,3 +37,7 @@ The actual history/postings/tail merge and frame decoding now live in `applicati
 `ReadService` owns only query capabilities and is cached once per runtime. Fork-chain validation, ancestor key checks and stitched execution moved into it. SSE feed/source has no HTTP or product import; owner resolution matches typed shard errors. Incarnation-bound remote pages and canonical path encoding moved to the peer read adapter. No internal response is encoded to call the reader.
 
 Rust 1.98.1 checks: typed read progress tests 2 passed; product read/scan scenarios 6 passed; fork/livefeed/cold-history/remote-predecessor/split/merge scenarios 11 passed; external-completion refresh 1 passed; signed watch/bodyless security 2 passed; applied suffix rollback 1 passed; source cursor mapping 2 passed; internal target binding 6 passed. Logs: `/private/tmp/r06-tests.log`, `/private/tmp/r06-final-tests.log`. The raw and product protocol adapters still own public cursor decoding and rendering; full final conformance and cold/hot workload comparison are recorded in the repository-wide gate evidence.
+
+### R04 fixture follow-up
+
+Four seal coordination/recovery fixtures now allocate `seal_gen_counter` before installing a claim, matching the validated durable descriptor contract instead of inserting an impossible claim generation. The unchanged assertions pass: seal coordination 8, fencing 6, recovery 7, incarnation 4, and convergence 6.
