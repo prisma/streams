@@ -731,9 +731,11 @@ mod tests {
         assert_eq!(mon.phase(), Some(Phase::Running));
         let report = sup.shutdown(Duration::from_millis(50)).await;
         assert_eq!(report.panicked(), vec!["boom"]);
-        assert!(report
-            .outcomes
-            .contains(&("broken", TaskOutcome::Failed("store gone".into()))));
+        assert!(
+            report
+                .outcomes
+                .contains(&("broken", TaskOutcome::Failed("store gone".into())))
+        );
         assert!(report.finished().contains(&"acker") && report.finished().contains(&"hygiene"));
         assert_eq!(
             mon.critical_failure(),
