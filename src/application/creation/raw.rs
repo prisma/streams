@@ -8,8 +8,7 @@ impl CreationService {
     ) -> Result<CreateOutcome, CreationError> {
         let state = self.clone();
         let CreateCommand {
-            project,
-            name,
+            sref,
             key,
             content_type,
             ttl_secs,
@@ -18,7 +17,7 @@ impl CreationService {
             body,
             fork,
         } = command;
-        let route = crate::crypto::RouteHash::for_stream(&project.stream_ref(&name));
+        let route = crate::crypto::RouteHash::for_stream(&sref);
         let prefix = self.shards.prefix_for(&route.0);
         if let Some(owner) = self.ownership.foreign_owner(&prefix) {
             return Err(CreationError {
@@ -34,8 +33,7 @@ impl CreationService {
         let prepared = fork::prepare(
             &state,
             fork::Preparation {
-                project: &project,
-                name: &name,
+                sref: &sref,
                 key: &key,
                 content_type,
                 ttl_secs,
@@ -71,8 +69,7 @@ impl CreationService {
         );
 
         let plan = CreatePlan {
-            project,
-            name,
+            sref,
             key,
             content_type,
             ct_hdr_present,
@@ -115,8 +112,7 @@ impl CreationService {
     }
 }
 pub(super) struct CreatePlan {
-    pub project: crate::tenant::ProjectId,
-    pub name: String,
+    pub sref: crate::tenant::TenantStreamRef,
     pub key: StreamKey,
     pub content_type: String,
     pub ct_hdr_present: bool,

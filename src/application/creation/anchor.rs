@@ -10,8 +10,7 @@ pub(super) async fn install(
     mut desc: StreamDesc,
     created: bool,
 ) -> Result<(StreamDesc, Option<Bytes>), CreationError> {
-    let project = &plan.project;
-    let name = &plan.name;
+    let name = plan.sref.name().as_str();
     let fork_ctx = &plan.fork_ctx;
     let hash = desc.resolve_segment("").identity;
     // Fork post-create (pinned DS fork contract): the tail row must be
@@ -51,7 +50,7 @@ pub(super) async fn install(
         // repaired by the tombstone's RETAINED debt. The park sits
         // BETWEEN the check and the install so tests can drive
         // exactly that window.
-        match state.registry.get(&project.stream_ref(name)).await {
+        match state.registry.get(&plan.sref).await {
             Ok(Some(c)) if desc_alive(&c) && c.stream_epoch == desc.stream_epoch => {}
             Err(error) => {
                 return Err(CreationError::new(
@@ -133,7 +132,7 @@ pub(super) async fn install(
         // pre-check and the install CAS. Release the reference this
         // request just installed — its tombstone's retained debt
         // covers the crash variant of the same window.
-        match state.registry.get(&project.stream_ref(name)).await {
+        match state.registry.get(&plan.sref).await {
             Ok(Some(c)) if desc_alive(&c) && c.stream_epoch == desc.stream_epoch => {}
             Err(error) => {
                 return Err(CreationError::new(
@@ -214,8 +213,6 @@ async fn stamp_child(
     mut desc: StreamDesc,
     fork_id: &str,
 ) -> Result<StreamDesc, CreationError> {
-    let project = &plan.project;
-    let name = &plan.name;
     if desc
         .forked_from
         .as_ref()
@@ -224,14 +221,14 @@ async fn stamp_child(
         let fid = fork_id.to_owned();
         let stamped = state
             .registry
-            .mutate_incarnation(&project.stream_ref(name), &desc.stream_epoch, |current| {
+            .mutate_incarnation(&plan.sref, &desc.stream_epoch, |current| {
                 stamp_fork_reference(current, &fid)
             })
             .await
             .map_err(|error| {
                 CreationError::new(CreationFailure::Storage, "internal", &error.to_string())
             })?;
-        state.registry.invalidate(&project.stream_ref(name));
+        state.registry.invalidate(&plan.sref);
         // A declined CAS here means the child was deleted (or
         // re-forked) underneath us. Installing a source
         // reference for it anyway would pin the source's data

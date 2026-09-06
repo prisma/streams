@@ -6,8 +6,6 @@ pub(super) async fn resolve(
     state: &Arc<CreationService>,
     plan: &CreatePlan,
 ) -> Result<(bool, StreamDesc), CreationError> {
-    let project = &plan.project;
-    let name = &plan.name;
     let key = &plan.key;
     let content_type = plan.content_type.clone();
     let ttl_secs = plan.ttl_secs;
@@ -16,7 +14,7 @@ pub(super) async fn resolve(
     let needs_init = plan.needs_init;
     let create_hash = &plan.create_hash;
     // Resolve existing.
-    let existing = match state.registry.get(&project.stream_ref(name)).await {
+    let existing = match state.registry.get(&plan.sref).await {
         Ok(v) => v,
         Err(e) => {
             return Err(CreationError::new(
@@ -55,14 +53,12 @@ pub(super) async fn resolve(
             // winner's live descriptor exactly like an idempotent PUT.
             let mut fresh = fresh_desc(
                 state,
-                project,
-                name,
+                &plan.sref,
                 key,
                 content_type.clone(),
                 ttl_secs,
                 expires_at_ms,
             );
-            fresh.project_id = project.clone();
             fresh.forked_from = expected_fork_ref.clone();
             let fp = fresh.key_fingerprint.clone();
             fresh.init = needs_init.then(|| crate::registry::InitState {
@@ -72,9 +68,7 @@ pub(super) async fn resolve(
             });
             match state
                 .registry
-                .recreate(&project.stream_ref(name), fresh, |d| {
-                    !desc_alive(d) && !d.soft_deleted
-                })
+                .recreate(&plan.sref, fresh, |d| !desc_alive(d) && !d.soft_deleted)
                 .await
             {
                 Ok((true, d)) => (true, d),
@@ -94,14 +88,12 @@ pub(super) async fn resolve(
         None => {
             let mut fresh = fresh_desc(
                 state,
-                project,
-                name,
+                &plan.sref,
                 key,
                 content_type.clone(),
                 ttl_secs,
                 expires_at_ms,
             );
-            fresh.project_id = project.clone();
             fresh.forked_from = expected_fork_ref.clone();
             let fp = fresh.key_fingerprint.clone();
             fresh.init = needs_init.then(|| crate::registry::InitState {

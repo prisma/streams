@@ -9,8 +9,7 @@ pub(super) struct ForkCtx {
 }
 
 pub(super) struct Preparation<'a> {
-    pub project: &'a crate::tenant::ProjectId,
-    pub name: &'a str,
+    pub sref: &'a crate::tenant::TenantStreamRef,
     pub key: &'a StreamKey,
     pub content_type: Option<String>,
     pub ttl_secs: Option<u64>,
@@ -27,8 +26,7 @@ pub(super) async fn prepare(
     input: Preparation<'_>,
 ) -> Result<PreparedFork, CreationError> {
     let Preparation {
-        project,
-        name,
+        sref,
         key,
         content_type,
         mut ttl_secs,
@@ -52,7 +50,14 @@ pub(super) async fn prepare(
         ));
     }
     let fork_ctx: Option<ForkCtx> = if let Some(src_raw) = &fork_src_hdr {
-        let src_name = src_raw.clone();
+        if src_raw.project_id() != sref.project_id() {
+            return Err(CreationError::new(
+                CreationFailure::Invalid,
+                "fork_project_mismatch",
+                "fork source and child must belong to the same project",
+            ));
+        }
+        let src_name = src_raw.name().as_str().to_string();
         // Is THIS child already mid-initialization against this source?
         // If so, the source is being retained FOR IT — its reference is
         // already installed — and refusing a retained source would leave
@@ -65,14 +70,14 @@ pub(super) async fn prepare(
         // broke idempotence — a completed fork whose response was lost
         // could not be re-PUT once its source was retained, because the
         // soft-delete check fired first.
-        let resuming_child = match state.registry.get(&project.stream_ref(name)).await {
+        let resuming_child = match state.registry.get(sref).await {
             Ok(Some(c)) if !c.deleted => c
                 .forked_from
                 .clone()
                 .filter(|f| f.source == src_name && !f.fork_id.is_empty()),
             _ => None,
         };
-        let src = match state.registry.get(&project.stream_ref(&src_name)).await {
+        let src = match state.registry.get(src_raw).await {
             Ok(Some(d)) if desc_alive(&d) => d,
             // Retained for this very child: same incarnation, and the
             // reference this child installed is still on it.

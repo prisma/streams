@@ -887,3 +887,70 @@ async fn r05_unknown_child_state_preserves_its_source_reference() {
         engine_shutdown(&state).await;
     }
 }
+
+/// A typed creation command cannot pair one project's child with another
+/// project's source. The same-project control must still anchor durably.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r05_typed_fork_keeps_source_and_child_in_one_project() {
+    use crate::application::creation::{CreateCommand, CreationFailure, ForkCommand};
+    let (state, addr) = http_rig(mem()).await;
+    assert_eq!(
+        hreq(
+            addr,
+            "PUT",
+            "/v1/stream/typed-source",
+            &[("content-type", "application/json")],
+            br#"[{"source":1}]"#,
+        )
+        .await
+        .0,
+        201
+    );
+    let source = state.deployment.raw_adapter_sref("typed-source");
+    let foreign_child = crate::tenant::ProjectId::new("other-project")
+        .unwrap()
+        .stream_ref("typed-child");
+    let command = |sref| CreateCommand {
+        sref,
+        key: super::fixture_storage::skey(),
+        content_type: None,
+        ttl_secs: None,
+        expires_at_ms: None,
+        close: false,
+        body: bytes::Bytes::new(),
+        fork: Some(ForkCommand {
+            source: source.clone(),
+            offset: None,
+            sub_offset: None,
+        }),
+    };
+    let result = state
+        .creation_service()
+        .create(command(foreign_child.clone()))
+        .await;
+    let error = result.err().expect("cross-project fork must be refused");
+    assert_eq!(error.kind, CreationFailure::Invalid);
+    assert_eq!(error.code, "fork_project_mismatch");
+    assert!(state.registry.get(&foreign_child).await.unwrap().is_none());
+    let source_before = state.registry.get(&source).await.unwrap().unwrap();
+    assert!(source_before.fork_children.is_empty());
+
+    let child = state.deployment.raw_adapter_sref("typed-child");
+    let created = state
+        .creation_service()
+        .create(command(child.clone()))
+        .await
+        .unwrap();
+    assert!(created.created);
+    assert_eq!(created.desc.sref(), child);
+    assert_eq!(created.next, 1);
+    state.registry.invalidate(&source);
+    let source_after = state.registry.get(&source).await.unwrap().unwrap();
+    assert!(
+        source_after
+            .fork_children
+            .contains(&created.desc.stream_epoch)
+    );
+    assert!(state.registry.get(&foreign_child).await.unwrap().is_none());
+    engine_shutdown(&state).await;
+}

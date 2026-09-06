@@ -58,13 +58,12 @@ impl CreationError {
 }
 #[derive(Clone)]
 pub(crate) struct ForkCommand {
-    pub source: String,
+    pub source: crate::tenant::TenantStreamRef,
     pub offset: Option<u64>,
     pub sub_offset: Option<u64>,
 }
 pub(crate) struct CreateCommand {
-    pub project: crate::tenant::ProjectId,
-    pub name: String,
+    pub sref: crate::tenant::TenantStreamRef,
     pub key: StreamKey,
     pub content_type: Option<String>,
     pub ttl_secs: Option<u64>,
@@ -185,8 +184,7 @@ pub(crate) fn create_request_hash(
 }
 pub(crate) fn fresh_desc(
     service: &CreationService,
-    project: &crate::tenant::ProjectId,
-    name: &str,
+    sref: &crate::tenant::TenantStreamRef,
     key: &StreamKey,
     content_type: String,
     ttl_secs: Option<u64>,
@@ -194,9 +192,9 @@ pub(crate) fn fresh_desc(
 ) -> crate::registry::PersistedDescriptor {
     let epoch = service.runtime.epoch();
     crate::registry::PersistedDescriptor {
-        name: name.to_string(),
+        name: sref.name().as_str().to_string(),
         account_id: Some(service.deployment.account_id().to_string()),
-        project_id: project.clone(),
+        project_id: sref.project_id().clone(),
         stream_epoch: hex(&epoch),
         seal_gen_counter: 0,
         key_fingerprint: key.fingerprint(&epoch),

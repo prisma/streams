@@ -12,7 +12,7 @@ pub(super) async fn seed(
     materialize_entry: Option<Bytes>,
 ) -> Result<(u64, bool), CreationError> {
     #[cfg(test)]
-    let name = &plan.name;
+    let name = plan.sref.name().as_str();
     let key = &plan.key;
     let close = plan.close;
     let body = &plan.body;
@@ -165,8 +165,7 @@ pub(super) async fn publish(
     desc: &StreamDesc,
     created: bool,
 ) -> Result<(), CreationError> {
-    let project = &plan.project;
-    let name = &plan.name;
+    let name = plan.sref.name().as_str();
     let needs_init = plan.needs_init;
     let create_hash = &plan.create_hash;
     // Publish Ready: every durable initialization step (fork tail seed,
@@ -178,7 +177,7 @@ pub(super) async fn publish(
         crate::failpoints::pause_create_before_ready(name).await;
         let published = match state
             .registry
-            .mutate_incarnation(&project.stream_ref(name), &desc.stream_epoch, |current| {
+            .mutate_incarnation(&plan.sref, &desc.stream_epoch, |current| {
                 if current.deleted
                     || !current
                         .init
@@ -205,24 +204,20 @@ pub(super) async fn publish(
                 ));
             }
         };
-        state.registry.invalidate(&project.stream_ref(name));
+        state.registry.invalidate(&plan.sref);
         // A declined CAS is NOT readiness. `cas_update` refuses a
         // deleted descriptor, so a delete that won mid-initialization
         // made this return 201 for a stream that no longer exists — and
         // if the work had already installed a fork reference, the source
         // stayed pinned by a child that was never published.
         if !published {
-            let now = state
-                .registry
-                .get(&project.stream_ref(name))
-                .await
-                .map_err(|error| {
-                    CreationError::new(
-                        CreationFailure::Storage,
-                        "internal",
-                        &format!("verifying stream readiness: {error}"),
-                    )
-                })?;
+            let now = state.registry.get(&plan.sref).await.map_err(|error| {
+                CreationError::new(
+                    CreationFailure::Storage,
+                    "internal",
+                    &format!("verifying stream readiness: {error}"),
+                )
+            })?;
             let live_and_ready = now.as_ref().is_some_and(|d| {
                 desc_alive(d) && d.init.is_none() && d.stream_epoch == desc.stream_epoch
             });

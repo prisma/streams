@@ -1413,7 +1413,7 @@ async fn product_create(
     }
     let result = state
         .creation_service()
-        .create_product(tenant, name, key, cfg, principal.map(|p| &p.quotas))
+        .create_product(tenant.stream_ref(&name), key, cfg, principal.map(|p| &p.quotas))
         .await;
     match result {
         Ok((created, desc)) => metadata_response(

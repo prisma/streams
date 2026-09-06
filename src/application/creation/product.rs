@@ -19,13 +19,12 @@ impl From<CreationError> for ProductCreateError {
 impl CreationService {
     pub(crate) async fn create_product(
         self: &Arc<Self>,
-        project: &crate::tenant::ProjectId,
-        name: String,
+        sref: crate::tenant::TenantStreamRef,
         key: StreamKey,
         cfg: ProductCreateConfig,
         quotas: Option<&crate::project_policy::ProjectQuotas>,
     ) -> Result<(bool, StreamDesc), ProductCreateError> {
-        let sref = project.stream_ref(&name);
+        let project = sref.project_id();
         let prefix = self
             .shards
             .prefix_for(&crate::crypto::RouteHash::for_stream(&sref).0);
@@ -84,8 +83,7 @@ impl CreationService {
         let build_fresh = || {
             let mut d = fresh_desc(
                 self,
-                project,
-                &name,
+                &sref,
                 &key,
                 cfg.content_type.clone(),
                 cfg.ttl_secs,

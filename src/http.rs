@@ -2588,19 +2588,19 @@ pub(crate) async fn create_stream(
         None => None,
     };
     let fork = fork_source.map(|source| crate::application::creation::ForkCommand {
-        source: source
-            .strip_prefix("/v1/stream/")
-            .unwrap_or(&source)
-            .trim_matches('/')
-            .to_string(),
+        source: project.stream_ref(
+            source
+                .strip_prefix("/v1/stream/")
+                .unwrap_or(&source)
+                .trim_matches('/'),
+        ),
         offset,
         sub_offset,
     });
     let result = state
         .creation_service()
         .create(crate::application::creation::CreateCommand {
-            project,
-            name: name.clone(),
+            sref: project.stream_ref(&name),
             key,
             content_type: hdr(&headers, "content-type").map(|_| content_type),
             ttl_secs,
