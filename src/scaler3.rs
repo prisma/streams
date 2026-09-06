@@ -99,6 +99,8 @@ const SKETCH_SWEEP_EVERY: u64 = 4_096;
 #[derive(Default)]
 struct State {
     tick: u64,
+    #[cfg(test)]
+    incarnation_scan_entries: usize,
     sketches: HashMap<(crate::tenant::TenantStreamRef, u32), SegSketch>,
     /// Per-stream cooldown clock (ms of the last transition we drove or
     /// observed).
@@ -139,17 +141,36 @@ impl State {
     }
 
     fn forget_previous_incarnation(&mut self, name: &crate::tenant::TenantStreamRef, epoch: &str) {
-        let changed = self
-            .sketches
-            .iter()
-            .any(|((n, _), sk)| n == name && sk.epoch != epoch);
+        #[cfg(test)]
+        let mut visited = 0;
+        let changed = self.sketches.iter().any(|((n, _), sk)| {
+            #[cfg(test)]
+            {
+                visited += 1;
+            }
+            n == name && sk.epoch != epoch
+        });
         if changed {
-            self.sketches
-                .retain(|(n, _), sk| n != name || sk.epoch == epoch);
+            self.sketches.retain(|(n, _), sk| {
+                #[cfg(test)]
+                {
+                    visited += 1;
+                }
+                n != name || sk.epoch == epoch
+            });
             self.hot_keys.remove(name);
         }
-        self.last_transition_ms
-            .retain(|(n, e), _| n != name || e == epoch);
+        self.last_transition_ms.retain(|(n, e), _| {
+            #[cfg(test)]
+            {
+                visited += 1;
+            }
+            n != name || e == epoch
+        });
+        #[cfg(test)]
+        {
+            self.incarnation_scan_entries += visited;
+        }
     }
 }
 
@@ -170,8 +191,8 @@ impl Scaler {
         hot
     }
 
-    /// Feed one admitted append into the segment's sketch. Cheap: one map
-    /// lookup + a few EWMA bumps under a short lock.
+    /// Feed one admitted append into the segment's sketch. A known segment
+    /// uses constant-time map lookups and EWMA bumps under a short lock.
     pub fn note_append(
         &self,
         desc: &StreamDesc,
@@ -194,8 +215,16 @@ impl Scaler {
         if g.tick.is_multiple_of(SKETCH_SWEEP_EVERY) {
             g.prune(now, &self.policy);
         }
-        g.forget_previous_incarnation(&desc.sref(), &desc.stream_epoch);
         let key = (desc.sref(), seg.seg_id);
+        // The common case must not scan every stream under the shared lock.
+        // An existing matching sketch proves this incarnation was admitted;
+        // new segments and epoch changes still clean up all obsolete siblings.
+        if g.sketches
+            .get(&key)
+            .is_none_or(|sk| sk.epoch != desc.stream_epoch)
+        {
+            g.forget_previous_incarnation(&key.0, &desc.stream_epoch);
+        }
         if !g.sketches.contains_key(&key) && g.sketches.len() >= SKETCH_MAX {
             // Automatic scaling must not silently stop at the cap (review
             // finding 8): evict the least-recently-fed sketch to admit the
@@ -712,6 +741,61 @@ mod tests {
         assert!(s.sketches.is_empty());
         assert!(s.last_transition_ms.is_empty());
         assert!(s.hot_keys.is_empty());
+    }
+
+    #[test]
+    fn repeated_appends_do_not_scan_other_streams_for_incarnation_cleanup() {
+        let scaler = Scaler::new(
+            &ScalePolicy::default(),
+            &crate::config::AdmissionConfig::default(),
+            Arc::new(crate::runtime::ManualClock::at(1000)),
+        );
+        let desc = test_desc("steady");
+        let seg = desc.resolve_segment("key");
+        {
+            let mut state = scaler.state.lock().unwrap();
+            state.tick = 1;
+            for i in 0..SKETCH_MAX - 2 {
+                state.sketches.insert(
+                    (test_desc(&format!("other-{i}")).sref(), 0),
+                    sketch(&desc.stream_epoch, 1000, false, 1),
+                );
+            }
+            for segment in [seg.seg_id, seg.seg_id + 1] {
+                state.sketches.insert(
+                    (desc.sref(), segment),
+                    sketch(&desc.stream_epoch, 1000, false, 1),
+                );
+            }
+            state
+                .last_transition_ms
+                .insert((desc.sref(), desc.stream_epoch.clone()), 1000);
+            state.hot_keys.insert(desc.sref(), RoutingKeyHash([1; 16]));
+            assert_eq!(state.sketches.len(), SKETCH_MAX);
+        }
+        for _ in 0..256 {
+            scaler.note_append(&desc, &seg, 100, 1);
+        }
+        assert_eq!(scaler.state.lock().unwrap().incarnation_scan_entries, 0);
+
+        let mut replacement = desc.to_persisted();
+        replacement.stream_epoch = crate::crypto::hex(&[42; 16]);
+        let replacement = StreamDesc::try_from(replacement).unwrap();
+        scaler.note_append(&replacement, &replacement.resolve_segment("key"), 100, 1);
+        let state = scaler.state.lock().unwrap();
+        assert!(state.incarnation_scan_entries >= SKETCH_MAX);
+        assert_eq!(state.sketches.len(), SKETCH_MAX - 1);
+        assert_eq!(
+            state
+                .sketches
+                .get(&(desc.sref(), seg.seg_id))
+                .unwrap()
+                .epoch,
+            replacement.stream_epoch
+        );
+        assert!(!state.sketches.contains_key(&(desc.sref(), seg.seg_id + 1)));
+        assert!(state.last_transition_ms.is_empty());
+        assert!(state.hot_keys.is_empty());
     }
 
     #[test]

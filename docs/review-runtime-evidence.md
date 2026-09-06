@@ -25,3 +25,10 @@ TaskMonitor reports unready before registration, after shutdown or stop, and aft
 ## R18: scaler bounds and determinism
 
 Cooldown keys include stream incarnation; bounded entries expire through the runtime's monotonic clock. Hot-key summaries aggregate across snapshots before sorting with deterministic tie-breaking, independent of map insertion order. Four focused bound/expiry/order tests passed. Runtime-local ownership and independent-clock checks are additionally covered by R10.
+
+The final R18 audit also checks the normal append path at the 4,096-sketch
+capacity: 256 appends to an existing segment of the same incarnation visit
+zero entries in incarnation cleanup. First-segment admission and an epoch
+change still remove obsolete sibling heat and cooldowns. The test measures
+actual cleanup visits and includes an epoch-change positive control; periodic
+idle pruning remains amortized every 4,096 appends.
