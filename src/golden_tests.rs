@@ -525,7 +525,7 @@ mod history_postings {
 
 mod descriptor_json {
     use crate::registry::{
-        ForkRef, InitState, SealIntent, SealState, StreamDesc, WatchDefinition, decode_desc,
+        ForkRef, InitState, SealIntent, SealState, WatchDefinition, decode_desc,
     };
     use crate::segmap::SegmentMap;
     use crate::tenant::ProjectId;
