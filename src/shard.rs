@@ -4844,7 +4844,7 @@ impl ShardEngine {
     /// part a naive filter misses — returns the CONSUMED offset over
     /// non-matching frames too, so keyed readers never rescan
     /// match-free ranges (the same first-class scanned progress the DB
-    /// path reports). The byte budget counts only INCLUDED frames;
+    /// path reports). The stored-byte budget also charges filtered misses;
     /// truncation reports the last scanned offset at the cut.
     pub fn ring_read_keyed(
         &self,
@@ -4894,13 +4894,13 @@ impl ShardEngine {
                     break;
                 }
                 let matched = record::decode_at(f, *off).ok()?.header.routing_key == rk;
+                total += f.len();
                 if matched {
-                    total += f.len();
                     out.frames.push(f.clone());
                 }
                 // Consumed progress covers NON-matching frames too.
                 out.last_offset = Some(*off);
-                if matched && total >= max_bytes {
+                if total >= max_bytes {
                     self.ring_hits.fetch_add(1, Ordering::Relaxed);
                     return Some(out);
                 }
@@ -6335,3 +6335,6 @@ mod queue_codec_tests;
 
 #[cfg(test)]
 mod record_scan_tests;
+
+#[cfg(test)]
+mod read_budget_tests;

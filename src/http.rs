@@ -3276,7 +3276,7 @@ async fn internal_segment_read(
         .get("streams-internal-max-bytes")
         .and_then(|v| v.to_str().ok())
         .and_then(|v| v.parse::<usize>().ok())
-        .map(|v| v.clamp(4096, MAX_READ_BYTES));
+        .map(|v| v.clamp(1, MAX_READ_BYTES));
     if headers
         .get("streams-internal-deliver")
         .and_then(|v| v.to_str().ok())

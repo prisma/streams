@@ -3611,7 +3611,7 @@ pub(crate) async fn internal_segment_scan(
             // Clamped to the public scan ceiling: an internal budget
             // header must not buy a larger page than the operation it
             // relays for (round-19 security finding).
-            .map(|v| v.clamp(4096, READ_MAX_BYTES_CAP)),
+            .map(|v| v.clamp(1, READ_MAX_BYTES_CAP)),
         q("stream-encryption-key"),
     ) else {
         return perr(

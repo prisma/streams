@@ -1,7 +1,8 @@
 //! Canonical bounded segment read plan and page. HTTP and SSE render this
 //! result; scanned progress never depends on the number of matching records.
-use crate::crypto::{StreamKey, decode_frame, decrypt_frame, derive_subkey};
-use crate::shard::{Deliver, ShardEngine, StreamHandle, read_frames};
+use super::read_budget::{MAX_SCAN_BATCH_BYTES, PageBudget, SCAN_WINDOW};
+use crate::crypto::{StreamKey, decode_frame, decrypt_frame_limited, derive_subkey};
+use crate::shard::{Deliver, ShardEngine, StreamHandle};
 use bytes::Bytes;
 use std::collections::HashMap;
 use std::sync::Arc;
@@ -107,6 +108,8 @@ pub(crate) struct ReadPage {
 /// Decode raw stream-key-encrypted frames (v2 history or shard tail —
 /// byte-identical formats) into plaintext records, charging the byte
 /// budget per record.
+/// Returns false at the first withheld matching record. Earlier filtered misses
+/// are consumed, but the low-level scan's later cursor must then be discarded.
 fn decode_frames_into(
     frames: &[Bytes],
     key: &StreamKey,
@@ -114,12 +117,15 @@ fn decode_frames_into(
     hash: &[u8; 16],
     subkeys: &mut HashMap<(String, u32), [u8; 32]>,
     out: &mut ReadPage,
-    budget: &mut usize,
-) -> Result<(), String> {
+    budget: &mut PageBudget,
+) -> Result<bool, String> {
     for raw in frames {
-        let Some(frame) = decode_frame(raw) else {
-            return Err("bad frame".into());
-        };
+        let frame = decode_frame(raw).ok_or("bad frame")?;
+        let offset = frame.header.offset;
+        if !budget.metadata_fits(&frame.header.routing_key) {
+            out.last = offset.checked_sub(1);
+            return Ok(false);
+        }
         let sk = *subkeys
             .entry((frame.header.routing_key.clone(), frame.header.key_version))
             .or_insert_with(|| {
@@ -130,19 +136,25 @@ fn decode_frames_into(
                     frame.header.key_version,
                 )
             });
-        let pt = decrypt_frame(&sk, hash, &frame, raw)?;
-        *budget = budget.saturating_sub(pt.len());
+        let Some(pt) = decrypt_frame_limited(&sk, hash, &frame, raw, budget.decode_limit())? else {
+            if out.recs.is_empty() {
+                return Err("decoded record exceeds 32 MiB".into());
+            }
+            out.last = offset.checked_sub(1);
+            return Ok(false);
+        };
+        if !budget.admit(pt.len(), &frame.header.routing_key) {
+            out.last = offset.checked_sub(1);
+            return Ok(false);
+        }
         out.recs.push(PlainRec {
-            off: frame.header.offset,
+            off: offset,
             payload: Bytes::from(pt),
-            rkey: frame.header.routing_key.clone(),
+            rkey: frame.header.routing_key,
         });
-        out.last = Some(
-            out.last
-                .map_or(frame.header.offset, |o| o.max(frame.header.offset)),
-        );
+        out.last = Some(offset);
     }
-    Ok(())
+    Ok(true)
 }
 
 /// The merge itself, free of `AppState` so the simulation harness can call
@@ -199,7 +211,7 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
         end,
         completed: true,
     };
-    let mut budget = max_bytes;
+    let mut budget = PageBudget::new(max_bytes);
     let mut subkeys: HashMap<(String, u32), [u8; 32]> = HashMap::new();
 
     // The absorbed snapshot above and the tail scan below are a TOCTOU
@@ -218,7 +230,7 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
     let mut boundary = absorbed; // history serves [_, boundary)
     for _ in 0..16 {
         let hist_upto = boundary.min(end);
-        if cursor < hist_upto && budget > 0 {
+        if cursor < hist_upto && !budget.full() {
             if !hist_v2 {
                 // The v1 per-stream layout was deleted in the clean
                 // switch: an unabsorbed-below-boundary tail without the
@@ -272,12 +284,20 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
             }
             cursor = hist_upto;
         }
-        if budget == 0 || cursor >= end {
+        if budget.full() || cursor >= end {
             break;
         }
-        let part = read_frames(engine, handle, cursor, key_filter, budget, deliver)
-            .await
-            .map_err(|e| e.to_string())?;
+        let part = crate::shard::record::read_frames_until(
+            engine,
+            handle,
+            cursor,
+            cursor.saturating_add(SCAN_WINDOW).min(end),
+            key_filter,
+            budget.remaining().min(MAX_SCAN_BATCH_BYTES),
+            deliver,
+        )
+        .await
+        .map_err(|e| e.to_string())?;
         // Revalidate the scan against concurrent absorption before
         // trusting it.
         let raced_boundary =
@@ -298,7 +318,7 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
             out.completed = false;
             return Ok(out);
         }
-        decode_frames_into(
+        let decoded_all = decode_frames_into(
             &part.frames,
             key,
             epoch,
@@ -307,7 +327,7 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
             &mut out,
             &mut budget,
         )?;
-        if let Some(last) = part.last_offset {
+        if decoded_all && let Some(last) = part.last_offset {
             out.last = Some(out.last.map_or(last, |o| o.max(last)));
         }
         break;
@@ -498,10 +518,10 @@ pub(crate) async fn read_stitched(
         end: own_end,
         completed: false,
     };
-    let mut budget = max_bytes;
+    let mut budget = PageBudget::new(max_bytes);
     let mut cursor = from;
     for _ in 0..(chain.len() * 4 + 8) {
-        if budget == 0 {
+        if budget.full() {
             break;
         }
         // Owner of `cursor`: the deepest entry whose boundary <= cursor.
@@ -533,7 +553,7 @@ pub(crate) async fn read_stitched(
             &engine,
             cursor,
             Some(""),
-            budget,
+            budget.remaining(),
             crate::shard::Deliver::Durable,
         )
         .await?;
@@ -549,7 +569,11 @@ pub(crate) async fn read_stitched(
             if r.off >= cap {
                 break;
             }
-            budget = budget.saturating_sub(r.payload.len());
+            if !budget.admit(r.payload.len(), &r.rkey) {
+                out.last = r.off.checked_sub(1);
+                out.completed = false;
+                return Ok(out);
+            }
             cursor = r.off + 1;
             out.recs.push(r);
             emitted = true;
@@ -741,7 +765,7 @@ async fn decode_history_range(
     range: HistoryRange,
     subkeys: &mut HashMap<(String, u32), [u8; 32]>,
     out: &mut ReadPage,
-    budget: &mut usize,
+    budget: &mut PageBudget,
 ) -> Result<bool, String> {
     // v2: the range lives in the shard's SHARED partition,
     // read through the owner's open Db — no reader open, no
@@ -749,6 +773,7 @@ async fn decode_history_range(
     // advanced the boundary). Frames decode like tail frames.
     // Keyed ranges resolve their postings runs through the
     // plan.engine's decoded slice cache (spec §7).
+    let upto = range.upto.min(range.from.saturating_add(SCAN_WINDOW));
     let part = plan
         .engine
         .history_partition()
@@ -762,9 +787,9 @@ async fn decode_history_range(
             crate::crypto::SegmentHash(range.identity),
             rk,
             range.from,
-            range.upto,
+            upto,
             range.absorbed,
-            *budget,
+            budget.remaining().min(MAX_SCAN_BATCH_BYTES),
         )
         .await
         .map_err(|e| e.to_string())?,
@@ -773,14 +798,14 @@ async fn decode_history_range(
             crate::crypto::RouteHash(range.route),
             crate::crypto::SegmentHash(range.identity),
             range.from,
-            range.upto,
+            upto,
             None,
-            *budget,
+            budget.remaining().min(MAX_SCAN_BATCH_BYTES),
         )
         .await
         .map_err(|e| e.to_string())?,
     };
-    decode_frames_into(
+    let decoded_all = decode_frames_into(
         &frames,
         plan.key,
         plan.epoch,
@@ -796,11 +821,12 @@ async fn decode_history_range(
     // last matching frame alone. Without this, a fat run
     // that planned zero frames re-polled the same position
     // forever.
-    if let Some(sl) = scan_last {
+    if decoded_all && let Some(sl) = scan_last.or_else(|| completed.then(|| upto.saturating_sub(1)))
+    {
         out.last = Some(out.last.map_or(sl, |o| o.max(sl)));
     }
 
-    Ok(completed)
+    Ok(decoded_all && completed && upto == range.upto)
 }
 
 /// A tail page is accepted only after ruling out a concurrent durable trim.

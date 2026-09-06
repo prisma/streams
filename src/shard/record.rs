@@ -51,7 +51,10 @@ pub(crate) fn decode_row<'a>(
 /// a complete AEAD tag and forbids unclassified trailing bytes.
 pub(crate) fn decode_at(raw: &[u8], offset: u64) -> Result<DecodedFrame<'_>, RecordCorruption> {
     let frame = decode_frame(raw).ok_or(RecordCorruption::Frame)?;
-    if frame.ciphertext.len() < 16 || frame.header_len + 4 + frame.ciphertext.len() != raw.len() {
+    if raw.len() > crate::crypto::MAX_ENCODED_FRAME
+        || frame.ciphertext.len() < 16
+        || frame.header_len + 4 + frame.ciphertext.len() != raw.len()
+    {
         return Err(RecordCorruption::Frame);
     }
     if frame.header.offset != offset {
@@ -134,6 +137,29 @@ pub async fn read_frames(
     max_bytes: usize,
     deliver: Deliver,
 ) -> Result<FrameReadResult, slatedb::Error> {
+    read_frames_until(
+        engine,
+        handle,
+        scan_from,
+        u64::MAX,
+        key_filter,
+        max_bytes,
+        deliver,
+    )
+    .await
+}
+
+/// Application pages bound examined offsets as well as selected bytes.
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn read_frames_until(
+    engine: &ShardEngine,
+    handle: &StreamHandle,
+    scan_from: u64,
+    scan_to: u64,
+    key_filter: Option<&str>,
+    max_bytes: usize,
+    deliver: Deliver,
+) -> Result<FrameReadResult, slatedb::Error> {
     let (hash, end) = {
         let st = handle.state.lock().unwrap();
         let end = match deliver {
@@ -143,7 +169,7 @@ pub async fn read_frames(
             // means Applied can never see LESS than a durable reader.
             Deliver::Applied => st.applied.next.max(st.durable.next),
         };
-        (handle.hash, end)
+        (handle.hash, end.min(scan_to))
     };
     let mut out = FrameReadResult {
         frames: Vec::new(),
@@ -190,12 +216,10 @@ pub async fn read_frames(
     while let Some(kv) = iter.next().await? {
         let frame = decode_row(&kv.key, &prefix[..17], &kv.value)?;
         let off = frame.header.offset;
-        if key_filter.is_some_and(|kf| frame.header.routing_key != kf) {
-            out.last_offset = Some(off);
-            continue;
-        }
         total += kv.value.len();
-        out.frames.push(kv.value);
+        if !key_filter.is_some_and(|kf| frame.header.routing_key != kf) {
+            out.frames.push(kv.value);
+        }
         out.last_offset = Some(off);
         if total >= max_bytes {
             break;

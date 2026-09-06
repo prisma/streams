@@ -232,3 +232,9 @@ mod fleet_controller;
 mod runtime_usage;
 #[path = "tests/scaler_controller.rs"]
 mod scaler_controller;
+
+#[path = "tests/read_page_limits.rs"]
+mod read_page_limits;
+
+#[path = "tests/read_page_assembly.rs"]
+mod read_page_assembly;

@@ -41,10 +41,9 @@ impl ReadService {
                     .await?
             }
         };
-        let budget = command.max_bytes.clamp(1, 8 << 20);
-        let mut spent = 0usize;
+        let mut budget = super::read_budget::PageBudget::new(command.max_bytes);
         let mut records = Vec::new();
-        while (cursor.current_index as usize) < cursor.segments.len() && spent < budget {
+        'segments: while (cursor.current_index as usize) < cursor.segments.len() && !budget.full() {
             let (segment, end) = cursor.segments[cursor.current_index as usize];
             if cursor.current_offset >= end {
                 cursor.current_index += 1;
@@ -57,7 +56,7 @@ impl ReadService {
                     &command.key,
                     segment,
                     cursor.current_offset,
-                    budget - spent,
+                    budget.remaining(),
                 )
                 .await?;
             let consumed = page.scanned_through(cursor.current_offset).min(end);
@@ -71,7 +70,10 @@ impl ReadService {
                 if record.off >= end {
                     break;
                 }
-                spent = spent.saturating_add(record.payload.len() + record.rkey.len() + 24);
+                if !budget.admit(record.payload.len(), &record.rkey) {
+                    cursor.current_offset = record.off;
+                    break 'segments;
+                }
                 records.push(record);
             }
             cursor.current_offset = if page.completed { end } else { consumed };

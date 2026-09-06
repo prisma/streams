@@ -1,6 +1,6 @@
 //! Incarnation-bound peer read protocol. Only this network adapter decodes the remote wire page.
+use super::read_wire::{self, WireRecord};
 use crate::registry::StreamDesc;
-use bytes::Bytes;
 
 /// The target of a fleet-internal peer RPC. **A name is not an
 /// identity** (the hardening program's central rule): a relay naming
@@ -209,43 +209,8 @@ async fn scan_page_once(
     if !(200..300).contains(&status) {
         return Err(RemoteSpanError::InvalidResponse(format!("status {status}")));
     }
-    let v: serde_json::Value = match resp.json().await {
-        Ok(v) => v,
-        Err(e) => return Err(RemoteSpanError::InvalidResponse(e.to_string())),
-    };
-    parse_scan_page(&v).ok_or_else(|| RemoteSpanError::InvalidResponse("malformed page".into()))
-}
-
-fn parse_scan_page(v: &serde_json::Value) -> Option<super::read::ReadPage> {
-    use base64::Engine as _;
-    let recs = v["items"]
-        .as_array()?
-        .iter()
-        .map(|it| {
-            Some(super::read::PlainRec {
-                off: it["off"].as_u64()?,
-                rkey: it["rk"].as_str()?.to_string(),
-                payload: Bytes::from(
-                    base64::engine::general_purpose::STANDARD
-                        .decode(it["p"].as_str()?)
-                        .ok()?,
-                ),
-            })
-        })
-        .collect::<Option<Vec<_>>>()?;
-    Some(super::read::ReadPage {
-        watermarks: crate::application::read::Watermarks {
-            durable: v["end"].as_u64()?,
-            applied: v["end"].as_u64()?,
-        },
-        recs,
-        last: match v.get("last")? {
-            serde_json::Value::Null => None,
-            value => Some(value.as_u64()?),
-        },
-        end: v["end"].as_u64()?,
-        completed: v["completed"].as_bool()?,
-    })
+    let bytes = read_wire::body(resp.content_length(), resp.bytes_stream()).await?;
+    read_wire::scan_page(&bytes, max_bytes)
 }
 
 /// Bounded peer page DTO. Every resume field is mandatory; decoding a missing
@@ -253,7 +218,8 @@ fn parse_scan_page(v: &serde_json::Value) -> Option<super::read::ReadPage> {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(crate) struct WireReadPage {
     epoch: String,
-    records: Vec<WireReadRecord>,
+    #[serde(deserialize_with = "read_wire::records")]
+    records: Vec<WireRecord>,
     next: super::read::ReadPosition,
     durable: Option<super::read::ReadPosition>,
     pending_from: Option<usize>,
@@ -265,12 +231,6 @@ pub(crate) struct WireReadPage {
     scan_from: u64,
     end: u64,
 }
-#[derive(serde::Serialize, serde::Deserialize)]
-struct WireReadRecord {
-    off: u64,
-    key: String,
-    payload: String,
-}
 impl WireReadPage {
     pub(crate) fn from_outcome(out: &super::read::ReadOutcome) -> Self {
         use base64::Engine;
@@ -279,7 +239,7 @@ impl WireReadPage {
             records: out
                 .records
                 .iter()
-                .map(|record| WireReadRecord {
+                .map(|record| WireRecord {
                     off: record.off,
                     key: record.rkey.clone(),
                     payload: base64::engine::general_purpose::STANDARD.encode(&record.payload),
@@ -301,7 +261,6 @@ impl WireReadPage {
         self,
         command: &super::read::ReadCommand,
     ) -> Result<super::read::ReadOutcome, RemoteSpanError> {
-        use base64::Engine;
         if self.epoch != command.descriptor.stream_epoch
             || command
                 .descriptor
@@ -321,17 +280,7 @@ impl WireReadPage {
                 "invalid pending record index".into(),
             ));
         }
-        let mut records = Vec::with_capacity(self.records.len());
-        for record in self.records {
-            let payload = base64::engine::general_purpose::STANDARD
-                .decode(record.payload)
-                .map_err(|e| RemoteSpanError::InvalidResponse(e.to_string()))?;
-            records.push(super::read::PlainRec {
-                off: record.off,
-                rkey: record.key,
-                payload: Bytes::from(payload),
-            });
-        }
+        let records = read_wire::decode_records(self.records, command.max_bytes)?;
         Ok(super::read::ReadOutcome {
             descriptor: command.descriptor.clone(),
             records,
@@ -443,19 +392,9 @@ pub(crate) async fn remote_read_page(
                 ))),
             });
         }
-        use futures_util::StreamExt;
-        let mut stream = response.bytes_stream();
-        let mut bytes = bytes::BytesMut::new();
-        while let Some(chunk) = stream.next().await {
-            let chunk = chunk
-                .map_err(|e| ReadFailure::Remote(RemoteSpanError::Transport(e.to_string())))?;
-            if bytes.len() + chunk.len() > 24 * 1024 * 1024 {
-                return Err(ReadFailure::Remote(RemoteSpanError::InvalidResponse(
-                    "read peer page exceeds the bound".into(),
-                )));
-            }
-            bytes.extend_from_slice(&chunk);
-        }
+        let bytes = read_wire::body(response.content_length(), response.bytes_stream())
+            .await
+            .map_err(ReadFailure::Remote)?;
         let page: WireReadPage = serde_json::from_slice(&bytes)
             .map_err(|e| ReadFailure::Remote(RemoteSpanError::InvalidResponse(e.to_string())))?;
         return page.into_outcome(command).map_err(ReadFailure::Remote);

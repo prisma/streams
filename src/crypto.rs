@@ -553,12 +553,33 @@ pub fn decode_frame(buf: &[u8]) -> Option<DecodedFrame<'_>> {
     })
 }
 
+/// Stored frames and their decoded payloads have separate admission bounds.
+pub const MAX_RECORD_PLAINTEXT: usize = 32 << 20;
+pub const MAX_ENCODED_FRAME: usize = MAX_RECORD_PLAINTEXT + u16::MAX as usize + 55;
+
 pub fn decrypt_frame(
     subkey: &[u8; KEY_LEN],
     stream_hash: &[u8; 16],
     frame: &DecodedFrame<'_>,
     raw: &[u8],
 ) -> Result<Vec<u8>, String> {
+    decrypt_frame_limited(subkey, stream_hash, frame, raw, MAX_RECORD_PLAINTEXT)?
+        .ok_or_else(|| "decoded record exceeds 32 MiB".to_string())
+}
+
+/// None means the authenticated payload crosses this page's remaining limit.
+/// Read at most limit+1 decompressed bytes; never materialize an entire bomb.
+pub fn decrypt_frame_limited(
+    subkey: &[u8; KEY_LEN],
+    stream_hash: &[u8; 16],
+    frame: &DecodedFrame<'_>,
+    raw: &[u8],
+    limit: usize,
+) -> Result<Option<Vec<u8>>, String> {
+    if raw.len() > MAX_ENCODED_FRAME || frame.ciphertext.len() > MAX_RECORD_PLAINTEXT + 16 {
+        return Err("encoded record exceeds the record bound".into());
+    }
+    let limit = limit.min(MAX_RECORD_PLAINTEXT);
     let payload = Payload {
         msg: frame.ciphertext,
         aad: &aad(stream_hash, &raw[..frame.header_len]),
@@ -582,10 +603,20 @@ pub fn decrypt_frame(
     if frame.ver == FRAME_VER_Z || frame.ver == LEGACY_FRAME_VER_Z {
         // Version byte is AAD-bound, so reaching here means the frame was
         // genuinely written compressed.
-        return zstd::stream::decode_all(&pt[..])
-            .map_err(|e| format!("frame decompression failed: {e}"));
+        use std::io::Read;
+        let mut decoder = zstd::stream::read::Decoder::new(&pt[..])
+            .map_err(|e| format!("frame decompression failed: {e}"))?;
+        decoder
+            .window_log_max(25)
+            .map_err(|e| format!("frame window limit: {e}"))?;
+        let mut decoded = Vec::new();
+        decoder
+            .take(limit as u64 + 1)
+            .read_to_end(&mut decoded)
+            .map_err(|e| format!("frame decompression failed: {e}"))?;
+        return Ok((decoded.len() <= limit).then_some(decoded));
     }
-    Ok(pt)
+    Ok((pt.len() <= limit).then_some(pt))
 }
 
 #[cfg(test)]

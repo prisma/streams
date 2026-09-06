@@ -1954,31 +1954,28 @@ async fn execute_postings_plan(
                 let mut hits: Vec<(u64, Bytes)> = Vec::new();
                 let mut span_bytes = 0usize;
                 let mut span_trunc = false;
+                let mut span_last = None;
                 while let Some(kv) = iter.next().await? {
                     READ_FRAMES_SCANNED.fetch_add(1, Relaxed);
                     let f = crate::shard::record::decode_row(&kv.key, &prefix[..33], &kv.value)?;
-                    if f.header.routing_key != rk {
-                        continue;
-                    }
-                    READ_FRAMES_MATCHED.fetch_add(1, Relaxed);
-                    // Stop MATERIALIZING once this span alone could fill
-                    // the whole response — never buffer an unbounded run
-                    // into memory (review blocker: long runs must page,
-                    // and the FIRST record must always fit regardless of
-                    // its size).
-                    if !hits.is_empty() && span_bytes + kv.value.len() > max_bytes {
+                    if span_last.is_some() && span_bytes + kv.value.len() > max_bytes {
                         span_trunc = true;
                         break;
                     }
                     span_bytes += kv.value.len();
+                    span_last = Some(f.header.offset);
+                    if f.header.routing_key != rk {
+                        continue;
+                    }
+                    READ_FRAMES_MATCHED.fetch_add(1, Relaxed);
                     hits.push((f.header.offset, kv.value));
                 }
-                anyhow::Ok((span, hits, span_trunc))
+                anyhow::Ok((span, hits, span_trunc, span_last))
             }
         }))
         .buffered(4);
         'spans: while let Some(res) = results.next().await {
-            let (span, hits, span_trunc) = res?;
+            let (span, hits, span_trunc, span_last) = res?;
             spans_used += 1;
             for (off, raw) in hits {
                 total += raw.len();
@@ -1990,9 +1987,12 @@ async fn execute_postings_plan(
                 }
             }
             if span_trunc {
-                // The span stopped mid-run: the cursor holds at the last
-                // emitted record, NOT the span end — later results are
-                // discarded and the caller re-polls from there.
+                if let Some(scanned) = span_last {
+                    last = Some(last.map_or(scanned, |l| l.max(scanned)));
+                }
+                // The span stopped mid-run: retain its actual scanned
+                // position, including valid filtered misses. Later span
+                // results are discarded; the caller resumes here.
                 truncated = true;
                 break 'spans;
             }
@@ -2038,13 +2038,10 @@ async fn read_history2_keyed_envelope(
     while let Some(kv) = iter.next().await? {
         let f = crate::shard::record::decode_row(&kv.key, &prefix[..33], &kv.value)?;
         let off = f.header.offset;
-        if f.header.routing_key != rk {
-            // Consumed but not matching: the cursor may advance past it.
-            last = Some(last.map_or(off, |l| l.max(off)));
-            continue;
-        }
         total += kv.value.len();
-        frames.push(kv.value);
+        if f.header.routing_key == rk {
+            frames.push(kv.value);
+        }
         last = Some(off);
         if total >= max_bytes {
             completed = false;
