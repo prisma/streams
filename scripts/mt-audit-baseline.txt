@@ -1,9 +1,6 @@
 internal-target	src/http.rs .get("streams-internal-identity")	
-internal-target	src/product.rs "streams-internal-epoch",	
 internal-target	src/product.rs "streams-internal-identity",	
-internal-target	src/product.rs "streams-internal-project",	
 internal-target	src/product.rs "streams-internal-seg",	
-internal-target	src/product.rs ("streams-internal-seg", self.seg_id.to_string()),	
 internal-target	src/product.rs .get("streams-internal-project")	
 internal-target	src/product.rs h("streams-internal-epoch"),	
 internal-target	src/product.rs h("streams-internal-seg").and_then(|v| v.parse::<u32>().ok()),	
@@ -40,10 +37,7 @@ stream-hash	src/fleet.rs /// stream_hash(name); the two are unrelated, so the de
 stream-hash	src/history.rs key_hash: crate::crypto::stream_hash(""),	
 stream-hash	src/history.rs let h = crate::crypto::stream_hash(&absorber.shard.prefix);	
 stream-hash	src/history.rs let h = crate::crypto::stream_hash(prefix);	
-stream-hash	src/http.rs key_hash: crate::crypto::stream_hash(""),	
-stream-hash	src/product.rs key_hash: crate::crypto::stream_hash(""),	
 stream-hash	src/product.rs key_hash: crate::crypto::stream_hash(routing_key),	
-stream-hash	src/product.rs keys_map.insert(r.off, crate::crypto::stream_hash(&r.rkey));	
 stream-hash	src/product.rs let kh = crate::crypto::stream_hash(&rk);	
 stream-hash	src/registry.rs /// is an ordinary key at stream_hash("")'s position.	
 stream-hash	src/registry.rs assert_eq!(r.shard_route, stream_hash("shard-07"));	
@@ -51,7 +45,6 @@ stream-hash	src/registry.rs assert_ne!(r.shard_route, stream_hash("t"));
 stream-hash	src/registry.rs crate::crypto::stream_hash(&seg.shard_prefix)	
 stream-hash	src/registry.rs let h = crate::crypto::stream_hash(routing_key);	
 stream-hash	src/rollup.rs crate::crypto::hex(&crate::crypto::stream_hash(name))	
-stream-hash	src/scaler3.rs key_hash: crate::crypto::stream_hash(""),	
 stream-hash	src/segmap.rs let h = crate::crypto::stream_hash(routing_key);	
 stream-hash	src/shard.rs /// Shard-routing hash (stream_hash(name)); zeros for streams last	
 stream-hash	src/shard.rs /// Shard-routing identity (`stream_hash(name)`), persisted into the	
@@ -64,8 +57,6 @@ stream-hash	src/sketch.rs let a = crate::crypto::stream_hash("old-dominant");
 stream-hash	src/sketch.rs let b = crate::crypto::stream_hash("new-traffic");	
 stream-hash	src/sketch.rs let k = crate::crypto::stream_hash("only");	
 stream-hash	src/sketch.rs one.note(1000, 6399, crate::crypto::stream_hash("z"), 100, 1);	
-stream-hash	src/usage.rs /// Usage counters are keyed by the NAME hash (`stream_hash(&desc.name)`,	
-stream-hash	src/usage.rs /// chosen by stream_hash(name), so that mapping is simply wrong (ladder	
 tenant-fallback	src/config/cli.rs #[arg(long, env = "ACCOUNT_ID", default_value = "acct_local")]	
 tenant-fallback	src/config/cli.rs #[arg(long, env = "PROJECT_ID", default_value = "proj_local")]	
 tenant-fallback	src/config/cli.rs account_id: "acct_local".into(),	

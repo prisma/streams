@@ -64,5 +64,33 @@
     "after_sha256": "9a082639f18a6130d4173f2733b39186b747af77671dce5cfc4eef6da4cab1b8",
     "finding": "R24",
     "reason": "Rust1.98 flags the pre-existing explicit loop counter. Iterate directly over exactly the same feed versions 2,3,4,5; retain four 1500ms waits, policy/grant publication inputs and live-subscription oracle."
+  },
+  {
+    "name": "enforce_denials_journal_to_audit_events",
+    "before_sha256": "d9c1218a5b952f849c66bfa8457e188c042e2bdb202bfb8cffa42282bb6c33da",
+    "after_sha256": "6342aee96dddcd85faef890b2d370a4ab63e485e9f5345ea0920ec7dbe4c1c98",
+    "finding": "R10",
+    "reason": "96fed7c: replace draining arbitrary process-global leftovers with an assertion that a fresh runtime owns an empty journal. Original denial inputs, required event identities and durable journal readback remain unchanged."
+  },
+  {
+    "name": "ops_events_journal_end_to_end",
+    "before_sha256": "1b08a8658c784465fd63483e4c16dbd04a4deb604cb649df36443f0e905296e1",
+    "after_sha256": "c41ef1cf25f15b5f998e851b500ee5b691886cae1065a9351dee9e7d5ddb63f0",
+    "finding": "R10",
+    "reason": "96fed7c: inspect the same runtime OpsService recent-event ring used by actual creation/deletion; all lifecycle IDs and durable journal assertions retained."
+  },
+  {
+    "name": "ops_metrics_and_alerts_flow",
+    "before_sha256": "a9258159825c05e9e9e2b8c03dcb607cda72f38640d03f44093cd08dd3886efe",
+    "after_sha256": "cfec8370a8e56b955ffcc629fa43778447567988366150b4191138c9e3e73ad1",
+    "finding": "R10",
+    "reason": "96fed7c: inspect the same runtime OpsService alert map and recent-event ring; queue pressure, open/resolve transitions, and all journal assertions remain unchanged."
+  },
+  {
+    "name": "pending_summary_clears_on_shard_close",
+    "before_sha256": "750c9241f6cd829eb6cce41966b832fb6aaf65d7d774a4e53b5415dc422b94dc",
+    "after_sha256": "c63b0de32fbe1639203edb7725d6c346baa31aaff0e5b8cb0299059676261274",
+    "finding": "R10",
+    "reason": "96fed7c: read pending state from engine.usage, the same capability used by its absorber. Existing polling schedule, publication prerequisite and close-cleanup assertions are unchanged."
   }
 ]

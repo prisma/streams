@@ -1788,7 +1788,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "d9c1218a5b952f849c66bfa8457e188c042e2bdb202bfb8cffa42282bb6c33da",
+    "function_sha256": "6342aee96dddcd85faef890b2d370a4ab63e485e9f5345ea0920ec7dbe4c1c98",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_audit.rs",
@@ -3268,7 +3268,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "1b08a8658c784465fd63483e4c16dbd04a4deb604cb649df36443f0e905296e1",
+    "function_sha256": "c41ef1cf25f15b5f998e851b500ee5b691886cae1065a9351dee9e7d5ddb63f0",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_usage.rs",
@@ -3279,7 +3279,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "a9258159825c05e9e9e2b8c03dcb607cda72f38640d03f44093cd08dd3886efe",
+    "function_sha256": "cfec8370a8e56b955ffcc629fa43778447567988366150b4191138c9e3e73ad1",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/billing_usage.rs",
@@ -3480,7 +3480,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "750c9241f6cd829eb6cce41966b832fb6aaf65d7d774a4e53b5415dc422b94dc",
+    "function_sha256": "c63b0de32fbe1639203edb7725d6c346baa31aaff0e5b8cb0299059676261274",
     "mechanisms": [],
     "configuration": [
       "let store = FaultStore::uniform(inner.clone(), 101, FaultPlan::new(0, 0, 0));"
@@ -4123,6 +4123,32 @@
     ]
   },
   {
+    "name": "r09_active_rollup_cancels_entered_publication_and_retains_artifact_debt",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "448888d3c95b40df932812d8e807130bee69a048958155568e892b8d913f5bc7",
+    "mechanisms": [],
+    "configuration": [
+      "let publication_store = FaultStore::uniform(mem(), 912, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/tests/billing_controller.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r09_active_rollup_cancels_entered_read_and_replays_ledger_once",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0cdd14242dac1065817fbfb85da3967057a5f4c1bf7aeb8a8f18d11ccc84060f",
+    "mechanisms": [],
+    "configuration": [
+      "let source_store = FaultStore::uniform(mem(), 911, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/tests/billing_controller.rs",
+    "scenarios": []
+  },
+  {
     "name": "r09_active_telemetry_cancels_entered_storage_and_preserves_debt",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -4151,6 +4177,33 @@
     "scenarios": []
   },
   {
+    "name": "r09_fleet_cancels_entered_documents_without_partial_authority_or_lost_retry",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "15ec4ef637fd43fba460c88dfb3d9c360daa2073f9256b35811a7329bf43ff2b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/fleet_controller.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r09_scaler_cancellation_and_deadlines_preserve_intent_and_rotate_work",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "335463099ab95f15798d05847fc8000a355fca442fb3bfc1ad85dbe7e7d26079",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::arm_scaler_before_publish(\"cancel-scale\");",
+      "crate::failpoints::parked(crate::failpoints::Fp::ScalerBeforePublish, \"cancel-scale\");",
+      "while crate::failpoints::parked(crate::failpoints::Fp::ScalerBeforePublish, \"cancel-scale\")",
+      "crate::failpoints::release_scaler_before_publish(\"cancel-scale\");"
+    ],
+    "file": "src/dst/tests/scaler_controller.rs",
+    "scenarios": []
+  },
+  {
     "name": "r09_tombstone_walk_advances_one_catalog_page_per_pass",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
@@ -4162,6 +4215,39 @@
       "let mut row = seed.to_persisted();"
     ],
     "file": "src/dst/tests/billing_controller.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r10_append_admission_and_committed_counters_share_only_their_runtime",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "fd13cf22a9dbb20f02f063c022571e21bf2f9827931ffb6ed837242d97d479f1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/runtime_usage.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r10_runtime_body_limits_apply_to_each_collector_and_preflight",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "fc876bbc45c0fbcfb928e63d84c71b0471c38b74f70479306192fef1b5cb1b76",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/runtime_journals.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r10_runtime_journals_and_alerts_do_not_cross_drain_or_resolve",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8718a7544107fe5bca53689404d3ba0d570864636eff28ef1877e1186c06beb5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/runtime_journals.rs",
     "scenarios": []
   },
   {

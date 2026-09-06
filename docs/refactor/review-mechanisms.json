@@ -434,22 +434,22 @@
         {
           "file": "src/ops.rs",
           "name": "cancelled_ops_append_restores_batch_order_and_retry_ids",
-          "sha256": "c0254b35ff80ca6760e797ae3c61fff986d75fb6afb698e6ccf9cc6f8bd2642b"
+          "sha256": "75be0d378da3ef249432a8294fa7f870645633ca3fdee21bf15fbb30edcb7581"
         },
         {
           "file": "src/ops.rs",
           "name": "cancelled_ops_batch_overflow_preserves_full_gap_magnitude",
-          "sha256": "aee4109bd7d74a749e94dd18f3511c303d402ff03475d297e8295efb73e38e02"
+          "sha256": "946524f2221c0293bf0ba760534bb74863e2d6625fa01a83ad3e2ae45ad52f15"
         },
         {
           "file": "src/audit.rs",
           "name": "cancelled_audit_append_restores_batch_order_and_retry_ids",
-          "sha256": "66f054c9ee56f841ada43dd328270739219bf04e9c5f4d8d18da762b763658cf"
+          "sha256": "d9775d4e74a9b34d048643841cb9fd693e39f5a1a8d14bb52acbf4743cc1c793"
         },
         {
           "file": "src/audit.rs",
           "name": "cancelled_audit_batch_overflow_preserves_full_gap_magnitude",
-          "sha256": "77113ca753571ec370b94d6d74707dd87b73ebb820001aa53ea09c182aada4bd"
+          "sha256": "5876d21431e04c20d81ac04b82f6f8c9e7d66aa0373dcdeb91b3ab1c2ba796c0"
         },
         {
           "file": "src/fleet/outbox.rs",
@@ -484,6 +484,262 @@
           "file": "src/scaler3.rs",
           "name": "repeated_appends_do_not_scan_other_streams_for_incarnation_cleanup",
           "sha256": "692af23484a4cf77a3acabd509b9d263531705e6e02f12a29b1aa22a2db4727a"
+        }
+      ]
+    },
+    {
+      "id": "runtime-usage-isolation",
+      "obligations": [
+        "R10"
+      ],
+      "owner": "RuntimeCaps UsageService and ShardEngine",
+      "mechanism": "Distinct limits, owned monotonic refill, admitted counters and lag/pending maps across live runtimes",
+      "entered_proof": "Actual HTTP accepted/refused appends and durable counter updates; separate ManualClock wall and monotonic changes",
+      "oracle": "Different runtime ceilings and counters never cross-charge; same runtime engines share one budget; teardown/restart releases state",
+      "configuration": {
+        "runtime_limits_bytes_per_sec": [
+          10,
+          20
+        ],
+        "same_stream_identity": true
+      },
+      "limitations": "Controlled local runtime/object-store execution; external Prisma Compute/Tigris and production performance remain separate acceptance legs.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/usage/runtime_tests.rs",
+          "name": "r10_runtime_usage_limits_counters_and_backlog_are_isolated",
+          "sha256": "477db244affbac21179a6e08ba58e5faad1e0e7ba40eaa4043b7714b459c1d8f"
+        },
+        {
+          "file": "src/usage/runtime_tests.rs",
+          "name": "r10_usage_refill_and_eviction_follow_only_owned_monotonic_time",
+          "sha256": "da614a60ef51eda0795391243400707a43464435f58a9beee786780c68ba9679"
+        },
+        {
+          "file": "src/dst/tests/runtime_usage.rs",
+          "name": "r10_append_admission_and_committed_counters_share_only_their_runtime",
+          "sha256": "fd13cf22a9dbb20f02f063c022571e21bf2f9827931ffb6ed837242d97d479f1"
+        }
+      ]
+    },
+    {
+      "id": "runtime-journals-caches-store-budgets",
+      "obligations": [
+        "R10"
+      ],
+      "owner": "RuntimeCaps telemetry, ops/audit and store I/O resources",
+      "mechanism": "Per-runtime queues/alerts/body ceilings/Foyer cache/progress/physical permit budgets",
+      "entered_proof": "Two real HTTP runtimes, real telemetry databases, and TimingStore entry/held permits",
+      "oracle": "No cross-drain, cross-resolve, shared first-touch capacity or wrong-runtime permit accounting; owned cancellation and teardown release resources",
+      "configuration": {
+        "two_runtime_configurations": true,
+        "store": "local object store and actual SlateDB"
+      },
+      "limitations": "Controlled local runtime/object-store execution; external Prisma Compute/Tigris and production performance remain separate acceptance legs.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/dst/tests/runtime_journals.rs",
+          "name": "r10_runtime_journals_and_alerts_do_not_cross_drain_or_resolve",
+          "sha256": "8718a7544107fe5bca53689404d3ba0d570864636eff28ef1877e1186c06beb5"
+        },
+        {
+          "file": "src/dst/tests/runtime_journals.rs",
+          "name": "r10_runtime_body_limits_apply_to_each_collector_and_preflight",
+          "sha256": "fc876bbc45c0fbcfb928e63d84c71b0471c38b74f70479306192fef1b5cb1b76"
+        },
+        {
+          "file": "src/runtime/telemetry.rs",
+          "name": "r10_telemetry_cache_progress_and_database_lifetimes_are_runtime_owned",
+          "sha256": "64f40d98186994cf4cfa650b02c4ca758dc7c72f5db1d9f84ea7c3540344ea04"
+        },
+        {
+          "file": "src/store_timing/resources.rs",
+          "name": "runtime_store_concurrency_is_shared_locally_and_independent_of_first_access",
+          "sha256": "fd2dabcd27d9f7d322727a546ed12e23b0282b8b3ff173458783c138545cb9ab"
+        },
+        {
+          "file": "src/store_timing/resources.rs",
+          "name": "runtime_bulk_capacity_cancellation_and_exempt_paths_keep_their_own_owner",
+          "sha256": "9e2d6f427a74fc14cfaa234af8a6fdf0e0f9ff7adb9c6c483f7d93fae1c01748"
+        }
+      ]
+    },
+    {
+      "id": "active-rollup-cancellation",
+      "obligations": [
+        "R09"
+      ],
+      "owner": "Billing rollup controller",
+      "mechanism": "Actual source ledger GET and immutable artifact PUT held inside active passes",
+      "entered_proof": "Entered operation counters observed before supervised cancellation",
+      "oracle": "Clean cooperative task completion preserves ledger offsets and artifact debt; retry bills once and publishes exact artifact",
+      "configuration": {
+        "held_operations": [
+          "GET",
+          "PUT"
+        ],
+        "worker_threads": 4
+      },
+      "limitations": "Controlled local runtime/object-store execution; external Prisma Compute/Tigris and production performance remain separate acceptance legs.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/dst/tests/billing_controller.rs",
+          "name": "r09_active_rollup_cancels_entered_read_and_replays_ledger_once",
+          "sha256": "0cdd14242dac1065817fbfb85da3967057a5f4c1bf7aeb8a8f18d11ccc84060f"
+        },
+        {
+          "file": "src/dst/tests/billing_controller.rs",
+          "name": "r09_active_rollup_cancels_entered_publication_and_retains_artifact_debt",
+          "sha256": "448888d3c95b40df932812d8e807130bee69a048958155568e892b8d913f5bc7"
+        }
+      ]
+    },
+    {
+      "id": "owned-active-absorber",
+      "obligations": [
+        "R09"
+      ],
+      "owner": "ShardEngine-owned history absorber",
+      "mechanism": "Real active budget reservation and history SST PUT, registered engine task and close watch",
+      "entered_proof": "Reservation slot enters while all bytes are held, or data SST PUT enters; engine joins before release",
+      "oracle": "Cancellation releases task/budget and lag state; durable dirty marker remains for a fresh owner to absorb exact data",
+      "configuration": {
+        "held_modes": [
+          "budget",
+          "data SST PUT"
+        ],
+        "dirty_marker_replay": true
+      },
+      "limitations": "Controlled local runtime/object-store execution; external Prisma Compute/Tigris and production performance remain separate acceptance legs.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/history/controller_tests.rs",
+          "name": "r09_owned_absorber_cancels_entered_budget_and_replays_dirty_debt",
+          "sha256": "e88f50cd853240bd70a7d8bf3dd1873af875af1fea1ca8e7a69516201dd06db1"
+        },
+        {
+          "file": "src/history/controller_tests.rs",
+          "name": "r09_owned_absorber_cancels_entered_storage_and_replays_dirty_debt",
+          "sha256": "ac9c948de94b91d43511311a70a9d4450a4f1ab6cc5004f6de23567f04446b2a"
+        }
+      ],
+      "support_functions": [
+        {
+          "file": "src/history/controller_tests.rs",
+          "name": "active_absorber_cancel",
+          "sha256": "e9cdb62c69ba22f3c357d76e3e70aee900685a21b2fcea6b4b1a54af05b29405"
+        }
+      ]
+    },
+    {
+      "id": "byte-bounded-journal-drains",
+      "obligations": [
+        "R09"
+      ],
+      "owner": "OpsService and AuditJournal",
+      "mechanism": "Serialize exact JSON byte budgets including arrays and escaped strings; oversized event emits an explicit gap",
+      "entered_proof": "Actual selected queue prefix, cancellation guard drop and 64KiB journal append contract",
+      "oracle": "Unselected/cancelled events keep exact order; oversized records cannot wedge followers or silently erase drop magnitude",
+      "configuration": {
+        "minimum_body_bytes": 65536,
+        "selection": "exact serialized bytes"
+      },
+      "limitations": "Controlled local runtime/object-store execution; external Prisma Compute/Tigris and production performance remain separate acceptance legs.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/ops/batch_tests.rs",
+          "name": "byte_bounded_ops_batches_preserve_unselected_and_cancelled_order",
+          "sha256": "752ef4be20b0d6ad48ccdfbc3e37f7a8ec1c13d8c808c03ab564e9d352862a86"
+        },
+        {
+          "file": "src/ops/batch_tests.rs",
+          "name": "oversized_ops_event_becomes_visible_gap_without_wedging_followers",
+          "sha256": "89060f62f92e15fb801b5001de885a0cc869b0b1d74380d086dc88f988b1c30a"
+        },
+        {
+          "file": "src/audit/batch_tests.rs",
+          "name": "byte_bounded_audit_batches_preserve_unselected_and_cancelled_order",
+          "sha256": "9fb7d77938b450660d670df3a01c617405da297b1d12cdb2c3f6596bdf6ee072"
+        },
+        {
+          "file": "src/audit/batch_tests.rs",
+          "name": "oversized_audit_event_becomes_visible_gap_without_wedging_followers",
+          "sha256": "31efb615b963d8f1e98dc820c1126d047f9d73ef8a9eec0de8a5fb7744cbe067"
+        },
+        {
+          "file": "src/telemetry_batch.rs",
+          "name": "array_delimiters_and_escaped_strings_count_toward_exact_limit",
+          "sha256": "7f0ab0f7e1581d79fb0f1b8bf7d78b263b8220ccb2cd07fc9d244ad9a816b95a"
+        }
+      ]
+    },
+    {
+      "id": "active-fleet-authority",
+      "obligations": [
+        "R09"
+      ],
+      "owner": "FleetRepository and fleet controller",
+      "mechanism": "Entered heartbeat/read/CAS operations with streamed-body and complete ownership snapshot bounds",
+      "entered_proof": "Real held GET/PUT entries; misleading body metadata and exact paused-time deadlines",
+      "oracle": "Cooperative shutdown, no partial ring/override publication, no corrupt-body empty view, deterministic durable retry after release",
+      "configuration": {
+        "document_deadline_secs": 10,
+        "pass_deadline_secs": 45,
+        "max_members": 4096,
+        "max_document_bytes": 8388608
+      },
+      "limitations": "Controlled local runtime/object-store execution; external Prisma Compute/Tigris and production performance remain separate acceptance legs.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/dst/tests/fleet_controller.rs",
+          "name": "r09_fleet_cancels_entered_documents_without_partial_authority_or_lost_retry",
+          "sha256": "15ec4ef637fd43fba460c88dfb3d9c360daa2073f9256b35811a7329bf43ff2b"
+        },
+        {
+          "file": "src/fleet/repository/document_tests.rs",
+          "name": "r09_fleet_document_body_failures_and_sizes_preserve_authority",
+          "sha256": "cd3a5c083316ebe68545c8f4e0f1415209e2f73845977fd6fc02ea175e8494d2"
+        },
+        {
+          "file": "src/fleet/repository/document_tests.rs",
+          "name": "r09_fleet_document_deadlines_leave_cas_source_retryable",
+          "sha256": "8208d4833c0ade725312fffeb5a1d9b5e2b39a24f3c5d4817280e2b04aa44a54"
+        },
+        {
+          "file": "src/fleet/repository/document_tests.rs",
+          "name": "r09_fleet_configuration_cannot_publish_an_unreadable_population",
+          "sha256": "0e2f5a9425bb0361a2f545b8bf1cad36d5f3c2e4ac258094eb9e3e01bddfed45"
+        }
+      ]
+    },
+    {
+      "id": "active-scaler-topology-debt",
+      "obligations": [
+        "R09"
+      ],
+      "owner": "Scaler controller and TopologyService",
+      "mechanism": "Durable parent close parked before successor CAS, cancellation and deadline rotation",
+      "entered_proof": "Actual phase-B failpoint entry after parent close",
+      "oracle": "Descriptor intent survives; wrong incarnation cannot resume; healthy queued stream progresses; matching retry completes once",
+      "configuration": {
+        "hints": 4096,
+        "attempts_per_pass": 16,
+        "decision_deadline_secs": 45,
+        "pass_deadline_secs": 60
+      },
+      "limitations": "Controlled local runtime/object-store execution; external Prisma Compute/Tigris and production performance remain separate acceptance legs.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/dst/tests/scaler_controller.rs",
+          "name": "r09_scaler_cancellation_and_deadlines_preserve_intent_and_rotate_work",
+          "sha256": "335463099ab95f15798d05847fc8000a355fca442fb3bfc1ad85dbe7e7d26079"
         }
       ]
     }
@@ -539,6 +795,71 @@
       "before_sha256": "47f14df77af2f670858e162ddd04e9efe3f62ad5fa328ef6359ddafde6416615",
       "after_sha256": "5a2235bc615964ad95e9abed560bfa287ca2b03b8985bc56343bbbae935cdb46",
       "reason": "Startup dirty discovery correctly backdates recovery work beyond even a large age threshold. The cold fixture now explicitly pauses its already owned HistoryResources before callers append, enforcing the existing cold schedule promise. Existing scenario bodies, assertions and mechanism/configuration metadata are unchanged."
+    },
+    {
+      "file": "src/dst/tests/fixture_http.rs",
+      "name": "default",
+      "finding": "R10",
+      "before_commit": "d1131213250624de7dabf79ee3e0b9abce171b23",
+      "before_sha256": "7a349763f34eaaf750647c546ddcbabcbbe220ce7f2cd886f5c929ffa24eb2d9",
+      "after_sha256": "b16daf456f4292f566dc4e30b79f03c913057fd0f1711dea0336b8cc9d403291",
+      "reason": "HttpRigOptions adds only a None body-limit override; ordinary fixtures retain their prior configured ceiling."
+    },
+    {
+      "file": "src/dst/tests/fixture_http.rs",
+      "name": "http_rig_build",
+      "finding": "R10",
+      "before_commit": "d1131213250624de7dabf79ee3e0b9abce171b23",
+      "before_sha256": "dda551518f46524e4b1cf2814ddd00ea3a65d44d845dbf5b7f84b1ee07c4600d",
+      "after_sha256": "ad77898122b56c0eaf613289b841d09f52a2869001f1c0d6172af6c2b7343f10",
+      "reason": "Construct and share each runtime usage/ops capabilities through HTTP append, shard/history and quota owners. Default HTTP admission refill uses the same real protocol clock as transport sleeps; explicit manual shared_usage overrides remain honored. No admission limit or original capacity oracle changed. New body-limit option defaults to None."
+    },
+    {
+      "file": "src/dst/tests/fixture_http.rs",
+      "name": "rig_opener",
+      "finding": "R09",
+      "before_commit": "d1131213250624de7dabf79ee3e0b9abce171b23",
+      "before_sha256": "8bc4055ac728dca0543aa1e5742b7550840152476e39a32ff794c7889b16b0df",
+      "after_sha256": "1d2bc61cbf3ecd04938cbab3723d6f878cb6d8805f82d65e2dd7c92f0710bf86",
+      "reason": "The fixture now registers the actual absorber with its engine through start_owned, matching production shutdown/join ownership. Its absorption settings and scenario scheduling remain unchanged."
+    }
+  ],
+  "source_adaptations": [
+    {
+      "file": "src/ops.rs",
+      "name": "cancelled_ops_append_restores_batch_order_and_retry_ids",
+      "finding": "R09/R10",
+      "before_commit": "d1131213250624de7dabf79ee3e0b9abce171b23",
+      "before_sha256": "c0254b35ff80ca6760e797ae3c61fff986d75fb6afb698e6ccf9cc6f8bd2642b",
+      "after_sha256": "75be0d378da3ef249432a8294fa7f870645633ca3fdee21bf15fbb30edcb7581",
+      "reason": "Use an explicitly owned journal and the new byte-budget selection constructor with usize::MAX in these original cancellation controls. Inputs, exact ordering/retry IDs, overflow magnitude and cancellation assertions remain unchanged."
+    },
+    {
+      "file": "src/ops.rs",
+      "name": "cancelled_ops_batch_overflow_preserves_full_gap_magnitude",
+      "finding": "R09/R10",
+      "before_commit": "d1131213250624de7dabf79ee3e0b9abce171b23",
+      "before_sha256": "aee4109bd7d74a749e94dd18f3511c303d402ff03475d297e8295efb73e38e02",
+      "after_sha256": "946524f2221c0293bf0ba760534bb74863e2d6625fa01a83ad3e2ae45ad52f15",
+      "reason": "Use an explicitly owned journal and the new byte-budget selection constructor with usize::MAX in these original cancellation controls. Inputs, exact ordering/retry IDs, overflow magnitude and cancellation assertions remain unchanged."
+    },
+    {
+      "file": "src/audit.rs",
+      "name": "cancelled_audit_append_restores_batch_order_and_retry_ids",
+      "finding": "R09/R10",
+      "before_commit": "d1131213250624de7dabf79ee3e0b9abce171b23",
+      "before_sha256": "66f054c9ee56f841ada43dd328270739219bf04e9c5f4d8d18da762b763658cf",
+      "after_sha256": "d9775d4e74a9b34d048643841cb9fd693e39f5a1a8d14bb52acbf4743cc1c793",
+      "reason": "Use an explicitly owned journal and the new byte-budget selection constructor with usize::MAX in these original cancellation controls. Inputs, exact ordering/retry IDs, overflow magnitude and cancellation assertions remain unchanged."
+    },
+    {
+      "file": "src/audit.rs",
+      "name": "cancelled_audit_batch_overflow_preserves_full_gap_magnitude",
+      "finding": "R09/R10",
+      "before_commit": "d1131213250624de7dabf79ee3e0b9abce171b23",
+      "before_sha256": "77113ca753571ec370b94d6d74707dd87b73ebb820001aa53ea09c182aada4bd",
+      "after_sha256": "5876d21431e04c20d81ac04b82f6f8c9e7d66aa0373dcdeb91b3ab1c2ba796c0",
+      "reason": "Use an explicitly owned journal and the new byte-budget selection constructor with usize::MAX in these original cancellation controls. Inputs, exact ordering/retry IDs, overflow magnitude and cancellation assertions remain unchanged."
     }
   ]
 }

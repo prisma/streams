@@ -32,10 +32,12 @@ current evidence and pending work. Historical reader-cache obligations retain
 their original IDs and state the replacement mechanism; they are not renamed
 away. Current symbol line numbers replace the obsolete monolith positions.
 
-The DST inventory preserves all 410 original tests and records fifteen reviewed
-additions (425 total, zero ignored). Five fixture body adaptations have exact
-old/new hashes and reasons: valid allocated seal generations and the legal
-competing transition at the parked phase-B seam. The new SEC-002 mapping is a
+The DST inventory preserves all 410 original tests and records 22 reviewed
+additions (432 total, zero ignored). Every permitted test-body adaptation has
+exact old/new hashes and reasons, including valid seal generations, the legal
+competing transition at the parked phase-B seam, and explicit runtime capability
+reads. The security journal fixture now asserts a fresh owned queue is empty;
+all denial inputs and required event assertions remain. The new SEC-002 mapping is a
 separately recorded metadata adaptation. Two append contract unit tests moved
 outside DST retain exact token hashes in `review-unit-relocations.json`.
 `test-inventory.py --compare ... --adaptations ... --additions ...` checks
@@ -46,7 +48,8 @@ A valid map means source references are internally consistent. It does not
 mean every schedule, production backend or runtime was exercised. The
 `review-mechanisms.json` manifest separately names the actual fault/frontier,
 entered proof, oracle, seed/configuration, exact regression body hashes and
-limitations for the required R01/R09/R13–R15/R17–R22 controls. A modified or
+limitations for 22 concrete mechanisms, including the required
+R01/R09/R10/R13–R15/R17–R22 controls. A modified or
 ignored Rust regression, changed SDK regression script, missing obligation or
 missing disposition fails `review-evidence.py --check`. This source checker
 never emits execution certification.
@@ -57,11 +60,31 @@ correctly backdates dirty work beyond large age thresholds; the fixture now
 pauses its owned history resource before callers append to enforce its promised
 cold schedule. No existing test body or assertion changes. Removing the fixture
 record, changing either body or omitting its rationale fails the source checker.
-The evidence checker includes 29 mutation controls, including four fixture
-provenance controls.
+The HTTP fixture constructor and opener also have exact before/after hashes
+pinned to pre-followup commit `d1131213250624de7dabf79ee3e0b9abce171b23`.
+They share runtime usage/ops/telemetry resources, honor explicit test clocks,
+and register absorbers with their engine. Four original ops/audit cancellation
+unit adaptations are independently pinned to that same commit. The absorber
+regressions hash their shared fault/oracle helper as well as the named tests.
+The evidence checker includes 33 mutation controls, including eight fixture
+body and immutable-anchor controls.
 
 ## New mechanism controls
 
+- R10: actual HTTP append ceilings and durable counters, runtime journals and
+  alert resolution, Foyer cache/progress, and real TimingStore permits are
+  isolated across distinct runtime configurations. Manual-clock controls
+  separate wall steps from elapsed refill/eviction time. The HTTP fixture uses
+  its existing protocol clock for ordinary wire pacing; explicit shared manual
+  usage capabilities still drive controlled time tests.
+- R09 follow-up: actual rollup source GET and artifact PUT cancellation retains
+  financial debt. Engine-owned absorber tasks exit during entered budget or
+  data-SST waits and replay durable markers on a new owner. Journal byte bounds
+  preserve exact selected/cancelled order and emit visible gaps for oversized
+  records. Fleet single-document deadlines retain complete ownership authority,
+  and the scaler rotates held pending transitions without losing incarnation
+  fencing. The full mechanism entries record every budget, entered proof and
+  limitation; these source checks do not substitute for execution receipts.
 - R09: held real spool PUT and catalog LIST operations prove both active
   telemetry tasks finish cooperatively and retain exact batch bytes and the
   incomplete-page cursor. A 513-entry catalog advances in three bounded passes.
@@ -166,3 +189,9 @@ negative-control test pass when compiled directly with the cached release
 `syn`/`quote` dependencies. The actual suite run still supplies final execution
 evidence. Two explicit markers identify a pure URL-shape predicate and shard
 engine-path scan cursors; neither carries customer stream identity.
+
+The multitenancy audit baseline removes nine obsolete fingerprints after
+confirming the final scan introduces none: removed transport identity helpers,
+the unused scaler compatibility path, and obsolete usage-map comments. The
+remaining 71 fingerprints are narrower than the prior set; the strict typed
+identity lint remains independently required.

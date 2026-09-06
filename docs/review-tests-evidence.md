@@ -1,5 +1,11 @@
 # R11 test ownership remediation
 
+The results below describe the original extraction checkpoint. The final
+R24 inventory now has 432 DST tests: all 410 original obligations plus 22
+explicit additions, with zero ignored tests. Later exact body/fixture
+adaptations and current receipts are tracked in `review-verification-evidence.md`
+and the checked manifests.
+
 The extraction baseline is commit `b612fbf`, after the R03/R04/R10 fixture
 adaptations. The monolithic `src/dst/dst_tests.rs` contained 381 tests; the
 recursive DST inventory contained 410, including existing trace-store tests

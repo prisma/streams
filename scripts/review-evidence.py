@@ -20,7 +20,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / 'docs/refactor/review-mechanisms.json'
 DISPOSITIONS = ROOT / 'docs/refactor/scenario-dispositions.json'
-REQUIRED = {'R01', 'R09', 'R13', 'R14', 'R15', 'R17', 'R18', 'R19', 'R20', 'R21', 'R22',
+REQUIRED = {'R01', 'R09', 'R10', 'R13', 'R14', 'R15', 'R17', 'R18', 'R19', 'R20', 'R21', 'R22',
             'DUR-005', 'SEL-022', 'DUR-014'}
 spec = importlib.util.spec_from_file_location('inventory', ROOT / 'scripts/test-inventory.py')
 inventory = importlib.util.module_from_spec(spec)
@@ -88,6 +88,20 @@ def fixture_change_failures(change: dict, before_source: str, after_source: str)
     return failures
 
 
+def source_anchor_failures(changes: list[dict], required: dict) -> list[str]:
+    failures, recorded = [], set()
+    for change in changes:
+        identity = (change.get('file'), change.get('name'))
+        if identity in recorded:
+            failures.append('duplicate reviewed source provenance')
+        recorded.add(identity)
+        if identity not in required or change.get('before_commit') != required[identity]:
+            failures.append('reviewed source baseline identity/commit mismatch')
+    if required.keys() - recorded:
+        failures.append('required reviewed source provenance missing')
+    return failures
+
+
 def check() -> list[str]:
     scenarios = json.loads((ROOT / 'docs/refactor/test-scenario-map.json').read_text())
     manifest = json.loads(MANIFEST.read_text())
@@ -100,24 +114,31 @@ def check() -> list[str]:
                     set((ROOT / 'scripts/clippy-baseline-fingerprints.txt').read_text().splitlines()),
                     json.loads((ROOT / 'docs/refactor/clippy-review-dispositions.json').read_text())))
 
-    required_fixtures = {('src/dst/tests/fixture_http.rs', 'http_rig_cold_absorb')}
-    recorded_fixtures = set()
-    for change in manifest.get('fixture_changes', []):
-        identity = (change.get('file'), change.get('name'))
-        if identity in recorded_fixtures:
-            failures.append('duplicate fixture change provenance')
-        recorded_fixtures.add(identity)
-        if change.get('before_commit') != 'b1864fffaca3f753a34129f95b8f5734cccd0a4a':
-            failures.append('fixture pre-audit source commit mismatch')
-            continue
-        path = ROOT / change['file']
-        if not path.is_file():
-            failures.append(f'missing fixture source: {change["file"]}')
-            continue
-        original_source = git('show', f'{change["before_commit"]}:{change["file"]}')
-        failures.extend(fixture_change_failures(change, original_source, path.read_text()))
-    if required_fixtures - recorded_fixtures:
-        failures.append('required cold-absorber fixture provenance missing')
+    required_fixtures = {
+        ('src/dst/tests/fixture_http.rs', 'http_rig_cold_absorb'): 'b1864fffaca3f753a34129f95b8f5734cccd0a4a',
+        ('src/dst/tests/fixture_http.rs', 'default'): 'd1131213250624de7dabf79ee3e0b9abce171b23',
+        ('src/dst/tests/fixture_http.rs', 'http_rig_build'): 'd1131213250624de7dabf79ee3e0b9abce171b23',
+        ('src/dst/tests/fixture_http.rs', 'rig_opener'): 'd1131213250624de7dabf79ee3e0b9abce171b23',
+    }
+    required_units = {
+        (file, name): 'd1131213250624de7dabf79ee3e0b9abce171b23'
+        for file, names in [
+            ('src/ops.rs', ['cancelled_ops_append_restores_batch_order_and_retry_ids', 'cancelled_ops_batch_overflow_preserves_full_gap_magnitude']),
+            ('src/audit.rs', ['cancelled_audit_append_restores_batch_order_and_retry_ids', 'cancelled_audit_batch_overflow_preserves_full_gap_magnitude']),
+        ] for name in names
+    }
+    for section, required_changes in [('fixture_changes', required_fixtures), ('source_adaptations', required_units)]:
+        changes = manifest.get(section, [])
+        failures.extend(source_anchor_failures(changes, required_changes))
+        for change in changes:
+            path = ROOT / change['file']
+            if not path.is_file():
+                failures.append(f'missing reviewed source: {change["file"]}')
+                continue
+            if change.get('before_commit') != required_changes.get((change.get('file'), change.get('name'))):
+                continue
+            original_source = git('show', f'{change["before_commit"]}:{change["file"]}')
+            failures.extend(fixture_change_failures(change, original_source, path.read_text()))
     obligations = set()
     for entry in manifest['mechanisms']:
         obligations.update(entry['obligations'])
@@ -142,6 +163,12 @@ def check() -> list[str]:
             else:
                 if sha(path.read_bytes()) != test.get('sha256') or test['name'] not in path.read_text():
                     failures.append(f'SDK mechanism script changed or test missing: {test["file"]}::{test["name"]}')
+        for helper in entry.get('support_functions', []):
+            path = ROOT / helper['file']
+            functions = inventory.functions(path.read_text(), path, include_helpers=True) if path.is_file() else []
+            found = [function for function in functions if function['name'] == helper['name']]
+            if len(found) != 1 or found[0]['function_sha256'] != helper.get('sha256'):
+                failures.append(f'mechanism support function changed or missing: {helper["file"]}::{helper["name"]}')
     for obligation in REQUIRED - obligations:
         failures.append(f'missing required mechanism: {obligation}')
     relocations = json.loads((ROOT / 'docs/refactor/review-unit-relocations.json').read_text())
@@ -246,7 +273,13 @@ def self_test() -> None:
     assert fixture_change_failures(fixture, new_fixture, new_fixture)
     assert fixture_change_failures(fixture, old_fixture, old_fixture)
     assert fixture_change_failures({**fixture, 'reason': ''}, old_fixture, new_fixture)
-    print('review-evidence self-test: OK (29 controls)')
+    anchors = {('fixture.rs', 'fixture'): 'fixed-commit'}
+    anchored = {**fixture, 'before_commit': 'fixed-commit'}
+    assert not source_anchor_failures([anchored], anchors)
+    assert source_anchor_failures([{**anchored, 'before_commit': 'new-head'}], anchors)
+    assert source_anchor_failures([], anchors)
+    assert source_anchor_failures([anchored, anchored], anchors)
+    print('review-evidence self-test: OK (33 controls)')
 
 
 def main() -> int:

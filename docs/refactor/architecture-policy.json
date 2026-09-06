@@ -54,11 +54,11 @@
       "source_obligation": "Critical-task registration and runtime resource wiring"
     },
     "file:src/history.rs": {
-      "limit": 2765,
+      "limit": 2775,
       "owner": "History partition owner",
       "finding": "R08/R09/R10",
-      "rationale": "Typed fence error classification, shared maintenance admission and required read refusal extend the existing owner; regression tests preserve these mechanisms. R10 also moves the worst-frame history floor into each runtime configuration, validated by different_runtime_body_limits_size_independent_history_floors. R09 adds four lines to accept the actual committed 24/32-byte dirty-marker formats during bounded restart discovery, preserving the signal-less recovery tests.",
-      "source_obligation": "r08_fence_disposition_uses_error_kind_through_context; bounded history admission"
+      "rationale": "Typed fence error classification, shared maintenance admission and required read refusal extend the existing owner; regression tests preserve these mechanisms. R10 also moves the worst-frame history floor into each runtime configuration, validated by different_runtime_body_limits_size_independent_history_floors. R09 adds four lines to accept the actual committed 24/32-byte dirty-marker formats during bounded restart discovery, preserving the signal-less recovery tests. Engine-owned absorber registration and close-aware loop capability; extracted controller regressions live separately. No broader storage pass or new boundary is permitted.",
+      "source_obligation": "r08_fence_disposition_uses_error_kind_through_context; bounded history admission; runtime isolation and active-controller cancellation regressions"
     },
     "function:src/product.rs::product_entry": {
       "limit": 318,
@@ -82,11 +82,11 @@
       "source_obligation": "r08_mutation_preserves_conditional_metadata_and_classifies_ambiguous_completion; malformed descriptor fixtures"
     },
     "file:src/rollup.rs": {
-      "limit": 2793,
+      "limit": 2811,
       "owner": "Financial rollup owner",
-      "finding": "R14",
-      "rationale": "Fail-closed key/value decoding and atomic checkpoint preparation add required-read/corruption regressions to the existing financial transaction owner.",
-      "source_obligation": "r14_required_read_failures_leave_every_row_and_checkpoint_unchanged; r14_corrupt_watermarks_rows_and_close_keys_block_progress"
+      "finding": "R14/R10",
+      "rationale": "Fail-closed key/value decoding and atomic checkpoint preparation add required-read/corruption regressions to the existing financial transaction owner. Accept the runtime-owned telemetry cache explicitly and retain independent cfg(test) constructors; no global first-touch capacity remains.",
+      "source_obligation": "r14_required_read_failures_leave_every_row_and_checkpoint_unchanged; r14_corrupt_watermarks_rows_and_close_keys_block_progress; runtime isolation and active-controller cancellation regressions"
     },
     "function:src/rollup.rs::close_month": {
       "limit": 226,
@@ -103,18 +103,18 @@
       "source_obligation": "Exact monthly delta application and close replay assertions"
     },
     "file:src/shard.rs": {
-      "limit": 6445,
+      "limit": 6475,
       "owner": "Shard actor durability transaction",
-      "finding": "R03/R09/R12/R13",
-      "rationale": "Retained actor protocol and one batch commit owner now use validated tails, typed after-commit replies and bounded accounting pages. Most growth is direct corruption, read-failure and real remote-frontier regressions; no new responsibility is granted by this cap. R09/R12 follow-ups preserve 16/24/32-byte recovery marker compatibility and the frozen v2/v3 tail byte codecs; validation remains mandatory at stored-state reads, with a separate corruption regression.",
-      "source_obligation": "R03 group failure/fence publication; R09 bounded page accounting; R12 tail corruption; R13 accounting read failures; r12_byte_compatibility_does_not_bypass_stored_state_validation; r09_committer_dirty_markers_survive_bounded_discovery"
+      "finding": "R03/R09/R12/R13/R10",
+      "rationale": "Retained actor protocol and one batch commit owner now use validated tails, typed after-commit replies and bounded accounting pages. Most growth is direct corruption, read-failure and real remote-frontier regressions; no new responsibility is granted by this cap. R09/R12 follow-ups preserve 16/24/32-byte recovery marker compatibility and the frozen v2/v3 tail byte codecs; validation remains mandatory at stored-state reads, with a separate corruption regression. Share explicit usage/ops capabilities with shard/history; register and join the active absorber under the engine close signal instead of detaching it.",
+      "source_obligation": "R03 group failure/fence publication; R09 bounded page accounting; R12 tail corruption; R13 accounting read failures; r12_byte_compatibility_does_not_bypass_stored_state_validation; r09_committer_dirty_markers_survive_bounded_discovery; runtime isolation and active-controller cancellation regressions"
     },
     "function:src/shard.rs::start": {
-      "limit": 389,
+      "limit": 399,
       "owner": "Shard actor startup",
       "finding": "R03/R10",
-      "rationale": "The shared runtime maintenance controller and typed transaction publication are explicitly constructed at engine startup.",
-      "source_obligation": "Two-runtime isolation and committer startup/readiness tests"
+      "rationale": "The shared runtime maintenance controller and typed transaction publication are explicitly constructed at engine startup. Resolve explicit usage and ops capabilities once per engine; no added per-append scan or policy duplication.",
+      "source_obligation": "Two-runtime isolation and committer startup/readiness tests; runtime isolation and active-controller cancellation regressions"
     },
     "function:src/shard.rs::commit_group": {
       "limit": 2137,
@@ -131,11 +131,25 @@
       "source_obligation": "Shared feed reads, rollback and source failure typed outcome tests"
     },
     "file:src/sse/session.rs": {
-      "limit": 1062,
+      "limit": 1068,
       "owner": "SSE transport/session adapter",
-      "finding": "R06",
-      "rationale": "Two lines adapt service wiring. This file remains an explicitly declared wire/session adapter, while feed/source/registry/service/budget core files have zero transport dependency allowance.",
-      "source_obligation": "Raw/product SSE formatting, auth lease and body drop tests"
+      "finding": "R06/R10",
+      "rationale": "Two lines adapt service wiring. This file remains an explicitly declared wire/session adapter, while feed/source/registry/service/budget core files have zero transport dependency allowance. Read owning runtime usage counters and body ceiling in the existing transport session adapter, preserving SSE protocol semantics.",
+      "source_obligation": "Raw/product SSE formatting, auth lease and body drop tests; runtime isolation and active-controller cancellation regressions"
+    },
+    "file:src/quota.rs": {
+      "limit": 1520,
+      "owner": "Quota registry",
+      "finding": "R10",
+      "rationale": "Original fixed-baseline owner retained under a narrow safety wiring cap. Inject the owning OpsService into QuotaRegistry and emit state changes only to that runtime journal.",
+      "source_obligation": "Original scenario obligations retained; runtime isolation and active-controller cancellation regressions"
+    },
+    "function:src/sse/session.rs::serve": {
+      "limit": 721,
+      "owner": "SSE transport session",
+      "finding": "R10",
+      "rationale": "Original fixed-baseline owner retained under a narrow safety wiring cap. Thread the same runtime-local body ceiling and usage counter capability through transport collection and metering.",
+      "source_obligation": "Original scenario obligations retained; runtime isolation and active-controller cancellation regressions"
     }
   },
   "transport_rationales": {

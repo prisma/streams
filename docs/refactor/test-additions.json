@@ -179,6 +179,40 @@
   },
   {
     "finding": "R09",
+    "reason": "Actual artifact PUT entry precedes cooperative shutdown; immutable publication debt survives and retries after release.",
+    "test": {
+      "name": "r09_active_rollup_cancels_entered_publication_and_retains_artifact_debt",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+      ],
+      "function_sha256": "448888d3c95b40df932812d8e807130bee69a048958155568e892b8d913f5bc7",
+      "mechanisms": [],
+      "configuration": [
+        "let publication_store = FaultStore::uniform(mem(), 912, FaultPlan::CLEAN);"
+      ],
+      "file": "src/dst/tests/billing_controller.rs",
+      "scenarios": []
+    }
+  },
+  {
+    "finding": "R09",
+    "reason": "Actual source GET entry precedes cooperative shutdown; retry consumes the original ledger once with unchanged financial assertions.",
+    "test": {
+      "name": "r09_active_rollup_cancels_entered_read_and_replays_ledger_once",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+      ],
+      "function_sha256": "0cdd14242dac1065817fbfb85da3967057a5f4c1bf7aeb8a8f18d11ccc84060f",
+      "mechanisms": [],
+      "configuration": [
+        "let source_store = FaultStore::uniform(mem(), 911, FaultPlan::CLEAN);"
+      ],
+      "file": "src/dst/tests/billing_controller.rs",
+      "scenarios": []
+    }
+  },
+  {
+    "finding": "R09",
     "reason": "Cancel actual entered spool PUT and catalog LIST; cooperative task completion retains exact batch identity and incomplete-page cursor for retry.",
     "test": {
       "name": "r09_active_telemetry_cancels_entered_storage_and_preserves_debt",
@@ -215,6 +249,41 @@
   },
   {
     "finding": "R09",
+    "reason": "Production loop cancels at heartbeat PUT, required overrides GET and desired CAS PUT. Last complete ownership snapshot survives incomplete reads, and resumed publication retains its deterministic event.",
+    "test": {
+      "name": "r09_fleet_cancels_entered_documents_without_partial_authority_or_lost_retry",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+      ],
+      "function_sha256": "15ec4ef637fd43fba460c88dfb3d9c360daa2073f9256b35811a7329bf43ff2b",
+      "mechanisms": [],
+      "configuration": [],
+      "file": "src/dst/tests/fleet_controller.rs",
+      "scenarios": []
+    }
+  },
+  {
+    "finding": "R09",
+    "reason": "Cancel after actual durable parent closure; retain descriptor intent and incarnation fence, rotate held work behind a healthy stream, then complete the same transition.",
+    "test": {
+      "name": "r09_scaler_cancellation_and_deadlines_preserve_intent_and_rotate_work",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+      ],
+      "function_sha256": "335463099ab95f15798d05847fc8000a355fca442fb3bfc1ad85dbe7e7d26079",
+      "mechanisms": [],
+      "configuration": [
+        "crate::failpoints::arm_scaler_before_publish(\"cancel-scale\");",
+        "crate::failpoints::parked(crate::failpoints::Fp::ScalerBeforePublish, \"cancel-scale\");",
+        "while crate::failpoints::parked(crate::failpoints::Fp::ScalerBeforePublish, \"cancel-scale\")",
+        "crate::failpoints::release_scaler_before_publish(\"cancel-scale\");"
+      ],
+      "file": "src/dst/tests/scaler_controller.rs",
+      "scenarios": []
+    }
+  },
+  {
+    "finding": "R09",
     "reason": "A 513-entry catalog requires three bounded passes with exact continuation cursors; prevents a full catalog loop in one pass.",
     "test": {
       "name": "r09_tombstone_walk_advances_one_catalog_page_per_pass",
@@ -228,6 +297,51 @@
         "let mut row = seed.to_persisted();"
       ],
       "file": "src/dst/tests/billing_controller.rs",
+      "scenarios": []
+    }
+  },
+  {
+    "finding": "R10",
+    "reason": "Two actual HTTP runtimes use different explicit usage limits; appends and durable committed counters share only their own runtime capability.",
+    "test": {
+      "name": "r10_append_admission_and_committed_counters_share_only_their_runtime",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+      ],
+      "function_sha256": "fd13cf22a9dbb20f02f063c022571e21bf2f9827931ffb6ed837242d97d479f1",
+      "mechanisms": [],
+      "configuration": [],
+      "file": "src/dst/tests/runtime_usage.rs",
+      "scenarios": []
+    }
+  },
+  {
+    "finding": "R10",
+    "reason": "Two body ceilings independently control actual collectors and admission preflight, including exact cleanup after refusal.",
+    "test": {
+      "name": "r10_runtime_body_limits_apply_to_each_collector_and_preflight",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+      ],
+      "function_sha256": "fc876bbc45c0fbcfb928e63d84c71b0471c38b74f70479306192fef1b5cb1b76",
+      "mechanisms": [],
+      "configuration": [],
+      "file": "src/dst/tests/runtime_journals.rs",
+      "scenarios": []
+    }
+  },
+  {
+    "finding": "R10",
+    "reason": "Two runtime journals/alerts keep their own queue, drain destination and resolution state.",
+    "test": {
+      "name": "r10_runtime_journals_and_alerts_do_not_cross_drain_or_resolve",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+      ],
+      "function_sha256": "8718a7544107fe5bca53689404d3ba0d570864636eff28ef1877e1186c06beb5",
+      "mechanisms": [],
+      "configuration": [],
+      "file": "src/dst/tests/runtime_journals.rs",
       "scenarios": []
     }
   },
