@@ -7,12 +7,12 @@
       {
         "name": "the_gather_window_waits_for_ack_dispatch",
         "file": "src/dst/tests/durability_failures.rs",
-        "line": 1728
+        "line": 22
       },
       {
         "name": "a_handoff_with_an_append_in_flight_resolves_safely",
         "file": "src/dst/tests/persistence_faults.rs",
-        "line": 844
+        "line": 164
       }
     ],
     "mapped": true,
@@ -27,7 +27,7 @@
       {
         "name": "a_failed_group_write_fails_its_duplicate_too",
         "file": "src/dst/tests/durability_failures.rs",
-        "line": 14832
+        "line": 347
       }
     ],
     "mapped": true,
@@ -42,7 +42,7 @@
       {
         "name": "idempotent_successes_wait_for_durability",
         "file": "src/dst/tests/durability_fences.rs",
-        "line": 14422
+        "line": 423
       }
     ],
     "mapped": true,
@@ -57,12 +57,12 @@
       {
         "name": "a_failed_group_fails_the_close_and_its_retry_together",
         "file": "src/dst/tests/durability_failures.rs",
-        "line": 15039
+        "line": 558
       },
       {
         "name": "a_fence_in_a_failed_group_reports_failure_not_closed",
         "file": "src/dst/tests/durability_failures.rs",
-        "line": 15162
+        "line": 687
       }
     ],
     "mapped": true,
@@ -77,17 +77,22 @@
       {
         "name": "idempotent_successes_wait_for_durability",
         "file": "src/dst/tests/durability_fences.rs",
-        "line": 14422
+        "line": 423
       },
       {
         "name": "a_failed_group_fails_the_close_and_its_retry_together",
         "file": "src/dst/tests/durability_failures.rs",
-        "line": 15039
+        "line": 558
+      },
+      {
+        "file": "src/shard/durability_frontier_tests.rs",
+        "name": "r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier",
+        "line": 11
       }
     ],
     "mapped": true,
-    "coverage": "partial",
-    "note": "STATUS.md: 'landed (R11) \u2014 idempotent_successes_wait_for_durability (dispatch gate)'. Dispatch-gate form only; no remote-watermark pause."
+    "coverage": "full",
+    "note": "Two independent mechanisms remain: existing post-durability dispatch holds, and an actual WAL object-store PUT hold (FaultStore seed 2405). The close is applied with no Remote tail before retry/fence are enqueued into a later group; their entered fence, withheld replies, released Remote tail, independent dispatch gate and reopen closed-tail readback are asserted. Local pinned-SlateDB evidence; production storage run remains pending."
   },
   {
     "id": "DUR-006",
@@ -97,12 +102,12 @@
       {
         "name": "a_reuse_verdict_dies_with_its_failed_group",
         "file": "src/dst/tests/durability_failures.rs",
-        "line": 14926
+        "line": 443
       },
       {
         "name": "state_dependent_conflicts_wait_for_durability",
         "file": "src/dst/tests/durability_fences.rs",
-        "line": 14547
+        "line": 550
       }
     ],
     "mapped": true,
@@ -117,12 +122,12 @@
       {
         "name": "a_transient_producer_gap_does_not_lose_the_promised_record",
         "file": "src/dst/tests/seal_recovery.rs",
-        "line": 12997
+        "line": 549
       },
       {
         "name": "an_ordering_verdict_keeps_its_intent_until_the_claim_is_abandoned",
         "file": "src/dst/tests/seal_recovery.rs",
-        "line": 12673
+        "line": 333
       }
     ],
     "mapped": true,
@@ -137,12 +142,12 @@
       {
         "name": "a_stream_seq_verdict_is_grounded_in_durable_state",
         "file": "src/dst/tests/durability_failures.rs",
-        "line": 15314
+        "line": 854
       },
       {
         "name": "state_dependent_conflicts_wait_for_durability",
         "file": "src/dst/tests/durability_fences.rs",
-        "line": 14547
+        "line": 550
       }
     ],
     "mapped": true,
@@ -157,17 +162,17 @@
       {
         "name": "a_lost_response_still_wrote_the_object",
         "file": "src/dst/tests/fault_substrate.rs",
-        "line": 87
+        "line": 76
       },
       {
         "name": "store_errors_surface_as_latency_not_as_failed_appends",
         "file": "src/dst/tests/persistence_faults.rs",
-        "line": 307
+        "line": 65
       },
       {
         "name": "acked_records_survive_store_faults",
         "file": "src/dst/tests/persistence_faults.rs",
-        "line": 260
+        "line": 18
       }
     ],
     "mapped": true,
@@ -181,7 +186,7 @@
       {
         "name": "storage_latency_creates_client_ambiguity_resolved_by_idempotence",
         "file": "src/dst/tests/producer_handoff.rs",
-        "line": 676
+        "line": 342
       }
     ],
     "mapped": true,
@@ -196,12 +201,12 @@
       {
         "name": "ambiguous_commit_survives_handoff_and_dedupes",
         "file": "src/dst/tests/producer_handoff.rs",
-        "line": 540
+        "line": 206
       },
       {
         "name": "product_append_producer_duplicate",
         "file": "src/dst/tests/producer_protocol.rs",
-        "line": 8089
+        "line": 603
       }
     ],
     "mapped": true,
@@ -216,7 +221,7 @@
       {
         "name": "a_handoff_with_an_append_in_flight_resolves_safely",
         "file": "src/dst/tests/persistence_faults.rs",
-        "line": 844
+        "line": 164
       }
     ],
     "mapped": true,
@@ -231,7 +236,7 @@
       {
         "name": "a_fenced_owner_acknowledges_nothing",
         "file": "src/dst/tests/persistence_faults.rs",
-        "line": 785
+        "line": 105
       }
     ],
     "mapped": true,
@@ -242,9 +247,16 @@
     "id": "DUR-014",
     "title": "Acknowledged-set equality, not count equality",
     "status": "L2-sim",
-    "tests": [],
-    "mapped": false,
-    "note": "The exact-set oracle exists (oracle_catches_loss:2404, oracle_catches_duplicates:2416) but the count-preserving loss+duplicate swap leg is not a test; needs the simulator."
+    "tests": [
+      {
+        "file": "src/dst/tests/oracle_model.rs",
+        "name": "r24_exact_set_oracle_rejects_count_preserving_loss_duplicate_swap",
+        "line": 118
+      }
+    ],
+    "mapped": true,
+    "note": "Exact-set oracle negative control: equal record counts with one lost record and one duplicate must fail audit; the faithful equal-count set passes. This exercises the local oracle and does not claim completion of a simulator or fleet campaign.",
+    "coverage": "full"
   },
   {
     "id": "DUR-015",
@@ -254,7 +266,7 @@
       {
         "name": "oracle_permits_a_non_idempotent_retry_committing_twice",
         "file": "src/dst/tests/oracle_model.rs",
-        "line": 2476
+        "line": 96
       }
     ],
     "mapped": true,
@@ -268,7 +280,7 @@
       {
         "name": "create_replay_never_loses_the_initial_body",
         "file": "src/dst/tests/lifecycle_creation.rs",
-        "line": 22445
+        "line": 300
       }
     ],
     "mapped": true,
@@ -283,7 +295,7 @@
       {
         "name": "create_replay_never_loses_the_initial_body",
         "file": "src/dst/tests/lifecycle_creation.rs",
-        "line": 22445
+        "line": 300
       }
     ],
     "mapped": true,
@@ -298,7 +310,7 @@
       {
         "name": "an_initialization_cannot_be_resumed_with_another_key",
         "file": "src/dst/tests/lifecycle_creation.rs",
-        "line": 11013
+        "line": 74
       }
     ],
     "mapped": true,
@@ -312,7 +324,7 @@
       {
         "name": "a_stale_initialization_never_becomes_visible",
         "file": "src/dst/tests/lifecycle_creation.rs",
-        "line": 10955
+        "line": 14
       }
     ],
     "mapped": true,
@@ -326,7 +338,7 @@
       {
         "name": "a_parked_create_never_publishes_readiness_for_a_later_incarnation",
         "file": "src/dst/tests/lifecycle_incarnation.rs",
-        "line": 21526
+        "line": 159
       }
     ],
     "mapped": true,
@@ -341,12 +353,12 @@
       {
         "name": "creation_does_not_report_success_after_a_concurrent_delete",
         "file": "src/dst/tests/lifecycle_incarnation.rs",
-        "line": 21959
+        "line": 603
       },
       {
         "name": "a_child_deleted_before_the_source_ref_cannot_pin_the_source",
         "file": "src/dst/tests/topology_lifecycle.rs",
-        "line": 15707
+        "line": 514
       }
     ],
     "mapped": true,
@@ -361,7 +373,7 @@
       {
         "name": "create_replay_recovers_from_a_failed_initial_write",
         "file": "src/dst/tests/lifecycle_creation.rs",
-        "line": 15382
+        "line": 209
       }
     ],
     "mapped": true,
@@ -391,17 +403,17 @@
       {
         "name": "catalog_paging_survives_dense_dead_entries",
         "file": "src/dst/tests/lifecycle_creation.rs",
-        "line": 11097
+        "line": 158
       },
       {
         "name": "catalog_pages_without_scanning_the_world",
         "file": "src/dst/tests/reads_raw.rs",
-        "line": 22973
+        "line": 677
       },
       {
         "name": "product_seal_final_append_and_catalog",
         "file": "src/dst/tests/product_lifecycle.rs",
-        "line": 10347
+        "line": 449
       }
     ],
     "mapped": true,
@@ -416,17 +428,17 @@
       {
         "name": "record_ceiling_refuses_one_oversized_record_not_the_batch",
         "file": "src/dst/tests/livefeed_ownership.rs",
-        "line": 34663
+        "line": 611
       },
       {
         "name": "max_streams_is_enforced_at_create",
         "file": "src/dst/tests/quota_enforcement.rs",
-        "line": 29232
+        "line": 473
       },
       {
         "name": "product_create_metadata_roundtrip",
         "file": "src/dst/tests/product_lifecycle.rs",
-        "line": 7730
+        "line": 9
       }
     ],
     "mapped": true,
@@ -441,12 +453,12 @@
       {
         "name": "typed_creation_dual_contract",
         "file": "src/dst/tests/product_lifecycle.rs",
-        "line": 10184
+        "line": 286
       },
       {
         "name": "a_fork_initialization_is_bound_to_its_source_incarnation",
         "file": "src/dst/tests/fork_lifecycle.rs",
-        "line": 11675
+        "line": 162
       }
     ],
     "mapped": true,
@@ -461,17 +473,17 @@
       {
         "name": "an_impossible_final_never_publishes_an_intent",
         "file": "src/dst/tests/seal_recovery.rs",
-        "line": 12407
+        "line": 163
       },
       {
         "name": "seal_requests_are_identified_and_validated_exactly",
         "file": "src/dst/tests/seal_coordination.rs",
-        "line": 11899
+        "line": 477
       },
       {
         "name": "record_ceiling_refuses_one_oversized_record_not_the_batch",
         "file": "src/dst/tests/livefeed_ownership.rs",
-        "line": 34663
+        "line": 611
       }
     ],
     "mapped": true,
@@ -486,7 +498,7 @@
       {
         "name": "seal_requests_are_identified_and_validated_exactly",
         "file": "src/dst/tests/seal_coordination.rs",
-        "line": 11899
+        "line": 477
       }
     ],
     "mapped": true,
@@ -501,7 +513,7 @@
       {
         "name": "seal_requests_are_identified_and_validated_exactly",
         "file": "src/dst/tests/seal_coordination.rs",
-        "line": 11899
+        "line": 477
       }
     ],
     "mapped": true,
@@ -516,12 +528,12 @@
       {
         "name": "a_wrong_content_type_close_cannot_join_the_valid_intent",
         "file": "src/dst/tests/seal_fencing.rs",
-        "line": 13516
+        "line": 429
       },
       {
         "name": "seal_requests_are_identified_and_validated_exactly",
         "file": "src/dst/tests/seal_coordination.rs",
-        "line": 11899
+        "line": 477
       }
     ],
     "mapped": true,
@@ -536,12 +548,12 @@
       {
         "name": "a_plain_seal_cannot_finish_someone_elses_final",
         "file": "src/dst/tests/seal_coordination.rs",
-        "line": 11150
+        "line": 65
       },
       {
         "name": "seal_only_takes_over_an_abandoned_final_claim",
         "file": "src/dst/tests/seal_fencing.rs",
-        "line": 13623
+        "line": 543
       }
     ],
     "mapped": true,
@@ -556,7 +568,7 @@
       {
         "name": "producers_cannot_write_new_records_while_sealing",
         "file": "src/dst/tests/seal_coordination.rs",
-        "line": 11255
+        "line": 171
       }
     ],
     "mapped": true,
@@ -570,12 +582,12 @@
       {
         "name": "a_raw_close_with_content_owes_its_records",
         "file": "src/dst/tests/seal_coordination.rs",
-        "line": 12015
+        "line": 593
       },
       {
         "name": "an_impossible_final_never_publishes_an_intent",
         "file": "src/dst/tests/seal_recovery.rs",
-        "line": 12407
+        "line": 163
       }
     ],
     "mapped": true,
@@ -590,7 +602,7 @@
       {
         "name": "a_crashed_raw_final_close_is_resumed_by_an_ordinary_retry",
         "file": "src/dst/tests/seal_coordination.rs",
-        "line": 12088
+        "line": 670
       }
     ],
     "mapped": true,
@@ -604,7 +616,7 @@
       {
         "name": "a_raw_final_close_resumes_after_its_records_are_durable",
         "file": "src/dst/tests/seal_recovery.rs",
-        "line": 12500
+        "line": 256
       }
     ],
     "mapped": true,
@@ -618,12 +630,12 @@
       {
         "name": "a_refused_raw_close_does_not_strand_the_collection",
         "file": "src/dst/tests/seal_recovery.rs",
-        "line": 12911
+        "line": 463
       },
       {
         "name": "a_stale_epoch_final_releases_its_intent_on_both_surfaces",
         "file": "src/dst/tests/seal_incarnation.rs",
-        "line": 15806
+        "line": 296
       }
     ],
     "mapped": true,
@@ -638,12 +650,12 @@
       {
         "name": "an_ordering_verdict_keeps_its_intent_until_the_claim_is_abandoned",
         "file": "src/dst/tests/seal_recovery.rs",
-        "line": 12673
+        "line": 333
       },
       {
         "name": "a_transient_producer_gap_does_not_lose_the_promised_record",
         "file": "src/dst/tests/seal_recovery.rs",
-        "line": 12997
+        "line": 549
       }
     ],
     "mapped": true,
@@ -657,7 +669,7 @@
       {
         "name": "a_non_closing_duplicate_releases_its_own_intent",
         "file": "src/dst/tests/seal_incarnation.rs",
-        "line": 14256
+        "line": 100
       }
     ],
     "mapped": true,
@@ -671,7 +683,7 @@
       {
         "name": "internal_producer_identities_are_unreachable_from_the_wire",
         "file": "src/dst/tests/security_routes.rs",
-        "line": 12798
+        "line": 341
       }
     ],
     "mapped": true,
@@ -685,7 +697,7 @@
       {
         "name": "a_product_seal_never_binds_to_a_recreated_incarnation",
         "file": "src/dst/tests/seal_incarnation.rs",
-        "line": 14169
+        "line": 13
       }
     ],
     "mapped": true,
@@ -700,7 +712,7 @@
       {
         "name": "a_product_final_never_writes_into_a_recreated_incarnation",
         "file": "src/dst/tests/seal_incarnation.rs",
-        "line": 14708
+        "line": 169
       }
     ],
     "mapped": true,
@@ -715,7 +727,7 @@
       {
         "name": "a_resumed_mark_never_seals_a_later_incarnation",
         "file": "src/dst/tests/seal_fencing.rs",
-        "line": 13435
+        "line": 348
       }
     ],
     "mapped": true,
@@ -730,7 +742,7 @@
       {
         "name": "a_seal_never_installs_over_a_pending_transition",
         "file": "src/dst/tests/seal_recovery.rs",
-        "line": 12202
+        "line": 15
       }
     ],
     "mapped": true,
@@ -744,12 +756,12 @@
       {
         "name": "a_parked_split_cannot_publish_under_a_sealed_collection",
         "file": "src/dst/tests/seal_coordination.rs",
-        "line": 11530
+        "line": 318
       },
       {
         "name": "topology_transitions_are_fenced_by_sealing",
         "file": "src/dst/tests/seal_coordination.rs",
-        "line": 11318
+        "line": 235
       }
     ],
     "mapped": true,
@@ -763,7 +775,7 @@
       {
         "name": "merge_phase_b_declines_under_sealing",
         "file": "src/dst/tests/topology_lifecycle.rs",
-        "line": 15465
+        "line": 211
       }
     ],
     "mapped": true,
@@ -778,12 +790,12 @@
       {
         "name": "a_fenced_owner_acknowledges_nothing",
         "file": "src/dst/tests/persistence_faults.rs",
-        "line": 785
+        "line": 105
       },
       {
         "name": "a_superseded_close_cannot_write_or_close",
         "file": "src/dst/tests/seal_fencing.rs",
-        "line": 13128
+        "line": 24
       }
     ],
     "mapped": true,
@@ -798,7 +810,7 @@
       {
         "name": "a_fence_in_a_failed_group_reports_failure_not_closed",
         "file": "src/dst/tests/durability_failures.rs",
-        "line": 15162
+        "line": 687
       }
     ],
     "mapped": true,
@@ -813,12 +825,17 @@
       {
         "name": "a_fence_waits_for_durability_before_reporting_closed",
         "file": "src/dst/tests/durability_fences.rs",
-        "line": 13798
+        "line": 20
+      },
+      {
+        "file": "src/shard/durability_frontier_tests.rs",
+        "name": "r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier",
+        "line": 11
       }
     ],
     "mapped": true,
-    "coverage": "partial",
-    "note": "STATUS.md: 'partial \u2014 dispatch-gate form only. A true remote-watermark pause needs the simulator substrate (#108) \u2014 relabeled, not claimed.'"
+    "coverage": "full",
+    "note": "Two independent mechanisms remain: existing post-durability dispatch holds, and an actual WAL object-store PUT hold (FaultStore seed 2405). The close is applied with no Remote tail before retry/fence are enqueued into a later group; their entered fence, withheld replies, released Remote tail, independent dispatch gate and reopen closed-tail readback are asserted. Local pinned-SlateDB evidence; production storage run remains pending."
   },
   {
     "id": "SEL-023",
@@ -828,7 +845,7 @@
       {
         "name": "a_lower_takeover_reservation_cannot_install",
         "file": "src/dst/tests/durability_fences.rs",
-        "line": 13938
+        "line": 173
       }
     ],
     "mapped": true,
@@ -842,7 +859,7 @@
       {
         "name": "an_exact_retry_renews_its_lease",
         "file": "src/dst/tests/seal_fencing.rs",
-        "line": 13345
+        "line": 253
       }
     ],
     "mapped": true,
@@ -856,7 +873,7 @@
       {
         "name": "a_fence_survives_handle_eviction",
         "file": "src/dst/tests/durability_fences.rs",
-        "line": 14085
+        "line": 330
       }
     ],
     "mapped": true,
@@ -870,7 +887,7 @@
       {
         "name": "a_fence_outlives_the_maintenance_sweep",
         "file": "src/dst/tests/durability_fences.rs",
-        "line": 14632
+        "line": 637
       }
     ],
     "mapped": true,
@@ -885,7 +902,7 @@
       {
         "name": "concurrent_finals_with_different_coordination_do_not_share_a_claim",
         "file": "src/dst/tests/topology_lifecycle.rs",
-        "line": 15606
+        "line": 405
       }
     ],
     "mapped": true,
@@ -900,7 +917,7 @@
       {
         "name": "scaler_heat_and_terminal_proof_are_incarnation_scoped",
         "file": "src/dst/tests/topology_lifecycle.rs",
-        "line": 14321
+        "line": 109
       }
     ],
     "mapped": true,
@@ -915,12 +932,12 @@
       {
         "name": "fork_lifecycle_and_stitched_reads",
         "file": "src/dst/tests/fork_lifecycle.rs",
-        "line": 22248
+        "line": 564
       },
       {
         "name": "livefeed_fork_subscriptions_stitch_the_ancestor_chain",
         "file": "src/dst/tests/livefeed_basics.rs",
-        "line": 32486
+        "line": 266
       }
     ],
     "mapped": true,
@@ -934,12 +951,12 @@
       {
         "name": "fork_lifecycle_and_stitched_reads",
         "file": "src/dst/tests/fork_lifecycle.rs",
-        "line": 22248
+        "line": 564
       },
       {
         "name": "fork_materialized_partial_respects_the_record_ceiling",
         "file": "src/dst/tests/livefeed_history.rs",
-        "line": 33762
+        "line": 20
       }
     ],
     "mapped": true,
@@ -954,7 +971,7 @@
       {
         "name": "fork_lifecycle_is_idempotent_and_epoch_checked",
         "file": "src/dst/tests/fork_lifecycle.rs",
-        "line": 22687
+        "line": 647
       }
     ],
     "mapped": true,
@@ -977,7 +994,7 @@
       {
         "name": "raw_forks_show_only_the_default_key",
         "file": "src/dst/tests/fork_lifecycle.rs",
-        "line": 11388
+        "line": 13
       }
     ],
     "mapped": true,
@@ -991,7 +1008,7 @@
       {
         "name": "fork_lifecycle_and_stitched_reads",
         "file": "src/dst/tests/fork_lifecycle.rs",
-        "line": 22248
+        "line": 564
       }
     ],
     "mapped": true,
@@ -1006,12 +1023,12 @@
       {
         "name": "fork_lifecycle_and_stitched_reads",
         "file": "src/dst/tests/fork_lifecycle.rs",
-        "line": 22248
+        "line": 564
       },
       {
         "name": "fork_cascade_hard_delete_releases_the_stream_slot",
         "file": "src/dst/tests/quota_enforcement.rs",
-        "line": 29635
+        "line": 794
       }
     ],
     "mapped": true,
@@ -1033,7 +1050,7 @@
       {
         "name": "a_fork_initialization_resumes_against_a_retained_source",
         "file": "src/dst/tests/fork_lifecycle.rs",
-        "line": 12573
+        "line": 470
       }
     ],
     "mapped": true,
@@ -1047,12 +1064,12 @@
       {
         "name": "a_fork_initialization_is_bound_to_its_source_incarnation",
         "file": "src/dst/tests/fork_lifecycle.rs",
-        "line": 11675
+        "line": 162
       },
       {
         "name": "fork_lifecycle_is_idempotent_and_epoch_checked",
         "file": "src/dst/tests/fork_lifecycle.rs",
-        "line": 22687
+        "line": 647
       }
     ],
     "mapped": true,
@@ -1066,7 +1083,7 @@
       {
         "name": "fork_creation_and_source_deletion_serialize",
         "file": "src/dst/tests/fork_lifecycle.rs",
-        "line": 12341
+        "line": 400
       }
     ],
     "mapped": true,
@@ -1089,12 +1106,12 @@
       {
         "name": "a_child_deleted_before_the_source_ref_cannot_pin_the_source",
         "file": "src/dst/tests/topology_lifecycle.rs",
-        "line": 15707
+        "line": 514
       },
       {
         "name": "a_crashed_creators_late_reference_is_repaired_by_delete_retry",
         "file": "src/dst/tests/fork_cleanup.rs",
-        "line": 16045
+        "line": 21
       }
     ],
     "mapped": true,
@@ -1109,7 +1126,7 @@
       {
         "name": "a_half_deleted_fork_finishes_its_cleanup",
         "file": "src/dst/tests/fork_lifecycle.rs",
-        "line": 11449
+        "line": 74
       }
     ],
     "mapped": true,
@@ -1123,7 +1140,7 @@
       {
         "name": "a_crashed_fork_cascade_can_be_resumed",
         "file": "src/dst/tests/fork_lifecycle.rs",
-        "line": 11797
+        "line": 289
       }
     ],
     "mapped": true,
@@ -1137,7 +1154,7 @@
       {
         "name": "fork_creation_and_source_deletion_serialize",
         "file": "src/dst/tests/fork_lifecycle.rs",
-        "line": 12341
+        "line": 400
       }
     ],
     "mapped": true,
@@ -1160,7 +1177,7 @@
       {
         "name": "fork_lifecycle_is_idempotent_and_epoch_checked",
         "file": "src/dst/tests/fork_lifecycle.rs",
-        "line": 22687
+        "line": 647
       }
     ],
     "mapped": true,
@@ -1190,22 +1207,22 @@
       {
         "name": "initial_routes_everything",
         "file": "src/segmap.rs",
-        "line": 315
+        "line": 442
       },
       {
         "name": "split_then_route_then_successors",
         "file": "src/segmap.rs",
-        "line": 324
+        "line": 451
       },
       {
         "name": "recursive_splits_keep_partition",
         "file": "src/segmap.rs",
-        "line": 344
+        "line": 471
       },
       {
         "name": "merge_adjacent_only",
         "file": "src/segmap.rs",
-        "line": 359
+        "line": 486
       }
     ],
     "mapped": true,
@@ -1220,12 +1237,12 @@
       {
         "name": "nondeployment_pending_split_resumes",
         "file": "src/dst/tests/topology_lifecycle.rs",
-        "line": 20925
+        "line": 606
       },
       {
         "name": "livefeed_pending_transition_connect_drives_resume",
         "file": "src/dst/tests/livefeed_ownership.rs",
-        "line": 34318
+        "line": 265
       }
     ],
     "mapped": true,
@@ -1240,32 +1257,32 @@
       {
         "name": "seal_gap_get_never_reports_closure",
         "file": "src/dst/tests/reads_raw.rs",
-        "line": 6210
+        "line": 16
       },
       {
         "name": "seal_gap_head_no_closure",
         "file": "src/dst/tests/reads_raw.rs",
-        "line": 6258
+        "line": 64
       },
       {
         "name": "seal_gap_long_poll_wakes_without_closure",
         "file": "src/dst/tests/reads_raw.rs",
-        "line": 6278
+        "line": 84
       },
       {
         "name": "seal_gap_cold_read_mid_gap",
         "file": "src/dst/tests/reads_raw.rs",
-        "line": 6351
+        "line": 157
       },
       {
         "name": "seal_gap_cancel_then_retry",
         "file": "src/dst/tests/reads_raw.rs",
-        "line": 6371
+        "line": 177
       },
       {
         "name": "seal_gap_stale_descriptor_redispatches",
         "file": "src/dst/tests/reads_raw.rs",
-        "line": 6407
+        "line": 213
       }
     ],
     "mapped": true,
@@ -1280,7 +1297,7 @@
       {
         "name": "livefeed_pending_transition_connect_drives_resume",
         "file": "src/dst/tests/livefeed_ownership.rs",
-        "line": 34318
+        "line": 265
       }
     ],
     "mapped": true,
@@ -1302,7 +1319,7 @@
       {
         "name": "split_children_land_on_distinct_engines",
         "file": "src/dst/tests/topology_scaling.rs",
-        "line": 7064
+        "line": 131
       }
     ],
     "mapped": true,
@@ -1316,7 +1333,7 @@
       {
         "name": "post_split_throughput_scales",
         "file": "src/dst/tests/topology_scaling.rs",
-        "line": 7179
+        "line": 246
       }
     ],
     "mapped": true,
@@ -1339,7 +1356,7 @@
       {
         "name": "stream_seq_resolves_through_predecessors",
         "file": "src/dst/tests/producer_protocol.rs",
-        "line": 6727
+        "line": 219
       }
     ],
     "mapped": true,
@@ -1353,17 +1370,17 @@
       {
         "name": "producer_retries_across_a_split_commit_once",
         "file": "src/dst/tests/producer_protocol.rs",
-        "line": 5431
+        "line": 98
       },
       {
         "name": "product_producer_hash_survives_split",
         "file": "src/dst/tests/producer_protocol.rs",
-        "line": 9156
+        "line": 854
       },
       {
         "name": "producer_lanes_scoped_per_routing_key",
         "file": "src/dst/tests/producer_protocol.rs",
-        "line": 6824
+        "line": 319
       }
     ],
     "mapped": true,
@@ -1377,12 +1394,12 @@
       {
         "name": "merge_rejoins_cold_children_with_exact_lineage",
         "file": "src/dst/tests/topology_scaling.rs",
-        "line": 7339
+        "line": 398
       },
       {
         "name": "livefeed_merge_continuation_in_place",
         "file": "src/dst/tests/livefeed_history.rs",
-        "line": 36155
+        "line": 556
       }
     ],
     "mapped": true,
@@ -1396,12 +1413,12 @@
       {
         "name": "stale_scaler_and_ttl_decisions_decline_after_recreate",
         "file": "src/dst/tests/topology_lifecycle.rs",
-        "line": 13703
+        "line": 12
       },
       {
         "name": "scaler_heat_and_terminal_proof_are_incarnation_scoped",
         "file": "src/dst/tests/topology_lifecycle.rs",
-        "line": 14321
+        "line": 109
       }
     ],
     "mapped": true,
@@ -1437,12 +1454,12 @@
       {
         "name": "a_fenced_owner_acknowledges_nothing",
         "file": "src/dst/tests/persistence_faults.rs",
-        "line": 785
+        "line": 105
       },
       {
         "name": "producer_state_survives_a_handoff_and_suppresses_duplicates",
         "file": "src/dst/tests/producer_handoff.rs",
-        "line": 363
+        "line": 29
       }
     ],
     "mapped": true,
@@ -1465,27 +1482,27 @@
       {
         "name": "sse_follows_lineage_across_split",
         "file": "src/dst/tests/sse_delivery.rs",
-        "line": 7484
+        "line": 37
       },
       {
         "name": "livefeed_split_parked_subscriber_continues_in_place",
         "file": "src/dst/tests/livefeed_tail.rs",
-        "line": 33321
+        "line": 131
       },
       {
         "name": "livefeed_keyed_lane_survives_split",
         "file": "src/dst/tests/livefeed_swap.rs",
-        "line": 35012
+        "line": 65
       },
       {
         "name": "livefeed_split_during_initial_catchup_delivers_everything",
         "file": "src/dst/tests/livefeed_swap.rs",
-        "line": 34963
+        "line": 16
       },
       {
         "name": "livefeed_split_shared_subscribers_swap_once_deliver_twice",
         "file": "src/dst/tests/livefeed_swap.rs",
-        "line": 35351
+        "line": 388
       }
     ],
     "mapped": true,
@@ -1499,12 +1516,12 @@
       {
         "name": "product_scan_is_snapshot_exact",
         "file": "src/dst/tests/reads_product.rs",
-        "line": 8627
+        "line": 383
       },
       {
         "name": "product_scan_traverses_split_lineage",
         "file": "src/dst/tests/reads_product.rs",
-        "line": 8823
+        "line": 579
       }
     ],
     "mapped": true,
@@ -1525,7 +1542,7 @@
       {
         "name": "acked_records_survive_absorption_into_history",
         "file": "src/dst/tests/history_absorption.rs",
-        "line": 985
+        "line": 19
       }
     ],
     "mapped": true,
@@ -1540,7 +1557,7 @@
       {
         "name": "v2_absorbs_without_customer_keys",
         "file": "src/dst/tests/history_absorption.rs",
-        "line": 1304
+        "line": 291
       }
     ],
     "mapped": true,
@@ -1554,7 +1571,7 @@
       {
         "name": "v2_history_survives_engine_handoff",
         "file": "src/dst/tests/history_absorption.rs",
-        "line": 1402
+        "line": 389
       }
     ],
     "mapped": true,
@@ -1568,7 +1585,7 @@
       {
         "name": "v2_gather_packs_to_the_aggregate_budget",
         "file": "src/dst/tests/history_gather.rs",
-        "line": 3656
+        "line": 426
       }
     ],
     "mapped": true,
@@ -1582,12 +1599,12 @@
       {
         "name": "an_oversized_chunk_gathers_alone",
         "file": "src/dst/tests/history_gather.rs",
-        "line": 3734
+        "line": 504
       },
       {
         "name": "worst_frame_floor_serializes_oversized_gathers_without_starvation",
         "file": "src/history.rs",
-        "line": 2432
+        "line": 2397
       }
     ],
     "mapped": true,
@@ -1601,7 +1618,7 @@
       {
         "name": "budget_deferred_streams_absorb_on_the_next_tick",
         "file": "src/dst/tests/history_recovery.rs",
-        "line": 4307
+        "line": 264
       }
     ],
     "mapped": true,
@@ -1615,12 +1632,12 @@
       {
         "name": "untouched_streams_absorb_after_restart",
         "file": "src/dst/tests/history_gather.rs",
-        "line": 3870
+        "line": 640
       },
       {
         "name": "absorber_sweep_recovers_streams_whose_signals_were_lost",
         "file": "src/dst/tests/history_absorption.rs",
-        "line": 1080
+        "line": 68
       }
     ],
     "mapped": true,
@@ -1634,7 +1651,7 @@
       {
         "name": "a_large_record_absorbs_after_restart_under_default_policy",
         "file": "src/dst/tests/history_recovery.rs",
-        "line": 4393
+        "line": 350
       }
     ],
     "mapped": true,
@@ -1648,7 +1665,7 @@
       {
         "name": "dirty_scan_retries_until_it_succeeds",
         "file": "src/dst/tests/history_recovery.rs",
-        "line": 4493
+        "line": 450
       }
     ],
     "mapped": true,
@@ -1662,12 +1679,12 @@
       {
         "name": "sparse_records_rediscovered_after_restart_are_absorbed",
         "file": "src/dst/tests/history_recovery.rs",
-        "line": 4606
+        "line": 563
       },
       {
         "name": "tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch",
         "file": "src/dst/tests/history_absorption.rs",
-        "line": 1464
+        "line": 451
       }
     ],
     "mapped": true,
@@ -1682,7 +1699,7 @@
       {
         "name": "pending_summary_clears_on_shard_close",
         "file": "src/dst/tests/history_recovery.rs",
-        "line": 4714
+        "line": 671
       }
     ],
     "mapped": true,
@@ -1696,7 +1713,7 @@
       {
         "name": "a_second_absorption_wave_trims_under_a_global_budget",
         "file": "src/dst/tests/history_recovery.rs",
-        "line": 4126
+        "line": 83
       }
     ],
     "mapped": true,
@@ -1710,7 +1727,7 @@
       {
         "name": "a_duplicate_absorbed_op_does_not_advance_the_trim",
         "file": "src/dst/tests/reads_ring.rs",
-        "line": 2306
+        "line": 275
       }
     ],
     "mapped": true,
@@ -1724,17 +1741,17 @@
       {
         "name": "a_fenced_owners_absorber_exits",
         "file": "src/dst/tests/runtime_isolation.rs",
-        "line": 1595
+        "line": 22
       },
       {
         "name": "absorber_exits_when_shard_engine_is_fenced",
         "file": "src/history.rs",
-        "line": 2188
+        "line": 2152
       },
       {
         "name": "r08_fence_disposition_uses_error_kind_through_context",
         "file": "src/history.rs",
-        "line": 2174
+        "line": 2133
       }
     ],
     "mapped": true,
@@ -1749,7 +1766,7 @@
       {
         "name": "history2_lives_under_the_shard_db_path",
         "file": "src/sharddir.rs",
-        "line": 577
+        "line": 854
       }
     ],
     "mapped": true,
@@ -1772,7 +1789,7 @@
       {
         "name": "sparse_key_reads_page_with_bounded_spans",
         "file": "src/dst/tests/reads_history.rs",
-        "line": 4982
+        "line": 139
       },
       {
         "name": "fragmented_key_stays_exact_and_bounded",
@@ -1811,7 +1828,7 @@
       {
         "name": "corrupt_postings_fall_back_to_the_envelope",
         "file": "src/dst/tests/reads_history.rs",
-        "line": 5093
+        "line": 249
       }
     ],
     "mapped": true,
@@ -1825,7 +1842,7 @@
       {
         "name": "oversized_keyed_record_pages_through",
         "file": "src/dst/tests/reads_raw.rs",
-        "line": 6552
+        "line": 361
       }
     ],
     "mapped": true,
@@ -1839,7 +1856,7 @@
       {
         "name": "long_keyed_run_pages_with_progress",
         "file": "src/dst/tests/reads_raw.rs",
-        "line": 6633
+        "line": 442
       }
     ],
     "mapped": true,
@@ -1893,7 +1910,7 @@
       {
         "name": "million_key_shape_holds_process_budget",
         "file": "src/postings_cache.rs",
-        "line": 1033
+        "line": 1020
       }
     ],
     "mapped": true,
@@ -1931,7 +1948,7 @@
       {
         "name": "product_consumer_per_key_fifo",
         "file": "src/dst/tests/consumer_product.rs",
-        "line": 9312
+        "line": 119
       }
     ],
     "mapped": true,
@@ -1945,7 +1962,7 @@
       {
         "name": "product_consumer_expiry_and_stale_fencing",
         "file": "src/dst/tests/consumer_product.rs",
-        "line": 9409
+        "line": 216
       }
     ],
     "mapped": true,
@@ -1959,7 +1976,7 @@
       {
         "name": "a_failed_queue_write_leaves_no_phantom_leases",
         "file": "src/dst/tests/consumer_atomicity.rs",
-        "line": 15938
+        "line": 12
       }
     ],
     "mapped": true,
@@ -1974,7 +1991,7 @@
       {
         "name": "a_failed_settle_leaves_no_phantom_acks",
         "file": "src/dst/tests/consumer_atomicity.rs",
-        "line": 16160
+        "line": 112
       }
     ],
     "mapped": true,
@@ -1989,7 +2006,7 @@
       {
         "name": "product_consumer_expiry_and_stale_fencing",
         "file": "src/dst/tests/consumer_product.rs",
-        "line": 9409
+        "line": 216
       }
     ],
     "mapped": true,
@@ -2012,20 +2029,32 @@
       {
         "name": "product_consumer_dlq_flow",
         "file": "src/dst/tests/consumer_product.rs",
-        "line": 9503
+        "line": 310
+      },
+      {
+        "file": "src/dst/tests/consumer_dlq.rs",
+        "name": "r07_failed_dlq_commit_retains_source_lease_and_exact_retry_settles_once",
+        "line": 7
       }
     ],
     "mapped": true,
     "coverage": "partial",
-    "note": "DLQ append durable before source settle is asserted; crash-around-poison-settle legs are not driven."
+    "note": "Controlled target group-write failure fires; source lease/cursor and target durable count remain unchanged. Exact retry creates one durable DLQ record then settles source once; another retry is stale and creates no duplicate. Crash after DLQ commit before source settlement is still a separate pending matrix leg."
   },
   {
     "id": "QUE-008",
     "title": "DLQ target recreation",
     "status": "L1-now",
-    "tests": [],
-    "mapped": false,
-    "note": "GAP: no test for delete/recreate of the DLQ target with pinned epoch. Adjacent: dead_letter_link_requires_a_shared_key:10561 (config-time gate only)."
+    "tests": [
+      {
+        "file": "src/dst/tests/append_application.rs",
+        "name": "r02_append_target_fence_rejects_same_name_recreation",
+        "line": 112
+      }
+    ],
+    "mapped": true,
+    "note": "The typed append boundary now directly proves expected_epoch rejects a same-name replacement before write, including the boundary used by DLQ. A configured consumer/DLQ operation parked across target delete/recreate is still pending; this adjacent test is not claimed as that end-to-end race.",
+    "coverage": "partial"
   },
   {
     "id": "QUE-009",
@@ -2035,7 +2064,7 @@
       {
         "name": "product_consumer_drains_lineage_across_split",
         "file": "src/dst/tests/consumer_product.rs",
-        "line": 9604
+        "line": 411
       }
     ],
     "mapped": true,
@@ -2057,42 +2086,42 @@
       {
         "name": "a_stale_delete_retry_cannot_delete_the_replacement_consumer",
         "file": "src/dst/tests/consumer_generations.rs",
-        "line": 23749
+        "line": 191
       },
       {
         "name": "a_parked_pull_cannot_lease_after_its_generation_was_deleted",
         "file": "src/dst/tests/consumer_delete.rs",
-        "line": 17048
+        "line": 226
       },
       {
         "name": "consumer_fence_survives_ownership_move",
         "file": "src/dst/tests/consumer_saga.rs",
-        "line": 24621
+        "line": 392
       },
       {
         "name": "queue_config_delete_is_group_local",
         "file": "src/dst/tests/consumer_atomicity.rs",
-        "line": 16271
+        "line": 225
       },
       {
         "name": "receive_then_delete_in_one_group_leaves_no_stale_lease",
         "file": "src/dst/tests/consumer_atomicity.rs",
-        "line": 16424
+        "line": 380
       },
       {
         "name": "settle_then_delete_in_one_group_leaves_no_stale_rows",
         "file": "src/dst/tests/consumer_atomicity.rs",
-        "line": 16543
+        "line": 501
       },
       {
         "name": "a_receive_after_delete_in_the_same_group_is_refused",
         "file": "src/dst/tests/consumer_atomicity.rs",
-        "line": 16681
+        "line": 641
       },
       {
         "name": "a_split_consumers_deletion_fails_one_segment_then_retries_clean",
         "file": "src/dst/tests/consumer_delete.rs",
-        "line": 16839
+        "line": 14
       }
     ],
     "mapped": true,
@@ -2114,12 +2143,12 @@
       {
         "name": "touch_close_shard_matches_route_hash_not_storage_hash",
         "file": "src/dst/tests/watch_observation.rs",
-        "line": 9736
+        "line": 21
       },
       {
         "name": "product_watch_wakes_on_matching_append",
         "file": "src/dst/tests/watch_observation.rs",
-        "line": 9908
+        "line": 192
       }
     ],
     "mapped": true,
@@ -2134,7 +2163,7 @@
       {
         "name": "touch_close_shard_matches_route_hash_not_storage_hash",
         "file": "src/dst/tests/watch_observation.rs",
-        "line": 9736
+        "line": 21
       }
     ],
     "mapped": true,
@@ -2149,7 +2178,7 @@
       {
         "name": "watch_urls_verify_on_a_process_that_never_saw_the_key",
         "file": "src/dst/tests/watch_observation.rs",
-        "line": 10487
+        "line": 404
       }
     ],
     "mapped": true,
@@ -2163,7 +2192,7 @@
       {
         "name": "only_the_exact_signed_watch_route_skips_the_token",
         "file": "src/dst/tests/security_routes.rs",
-        "line": 10774
+        "line": 158
       }
     ],
     "mapped": true,
@@ -2193,12 +2222,12 @@
       {
         "name": "product_requires_the_account_token",
         "file": "src/dst/tests/security_routes.rs",
-        "line": 22329
+        "line": 446
       },
       {
         "name": "only_the_exact_signed_watch_route_skips_the_token",
         "file": "src/dst/tests/security_routes.rs",
-        "line": 10774
+        "line": 158
       },
       {
         "name": "negative_matrix_tokens",
@@ -2218,9 +2247,16 @@
     "id": "SEC-002",
     "title": "Auth before body buffering",
     "status": "Existing/static + L3",
-    "tests": [],
-    "mapped": false,
-    "note": "GAP in test code: no test sends an unauthenticated oversize (32 MiB) request and asserts rejection before body read. Nearest: inflight_admission_answers_only_after_authentication:36349 (auth precedes admission/tarpit, round-13) and the 401 legs of 22329."
+    "tests": [
+      {
+        "file": "src/dst/review_security.rs",
+        "name": "r15_bodyless_and_unauthorized_requests_never_poll_the_body",
+        "line": 51
+      }
+    ],
+    "mapped": true,
+    "note": "Actual Body::poll_frame sentinel across raw and product paths: unauthorized mutation requests, valid bodyless reads, signed watch access and expired watch tokens must not poll. Poll count stays zero; response status is checked. This is the body-poll mechanism, not a payload-allocation proxy.",
+    "coverage": "full"
   },
   {
     "id": "SEC-003",
@@ -2230,7 +2266,7 @@
       {
         "name": "product_responses_carry_cors_not_just_preflights",
         "file": "src/dst/tests/security_routes.rs",
-        "line": 10888
+        "line": 272
       }
     ],
     "mapped": true,
@@ -2244,17 +2280,17 @@
       {
         "name": "an_initialization_cannot_be_resumed_with_another_key",
         "file": "src/dst/tests/lifecycle_creation.rs",
-        "line": 11013
+        "line": 74
       },
       {
         "name": "dead_letter_link_requires_a_shared_key",
         "file": "src/dst/tests/consumer_product.rs",
-        "line": 10561
+        "line": 537
       },
       {
         "name": "seal_requests_are_identified_and_validated_exactly",
         "file": "src/dst/tests/seal_coordination.rs",
-        "line": 11899
+        "line": 477
       }
     ],
     "mapped": true,
@@ -2269,12 +2305,12 @@
       {
         "name": "raw_route_is_the_default_key_view_across_splits",
         "file": "src/dst/tests/reads_raw.rs",
-        "line": 22834
+        "line": 538
       },
       {
         "name": "raw_forks_show_only_the_default_key",
         "file": "src/dst/tests/fork_lifecycle.rs",
-        "line": 11388
+        "line": 13
       }
     ],
     "mapped": true,
@@ -2308,7 +2344,7 @@
       {
         "name": "product_read_pages_and_binds_cursors",
         "file": "src/dst/tests/reads_product.rs",
-        "line": 8149
+        "line": 12
       }
     ],
     "mapped": true,
@@ -2322,7 +2358,7 @@
       {
         "name": "catalog_paging_survives_dense_dead_entries",
         "file": "src/dst/tests/lifecycle_creation.rs",
-        "line": 11097
+        "line": 158
       }
     ],
     "mapped": true,
@@ -2345,12 +2381,12 @@
       {
         "name": "product_clean_switch_rejections",
         "file": "src/dst/tests/product_lifecycle.rs",
-        "line": 7809
+        "line": 88
       },
       {
         "name": "profiles_are_removed_from_every_surface",
         "file": "src/dst/tests/product_lifecycle.rs",
-        "line": 10117
+        "line": 219
       }
     ],
     "mapped": true,
@@ -2364,17 +2400,17 @@
       {
         "name": "dual_surface_equivalence_corpus",
         "file": "src/dst/tests/product_lifecycle.rs",
-        "line": 22042
+        "line": 535
       },
       {
         "name": "typed_creation_dual_contract",
         "file": "src/dst/tests/product_lifecycle.rs",
-        "line": 10184
+        "line": 286
       },
       {
         "name": "raw_route_is_the_default_key_view_across_splits",
         "file": "src/dst/tests/reads_raw.rs",
-        "line": 22834
+        "line": 538
       }
     ],
     "mapped": true,
@@ -2388,13 +2424,11 @@
     "tests": [
       {
         "name": "conformance suite (node --test)",
-        "file": "conformance/conformance.test.mjs",
-        "line": 1
+        "file": "conformance/conformance.test.mjs"
       },
       {
         "name": "conformance checker",
-        "file": "conformance/check.mjs",
-        "line": 1
+        "file": "conformance/check.mjs"
       }
     ],
     "mapped": true,
@@ -2408,8 +2442,7 @@
     "tests": [
       {
         "name": "pipelined long-poll chaser (speculative response discard)",
-        "file": "bench/awsbench/src/main.rs",
-        "line": 835
+        "file": "bench/awsbench/src/main.rs"
       }
     ],
     "mapped": true,
@@ -2423,21 +2456,34 @@
     "tests": [
       {
         "name": "abort leg of smoke.mjs",
-        "file": "sdk/smoke.mjs",
-        "line": 147
+        "file": "sdk/smoke.mjs"
+      },
+      {
+        "file": "sdk/scripts/retry-classification.test.mjs",
+        "name": "cancellation interrupts status backoff without replay"
+      },
+      {
+        "file": "sdk/scripts/consumer-cleanup.test.mjs",
+        "name": "iterator return cancels an in-flight parked pull"
       }
     ],
     "mapped": true,
-    "coverage": "partial",
-    "note": "Abort-during-fetch leg exists ('abort ends the long poll promptly', smoke.mjs:147-156); abort-during-Retry-After-sleep leg not found."
+    "coverage": "full",
+    "note": "Existing real-server smoke aborts fetch. Controlled Node runtime tests additionally park a pull and abort a five-second Retry-After wait, asserting prompt completion and no replay. These mocked transport legs do not substitute for the pending Bun/Deno/live-server runtime matrix."
   },
   {
     "id": "SDK-003",
     "title": "Producer operation chain bounded",
     "status": "L1/SDK",
-    "tests": [],
-    "mapped": false,
-    "note": "GAP: no eviction/boundedness test for the SDK producer operation chain (sdk/src/index.ts has no test harness; package.json has no test script)."
+    "tests": [
+      {
+        "file": "sdk/scripts/producer-ordering.test.mjs",
+        "name": "one million sparse producer scopes release every fulfilled and rejected chain"
+      }
+    ],
+    "mapped": true,
+    "note": "One million unique routing keys run through the actual producer chain primitive in held cohorts of 128. Entered operations and every injected rejection are counted; map cardinality equals in-flight cohort and returns to zero after every cohort. Peak is exactly 128; no swallowed caller failure. Node runtime local mechanism; retained-state persistence has a separate owner.",
+    "coverage": "full"
   },
   {
     "id": "SDK-004",
@@ -2447,16 +2493,21 @@
       {
         "name": "product_seal_final_append_and_catalog",
         "file": "src/dst/tests/product_lifecycle.rs",
-        "line": 10347
+        "line": 449
       },
       {
         "name": "product_seal_final_needs_no_caller_producer",
         "file": "src/dst/tests/seal_coordination.rs",
-        "line": 10438
+        "line": 18
+      },
+      {
+        "file": "sdk/scripts/producer-ordering.test.mjs",
+        "name": "append, epoch bump, batch append and final seal share one scope order"
       }
     ],
     "mapped": true,
-    "coverage": "full"
+    "coverage": "full",
+    "note": "Controlled first-append hold proves append, explicit epoch bump, batch and final seal use one producer queue; exact wire epoch/sequence pairs and final persisted state are asserted. Existing seal smoke remains referenced."
   },
   {
     "id": "FLT-001",
@@ -2466,12 +2517,12 @@
       {
         "name": "open_gate_survives_impatient_clients_without_a_storm",
         "file": "src/dst/tests/runtime_open_gate.rs",
-        "line": 2683
+        "line": 197
       },
       {
         "name": "reopen_storm_reproduces_the_eu_central_wedge",
         "file": "src/dst/tests/runtime_open_gate.rs",
-        "line": 2619
+        "line": 133
       }
     ],
     "mapped": true,
@@ -2486,7 +2537,7 @@
       {
         "name": "a_hung_open_is_deadlined_and_its_late_engine_reaped",
         "file": "src/dst/tests/runtime_open_gate.rs",
-        "line": 3055
+        "line": 580
       }
     ],
     "mapped": true,
@@ -2500,7 +2551,7 @@
       {
         "name": "open_gate_escalates_holdoff_for_engines_that_die_young",
         "file": "src/dst/tests/runtime_open_gate.rs",
-        "line": 2989
+        "line": 510
       }
     ],
     "mapped": true,
@@ -2537,12 +2588,12 @@
       {
         "name": "closing_an_engine_answers_queued_appends_and_ends_every_task",
         "file": "src/dst/tests/runtime_isolation.rs",
-        "line": 1667
+        "line": 94
       },
       {
         "name": "a_fenced_owners_absorber_exits",
         "file": "src/dst/tests/runtime_isolation.rs",
-        "line": 1595
+        "line": 22
       }
     ],
     "mapped": true,
@@ -2557,12 +2608,12 @@
       {
         "name": "pending_summary_clears_on_shard_close",
         "file": "src/dst/tests/history_recovery.rs",
-        "line": 4714
+        "line": 671
       },
       {
         "name": "ownership_handoff_moves_backlog_without_aba",
         "file": "src/dst/tests/billing_maintenance.rs",
-        "line": 26399
+        "line": 737
       }
     ],
     "mapped": true,
@@ -2626,7 +2677,7 @@
       {
         "name": "closing_an_engine_answers_queued_appends_and_ends_every_task",
         "file": "src/dst/tests/runtime_isolation.rs",
-        "line": 1667
+        "line": 94
       }
     ],
     "mapped": true,
@@ -2640,17 +2691,17 @@
       {
         "name": "a_fence_survives_handle_eviction",
         "file": "src/dst/tests/durability_fences.rs",
-        "line": 14085
+        "line": 330
       },
       {
         "name": "idle_stream_handles_evict_and_reload",
         "file": "src/dst/tests/history_recovery.rs",
-        "line": 4014
+        "line": 13
       },
       {
         "name": "consumer_fence_survives_ownership_move",
         "file": "src/dst/tests/consumer_saga.rs",
-        "line": 24621
+        "line": 392
       }
     ],
     "mapped": true,
@@ -2665,7 +2716,7 @@
       {
         "name": "past_the_cap_limits_still_apply_and_counters_aggregate",
         "file": "src/usage.rs",
-        "line": 728
+        "line": 741
       },
       {
         "name": "overflow_counts_and_reports",
@@ -2685,17 +2736,17 @@
       {
         "name": "spool_fault_requeues_the_whole_round",
         "file": "src/billing.rs",
-        "line": 627
+        "line": 630
       },
       {
         "name": "telemetry_crash_points_and_cost_gates",
         "file": "src/dst/tests/billing_usage.rs",
-        "line": 25494
+        "line": 763
       },
       {
         "name": "usage_pipeline_end_to_end_exactly_once",
         "file": "src/dst/tests/billing_usage.rs",
-        "line": 25167
+        "line": 435
       }
     ],
     "mapped": true,
@@ -2710,7 +2761,7 @@
       {
         "name": "counter_generations_are_unique_per_incarnation",
         "file": "src/usage.rs",
-        "line": 708
+        "line": 721
       }
     ],
     "mapped": true,
@@ -2725,27 +2776,27 @@
       {
         "name": "engages_on_any_bound_and_releases_only_when_all_are_clear",
         "file": "src/backpressure.rs",
-        "line": 380
+        "line": 369
       },
       {
         "name": "shard_pressure_cannot_mask_a_global_violation",
         "file": "src/backpressure.rs",
-        "line": 478
+        "line": 467
       },
       {
         "name": "overloaded_engine_sheds_while_sibling_admits",
         "file": "src/dst/tests/admission_maintenance.rs",
-        "line": 26457
+        "line": 39
       },
       {
         "name": "raw_hierarchical_append_sheds_typed_503_under_backlog",
         "file": "src/dst/tests/admission_maintenance.rs",
-        "line": 26610
+        "line": 192
       },
       {
         "name": "project_memory_pressure_throttles_new_appends_only",
         "file": "src/dst/tests/admission_memory.rs",
-        "line": 36564
+        "line": 382
       }
     ],
     "mapped": true,
@@ -2781,7 +2832,7 @@
       {
         "name": "idle_engine_store_traffic_is_bounded_by_the_poll_cadence",
         "file": "src/dst/tests/runtime_open_gate.rs",
-        "line": 2793
+        "line": 310
       }
     ],
     "mapped": true,
@@ -2804,12 +2855,12 @@
       {
         "name": "repeated_keyed_reads_hit_the_postings_cache",
         "file": "src/dst/tests/reads_history.rs",
-        "line": 5216
+        "line": 371
       },
       {
         "name": "sparse_key_reads_page_with_bounded_spans",
         "file": "src/dst/tests/reads_history.rs",
-        "line": 4982
+        "line": 139
       }
     ],
     "mapped": true,
@@ -2824,7 +2875,7 @@
       {
         "name": "livefeed_two_subscribers_share_one_feed_and_one_source_read",
         "file": "src/dst/tests/livefeed_basics.rs",
-        "line": 32317
+        "line": 93
       },
       {
         "name": "last_subscriber_evicts_and_reconnect_does_not_grow",

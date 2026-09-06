@@ -568,7 +568,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "2e7026a22d02078d1befd921c069b3ed31f4d5ee178bc535a11ae6f51aae825e",
+    "function_sha256": "1a4ca92fc1de23b0bb1f88a3270f70b582f7a212e5397e72d921b66561f2e262",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/seal_coordination.rs",
@@ -1056,6 +1056,17 @@
     ]
   },
   {
+    "name": "account_watch_wait_charges_one_request_and_releases_its_subscription",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b30d91d678065e09608495b10e6b4d6f82ce88ebd2a76c93a4521d1b4f77348b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/watch_admission.rs",
+    "scenarios": []
+  },
+  {
     "name": "acked_records_survive_absorption_into_history",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -1254,6 +1265,17 @@
     "scenarios": [
       "HIS-006"
     ]
+  },
+  {
+    "name": "cancelled_final_preserves_claim_and_only_definitive_retry_releases_it",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "43551d1aa0f885aab584dc303b8d4d3bd76039c51b016c8e56dd9c898e74b1e1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/seal_cancellation.rs",
+    "scenarios": []
   },
   {
     "name": "catalog_failure_fails_the_stream_seed_closed",
@@ -3083,7 +3105,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "7039cab7d15e6978a216e7ae40dd905c7686b4dabbb9a84d1220d1c86c884900",
+    "function_sha256": "0c058fc05bd8828af3126d85eb39e8c87c1f13776e4053429f21a3f08015af77",
     "mechanisms": [],
     "configuration": [
       "let pbefore = crate::failpoints::parked(crate::failpoints::Fp::ScalerBeforePublish, \"sel019\");",
@@ -3549,7 +3571,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "f096cf9a0abeb9619c888212bcea6b633e56f14866e0c6f53a69cf39bfb097d8",
+    "function_sha256": "a9aab49288693fb030c026c2d73a4242bc9789f88190de0a60a4e1ee32ccd955",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/seal_coordination.rs",
@@ -3989,6 +4011,96 @@
     "scenarios": []
   },
   {
+    "name": "r02_append_target_fence_rejects_same_name_recreation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "6b8f061e5e4b702166b2858b98b634608315127debd458eb4f99b1297d90392d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/append_application.rs",
+    "scenarios": [
+      "QUE-008"
+    ]
+  },
+  {
+    "name": "r02_typed_append_preserves_original_duplicate_offsets",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "77f0d634d598175aeb336a29a44bdc86f872efa431908c6cd6b046858d6b0742",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/append_application.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r05_unknown_child_state_preserves_its_source_reference",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "aae95b11b99c67ff746d7bf13e67807d21575153714079554aeb9ae0b42972f2",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::Fp::ForkAfterSourceRef",
+      "crate::failpoints::Fp::CreateBeforeReady",
+      "let before = crate::failpoints::parked(point, name);",
+      "crate::failpoints::park_fork_after_source_ref(name);",
+      "crate::failpoints::park_create_before_ready(name);",
+      "while crate::failpoints::parked(point, name) <= before {",
+      "crate::failpoints::release_fork_after_source_ref(name);",
+      "crate::failpoints::release_create_before_ready(name);"
+    ],
+    "file": "src/dst/tests/fork_lifecycle.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r06_cross_owner_replay_and_scan_share_typed_pages_and_bill_once",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7450fcc71e8ec08d218a3fc162feb4d5a27b9b3cfc7f74da134e2799be0b449d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_application.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r06_empty_filtered_page_has_one_position_across_application_and_protocols",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "8ecb7d8008523658f73c6904977065caafd44889a495582cb214cfbabf2f24f8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_application.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r06_refresh_rejects_same_name_recreation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "c3d2f95699f78a773f7fefd7ab60f4ee98a4e13b401ba00a7c774b6584ff3cc0",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_application.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r07_failed_dlq_commit_retains_source_lease_and_exact_retry_settles_once",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d40400640ec7c4f99a3b52bbe7e82f1c5874f415c8302b799167771b85d778f3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/consumer_dlq.rs",
+    "scenarios": [
+      "QUE-007"
+    ]
+  },
+  {
     "name": "r15_bodyless_and_unauthorized_requests_never_poll_the_body",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
@@ -3997,7 +4109,9 @@
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/review_security.rs",
-    "scenarios": []
+    "scenarios": [
+      "SEC-002"
+    ]
   },
   {
     "name": "r16_unauthorized_watch_shapes_are_independent_of_existence",
@@ -4009,6 +4123,19 @@
     "configuration": [],
     "file": "src/dst/review_security.rs",
     "scenarios": []
+  },
+  {
+    "name": "r24_exact_set_oracle_rejects_count_preserving_loss_duplicate_swap",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "08d934e70bc3894bdad386928a9fa5fb0c077a0670bebcd93f853a17820cc5eb",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/oracle_model.rs",
+    "scenarios": [
+      "DUR-014"
+    ]
   },
   {
     "name": "ranged_get_records_span",
@@ -4560,7 +4687,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "fbbf10c0d44a8c827f88391572616f1a0ef0972c51779624c41d50289b5f089f",
+    "function_sha256": "4bcaa1f63cf541cb054cecef7ddd848fae22b7de740c485d06c41e627dcab310",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/seal_recovery.rs",
@@ -4933,7 +5060,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "072bae60200dfbffb212cd974b95a97891dd4c2d0d1d135cb236482ab501ae3c",
+    "function_sha256": "9a082639f18a6130d4173f2733b39186b747af77671dce5cfc4eef6da4cab1b8",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_revocation.rs",
@@ -5136,7 +5263,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "1da18971fd1e67307e3447364edcae329f78135f79fc27a8dde172c324847350",
+    "function_sha256": "05e7587726a80a3e9e302982ea3ceced47e5c379714baf4d1d1d80ea5abc4403",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/seal_coordination.rs",

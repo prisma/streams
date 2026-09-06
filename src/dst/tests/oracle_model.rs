@@ -112,3 +112,26 @@ fn oracle_catches_a_self_contradictory_ledger() {
     let err = log.audit(&obs(&[("k", &[(1, 0)])])).unwrap_err();
     assert!(err.starts_with("harness bug"), "got: {err}");
 }
+
+/// DUR-014 negative control: counts stay equal while the acknowledged set is wrong.
+#[test]
+fn r24_exact_set_oracle_rejects_count_preserving_loss_duplicate_swap() {
+    let mut log = OpLog::default();
+    let acknowledged = vec![(10, 0), (11, 0), (12, 0)];
+    log.acked.insert("k".into(), acknowledged.clone());
+    let swapped = vec![(10, 0), (10, 0), (12, 0)];
+    assert_eq!(
+        acknowledged.len(),
+        swapped.len(),
+        "a count-only checker incorrectly accepts this observation"
+    );
+    let error = log.audit(&obs(&[("k", &swapped)])).unwrap_err();
+    assert!(
+        error.starts_with("I1") || error.starts_with("I3"),
+        "exact-set corruption must be identified: {error}"
+    );
+    assert!(
+        log.audit(&obs(&[("k", &acknowledged)])).is_ok(),
+        "faithful same-size observations must still pass"
+    );
+}

@@ -87,3 +87,37 @@ test("automatic reclaim completes within the queue before a later epoch bump", a
   assert.deepEqual(headers.map(h => [h["producer-epoch"], h["producer-seq"]]), [["0", "0"], ["5", "0"]]);
   assert.deepEqual(state, { epoch: 6, nextSeq: 0 });
 });
+
+test("one million sparse producer scopes release every fulfilled and rejected chain", async () => {
+  const f = fixture(async () => {});
+  const scopes = 1_000_000, concurrency = 128;
+  const failure = new Error("controlled queue operation failure");
+  let entered = 0, rejected = 0, peak = 0;
+  for (let first = 0; first < scopes; first += concurrency) {
+    const release = deferred();
+    const pending = [];
+    for (let key = first; key < Math.min(first + concurrency, scopes); key++) {
+      // Exercise the actual queue primitive used by append, bump and seal.
+      // The held cohort proves in-flight cardinality before terminal cleanup.
+      pending.push(f.p._chain(`sparse-${key}`, async () => {
+        entered++;
+        await release.promise;
+        if (key % 17 === 0) throw failure;
+      }));
+    }
+    peak = Math.max(peak, f.p.chains.size);
+    assert.equal(f.p.chains.size, pending.length);
+    release.resolve();
+    const outcomes = await Promise.allSettled(pending);
+    for (const outcome of outcomes) {
+      if (outcome.status === "rejected") {
+        assert.equal(outcome.reason, failure);
+        rejected++;
+      }
+    }
+    assert.equal(f.p.chains.size, 0, "completed routing keys must be evicted");
+  }
+  assert.equal(entered, scopes);
+  assert.equal(rejected, Math.floor((scopes - 1) / 17) + 1);
+  assert.equal(peak, concurrency);
+});

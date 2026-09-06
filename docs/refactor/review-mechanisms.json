@@ -1,0 +1,399 @@
+{
+  "schema": 1,
+  "interpretation": "This is a reviewed source/mechanism inventory. Neither mapped/full nor a valid hash certifies execution. Clean final-HEAD receipts and external acceptance are separate.",
+  "mechanisms": [
+    {
+      "id": "prior-group-remote-frontier",
+      "obligations": [
+        "DUR-005",
+        "SEL-022"
+      ],
+      "owner": "ShardEngine batch durability/publication",
+      "mechanism": "WAL object-store PUT held separately from reply dispatch",
+      "entered_proof": "WAL hold counter, applied closed state, absent Remote tail, subsequent enqueued retry/fence and fence generation 2",
+      "oracle": "No success until actual Remote tail; no reply until dispatch release; all replies closed and reopened tail closed",
+      "configuration": {
+        "seed": 2405,
+        "flush_interval_ms": 5,
+        "worker_threads": 2
+      },
+      "limitations": "In-memory object store behind pinned SlateDB; real Prisma Compute/Tigris run pending.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/shard/durability_frontier_tests.rs",
+          "name": "r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier",
+          "sha256": "d0e4ce7e2deccf92309fd6167eb64595c5d4e4d703fbd74cb26bf8de0af25f30"
+        }
+      ]
+    },
+    {
+      "id": "exact-set-negative-control",
+      "obligations": [
+        "DUR-014"
+      ],
+      "owner": "DST OpLog audit",
+      "mechanism": "Count-preserving lost-record/duplicate swap",
+      "entered_proof": "Acknowledged and observed vector counts equal before audit",
+      "oracle": "Swapped set rejected with loss or duplicate invariant; faithful set accepted",
+      "configuration": {
+        "acknowledged_records": 3,
+        "observed_records": 3
+      },
+      "limitations": "Pure oracle control; no claim that fleet schedules were executed.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/dst/tests/oracle_model.rs",
+          "name": "r24_exact_set_oracle_rejects_count_preserving_loss_duplicate_swap",
+          "sha256": "08d934e70bc3894bdad386928a9fa5fb0c077a0670bebcd93f853a17820cc5eb"
+        }
+      ]
+    },
+    {
+      "id": "frame-invocation-domain",
+      "obligations": [
+        "R01"
+      ],
+      "owner": "crypto FrameCipher",
+      "mechanism": "Actual segment-derived key/frame nonce construction including forced nonce repetition and rollback",
+      "entered_proof": "Same offset and forced identical nonce across segment and replacement payload invocations",
+      "oracle": "No repeated GCM keystream; decrypt authentic frames; exact RFC8452 and frame vectors; legacy/new readback",
+      "configuration": {
+        "frame_versions": [
+          4,
+          5
+        ],
+        "primitive": "AES-256-GCM-SIV"
+      },
+      "limitations": "Independent cryptographic design review and namespace/backend rollout remain pending.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/crypto.rs",
+          "name": "r01_rfc8452_aes256_empty_plaintext_vector",
+          "sha256": "6195fc6bf32cc487241c0da26dfb83e52f369fa13021e3a5151226208a518952"
+        },
+        {
+          "file": "src/crypto.rs",
+          "name": "r01_segments_and_reused_offsets_have_safe_invocation_domains",
+          "sha256": "4effe4c548332b1aa9bfec142378b9d903879c613a3a25394b9e4b4d9a2fcb51"
+        },
+        {
+          "file": "src/crypto.rs",
+          "name": "r01_retained_legacy_frames_and_new_versions_read_together",
+          "sha256": "169214879bba60bfff050bfb67f802454cb0d778d4e6bd1f413c75f93e74c698"
+        },
+        {
+          "file": "src/crypto.rs",
+          "name": "r01_frame_golden_header_and_ciphertext",
+          "sha256": "165487534c5ca524b49594629f085aee7bbe23b7f32c490248cdab6fd797c7bc"
+        }
+      ]
+    },
+    {
+      "id": "durable-accounting-read-failure",
+      "obligations": [
+        "R13"
+      ],
+      "owner": "shard accounting transaction",
+      "mechanism": "Each required durable accounting read fails before transaction commit",
+      "entered_proof": "Injected read failures and concurrently newer dirty version",
+      "oracle": "No partial batch acknowledgment/accounting advance; failed group preserves dirty version and exact retry state",
+      "configuration": {
+        "failure_model": "required accounting reads"
+      },
+      "limitations": "Production billing reconciliation remains pending.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/shard.rs",
+          "name": "r13_failed_accounting_reads_preserve_group_and_newer_dirty_version",
+          "sha256": "df3f9bbc59ebd3ec652cd1e083739cfdc144a674ba3264b5b089d8903a3a2f60"
+        }
+      ]
+    },
+    {
+      "id": "financial-rollup-read-failure",
+      "obligations": [
+        "R14"
+      ],
+      "owner": "rollup checkpoint/finalization",
+      "mechanism": "Required metadata reads fail and persisted rows/keys are corrupt",
+      "entered_proof": "Per-read injection and malformed watermark/close-key fixtures",
+      "oracle": "Exact row/checkpoint bytes remain unchanged; finalization cannot certify incomplete input",
+      "configuration": {
+        "failure_model": "read error and corrupt durable input"
+      },
+      "limitations": "Live ledger/rollup reconciliation across production restarts remains pending.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/rollup.rs",
+          "name": "r14_required_read_failures_leave_every_row_and_checkpoint_unchanged",
+          "sha256": "a8ceb2127c93edf96560752780c15649d5e3c6408b9ebc15b4d06de3d53c21db"
+        },
+        {
+          "file": "src/rollup.rs",
+          "name": "r14_corrupt_watermarks_rows_and_close_keys_block_progress",
+          "sha256": "9cc3ac6546ee1435af5200ee754f9e2b30af8704b79c5e74395ab9c566448b2b"
+        }
+      ]
+    },
+    {
+      "id": "body-poll-admission",
+      "obligations": [
+        "R15",
+        "SEC-002"
+      ],
+      "owner": "public authorization boundary",
+      "mechanism": "Actual HTTP body polling sentinel",
+      "entered_proof": "Raw/product requests exercise valid bodyless and unauthorized mutations, signed and expired capability tokens",
+      "oracle": "Body poll count remains zero at required boundary; exact response classification",
+      "configuration": {
+        "auth_modes": "raw and product/capability"
+      },
+      "limitations": "Configured production authentication deployment leg remains pending.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/dst/review_security.rs",
+          "name": "r15_bodyless_and_unauthorized_requests_never_poll_the_body",
+          "sha256": "00e28c0916562954d9b107952969b64161b0335fe11b1e75e03a1a90a2144e11"
+        }
+      ]
+    },
+    {
+      "id": "critical-runtime-exit",
+      "obligations": [
+        "R17"
+      ],
+      "owner": "TaskRegistry readiness",
+      "mechanism": "Required task returns Done, Failed, or panics after /readyz first succeeds",
+      "entered_proof": "Park/release oneshot; await critical failure registration",
+      "oracle": "Both /readyz and /health return 503 with failed task identity; shutdown controls covered by registry tests",
+      "configuration": {
+        "outcomes": [
+          "Done",
+          "Failed",
+          "panic"
+        ]
+      },
+      "limitations": "Process drain/restart policy in live fleet remains pending.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/dst/review_readiness.rs",
+          "name": "readiness_endpoint_refuses_each_permanent_critical_exit",
+          "sha256": "650887ca19c494c8ed4e394f8f48d3af0b96fb214b4ea16d7fc7d47d8bbc56a2"
+        },
+        {
+          "file": "src/tasks.rs",
+          "name": "critical_exits_failures_and_panics_are_reported",
+          "sha256": "13b4991686073b3e5db3b1e40ef6862bc110617df596f4647eaaedfb1714f90f"
+        }
+      ]
+    },
+    {
+      "id": "sdk-token-generations",
+      "obligations": [
+        "R19"
+      ],
+      "owner": "SDK auth acquisition",
+      "mechanism": "Controlled cached-token expiry concurrency and late old-generation 401",
+      "entered_proof": "All old-token requests entered before refresh release",
+      "oracle": "One provider refresh shared; late failures reuse newer token; rejection delivered to all waiters and subsequent acquisition recovers",
+      "configuration": {
+        "runtime": "Node built package"
+      },
+      "limitations": "Bun/Deno/live auth exchanges require external runtime receipts.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "sdk/scripts/token-refresh.test.mjs",
+          "name": "cached concurrent expiry shares one refresh and late 401s reuse it",
+          "sha256": "016f182f3044bdeab5a9a7f7722b27aea5c8afb4967bd03191712fac58b40ef0"
+        },
+        {
+          "file": "sdk/scripts/token-refresh.test.mjs",
+          "name": "refresh rejection reaches every waiter and subsequent acquisition recovers",
+          "sha256": "016f182f3044bdeab5a9a7f7722b27aea5c8afb4967bd03191712fac58b40ef0"
+        },
+        {
+          "file": "sdk/scripts/token-refresh.test.mjs",
+          "name": "synchronous provider failure is single-flight and recoverable",
+          "sha256": "016f182f3044bdeab5a9a7f7722b27aea5c8afb4967bd03191712fac58b40ef0"
+        }
+      ]
+    },
+    {
+      "id": "sdk-producer-order",
+      "obligations": [
+        "R20",
+        "SDK-003",
+        "SDK-004"
+      ],
+      "owner": "SDK producer scope queue",
+      "mechanism": "Held first append, queued epoch bump/batch/seal and injected fetch/save failures; sparse scope churn",
+      "entered_proof": "First append entered before enqueue; one million unique keys, peak128 held operations",
+      "oracle": "Exact wire sequence/epoch; failures remain caller-visible; every completed/rejected chain evicts",
+      "configuration": {
+        "runtime": "Node built package",
+        "sparse_scopes": 1000000,
+        "cohort": 128
+      },
+      "limitations": "Local queue and mocked fetch proof; multi-runtime real-server ordering remains pending.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "sdk/scripts/producer-ordering.test.mjs",
+          "name": "append, epoch bump, batch append and final seal share one scope order",
+          "sha256": "c306ee3e280af52947252c2a50cac401a827ab5ac8890a43de25078630220f9f"
+        },
+        {
+          "file": "sdk/scripts/producer-ordering.test.mjs",
+          "name": "fetch failure propagates and does not poison subsequent producer operations",
+          "sha256": "c306ee3e280af52947252c2a50cac401a827ab5ac8890a43de25078630220f9f"
+        },
+        {
+          "file": "sdk/scripts/producer-ordering.test.mjs",
+          "name": "state-save failure propagates and a same-payload retry preserves sequence",
+          "sha256": "c306ee3e280af52947252c2a50cac401a827ab5ac8890a43de25078630220f9f"
+        },
+        {
+          "file": "sdk/scripts/producer-ordering.test.mjs",
+          "name": "automatic reclaim completes within the queue before a later epoch bump",
+          "sha256": "c306ee3e280af52947252c2a50cac401a827ab5ac8890a43de25078630220f9f"
+        },
+        {
+          "file": "sdk/scripts/producer-ordering.test.mjs",
+          "name": "one million sparse producer scopes release every fulfilled and rejected chain",
+          "sha256": "c306ee3e280af52947252c2a50cac401a827ab5ac8890a43de25078630220f9f"
+        }
+      ]
+    },
+    {
+      "id": "sdk-consumer-cleanup",
+      "obligations": [
+        "R21"
+      ],
+      "owner": "SDK async consumer iterator",
+      "mechanism": "Break/throw/return cleanup after recorded per-message decisions and parked pull cancellation",
+      "entered_proof": "A yielded message or pending pull entered before consumer cancellation",
+      "oracle": "Only processed decisions settle once; undecided messages retained; settlement/handler errors remain observable",
+      "configuration": {
+        "runtime": "Node built package"
+      },
+      "limitations": "Live consumer lease timing and Bun/Deno remain pending.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "sdk/scripts/consumer-cleanup.test.mjs",
+          "name": "ack then break submits only the yielded message's decision",
+          "sha256": "a74f08327e1dada8b2764b6152519ba59e35224bd24f1d63826b479299147d54"
+        },
+        {
+          "file": "sdk/scripts/consumer-cleanup.test.mjs",
+          "name": "handler throw settles recorded decisions and retains the handler exception",
+          "sha256": "a74f08327e1dada8b2764b6152519ba59e35224bd24f1d63826b479299147d54"
+        },
+        {
+          "file": "sdk/scripts/consumer-cleanup.test.mjs",
+          "name": "settlement failure surfaces on break and remains visible beside handler failure",
+          "sha256": "a74f08327e1dada8b2764b6152519ba59e35224bd24f1d63826b479299147d54"
+        },
+        {
+          "file": "sdk/scripts/consumer-cleanup.test.mjs",
+          "name": "iterator return cancels an in-flight parked pull",
+          "sha256": "a74f08327e1dada8b2764b6152519ba59e35224bd24f1d63826b479299147d54"
+        }
+      ]
+    },
+    {
+      "id": "sdk-retry-classification",
+      "obligations": [
+        "R22",
+        "SDK-002"
+      ],
+      "owner": "SDK request/subscription retry",
+      "mechanism": "421 and 503 header/body wrong-cell, permanent auth/domain failures, status backoff and transport rollback",
+      "entered_proof": "Mock fetch counts, provider counts, body cancellation and five-second Retry-After aborted",
+      "oracle": "Permanent failures surfaced after one request; no auth refresh on wrong-cell; transient recovery resumes durable cursor",
+      "configuration": {
+        "runtime": "Node built package",
+        "wrong_cell_matrix": "metadata/subscribe x 421/503 header/503 body"
+      },
+      "limitations": "Live server compatibility and Bun/Deno smoke remain pending.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "sdk/scripts/retry-classification.test.mjs",
+          "name": "wrong-cell after one request and no refresh",
+          "sha256": "acc29a2cfd312f1eb7f4b9d2f5e63e97849e2da3a55cf6013297c4417b8c0952"
+        },
+        {
+          "file": "sdk/scripts/retry-classification.test.mjs",
+          "name": "subscription propagates permanent token-provider failures without any fetch",
+          "sha256": "acc29a2cfd312f1eb7f4b9d2f5e63e97849e2da3a55cf6013297c4417b8c0952"
+        },
+        {
+          "file": "sdk/scripts/retry-classification.test.mjs",
+          "name": "cancellation interrupts status backoff without replay",
+          "sha256": "acc29a2cfd312f1eb7f4b9d2f5e63e97849e2da3a55cf6013297c4417b8c0952"
+        },
+        {
+          "file": "sdk/scripts/retry-classification.test.mjs",
+          "name": "header wrong-cell cancels an unused response body",
+          "sha256": "acc29a2cfd312f1eb7f4b9d2f5e63e97849e2da3a55cf6013297c4417b8c0952"
+        },
+        {
+          "file": "sdk/scripts/retry-classification.test.mjs",
+          "name": "explicitly permanent 503 domain errors are not replayed",
+          "sha256": "acc29a2cfd312f1eb7f4b9d2f5e63e97849e2da3a55cf6013297c4417b8c0952"
+        }
+      ]
+    }
+  ],
+  "external_legs": [
+    {
+      "id": "crypto-design",
+      "owner": "crypto maintainer and independent reviewer",
+      "state": "pending",
+      "required_evidence": "Reviewed AES-GCM-SIV invocation-domain design, retained legacy policy, pinned namespace rollout",
+      "reason": "Human review cannot be produced by a local test run."
+    },
+    {
+      "id": "prisma-tigris",
+      "owner": "fleet/storage owners",
+      "state": "pending",
+      "required_evidence": "Final build, namespace, credential/config fingerprint and actual Tigris durability/restart/financial/readback campaign artifacts",
+      "reason": "No live deployment/store campaign is certified by local source checks."
+    },
+    {
+      "id": "capacity-cost",
+      "owner": "runtime/storage performance owners",
+      "state": "pending",
+      "required_evidence": "Isolated local capacity plus declared noisy-neighbor, cold-cache, scale, storage-request and allocation before/after receipts",
+      "reason": "Unit tests do not establish production workload budgets."
+    },
+    {
+      "id": "sdk-runtimes",
+      "owner": "SDK owner",
+      "state": "pending",
+      "required_evidence": "Node/Bun/Deno real-server auth/capability/consumer/producer smoke artifacts on final build",
+      "reason": "Mocked Node regressions do not certify all runtimes or a deployed server."
+    },
+    {
+      "id": "conformance",
+      "owner": "public API owner",
+      "state": "pending",
+      "required_evidence": "Official pinned Durable Streams and product corpus results with expected known outcome and final build provenance",
+      "reason": "External corpus requires execution beyond source-symbol mapping."
+    }
+  ],
+  "clippy_baseline": {
+    "commit": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+    "file": "docs/refactor/clippy-review-baseline.txt",
+    "sha256": "796e86199db02216bb082cbe2a8b835786ef878bc3ca58ee229049838b6a7d45"
+  }
+}

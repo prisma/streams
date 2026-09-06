@@ -1,8 +1,10 @@
 #!/usr/bin/env python3
 """Architecture report (WP-00, docs/refactor/BASELINE.md).
 
-Warning-only structural scanner. Reports, never fails (unless --fail is
-passed; reserved for WP-17 hard gates):
+Historical diagnostic scanner. The enforcing R24 gate is
+`scripts/architecture-gate.py`, pinned to review commit a7e2070. This
+report's WP-00 baseline is retained for comparison, never acceptance.
+Reports, never fails (unless --fail is passed):
 
   - Rust files over the file budget (default 1,000 lines)
   - functions over the function budget (default 200 lines)

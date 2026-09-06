@@ -53,8 +53,7 @@ async fn subscription_survives_when_both_feeds_refresh_before_the_deadline() {
     // Identical-content republication every 1.5 s moves the freshness
     // deadline forward: the subscription must stay open well past the
     // original 3 s window.
-    let mut fv = 2;
-    for _ in 0..4 {
+    for fv in 2..6 {
         tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
         rig_publish_policy(&svc, rig_policy("proj-st3", "ws_st", 1, 1), fv).unwrap();
         rig_publish_grants(
@@ -64,7 +63,6 @@ async fn subscription_survives_when_both_feeds_refresh_before_the_deadline() {
             fv,
         )
         .unwrap();
-        fv += 1;
     }
     let (_, eof) = hub_sse_collect(&mut sub, 2, |_| false).await;
     assert!(!eof, "refreshed feeds must keep the subscription open");

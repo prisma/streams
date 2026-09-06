@@ -146,19 +146,29 @@ def inventory() -> list[dict]:
     return sorted(tests, key=lambda test: test["name"])
 
 
-def differences(expected: list[dict], actual: list[dict], allow_moves: bool, adaptations: list[dict] = ()) -> list[str]:
+def differences(expected: list[dict], actual: list[dict], allow_moves: bool, adaptations: list[dict] = (), additions: list[dict] = ()) -> list[str]:
     before = {test["name"]: test for test in expected}
     after = {test["name"]: test for test in actual}
     problems = [f"missing test: {name}" for name in sorted(before.keys() - after.keys())]
-    problems += [f"new test requires inventory: {name}" for name in sorted(after.keys() - before.keys())]
+    problems += [f"new test requires inventory: {name}" for name in sorted(after.keys() - before.keys())
+                 if not any(entry.get("test") == after[name] and entry.get("finding") and entry.get("reason")
+                            for entry in additions)]
     for name in sorted(before.keys() & after.keys()):
         for field in before[name].keys() | after[name].keys():
             if allow_moves and field == "file":
                 continue
+            if field == "scenarios" and any(
+                adaptation["name"] == name and adaptation.get("field") == field
+                and adaptation.get("before_value") == before[name].get(field)
+                and adaptation.get("after_value") == after[name].get(field)
+                and adaptation.get("finding") and adaptation.get("reason")
+                for adaptation in adaptations
+            ):
+                continue
             if field == "function_sha256" and any(
                 adaptation["name"] == name
-                and adaptation["before_sha256"] == before[name][field]
-                and adaptation["after_sha256"] == after[name][field]
+                and adaptation.get("before_sha256") == before[name][field]
+                and adaptation.get("after_sha256") == after[name][field]
                 and adaptation.get("finding") and adaptation.get("reason")
                 for adaptation in adaptations
             ):
@@ -185,7 +195,14 @@ def self_test() -> None:
     adaptation = [{"name": "actual", "before_sha256": original[0]["function_sha256"], "after_sha256": "changed", "finding": "R06", "reason": "explicit API migration"}]
     assert not differences(original, changed, True, adaptation)
     assert differences(original, [{**changed[0], "function_sha256": "unexpected"}], True, adaptation)
-    print("test-inventory self-test: OK (9 controls)")
+    addition = [{"test": original[0], "finding": "R24", "reason": "new controlled negative oracle"}]
+    assert not differences([], original, True, additions=addition)
+    assert differences([], changed, True, additions=addition)
+    old_scenario, new_scenario = [{**original[0], "scenarios": []}], [{**original[0], "scenarios": ["SEC-002"]}]
+    mapping = [{"name": "actual", "field": "scenarios", "before_value": [], "after_value": ["SEC-002"], "finding": "R24", "reason": "map actual body-poll mechanism"}]
+    assert not differences(old_scenario, new_scenario, True, adaptations=mapping)
+    assert differences(old_scenario, [{**new_scenario[0], "scenarios": ["OTHER"]}], True, adaptations=mapping)
+    print("test-inventory self-test: OK (13 controls)")
 
 
 def main() -> int:
@@ -195,6 +212,7 @@ def main() -> int:
     parser.add_argument("--count", action="store_true", help="print the recursive total for provenance")
     parser.add_argument("--compare", type=Path)
     parser.add_argument("--adaptations", type=Path, help="exact reviewed old/new hashes allowed during --compare")
+    parser.add_argument("--additions", type=Path, help="exact reviewed added test entries allowed during --compare")
     parser.add_argument("--self-test", action="store_true")
     args = parser.parse_args()
     if args.self_test:
@@ -209,10 +227,11 @@ def main() -> int:
         print(f"test-inventory: wrote {len(actual)} tests")
         return 0
     expected_path = args.compare or MANIFEST
-    if args.adaptations and not args.compare:
-        parser.error("--adaptations requires --compare; the current inventory gate has no exceptions")
+    if (args.adaptations or args.additions) and not args.compare:
+        parser.error("--adaptations/--additions require --compare; the current inventory gate has no exceptions")
     adaptations = json.loads(args.adaptations.read_text()) if args.adaptations else []
-    problems = differences(json.loads(expected_path.read_text()), actual, bool(args.compare), adaptations)
+    additions = json.loads(args.additions.read_text()) if args.additions else []
+    problems = differences(json.loads(expected_path.read_text()), actual, bool(args.compare), adaptations, additions)
     for problem in problems:
         print(problem)
     if problems:

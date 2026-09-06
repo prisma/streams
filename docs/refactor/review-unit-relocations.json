@@ -1,0 +1,20 @@
+[
+  {
+    "name": "rejection_policy_uses_variants_not_display_text",
+    "finding": "R02/R11",
+    "from_commit": "fc19b61f185e8583bd417fe8e178d92b30964e17",
+    "from_file": "src/application/append.rs",
+    "to_file": "src/application/append/contract.rs",
+    "function_sha256": "d4eab18d87587221f88eacc08325379e0bb794103aaf111f6ff8d3643b5a623c",
+    "reason": "Transport-free append failure/producer contract moved to its own focused module; exact function tokens and executable attributes unchanged."
+  },
+  {
+    "name": "producer_parser_rejects_partial_reserved_and_noncanonical_numbers",
+    "finding": "R02/R11",
+    "from_commit": "fc19b61f185e8583bd417fe8e178d92b30964e17",
+    "from_file": "src/application/append.rs",
+    "to_file": "src/application/append/contract.rs",
+    "function_sha256": "ed4927f8020a415fb9d5eb55e424fde6a3e77ed7b201c814087238aef4e41f82",
+    "reason": "Transport-free append failure/producer contract moved to its own focused module; exact function tokens and executable attributes unchanged."
+  }
+]

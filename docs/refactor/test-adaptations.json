@@ -12,5 +12,57 @@
     "after_sha256": "00e28c0916562954d9b107952969b64161b0335fe11b1e75e03a1a90a2144e11",
     "finding": "R15",
     "reason": "Commit012ba73 adds valid and expired signed watch capability body-poll sentinels; retains all previous scenarios and strengthens security assertions."
+  },
+  {
+    "name": "a_plain_seal_cannot_finish_someone_elses_final",
+    "before_sha256": "2e7026a22d02078d1befd921c069b3ed31f4d5ee178bc535a11ae6f51aae825e",
+    "after_sha256": "1a4ca92fc1de23b0bb1f88a3270f70b582f7a212e5397e72d921b66561f2e262",
+    "finding": "R04",
+    "reason": "bfa61e9: fixture allocates seal_gen_counter and uses that valid claim generation before persisting. Original final-intent refusal and no-closure assertions remain."
+  },
+  {
+    "name": "producers_cannot_write_new_records_while_sealing",
+    "before_sha256": "f096cf9a0abeb9619c888212bcea6b633e56f14866e0c6f53a69cf39bfb097d8",
+    "after_sha256": "a9aab49288693fb030c026c2d73a4242bc9789f88190de0a60a4e1ee32ccd955",
+    "finding": "R04",
+    "reason": "bfa61e9: fixture allocates a valid seal generation instead of writing generation zero outside the validated descriptor domain. All producer-refusal assertions remain."
+  },
+  {
+    "name": "seal_is_a_resumable_transition",
+    "before_sha256": "fbbf10c0d44a8c827f88391572616f1a0ef0972c51779624c41d50289b5f089f",
+    "after_sha256": "4bcaa1f63cf541cb054cecef7ddd848fae22b7de740c485d06c41e627dcab310",
+    "finding": "R04",
+    "reason": "bfa61e9: resumed seal fixture records a positive allocated claim generation consistent with the descriptor counter; original resumability and final closed-state checks remain."
+  },
+  {
+    "name": "topology_transitions_are_fenced_by_sealing",
+    "before_sha256": "1da18971fd1e67307e3447364edcae329f78135f79fc27a8dde172c324847350",
+    "after_sha256": "05e7587726a80a3e9e302982ea3ceced47e5c379714baf4d1d1d80ea5abc4403",
+    "finding": "R04",
+    "reason": "bfa61e9: sealing fixture allocates its claim generation through the persisted counter before asserting split/merge refusal; no topology assertions removed."
+  },
+  {
+    "name": "merge_phase_b_declines_under_sealing",
+    "before_sha256": "7039cab7d15e6978a216e7ae40dd905c7686b4dabbb9a84d1220d1c86c884900",
+    "after_sha256": "0c058fc05bd8828af3126d85eb39e8c87c1f13776e4053429f21a3f08015af77",
+    "finding": "R04/R05",
+    "reason": "1850b0a: validated serving descriptors reject simultaneous topology/seal claims. The test now asserts this invalid state is refused, retains the parked pending snapshot, installs a legal competing seal transition, proves stale phase-B cannot publish, then restores pending while clearing seal to exercise retry. Original entered failpoint and topology preservation remain."
+  },
+  {
+    "name": "r15_bodyless_and_unauthorized_requests_never_poll_the_body",
+    "field": "scenarios",
+    "before_value": [],
+    "after_value": [
+      "SEC-002"
+    ],
+    "finding": "R24",
+    "reason": "SEC-002 now maps the actual body-poll sentinel instead of leaving the implemented security mechanism unmapped. No test body or oracle is changed by this mapping."
+  },
+  {
+    "name": "subscription_survives_when_both_feeds_refresh_before_the_deadline",
+    "before_sha256": "072bae60200dfbffb212cd974b95a97891dd4c2d0d1d135cb236482ab501ae3c",
+    "after_sha256": "9a082639f18a6130d4173f2733b39186b747af77671dce5cfc4eef6da4cab1b8",
+    "finding": "R24",
+    "reason": "Rust1.98 flags the pre-existing explicit loop counter. Iterate directly over exactly the same feed versions 2,3,4,5; retain four 1500ms waits, policy/grant publication inputs and live-subscription oracle."
   }
 ]

@@ -1,0 +1,170 @@
+{
+  "baseline_commit": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+  "baseline_sha256": "cd4078adb4a6a5207102047cf6f2927a26dc1fb115482a3761280859a7b5b3a0",
+  "sse_core_files": [
+    "src/sse/budget.rs",
+    "src/sse/feed.rs",
+    "src/sse/registry.rs",
+    "src/sse/source.rs",
+    "src/sse/service.rs"
+  ],
+  "transport_and_composition_files": [
+    "src/http.rs",
+    "src/http/read.rs",
+    "src/product.rs",
+    "src/bootstrap.rs",
+    "src/sse/auth.rs",
+    "src/sse/session.rs",
+    "src/sse/wire.rs"
+  ],
+  "budget_exceptions": {
+    "file:src/billing.rs": {
+      "limit": 3006,
+      "owner": "Billing outbox drain",
+      "finding": "R13/R14",
+      "rationale": "Additional required-read failure handling preserves dirty accounting debt and validates progress before advancing an outbox. Retain the existing billing owner and its focused regressions. Three explanatory lines record the bounded resident-depth gauge; no full accounting cursor scan is reintroduced.",
+      "source_obligation": "r13_failed_accounting_reads_preserve_group_and_newer_dirty_version; billing delivery retries"
+    },
+    "function:src/billing.rs::drain_once": {
+      "limit": 352,
+      "owner": "Billing outbox drain",
+      "finding": "R14",
+      "rationale": "Required durable metadata decoding and stable-finality failures now stop the same ordered drain transaction instead of treating missing/unreadable state as zero.",
+      "source_obligation": "Required-read failure preserves outbox checkpoints and attribution"
+    },
+    "function:src/bootstrap.rs::run": {
+      "limit": 841,
+      "owner": "Runtime composition root",
+      "finding": "R10/R17",
+      "rationale": "Explicit shared runtime resources, critical-task policy and typed owner construction add assembly lines at the one composition root. This exception grants no application reverse edge.",
+      "source_obligation": "Two-runtime resource isolation and critical readiness-exit tests"
+    },
+    "file:src/fleet.rs": {
+      "limit": 1317,
+      "owner": "Fleet runtime",
+      "finding": "R10/R17",
+      "rationale": "Fleet resource wiring now retains one runtime task/readiness and clock owner. Existing placement loops remain historical debt under a fixed cap.",
+      "source_obligation": "Runtime task ownership and clock-domain isolation"
+    },
+    "function:src/fleet.rs::start": {
+      "limit": 687,
+      "owner": "Fleet runtime",
+      "finding": "R10/R17",
+      "rationale": "Task/resource ownership and monotonic timing are threaded through the existing startup supervision loop with no additional network boundary.",
+      "source_obligation": "Critical-task registration and runtime resource wiring"
+    },
+    "file:src/history.rs": {
+      "limit": 2761,
+      "owner": "History partition owner",
+      "finding": "R08/R09/R10",
+      "rationale": "Typed fence error classification, shared maintenance admission and required read refusal extend the existing owner; regression tests preserve these mechanisms. R10 also moves the worst-frame history floor into each runtime configuration, validated by different_runtime_body_limits_size_independent_history_floors.",
+      "source_obligation": "r08_fence_disposition_uses_error_kind_through_context; bounded history admission"
+    },
+    "function:src/product.rs::product_entry": {
+      "limit": 318,
+      "owner": "Product transport dispatch",
+      "finding": "R07/R15/R16",
+      "rationale": "The route match now transports explicit verified account/capability/deployment contexts and delegates typed consumer/watch operations; it performs no owner workflow.",
+      "source_obligation": "No-body-poll and cross-tenant admission matrix; product consumer/watch protocol tests"
+    },
+    "function:src/product.rs::product_usage": {
+      "limit": 203,
+      "owner": "Product usage transport",
+      "finding": "R14",
+      "rationale": "The existing usage adapter now propagates required durable progress read errors rather than defaulting to zero.",
+      "source_obligation": "Financial required-read failures and exact public usage classification"
+    },
+    "file:src/registry.rs": {
+      "limit": 2774,
+      "owner": "Registry validated domain and typed CAS",
+      "finding": "R04/R08",
+      "rationale": "Serving descriptors now validate persisted DTOs and mutation results; typed conflict/uncertain completion preserves conditional metadata. Growth includes corruption/CAS regressions inside the legacy owner.",
+      "source_obligation": "r08_mutation_preserves_conditional_metadata_and_classifies_ambiguous_completion; malformed descriptor fixtures"
+    },
+    "file:src/rollup.rs": {
+      "limit": 2793,
+      "owner": "Financial rollup owner",
+      "finding": "R14",
+      "rationale": "Fail-closed key/value decoding and atomic checkpoint preparation add required-read/corruption regressions to the existing financial transaction owner.",
+      "source_obligation": "r14_required_read_failures_leave_every_row_and_checkpoint_unchanged; r14_corrupt_watermarks_rows_and_close_keys_block_progress"
+    },
+    "function:src/rollup.rs::close_month": {
+      "limit": 226,
+      "owner": "Financial month finalizer",
+      "finding": "R14",
+      "rationale": "Finalization requires every checkpoint and close-key read and validates exact durable values before writing a final month. These checks remain with the atomic decision.",
+      "source_obligation": "r14_corrupt_watermarks_rows_and_close_keys_block_progress"
+    },
+    "function:src/rollup.rs::rollup_applies_deltas_and_closes_months": {
+      "limit": 321,
+      "owner": "Rollup regression fixture",
+      "finding": "R14",
+      "rationale": "Existing exact financial reconciliation test adapts to required state/finality reads without removing its original assertions or scenario.",
+      "source_obligation": "Exact monthly delta application and close replay assertions"
+    },
+    "file:src/shard.rs": {
+      "limit": 6414,
+      "owner": "Shard actor durability transaction",
+      "finding": "R03/R09/R12/R13",
+      "rationale": "Retained actor protocol and one batch commit owner now use validated tails, typed after-commit replies and bounded accounting pages. Most growth is direct corruption, read-failure and real remote-frontier regressions; no new responsibility is granted by this cap.",
+      "source_obligation": "R03 group failure/fence publication; R09 bounded page accounting; R12 tail corruption; R13 accounting read failures"
+    },
+    "function:src/shard.rs::start": {
+      "limit": 389,
+      "owner": "Shard actor startup",
+      "finding": "R03/R10",
+      "rationale": "The shared runtime maintenance controller and typed transaction publication are explicitly constructed at engine startup.",
+      "source_obligation": "Two-runtime isolation and committer startup/readiness tests"
+    },
+    "function:src/shard.rs::commit_group": {
+      "limit": 2137,
+      "owner": "Shard batch transaction",
+      "finding": "R03",
+      "rationale": "One atomic transaction still orders append/queue/close/fence storage effects. Typed prepared states and a single publication plan remove booleans and poison-prone temporary success replies; retained match arms remain explicit transaction debt instead of an arbitrary helper split. This fixed ceiling requires separate review for future growth.",
+      "source_obligation": "r03_close_and_fence_wait_for_write_remote_durability_and_dispatch; r03_failed_group_discards_close_and_fence_effects_together; r03_queue_refusal_from_staged_generation_shares_group_failure_and_dispatch"
+    },
+    "file:src/sse/feed.rs": {
+      "limit": 2270,
+      "owner": "LiveFeed core",
+      "finding": "R06",
+      "rationale": "Two lines adapt the explicit ReadService capability. Existing feed state machine/test body is retained under the historical fixed budget; HTTP/product dependencies remain forbidden.",
+      "source_obligation": "Shared feed reads, rollback and source failure typed outcome tests"
+    },
+    "file:src/sse/session.rs": {
+      "limit": 1062,
+      "owner": "SSE transport/session adapter",
+      "finding": "R06",
+      "rationale": "Two lines adapt service wiring. This file remains an explicitly declared wire/session adapter, while feed/source/registry/service/budget core files have zero transport dependency allowance.",
+      "source_obligation": "Raw/product SSE formatting, auth lease and body drop tests"
+    }
+  },
+  "transport_rationales": {
+    "src/http.rs": "Raw HTTP parse/render and composition factories; owner workflows live in application modules.",
+    "src/http/read.rs": "Raw read/head/connect parse/render adapter; explicit ReadService owns page work.",
+    "src/product.rs": "Product protocol dispatch/cursor/framing adapter.",
+    "src/bootstrap.rs": "The executable composition root assembles typed owners and shared capabilities.",
+    "src/sse/auth.rs": "SSE request lease and gated HTTP body adapter.",
+    "src/sse/session.rs": "SSE wire/session HTTP adapter; FeedSourceRead and ReadService own reads.",
+    "src/sse/wire.rs": "SSE event/header formatting only."
+  },
+  "adapter_http_exports": {
+    "src/sse/session.rs": [
+      "AppState",
+      "ReadParams",
+      "SseSlot",
+      "err_resp",
+      "sse_send",
+      "sse_send_billed",
+      "StartPos",
+      "SseSurface",
+      "TEST_ASSERT_KEYED_DENSE"
+    ],
+    "src/sse/auth.rs": [
+      "AppState",
+      "InternalLease",
+      "SseSlot",
+      "err_resp",
+      "ReadParams"
+    ]
+  }
+}

@@ -1,0 +1,1025 @@
+[
+  {
+    "id": "DUR-005",
+    "owner": "src/shard.rs durability transaction",
+    "state": "local_mechanism",
+    "mechanism": "hold remote durability after physical close is applied, issue exact close-only retry, require both responses to wait.",
+    "disposition": "Two independent mechanisms remain: existing post-durability dispatch holds, and an actual WAL object-store PUT hold (FaultStore seed 2405). The close is applied with no Remote tail before retry/fence are enqueued into a later group; their entered fence, withheld replies, released Remote tail, independent dispatch gate and reopen closed-tail readback are asserted. Local pinned-SlateDB evidence; production storage run remains pending.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/durability_fences.rs::idempotent_successes_wait_for_durability",
+        "src/dst/tests/durability_failures.rs::a_failed_group_fails_the_close_and_its_retry_together",
+        "src/shard/durability_frontier_tests.rs::r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Production/fleet acceptance is pending where required by the catalogue status."
+    }
+  },
+  {
+    "id": "DUR-007",
+    "owner": "src/shard.rs durability transaction",
+    "state": "partial",
+    "mechanism": "park sequence N before enqueue/commit, allow N+1 to observe a gap, then commit N and retry N+1; final operation must commit exactly once.",
+    "disposition": "12997 parks the predecessor via Fp::AppendBeforeEnqueue, lets N+1 observe a gap, then commits N and retries \u2014 exact DUR-007 procedure, but exercised on final-intent closes (shared committer path), not plain appends.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/seal_recovery.rs::a_transient_producer_gap_does_not_lose_the_promised_record",
+        "src/dst/tests/seal_recovery.rs::an_ordering_verdict_keeps_its_intent_until_the_claim_is_abandoned"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: park sequence N before enqueue/commit, allow N+1 to observe a gap, then commit N and retry N+1; final operation must commit exactly once."
+    }
+  },
+  {
+    "id": "DUR-014",
+    "owner": "src/shard.rs durability transaction",
+    "state": "local_mechanism",
+    "mechanism": "inject one missing acknowledged record and one extra ambiguous duplicate while preserving total count; exact operation-set auditor must fail.",
+    "disposition": "Exact-set oracle negative control: equal record counts with one lost record and one duplicate must fail audit; the faithful equal-count set passes. This exercises the local oracle and does not claim completion of a simulator or fleet campaign.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/oracle_model.rs::r24_exact_set_oracle_rejects_count_preserving_loss_duplicate_swap"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Production/fleet acceptance is pending where required by the catalogue status."
+    }
+  },
+  {
+    "id": "CRT-007",
+    "owner": "src/application/creation.rs",
+    "state": "partial",
+    "mechanism": "two create retries share synthetic init identity in one group; fail initial-content write; descriptor must not become Ready.",
+    "disposition": "Explicit 'CRT-007' comment at 15378. IMPLEMENTED since catalogue but single-creator only; STATUS.md: 'the two-joiner same-group variant remains open (#108)'. Uses Fp::InitBeforeSeed entered-proof.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/lifecycle_creation.rs::create_replay_recovers_from_a_failed_initial_write"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: two create retries share synthetic init identity in one group; fail initial-content write; descriptor must not become Ready."
+    }
+  },
+  {
+    "id": "CRT-008",
+    "owner": "src/application/creation.rs",
+    "state": "pending",
+    "mechanism": "crash after descriptor, after body durability, after physical close, and before Ready; exact retry resumes each phase.",
+    "disposition": "GAP: no create-with-close crash-boundary matrix found (no test combines create and close lifecycle phases).",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: crash after descriptor, after body durability, after physical close, and before Ready; exact retry resumes each phase."
+    }
+  },
+  {
+    "id": "CRT-009",
+    "owner": "src/application/creation.rs",
+    "state": "pending",
+    "mechanism": "all clients abandon while cache-owned initializer runs; initializer still completes or leaves a recoverable intent.",
+    "disposition": "The catalogue procedure has no concrete local test. Preserve this obligation and execute the specified failure/order/load matrix under the owning harness.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: all clients abandon while cache-owned initializer runs; initializer still completes or leaves a recoverable intent."
+    }
+  },
+  {
+    "id": "CRT-010",
+    "owner": "src/application/creation.rs",
+    "state": "partial",
+    "mechanism": "create many initialized and initializing descriptors across pages; catalog returns only Ready live resources and preserves continuation.",
+    "disposition": "Catalog paging/continuation over dead entries is pinned; the 'initializing descriptors excluded from pages' leg is not separately asserted.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/lifecycle_creation.rs::catalog_paging_survives_dense_dead_entries",
+        "src/dst/tests/reads_raw.rs::catalog_pages_without_scanning_the_world",
+        "src/dst/tests/product_lifecycle.rs::product_seal_final_append_and_catalog"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: create many initialized and initializing descriptors across pages; catalog returns only Ready live resources and preserves continuation."
+    }
+  },
+  {
+    "id": "CRT-011",
+    "owner": "src/application/creation.rs",
+    "state": "partial",
+    "mechanism": "invalid key, body, config, expiry, watch definition, or impossible capacity returns error with no descriptor object.",
+    "disposition": "Validation legs exist (record/body ceiling on create-with-content, impossible capacity, config conflict) but no dedicated test asserts the full matrix leaves NO descriptor object.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/livefeed_ownership.rs::record_ceiling_refuses_one_oversized_record_not_the_batch",
+        "src/dst/tests/quota_enforcement.rs::max_streams_is_enforced_at_create",
+        "src/dst/tests/product_lifecycle.rs::product_create_metadata_roundtrip"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: invalid key, body, config, expiry, watch definition, or impossible capacity returns error with no descriptor object."
+    }
+  },
+  {
+    "id": "CRT-012",
+    "owner": "src/application/creation.rs",
+    "state": "partial",
+    "mechanism": "vary exactly one semantic field\u2014key fingerprint, source epoch, body, content type, expiry, fork boundary\u2014and prove operation identities differ.",
+    "disposition": "Config-comparison and source-epoch identity legs exist; no vary-one-field identity-completeness matrix.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/product_lifecycle.rs::typed_creation_dual_contract",
+        "src/dst/tests/fork_lifecycle.rs::a_fork_initialization_is_bound_to_its_source_incarnation"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: vary exactly one semantic field\u2014key fingerprint, source epoch, body, content type, expiry, fork boundary\u2014and prove operation identities differ."
+    }
+  },
+  {
+    "id": "SEL-004",
+    "owner": "src/application/lifecycle.rs",
+    "state": "partial",
+    "mechanism": "same body/key with different request Content-Type or key version cannot join one intent.",
+    "disposition": "Content-type leg covered (13516); key-version-in-identity leg not separately asserted.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/seal_fencing.rs::a_wrong_content_type_close_cannot_join_the_valid_intent",
+        "src/dst/tests/seal_coordination.rs::seal_requests_are_identified_and_validated_exactly"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: same body/key with different request Content-Type or key version cannot join one intent."
+    }
+  },
+  {
+    "id": "SEL-020",
+    "owner": "src/application/lifecycle.rs",
+    "state": "partial",
+    "mechanism": "after takeover fence is enqueued/processed, a lower-generation append arriving later is rejected before staging.",
+    "disposition": "13128: committer refuses a superseded (lower-generation) close BEFORE writing (Fp::CloseBeforeEnqueue). Plain-append late-write leg is covered via the fenced-owner form in 785 rather than a dedicated staging-gate assertion.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/persistence_faults.rs::a_fenced_owner_acknowledges_nothing",
+        "src/dst/tests/seal_fencing.rs::a_superseded_close_cannot_write_or_close"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: after takeover fence is enqueued/processed, a lower-generation append arriving later is rejected before staging."
+    }
+  },
+  {
+    "id": "SEL-022",
+    "owner": "src/application/lifecycle.rs",
+    "state": "local_mechanism",
+    "mechanism": "close group applied with `await_durable=false`, pause WAL watermark, process fence-only group; fence remains pending.",
+    "disposition": "Two independent mechanisms remain: existing post-durability dispatch holds, and an actual WAL object-store PUT hold (FaultStore seed 2405). The close is applied with no Remote tail before retry/fence are enqueued into a later group; their entered fence, withheld replies, released Remote tail, independent dispatch gate and reopen closed-tail readback are asserted. Local pinned-SlateDB evidence; production storage run remains pending.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/durability_fences.rs::a_fence_waits_for_durability_before_reporting_closed",
+        "src/shard/durability_frontier_tests.rs::r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Production/fleet acceptance is pending where required by the catalogue status."
+    }
+  },
+  {
+    "id": "FRK-002",
+    "owner": "src/application/creation.rs fork preparation",
+    "state": "partial",
+    "mechanism": "fork inside a binary record; partial suffix becomes child\u2019s first own record exactly once.",
+    "disposition": "22248 covers sub-offset materialization (JSON sub-offset leg, 'regression net for the conformance suite'); 33762 materializes a binary partial but asserts the record ceiling, not exact-once suffix semantics.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/fork_lifecycle.rs::fork_lifecycle_and_stitched_reads",
+        "src/dst/tests/livefeed_history.rs::fork_materialized_partial_respects_the_record_ceiling"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: fork inside a binary record; partial suffix becomes child\u2019s first own record exactly once."
+    }
+  },
+  {
+    "id": "FRK-003",
+    "owner": "src/application/creation.rs fork preparation",
+    "state": "partial",
+    "mechanism": "fork chain with distinct epochs; each hop decrypts using its source epoch; mismatch fails safely.",
+    "disposition": "Covers stale-source-epoch integrity error (22770-22795); multi-hop chain with DISTINCT epochs decrypting per hop is not exercised.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/fork_lifecycle.rs::fork_lifecycle_is_idempotent_and_epoch_checked"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: fork chain with distinct epochs; each hop decrypts using its source epoch; mismatch fails safely."
+    }
+  },
+  {
+    "id": "FRK-004",
+    "owner": "src/application/creation.rs fork preparation",
+    "state": "pending",
+    "mechanism": "inject cycle and over-depth chain; read refuses without recursion/resource blowup.",
+    "disposition": "GAP (Existing with no test): MAX_FORK_DEPTH=64 exists in src/http.rs:2727 but no test builds a cycle or over-depth chain.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: inject cycle and over-depth chain; read refuses without recursion/resource blowup."
+    }
+  },
+  {
+    "id": "FRK-008",
+    "owner": "src/application/creation.rs fork preparation",
+    "state": "pending",
+    "mechanism": "crash after fork tail seed before source ref; retry resumes without duplicate materialization.",
+    "disposition": "GAP: Fp::InitBeforeSeed park exists but is only used by the CRT-007 test (create seed); no fork-child crash-after-tail-seed resume test found.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: crash after fork tail seed before source ref; retry resumes without duplicate materialization."
+    }
+  },
+  {
+    "id": "FRK-012",
+    "owner": "src/application/creation.rs fork preparation",
+    "state": "pending",
+    "mechanism": "force opposite ordering; fork source CAS sees dead source and refuses, target init does not become Ready and no orphan remains.",
+    "disposition": "GAP: opposite ordering (delete decides first, fork CAS sees dead source) not implemented; fork_creation_and_source_deletion_serialize has only the one ordering.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: force opposite ordering; fork source CAS sees dead source and refuses, target init does not become Ready and no orphan remains."
+    }
+  },
+  {
+    "id": "FRK-016",
+    "owner": "src/application/creation.rs fork preparation",
+    "state": "partial",
+    "mechanism": "while last-child release decides whether to hard-delete source, install a new child in both forced orderings.",
+    "disposition": "STATUS.md: 'covered by construction \u2014 release+decide in ONE CAS (release_fork_ref)'. No dedicated two-ordering test; the mechanism is structural.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/fork_lifecycle.rs::fork_creation_and_source_deletion_serialize"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: while last-child release decides whether to hard-delete source, install a new child in both forced orderings."
+    }
+  },
+  {
+    "id": "FRK-017",
+    "owner": "src/application/creation.rs fork preparation",
+    "state": "pending",
+    "mechanism": "response lost after fork Ready; source soft-deleted; exact target PUT returns existing fork rather than source-gone.",
+    "disposition": "GAP: idempotent fork PUT leg exists (22687) but BEFORE soft-delete; the 'exact target PUT returns existing fork after source soft-delete' leg is not tested.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: response lost after fork Ready; source soft-deleted; exact target PUT returns existing fork rather than source-gone."
+    }
+  },
+  {
+    "id": "FRK-019",
+    "owner": "src/application/creation.rs fork preparation",
+    "state": "pending",
+    "mechanism": "source expires with children; behaves as soft-deleted until final reference release.",
+    "disposition": "GAP: no test for TTL-expiry of a source with live fork references.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: source expires with children; behaves as soft-deleted until final reference release."
+    }
+  },
+  {
+    "id": "FRK-020",
+    "owner": "src/application/creation.rs fork preparation",
+    "state": "pending",
+    "mechanism": "compaction/GC during fork chain reads and deletion; no ancestor object is deleted before last reference.",
+    "disposition": "The catalogue procedure has no concrete local test. Preserve this obligation and execute the specified failure/order/load matrix under the owning harness.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: compaction/GC during fork chain reads and deletion; no ancestor object is deleted before last reference."
+    }
+  },
+  {
+    "id": "TOP-002",
+    "owner": "src/application/topology.rs and src/scaler3.rs",
+    "state": "partial",
+    "mechanism": "restart/resume publishes or aborts deterministic transition.",
+    "disposition": "Resume-completes legs exist (34318: executor died between durable intent and publication; connect drives resume). No crash-restart publish-or-abort matrix at the registry level.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/topology_lifecycle.rs::nondeployment_pending_split_resumes",
+        "src/dst/tests/livefeed_ownership.rs::livefeed_pending_transition_connect_drives_resume"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: restart/resume publishes or aborts deterministic transition."
+    }
+  },
+  {
+    "id": "TOP-004",
+    "owner": "src/application/topology.rs and src/scaler3.rs",
+    "state": "partial",
+    "mechanism": "repeated resume is idempotent; no duplicate child state.",
+    "disposition": "Orphaned-transition resume exists; repeated-resume idempotence / no-duplicate-child-state leg not separately asserted.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/livefeed_ownership.rs::livefeed_pending_transition_connect_drives_resume"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: repeated resume is idempotent; no duplicate child state."
+    }
+  },
+  {
+    "id": "TOP-005",
+    "owner": "src/application/topology.rs and src/scaler3.rs",
+    "state": "pending",
+    "mechanism": "reads and appends follow successors; parent retained until safe GC.",
+    "disposition": "The catalogue procedure has no concrete local test. Preserve this obligation and execute the specified failure/order/load matrix under the owning harness.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: reads and appends follow successors; parent retained until safe GC."
+    }
+  },
+  {
+    "id": "TOP-008",
+    "owner": "src/application/topology.rs and src/scaler3.rs",
+    "state": "pending",
+    "mechanism": "one key dominates; no useless split; `hot_key` surfaced.",
+    "disposition": "GAP (Existing with no test): scaler3.rs implements hot-key suppression (scaler3.rs:238 '\u00a75.2') and hot_key() surfacing (scaler3.rs:124), and dst_tests.rs:14335 deliberately avoids tripping it \u2014 but no test asserts a dominant key refuses split and surfaces hot_key. Nearest mechanism unit test: src/sketch.rs:290 spacesaving_finds_the_dominant_key (detection only).",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: one key dominates; no useless split; `hot_key` surfaced."
+    }
+  },
+  {
+    "id": "TOP-013",
+    "owner": "src/application/topology.rs and src/scaler3.rs",
+    "state": "pending",
+    "mechanism": "recreate name between reading pending and phase B; stale transition declines.",
+    "disposition": "GAP (Existing/strengthen with no direct test): no test recreates the name between pending-read and phase B. Adjacent: stale_scaler_and_ttl_decisions_decline_after_recreate:13703 (decision epoch fencing), but not the phase-B CAS epoch leg.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: recreate name between reading pending and phase B; stale transition declines."
+    }
+  },
+  {
+    "id": "TOP-014",
+    "owner": "src/application/topology.rs and src/scaler3.rs",
+    "state": "pending",
+    "mechanism": "router sends to non-owner, receives replay target, converges within bounded hops; no record loss.",
+    "disposition": "The catalogue procedure has no concrete local test. Preserve this obligation and execute the specified failure/order/load matrix under the owning harness.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: router sends to non-owner, receives replay target, converges within bounded hops; no record loss."
+    }
+  },
+  {
+    "id": "TOP-015",
+    "owner": "src/application/topology.rs and src/scaler3.rs",
+    "state": "pending",
+    "mechanism": "node possesses shard while ring changes; no second owner claim until possession transition/fence.",
+    "disposition": "The catalogue procedure has no concrete local test. Preserve this obligation and execute the specified failure/order/load matrix under the owning harness.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: node possesses shard while ring changes; no second owner claim until possession transition/fence."
+    }
+  },
+  {
+    "id": "TOP-016",
+    "owner": "src/application/topology.rs and src/scaler3.rs",
+    "state": "partial",
+    "mechanism": "both open same prefix; exactly one acknowledges, loser tasks terminate.",
+    "disposition": "Single-process two-engine form: exactly one owner acknowledges, loser fenced and tasks terminate. True two-process race is the L2 leg.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/persistence_faults.rs::a_fenced_owner_acknowledges_nothing",
+        "src/dst/tests/producer_handoff.rs::producer_state_survives_a_handoff_and_suppresses_duplicates"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: both open same prefix; exactly one acknowledges, loser tasks terminate."
+    }
+  },
+  {
+    "id": "TOP-017",
+    "owner": "src/application/topology.rs and src/scaler3.rs",
+    "state": "pending",
+    "mechanism": "appends continue through seal/replay; exact per-key counts and order.",
+    "disposition": "Campaign-level: bench/costab/run-split.sh + split-driver.py. In-suite nearest (no fault injection): split_children_land_on_distinct_engines:7064.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: appends continue through seal/replay; exact per-key counts and order."
+    }
+  },
+  {
+    "id": "TOP-020",
+    "owner": "src/application/topology.rs and src/scaler3.rs",
+    "state": "pending",
+    "mechanism": "oscillating load through many transitions; bounded DBs, tasks, parent objects, and sketches.",
+    "disposition": "The catalogue procedure has no concrete local test. Preserve this obligation and execute the specified failure/order/load matrix under the owning harness.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: oscillating load through many transitions; bounded DBs, tasks, parent objects, and sketches."
+    }
+  },
+  {
+    "id": "HIS-014",
+    "owner": "src/history.rs, src/postings_cache.rs and src/sse/registry.rs",
+    "state": "partial",
+    "mechanism": "engine closes while partition OnceCell open is in progress; late DB closes and cannot survive old engine.",
+    "disposition": "Zombie-absorber/fence-class coverage exists; the exact 'engine closes while partition OnceCell open is in progress' race leg is not explicitly driven.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/runtime_isolation.rs::a_fenced_owners_absorber_exits",
+        "src/history.rs::absorber_exits_when_shard_engine_is_fenced",
+        "src/history.rs::r08_fence_disposition_uses_error_kind_through_context"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: engine closes while partition OnceCell open is in progress; late DB closes and cannot survive old engine."
+    }
+  },
+  {
+    "id": "HIS-015",
+    "owner": "src/history.rs, src/postings_cache.rs and src/sse/registry.rs",
+    "state": "partial",
+    "mechanism": "one-shard topology with empty prefix; history path normalized and readable.",
+    "disposition": "IMPLEMENTED (unit-level path pin against /history2 drift). The empty-prefix one-shard end-to-end read leg is not separate.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/sharddir.rs::history2_lives_under_the_shard_db_path"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: one-shard topology with empty prefix; history path normalized and readable."
+    }
+  },
+  {
+    "id": "HIS-016",
+    "owner": "src/history.rs, src/postings_cache.rs and src/sse/registry.rs",
+    "state": "pending",
+    "mechanism": "incompressible b1/b10 workload; postings/canonical and total bytes within gates.",
+    "disposition": "Campaign-level: bench/costab keyed drivers (run-keyed.sh, keyed-compare.py). In-suite mechanism pins: keyed_frames_no_longer_count_twice_against_the_budget:3800.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: incompressible b1/b10 workload; postings/canonical and total bytes within gates."
+    }
+  },
+  {
+    "id": "HIS-022",
+    "owner": "src/history.rs, src/postings_cache.rs and src/sse/registry.rs",
+    "state": "pending",
+    "mechanism": "64 callers, one open, \u226563 coalesced.",
+    "disposition": "MECHANISM REPLACED: no history-reader-cache module exists in current src/ (superseded by LiveFeed + postings cache). Nearest equivalents: livefeed_two_subscribers_share_one_feed_and_one_source_read:32317, src/sse/registry.rs:221 last_subscriber_evicts_and_reconnect_does_not_grow, src/postings_cache.rs:929 warm_install_serves_from_zero_without_index_load.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: 64 callers, one open, \u226563 coalesced."
+    }
+  },
+  {
+    "id": "HIS-023",
+    "owner": "src/history.rs, src/postings_cache.rs and src/sse/registry.rs",
+    "state": "pending",
+    "mechanism": "one probe, one reopen, all callers correct.",
+    "disposition": "MECHANISM REPLACED (see HIS-022). Nearest: src/postings_cache.rs:948 warm_extension_stitches_chunks / 1096 eviction_poisons_fresh_claims.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: one probe, one reopen, all callers correct."
+    }
+  },
+  {
+    "id": "HIS-024",
+    "owner": "src/history.rs, src/postings_cache.rs and src/sse/registry.rs",
+    "state": "pending",
+    "mechanism": "cancel every waiter; cache-owned open completes; next read hits.",
+    "disposition": "MECHANISM REPLACED (see HIS-022). Nearest engine-open equivalents: open_gate_survives_impatient_clients_without_a_storm:2683 (clients give up, open completes), a_hung_open_is_deadlined_and_its_late_engine_reaped:3055.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: cancel every waiter; cache-owned open completes; next read hits."
+    }
+  },
+  {
+    "id": "HIS-025",
+    "owner": "src/history.rs, src/postings_cache.rs and src/sse/registry.rs",
+    "state": "pending",
+    "mechanism": "deterministic transform/data error, not transient store retry; retain cached reader.",
+    "disposition": "MECHANISM REPLACED (see HIS-022). Nearest: src/sse/feed.rs:1789 source_failure_is_typed_and_recoverable.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: deterministic transform/data error, not transient store retry; retain cached reader."
+    }
+  },
+  {
+    "id": "HIS-026",
+    "owner": "src/history.rs, src/postings_cache.rs and src/sse/registry.rs",
+    "state": "pending",
+    "mechanism": "same hash/key on two stores; each node reads own data.",
+    "disposition": "MECHANISM REPLACED (see HIS-022). No per-store reader-cache isolation test remains.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: same hash/key on two stores; each node reads own data."
+    }
+  },
+  {
+    "id": "HIS-027",
+    "owner": "src/history.rs, src/postings_cache.rs and src/sse/registry.rs",
+    "state": "partial",
+    "mechanism": "many shard engines, one million keys/100 active; cache stays within one process budget and warm active hit rate gate.",
+    "disposition": "Unit-level process-budget pin exists; the warm-active hit-rate gate is campaign-level.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/postings_cache.rs::million_key_shape_holds_process_budget"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: many shard engines, one million keys/100 active; cache stays within one process budget and warm active hit rate gate."
+    }
+  },
+  {
+    "id": "HIS-028",
+    "owner": "src/history.rs, src/postings_cache.rs and src/sse/registry.rs",
+    "state": "pending",
+    "mechanism": "boot inventory stale, obsolete object appears, refresh logic finds it before TTL dead zone.",
+    "disposition": "Campaign/fork-level per the label; no src test found for stale boot inventory + obsolete object rediscovery before TTL dead zone.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: boot inventory stale, obsolete object appears, refresh logic finds it before TTL dead zone."
+    }
+  },
+  {
+    "id": "HIS-029",
+    "owner": "src/history.rs, src/postings_cache.rs and src/sse/registry.rs",
+    "state": "pending",
+    "mechanism": "N known, N+1 missing, N+2 present; bounded fallback finds later version or writer invariant proves impossible.",
+    "disposition": "GAP: no test for the N known / N+1 missing / N+2 present probe-gap fallback.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: N known, N+1 missing, N+2 present; bounded fallback finds later version or writer invariant proves impossible."
+    }
+  },
+  {
+    "id": "HIS-030",
+    "owner": "src/history.rs, src/postings_cache.rs and src/sse/registry.rs",
+    "state": "pending",
+    "mechanism": "16-way deletes, partial failures, retries; foreground WAL remains within budget and objects converge.",
+    "disposition": "The catalogue procedure has no concrete local test. Preserve this obligation and execute the specified failure/order/load matrix under the owning harness.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: 16-way deletes, partial failures, retries; foreground WAL remains within budget and objects converge."
+    }
+  },
+  {
+    "id": "QUE-006",
+    "owner": "src/application/consumer.rs",
+    "state": "pending",
+    "mechanism": "stale retry, ack, and extend in forced orders; only matching generation mutates.",
+    "disposition": "GAP: the settle API carries acks/retries/extends (src/product.rs:6763) but no test forces stale retry/ack/extend orderings; only settle-side stale fencing exists (9409, 24621).",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: stale retry, ack, and extend in forced orders; only matching generation mutates."
+    }
+  },
+  {
+    "id": "QUE-007",
+    "owner": "src/application/consumer.rs",
+    "state": "partial",
+    "mechanism": "crash around poison settle and DLQ append; never lose message or duplicate terminal state.",
+    "disposition": "Controlled target group-write failure fires; source lease/cursor and target durable count remain unchanged. Exact retry creates one durable DLQ record then settles source once; another retry is stale and creates no duplicate. Crash after DLQ commit before source settlement is still a separate pending matrix leg.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/consumer_product.rs::product_consumer_dlq_flow",
+        "src/dst/tests/consumer_dlq.rs::r07_failed_dlq_commit_retains_source_lease_and_exact_retry_settles_once"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: crash around poison settle and DLQ append; never lose message or duplicate terminal state."
+    }
+  },
+  {
+    "id": "QUE-008",
+    "owner": "src/application/consumer.rs",
+    "state": "partial",
+    "mechanism": "target deleted/recreated same name; pinned epoch prevents silent delivery to replacement.",
+    "disposition": "The typed append boundary now directly proves expected_epoch rejects a same-name replacement before write, including the boundary used by DLQ. A configured consumer/DLQ operation parked across target delete/recreate is still pending; this adjacent test is not claimed as that end-to-end race.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/append_application.rs::r02_append_target_fence_rejects_same_name_recreation"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: target deleted/recreated same name; pinned epoch prevents silent delivery to replacement."
+    }
+  },
+  {
+    "id": "QUE-010",
+    "owner": "src/application/consumer.rs",
+    "state": "pending",
+    "mechanism": "active leases across merge; successor state exact.",
+    "disposition": "GAP: only split lineage (9604) exists; no consumer-across-merge test.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: active leases across merge; successor state exact."
+    }
+  },
+  {
+    "id": "QUE-012",
+    "owner": "src/application/consumer.rs",
+    "state": "pending",
+    "mechanism": "many consumers/leases; scans, memory, and object requests remain bounded.",
+    "disposition": "The catalogue procedure has no concrete local test. Preserve this obligation and execute the specified failure/order/load matrix under the owning harness.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: many consumers/leases; scans, memory, and object requests remain bounded."
+    }
+  },
+  {
+    "id": "WAT-001",
+    "owner": "src/application/watch.rs",
+    "state": "partial",
+    "mechanism": "pause remote durability; waiter must not wake; release and require read sees data immediately.",
+    "disposition": "Wakes ride post-durability acker ingest ('TouchFeed -> post-durability acker ingest', ~9770) and 9736 asserts no spurious wake before fence; the explicit 'pause durability, waiter must not wake' hold is not driven.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/watch_observation.rs::touch_close_shard_matches_route_hash_not_storage_hash",
+        "src/dst/tests/watch_observation.rs::product_watch_wakes_on_matching_append"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: pause remote durability; waiter must not wake; release and require read sees data immediately."
+    }
+  },
+  {
+    "id": "WAT-005",
+    "owner": "src/application/watch.rs",
+    "state": "pending",
+    "mechanism": "watch active across split/merge, matching updates once.",
+    "disposition": "GAP: no watch-definition-across-split test (SSE/livefeed lineage is covered; watches are not).",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: watch active across split/merge, matching updates once."
+    }
+  },
+  {
+    "id": "WAT-006",
+    "owner": "src/application/watch.rs",
+    "state": "pending",
+    "mechanism": "delete/recreate collection while old watch update is parked; replacement unchanged.",
+    "disposition": "GAP: no delete/recreate-during-parked-watch-update test.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: delete/recreate collection while old watch update is parked; replacement unchanged."
+    }
+  },
+  {
+    "id": "SEC-002",
+    "owner": "src/security and public transport adapters",
+    "state": "local_mechanism",
+    "mechanism": "unauthenticated 32 MiB request rejected before body allocation/read.",
+    "disposition": "Actual Body::poll_frame sentinel across raw and product paths: unauthorized mutation requests, valid bodyless reads, signed watch access and expired watch tokens must not poll. Poll count stays zero; response status is checked. This is the body-poll mechanism, not a payload-allocation proxy.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/review_security.rs::r15_bodyless_and_unauthorized_requests_never_poll_the_body"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Production/fleet acceptance is pending where required by the catalogue status."
+    }
+  },
+  {
+    "id": "SEC-004",
+    "owner": "src/security and public transport adapters",
+    "state": "partial",
+    "mechanism": "wrong key on create resume, seal, fork, consumer/DLQ config; no state change.",
+    "disposition": "Create-resume, DLQ-config, and seal key-check-before-intent legs covered; wrong-key fork and consumer-config legs not separately driven. (11899 line 11955: 'A wrong key must not move the lifecycle at all.')",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/lifecycle_creation.rs::an_initialization_cannot_be_resumed_with_another_key",
+        "src/dst/tests/consumer_product.rs::dead_letter_link_requires_a_shared_key",
+        "src/dst/tests/seal_coordination.rs::seal_requests_are_identified_and_validated_exactly"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: wrong key on create resume, seal, fork, consumer/DLQ config; no state change."
+    }
+  },
+  {
+    "id": "SEC-007",
+    "owner": "src/security and public transport adapters",
+    "state": "partial",
+    "mechanism": "provider page underfull after dead/vanished entries; continuation still reaches later live streams.",
+    "disposition": "Dense tombstone run + underfull-page continuation covered; 'vanished object' (descriptor GET failure mid-page) leg not driven.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/lifecycle_creation.rs::catalog_paging_survives_dense_dead_entries"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: provider page underfull after dead/vanished entries; continuation still reaches later live streams."
+    }
+  },
+  {
+    "id": "SEC-008",
+    "owner": "src/security and public transport adapters",
+    "state": "pending",
+    "mechanism": "one descriptor GET fails; page retries/fails honestly, never advances past omitted live resource.",
+    "disposition": "GAP: registry failpoints fail_next_get/fail_next_list exist but are used by the consumer-saga (24317) and quota-seed (29601) tests, not by a catalog page-walk test.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: one descriptor GET fails; page retries/fails honestly, never advances past omitted live resource."
+    }
+  },
+  {
+    "id": "SEC-011",
+    "owner": "src/security and public transport adapters",
+    "state": "pending",
+    "mechanism": "pinned suite exact 332/0/6; changed skips/failures fail CI.",
+    "disposition": "Pinned expected.json in conformance/; runs outside the Rust suite.",
+    "closure_evidence": {
+      "source_tests": [
+        "conformance/conformance.test.mjs::conformance suite (node --test)",
+        "conformance/check.mjs::conformance checker"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: pinned suite exact 332/0/6; changed skips/failures fail CI."
+    }
+  },
+  {
+    "id": "SDK-001",
+    "owner": "sdk/src/index.ts",
+    "state": "pending",
+    "mechanism": "headers+cursor then truncated body; discard speculative response and retry committed cursor.",
+    "disposition": "Benchmark-harness client logic (bench/awsbench/src/main.rs:835-904): truncated/failed body drains and DISCARDS the speculative response, re-polls from the committed cursor. Not a #[test].",
+    "closure_evidence": {
+      "source_tests": [
+        "bench/awsbench/src/main.rs::pipelined long-poll chaser (speculative response discard)"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: headers+cursor then truncated body; discard speculative response and retry committed cursor."
+    }
+  },
+  {
+    "id": "SDK-002",
+    "owner": "sdk/src/index.ts",
+    "state": "local_mechanism",
+    "mechanism": "abort during fetch and during Retry-After sleep; prompt termination.",
+    "disposition": "Existing real-server smoke aborts fetch. Controlled Node runtime tests additionally park a pull and abort a five-second Retry-After wait, asserting prompt completion and no replay. These mocked transport legs do not substitute for the pending Bun/Deno/live-server runtime matrix.",
+    "closure_evidence": {
+      "source_tests": [
+        "sdk/smoke.mjs::abort leg of smoke.mjs",
+        "sdk/scripts/retry-classification.test.mjs::cancellation interrupts status backoff without replay",
+        "sdk/scripts/consumer-cleanup.test.mjs::iterator return cancels an in-flight parked pull"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Production/fleet acceptance is pending where required by the catalogue status."
+    }
+  },
+  {
+    "id": "SDK-003",
+    "owner": "sdk/src/index.ts",
+    "state": "local_mechanism",
+    "mechanism": "one million routing keys with sparse activity; resolved chain entries evict.",
+    "disposition": "One million unique routing keys run through the actual producer chain primitive in held cohorts of 128. Entered operations and every injected rejection are counted; map cardinality equals in-flight cohort and returns to zero after every cohort. Peak is exactly 128; no swallowed caller failure. Node runtime local mechanism; retained-state persistence has a separate owner.",
+    "closure_evidence": {
+      "source_tests": [
+        "sdk/scripts/producer-ordering.test.mjs::one million sparse producer scopes release every fulfilled and rejected chain"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Production/fleet acceptance is pending where required by the catalogue status."
+    }
+  },
+  {
+    "id": "FLT-004",
+    "owner": "src/fleet.rs fleet campaign owner",
+    "state": "pending",
+    "mechanism": "nodes join over simulated minutes while traffic continues; reproduce historical 371,900-record loss shape and require exact set.",
+    "disposition": "The 371,900-record loss shape is referenced; single-node wedge repro (2619) is the nearest analogue, not the fleet scenario.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: nodes join over simulated minutes while traffic continues; reproduce historical 371,900-record loss shape and require exact set."
+    }
+  },
+  {
+    "id": "FLT-005",
+    "owner": "src/fleet.rs fleet campaign owner",
+    "state": "pending",
+    "mechanism": "route cache several versions stale; \u2264 configured replay hops, no duplicate dispatch commit.",
+    "disposition": "The catalogue procedure has no concrete local test. Preserve this obligation and execute the specified failure/order/load matrix under the owning harness.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: route cache several versions stale; \u2264 configured replay hops, no duplicate dispatch commit."
+    }
+  },
+  {
+    "id": "FLT-006",
+    "owner": "src/fleet.rs fleet campaign owner",
+    "state": "pending",
+    "mechanism": "crash owner, no customer touch to selected stream; new owner discovers dirty marker and drains.",
+    "disposition": "Single-node analogue exists (untouched_streams_absorb_after_restart:3870); fleet leg needs the simulator.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: crash owner, no customer touch to selected stream; new owner discovers dirty marker and drains."
+    }
+  },
+  {
+    "id": "FLT-009",
+    "owner": "src/fleet.rs fleet campaign owner",
+    "state": "pending",
+    "mechanism": "pause retains memory/ownership timeout behavior; crash drops state and requires reconstruction.",
+    "disposition": "The catalogue procedure has no concrete local test. Preserve this obligation and execute the specified failure/order/load matrix under the owning harness.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: pause retains memory/ownership timeout behavior; crash drops state and requires reconstruction."
+    }
+  },
+  {
+    "id": "FLT-010",
+    "owner": "src/fleet.rs fleet campaign owner",
+    "state": "pending",
+    "mechanism": "several nodes compute desired state; CAS losses converge without write storm.",
+    "disposition": "The catalogue procedure has no concrete local test. Preserve this obligation and execute the specified failure/order/load matrix under the owning harness.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: several nodes compute desired state; CAS losses converge without write storm."
+    }
+  },
+  {
+    "id": "FLT-011",
+    "owner": "src/fleet.rs fleet campaign owner",
+    "state": "pending",
+    "mechanism": "1\u2192N\u21921, traffic throughout, no fence war or phantom owner.",
+    "disposition": "The catalogue procedure has no concrete local test. Preserve this obligation and execute the specified failure/order/load matrix under the owning harness.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: 1\u2192N\u21921, traffic throughout, no fence war or phantom owner."
+    }
+  },
+  {
+    "id": "FLT-012",
+    "owner": "src/fleet.rs fleet campaign owner",
+    "state": "pending",
+    "mechanism": "crash half nodes; survivors acquire shards within bound and exact data remains.",
+    "disposition": "The catalogue procedure has no concrete local test. Preserve this obligation and execute the specified failure/order/load matrix under the owning harness.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: crash half nodes; survivors acquire shards within bound and exact data remains."
+    }
+  },
+  {
+    "id": "FLT-013",
+    "owner": "src/fleet.rs fleet campaign owner",
+    "state": "pending",
+    "mechanism": "N instances over long virtual time; heartbeat/list/peer reads remain within O(N) budget.",
+    "disposition": "The catalogue procedure has no concrete local test. Preserve this obligation and execute the specified failure/order/load matrix under the owning harness.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: N instances over long virtual time; heartbeat/list/peer reads remain within O(N) budget."
+    }
+  },
+  {
+    "id": "FLT-014",
+    "owner": "src/fleet.rs fleet campaign owner",
+    "state": "pending",
+    "mechanism": "stale map route, sealed parent response, retry/resume; no user-visible closure.",
+    "disposition": "Nearest single-node leg: seal_gap_stale_descriptor_redispatches:6407 (stale map refresh + redispatch).",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: stale map route, sealed parent response, retry/resume; no user-visible closure."
+    }
+  },
+  {
+    "id": "FLT-015",
+    "owner": "src/fleet.rs fleet campaign owner",
+    "state": "pending",
+    "mechanism": "fault-heavy multi-node phase, heal one viable core, require all lifecycle/topology/history/debt measures converge.",
+    "disposition": "The catalogue procedure has no concrete local test. Preserve this obligation and execute the specified failure/order/load matrix under the owning harness.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: fault-heavy multi-node phase, heal one viable core, require all lifecycle/topology/history/debt measures converge."
+    }
+  },
+  {
+    "id": "RES-007",
+    "owner": "src/admission.rs and src/tasks.rs runtime capacity",
+    "state": "pending",
+    "mechanism": "noncompliant client instant-retries 429; tarpit/admission preserves health and control loop.",
+    "disposition": "The catalogue procedure has no concrete local test. Preserve this obligation and execute the specified failure/order/load matrix under the owning harness.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: noncompliant client instant-retries 429; tarpit/admission preserves health and control loop."
+    }
+  },
+  {
+    "id": "RES-008",
+    "owner": "src/admission.rs and src/tasks.rs runtime capacity",
+    "state": "pending",
+    "mechanism": "inject long CPU jobs on one worker; dedicated runtime preserves ack progress; no timer starvation beyond budget.",
+    "disposition": "The catalogue procedure has no concrete local test. Preserve this obligation and execute the specified failure/order/load matrix under the owning harness.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: inject long CPU jobs on one worker; dedicated runtime preserves ack progress; no timer starvation beyond budget."
+    }
+  },
+  {
+    "id": "COST-001",
+    "owner": "bench/costab storage-cost campaign owner",
+    "state": "pending",
+    "mechanism": "b1/b10/large batch; WAL PUTs and Class A/GiB within budget.",
+    "disposition": "Campaign-level: bench/costab (run-soak.sh/run-wide.sh). In-suite supporting pin only: object_classes_match_production_telemetry:198 (classifier matches production telemetry).",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: b1/b10/large batch; WAL PUTs and Class A/GiB within budget."
+    }
+  },
+  {
+    "id": "COST-002",
+    "owner": "bench/costab storage-cost campaign owner",
+    "state": "partial",
+    "mechanism": "30 virtual minutes; LIST count within gate, WAL listing policy explicit.",
+    "disposition": "In-suite: idle engine's store traffic is exactly the manifest/compactions poll cadence, op-class counted (require(mech::STORE_LATENCY) at 2922). The 30-virtual-minute LIST gate itself is campaign-level.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/runtime_open_gate.rs::idle_engine_store_traffic_is_bounded_by_the_poll_cadence"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: 30 virtual minutes; LIST count within gate, WAL listing policy explicit."
+    }
+  },
+  {
+    "id": "COST-003",
+    "owner": "bench/costab storage-cost campaign owner",
+    "state": "pending",
+    "mechanism": "same bytes across 10, 1k, 100k streams; history Class A nearly flat.",
+    "disposition": "Campaign-level: bench/costab (run-mature.sh/run-wide.sh).",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: same bytes across 10, 1k, 100k streams; history Class A nearly flat."
+    }
+  },
+  {
+    "id": "COST-005",
+    "owner": "bench/costab storage-cost campaign owner",
+    "state": "partial",
+    "mechanism": "64 callers cause one reader/open/index load.",
+    "disposition": "MECHANISM REPLACED: the 64-callers/one-open reader-cache gate has no exact successor; LiveFeed feed-sharing (one feed, one source read) and sse/registry budget tests pin the equivalent economics.",
+    "closure_evidence": {
+      "source_tests": [
+        "src/dst/tests/livefeed_basics.rs::livefeed_two_subscribers_share_one_feed_and_one_source_read",
+        "src/sse/registry.rs::last_subscriber_evicts_and_reconnect_does_not_grow",
+        "src/sse/registry.rs::shared_subscribers_cost_nothing_until_retention"
+      ],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: 64 callers cause one reader/open/index load."
+    }
+  },
+  {
+    "id": "COST-006",
+    "owner": "bench/costab storage-cost campaign owner",
+    "state": "pending",
+    "mechanism": "one append per minute; L0/manifest work follows WAL count/bytes/age budget, not one flush per append.",
+    "disposition": "Future gate; src/main.rs:1610 unflushed_at_or_below_l0_is_rejected_before_any_engine_opens is a config guard, not the budget.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: one append per minute; L0/manifest work follows WAL count/bytes/age budget, not one flush per append."
+    }
+  },
+  {
+    "id": "COST-007",
+    "owner": "bench/costab storage-cost campaign owner",
+    "state": "pending",
+    "mechanism": "retries, 304/412, lost response; logical and physical counts reconcile and billable class is correct.",
+    "disposition": "The catalogue procedure has no concrete local test. Preserve this obligation and execute the specified failure/order/load matrix under the owning harness.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: retries, 304/412, lost response; logical and physical counts reconcile and billable class is correct."
+    }
+  },
+  {
+    "id": "COST-008",
+    "owner": "bench/costab storage-cost campaign owner",
+    "state": "pending",
+    "mechanism": "1, 100, 10k subscribers; ring/cache/coalescing keep Class B within bound.",
+    "disposition": "Nearest in-suite fanout economics: 32317 (two subscribers, one source read) and livefeed_seal_retry_is_one_task_per_feed_at_fanout:34585; the 1/100/10k Class B bound is L2.",
+    "closure_evidence": {
+      "source_tests": [],
+      "execution": "Requires final-HEAD execution receipt for local tests; source-symbol availability is not a pass.",
+      "remaining": "Pending: 1, 100, 10k subscribers; ring/cache/coalescing keep Class B within bound."
+    }
+  }
+]

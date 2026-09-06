@@ -6407,4 +6407,8 @@ mod queue_publication_tests {
 }
 
 #[cfg(test)]
+#[path = "shard/durability_frontier_tests.rs"]
+mod durability_frontier_tests;
+
+#[cfg(test)]
 mod queue_codec_tests;

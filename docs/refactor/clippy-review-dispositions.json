@@ -1,0 +1,123 @@
+[
+  {
+    "kind": "strict_subset",
+    "baseline_commit": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+    "original_fingerprint": "associated items `clean` and `with_op_class` are never used :: src/dst/fault_store.rs",
+    "current_fingerprint": "method `with_op_class` is never used :: src/dst/fault_store.rs",
+    "proof": "clean is now used by new fault regressions; with_op_class remains the same pre-existing uncalled builder. Its complete function-token hash matches the original Git source. No new method or lint kind is accepted.",
+    "symbol": "src/dst/fault_store.rs::with_op_class",
+    "function_sha256": "3cd9693b13b0ac49b6b04dc9a88d1879bca40bb45f5d372285400f6e9fd8064d"
+  },
+  {
+    "kind": "relocation",
+    "baseline_commit": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+    "original_fingerprint": "field assignment outside of initializer for an instance created with Default::default() :: src/dst/dst_tests.rs",
+    "current_fingerprint": "field assignment outside of initializer for an instance created with Default::default() :: src/dst/tests/runtime_open_gate.rs",
+    "proof": "R11 assigns the original DST tests to this owner. The test-relocations and token-hash inventories preserve the exact original obligations, with separately recorded reviewed adaptations. The warning message is byte-identical to the original monolith fingerprint.",
+    "relocation_evidence": "docs/refactor/test-relocations.json"
+  },
+  {
+    "kind": "relocation",
+    "baseline_commit": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+    "original_fingerprint": "this `MutexGuard` is held across an await point :: src/dst/dst_tests.rs",
+    "current_fingerprint": "this `MutexGuard` is held across an await point :: src/dst/tests/reads_applied.rs",
+    "proof": "R11 assigns the original DST tests to this owner. The test-relocations and token-hash inventories preserve the exact original obligations, with separately recorded reviewed adaptations. The warning message is byte-identical to the original monolith fingerprint.",
+    "relocation_evidence": "docs/refactor/test-relocations.json"
+  },
+  {
+    "kind": "relocation",
+    "baseline_commit": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+    "original_fingerprint": "unnecessary use of `get(\"access-control-allow-headers\").is_some()` :: src/dst/dst_tests.rs",
+    "current_fingerprint": "unnecessary use of `get(\"access-control-allow-headers\").is_some()` :: src/dst/tests/security_routes.rs",
+    "proof": "R11 assigns the original DST tests to this owner. The test-relocations and token-hash inventories preserve the exact original obligations, with separately recorded reviewed adaptations. The warning message is byte-identical to the original monolith fingerprint.",
+    "relocation_evidence": "docs/refactor/test-relocations.json"
+  },
+  {
+    "kind": "relocation",
+    "baseline_commit": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+    "original_fingerprint": "unnecessary use of `get(\"prisma-durable-cursor\").is_none()` :: src/dst/dst_tests.rs",
+    "current_fingerprint": "unnecessary use of `get(\"prisma-durable-cursor\").is_none()` :: src/dst/tests/reads_applied.rs",
+    "proof": "R11 assigns the original DST tests to this owner. The test-relocations and token-hash inventories preserve the exact original obligations, with separately recorded reviewed adaptations. The warning message is byte-identical to the original monolith fingerprint.",
+    "relocation_evidence": "docs/refactor/test-relocations.json"
+  },
+  {
+    "kind": "relocation",
+    "baseline_commit": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+    "original_fingerprint": "unnecessary use of `get(\"prisma-next-cursor\").is_some()` :: src/dst/dst_tests.rs",
+    "current_fingerprint": "unnecessary use of `get(\"prisma-next-cursor\").is_some()` :: src/dst/tests/reads_product.rs",
+    "proof": "R11 assigns the original DST tests to this owner. The test-relocations and token-hash inventories preserve the exact original obligations, with separately recorded reviewed adaptations. The warning message is byte-identical to the original monolith fingerprint.",
+    "relocation_evidence": "docs/refactor/test-relocations.json"
+  },
+  {
+    "kind": "relocation",
+    "baseline_commit": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+    "original_fingerprint": "unnecessary use of `get(\"prisma-next-scan-cursor\").is_none()` :: src/dst/dst_tests.rs",
+    "current_fingerprint": "unnecessary use of `get(\"prisma-next-scan-cursor\").is_none()` :: src/dst/tests/reads_product.rs",
+    "proof": "R11 assigns the original DST tests to this owner. The test-relocations and token-hash inventories preserve the exact original obligations, with separately recorded reviewed adaptations. The warning message is byte-identical to the original monolith fingerprint.",
+    "relocation_evidence": "docs/refactor/test-relocations.json"
+  },
+  {
+    "kind": "relocation",
+    "baseline_commit": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+    "original_fingerprint": "unnecessary use of `get(\"prisma-pending-from\").is_none()` :: src/dst/dst_tests.rs",
+    "current_fingerprint": "unnecessary use of `get(\"prisma-pending-from\").is_none()` :: src/dst/tests/reads_applied.rs",
+    "proof": "R11 assigns the original DST tests to this owner. The test-relocations and token-hash inventories preserve the exact original obligations, with separately recorded reviewed adaptations. The warning message is byte-identical to the original monolith fingerprint.",
+    "relocation_evidence": "docs/refactor/test-relocations.json"
+  },
+  {
+    "kind": "relocation",
+    "baseline_commit": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+    "original_fingerprint": "unnecessary use of `get(\"prisma-sealed\").is_none()` :: src/dst/dst_tests.rs",
+    "current_fingerprint": "unnecessary use of `get(\"prisma-sealed\").is_none()` :: src/dst/tests/reads_product.rs",
+    "proof": "R11 assigns the original DST tests to this owner. The test-relocations and token-hash inventories preserve the exact original obligations, with separately recorded reviewed adaptations. The warning message is byte-identical to the original monolith fingerprint.",
+    "relocation_evidence": "docs/refactor/test-relocations.json"
+  },
+  {
+    "kind": "relocation",
+    "baseline_commit": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+    "original_fingerprint": "unnecessary use of `get(\"stream-next-offset\").is_none()` :: src/dst/dst_tests.rs",
+    "current_fingerprint": "unnecessary use of `get(\"stream-next-offset\").is_none()` :: src/dst/tests/reads_product.rs",
+    "proof": "R11 assigns the original DST tests to this owner. The test-relocations and token-hash inventories preserve the exact original obligations, with separately recorded reviewed adaptations. The warning message is byte-identical to the original monolith fingerprint.",
+    "relocation_evidence": "docs/refactor/test-relocations.json"
+  },
+  {
+    "kind": "relocation",
+    "baseline_commit": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+    "original_fingerprint": "unnecessary use of `get(\"stream-up-to-date\").is_none()` :: src/dst/dst_tests.rs",
+    "current_fingerprint": "unnecessary use of `get(\"stream-up-to-date\").is_none()` :: src/dst/tests/reads_product.rs",
+    "proof": "R11 assigns the original DST tests to this owner. The test-relocations and token-hash inventories preserve the exact original obligations, with separately recorded reviewed adaptations. The warning message is byte-identical to the original monolith fingerprint.",
+    "relocation_evidence": "docs/refactor/test-relocations.json"
+  },
+  {
+    "kind": "relocation",
+    "baseline_commit": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+    "original_fingerprint": "unnecessary use of `to_string` :: src/dst/dst_tests.rs",
+    "current_fingerprint": "unnecessary use of `to_string` :: src/dst/tests/livefeed_history.rs",
+    "proof": "R11 assigns the original DST tests to this owner. The test-relocations and token-hash inventories preserve the exact original obligations, with separately recorded reviewed adaptations. The warning message is byte-identical to the original monolith fingerprint.",
+    "relocation_evidence": "docs/refactor/test-relocations.json"
+  },
+  {
+    "kind": "relocation",
+    "baseline_commit": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+    "original_fingerprint": "unnecessary use of `to_string` :: src/dst/dst_tests.rs",
+    "current_fingerprint": "unnecessary use of `to_string` :: src/dst/tests/livefeed_ownership.rs",
+    "proof": "R11 assigns the original DST tests to this owner. The test-relocations and token-hash inventories preserve the exact original obligations, with separately recorded reviewed adaptations. The warning message is byte-identical to the original monolith fingerprint.",
+    "relocation_evidence": "docs/refactor/test-relocations.json"
+  },
+  {
+    "kind": "relocation",
+    "baseline_commit": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+    "original_fingerprint": "unnecessary use of `to_string` :: src/dst/dst_tests.rs",
+    "current_fingerprint": "unnecessary use of `to_string` :: src/dst/tests/topology_scaling.rs",
+    "proof": "R11 assigns the original DST tests to this owner. The test-relocations and token-hash inventories preserve the exact original obligations, with separately recorded reviewed adaptations. The warning message is byte-identical to the original monolith fingerprint.",
+    "relocation_evidence": "docs/refactor/test-relocations.json"
+  },
+  {
+    "kind": "relocation",
+    "baseline_commit": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+    "original_fingerprint": "you seem to be trying to use `match` for destructuring a single pattern. Consider using `if let` :: src/dst/dst_tests.rs",
+    "current_fingerprint": "you seem to be trying to use `match` for destructuring a single pattern. Consider using `if let` :: src/dst/tests/durability_failures.rs",
+    "proof": "R11 assigns the original DST tests to this owner. The test-relocations and token-hash inventories preserve the exact original obligations, with separately recorded reviewed adaptations. The warning message is byte-identical to the original monolith fingerprint.",
+    "relocation_evidence": "docs/refactor/test-relocations.json"
+  }
+]

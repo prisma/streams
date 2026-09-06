@@ -235,6 +235,11 @@ def main() -> int:
     report.append("authoritative; this file is a view. Validation (same IDs as")
     report.append("`docs/dst/SCENARIO-CATALOG.md`, unique, mapped-iff-tests,")
     report.append("coverage values, test-symbol existence) runs with `--check`.")
+    report.append("This is source-inventory consistency, not execution certification. A full mapping")
+    report.append("describes the local mechanism; it does not certify fleet/cloud/runtime legs.")
+    report.append("`scenario-dispositions.json` preserves partial/unmapped obligations, owners and")
+    report.append("required evidence. `review-mechanisms.json` pins reviewed regression bodies;")
+    report.append("`review-evidence.py` separately verifies final-HEAD execution receipts.")
     report.append("")
     report.append(f"Catalogue source: `docs/dst/SCENARIO-CATALOG.md` "
                   f"({len(catalog)} scenarios).")

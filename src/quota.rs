@@ -906,7 +906,7 @@ impl QuotaRegistry {
                 ));
             }
         }
-        rows.sort_by(|x, y| y.0.cmp(&x.0));
+        rows.sort_by_key(|x| std::cmp::Reverse(x.0));
         rows.truncate(limit);
         serde_json::json!({
             "projects_memory_engaged": engaged,

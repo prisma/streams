@@ -1,0 +1,707 @@
+{
+  "commit": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+  "schema": 1,
+  "source_sha256": {
+    "src/admission.rs": "d52f9e16d60d29e30bbde5f45723dab298eca4ad0a899de63d749030703c523c",
+    "src/audit.rs": "c3d2394916937b76184c4e4ad84aa72365c7cb250342a3ad4cc8ed68dcc5cd1e",
+    "src/auth.rs": "8e0ba4cb3e8c68a64fe236b274682aed0aef940526e74ab6ccf16a0edcdcab86",
+    "src/auth_feed.rs": "a717f3401fb03d3acbe6ff992a9dcb30051d64612f155999503e67b9641d5672",
+    "src/backpressure.rs": "d97d98734a665d72b0968e7156ffb1f1bab121885d062830861a691044e2edfe",
+    "src/billing.rs": "26d6dd100bd48c046f8d9d1f15cda52bd628e84eb3ef1a37023e5c15ff96aee4",
+    "src/billing_service.rs": "691aa6b8562f4b00a0935d1addb15a0be6b6fd43149fdd5be7c196116954ca38",
+    "src/bin/bench.rs": "a29a535b708d66fdb28165488a39eea0fd27d2663aa6dca2ada716d204af0921",
+    "src/bin/cryptobench.rs": "4cecd4c4beb3af70feb8b2b282b5bb35ab11804382fc6243f0065432f2ff9ada",
+    "src/bin/edgesim.rs": "95af8413893d3b821191957fbb3e898052bc306f74663993a339e4f542bbe1b7",
+    "src/bin/keys.rs": "c0a75890887c5f2611e75fa19cfa49d96f4f8d52dc0af05e9f88cfefb86d9a3a",
+    "src/bin/livebench.rs": "d59e3a883f664b393193fbca90b999cef9d002f174fec11ee96d959f0dfcec7a",
+    "src/bin/pilot.rs": "82a5ac030568db26e6cbbec7b2743a05ca9a6ed5e0d16f3fc0791f560c66f755",
+    "src/bin/s3lite.rs": "a73625ecfbab5a653abef9910053ef1e7ccb25f0397fbc758207b43eb94b7c84",
+    "src/bin/verify.rs": "06bfcfeba353feba938f5980cab1afe8eeb188159443f4fda46b45455a39c847",
+    "src/bootstrap.rs": "d1d23acf08098c5a183571dd554cf374111197fe23125cdf36b30c93ccb0a96c",
+    "src/config/cli.rs": "acd035a923d1b56718d306fdc505421ef6cc8daa87621a440b6cf8acef023a0b",
+    "src/config/environment.rs": "c24aec9eb5084482deb9dc278569a727c4aba15a28d8ba3e883b06e49444f58e",
+    "src/config/load.rs": "2d4875c1cfcc00210111957dfdaddd8439de81055314b82e30c7f795be843b58",
+    "src/config/mod.rs": "526d52b4a283420ec32a22e2f7c125a818e94eaa2ab165cbcce2931fdf6972bb",
+    "src/config/model.rs": "89817058aed86d069d234fcabbb0d5c8e323ab4f421af91d5d63122e7b55b083",
+    "src/config/notice.rs": "4c5dbad77d1d09fe603c47d55f3168f93d82d33f57a9dacaecee9cfb13077685",
+    "src/config/profile.rs": "d25d6530021b12ebdfb112a44c9868ec0d40b20abf4abc60e531e28eea19be5d",
+    "src/config/summary.rs": "8b2683d3f98edf07fda1142e9101287b789603e7adc8029a9ca3c9566d447d7d",
+    "src/config/tests.rs": "ca61a44729ed56254612c5d44f815c7173b0bdad841361ea21a177c0e8e29254",
+    "src/config/validation.rs": "5678ff0c669543ecd4d4cbecff80f100a0e453cab4d0595e5ee43006154dc717",
+    "src/config/validation_tests.rs": "5f12baad67837def2108fb79289ec67ef19e5a9bedb450014f7890beced33c18",
+    "src/crypto.rs": "2bb72abb81e672b9c27bcb772dc29fb68aa39231b372160dc58b441d3c306da9",
+    "src/deployment.rs": "cb2eddfe5e8b5366306a58599e8e5731224ee7ffc7cdd58bab27979921aa83d1",
+    "src/deployment_bearer.rs": "b981616d3740941562dd1694441269955807ca1fb041544936f6384360900124",
+    "src/dst/dst_tests.rs": "909a89c378f0acd8570137cf4b458ed89a54cfb7b695ed11cb4795f38e21b7fb",
+    "src/dst/fault_store.rs": "7bd6f2a03e33ce61a88d4c41f845923c8fb2b7f3f9c64b1f8624e09c2e50e5cc",
+    "src/dst/mod.rs": "ff107cb0818bcc4c499d44cad330773682a0bddb092ca402a10ce14ad57b1a7e",
+    "src/dst/runtime.rs": "682c5dcfb61658291a001ed93634d954c2849a2d48fa89475bef321a905c8183",
+    "src/dst/trace_store.rs": "5347e4d8b26d8d2f5df8a356c3d3c1eb2e69a2e1f7a899b09b85af8be32a3cde",
+    "src/dst/trace_store_tests/basic.rs": "50103a6dd06d2e933e507eb4e6fa522da037c0faaad27f9dca12df5b443e83f8",
+    "src/dst/trace_store_tests/cancellation.rs": "8f22184f8f9a26be2f4adae10f750475ab151a2dcf95119b5702d6212f9d27fe",
+    "src/dst/trace_store_tests/concurrency.rs": "41637583e29198768a1c273f2528f7e336cb236c7535f10c6d627a08b7ae5e72",
+    "src/dst/trace_store_tests/delete_accounting.rs": "f791fa1b362e357d0ff0b7604c037c2e3c9e012edc28785533fed7f2ccc13c19",
+    "src/dst/trace_store_tests/mod.rs": "f7bd24e3081d239f22d1f6cb3e60a4a652fd8b65cc138c1f678a83bb9f4d86ab",
+    "src/dst/trace_store_tests/streams.rs": "d1a982853be0ce9a55ed1f36217575a0093414011b64cc18bb2cf8588093068d",
+    "src/failpoints.rs": "57de11c3749bae49f81898b4cb32925107201d06d24bfb7ca1cae1132336d7aa",
+    "src/fleet.rs": "863320731231e754345226cfbb5c7652385b50f8b13ae7c185bb339c9301094c",
+    "src/fleet/repository.rs": "197eae82f2a150238c1bf749f8e35a77e58d7fb716cb4dfc9df2d387af386cd0",
+    "src/golden_tests.rs": "e25fc49cfee2ddcbb9fd821baebf559b266ce424d11c8c58c80e6acd5b14fa95",
+    "src/history.rs": "bf7d3bebab442410178cc762827ebae075bff0cc05828b8bd40272e9f2b8a29d",
+    "src/http.rs": "3abb1a5811c5ffd948e1559bd181806c375bddeafc9a34aeccc82e1ccb6567f7",
+    "src/lib.rs": "959990fb00c8cddc10f0312414169cedfb75b26076e4d21fe44d9270fef43f7a",
+    "src/main.rs": "cf92f363ff0f5f23e5378d21a79c262fabfd84e1052562e184931fa24f79a01b",
+    "src/mt_lint.rs": "6d2e4bba42ba0f6c1cac6ad353fe59a7f01e732137da21e365e226ab917cfec5",
+    "src/offsets.rs": "498fe0d09c84aa6787d2b77bf0c5e6c07c181309b7610c478d0ed2057bc06aae",
+    "src/operator.rs": "618669881cd2915aeca98d4b138c2809b1bf197c05a6b8dcf73018bf95473c14",
+    "src/ops.rs": "e2d74f6c6fe313b50a746d9bdc0413b0c520d6d0a16c7124f92f98585f4c892c",
+    "src/ownership.rs": "4230066f0a7d4cf9c685e183b061a0e6c44d9e68b3b93338b472012310c69ff7",
+    "src/peer.rs": "b819a1c93f0d9c9fb39f254b93e292abb46a47bc5435508a4dd9d9e52759fbe8",
+    "src/postings.rs": "53e0c49f5fbc5a962bb432264497e7d454613094a2209709abeecfa735ee606c",
+    "src/postings_cache.rs": "be817b56e5d6c7889857363c3b561e3e68ef1e42497a2b8a712edd84d940e1bc",
+    "src/product.rs": "51d7c3eef11e5709b930c0281ce3f836af5653fc7a24e69b3613b061206f960e",
+    "src/product_cursor.rs": "331483bbc79ea722990a080e61888019fe95d0d52aa17785ecda14ee25929b7b",
+    "src/project_policy.rs": "f0e813d7f7e9fa7618c5ec7406396feda34abf7e70c673469b5388e6dc1fd3d2",
+    "src/protocol_pin.rs": "9c6e3f39fbaf89de6ba7594d5147462b12010e1b6bdd25f6a1a8ef140c457f60",
+    "src/queue.rs": "e6838e0e50bdaf2e91c2be9c7245ea51645c917f1677d43328fb25de9526064e",
+    "src/quota.rs": "8e9194ded870e6ff5710feaef8d5d1774ffca51f245fb4b1182e87f04cfba418",
+    "src/registry.rs": "a414f5f24c2129c85f91800508a8889438083bb76245c1d68fcd305796f2ff20",
+    "src/rollup.rs": "0d1e0f58ef5eba68b9cf266fc884274b4a73508dba90d09160e1d224b97d0d82",
+    "src/runtime.rs": "c31dbdbdb3a2cb37e9bd93ce61afaa798ff7de1badb4377d4de175626466e39a",
+    "src/scaler3.rs": "3650a339d3b4e26657f53a5c24c7e15f26437e05c8da75c4248b3933c8ccd556",
+    "src/segmap.rs": "6a6ac473515ade2c175ce35dd1c7c59523a9141175f47d18adf559034cea18a1",
+    "src/shard.rs": "403ddd3f0f349344b3075cc39e5ecab93e3a567f29faf00998fb058a37767d78",
+    "src/shard_directory.rs": "513cd7e1f0fae9bfa44b7c8d15203e4a1cd00e5810d5552fe6c532316012dd0c",
+    "src/sharddir.rs": "24db91f3d2eb21f0e5dd85f03efe3e4f966442681be03ef37fa08c2bf459db5e",
+    "src/sketch.rs": "d754862544b7ddd67a47a4258d2a13da0bbbc18f599a56ab8517b6d32175040b",
+    "src/sse/auth.rs": "38a8a7a826b288eb2a14853d30ffbac36eabcf5787a332f96ad1d36cfe0a3f19",
+    "src/sse/budget.rs": "578c7b9fd3d94bd2b18c288bae4078acf79e1f70fe10d04737e10470faa8a9af",
+    "src/sse/feed.rs": "057fd09051cc2ada855158129a9cbc959c9ebf458becf64197f996628eb58cab",
+    "src/sse/mod.rs": "dcc81648af01234cb7990d56603dff5e9f6cf4be9f5028c3aae3756242d80bd1",
+    "src/sse/registry.rs": "0061decbafc9f18199bdcf1acb84f08ad08bf5fe4a200ffaeb80bb44dbb3a89c",
+    "src/sse/service.rs": "e89545930f669d195dd7716f2f359f519b15cf1f4c97db2e51e7e98e7dd66645",
+    "src/sse/session.rs": "0e00af0719d4ed07bc8a80a3f8e0d5bc5aad9df2612121fae4b0dbdfab3253c9",
+    "src/sse/source.rs": "0f3eb4e53602ac47fb304dc607947ea2870079c3de9d1f168d92c2690c7263c4",
+    "src/sse/wire.rs": "290f3d3a7948ed4294ba6f3192f3dcc9e892352502ef3454e709302ffc810f3c",
+    "src/store_timing.rs": "a5b6c09d7610110ae1e8bb97570e35995d2eb60c408d40c030da97a538759b27",
+    "src/tasks.rs": "6b8a92fe87f2ff835d0ad0f1b29b0ca5dea7c56cfd3df2f978a4debb775d5ea8",
+    "src/tasks/signal.rs": "686e7f96618c33ff1ce257a6719934dc639200a530dadb0ccf17baf3461010e9",
+    "src/tenant.rs": "a7f43b44c388ecd0beb1722fa110995fd5a56a61bdf6d79ecf5932849b4a6fbb",
+    "src/touch.rs": "e90b94a18bac87745bf81ab0f079b068d06b140580a10d671086d622666d7267",
+    "src/touch_keys.rs": "d2000247f3ac5098cfb4320ea1963b4ec67fe8d85cb27ff5c6c285320ceefc70",
+    "src/usage.rs": "78a6b0c723cdc70e9fce3364e26ef0ab49c74cb2497527e99a164c5e0df2bf4f"
+  },
+  "metrics": {
+    "src/admission.rs": {
+      "test_only": false,
+      "lines": 621,
+      "functions": {},
+      "edges": {}
+    },
+    "src/audit.rs": {
+      "test_only": false,
+      "lines": 214,
+      "functions": {},
+      "edges": {
+        "http": 2
+      }
+    },
+    "src/auth.rs": {
+      "test_only": false,
+      "lines": 2148,
+      "functions": {},
+      "edges": {}
+    },
+    "src/auth_feed.rs": {
+      "test_only": false,
+      "lines": 503,
+      "functions": {},
+      "edges": {}
+    },
+    "src/backpressure.rs": {
+      "test_only": false,
+      "lines": 539,
+      "functions": {},
+      "edges": {}
+    },
+    "src/billing.rs": {
+      "test_only": false,
+      "lines": 2952,
+      "functions": {
+        "drain_once": 321
+      },
+      "edges": {
+        "http": 43,
+        "product": 1
+      }
+    },
+    "src/billing_service.rs": {
+      "test_only": false,
+      "lines": 297,
+      "functions": {},
+      "edges": {}
+    },
+    "src/bin/bench.rs": {
+      "test_only": false,
+      "lines": 361,
+      "functions": {},
+      "edges": {}
+    },
+    "src/bin/cryptobench.rs": {
+      "test_only": false,
+      "lines": 88,
+      "functions": {},
+      "edges": {}
+    },
+    "src/bin/edgesim.rs": {
+      "test_only": false,
+      "lines": 202,
+      "functions": {},
+      "edges": {}
+    },
+    "src/bin/keys.rs": {
+      "test_only": false,
+      "lines": 137,
+      "functions": {},
+      "edges": {}
+    },
+    "src/bin/livebench.rs": {
+      "test_only": false,
+      "lines": 473,
+      "functions": {
+        "main": 345
+      },
+      "edges": {}
+    },
+    "src/bin/pilot.rs": {
+      "test_only": false,
+      "lines": 1697,
+      "functions": {
+        "lb": 341,
+        "proxy": 238,
+        "generator": 346,
+        "bench": 355
+      },
+      "edges": {}
+    },
+    "src/bin/s3lite.rs": {
+      "test_only": false,
+      "lines": 837,
+      "functions": {},
+      "edges": {}
+    },
+    "src/bin/verify.rs": {
+      "test_only": false,
+      "lines": 532,
+      "functions": {},
+      "edges": {}
+    },
+    "src/bootstrap.rs": {
+      "test_only": false,
+      "lines": 957,
+      "functions": {
+        "run": 836
+      },
+      "edges": {
+        "http": 6
+      }
+    },
+    "src/config/cli.rs": {
+      "test_only": false,
+      "lines": 647,
+      "functions": {},
+      "edges": {}
+    },
+    "src/config/environment.rs": {
+      "test_only": false,
+      "lines": 60,
+      "functions": {},
+      "edges": {}
+    },
+    "src/config/load.rs": {
+      "test_only": false,
+      "lines": 300,
+      "functions": {},
+      "edges": {}
+    },
+    "src/config/mod.rs": {
+      "test_only": false,
+      "lines": 42,
+      "functions": {},
+      "edges": {}
+    },
+    "src/config/model.rs": {
+      "test_only": false,
+      "lines": 490,
+      "functions": {},
+      "edges": {}
+    },
+    "src/config/notice.rs": {
+      "test_only": false,
+      "lines": 154,
+      "functions": {},
+      "edges": {}
+    },
+    "src/config/profile.rs": {
+      "test_only": false,
+      "lines": 144,
+      "functions": {},
+      "edges": {}
+    },
+    "src/config/summary.rs": {
+      "test_only": false,
+      "lines": 109,
+      "functions": {},
+      "edges": {}
+    },
+    "src/config/tests.rs": {
+      "test_only": false,
+      "lines": 456,
+      "functions": {},
+      "edges": {}
+    },
+    "src/config/validation.rs": {
+      "test_only": false,
+      "lines": 922,
+      "functions": {},
+      "edges": {}
+    },
+    "src/config/validation_tests.rs": {
+      "test_only": false,
+      "lines": 690,
+      "functions": {},
+      "edges": {
+        "http": 3
+      }
+    },
+    "src/crypto.rs": {
+      "test_only": false,
+      "lines": 771,
+      "functions": {},
+      "edges": {}
+    },
+    "src/deployment.rs": {
+      "test_only": false,
+      "lines": 111,
+      "functions": {},
+      "edges": {}
+    },
+    "src/deployment_bearer.rs": {
+      "test_only": false,
+      "lines": 65,
+      "functions": {},
+      "edges": {}
+    },
+    "src/dst/dst_tests.rs": {
+      "test_only": true,
+      "lines": 38422,
+      "functions": {},
+      "edges": {}
+    },
+    "src/dst/fault_store.rs": {
+      "test_only": true,
+      "lines": 545,
+      "functions": {},
+      "edges": {}
+    },
+    "src/dst/mod.rs": {
+      "test_only": true,
+      "lines": 162,
+      "functions": {},
+      "edges": {}
+    },
+    "src/dst/runtime.rs": {
+      "test_only": true,
+      "lines": 536,
+      "functions": {},
+      "edges": {}
+    },
+    "src/dst/trace_store.rs": {
+      "test_only": true,
+      "lines": 758,
+      "functions": {},
+      "edges": {}
+    },
+    "src/dst/trace_store_tests/basic.rs": {
+      "test_only": true,
+      "lines": 199,
+      "functions": {},
+      "edges": {}
+    },
+    "src/dst/trace_store_tests/cancellation.rs": {
+      "test_only": true,
+      "lines": 120,
+      "functions": {},
+      "edges": {}
+    },
+    "src/dst/trace_store_tests/concurrency.rs": {
+      "test_only": true,
+      "lines": 108,
+      "functions": {},
+      "edges": {}
+    },
+    "src/dst/trace_store_tests/delete_accounting.rs": {
+      "test_only": true,
+      "lines": 212,
+      "functions": {},
+      "edges": {}
+    },
+    "src/dst/trace_store_tests/mod.rs": {
+      "test_only": true,
+      "lines": 293,
+      "functions": {},
+      "edges": {}
+    },
+    "src/dst/trace_store_tests/streams.rs": {
+      "test_only": true,
+      "lines": 152,
+      "functions": {},
+      "edges": {}
+    },
+    "src/failpoints.rs": {
+      "test_only": false,
+      "lines": 551,
+      "functions": {},
+      "edges": {}
+    },
+    "src/fleet.rs": {
+      "test_only": false,
+      "lines": 1300,
+      "functions": {
+        "start": 670
+      },
+      "edges": {
+        "http": 2
+      }
+    },
+    "src/fleet/repository.rs": {
+      "test_only": false,
+      "lines": 233,
+      "functions": {},
+      "edges": {}
+    },
+    "src/golden_tests.rs": {
+      "test_only": true,
+      "lines": 828,
+      "functions": {},
+      "edges": {}
+    },
+    "src/history.rs": {
+      "test_only": false,
+      "lines": 2708,
+      "functions": {
+        "start": 405,
+        "absorb_gather_v2_with": 319
+      },
+      "edges": {
+        "http": 3
+      }
+    },
+    "src/http.rs": {
+      "test_only": false,
+      "lines": 7941,
+      "functions": {
+        "debug_load": 211,
+        "router": 302,
+        "create_stream": 1042,
+        "append_core": 1085,
+        "read_merged": 260,
+        "read_inner": 451,
+        "read_v3_lineage_inner": 566
+      },
+      "edges": {
+        "product": 45
+      }
+    },
+    "src/lib.rs": {
+      "test_only": false,
+      "lines": 96,
+      "functions": {},
+      "edges": {}
+    },
+    "src/main.rs": {
+      "test_only": false,
+      "lines": 55,
+      "functions": {},
+      "edges": {}
+    },
+    "src/mt_lint.rs": {
+      "test_only": false,
+      "lines": 431,
+      "functions": {},
+      "edges": {}
+    },
+    "src/offsets.rs": {
+      "test_only": false,
+      "lines": 150,
+      "functions": {},
+      "edges": {}
+    },
+    "src/operator.rs": {
+      "test_only": false,
+      "lines": 120,
+      "functions": {},
+      "edges": {
+        "http": 5
+      }
+    },
+    "src/ops.rs": {
+      "test_only": false,
+      "lines": 616,
+      "functions": {
+        "collect_snapshot": 204
+      },
+      "edges": {
+        "http": 6
+      }
+    },
+    "src/ownership.rs": {
+      "test_only": false,
+      "lines": 195,
+      "functions": {},
+      "edges": {}
+    },
+    "src/peer.rs": {
+      "test_only": false,
+      "lines": 171,
+      "functions": {},
+      "edges": {}
+    },
+    "src/postings.rs": {
+      "test_only": false,
+      "lines": 810,
+      "functions": {},
+      "edges": {}
+    },
+    "src/postings_cache.rs": {
+      "test_only": false,
+      "lines": 1193,
+      "functions": {},
+      "edges": {}
+    },
+    "src/product.rs": {
+      "test_only": false,
+      "lines": 8216,
+      "functions": {
+        "product_entry": 292,
+        "product_create": 233,
+        "product_seal": 361,
+        "run_seal": 237,
+        "product_append_inner": 251,
+        "translate_append_response": 206,
+        "product_read": 324,
+        "product_scan": 393,
+        "product_consumer_put": 228,
+        "product_consumer_delete": 404,
+        "product_consumer_pull": 271,
+        "product_consumer_settle": 213,
+        "product_watch_wait": 323
+      },
+      "edges": {
+        "http": 103
+      }
+    },
+    "src/product_cursor.rs": {
+      "test_only": false,
+      "lines": 642,
+      "functions": {},
+      "edges": {}
+    },
+    "src/project_policy.rs": {
+      "test_only": false,
+      "lines": 168,
+      "functions": {},
+      "edges": {}
+    },
+    "src/protocol_pin.rs": {
+      "test_only": false,
+      "lines": 36,
+      "functions": {},
+      "edges": {}
+    },
+    "src/queue.rs": {
+      "test_only": false,
+      "lines": 303,
+      "functions": {},
+      "edges": {}
+    },
+    "src/quota.rs": {
+      "test_only": false,
+      "lines": 1510,
+      "functions": {},
+      "edges": {}
+    },
+    "src/registry.rs": {
+      "test_only": false,
+      "lines": 2279,
+      "functions": {},
+      "edges": {}
+    },
+    "src/rollup.rs": {
+      "test_only": false,
+      "lines": 2440,
+      "functions": {
+        "close_month": 217,
+        "rollup_applies_deltas_and_closes_months": 304
+      },
+      "edges": {}
+    },
+    "src/runtime.rs": {
+      "test_only": false,
+      "lines": 506,
+      "functions": {},
+      "edges": {}
+    },
+    "src/scaler3.rs": {
+      "test_only": false,
+      "lines": 1067,
+      "functions": {},
+      "edges": {
+        "http": 13,
+        "product": 1
+      }
+    },
+    "src/segmap.rs": {
+      "test_only": false,
+      "lines": 487,
+      "functions": {},
+      "edges": {}
+    },
+    "src/shard.rs": {
+      "test_only": false,
+      "lines": 5510,
+      "functions": {
+        "start": 383,
+        "commit_group": 2107
+      },
+      "edges": {}
+    },
+    "src/shard_directory.rs": {
+      "test_only": false,
+      "lines": 546,
+      "functions": {},
+      "edges": {}
+    },
+    "src/sharddir.rs": {
+      "test_only": false,
+      "lines": 905,
+      "functions": {},
+      "edges": {}
+    },
+    "src/sketch.rs": {
+      "test_only": false,
+      "lines": 403,
+      "functions": {},
+      "edges": {}
+    },
+    "src/sse/auth.rs": {
+      "test_only": false,
+      "lines": 474,
+      "functions": {},
+      "edges": {
+        "http": 2
+      }
+    },
+    "src/sse/budget.rs": {
+      "test_only": false,
+      "lines": 23,
+      "functions": {},
+      "edges": {}
+    },
+    "src/sse/feed.rs": {
+      "test_only": false,
+      "lines": 2268,
+      "functions": {},
+      "edges": {
+        "http": 4
+      }
+    },
+    "src/sse/mod.rs": {
+      "test_only": false,
+      "lines": 12,
+      "functions": {},
+      "edges": {}
+    },
+    "src/sse/registry.rs": {
+      "test_only": false,
+      "lines": 369,
+      "functions": {},
+      "edges": {}
+    },
+    "src/sse/service.rs": {
+      "test_only": false,
+      "lines": 142,
+      "functions": {},
+      "edges": {}
+    },
+    "src/sse/session.rs": {
+      "test_only": false,
+      "lines": 1060,
+      "functions": {
+        "serve": 715
+      },
+      "edges": {
+        "http": 10
+      }
+    },
+    "src/sse/source.rs": {
+      "test_only": false,
+      "lines": 997,
+      "functions": {},
+      "edges": {
+        "http": 14,
+        "product": 12
+      }
+    },
+    "src/sse/wire.rs": {
+      "test_only": false,
+      "lines": 84,
+      "functions": {},
+      "edges": {
+        "http": 1
+      }
+    },
+    "src/store_timing.rs": {
+      "test_only": false,
+      "lines": 1381,
+      "functions": {},
+      "edges": {}
+    },
+    "src/tasks.rs": {
+      "test_only": false,
+      "lines": 810,
+      "functions": {},
+      "edges": {}
+    },
+    "src/tasks/signal.rs": {
+      "test_only": false,
+      "lines": 138,
+      "functions": {},
+      "edges": {}
+    },
+    "src/tenant.rs": {
+      "test_only": false,
+      "lines": 1093,
+      "functions": {},
+      "edges": {}
+    },
+    "src/touch.rs": {
+      "test_only": false,
+      "lines": 533,
+      "functions": {},
+      "edges": {}
+    },
+    "src/touch_keys.rs": {
+      "test_only": false,
+      "lines": 112,
+      "functions": {},
+      "edges": {}
+    },
+    "src/usage.rs": {
+      "test_only": false,
+      "lines": 847,
+      "functions": {},
+      "edges": {}
+    }
+  }
+}

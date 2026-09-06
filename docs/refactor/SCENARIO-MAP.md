@@ -5,14 +5,19 @@
 authoritative; this file is a view. Validation (same IDs as
 `docs/dst/SCENARIO-CATALOG.md`, unique, mapped-iff-tests,
 coverage values, test-symbol existence) runs with `--check`.
+This is source-inventory consistency, not execution certification. A full mapping
+describes the local mechanism; it does not certify fleet/cloud/runtime legs.
+`scenario-dispositions.json` preserves partial/unmapped obligations, owners and
+required evidence. `review-mechanisms.json` pins reviewed regression bodies;
+`review-evidence.py` separately verifies final-HEAD execution receipts.
 
 Catalogue source: `docs/dst/SCENARIO-CATALOG.md` (189 scenarios).
 
 ## Counts
 
 - scenarios inventoried: **189**
-- mapped to concrete tests: **138** (full 111, partial 25, external 2)
-- unmapped (no concrete test): **51**
+- mapped to concrete tests: **142** (full 117, partial 23, external 2)
+- unmapped (no concrete test): **47**
 
 Status labels as recorded in the catalogue:
 - Existing: 87
@@ -63,7 +68,6 @@ Existing/Strengthen/L1-now entries are the gaps that matter
 - **COST-008** (L2 performance): Read fanout does not multiply origin GETs linearly — Nearest in-suite fanout economics: 32317 (two subscribers, one source read) and livefeed_seal_retry_is_one_task_per_feed_at_fanout:34585; the 1/100/10k Class B bound is L2.
 - **CRT-008** (L1-now): Create-and-close crash matrix — GAP: no create-with-close crash-boundary matrix found (no test combines create and close lifecycle phases).
 - **CRT-009** (L2-sim): Initialization takeover is cancellation-proof
-- **DUR-014** (L2-sim): Acknowledged-set equality, not count equality — The exact-set oracle exists (oracle_catches_loss:2404, oracle_catches_duplicates:2416) but the count-preserving loss+duplicate swap leg is not a test; needs the simulator.
 - **FLT-004** (L2-sim): Ring convergence under staggered cold starts — The 371,900-record loss shape is referenced; single-node wedge repro (2619) is the nearest analogue, not the fleet scenario.
 - **FLT-005** (L2-sim): Stale router replay bound
 - **FLT-006** (L2-sim): Ownership handoff with unabsorbed data — Single-node analogue exists (untouched_streams_absorb_after_restart:3870); fleet leg needs the simulator.
@@ -90,13 +94,10 @@ Existing/Strengthen/L1-now entries are the gaps that matter
 - **HIS-029** (L1-now/fork): Latest-version probe gap fallback — GAP: no test for the N known / N+1 missing / N+2 present probe-gap fallback.
 - **HIS-030** (L2-sim/performance): GC concurrent delete throughput and partial failure
 - **QUE-006** (L1-now): Retry and extend race — GAP: the settle API carries acks/retries/extends (src/product.rs:6763) but no test forces stale retry/ack/extend orderings; only settle-side stale fencing exists (9409, 24621).
-- **QUE-008** (L1-now): DLQ target recreation — GAP: no test for delete/recreate of the DLQ target with pinned epoch. Adjacent: dead_letter_link_requires_a_shared_key:10561 (config-time gate only).
 - **QUE-010** (L1-now): Consumer merge lineage — GAP: only split lineage (9604) exists; no consumer-across-merge test.
 - **QUE-012** (L2-sim/performance): Bounded queue-state loading
 - **RES-007** (L2 performance): Reject storm protection
 - **RES-008** (L2 CPU model/L3 benchmark): Event-loop starvation model
-- **SDK-003** (L1/SDK): Producer operation chain bounded — GAP: no eviction/boundedness test for the SDK producer operation chain (sdk/src/index.ts has no test harness; package.json has no test script).
-- **SEC-002** (Existing/static + L3): Auth before body buffering — GAP in test code: no test sends an unauthenticated oversize (32 MiB) request and asserts rejection before body read. Nearest: inflight_admission_answers_only_after_authentication:36349 (auth precedes admission/tarpit, round-13) and the 401 legs of 22329.
 - **SEC-008** (L1-now): Catalog transient GET failure — GAP: registry failpoints fail_next_get/fail_next_list exist but are used by the consumer-saga (24317) and quota-seed (29601) tests, not by a catalog page-walk test.
 - **TOP-005** (L2-sim): Crash after phase-B publication before parent retirement
 - **TOP-008** (Existing): Dominant key refuses split — GAP (Existing with no test): scaler3.rs implements hot-key suppression (scaler3.rs:238 '§5.2') and hot_key() surfacing (scaler3.rs:124), and dst_tests.rs:14335 deliberately avoids tripping it — but no test asserts a dominant key refuses split and surfaces hot_key. Nearest mechanism unit test: src/sketch.rs:290 spacesaving_finds_the_dominant_key (detection only).

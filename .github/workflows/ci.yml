@@ -18,18 +18,18 @@ on:
 # its own job against a fresh namespace.
 
 jobs:
-  # Temporary WP-00 job: structural report only. Never fails the push;
-  # WP-17 turns the same script into a hard gate (--fail).
+  # R24: fixed review-commit ratchets and explicit extracted-owner boundaries.
+  # The historical WP-00 report remains diagnostic, never an acceptance signal.
   architecture-report:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
       - name: Scanner self-test
         run: python3 scripts/architecture-report.py --self-test
-      - name: Architecture report (warning-only)
-        run: python3 scripts/architecture-report.py
-      - name: Architecture delta vs WP-00 baseline (warning-only)
-        run: python3 scripts/architecture-report.py --baseline-diff
+      - name: Architecture budgets and owner boundaries (hard gate)
+        run: |
+          python3 scripts/architecture-gate.py --self-test
+          python3 scripts/architecture-gate.py --check
       - name: Scenario-map validation (hard gate, PR 3.2)
         run: |
           python3 scripts/scenario-map-report.py --self-test
@@ -38,6 +38,11 @@ jobs:
         run: |
           python3 scripts/test-inventory.py --self-test
           python3 scripts/test-inventory.py --check
+      - name: Mechanism claims and unresolved scenario dispositions
+        run: |
+          python3 scripts/review-evidence.py --self-test
+          python3 scripts/review-evidence.py --check
+          python3 scripts/verify-rc-evidence.py --self-test --repo .
   # Job: rust build + full suite (product conformance, dual-surface
   # equivalence corpus, DST safety/liveness, request-cost budgets).
   rust:

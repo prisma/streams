@@ -749,11 +749,9 @@ impl Stream for TimedDeleteStream {
                 };
                 record(4, classify(&p), start, &p, ok);
             }
-            std::task::Poll::Ready(None) => {
-                if self.open {
-                    self.open = false;
-                    stats().inflight.fetch_sub(1, Ordering::Relaxed);
-                }
+            std::task::Poll::Ready(None) if self.open => {
+                self.open = false;
+                stats().inflight.fetch_sub(1, Ordering::Relaxed);
             }
             _ => {}
         }

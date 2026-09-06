@@ -46,6 +46,17 @@ if ! python3 scripts/test-inventory.py --self-test >> "$OUT" 2>&1 ||
   echo GATEFAIL-test-inventory >> "$OUT"
   exit 1
 fi
+if ! python3 scripts/architecture-report.py --self-test >> "$OUT" 2>&1 ||
+   ! python3 scripts/architecture-gate.py --self-test >> "$OUT" 2>&1 ||
+   ! python3 scripts/architecture-gate.py --check >> "$OUT" 2>&1; then
+  echo GATEFAIL-architecture >> "$OUT"
+  exit 1
+fi
+if ! python3 scripts/review-evidence.py --self-test >> "$OUT" 2>&1 ||
+   ! python3 scripts/review-evidence.py --check >> "$OUT" 2>&1; then
+  echo GATEFAIL-review-mechanisms >> "$OUT"
+  exit 1
+fi
 if ! cargo fmt --check > /tmp/fmt.out 2>&1; then
   cat /tmp/fmt.out
   echo GATEFAIL-fmt >> "$OUT"

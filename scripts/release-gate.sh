@@ -11,6 +11,18 @@
 set -e
 cd "$(dirname "$0")/.."
 
+echo "== structural and evidence ratchets =="
+python3 scripts/architecture-report.py --self-test
+python3 scripts/architecture-gate.py --self-test
+python3 scripts/architecture-gate.py --check
+python3 scripts/scenario-map-report.py --self-test
+python3 scripts/scenario-map-report.py --check
+python3 scripts/test-inventory.py --self-test
+python3 scripts/test-inventory.py --check
+python3 scripts/review-evidence.py --self-test
+python3 scripts/review-evidence.py --check
+python3 scripts/verify-rc-evidence.py --self-test --repo .
+
 echo "== fmt =="
 cargo fmt --check
 

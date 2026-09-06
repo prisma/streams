@@ -1,0 +1,167 @@
+[
+  {
+    "finding": "R07/R16",
+    "reason": "Actual account watch request reuses outer admission and releases subscription charge.",
+    "test": {
+      "name": "account_watch_wait_charges_one_request_and_releases_its_subscription",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+      ],
+      "function_sha256": "b30d91d678065e09608495b10e6b4d6f82ce88ebd2a76c93a4521d1b4f77348b",
+      "mechanisms": [],
+      "configuration": [],
+      "file": "src/dst/tests/watch_admission.rs",
+      "scenarios": []
+    }
+  },
+  {
+    "finding": "R05",
+    "reason": "Cancelled final append retains the durable claim; only a matching definitive retry may resolve it.",
+    "test": {
+      "name": "cancelled_final_preserves_claim_and_only_definitive_retry_releases_it",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+      ],
+      "function_sha256": "43551d1aa0f885aab584dc303b8d4d3bd76039c51b016c8e56dd9c898e74b1e1",
+      "mechanisms": [],
+      "configuration": [],
+      "file": "src/dst/tests/seal_cancellation.rs",
+      "scenarios": []
+    }
+  },
+  {
+    "finding": "R02",
+    "reason": "Typed append expected_epoch rejects a same-name replacement before writing.",
+    "test": {
+      "name": "r02_append_target_fence_rejects_same_name_recreation",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+      ],
+      "function_sha256": "6b8f061e5e4b702166b2858b98b634608315127debd458eb4f99b1297d90392d",
+      "mechanisms": [],
+      "configuration": [],
+      "file": "src/dst/tests/append_application.rs",
+      "scenarios": [
+        "QUE-008"
+      ]
+    }
+  },
+  {
+    "finding": "R02",
+    "reason": "Typed duplicate outcome retains original segment, offsets and request result.",
+    "test": {
+      "name": "r02_typed_append_preserves_original_duplicate_offsets",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+      ],
+      "function_sha256": "77f0d634d598175aeb336a29a44bdc86f872efa431908c6cd6b046858d6b0742",
+      "mechanisms": [],
+      "configuration": [],
+      "file": "src/dst/tests/append_application.rs",
+      "scenarios": []
+    }
+  },
+  {
+    "finding": "R05",
+    "reason": "Both child-claim response uncertainty and child-anchor failure keep the durable fork source reference; retried resume proves safe progress.",
+    "test": {
+      "name": "r05_unknown_child_state_preserves_its_source_reference",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+      ],
+      "function_sha256": "aae95b11b99c67ff746d7bf13e67807d21575153714079554aeb9ae0b42972f2",
+      "mechanisms": [],
+      "configuration": [
+        "crate::failpoints::Fp::ForkAfterSourceRef",
+        "crate::failpoints::Fp::CreateBeforeReady",
+        "let before = crate::failpoints::parked(point, name);",
+        "crate::failpoints::park_fork_after_source_ref(name);",
+        "crate::failpoints::park_create_before_ready(name);",
+        "while crate::failpoints::parked(point, name) <= before {",
+        "crate::failpoints::release_fork_after_source_ref(name);",
+        "crate::failpoints::release_create_before_ready(name);"
+      ],
+      "file": "src/dst/tests/fork_lifecycle.rs",
+      "scenarios": []
+    }
+  },
+  {
+    "finding": "R06",
+    "reason": "Two actual owners replay/scan exact plaintext through shared typed page transport with one billing charge. a733d66 uses typed RoutingKeyHash::of(\"\").0 at the fixture boundary, preserving the identical hash while satisfying the multitenancy lint.",
+    "test": {
+      "name": "r06_cross_owner_replay_and_scan_share_typed_pages_and_bill_once",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+      ],
+      "function_sha256": "7450fcc71e8ec08d218a3fc162feb4d5a27b9b3cfc7f74da134e2799be0b449d",
+      "mechanisms": [],
+      "configuration": [],
+      "file": "src/dst/tests/read_application.rs",
+      "scenarios": []
+    }
+  },
+  {
+    "finding": "R06",
+    "reason": "Actual application/raw/product empty filtered pages share planner continuation and malformed peer progress fails closed.",
+    "test": {
+      "name": "r06_empty_filtered_page_has_one_position_across_application_and_protocols",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+      ],
+      "function_sha256": "8ecb7d8008523658f73c6904977065caafd44889a495582cb214cfbabf2f24f8",
+      "mechanisms": [],
+      "configuration": [],
+      "file": "src/dst/tests/read_application.rs",
+      "scenarios": []
+    }
+  },
+  {
+    "finding": "R06",
+    "reason": "Same-name refresh cannot cross descriptor incarnation.",
+    "test": {
+      "name": "r06_refresh_rejects_same_name_recreation",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+      ],
+      "function_sha256": "c3d2f95699f78a773f7fefd7ab60f4ee98a4e13b401ba00a7c774b6584ff3cc0",
+      "mechanisms": [],
+      "configuration": [],
+      "file": "src/dst/tests/read_application.rs",
+      "scenarios": []
+    }
+  },
+  {
+    "finding": "R07",
+    "reason": "Controlled target write failure preserves source lease/cursor; exact retry settles once and duplicate retry stays stale.",
+    "test": {
+      "name": "r07_failed_dlq_commit_retains_source_lease_and_exact_retry_settles_once",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+      ],
+      "function_sha256": "d40400640ec7c4f99a3b52bbe7e82f1c5874f415c8302b799167771b85d778f3",
+      "mechanisms": [],
+      "configuration": [],
+      "file": "src/dst/tests/consumer_dlq.rs",
+      "scenarios": [
+        "QUE-007"
+      ]
+    }
+  },
+  {
+    "finding": "R24",
+    "reason": "Equal acknowledged/observed counts hide one loss plus one duplicate; exact-set audit must reject.",
+    "test": {
+      "name": "r24_exact_set_oracle_rejects_count_preserving_loss_duplicate_swap",
+      "attributes": [
+        "#[test]"
+      ],
+      "function_sha256": "08d934e70bc3894bdad386928a9fa5fb0c077a0670bebcd93f853a17820cc5eb",
+      "mechanisms": [],
+      "configuration": [],
+      "file": "src/dst/tests/oracle_model.rs",
+      "scenarios": [
+        "DUR-014"
+      ]
+    }
+  }
+]
