@@ -1823,74 +1823,80 @@ pub fn spawn_rollup(
         "usage-rollup",
         crate::tasks::Policy::Critical,
         move |cancel| async move {
-            let _store = state.data_store.clone();
-            if let Err(e) = open_rollup(&state, &prefix).await {
-                tracing::error!("usage rollup open failed: {e}");
-                return crate::tasks::TaskResult::Failed(format!("usage rollup open failed: {e}"));
+            tokio::select! {
+                biased;
+                _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
+                opened = open_rollup(&state, &prefix) => if let Err(e) = opened {
+                    tracing::error!("usage rollup open failed: {e}");
+                    return crate::tasks::TaskResult::Failed(format!("usage rollup open failed: {e}"));
+                },
             }
             tracing::info!("usage rollup running");
             let grace_ms: i64 = state.config.billing.month_close_grace_ms;
             let mut last_close = None;
             loop {
-                if cancel.is_cancelled() {
-                    return crate::tasks::TaskResult::Done;
-                }
-                let usage_n = match rollup_step(&state).await {
-                    Ok(n) => n,
-                    Err(e) => {
-                        tracing::warn!("rollup step: {e}");
-                        0
-                    }
-                };
-                let ops_n = match ops_rollup_step(&state).await {
-                    Ok(n) => n,
-                    Err(e) => {
-                        tracing::warn!("ops rollup step: {e}");
-                        0
-                    }
-                };
-                if usage_n == 0 && ops_n == 0 {
-                    tokio::select! {
-                        _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
-                        _ = tokio::time::sleep(std::time::Duration::from_secs(2)) => {}
-                    }
-                }
-                let monotonic = state.runtime.clock.monotonic();
-                if last_close.is_none_or(|previous| {
-                    monotonic.since(previous) > std::time::Duration::from_secs(3600)
-                }) {
-                    last_close = Some(monotonic);
-                    let now = state.runtime.clock.now().ms();
-                    let rollup2 = state.rollup.get().unwrap().clone();
-                    let store2 = state.data_store.clone();
-                    let pfx = prefix.clone();
-                    if let Ok(n) = rollup2.sweep_ops_raw(now, 10_000).await
-                        && n > 0
-                    {
-                        tracing::info!("ops raw retention: {n} points expired");
-                    }
-                    // Round-22 item 8: missed months catch up IN ORDER from
-                    // the persisted oldest-unfinalized marker — a rollup
-                    // that was down over one or more boundaries closes
-                    // every overdue month, oldest first, before touching
-                    // the newest.
-                    match rollup2.close_months_due(grace_ms).await {
-                        Ok(closed) => {
-                            for (mstr, n) in closed {
-                                if n > 0 {
-                                    tracing::info!("month {mstr} closed: {n} streams");
+                // Every application page commits its cursor with its rows;
+                // pending artifacts remain durable until verified publication.
+                // Dropping any active phase therefore leaves replayable debt.
+                tokio::select! {
+                    biased;
+                    _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
+                    _ = async {
+                        let usage_n = match rollup_step(&state).await {
+                            Ok(n) => n,
+                            Err(e) => {
+                                tracing::warn!("rollup step: {e}");
+                                0
+                            }
+                        };
+                        let ops_n = match ops_rollup_step(&state).await {
+                            Ok(n) => n,
+                            Err(e) => {
+                                tracing::warn!("ops rollup step: {e}");
+                                0
+                            }
+                        };
+                        if usage_n == 0 && ops_n == 0 {
+                            tokio::time::sleep(std::time::Duration::from_secs(2)).await;
+                        }
+                        let monotonic = state.runtime.clock.monotonic();
+                        if last_close.is_none_or(|previous| {
+                            monotonic.since(previous) > std::time::Duration::from_secs(3600)
+                        }) {
+                            last_close = Some(monotonic);
+                            let now = state.runtime.clock.now().ms();
+                            let rollup2 = state.rollup.get().unwrap().clone();
+                            let store2 = state.data_store.clone();
+                            let pfx = prefix.clone();
+                            if let Ok(n) = rollup2.sweep_ops_raw(now, 10_000).await
+                                && n > 0
+                            {
+                                tracing::info!("ops raw retention: {n} points expired");
+                            }
+                            // Round-22 item 8: missed months catch up IN ORDER from
+                            // the persisted oldest-unfinalized marker — a rollup
+                            // that was down over one or more boundaries closes
+                            // every overdue month, oldest first, before touching
+                            // the newest.
+                            match rollup2.close_months_due(grace_ms).await {
+                                Ok(closed) => {
+                                    for (mstr, n) in closed {
+                                        if n > 0 {
+                                            tracing::info!("month {mstr} closed: {n} streams");
+                                        }
+                                    }
                                 }
+                                Err(e) => tracing::warn!("month close: {e}"),
+                            }
+                            // Two-phase artifact publication (round-21 blocker 7):
+                            // PutMode::Create against the immutable path; an
+                            // AlreadyExists is an earlier successful PUT. Pending
+                            // rows survive crash and retry here every tick.
+                            if let Err(e) = publish_artifacts(&rollup2, &store2, &pfx).await {
+                                tracing::warn!("artifact publication: {e}");
                             }
                         }
-                        Err(e) => tracing::warn!("month close: {e}"),
-                    }
-                    // Two-phase artifact publication (round-21 blocker 7):
-                    // PutMode::Create against the immutable path; an
-                    // AlreadyExists is an earlier successful PUT. Pending
-                    // rows survive crash and retry here every tick.
-                    if let Err(e) = publish_artifacts(&rollup2, &store2, &pfx).await {
-                        tracing::warn!("artifact publication: {e}");
-                    }
+                    } => {}
                 }
             }
         },
