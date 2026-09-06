@@ -114,6 +114,11 @@ pub(super) async fn close_db(db: &Db) -> Result<(), String> {
     match db.close().await {
         Ok(()) => Ok(()),
         Err(e) if e.kind() == slatedb::ErrorKind::Closed(slatedb::CloseReason::Clean) => Ok(()),
+        // The pinned Db::close_with_options awaits every shutdown/join before
+        // returning its saved final-flush result. A new owner may fence that
+        // flush; the awaited close still completed. This is not inferred from
+        // status(), nor from abandoning/retrying a pending close.
+        Err(e) if e.kind() == slatedb::ErrorKind::Closed(slatedb::CloseReason::Fenced) => Ok(()),
         Err(e) => Err(e.to_string()),
     }
 }

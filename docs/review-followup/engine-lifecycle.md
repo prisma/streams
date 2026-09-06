@@ -16,7 +16,15 @@ deadline: SlateDB marks its status closed before completing its internal joins,
 so a second close or a closed status cannot establish resource termination.
 Observers receive the same terminal report or an explicit ongoing result.
 A failed resource close retains the replacement fence and fails directory
-readiness. The runtime watchdog observes that failure as well as required-worker
+readiness, except for the pinned backend’s expected `Closed(Fenced)` final-flush
+result: `Db::close_with_options` returns that result only after awaiting all of
+its shutdowns/joins. An ownership change during that flush therefore completes
+the old owner’s retirement after the retained close returns. Treating this as
+an incomplete close stranded healthy fleet prefixes after ordinary handoffs.
+The held-SST regression takes ownership with a second real database while the
+old close is parked, proves it remains incomplete until release, then verifies
+termination and the replacement’s durable tail. Other failures and panics still
+retain the fence. The runtime watchdog observes that failure as well as required-worker
 loss. Completed retirements keep a small shutdown receipt, releasing the engine
 and its caches.
 

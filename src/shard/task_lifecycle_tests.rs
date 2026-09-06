@@ -219,3 +219,58 @@ async fn r17a_cancelled_history_opener_stays_owned_until_late_store_close() {
     assert!(engine.history_partition().await.is_err());
     assert!(engine.termination_complete());
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn r17a_fenced_final_flush_releases_only_after_the_owned_close_joins() {
+    let (engine, store) = fixture().await;
+    let hash = [19; 16];
+    let (reply, result) = oneshot::channel();
+    engine
+        .try_close(CloseReq {
+            hash,
+            generation: None,
+            resp: reply,
+        })
+        .unwrap();
+    result.await.unwrap().unwrap();
+    let entered = store.hold_class(crate::dst::StoreOp::Put, crate::dst::ObjClass::Sst, 1);
+    engine.begin_close();
+    tokio::time::timeout(Duration::from_secs(10), async {
+        while entered.load(Ordering::SeqCst) == 0 {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+    // A different process takes ownership while the OLD owner's final flush
+    // is held. Its persisted fencing epoch makes that flush return Fenced.
+    let replacement = Db::builder("r17a-engine", store.clone())
+        .with_settings(slatedb::config::Settings {
+            flush_interval: Some(Duration::from_secs(600)),
+            ..Default::default()
+        })
+        .build()
+        .await
+        .unwrap();
+    let held = engine.await_terminated(Duration::from_millis(5)).await;
+    assert!(!engine.termination_complete());
+    store.release_hold();
+    let joined = engine.await_terminated(Duration::from_secs(10)).await;
+    let persisted = replacement.get(&super::tail_key(&hash)).await.unwrap();
+    replacement.close().await.unwrap();
+    assert!(
+        held.is_err(),
+        "a fenced but held close still owns its tasks"
+    );
+    assert!(
+        persisted.is_some(),
+        "the replacement recovers the durable tail"
+    );
+    assert!(
+        joined.is_ok(),
+        "the pinned backend returns Fenced only after its close joins: {joined:?}"
+    );
+    assert!(engine.termination_complete());
+    assert!(engine.shutdown_handle().failure().is_none());
+    assert!(engine.required_task_failure().is_none());
+}
