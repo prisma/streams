@@ -146,7 +146,7 @@ async fn seed_records(
         entries: vec![bytes::Bytes::copy_from_slice(payload); count],
         usage: state.runtime.usage.counters(&route),
         routing_key: String::new(),
-        key_hash: crate::crypto::stream_hash(""),
+        key_hash: crate::crypto::RoutingKeyHash::of("").0,
         producer_lineage: vec![],
         key_version: 0,
         subkey: crate::crypto::derive_subkey(&skey(), &desc.epoch(), "", 0),
