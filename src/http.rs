@@ -181,20 +181,7 @@ impl AppState {
             .clone()
     }
 
-    pub(crate) fn watch_service(&self) -> Arc<crate::application::watch::WatchService> {
-        self.watches
-            .get_or_init(|| {
-                Arc::new(crate::application::watch::WatchService::new(
-                    self.registry.clone(),
-                    self.auth.clone(),
-                    self.quotas.clone(),
-                    self.keys.clone(),
-                    self.touch.clone(),
-                    self.runtime.clock.clone(),
-                ))
-            })
-            .clone()
-    }
+
 
     pub(crate) fn watch_service(&self) -> Arc<crate::application::watch::WatchService> {
         self.watches
