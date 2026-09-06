@@ -210,6 +210,7 @@ async fn relay_segment_close(
 /// Execute (or resume) one split end-to-end. Idempotent at every step.
 /// Resolves the CURRENT incarnation and splits it — the entry point for
 /// direct calls that just created or inspected the stream.
+#[cfg(test)]
 pub(crate) async fn execute_split(
     st: &TopologyService,
     sref: &crate::tenant::TenantStreamRef,
@@ -302,6 +303,7 @@ pub(crate) async fn execute_split_fenced(
 /// Execute (or resume) one MERGE of two adjacent live segments.
 /// Same two-phase discipline as split: persist the intent, seal both
 /// parents, publish the child. Idempotent at every step.
+#[cfg(test)]
 pub(crate) async fn execute_merge(
     st: &TopologyService,
     sref: &crate::tenant::TenantStreamRef,

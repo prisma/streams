@@ -51,7 +51,7 @@ pub(super) async fn install(
         // repaired by the tombstone's RETAINED debt. The park sits
         // BETWEEN the check and the install so tests can drive
         // exactly that window.
-        match state.registry.get(&project.stream_ref(&name)).await {
+        match state.registry.get(&project.stream_ref(name)).await {
             Ok(Some(c)) if desc_alive(&c) && c.stream_epoch == desc.stream_epoch => {}
             Err(error) => {
                 return Err(CreationError::new(
@@ -69,7 +69,7 @@ pub(super) async fn install(
             }
         }
         #[cfg(test)]
-        crate::failpoints::pause_fork_before_source_ref(&name).await;
+        crate::failpoints::pause_fork_before_source_ref(name).await;
         match state
             .registry
             .mutate_incarnation(&fc.source_desc.sref(), &fc.source_desc.stream_epoch, |d| {
@@ -128,12 +128,12 @@ pub(super) async fn install(
         }
         state.registry.invalidate(&fc.source_desc.sref());
         #[cfg(test)]
-        crate::failpoints::pause_fork_after_source_ref(&name).await;
+        crate::failpoints::pause_fork_after_source_ref(name).await;
         // Post-install: the child can have been deleted between the
         // pre-check and the install CAS. Release the reference this
         // request just installed — its tombstone's retained debt
         // covers the crash variant of the same window.
-        match state.registry.get(&project.stream_ref(&name)).await {
+        match state.registry.get(&project.stream_ref(name)).await {
             Ok(Some(c)) if desc_alive(&c) && c.stream_epoch == desc.stream_epoch => {}
             Err(error) => {
                 return Err(CreationError::new(
@@ -144,7 +144,7 @@ pub(super) async fn install(
             }
             Ok(_) => {
                 if let Err(m) = release_fork_ref(
-                    &state,
+                    state,
                     fc.source_desc.sref(),
                     &fork_id,
                     &fc.source_desc.stream_epoch,
@@ -212,7 +212,7 @@ async fn stamp_child(
     state: &Arc<CreationService>,
     plan: &CreatePlan,
     mut desc: StreamDesc,
-    fork_id: &String,
+    fork_id: &str,
 ) -> Result<StreamDesc, CreationError> {
     let project = &plan.project;
     let name = &plan.name;
@@ -221,17 +221,17 @@ async fn stamp_child(
         .as_ref()
         .is_some_and(|f| f.fork_id.is_empty())
     {
-        let fid = fork_id.clone();
+        let fid = fork_id.to_owned();
         let stamped = state
             .registry
-            .mutate_incarnation(&project.stream_ref(&name), &desc.stream_epoch, |current| {
+            .mutate_incarnation(&project.stream_ref(name), &desc.stream_epoch, |current| {
                 stamp_fork_reference(current, &fid)
             })
             .await
             .map_err(|error| {
                 CreationError::new(CreationFailure::Storage, "internal", &error.to_string())
             })?;
-        state.registry.invalidate(&project.stream_ref(&name));
+        state.registry.invalidate(&project.stream_ref(name));
         // A declined CAS here means the child was deleted (or
         // re-forked) underneath us. Installing a source
         // reference for it anyway would pin the source's data
@@ -254,7 +254,7 @@ async fn stamp_child(
         // pinned by a child deleted mid-creation (FRK-013).
         let mut stamped_desc = desc.to_persisted();
         if let Some(f) = stamped_desc.forked_from.as_mut() {
-            f.fork_id = fork_id.clone();
+            f.fork_id = fork_id.to_owned();
         }
         desc = match StreamDesc::try_from(stamped_desc) {
             Ok(desc) => desc,

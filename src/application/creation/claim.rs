@@ -16,7 +16,7 @@ pub(super) async fn resolve(
     let needs_init = plan.needs_init;
     let create_hash = &plan.create_hash;
     // Resolve existing.
-    let existing = match state.registry.get(&project.stream_ref(&name)).await {
+    let existing = match state.registry.get(&project.stream_ref(name)).await {
         Ok(v) => v,
         Err(e) => {
             return Err(CreationError::new(
@@ -54,11 +54,10 @@ pub(super) async fn resolve(
             // Predicated CAS — one winner; a loser validates against the
             // winner's live descriptor exactly like an idempotent PUT.
             let mut fresh = fresh_desc(
-                &state.runtime,
-                &state.deployment,
-                &project,
-                &name,
-                &key,
+                state,
+                project,
+                name,
+                key,
                 content_type.clone(),
                 ttl_secs,
                 expires_at_ms,
@@ -73,7 +72,7 @@ pub(super) async fn resolve(
             });
             match state
                 .registry
-                .recreate(&project.stream_ref(&name), fresh, |d| {
+                .recreate(&project.stream_ref(name), fresh, |d| {
                     !desc_alive(d) && !d.soft_deleted
                 })
                 .await
@@ -94,11 +93,10 @@ pub(super) async fn resolve(
         }
         None => {
             let mut fresh = fresh_desc(
-                &state.runtime,
-                &state.deployment,
-                &project,
-                &name,
-                &key,
+                state,
+                project,
+                name,
+                key,
                 content_type.clone(),
                 ttl_secs,
                 expires_at_ms,
@@ -175,7 +173,7 @@ fn validate_live(plan: &CreatePlan, d: StreamDesc) -> Result<(bool, StreamDesc),
     let expected_fork_ref = &plan.expected_fork_ref;
 
     let same_ct = crate::registry::media_type(&d.content_type)
-        == crate::registry::media_type(&content_type)
+        == crate::registry::media_type(content_type)
         || !ct_hdr_present;
     // ROUTING-V3: ordering/segmentation are no longer part of
     // user-visible config, so the idempotent-PUT compare ignores
@@ -215,7 +213,7 @@ fn resume_initialization(
     // conflict, not an idempotent hit; a stale claim is taken over.
     let mut resume_init = false;
     if let Some(d) = existing
-        && let Some(init) = &d.init
+        && let crate::registry::Lifecycle::Initializing(init) = d.lifecycle()
     {
         if !desc_alive(d) {
             // dead-and-initializing: fall through to the recreate arm

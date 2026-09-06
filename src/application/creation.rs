@@ -184,8 +184,7 @@ pub(crate) fn create_request_hash(
     hex(&h.finalize()[..16])
 }
 pub(crate) fn fresh_desc(
-    runtime: &crate::runtime::RuntimeCaps,
-    deployment: &crate::deployment::DeploymentIdentity,
+    service: &CreationService,
     project: &crate::tenant::ProjectId,
     name: &str,
     key: &StreamKey,
@@ -193,10 +192,10 @@ pub(crate) fn fresh_desc(
     ttl_secs: Option<u64>,
     expires_at_ms: Option<i64>,
 ) -> crate::registry::PersistedDescriptor {
-    let epoch = runtime.epoch();
+    let epoch = service.runtime.epoch();
     crate::registry::PersistedDescriptor {
         name: name.to_string(),
-        account_id: Some(deployment.account_id().to_string()),
+        account_id: Some(service.deployment.account_id().to_string()),
         project_id: project.clone(),
         stream_epoch: hex(&epoch),
         seal_gen_counter: 0,

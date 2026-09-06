@@ -267,10 +267,8 @@ fn delete_lifecycle(
         // also how a crashed CASCADE is repaired — an intermediate
         // generation that was tombstoned but never released its own
         // parent is reachable by deleting it again.
-        if d.deleted {
-            if d.parent_ref_pending
-                && let Some((src, fid, sep)) = parent.clone()
-            {
+        if let crate::registry::Lifecycle::Deleted { parent_ref_pending } = d.lifecycle() {
+            if parent_ref_pending && let Some((src, fid, sep)) = parent.clone() {
                 // Clear the debt only on a CONCLUSIVE release: an
                 // absent reference on a live source may still be
                 // installed by a creator in flight, and this very

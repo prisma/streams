@@ -11,6 +11,7 @@ pub(super) async fn seed(
     created: bool,
     materialize_entry: Option<Bytes>,
 ) -> Result<(u64, bool), CreationError> {
+    #[cfg(test)]
     let name = &plan.name;
     let key = &plan.key;
     let close = plan.close;
@@ -47,7 +48,7 @@ pub(super) async fn seed(
         let mut entries: Vec<Bytes> = if body.is_empty() {
             Vec::new()
         } else if desc.is_json() {
-            match json_entries(&body, true) {
+            match json_entries(body, true) {
                 Ok(v) => v,
                 Err(m) => {
                     return Err(CreationError::new(
@@ -75,10 +76,10 @@ pub(super) async fn seed(
         if let Some(m) = materialize_entry {
             entries.insert(0, m);
         }
-        let subkey = derive_subkey(&key, &epoch_bytes, "", 0);
+        let subkey = derive_subkey(key, &epoch_bytes, "", 0);
         let bytes = entries.iter().map(|e| e.len()).sum();
         #[cfg(test)]
-        crate::failpoints::pause_init_before_seed(&name).await;
+        crate::failpoints::pause_init_before_seed(name).await;
         let (tx, rx) = oneshot::channel();
         let req = AppendReq {
             enqueued_at: std::time::Instant::now(),
@@ -120,7 +121,7 @@ pub(super) async fn seed(
                     identity: crate::billing::identity_with_capabilities(
                         &state.auth,
                         &state.deployment,
-                        &desc,
+                        desc,
                         true,
                     ),
                     segment_id: 0,
@@ -174,10 +175,10 @@ pub(super) async fn publish(
     // whose content never arrived.
     if created && needs_init {
         #[cfg(test)]
-        crate::failpoints::pause_create_before_ready(&name).await;
+        crate::failpoints::pause_create_before_ready(name).await;
         let published = match state
             .registry
-            .mutate_incarnation(&project.stream_ref(&name), &desc.stream_epoch, |current| {
+            .mutate_incarnation(&project.stream_ref(name), &desc.stream_epoch, |current| {
                 if current.deleted
                     || !current
                         .init
@@ -204,7 +205,7 @@ pub(super) async fn publish(
                 ));
             }
         };
-        state.registry.invalidate(&project.stream_ref(&name));
+        state.registry.invalidate(&project.stream_ref(name));
         // A declined CAS is NOT readiness. `cas_update` refuses a
         // deleted descriptor, so a delete that won mid-initialization
         // made this return 201 for a stream that no longer exists — and
@@ -213,7 +214,7 @@ pub(super) async fn publish(
         if !published {
             let now = state
                 .registry
-                .get(&project.stream_ref(&name))
+                .get(&project.stream_ref(name))
                 .await
                 .map_err(|error| {
                     CreationError::new(
@@ -231,7 +232,7 @@ pub(super) async fn publish(
                 // a child that will never exist.
                 if let Some(fr) = desc.forked_from.as_ref().filter(|f| !f.fork_id.is_empty())
                     && let Err(m) = release_fork_ref(
-                        &state,
+                        state,
                         desc.ref_in_project(&fr.source),
                         &fr.fork_id,
                         &fr.source_epoch,

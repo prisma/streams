@@ -65,7 +65,7 @@ pub(super) async fn prepare(
         // broke idempotence — a completed fork whose response was lost
         // could not be re-PUT once its source was retained, because the
         // soft-delete check fired first.
-        let resuming_child = match state.registry.get(&project.stream_ref(&name)).await {
+        let resuming_child = match state.registry.get(&project.stream_ref(name)).await {
             Ok(Some(c)) if !c.deleted => c
                 .forked_from
                 .clone()
@@ -179,7 +179,7 @@ async fn validate_boundary(
     fork_sub_hdr: Option<u64>,
 ) -> Result<Boundary, CreationError> {
     let src_key = key.clone();
-    let (_, src_handle) = match state.reads.handle_of(&src).await {
+    let (_, src_handle) = match state.reads.handle_of(src).await {
         Ok(v) => v,
         Err(m) => return Err(CreationError::new(CreationFailure::Storage, "internal", &m)),
     };
@@ -236,7 +236,7 @@ async fn validate_boundary(
             // fork — read through its chain).
             let rec = match state
                 .reads
-                .read_stitched(&src, &src_key, base, 64 << 20)
+                .read_stitched(src, &src_key, base, 64 << 20)
                 .await
             {
                 Ok(out) => out.recs.into_iter().find(|r| r.off == base),
