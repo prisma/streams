@@ -152,7 +152,7 @@ async fn r09_fleet_document_deadlines_leave_cas_source_retryable() {
         .await
         .unwrap();
     let (_, version) = repository.read_desired_state().await.unwrap();
-    let entered = fault.hold_class(StoreOp::Get, ObjClass::Other, u64::MAX);
+    let entered = fault.hold_class(StoreOp::Get, ObjClass::Fleet, u64::MAX);
     let started = tokio::time::Instant::now();
     assert!(
         repository
@@ -166,7 +166,7 @@ async fn r09_fleet_document_deadlines_leave_cas_source_retryable() {
     assert_eq!(started.elapsed(), DOCUMENT_DEADLINE);
     fault.release_hold();
     let replacement = br#"{"count":3,"epoch":2,"reason":"next","computed_at_ms":0}"#.to_vec();
-    let entered = fault.hold_class(StoreOp::Put, ObjClass::Other, u64::MAX);
+    let entered = fault.hold_class(StoreOp::Put, ObjClass::Fleet, u64::MAX);
     assert!(
         !repository
             .replace_document(FleetDocument::Desired, replacement.clone(), version.clone())
@@ -221,5 +221,164 @@ fn r09_fleet_configuration_cannot_publish_an_unreadable_population() {
     assert!(
         config.validate().is_ok(),
         "supported bounded configuration remains valid"
+    );
+}
+
+#[tokio::test]
+async fn r09_fleet_write_caps_preserve_readable_document_and_exact_cas_version() {
+    let inner: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let repository = FleetRepository::new(Some(inner.clone()));
+    let mut at_cap = Overrides::default();
+    for index in 0..MAX_MEMBERS {
+        at_cap.entries.insert(
+            format!("{index:04x}"),
+            super::super::OverrideEntry {
+                to: "streams-1".into(),
+                ms: 1,
+            },
+        );
+    }
+    let original = serde_json::to_vec(&at_cap).unwrap();
+    assert!(
+        repository
+            .replace_document(FleetDocument::Overrides, original.clone(), None)
+            .await
+    );
+    let (_, version) = repository.read_overrides().await.unwrap();
+    at_cap.entries.insert(
+        "beyond-cap".into(),
+        super::super::OverrideEntry {
+            to: "streams-2".into(),
+            ms: 2,
+        },
+    );
+    assert!(
+        !repository
+            .replace_document(
+                FleetDocument::Overrides,
+                serde_json::to_vec(&at_cap).unwrap(),
+                version.clone()
+            )
+            .await
+    );
+    let (after, after_version) = repository.read_overrides().await.unwrap();
+    assert_eq!(after.entries.len(), MAX_MEMBERS);
+    assert_eq!(
+        after_version, version,
+        "rejected publication must not change the CAS source version"
+    );
+    assert_eq!(
+        inner
+            .get(&ObjPath::from(OVERRIDES_DOC))
+            .await
+            .unwrap()
+            .bytes()
+            .await
+            .unwrap(),
+        original
+    );
+    at_cap.entries.remove("beyond-cap");
+    at_cap.entries.get_mut("0000").unwrap().to = "streams-2".into();
+    assert!(
+        repository
+            .replace_document(
+                FleetDocument::Overrides,
+                serde_json::to_vec(&at_cap).unwrap(),
+                version
+            )
+            .await,
+        "same-version bounded retry must remain possible"
+    );
+    assert_eq!(
+        repository.read_overrides().await.unwrap().0.entries["0000"].to,
+        "streams-2"
+    );
+    let desired = Desired {
+        count: MAX_MEMBERS as u64,
+        epoch: 1,
+        reason: "at cap".into(),
+        computed_at_ms: 0,
+        pending_events: vec![],
+    };
+    assert!(
+        repository
+            .replace_document(
+                FleetDocument::Desired,
+                serde_json::to_vec(&desired).unwrap(),
+                None
+            )
+            .await
+    );
+    let (_, version) = repository.read_desired_state().await.unwrap();
+    for invalid in [
+        Desired {
+            count: MAX_MEMBERS as u64 + 1,
+            ..desired.clone()
+        },
+        Desired {
+            epoch: u64::MAX,
+            ..desired.clone()
+        },
+        Desired {
+            pending_events: vec![crate::ops::OpsEvent::new("test", "fixed".into()); 65],
+            ..desired.clone()
+        },
+    ] {
+        assert!(
+            !repository
+                .replace_document(
+                    FleetDocument::Desired,
+                    serde_json::to_vec(&invalid).unwrap(),
+                    version.clone()
+                )
+                .await
+        );
+        assert_eq!(repository.read_desired_state().await.unwrap().1, version);
+    }
+    let (_, version) = repository.read_overrides().await.unwrap();
+    at_cap.pending_events = vec![crate::ops::OpsEvent::new("test", "fixed".into()); 65];
+    for invalid in [
+        serde_json::to_vec(&at_cap).unwrap(),
+        b"malformed".to_vec(),
+        vec![b' '; MAX_DOCUMENT_BYTES + 1],
+    ] {
+        assert!(
+            !repository
+                .replace_document(FleetDocument::Overrides, invalid, version.clone())
+                .await
+        );
+        assert_eq!(repository.read_overrides().await.unwrap().1, version);
+    }
+}
+
+#[tokio::test]
+async fn r09_fleet_population_budget_includes_its_coordination_documents() {
+    let inner: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+    let repository = FleetRepository::new(Some(inner.clone()));
+    for path in [DESIRED_DOC, OVERRIDES_DOC, URLS_DOC] {
+        inner
+            .put(&ObjPath::from(path), PutPayload::from("{}"))
+            .await
+            .unwrap();
+    }
+    for index in 1..=MAX_MEMBERS {
+        let heartbeat: Heartbeat = serde_json::from_value(serde_json::json!({"instance":format!("streams-{index}"),"ts_ms":0,"rps":0.0,"owned_shards":[],"draining":false})).unwrap();
+        repository
+            .publish_heartbeat(&heartbeat.instance, &heartbeat)
+            .await
+            .unwrap();
+    }
+    assert_eq!(
+        repository.read_heartbeat_set().await.unwrap().len(),
+        MAX_MEMBERS,
+        "three owner documents must not consume configured member slots"
+    );
+    inner
+        .put(&ObjPath::from("fleet/extra.json"), PutPayload::from("{}"))
+        .await
+        .unwrap();
+    assert!(
+        repository.read_heartbeat_set().await.is_err(),
+        "provider work beyond the declared cap must still fail closed"
     );
 }

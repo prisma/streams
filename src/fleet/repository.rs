@@ -75,7 +75,9 @@ impl FleetRepository {
         prefix: &str,
         heartbeat: bool,
     ) -> anyhow::Result<Vec<T>> {
-        const MAX_OBJECTS: usize = 4096;
+        // The heartbeat namespace also contains the three coordination
+        // documents. They consume provider work, not member capacity.
+        let max_objects = MAX_MEMBERS + if heartbeat { 3 } else { 0 };
         const MAX_OBJECT_BYTES: usize = 128 * 1024;
         const MAX_TOTAL_BYTES: usize = 8 * 1024 * 1024;
         let Some(store) = self.store.as_ref() else {
@@ -89,8 +91,8 @@ impl FleetRepository {
             while let Some(meta) = listing.try_next().await? {
                 listed += 1;
                 anyhow::ensure!(
-                    listed <= MAX_OBJECTS,
-                    "fleet population exceeds {MAX_OBJECTS} objects"
+                    listed <= max_objects,
+                    "fleet population exceeds {max_objects} objects"
                 );
                 let loc = meta.location.as_ref();
                 if heartbeat
@@ -149,15 +151,7 @@ impl FleetRepository {
     ) -> anyhow::Result<(Option<Desired>, Option<UpdateVersion>)> {
         match self.read_typed::<Desired>(DESIRED_DOC).await? {
             Some((doc, version)) => {
-                anyhow::ensure!(
-                    (1..=MAX_MEMBERS as u64).contains(&doc.count),
-                    "desired count exceeds fleet budget"
-                );
-                anyhow::ensure!(doc.epoch < u64::MAX, "desired epoch exhausted");
-                anyhow::ensure!(
-                    doc.pending_events.len() <= 64,
-                    "desired outbox exceeds item budget"
-                );
+                validate_desired(&doc)?;
                 Ok((Some(doc), Some(version)))
             }
             None => Ok((None, None)),
@@ -167,14 +161,7 @@ impl FleetRepository {
     pub async fn read_overrides(&self) -> anyhow::Result<(Overrides, Option<UpdateVersion>)> {
         match self.read_typed::<Overrides>(OVERRIDES_DOC).await? {
             Some((doc, version)) => {
-                anyhow::ensure!(
-                    doc.entries.len() <= MAX_MEMBERS,
-                    "override map exceeds item budget"
-                );
-                anyhow::ensure!(
-                    doc.pending_events.len() <= 64,
-                    "override outbox exceeds item budget"
-                );
+                validate_overrides(&doc)?;
                 Ok((doc, Some(version)))
             }
             None => Ok((Overrides::default(), None)),
@@ -210,8 +197,8 @@ impl FleetRepository {
             Some(v) => PutMode::Update(v),
             None => PutMode::Create,
         };
-        if body.len() > MAX_DOCUMENT_BYTES {
-            tracing::warn!(document = doc.path(), "fleet write exceeds byte budget");
+        if let Err(error) = validate_write(doc, &body) {
+            tracing::warn!(document = doc.path(), %error, "fleet write refused; prior authority retained");
             return false;
         }
         // An uncertain PUT is retried from the next authoritative version;
@@ -305,6 +292,44 @@ impl FleetRepository {
         let value = serde_json::from_slice::<T>(&raw)
             .map_err(|error| anyhow::anyhow!("invalid fleet document {doc}: {error}"))?;
         Ok(Some((value, version)))
+    }
+}
+
+fn validate_desired(doc: &Desired) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        (1..=MAX_MEMBERS as u64).contains(&doc.count),
+        "desired count exceeds fleet budget"
+    );
+    anyhow::ensure!(doc.epoch < u64::MAX, "desired epoch exhausted");
+    anyhow::ensure!(
+        doc.pending_events.len() <= 64,
+        "desired outbox exceeds item budget"
+    );
+    Ok(())
+}
+
+fn validate_overrides(doc: &Overrides) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        doc.entries.len() <= MAX_MEMBERS,
+        "override map exceeds item budget"
+    );
+    anyhow::ensure!(
+        doc.pending_events.len() <= 64,
+        "override outbox exceeds item budget"
+    );
+    Ok(())
+}
+
+/// Every CAS publication must remain readable by the same owner. Byte and
+/// semantic ceilings are checked before storage, including outbox-clear writes.
+fn validate_write(doc: FleetDocument, body: &[u8]) -> anyhow::Result<()> {
+    anyhow::ensure!(
+        body.len() <= MAX_DOCUMENT_BYTES,
+        "fleet write exceeds byte budget"
+    );
+    match doc {
+        FleetDocument::Desired => validate_desired(&serde_json::from_slice(body)?),
+        FleetDocument::Overrides => validate_overrides(&serde_json::from_slice(body)?),
     }
 }
 
