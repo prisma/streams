@@ -381,6 +381,7 @@ pub(super) async fn http_rig_build(
         protocol_clock: Arc::new(crate::runtime::SystemClock::default()),
         config: rig_config.clone(),
         registry: Arc::new(registry),
+        watches: std::sync::OnceLock::new(),
         reads: std::sync::OnceLock::new(),
         creations: std::sync::OnceLock::new(),
         peer,

@@ -1094,7 +1094,7 @@ pub async fn product_entry(
     headers: HeaderMap,
     query: String,
     body: Bytes,
-    principal: Option<crate::auth::RequestPrincipal>,
+    authorization: ProductAuthorization,
 ) -> Response {
     // Browser preflight: answered before authorization, because a
     // preflight carries no credentials by definition (the browser sends
@@ -1121,14 +1121,9 @@ pub async fn product_entry(
             .body(Body::empty())
             .unwrap();
     }
-    // Authorized by PARSED route (see product_auth_gate). The wrapper
-    // already ran this before reading the body; repeating it is cheap
-    // and keeps direct callers safe. The wrapper's principal (if any)
-    // wins; the re-run only re-derives one for direct callers.
-    let principal = match product_auth_gate(&state, &path, &method, &query, &headers) {
-        Ok(p2) => principal.or(p2.into_principal()),
-        Err(r) => return r,
-    };
+    // Authentication proof is carried from the transport gate; the request
+    // already owns its one admission slot for the full handler lifetime.
+    let principal = authorization.principal().cloned();
     // Stage 5d: the VERIFIED principal selects the tenant-qualified
     // storage identity. Off/shadow requests (and §15 capability
     // carriers, until the capability wire carries the project —
@@ -1345,7 +1340,30 @@ pub async fn product_entry(
         }
         ProductRoute::WatchWait { name, watch, key } => {
             return if method == Method::GET {
-                product_watch_wait(state, &tenant, name, watch, key, headers, &query).await
+                product_watch_wait(
+                    state,
+                    &tenant,
+                    name,
+                    watch,
+                    key,
+                    headers,
+                    &query,
+                    match &authorization {
+                        ProductAuthorization::Principal(principal) => {
+                            crate::application::watch::WatchAccess::AdmittedAccount(principal)
+                        }
+                        ProductAuthorization::CapabilityCarrier => {
+                            crate::application::watch::WatchAccess::CapabilityCarrier
+                        }
+                        ProductAuthorization::Deployment => {
+                            crate::application::watch::WatchAccess::Deployment
+                        }
+                        ProductAuthorization::Preflight => {
+                            unreachable!("preflight returned before dispatch")
+                        }
+                    },
+                )
+                .await
             } else {
                 perr(
                     StatusCode::METHOD_NOT_ALLOWED,
@@ -1477,26 +1495,55 @@ async fn product_create(
     {
         return crate::audit::tag_project(auth_failure_response(&e), &p.project_id);
     }
-    let result = state.creation_service().create_product(tenant,name,key,cfg,principal.map(|p| &p.quotas)).await;
+    let result = state
+        .creation_service()
+        .create_product(tenant, name, key, cfg, principal.map(|p| &p.quotas))
+        .await;
     match result {
-        Ok((created,desc)) => metadata_response(&desc, if created {StatusCode::CREATED} else {StatusCode::OK}),
+        Ok((created, desc)) => metadata_response(
+            &desc,
+            if created {
+                StatusCode::CREATED
+            } else {
+                StatusCode::OK
+            },
+        ),
         Err(crate::application::creation::ProductCreateError::Quota(refusal)) => {
-            let response=quota_refusal_response(&refusal);
-            if let Some(p)=principal {crate::audit::tag_project(response,&p.project_id)} else {response}
+            let response = quota_refusal_response(&refusal);
+            if let Some(p) = principal {
+                crate::audit::tag_project(response, &p.project_id)
+            } else {
+                response
+            }
         }
         Err(crate::application::creation::ProductCreateError::Creation(error)) => {
             use crate::application::creation::CreationFailure as F;
-            let status=match error.kind {
-                F::Invalid=>StatusCode::BAD_REQUEST,F::Conflict=>StatusCode::CONFLICT,F::Missing=>StatusCode::NOT_FOUND,
-                F::Gone=>StatusCode::GONE,F::WrongKey=>StatusCode::FORBIDDEN,F::Storage=>StatusCode::INTERNAL_SERVER_ERROR,
-                F::TooLarge=>StatusCode::PAYLOAD_TOO_LARGE,F::Overloaded=>StatusCode::TOO_MANY_REQUESTS,
-                F::Ambiguous=>StatusCode::REQUEST_TIMEOUT,F::Opening=>StatusCode::SERVICE_UNAVAILABLE,
+            let status = match error.kind {
+                F::Invalid => StatusCode::BAD_REQUEST,
+                F::Conflict => StatusCode::CONFLICT,
+                F::Missing => StatusCode::NOT_FOUND,
+                F::Gone => StatusCode::GONE,
+                F::WrongKey => StatusCode::FORBIDDEN,
+                F::Storage => StatusCode::INTERNAL_SERVER_ERROR,
+                F::TooLarge => StatusCode::PAYLOAD_TOO_LARGE,
+                F::Overloaded => StatusCode::TOO_MANY_REQUESTS,
+                F::Ambiguous => StatusCode::REQUEST_TIMEOUT,
+                F::Opening => StatusCode::SERVICE_UNAVAILABLE,
             };
-            let retryable=matches!(error.kind,F::Storage|F::Overloaded|F::Ambiguous|F::Opening);
-            let mut response=perr(status,error.code,&error.message,None,retryable);
-            if error.kind==F::WrongKey {response=crate::audit::tag(response,"wrong_key");}
-            if let Some(owner)=error.owner.and_then(|v| v.parse().ok()) {response.headers_mut().insert("streams-replay-to",owner);}
-            if let Some(p)=principal {response=crate::audit::tag_project(response,&p.project_id);}
+            let retryable = matches!(
+                error.kind,
+                F::Storage | F::Overloaded | F::Ambiguous | F::Opening
+            );
+            let mut response = perr(status, error.code, &error.message, None, retryable);
+            if error.kind == F::WrongKey {
+                response = crate::audit::tag(response, "wrong_key");
+            }
+            if let Some(owner) = error.owner.and_then(|v| v.parse().ok()) {
+                response.headers_mut().insert("streams-replay-to", owner);
+            }
+            if let Some(p) = principal {
+                response = crate::audit::tag_project(response, &p.project_id);
+            }
             response
         }
     }
@@ -5883,98 +5930,9 @@ async fn product_consumer_settle(
 
 // ---- Stage 2b: watches ----------------------------------------------
 
-/// Journal template registration shape for a stream's immutable watch
-/// definitions.
-pub(crate) fn watch_pinned(desc: &StreamDesc) -> Vec<(String, Vec<String>)> {
-    desc.watch_definitions
-        .iter()
-        .map(|w| (w.name.clone(), w.fields.clone()))
-        .collect()
-}
-
-/// Canonical watch-key value encoding (spec Stage 2 §3.3): JSON
-/// serialization, so "1" (string), 1 (number), true, null, arrays and
-/// objects are all distinct. A missing pointer produces NO key for the
-/// definition.
-///
-/// This encoding is NORMATIVE and cross-language — the SDK derives the
-/// same watch key offline (see `sdk/src/index.ts`), so the two must
-/// agree byte for byte. Two places where a naive `to_string()` would
-/// not: object keys are sorted (serde's map already is, JavaScript's
-/// is not), and a float with no fractional part is written as an
-/// integer, because serde writes `1.0` where JSON.stringify writes `1`.
-fn canonical_arg(v: &serde_json::Value) -> String {
-    use serde_json::Value as V;
-    match v {
-        V::Number(n) => match n.as_f64() {
-            Some(f) if n.as_i64().is_none() && n.as_u64().is_none() && f.fract() == 0.0 => {
-                format!("{}", f as i64)
-            }
-            _ => n.to_string(),
-        },
-        V::Array(a) => {
-            let items: Vec<String> = a.iter().map(canonical_arg).collect();
-            format!("[{}]", items.join(","))
-        }
-        V::Object(m) => {
-            let mut keys: Vec<&String> = m.keys().collect();
-            keys.sort();
-            let items: Vec<String> = keys
-                .iter()
-                .map(|k| {
-                    format!(
-                        "{}:{}",
-                        V::String((*k).clone()),
-                        canonical_arg(m.get(*k).unwrap_or(&V::Null))
-                    )
-                })
-                .collect();
-            format!("{{{}}}", items.join(","))
-        }
-        other => other.to_string(),
-    }
-}
-
-fn watch_arg(v: Option<&serde_json::Value>) -> Option<String> {
-    v.map(canonical_arg)
-}
-
-/// The 64-bit watch key for (definition, extracted values), hex16 on
-/// the wire. Field order is significant and preserved (spec §3.2) —
-/// the definition id hashes fields AS DECLARED.
-pub(crate) fn watch_key_hex(name: &str, fields: &[String], values: &[String]) -> String {
-    let tid = crate::touch_keys::template_id(name, fields);
-    crate::touch_keys::key_hex(crate::touch_keys::watch_key(tid, values))
-}
-
-/// Watch-journal key ids for one committed JSON record.
-pub(crate) fn product_watch_ids(
-    defs: &[crate::registry::WatchDefinition],
-    record: &serde_json::Value,
-) -> Vec<u32> {
-    let mut out = Vec::new();
-    for def in defs {
-        let mut values = Vec::with_capacity(def.fields.len());
-        let mut complete = true;
-        for ptr in &def.fields {
-            match watch_arg(record.pointer(ptr)) {
-                Some(v) => values.push(v),
-                None => {
-                    complete = false;
-                    break;
-                }
-            }
-        }
-        if !complete {
-            continue;
-        }
-        let tid = crate::touch_keys::template_id(&def.name, &def.fields);
-        out.push(crate::touch_keys::key_id_of_u64(
-            crate::touch_keys::watch_key(tid, &values),
-        ));
-    }
-    out
-}
+#[cfg(test)]
+use crate::application::watch::canonical_arg;
+pub(crate) use crate::application::watch::{product_watch_ids, watch_key_hex, watch_pinned};
 
 fn watch_def_json(w: &crate::registry::WatchDefinition) -> serde_json::Value {
     json!({"name": w.name, "fields": w.fields})
@@ -5985,115 +5943,37 @@ async fn product_watches_list(
     tenant: &crate::tenant::ProjectId,
     name: String,
 ) -> Response {
-    let desc = match state.registry.get(&tenant.stream_ref(&name)).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => {
-            if crate::http::initializing(&d) {
-                return perr(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "creating",
-                    "stream is still being created; retry",
-                    None,
-                    true,
-                );
-            }
-            d
-        }
-        Ok(_) => {
-            return perr(
-                StatusCode::NOT_FOUND,
-                "not_found",
-                "stream not found",
-                None,
-                false,
-            );
-        }
-        Err(e) => {
-            return perr(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &e.to_string(),
-                None,
-                true,
-            );
-        }
-    };
-    let defs: Vec<_> = desc.watch_definitions.iter().map(watch_def_json).collect();
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::CACHE_CONTROL, "no-store")
-        .body(Body::from(json!({ "watches": defs }).to_string()))
-        .unwrap()
+    match state
+        .watch_service()
+        .definitions(&tenant.stream_ref(&name))
+        .await
+    {
+        Ok(definitions) => json_ok(
+            json!({ "watches": definitions.iter().map(watch_def_json).collect::<Vec<_>>() }),
+        ),
+        Err(error) => watch_failure_response(error),
+    }
 }
 
 async fn product_watch_get(
     state: Arc<AppState>,
     tenant: &crate::tenant::ProjectId,
     name: String,
-    w: String,
+    watch: String,
 ) -> Response {
-    let desc = match state.registry.get(&tenant.stream_ref(&name)).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => {
-            if crate::http::initializing(&d) {
-                return perr(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "creating",
-                    "stream is still being created; retry",
-                    None,
-                    true,
-                );
-            }
-            d
-        }
-        _ => {
-            return perr(
-                StatusCode::NOT_FOUND,
-                "not_found",
-                "stream not found",
-                None,
-                false,
-            );
-        }
-    };
-    match desc.watch_definitions.iter().find(|d| d.name == w) {
-        Some(def) => Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::CACHE_CONTROL, "no-store")
-            .body(Body::from(watch_def_json(def).to_string()))
-            .unwrap(),
-        None => perr(
-            StatusCode::NOT_FOUND,
-            "unknown_watch",
-            "no such watch definition",
-            None,
-            false,
-        ),
-    }
-}
-
-/// The observation endpoint (spec §3.5): long-poll one watch key. The
-/// URL sig is an OBSERVATION capability derived from the stream key —
-/// it grants no decryption, append, consumer, or management rights;
-/// holders of the stream key authenticate directly.
-/// Global pre-auth token bucket for capability-driven registry
-/// lookups (SR-3): generous for real clients, a hard wall for forged-
-/// capability scanning. 500/s refill, 1000 burst.
-fn cap_lookup_allowed() -> bool {
-    static B: std::sync::OnceLock<std::sync::Mutex<(f64, i64)>> = std::sync::OnceLock::new();
-    const RATE: f64 = 500.0;
-    const BURST: f64 = 1000.0;
-    let now = crate::shard::now_ms();
-    let m = B.get_or_init(|| std::sync::Mutex::new((BURST, now)));
-    let mut g = m.lock().unwrap();
-    let dt = ((now - g.1).max(0) as f64) / 1000.0;
-    g.0 = (g.0 + dt * RATE).min(BURST);
-    g.1 = now;
-    if g.0 >= 1.0 {
-        g.0 -= 1.0;
-        true
-    } else {
-        false
+    match state
+        .watch_service()
+        .definitions(&tenant.stream_ref(&name))
+        .await
+    {
+        Ok(definitions) => match definitions
+            .iter()
+            .find(|definition| definition.name == watch)
+        {
+            Some(definition) => json_ok(watch_def_json(definition)),
+            None => watch_failure_response(crate::application::watch::WatchFailure::UnknownWatch),
+        },
+        Err(error) => watch_failure_response(error),
     }
 }
 
@@ -6101,316 +5981,78 @@ async fn product_watch_wait(
     state: Arc<AppState>,
     tenant: &crate::tenant::ProjectId,
     name: String,
-    w: String,
+    watch: String,
     key_hex: String,
     headers: HeaderMap,
     query: &str,
+    access: crate::application::watch::WatchAccess<'_>,
 ) -> Response {
-    // ONE refusal for every "no valid capability for this URL" shape —
-    // missing stream, deleted stream, bad/expired/forged capability —
-    // so an unauthenticated prober cannot use this route (reachable
-    // without any token, §15) as a stream-existence oracle. Existence-
-    // revealing answers (creating, unknown watch) come only AFTER the
-    // capability or key verifies.
-    let refuse = || {
-        // Journaled (§10.4): capability probing is exactly the class a
-        // security review reconstructs. No project — the refusal fires
-        // BEFORE anything verifies, and unverified claims are never
-        // identity.
-        crate::audit::tag(
-            perr(
-                StatusCode::FORBIDDEN,
-                "watch_unauthorized",
-                "a valid observation capability or Prisma-Encryption-Key is required",
-                None,
-                false,
-            ),
-            "watch_unauthorized",
-        )
-    };
-    // Review item 3: a capability CARRIES its project (wire v2), so a
-    // bearer-free observation resolves the right project's same-named
-    // stream BEFORE the registry lookup. Key-holder requests (no cap)
-    // stay on the request tenant. A cap whose project fails the ID
-    // grammar gets the uniform refusal, same as a forged signature.
-    let cap_early = headers
+    use crate::application::watch::{Observation, WatchCredentials};
+    // Parse a carrier without surfacing syntax diagnostics until proof exists.
+    let parsed_query = strict_query(query, &["cursor", "cap", "timeoutMs"]);
+    let capability = headers
         .get(header::AUTHORIZATION)
-        .and_then(|v| v.to_str().ok())
-        .and_then(|v| v.strip_prefix("Prisma-Watch "))
+        .and_then(|value| value.to_str().ok())
+        .and_then(|value| value.strip_prefix("Prisma-Watch "))
         .map(str::to_string)
-        .or_else(
-            || match strict_query(query, &["cursor", "cap", "timeoutMs"]) {
-                Ok(q) => q.get("cap").cloned(),
-                Err(_) => None,
-            },
-        );
-    let cap_tenant = match &cap_early {
-        Some(c) => match crate::crypto::watch_capability_project(c) {
-            Some(p) => Some(p),
-            None => return refuse(),
-        },
-        None => None,
-    };
-    // SR-3 pre-auth backstop: a forged capability drives one
-    // project-qualified registry lookup BEFORE anything verifies.
-    // Bound the global rate so capability probing cannot become
-    // registry pressure; the uniform refusal keeps the non-oracle.
-    if cap_tenant.is_some() && !cap_lookup_allowed() {
-        return refuse();
-    }
-    let lookup_tenant = cap_tenant.as_ref().unwrap_or(tenant);
-    let desc = match state.registry.get(&lookup_tenant.stream_ref(&name)).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => d,
-        _ => return refuse(),
-    };
-    let key_hex = key_hex.trim_end_matches('/').to_ascii_lowercase();
-    let Some(epoch) = desc.epoch_bytes() else {
-        return refuse();
-    };
-    // Auth (§15): a watch-observation CAPABILITY, or the full
-    // encryption key. The capability chain is derivable by any
-    // stream-key holder, offline:
-    //   touch_token(key, epoch) -> wait_sig_key -> watch_capability_sig
-    // and the server verifies against the wait_sig_key persisted in
-    // the descriptor at create — no stream keys held server-side, so
-    // capabilities keep working across restarts and cold processes.
-    // Unlike the retired `sig=` design the capability is bound to
-    // project + name + epoch + watch + key + METHOD + EXPIRY, expires
-    // in <=5 minutes, and is accepted from the Prisma-Watch
-    // Authorization scheme (preferred) or a `cap=` query parameter
-    // for EventSource clients. REDACTION: never log the query string
-    // or Authorization header of this route.
-    let cap = cap_early;
-    let cap_ok = cap.is_some_and(|c| {
-        use base64::Engine;
-        let Some(stored) = desc.watch_sig_key.as_deref() else {
-            return false;
-        };
-        let Ok(raw) = base64::engine::general_purpose::STANDARD.decode(stored) else {
-            return false;
-        };
-        let Ok(sk) = <[u8; 32]>::try_from(raw.as_slice()) else {
-            return false;
-        };
-        crate::crypto::verify_watch_capability(
-            &c,
-            &sk,
-            &desc.sref(),
-            &desc.stream_epoch,
-            &w,
-            &key_hex,
-            "GET",
-            crate::shard::now_ms() / 1000,
-        )
-    });
-    if !cap_ok {
-        let key_ok = product_key(&headers).is_some_and(|kb| {
-            matches!(
-                crate::http::check_key(Some(&kb), &desc),
-                crate::http::KeyCheck::Ok(..)
-            )
+        .or_else(|| {
+            parsed_query
+                .as_ref()
+                .ok()
+                .and_then(|query| query.get("cap").cloned())
         });
-        if !key_ok {
-            return refuse();
-        }
-    }
-    // Syntax diagnostics are safe only after a credential verifies. In
-    // particular malformed keys and duplicate/unknown query parameters must
-    // never distinguish a real descriptor from a missing one for a prober.
-    if key_hex.len() != 16 || u64::from_str_radix(&key_hex, 16).is_err() {
-        return perr(
-            StatusCode::BAD_REQUEST,
-            "invalid_watch_key",
-            "watch key must be 16 hex chars",
-            None,
-            false,
-        );
-    }
-    let q = match strict_query(query, &["cursor", "cap", "timeoutMs"]) {
-        Ok(q) => q,
-        Err(r) => return r,
-    };
-    // Authorized from here on: these answers reveal state and must not
-    // be reachable by an unauthenticated probe.
-    //
-    // SR-3 (Søren review): the verified capability IS a restricted
-    // principal for lookup_tenant's project. Hold it to the CURRENT
-    // project policy and occupy the project's admission capacity for
-    // the WHOLE wait — a suspended project's capabilities die with the
-    // policy, and capability waiters cannot bypass the §17.3 ceilings.
-    let _cap_admission = if state.auth.mode == crate::auth::AuthMode::Enforce {
-        match state
-            .auth
-            .status_and_quotas(lookup_tenant, crate::shard::now_ms() / 1000)
-        {
-            Err(_) => {
-                // SR2 finding 3: stale policy fails the capability
-                // CLOSED — the same retryable 503 a customer JWT gets,
-                // never service on a stale Active.
-                return crate::audit::tag_project(
-                    perr(
-                        StatusCode::SERVICE_UNAVAILABLE,
-                        "policy_stale",
-                        "project policy is stale; retry shortly",
-                        None,
-                        true,
-                    ),
-                    lookup_tenant,
-                );
-            }
-            Ok(None) => {
-                // Not in a FRESH policy snapshot: not served here.
-                return crate::audit::tag_project(refuse(), lookup_tenant);
-            }
-            Ok(Some((status, quotas))) => {
-                if !matches!(status, crate::project_policy::ProjectStatus::Active) {
-                    return crate::audit::tag_project(
-                        crate::audit::tag(
-                            perr(
-                                StatusCode::FORBIDDEN,
-                                "project_not_active",
-                                "the project is not active",
-                                None,
-                                false,
-                            ),
-                            "project_not_active",
-                        ),
-                        lookup_tenant,
-                    );
-                }
-                let g = match state
-                    .quotas
-                    .admit(lookup_tenant, &quotas, crate::shard::now_ms())
-                {
-                    Ok(g) => g,
-                    Err(r) => {
-                        return crate::audit::tag_project(
-                            quota_refusal_response(&r),
-                            lookup_tenant,
-                        );
-                    }
-                };
-                // SR2-4: a capability LONG POLL occupies the project's
-                // live-subscription pool for its whole wait — watches
-                // get no unbounded side door around the ceiling.
-                let sub = match state.quotas.admit_subscription(lookup_tenant, &quotas) {
-                    Ok(sg) => sg,
-                    Err(r) => {
-                        return crate::audit::tag_project(
-                            quota_refusal_response(&r),
-                            lookup_tenant,
-                        );
-                    }
-                };
-                Some((g, sub))
-            }
-        }
-    } else {
-        None
-    };
-    if crate::http::initializing(&desc) {
-        return perr(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "creating",
-            "stream is still being created; retry",
-            None,
-            true,
-        );
-    }
-    if !desc.watch_definitions.iter().any(|d| d.name == w) {
-        return perr(
-            StatusCode::NOT_FOUND,
-            "unknown_watch",
-            "no such watch definition",
-            None,
-            false,
-        );
-    }
-    // Cache the key for sig derivation on later keyless waits.
-    if let Some(kb) = product_key(&headers)
-        && let crate::http::KeyCheck::Ok(k, e) = crate::http::check_key(Some(&kb), &desc)
+    let service = state.watch_service();
+    let verified = match service
+        .authenticate(
+            &tenant.stream_ref(&name),
+            watch,
+            key_hex,
+            WatchCredentials {
+                capability,
+                encryption_key: product_key(&headers),
+            },
+            access,
+        )
+        .await
     {
-        state.keys.put(desc.storage_hash(), k, e);
-    }
-    let journal = state.touch.journal(
-        desc.storage_hash(),
-        crate::crypto::RouteHash::for_stream(&desc.sref()),
-        &watch_pinned(&desc),
-    );
-    let cursor = q
+        Ok(proof) => proof,
+        Err(error) => return watch_failure_response(error),
+    };
+    let query = match parsed_query {
+        Ok(query) => query,
+        Err(response) => return response,
+    };
+    let cursor = query
         .get("cursor")
-        .map(String::as_str)
-        .unwrap_or("now")
-        .to_string();
-    let timeout = match q_num::<u64>(&q, "timeoutMs", "invalid_timeout_ms") {
-        Ok(v) => v
-            .map(std::time::Duration::from_millis)
-            .unwrap_or(std::time::Duration::from_secs(25))
-            .min(std::time::Duration::from_secs(25)),
-        Err(r) => return r,
+        .cloned()
+        .unwrap_or_else(|| "now".to_string());
+    let timeout = match q_num::<u64>(&query, "timeoutMs", "invalid_timeout_ms") {
+        Ok(value) => std::time::Duration::from_millis(value.unwrap_or(25_000).min(25_000)),
+        Err(response) => return response,
     };
-    let key_id = crate::touch_keys::key_id_of(&key_hex);
-    let out = journal.wait(&cursor, vec![key_id], timeout).await;
-
-    use crate::touch::WaitOutcome;
-    let stream_cursor = |end: u64| {
-        let ro = desc.resolve_segment("");
-        crate::product_cursor::KeyCursor {
-            epoch,
-            key_hash: crate::crypto::stream_hash(""),
-            seg_id: ro.seg_id,
-            offset: end,
-        }
-    };
-    let (status, body) = match out {
-        WaitOutcome::Touched {
+    let body = match service.wait(verified, cursor, timeout).await {
+        Ok(Observation::Touched {
             cursor,
-            end_offset,
             proven,
-            cacheable: _,
-        } => (
-            StatusCode::OK,
-            json!({
-                "invalidated": true,
-                "reason": if proven { "changed" } else { "resync" },
-                "cursor": cursor,
-                "streamCursor": state
-                    .keys
-                    .get(&desc.storage_hash())
-                    .map(|(k, _)| stream_cursor(end_offset).encode(&desc.project_id, &k)),
-            }),
-        ),
-        WaitOutcome::Stale { cursor } => (
-            StatusCode::OK,
-            json!({
-                // A stale cursor is an explicit RESYNC, never a silent
-                // false (spec §3.5).
-                "invalidated": true,
-                "reason": "resync",
-                "cursor": cursor,
-            }),
-        ),
-        WaitOutcome::Timeout { cursor, end_offset } => (
-            StatusCode::OK,
-            json!({
-                "invalidated": false,
-                "cursor": cursor,
-                "streamCursor": state
-                    .keys
-                    .get(&desc.storage_hash())
-                    .map(|(k, _)| stream_cursor(end_offset).encode(&desc.project_id, &k)),
-            }),
-        ),
+            stream_cursor,
+        }) => json!({
+            "invalidated": true, "reason": if proven { "changed" } else { "resync" },
+            "cursor": cursor, "streamCursor": stream_cursor,
+        }),
+        Ok(Observation::Stale { cursor }) => {
+            json!({"invalidated": true, "reason": "resync", "cursor": cursor})
+        }
+        Ok(Observation::Timeout {
+            cursor,
+            stream_cursor,
+        }) => json!({"invalidated": false, "cursor": cursor, "streamCursor": stream_cursor}),
+        Err(error) => return watch_failure_response(error),
     };
-    Response::builder()
-        .status(status)
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::CACHE_CONTROL, "no-store")
-        // §15: observation responses must never leak the capability
-        // through a Referer header.
-        .header("referrer-policy", "no-referrer")
-        .body(Body::from(body.to_string()))
-        .unwrap()
+    let mut response = json_ok(body);
+    response
+        .headers_mut()
+        .insert("referrer-policy", HeaderValue::from_static("no-referrer"));
+    response
 }
 
 /// GET /v1/streams — the paginated product catalog (spec Stage 8 §10).
@@ -7143,5 +6785,88 @@ mod tests {
         let out = translate_read_error(raw);
         assert_eq!(out.status(), StatusCode::CONFLICT);
         assert!(out.headers().get("streams-replay-to").is_none());
+    }
+}
+
+fn watch_failure_response(error: crate::application::watch::WatchFailure) -> Response {
+    use crate::application::watch::WatchFailure;
+    match error {
+        WatchFailure::Unauthorized(project) => {
+            let response = crate::audit::tag(
+                perr(
+                    StatusCode::FORBIDDEN,
+                    "watch_unauthorized",
+                    "a valid observation capability or Prisma-Encryption-Key is required",
+                    None,
+                    false,
+                ),
+                "watch_unauthorized",
+            );
+            match project {
+                Some(project) => crate::audit::tag_project(response, &project),
+                None => response,
+            }
+        }
+        WatchFailure::PolicyStale(project) => crate::audit::tag_project(
+            perr(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "policy_stale",
+                "project policy is stale; retry shortly",
+                None,
+                true,
+            ),
+            &project,
+        ),
+        WatchFailure::ProjectInactive(project) => crate::audit::tag_project(
+            crate::audit::tag(
+                perr(
+                    StatusCode::FORBIDDEN,
+                    "project_not_active",
+                    "the project is not active",
+                    None,
+                    false,
+                ),
+                "project_not_active",
+            ),
+            &project,
+        ),
+        WatchFailure::Quota(project, refusal) => {
+            crate::audit::tag_project(quota_refusal_response(&refusal), &project)
+        }
+        WatchFailure::InvalidKey => perr(
+            StatusCode::BAD_REQUEST,
+            "invalid_watch_key",
+            "watch key must be 16 hex chars",
+            None,
+            false,
+        ),
+        WatchFailure::Creating => perr(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "creating",
+            "stream is still being created; retry",
+            None,
+            true,
+        ),
+        WatchFailure::NotFound => perr(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "stream not found",
+            None,
+            false,
+        ),
+        WatchFailure::UnknownWatch => perr(
+            StatusCode::NOT_FOUND,
+            "unknown_watch",
+            "no such watch definition",
+            None,
+            false,
+        ),
+        WatchFailure::Storage(message) => perr(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &message,
+            None,
+            true,
+        ),
     }
 }

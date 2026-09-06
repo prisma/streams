@@ -207,3 +207,6 @@ mod review_security;
 
 #[path = "review_readiness.rs"]
 mod review_readiness;
+
+#[path = "tests/watch_admission.rs"]
+mod watch_admission;

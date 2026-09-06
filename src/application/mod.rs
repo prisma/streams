@@ -7,3 +7,5 @@ pub(crate) mod topology;
 pub(crate) mod lifecycle;
 
 pub(crate) mod creation;
+
+pub(crate) mod watch;

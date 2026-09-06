@@ -92,6 +92,7 @@ pub struct AppState {
     /// lifecycle leases. Production shares RuntimeCaps.clock; wire fixtures
     /// explicitly supply the same real-time domain as their JWT/policy feeds.
     pub(crate) protocol_clock: Arc<dyn crate::runtime::Clock>,
+    pub(crate) watches: std::sync::OnceLock<Arc<crate::application::watch::WatchService>>,
     pub registry: Arc<Registry>,
     pub(crate) reads: std::sync::OnceLock<Arc<crate::application::read::ReadService>>,
     pub(crate) creations: std::sync::OnceLock<Arc<crate::application::creation::CreationService>>,
@@ -158,20 +159,56 @@ pub struct AppState {
 }
 
 impl AppState {
-    pub(crate) fn creation_service(self: &Arc<Self>) -> Arc<crate::application::creation::CreationService> {
-        self.creations.get_or_init(|| Arc::new(crate::application::creation::CreationService {
-            registry:self.registry.clone(), shards:self.shards.clone(), ownership:self.ownership.clone(),
-            reads:self.read_service(), keys:self.keys.clone(), runtime:self.runtime.clone(),
-            deployment:self.deployment.clone(), auth:self.auth.clone(), quotas:self.quotas.clone(),
-            record_ceiling:self.admission.record_ceiling(), sliding:Default::default(),
-        })).clone()
+    pub(crate) fn creation_service(
+        self: &Arc<Self>,
+    ) -> Arc<crate::application::creation::CreationService> {
+        self.creations
+            .get_or_init(|| {
+                Arc::new(crate::application::creation::CreationService {
+                    registry: self.registry.clone(),
+                    shards: self.shards.clone(),
+                    ownership: self.ownership.clone(),
+                    reads: self.read_service(),
+                    keys: self.keys.clone(),
+                    runtime: self.runtime.clone(),
+                    deployment: self.deployment.clone(),
+                    auth: self.auth.clone(),
+                    quotas: self.quotas.clone(),
+                    record_ceiling: self.admission.record_ceiling(),
+                    sliding: Default::default(),
+                })
+            })
+            .clone()
     }
 
     pub(crate) fn watch_service(&self) -> Arc<crate::application::watch::WatchService> {
-        self.watches.get_or_init(|| Arc::new(crate::application::watch::WatchService::new(
-            self.registry.clone(), self.auth.clone(), self.quotas.clone(), self.keys.clone(),
-            self.touch.clone(), self.runtime.clock.clone(),
-        ))).clone()
+        self.watches
+            .get_or_init(|| {
+                Arc::new(crate::application::watch::WatchService::new(
+                    self.registry.clone(),
+                    self.auth.clone(),
+                    self.quotas.clone(),
+                    self.keys.clone(),
+                    self.touch.clone(),
+                    self.runtime.clock.clone(),
+                ))
+            })
+            .clone()
+    }
+
+    pub(crate) fn watch_service(&self) -> Arc<crate::application::watch::WatchService> {
+        self.watches
+            .get_or_init(|| {
+                Arc::new(crate::application::watch::WatchService::new(
+                    self.registry.clone(),
+                    self.auth.clone(),
+                    self.quotas.clone(),
+                    self.keys.clone(),
+                    self.touch.clone(),
+                    self.protocol_clock.clone(),
+                ))
+            })
+            .clone()
     }
 
     pub(crate) fn lifecycle_service(&self) -> crate::application::lifecycle::LifecycleService {
@@ -2022,16 +2059,9 @@ pub(crate) async fn product_entry_axum_inner(
     // denial the handlers produced (fill-only-if-absent), so classifier
     // sites never need identity plumbing of their own.
     let proj = principal.map(|p| p.project_id.clone());
-    let mut resp = crate::product::product_entry(
-        state,
-        name,
-        method,
-        headers,
-        query,
-        body,
-        principal.cloned(),
-    )
-    .await;
+    let mut resp =
+        crate::product::product_entry(state, name, method, headers, query, body, authorization)
+            .await;
     if let Some(p) = proj {
         resp = crate::audit::tag_project(resp, &p);
     }
@@ -2529,7 +2559,11 @@ pub(crate) async fn create_stream(
     let fork_offset = hdr(&headers, "stream-fork-offset");
     let fork_sub = hdr(&headers, "stream-fork-sub-offset");
     if fork_source.is_none() && (fork_offset.is_some() || fork_sub.is_some()) {
-        return err_resp(StatusCode::BAD_REQUEST, "fork_headers", "Stream-Fork-Offset/Sub-Offset require Stream-Forked-From");
+        return err_resp(
+            StatusCode::BAD_REQUEST,
+            "fork_headers",
+            "Stream-Fork-Offset/Sub-Offset require Stream-Forked-From",
+        );
     }
     let offset = match fork_offset.as_deref().map(parse_fork_offset).transpose() {
         Ok(v) => v,
@@ -2537,31 +2571,67 @@ pub(crate) async fn create_stream(
     };
     let sub_offset = match fork_sub.as_deref() {
         Some(s) => match s.trim().parse::<u64>() {
-            Ok(n) if !s.trim().is_empty() && s.trim().chars().all(|c| c.is_ascii_digit()) => Some(n),
-            _ => return err_resp(StatusCode::BAD_REQUEST, "invalid_fork_sub_offset", "sub-offset must be a non-negative integer"),
+            Ok(n) if !s.trim().is_empty() && s.trim().chars().all(|c| c.is_ascii_digit()) => {
+                Some(n)
+            }
+            _ => {
+                return err_resp(
+                    StatusCode::BAD_REQUEST,
+                    "invalid_fork_sub_offset",
+                    "sub-offset must be a non-negative integer",
+                );
+            }
         },
         None => None,
     };
     let fork = fork_source.map(|source| crate::application::creation::ForkCommand {
-        source: source.strip_prefix("/v1/stream/").unwrap_or(&source).trim_matches('/').to_string(), offset, sub_offset,
+        source: source
+            .strip_prefix("/v1/stream/")
+            .unwrap_or(&source)
+            .trim_matches('/')
+            .to_string(),
+        offset,
+        sub_offset,
     });
-    let result = state.creation_service().create(crate::application::creation::CreateCommand {
-        project, name: name.clone(), key, content_type: hdr(&headers, "content-type").map(|_| content_type),
-        ttl_secs, expires_at_ms, close, body, fork,
-    }).await;
-    let out = match result {Ok(v) => v, Err(e) => return creation_error_response(e)};
-    let mut response = Response::builder().status(if out.created {StatusCode::CREATED} else {StatusCode::OK})
+    let result = state
+        .creation_service()
+        .create(crate::application::creation::CreateCommand {
+            project,
+            name: name.clone(),
+            key,
+            content_type: hdr(&headers, "content-type").map(|_| content_type),
+            ttl_secs,
+            expires_at_ms,
+            close,
+            body,
+            fork,
+        })
+        .await;
+    let out = match result {
+        Ok(v) => v,
+        Err(e) => return creation_error_response(e),
+    };
+    let mut response = Response::builder()
+        .status(if out.created {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        })
         .header(header::CONTENT_TYPE, out.desc.content_type.clone())
         .header("Stream-Next-Offset", tail_token(out.next));
     if out.created {
-        let host = hdr(&headers,"host").unwrap_or_else(|| "localhost".into());
+        let host = hdr(&headers, "host").unwrap_or_else(|| "localhost".into());
         response = response.header(header::LOCATION, format!("http://{host}/v1/stream/{name}"));
     }
-    if out.closed {response = response.header("Stream-Closed", "true");}
+    if out.closed {
+        response = response.header("Stream-Closed", "true");
+    }
     response.body(Body::empty()).unwrap()
 }
 
-pub(crate) fn creation_error_response(error: crate::application::creation::CreationError) -> Response {
+pub(crate) fn creation_error_response(
+    error: crate::application::creation::CreationError,
+) -> Response {
     use crate::application::creation::CreationFailure as F;
     let status = match error.kind {
         F::Invalid => StatusCode::BAD_REQUEST,
@@ -2576,8 +2646,12 @@ pub(crate) fn creation_error_response(error: crate::application::creation::Creat
         F::Opening => StatusCode::SERVICE_UNAVAILABLE,
     };
     let mut response = err_resp(status, error.code, &error.message);
-    if let Some(owner) = error.owner.and_then(|v| v.parse().ok()) {response.headers_mut().insert("streams-replay-to",owner);}
-    if let Some(retry) = error.retry_after.and_then(|v| v.to_string().parse().ok()) {response.headers_mut().insert("retry-after",retry);}
+    if let Some(owner) = error.owner.and_then(|v| v.parse().ok()) {
+        response.headers_mut().insert("streams-replay-to", owner);
+    }
+    if let Some(retry) = error.retry_after.and_then(|v| v.to_string().parse().ok()) {
+        response.headers_mut().insert("retry-after", retry);
+    }
     response
 }
 
@@ -2588,8 +2662,16 @@ async fn delete_stream(state: Arc<AppState>, sref: crate::tenant::TenantStreamRe
     }
 }
 #[cfg(test)]
-pub(crate) async fn release_fork_ref_for_test(state: &Arc<AppState>, source: crate::tenant::TenantStreamRef, fork_id: &str, epoch: &str) -> Result<bool,String> {
-    state.creation_service().release_fork_ref(source,fork_id,epoch).await
+pub(crate) async fn release_fork_ref_for_test(
+    state: &Arc<AppState>,
+    source: crate::tenant::TenantStreamRef,
+    fork_id: &str,
+    epoch: &str,
+) -> Result<bool, String> {
+    state
+        .creation_service()
+        .release_fork_ref(source, fork_id, epoch)
+        .await
 }
 
 // ---- state-protocol touch surface (collapsible GET-per-key model) ----
