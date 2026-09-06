@@ -1168,7 +1168,7 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
     let mut acks: Vec<(
         std::sync::Arc<crate::shard::ShardEngine>,
         [u8; 16],
-        u64,
+        crate::shard::UsageAckScope,
         Vec<Vec<u8>>,
     )> = Vec::new();
     // HARD-bounded round (round-21 blocker 9, tightened by round-22
@@ -1415,12 +1415,16 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
             body_bytes += encoded_size(&env);
             envelopes.push(env);
             let _ = version;
-            // Partial final pages must not erase discovery of remaining
-            // finals. Version zero cannot acknowledge an existing billed row.
+            // Partial final pages retain discovery independently of the
+            // metadata version, including a legacy version-zero row.
             acks.push((
                 engine.clone(),
                 hash,
-                if more_finals { 0 } else { ver },
+                if more_finals {
+                    crate::shard::UsageAckScope::FinalRowsOnly
+                } else {
+                    crate::shard::UsageAckScope::ThroughVersion(ver)
+                },
                 final_keys,
             ));
         }
@@ -1439,8 +1443,15 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
             // Spooled batches leave the spool ONLY now, after the
             // ledger acknowledged durably.
             state.billing.remove_spooled(&spooled_keys).await?;
-            for (engine, hash, ver, finals) in acks {
-                engine.submit_usage_ack(hash, ver, finals);
+            for (engine, hash, scope, finals) in acks {
+                match scope {
+                    crate::shard::UsageAckScope::ThroughVersion(version) => {
+                        engine.submit_usage_ack(hash, version, finals)
+                    }
+                    crate::shard::UsageAckScope::FinalRowsOnly => {
+                        engine.submit_usage_final_ack(hash, finals)
+                    }
+                }
             }
             Ok(envelopes.len())
         }

@@ -19,8 +19,11 @@ use tokio::sync::{Notify, mpsc, oneshot};
 
 use crate::crypto::decode_frame;
 mod commit_plan;
-pub use commit_plan::{AppendFinish, CloseReq, EnqueueError, SealFenceReq};
-use commit_plan::{DurableEffects, ProducerDecision, decide_producer, seal_authorized};
+pub use commit_plan::{AppendFinish, CloseReq, EnqueueError, SealFenceReq, UsageAckScope};
+use commit_plan::{
+    BillingAckDecision, decide_billing_ack, ConsumerGeneration, DurableEffects, ProducerDecision, decide_consumer_generation,
+    decide_producer, seal_authorized,
+};
 
 pub fn tail_key(hash: &[u8; 16]) -> Vec<u8> {
     let mut k = Vec::with_capacity(17);
@@ -869,7 +872,7 @@ pub enum CommitOp {
     /// deduplicates by version.
     UsageAck {
         hash: [u8; 16],
-        version: u64,
+        scope: UsageAckScope,
         month_final_keys: Vec<Vec<u8>>,
     },
     /// Hard-delete/expiry closure (§6.2): advance the storage clock to
@@ -2553,7 +2556,7 @@ impl ShardEngine {
         )>,
         queue_pending: Vec<(
             oneshot::Sender<Result<crate::queue::QueueOut, String>>,
-            crate::queue::QueueOut,
+            Result<crate::queue::QueueOut, String>,
         )>,
     ) {
         DurableEffects {
@@ -2780,7 +2783,7 @@ impl ShardEngine {
         let mut usage_effects = Vec::new();
         let mut queue_pending: Vec<(
             oneshot::Sender<Result<crate::queue::QueueOut, String>>,
-            crate::queue::QueueOut,
+            Result<crate::queue::QueueOut, String>,
         )> = Vec::new();
         let mut extra_writes = false;
         // GLOBAL trim budget for this commit group: every record-delete a
@@ -2855,7 +2858,7 @@ impl ShardEngine {
                 // Expanded at commit_group entry; unreachable here.
                 CommitOp::AbsorbedBatch { .. } | CommitOp::TrimTick => {}
                 CommitOp::UsageAck {
-                    version,
+                    scope,
                     month_final_keys,
                     ..
                 } => {
@@ -2864,8 +2867,8 @@ impl ShardEngine {
                     // it), else the durable row. A NEWER version stays
                     // dirty — the drain that acked version N must not
                     // erase evidence of N+1.
-                    let cur = local.billing.as_ref().map_or(0, |bm| bm.usage_version);
-                    if cur <= version {
+                    let cur = local.billing.as_ref().map(|bm| bm.usage_version);
+                    if decide_billing_ack(cur, scope) == BillingAckDecision::ClearDirty {
                         wb.delete(crate::billing::usage_dirty_key(&hash));
                         extra_writes = true;
                     }
@@ -3508,7 +3511,7 @@ impl ShardEngine {
                         }
                     }
                     if let Some(m) = load_err {
-                        let _ = resp.send(Err(m));
+                        queue_pending.push((resp, Err(m)));
                         continue;
                     }
                     // Config ops (spec Stage 2 §2.2): single-row,
@@ -3535,7 +3538,7 @@ impl ShardEngine {
                                                 serde_json::from_slice::<ConsumerRecord>(&v).ok()
                                             }),
                                             Err(e) => {
-                                                let _ = resp.send(Err(e.to_string()));
+                                                queue_pending.push((resp, Err(e.to_string())));
                                                 continue;
                                             }
                                         }
@@ -3591,7 +3594,7 @@ impl ShardEngine {
                                     }
                                 }
                             };
-                            queue_pending.push((resp, out));
+                            queue_pending.push((resp, Ok(out)));
                             continue;
                         }
                         QueueOp::ConfigGet { consumer } => {
@@ -3601,7 +3604,7 @@ impl ShardEngine {
                                     match self.db.get(&config_key(&hash, &consumer)[..]).await {
                                         Ok(v) => v.and_then(|v| serde_json::from_slice(&v).ok()),
                                         Err(e) => {
-                                            let _ = resp.send(Err(e.to_string()));
+                                            queue_pending.push((resp, Err(e.to_string())));
                                             continue;
                                         }
                                     }
@@ -3609,11 +3612,11 @@ impl ShardEngine {
                             };
                             queue_pending.push((
                                 resp,
-                                QueueOut::Config {
+                                Ok(QueueOut::Config {
                                     rec,
                                     created: false,
                                     conflict: false,
-                                },
+                                }),
                             ));
                             continue;
                         }
@@ -3631,23 +3634,23 @@ impl ShardEngine {
                                                 serde_json::from_slice::<ConsumerRecord>(&v).ok()
                                             }),
                                             Err(e) => {
-                                                let _ = resp.send(Err(e.to_string()));
+                                                queue_pending.push((resp, Err(e.to_string())));
                                                 continue;
                                             }
                                         }
                                     }
                                 };
                             let Some(rec) = existing else {
-                                let _ = resp.send(Err(
+                                queue_pending.push((resp, Err(
                                     "consumer_not_found: no record for lifecycle change".into(),
-                                ));
+                                )));
                                 continue;
                             };
                             if rec.generation != expect_gen {
-                                let _ = resp.send(Err(format!(
+                                queue_pending.push((resp, Err(format!(
                                     "consumer_generation_conflict: record gen {} != expected {}",
                                     rec.generation, expect_gen
-                                )));
+                                ))));
                                 continue;
                             }
                             let target = if deleting {
@@ -3663,10 +3666,13 @@ impl ShardEngine {
                                     | (ConsumerLifecycle::Deleted, ConsumerLifecycle::Deleted)
                             );
                             if !legal {
-                                let _ = resp.send(Err(format!(
-                                    "consumer_lifecycle_conflict: {:?} -> {:?}",
-                                    rec.state, target
-                                )));
+                                queue_pending.push((
+                                    resp,
+                                    Err(format!(
+                                        "consumer_lifecycle_conflict: {:?} -> {:?}",
+                                        rec.state, target
+                                    )),
+                                ));
                                 continue;
                             }
                             let mut next = rec.clone();
@@ -3679,11 +3685,11 @@ impl ShardEngine {
                             local.queue_configs.insert(consumer.clone(), next.clone());
                             queue_pending.push((
                                 resp,
-                                QueueOut::Config {
+                                Ok(QueueOut::Config {
                                     rec: Some(next),
                                     created: false,
                                     conflict: false,
-                                },
+                                }),
                             ));
                             continue;
                         }
@@ -3815,9 +3821,10 @@ impl ShardEngine {
                                 // they were (the fence stays — it is
                                 // conservative), and the saga reports
                                 // the failure instead of 204.
-                                let _ = resp.send(Err(format!(
-                                    "consumer delete aborted: state scan failed: {e}"
-                                )));
+                                queue_pending.push((
+                                    resp,
+                                    Err(format!("consumer delete aborted: state scan failed: {e}")),
+                                ));
                                 continue;
                             }
                             // PHASE 2 — rows an EARLIER op in this
@@ -3898,10 +3905,10 @@ impl ShardEngine {
                             }
                             queue_pending.push((
                                 resp,
-                                QueueOut::DeleteStep {
+                                Ok(QueueOut::DeleteStep {
                                     complete: !more,
                                     deleted_rows,
-                                },
+                                }),
                             ));
                             continue;
                         }
@@ -3954,9 +3961,10 @@ impl ShardEngine {
                                         // retry (fail closed).
                                         Ok(None) => 0,
                                         Err(e) => {
-                                            let _ = resp.send(Err(format!(
-                                                "consumer_fence_unverified: {e}"
-                                            )));
+                                            queue_pending.push((
+                                                resp,
+                                                Err(format!("consumer_fence_unverified: {e}")),
+                                            ));
                                             continue;
                                         }
                                     };
@@ -3969,19 +3977,25 @@ impl ShardEngine {
                             }
                         };
                         if fenced {
-                            let _ = resp.send(Err(format!(
-                                "consumer_generation_fenced: generation {op_gen} was deleted"
-                            )));
+                            queue_pending.push((
+                                resp,
+                                Err(format!(
+                                    "consumer_generation_fenced: generation {op_gen} was deleted"
+                                )),
+                            ));
                             continue;
                         }
                         if let Some(staged) = local.queue_configs.get(&cname)
                             && (staged.state != ConsumerLifecycle::Active
                                 || staged.generation != op_gen)
                         {
-                            let _ = resp.send(Err(format!(
-                                "consumer_not_found: generation {op_gen} is not the \
+                            queue_pending.push((
+                                resp,
+                                Err(format!(
+                                    "consumer_not_found: generation {op_gen} is not the \
                                      active record in this commit group"
-                            )));
+                                )),
+                            ));
                             continue;
                         }
                     }
@@ -4009,20 +4023,19 @@ impl ShardEngine {
                                 // replace it (its durable rows are the
                                 // cleanup's job, and its generation is
                                 // fenced anyway).
-                                if cs.cgen == 0 {
-                                    cs.cgen = cgen;
-                                } else if cs.cgen > cgen {
-                                    let _ = resp.send(Err(format!(
-                                        "consumer_generation_fenced: generation {cgen} \
-                                         superseded by {}",
-                                        cs.cgen
-                                    )));
-                                    continue;
-                                } else if cs.cgen < cgen {
-                                    *cs = ConsumerState {
-                                        cgen,
-                                        ..Default::default()
-                                    };
+                                match decide_consumer_generation(cs.cgen, cgen) {
+                                    ConsumerGeneration::Bind => cs.cgen = cgen,
+                                    ConsumerGeneration::Reset => {
+                                        *cs = ConsumerState {
+                                            cgen,
+                                            ..Default::default()
+                                        }
+                                    }
+                                    ConsumerGeneration::Continue => {}
+                                    ConsumerGeneration::Fenced { current } => {
+                                        queue_pending.push((resp,Err(format!("consumer_generation_fenced: generation {cgen} superseded by {current}"))));
+                                        continue;
+                                    }
                                 }
                                 let mut leased = Vec::new();
                                 let mut poisoned: Vec<(u64, u32, u32, [u8; 16])> = Vec::new();
@@ -4119,20 +4132,19 @@ impl ShardEngine {
                                 max_deliveries,
                             } => {
                                 let cs = st_queue.consumers.entry(consumer.clone()).or_default();
-                                if cs.cgen == 0 {
-                                    cs.cgen = cgen;
-                                } else if cs.cgen > cgen {
-                                    let _ = resp.send(Err(format!(
-                                        "consumer_generation_fenced: generation {cgen} \
-                                         superseded by {}",
-                                        cs.cgen
-                                    )));
-                                    continue;
-                                } else if cs.cgen < cgen {
-                                    *cs = ConsumerState {
-                                        cgen,
-                                        ..Default::default()
-                                    };
+                                match decide_consumer_generation(cs.cgen, cgen) {
+                                    ConsumerGeneration::Bind => cs.cgen = cgen,
+                                    ConsumerGeneration::Reset => {
+                                        *cs = ConsumerState {
+                                            cgen,
+                                            ..Default::default()
+                                        }
+                                    }
+                                    ConsumerGeneration::Continue => {}
+                                    ConsumerGeneration::Fenced { current } => {
+                                        queue_pending.push((resp,Err(format!("consumer_generation_fenced: generation {cgen} superseded by {current}"))));
+                                        continue;
+                                    }
                                 }
                                 let (mut a, mut r, mut e2, mut dq, mut stale) =
                                     (0usize, 0usize, 0usize, 0usize, 0usize);
@@ -4236,7 +4248,7 @@ impl ShardEngine {
                             }
                         }
                     };
-                    queue_pending.push((resp, out));
+                    queue_pending.push((resp, Ok(out)));
                 }
             }
         }
@@ -4421,7 +4433,7 @@ impl ShardEngine {
                     let _ = resp.send(res);
                 }
                 for (resp, out) in queue_pending {
-                    let _ = resp.send(Ok(out));
+                    let _ = resp.send(out);
                 }
             }
             return;
@@ -5107,7 +5119,15 @@ impl ShardEngine {
     pub fn submit_usage_ack(&self, hash: [u8; 16], version: u64, month_final_keys: Vec<Vec<u8>>) {
         let _ = self.tx.try_send(CommitOp::UsageAck {
             hash,
-            version,
+            scope: UsageAckScope::ThroughVersion(version),
+            month_final_keys,
+        });
+    }
+
+    pub fn submit_usage_final_ack(&self, hash: [u8; 16], month_final_keys: Vec<Vec<u8>>) {
+        let _ = self.tx.try_send(CommitOp::UsageAck {
+            hash,
+            scope: UsageAckScope::FinalRowsOnly,
             month_final_keys,
         });
     }
@@ -5241,7 +5261,7 @@ impl ShardEngine {
                 let _ = resp.send(res);
             }
             for (resp, out) in group.effects.queue_acks {
-                let _ = resp.send(Ok(out));
+                let _ = resp.send(out);
             }
             for s in group.effects.signals {
                 let _ = self.absorb_tx.try_send(s);
@@ -5827,7 +5847,7 @@ mod billing_read_tests {
                 let accounting = match action {
                     0 => CommitOp::UsageAck {
                         hash,
-                        version: 7,
+                        scope: UsageAckScope::ThroughVersion(7),
                         month_final_keys: vec![final_key.clone()],
                     },
                     1 => CommitOp::BillingClose {
@@ -5883,7 +5903,7 @@ mod billing_read_tests {
             .commit_group(
                 vec![CommitOp::UsageAck {
                     hash,
-                    version: 7,
+                    scope: UsageAckScope::ThroughVersion(7),
                     month_final_keys: vec![],
                 }],
                 &ShardConfig::default(),
@@ -6172,7 +6192,7 @@ mod bounded_outbox_tests {
             .commit_group(
                 vec![CommitOp::UsageAck {
                     hash,
-                    version: 0,
+                    scope: UsageAckScope::FinalRowsOnly,
                     month_final_keys: finals.into_iter().map(|(key, _)| key).collect(),
                 }],
                 &ShardConfig::default(),
@@ -6193,7 +6213,7 @@ mod bounded_outbox_tests {
             .commit_group(
                 vec![CommitOp::UsageAck {
                     hash,
-                    version: 8,
+                    scope: UsageAckScope::ThroughVersion(8),
                     month_final_keys: remaining.into_iter().map(|(key, _)| key).collect(),
                 }],
                 &ShardConfig::default(),
@@ -6205,6 +6225,130 @@ mod bounded_outbox_tests {
                 .unwrap()
                 .is_none()
         );
+        engine.begin_close();
+        let _ = db.close().await;
+    }
+}
+
+#[cfg(test)]
+mod queue_publication_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r03_queue_refusal_from_staged_generation_shares_group_failure_and_dispatch() {
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        let db = Arc::new(
+            Db::builder("r03-queue-refusal", store.clone())
+                .build()
+                .await
+                .unwrap(),
+        );
+        let (tx, _rx) = mpsc::channel(1);
+        let engine = ShardEngine::start(
+            "r03-queue-refusal".into(),
+            db.clone(),
+            store,
+            ShardConfig::default(),
+            tx,
+            None,
+            Default::default(),
+        );
+        let hash = [37; 16];
+        for fail in [true, false] {
+            let (created_tx, mut created) = oneshot::channel();
+            let (conflict_tx, mut conflict) = oneshot::channel();
+            let (close_tx, mut closed) = oneshot::channel();
+            if fail {
+                engine.fail_next_group_for(hash);
+            }
+            let dispatch = engine.test_hold_dispatch().await;
+            engine
+                .commit_group(
+                    vec![
+                        CommitOp::Queue {
+                            hash,
+                            op: crate::queue::QueueOp::ConfigPut {
+                                consumer: "c".into(),
+                                cfg: Default::default(),
+                            },
+                            resp: created_tx,
+                        },
+                        CommitOp::Queue {
+                            hash,
+                            op: crate::queue::QueueOp::ConfigLifecycle {
+                                consumer: "c".into(),
+                                expect_gen: 2,
+                                deleting: true,
+                            },
+                            resp: conflict_tx,
+                        },
+                        CommitOp::Close(CloseReq {
+                            hash,
+                            generation: None,
+                            resp: close_tx,
+                        }),
+                    ],
+                    &ShardConfig::default(),
+                )
+                .await;
+            if fail {
+                // The conflict was derived from the uncommitted ConfigPut.
+                // If the group fails, the consumer generation never existed.
+                assert!(
+                    created
+                        .await
+                        .unwrap()
+                        .unwrap_err()
+                        .contains("group write failed")
+                );
+                assert!(
+                    conflict
+                        .await
+                        .unwrap()
+                        .unwrap_err()
+                        .contains("group write failed")
+                );
+                assert!(matches!(closed.await.unwrap(), Err(AppendErr::Internal(_))));
+                assert!(
+                    db.get(crate::queue::config_key(&hash, "c"))
+                        .await
+                        .unwrap()
+                        .is_none()
+                );
+            } else {
+                assert!(matches!(
+                    created.try_recv(),
+                    Err(oneshot::error::TryRecvError::Empty)
+                ));
+                assert!(matches!(
+                    conflict.try_recv(),
+                    Err(oneshot::error::TryRecvError::Empty)
+                ));
+                assert!(matches!(
+                    closed.try_recv(),
+                    Err(oneshot::error::TryRecvError::Empty)
+                ));
+                drop(dispatch);
+                assert!(
+                    tokio::time::timeout(std::time::Duration::from_secs(10), created)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .is_ok()
+                );
+                assert!(
+                    tokio::time::timeout(std::time::Duration::from_secs(10), conflict)
+                        .await
+                        .unwrap()
+                        .unwrap()
+                        .unwrap_err()
+                        .contains("consumer_generation_conflict")
+                );
+                assert!(closed.await.unwrap().unwrap().closed);
+                continue;
+            }
+        }
         engine.begin_close();
         let _ = db.close().await;
     }

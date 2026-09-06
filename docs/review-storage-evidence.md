@@ -48,6 +48,8 @@ Regressions: `r03_producer_decision_keeps_duplicate_before_close_and_new_epoch_f
 
 Combined Rust 1.98.1 command `cargo test --locked --lib -- r01_ r03_ r12_ r13_ r14_ r23_ --nocapture`: **15 passed**, 0 failed, 768 filtered, 0.58s execution. The first combined run exposed two test-fixture mistakes (R12 corruption seed was not yet remote-durable; R03 cleanup closed an already closed DB), both corrected before this passing run. No product failure was hidden by weakening the durability assertions.
 
+R03 follow-up audit found that queue generation/config refusals still escaped directly from provisional group state. Queue success and error results now share `DurableEffects`, including the previous in-flight barrier for a read-only group. `r03_queue_refusal_from_staged_generation_shares_group_failure_and_dispatch` stages ConfigPut and a conflicting lifecycle command together: a failed write makes both return the group failure, while successful write responses remain withheld behind dispatch. Pure consumer-generation and billing-ack decisions now complement producer decisions. `UsageAckScope::FinalRowsOnly` replaces the partial-page version-zero convention, so an actual version-zero row retains debt. Focused integrated execution of R03, R13 and partial billing outbox scenarios: **6 passed**, 0 failed, 797 filtered, 0.12s.
+
 ## R09 — billing/history controller continuation (storage portion)
 
 Billing discovery visits at most four rotating engines, 64 dirty rows per engine and 32 month-final rows per segment. Dirty and history cursors use exclusive storage seeks. Partial final acknowledgements delete exact published keys while retaining the dirty marker until all finals were emitted. Residency probes read at most one row per outbox index. Error/cancellation leaves durable debt discoverable. Optional-mode read batches now have a Drop guard which requeues them if cancellation occurs at any await before ledger acceptance.
@@ -68,6 +70,8 @@ Absorber fencing now inspects SlateDB `ErrorKind::Closed` through the complete a
 
 The transition table and separate-storage-domain recovery contract are in `docs/creation-transitions.md`. Existing integrated loopback regressions for creation replay, failed writes, stale initialization, fork lifecycle, deletion/cascade, wrong-key replay, same-name recreation, tenant isolation, product create and dual-surface equivalence, and stream quota reservation/release: **31 passed**, 0 failed, 763 filtered, 0.50s. The initial sandboxed invocation could not bind its loopback fixture; authorized loopback execution passed. A broader topology set additionally exposed one pre-existing fixture that manufactured simultaneous sealing/topology claims rejected by R04 validation; the topology owner is correcting that fixture separately.
 
+R05 additional regression `r05_cancelled_ttl_attempt_releases_only_its_owned_slot`: **1 passed**, 0 failed, 801 filtered. Cancellation releases exactly the owned runtime TTL slot and admits a retry while preserving another stream's slot.
+
 ## Implementation commit references
 
 - R12: `78c5940` (remote fixture correction included with R03 tests).
@@ -78,5 +82,6 @@ The transition table and separate-storage-domain recovery contract are in `docs/
 - R03: `fd1706e`.
 - R09 storage: `01ef5d0`.
 - R08 storage: `e8b4257`.
+- R05 creation: `fe2100c`.
 
 All source commits are reviewable changes; the external acceptance conditions above are not marked as passed.

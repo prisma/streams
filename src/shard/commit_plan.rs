@@ -37,7 +37,7 @@ pub(super) struct DurableEffects {
     )>,
     pub queue_acks: Vec<(
         oneshot::Sender<Result<crate::queue::QueueOut, String>>,
-        crate::queue::QueueOut,
+        Result<crate::queue::QueueOut, String>,
     )>,
     pub tails: Vec<(Arc<StreamHandle>, TailFields)>,
     pub ring_pub: Vec<(Arc<StreamHandle>, Vec<(u64, Bytes)>)>,
@@ -169,5 +169,47 @@ mod tests {
         assert!(!seal_authorized(None, true, 1));
         assert!(!seal_authorized(Some(1), true, 2));
         assert!(seal_authorized(Some(2), true, 2));
+    }
+}
+
+/// A request from a deleted generation cannot inherit leases or cursor state
+/// from a replacement. Bind legacy empty state, reset older state, preserve
+/// the same generation; the actor stages any refusal in DurableEffects.
+pub(super) enum ConsumerGeneration {
+    Bind,
+    Reset,
+    Continue,
+    Fenced { current: u64 },
+}
+pub(super) fn decide_consumer_generation(current: u64, requested: u64) -> ConsumerGeneration {
+    if current == 0 {
+        ConsumerGeneration::Bind
+    } else if current > requested {
+        ConsumerGeneration::Fenced { current }
+    } else if current < requested {
+        ConsumerGeneration::Reset
+    } else {
+        ConsumerGeneration::Continue
+    }
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum UsageAckScope {
+    ThroughVersion(u64),
+    FinalRowsOnly,
+}
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum BillingAckDecision {
+    ClearDirty,
+    RetainDirty,
+}
+pub(super) fn decide_billing_ack(current: Option<u64>, scope: UsageAckScope) -> BillingAckDecision {
+    match scope {
+        UsageAckScope::ThroughVersion(version)
+            if current.is_none_or(|current| current <= version) =>
+        {
+            BillingAckDecision::ClearDirty
+        }
+        _ => BillingAckDecision::RetainDirty,
     }
 }
