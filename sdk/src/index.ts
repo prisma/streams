@@ -404,6 +404,27 @@ async function authHeader(
   return { header: ctx.token ? `Bearer ${ctx.token}` : undefined };
 }
 
+/** Cancel this request's wait, without cancelling a shared credential provider.
+ * Keep both promise handlers attached so a late rejection is still observed. */
+function requestWait<T>(pending: Promise<T>, signal?: AbortSignal): Promise<T> {
+  if (!signal) return pending;
+  return new Promise<T>((resolve, reject) => {
+    let listening = true;
+    const stopListening = () => {
+      if (!listening) return;
+      listening = false;
+      signal.removeEventListener("abort", aborted);
+    };
+    const aborted = () => { stopListening(); reject(signal.reason); };
+    signal.addEventListener("abort", aborted, { once: true });
+    pending.then(
+      value => { stopListening(); resolve(value); },
+      error => { stopListening(); reject(error); },
+    );
+    if (signal.aborted) aborted();
+  });
+}
+
 /** Bytes as a fetch body across the runtimes this SDK supports. */
 function toBody(v: Uint8Array): BodyInit {
   return v.buffer.slice(
@@ -518,7 +539,7 @@ async function req(
   let refreshed = false;
   for (let attempt = 0; ; attempt++) {
     signal?.throwIfAborted();
-    const auth = await authHeader(ctx, rejectedGeneration);
+    const auth = await requestWait(authHeader(ctx, rejectedGeneration), signal);
     signal?.throwIfAborted();
     rejectedGeneration = undefined;
     if (auth.header) h["authorization"] = auth.header;

@@ -221,6 +221,8 @@ jobs:
       - uses: actions/setup-node@v4
         with:
           node-version: 18
+      - name: Credential-wait cancellation (Node 18)
+        run: node --test sdk/scripts/credential-cancellation.test.mjs
       - name: Smoke through the package (Node 18, the engines floor)
         run: |
           ./target/release/streams-slate --listen 127.0.0.1:8091 \
@@ -232,6 +234,8 @@ jobs:
       # The SDK claims Bun and Deno too, so gate them rather than assert
       # them. Both run the same package through the same smoke.
       - uses: oven-sh/setup-bun@v2
+      - name: Credential-wait cancellation (Bun)
+        run: bun test sdk/scripts/credential-cancellation.test.mjs
       - name: Smoke through the package (Bun)
         run: |
           ./target/release/streams-slate --listen 127.0.0.1:8092 \
@@ -243,6 +247,8 @@ jobs:
       - uses: denoland/setup-deno@v2
         with:
           deno-version: v2.x
+      - name: Credential-wait cancellation (Deno)
+        run: deno test -A sdk/scripts/credential-cancellation.test.mjs
       - name: Smoke through the package (Deno)
         run: |
           ./target/release/streams-slate --listen 127.0.0.1:8093 \
