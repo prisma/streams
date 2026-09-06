@@ -2240,7 +2240,10 @@ impl ReadSpool {
     }
 
     pub async fn depth(&self) -> usize {
-        self.pending(usize::MAX).await.map(|v| v.len()).unwrap_or(0)
+        // Health reads use the exact counters rebuilt during open and updated
+        // on spool puts/removals. They must not materialize the durable backlog
+        // or turn a failed scan into a reassuring zero-depth answer.
+        self.resident().0.try_into().unwrap_or(usize::MAX)
     }
 }
 
