@@ -34,6 +34,10 @@ jobs:
         run: |
           python3 scripts/scenario-map-report.py --self-test
           python3 scripts/scenario-map-report.py --check
+      - name: DST obligation inventory
+        run: |
+          python3 scripts/test-inventory.py --self-test
+          python3 scripts/test-inventory.py --check
   # Job: rust build + full suite (product conformance, dual-surface
   # equivalence corpus, DST safety/liveness, request-cost budgets).
   rust:
@@ -78,7 +82,7 @@ jobs:
       # understates the ratio (observed 1.73-1.80 in-suite vs the 1.8x
       # gate, with healthy single-segment baselines).
       - name: Capacity mechanism gate (owns the runner)
-        run: cargo test --release --lib post_split_throughput_scales -- --exact dst::dst_tests::post_split_throughput_scales
+        run: cargo test --release --lib post_split_throughput_scales -- --exact dst::dst_tests::topology_scaling::post_split_throughput_scales
   # Job: the LiveFeed engine's focused legs (unit + HTTP) on every
   # push — fast signal for the engine's own files ahead of the full
   # suite (livefeed IS the one engine since round 11.8).

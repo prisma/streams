@@ -41,6 +41,11 @@ if ! python3 scripts/scenario-map-report.py --check >> "$OUT" 2>&1; then
   echo GATEFAIL-scenario-map >> "$OUT"
   exit 1
 fi
+if ! python3 scripts/test-inventory.py --self-test >> "$OUT" 2>&1 ||
+   ! python3 scripts/test-inventory.py --check >> "$OUT" 2>&1; then
+  echo GATEFAIL-test-inventory >> "$OUT"
+  exit 1
+fi
 if ! cargo fmt --check > /tmp/fmt.out 2>&1; then
   cat /tmp/fmt.out
   echo GATEFAIL-fmt >> "$OUT"
@@ -64,7 +69,7 @@ fi
 # depresses it — the test's own failure text says how to distinguish.
 set +e
 cargo test --release --lib post_split_throughput_scales -- \
-  --exact dst::dst_tests::post_split_throughput_scales 2>&1 \
+  --exact dst::dst_tests::topology_scaling::post_split_throughput_scales 2>&1 \
   | tee /tmp/gate-capacity.log \
   | grep -E "^test result|^failures:$" >> "$OUT"
 CAP_STATUS=${PIPESTATUS[0]}

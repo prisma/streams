@@ -1,6 +1,12 @@
-//! Regression mechanisms for R15/R16: operate the actual entry boundary with
-//! a body whose first poll is observable and which otherwise never completes.
-use super::*;
+use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig_build};
+use super::fixture_requests::{PRISMA_KEY, preq};
+use super::fixture_runtime::RigRuntime;
+use super::fixture_storage::{mem, skey};
+use std::sync::Arc;
+use std::sync::atomic::Ordering;
+
+// Regression mechanisms for R15/R16: operate the actual entry boundary with
+// a body whose first poll is observable and which otherwise never completes.
 
 async fn sentinel_request(
     state: Arc<crate::http::AppState>,

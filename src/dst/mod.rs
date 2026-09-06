@@ -40,14 +40,11 @@ mod fault_store;
 mod runtime;
 mod trace_store;
 
-pub use fault_store::*;
-pub use runtime::*;
+pub use fault_store::{FaultPlan, FaultProfile, FaultStore};
+pub use runtime::{AttemptId, OpLog, Outcome, Workload, drain_observed};
 
 use std::collections::HashMap;
-use std::sync::{Arc, Mutex};
-
-use object_store::path::Path as ObjPath;
-use object_store::{GetOptions, ObjectStore, PutMultipartOptions, PutOptions, PutPayload};
+use std::sync::Mutex;
 
 // ---- semantic classification ----------------------------------------
 

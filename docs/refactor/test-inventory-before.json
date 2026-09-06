@@ -1,0 +1,5396 @@
+[
+  {
+    "name": "a_applied_read_and_long_poll_serve_the_tail_before_durability",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6cec5aaabaa01ce43b1e07855dae986262fd27e68f6d46b4462ea45c89384326",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_benign_descriptor_conflict_never_fails_a_seal",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "eb44fbbfce9687fc346c4bf17de5ced912eda3d3bac352312a71ce26da355d44",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_bounded_cleanup_drains_residue_without_touching_the_live_generation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8d0c80419b04f123e7c831d92a5de874673d951648bcc4e894887e02f0a9a9e4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_busy_next_generation_skips_the_gather_window",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d2a20203895688c38ca48bc45f1bb7439bcb60a292a208508df4b6dee60f6400",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 91, FaultPlan::new(0, 0, 20));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_child_deleted_before_the_source_ref_cannot_pin_the_source",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c78f4fbee2242997a2fc958af3834e70481b0397ff65113d4e6387890cb7ba15",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::parked(crate::failpoints::Fp::ForkBeforeSourceRef, \"frk13child\");",
+      "crate::failpoints::park_fork_before_source_ref(\"frk13child\");",
+      "if crate::failpoints::parked(crate::failpoints::Fp::ForkBeforeSourceRef, \"frk13child\")",
+      "crate::failpoints::release_fork_before_source_ref(\"frk13child\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "CRT-006",
+      "FRK-013"
+    ]
+  },
+  {
+    "name": "a_crashed_creators_late_reference_is_repaired_by_delete_retry",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a7aa1949d4f5baa5fceeee5728a289cbffaa2782820231c3d7aeb2fdccd51ccc",
+    "mechanisms": [],
+    "configuration": [
+      "let pre = crate::failpoints::parked(crate::failpoints::Fp::ForkBeforeSourceRef, \"frk13kid\");",
+      "let post = crate::failpoints::parked(crate::failpoints::Fp::ForkAfterSourceRef, \"frk13kid\");",
+      "crate::failpoints::park_fork_before_source_ref(\"frk13kid\");",
+      "crate::failpoints::park_fork_after_source_ref(\"frk13kid\");",
+      "while crate::failpoints::parked(crate::failpoints::Fp::ForkBeforeSourceRef, \"frk13kid\") <= pre {",
+      "crate::failpoints::release_fork_before_source_ref(\"frk13kid\");",
+      "while crate::failpoints::parked(crate::failpoints::Fp::ForkAfterSourceRef, \"frk13kid\") <= post {",
+      "crate::failpoints::release_fork_after_source_ref(\"frk13kid\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "FRK-013"
+    ]
+  },
+  {
+    "name": "a_crashed_fork_cascade_can_be_resumed",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b520699e56b7aa8c2a751806b1a279d454c9b536ed98c0c9b1be70fe82af8bc4",
+    "mechanisms": [],
+    "configuration": [
+      "// debt \u2014 and the failpoint stops it there, before A is released.",
+      "crate::failpoints::stop_after_tombstone(\"genB\");",
+      "crate::failpoints::stop_after_tombstone_off(\"genB\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "FRK-015"
+    ]
+  },
+  {
+    "name": "a_crashed_raw_final_close_is_resumed_by_an_ordinary_retry",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8808de01d4c34f8f39d98b8ebfe6479a3541a5e92ff8bd6bb72836667df2c830",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::stop_after_seal_intent(\"rawcrash\");",
+      "assert_eq!(st, 503, \"the failpoint did not stop the close\");",
+      "crate::failpoints::stop_after_seal_intent_off(\"rawcrash\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-008"
+    ]
+  },
+  {
+    "name": "a_declined_retirement_keeps_the_engine_and_arms_nothing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "8113ec643c4258d6bb65b82b909852c179d50917f054b2012d49d97c3fd3a8c2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_duplicate_absorbed_op_does_not_advance_the_trim",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "414f16c577ad2d95d1cab212fdc5cae15b29f820043a1db23760c464d788bd34",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 29, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "HIS-013"
+    ]
+  },
+  {
+    "name": "a_failed_config_scan_aborts_the_delete_untouched",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b4683c4ce0a1259e76eb34f5c605188420d868800acd89195ee9a5d6e1ec0353",
+    "mechanisms": [],
+    "configuration": [
+      "// Retry (failpoint is one-shot): the cleanup completes."
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_failed_group_fails_the_close_and_its_retry_together",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "882c91f10ea835ef1e001707fcc266f06f6791453ecd3ac57bd689d890c3be2b",
+    "mechanisms": [],
+    "configuration": [
+      "\"the failpoint never fired\""
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "DUR-004",
+      "DUR-005"
+    ]
+  },
+  {
+    "name": "a_failed_group_write_fails_its_duplicate_too",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "2e84b1e956346f867cabec2732747f96139ffc761b61f0248c68bf6a0f3c87bf",
+    "mechanisms": [],
+    "configuration": [
+      "\"the failpoint never fired\""
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "DUR-002"
+    ]
+  },
+  {
+    "name": "a_failed_queue_write_leaves_no_phantom_leases",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "baba205b638311cd7cf71ec5652b808f3e6e2ec966f462bfb919f9dec8b50ded",
+    "mechanisms": [],
+    "configuration": [
+      "\"the failpoint never fired\""
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "QUE-003"
+    ]
+  },
+  {
+    "name": "a_failed_settle_leaves_no_phantom_acks",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "51b468586716a2b5ea9e40dcaddb1b729fa2ed821ef6f43fddafa9feed5cc005",
+    "mechanisms": [],
+    "configuration": [
+      "\"the failpoint never fired\""
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "QUE-004"
+    ]
+  },
+  {
+    "name": "a_fence_in_a_failed_group_reports_failure_not_closed",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "23e6ba64f0c0efd5ae73c9610908d8f5d4c24cb967f9ef377cfcac57bc91608d",
+    "mechanisms": [],
+    "configuration": [
+      "let before = crate::failpoints::parked(crate::failpoints::Fp::CloseBeforeEnqueue, \"sel021\");",
+      "crate::failpoints::park_close_before_enqueue(\"sel021\");",
+      "if crate::failpoints::parked(crate::failpoints::Fp::CloseBeforeEnqueue, \"sel021\") > before {",
+      "crate::failpoints::release_close_before_enqueue(\"sel021\");",
+      "\"the failpoint never fired\""
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "DUR-004",
+      "SEL-021"
+    ]
+  },
+  {
+    "name": "a_fence_outlives_the_maintenance_sweep",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b20b6319d872d5cf2312aa692855d04fb939ee5c5fb9895b7dfec91326a07324",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-026"
+    ]
+  },
+  {
+    "name": "a_fence_survives_handle_eviction",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a3aa4bb30c4f317e1437bba384802ff4095cedb186873f900dc7f9f3ba07e699",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "RES-002",
+      "SEL-025"
+    ]
+  },
+  {
+    "name": "a_fence_waits_for_durability_before_reporting_closed",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "09e64eed3b64efc5bee07ebc83f971d5c5a881600bb2d1edc3b822110b5d63ff",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-022"
+    ]
+  },
+  {
+    "name": "a_fenced_owner_acknowledges_nothing",
+    "attributes": [
+      "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
+    ],
+    "function_sha256": "0dc49d492890a0b53593ca18d54ed423446dc16c52f09bf2c2c7caffa1b781a9",
+    "mechanisms": [
+      "OLD_OWNER_FENCED"
+    ],
+    "configuration": [
+      "for seed in [2u64, 13] {",
+      "let store = FaultStore::uniform(inner.clone(), seed, FaultPlan::new(0, 0, 25));",
+      "let prefix = format!(\"dst-fence-{seed}\");",
+      "assert!(before > 0, \"seed {seed}: nothing acked pre-handoff\");",
+      "\"I4 violated (seed {seed}): the fenced owner acknowledged {} write(s) \\",
+      "\"seed {seed}: the fenced owner never observed that it lost the shard, \\",
+      "panic!(\"seed {seed}: after handoff (pre-handoff acks={before}): {e}\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "DUR-013",
+      "SEL-020",
+      "TOP-016"
+    ]
+  },
+  {
+    "name": "a_fenced_owners_absorber_exits",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "466bb3be8989a0d0f835abe488f87c26580609da3930f109125f58872e53e0c5",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 23, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "FLT-007",
+      "HIS-014"
+    ]
+  },
+  {
+    "name": "a_fork_initialization_is_bound_to_its_source_incarnation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "5e113d7137e0acf0da65a0e3d0258d788e10cce5b22c4b7b70e6677679f8a681",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "CRT-012",
+      "FRK-010"
+    ]
+  },
+  {
+    "name": "a_fork_initialization_resumes_against_a_retained_source",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "cc0110d9584b4a0e8499742739084ff8a78a969b0309130ec1af5f8b75cc0d65",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "FRK-009"
+    ]
+  },
+  {
+    "name": "a_fork_stamp_never_lands_on_a_later_incarnation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "abba4af26e483c4d206bf1878c1eb287185fef0fb6b6a238632fd99b1ea07bf7",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_half_deleted_fork_finishes_its_cleanup",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "2b02c8b222d3edab076b2d8bf14a7fd95827ad0939f7f5d2f443132f51e8f008",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "FRK-014"
+    ]
+  },
+  {
+    "name": "a_handoff_with_an_append_in_flight_resolves_safely",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "2005e1235389bcff12cc88568d7052796637b1ad0abde50660e5c9aa31148332",
+    "mechanisms": [
+      "IN_FLIGHT_AT_FENCE"
+    ],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 31, FaultPlan::CLEAN);",
+      "if let Err(e) = cov.require(&[mech::IN_FLIGHT_AT_FENCE]) {"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "DUR-001",
+      "DUR-012"
+    ]
+  },
+  {
+    "name": "a_hung_open_is_deadlined_and_its_late_engine_reaped",
+    "attributes": [
+      "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
+    ],
+    "function_sha256": "ffbcc709983c0f196682dbf2f0ddeda07bf0ecdca3170b652b185d7e1518dc1e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "FLT-002"
+    ]
+  },
+  {
+    "name": "a_large_record_absorbs_after_restart_under_default_policy",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d73563ebca407695e6d90324a2abb4f9ac327aac488e1272194b740d2495b356",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 98, FaultPlan::new(0, 0, 0));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "HIS-008"
+    ]
+  },
+  {
+    "name": "a_lost_applied_suffix_rewinds_to_the_durable_frontier",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "3eb8be3396db7426e350dbda909e9696bf6aed7319f7c970850403a0c5d89d1b",
+    "mechanisms": [],
+    "configuration": [
+      "let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();",
+      "let cov = FaultStore::uniform(mem(), 2, FaultPlan::new(0, 0, 0)).coverage();"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_lost_response_still_wrote_the_object",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "7073b1b77bfafef869d2337ddf912801785927b6a94907927c1641b603c6f3b5",
+    "mechanisms": [],
+    "configuration": [
+      "let s = FaultStore::uniform(inner.clone(), 1, FaultPlan::new(0, 100, 0));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "DUR-009"
+    ]
+  },
+  {
+    "name": "a_lower_takeover_reservation_cannot_install",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "178497b540b5c82304de5968f35676b1a2ffbd4899f8d4b1f8063648c0910858",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::stop_after_seal_intent(\"race9\");",
+      "crate::failpoints::stop_after_seal_intent_off(\"race9\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-023"
+    ]
+  },
+  {
+    "name": "a_non_closing_duplicate_releases_its_own_intent",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a5265af16aac665f8bbf3f6140cfa3bd329a8b664e8069a0f68f632401331f1a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-012"
+    ]
+  },
+  {
+    "name": "a_parked_create_never_publishes_readiness_for_a_later_incarnation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c6ba31b8916927f57c500b202087c940705a03f1ac72e0f783b0aa381b74e0c4",
+    "mechanisms": [],
+    "configuration": [
+      "let before = crate::failpoints::parked(crate::failpoints::Fp::CreateBeforeReady, \"abacreate\");",
+      "crate::failpoints::park_create_before_ready(\"abacreate\");",
+      "if crate::failpoints::parked(crate::failpoints::Fp::CreateBeforeReady, \"abacreate\") > before",
+      "if crate::failpoints::parked(crate::failpoints::Fp::CreateBeforeReady, \"abacreate\")",
+      "crate::failpoints::release_create_before_ready(\"abacreate\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "CRT-005"
+    ]
+  },
+  {
+    "name": "a_parked_delete_never_removes_a_later_incarnation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c9bea3e8812a37942a3c4317e2a0574cb4b2cd1e72cd563f5880e1c5e92a7dfe",
+    "mechanisms": [],
+    "configuration": [
+      "let dbefore = crate::failpoints::parked(crate::failpoints::Fp::DeleteBeforeDecision, \"abadel\");",
+      "crate::failpoints::park_delete_before_decision(\"abadel\");",
+      "while crate::failpoints::parked(crate::failpoints::Fp::DeleteBeforeDecision, \"abadel\")",
+      "// is not parked (the failpoint is armed for the parked one only \u2014",
+      "crate::failpoints::release_delete_before_decision(\"abadel\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_parked_pull_cannot_lease_after_its_generation_was_deleted",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d8cc1ffce1a02b1a8b317161be8d0a819a36ca1777671caf24494e2a020130de",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::park_pull_before_receive(\"qc16p\");",
+      "let before = crate::failpoints::parked(crate::failpoints::Fp::PullBeforeReceive, \"qc16p\");",
+      "while crate::failpoints::parked(crate::failpoints::Fp::PullBeforeReceive, \"qc16p\") == before {",
+      "crate::failpoints::release_pull_before_receive(\"qc16p\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "QUE-011"
+    ]
+  },
+  {
+    "name": "a_parked_saga_never_touches_a_recreated_stream",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8ecaee4cdd40c488b203345b92d49666e150603d0c07688fb1bffb68c4f0dcca",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::park_consumer_saga_before_refresh(\"qc17c\");",
+      "crate::failpoints::parked(crate::failpoints::Fp::ConsumerSagaBeforeRefresh, \"qc17c\");",
+      "while crate::failpoints::parked(crate::failpoints::Fp::ConsumerSagaBeforeRefresh, \"qc17c\")",
+      "crate::failpoints::release_consumer_saga_before_refresh(\"qc17c\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_parked_split_cannot_publish_under_a_sealed_collection",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "57a7ac05e27f12434163841dd8fd75e526b8927bb8d59d6a970f2cdf83ece1f7",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::arm_scaler_before_publish(\"parked\");",
+      "crate::failpoints::release_scaler_before_publish(\"parked\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-018"
+    ]
+  },
+  {
+    "name": "a_plain_seal_cannot_finish_someone_elses_final",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "2e7026a22d02078d1befd921c069b3ed31f4d5ee178bc535a11ae6f51aae825e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-005"
+    ]
+  },
+  {
+    "name": "a_product_final_never_writes_into_a_recreated_incarnation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "77cd6a27e0dc5cbfdf6b855b5b4dc2fc668d22e2a2be4d48556c940113c48bca",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::parked(crate::failpoints::Fp::ProductFinalBeforeAppend, \"finaba\");",
+      "crate::failpoints::park_product_final_before_append(\"finaba\");",
+      "if crate::failpoints::parked(crate::failpoints::Fp::ProductFinalBeforeAppend, \"finaba\")",
+      "crate::failpoints::release_product_final_before_append(\"finaba\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-015"
+    ]
+  },
+  {
+    "name": "a_product_seal_never_binds_to_a_recreated_incarnation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "151b94b148fbf097a9ba84918b549044552830a85e6243a8d0436fa75df3a25b",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::parked(crate::failpoints::Fp::ProductSealBeforeClaim, \"sealaba\");",
+      "crate::failpoints::park_product_seal_before_claim(\"sealaba\");",
+      "if crate::failpoints::parked(crate::failpoints::Fp::ProductSealBeforeClaim, \"sealaba\")",
+      "crate::failpoints::release_product_seal_before_claim(\"sealaba\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-014"
+    ]
+  },
+  {
+    "name": "a_raw_close_with_content_owes_its_records",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "22911fe4bc3f05dc21152961baf8673fbd9b42e4f74fc5657475655de6a308b3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-007"
+    ]
+  },
+  {
+    "name": "a_raw_final_close_resumes_after_its_records_are_durable",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "f9a3847e724e360406f54d52acb25b18079edb9b553e0628874634be4dfee00c",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::stop_before_mark_committed(\"rawmark\");",
+      "crate::failpoints::stop_before_mark_committed_off(\"rawmark\");",
+      "assert_eq!(st, 503, \"the failpoint should have interrupted the close\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-009"
+    ]
+  },
+  {
+    "name": "a_receive_after_delete_in_the_same_group_is_refused",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7781407d60089568b9064771a2322d97173f324e6b86954921c555c1700f986f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "QUE-011"
+    ]
+  },
+  {
+    "name": "a_refused_raw_close_does_not_strand_the_collection",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "647ff859cd7f33478307b9c64ce25ae314d81a8519b07a45f0b5584fb2efcf4f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-010"
+    ]
+  },
+  {
+    "name": "a_release_parked_across_recreation_cannot_touch_the_replacement",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c06f9e96e522e8373e2be344ee0a494c5f7c989d554388f4bedcc2a16298d258",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::park_release_after_epoch_check(\"frk15src\");",
+      "crate::failpoints::parked(crate::failpoints::Fp::ReleaseAfterEpochCheck, \"frk15src\");",
+      "while crate::failpoints::parked(crate::failpoints::Fp::ReleaseAfterEpochCheck, \"frk15src\")",
+      "crate::failpoints::release_release_after_epoch_check(\"frk15src\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_resumed_mark_never_seals_a_later_incarnation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "f0b250b7259cf54d5b9622cb0f3748ebaf549f21ceb1e2b1a93198991ac1ae98",
+    "mechanisms": [],
+    "configuration": [
+      "let before = crate::failpoints::parked(crate::failpoints::Fp::CloseBeforeMark, \"markaba\");",
+      "crate::failpoints::park_close_before_mark(\"markaba\");",
+      "if crate::failpoints::parked(crate::failpoints::Fp::CloseBeforeMark, \"markaba\") > before {",
+      "crate::failpoints::release_close_before_mark(\"markaba\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-016"
+    ]
+  },
+  {
+    "name": "a_reuse_verdict_dies_with_its_failed_group",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8e95aca160f51390a65cb277943f9dbf09602a674efa417813bf6d369a34d513",
+    "mechanisms": [],
+    "configuration": [
+      "\"the failpoint never fired\""
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "DUR-006"
+    ]
+  },
+  {
+    "name": "a_saga_never_finalizes_under_a_pending_transition",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9f06d8a719beb24fcbd685eecb92453eb5242faadfec611320ff29494cf91a9d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_saga_refresh_failure_is_retryable_not_stable",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7ea6b8f21bc14ead0fcc2efc7de1eaf2af3461844fbb0b9d0641342b4c279b61",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::park_consumer_saga_before_refresh(\"qc18a\");",
+      "while crate::failpoints::parked(crate::failpoints::Fp::ConsumerSagaBeforeRefresh, \"qc18a\") == 0",
+      "crate::failpoints::release_consumer_saga_before_refresh(\"qc18a\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_saga_vanished_collection_is_idempotent_success",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "306930e10b5bed1005dc15908ec45d22dfe3e7aec6d626f63a8e1faf99522a02",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::park_consumer_saga_before_refresh(\"qc18b\");",
+      "while crate::failpoints::parked(crate::failpoints::Fp::ConsumerSagaBeforeRefresh, \"qc18b\") == 0",
+      "crate::failpoints::release_consumer_saga_before_refresh(\"qc18b\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_seal_in_flight_never_closes_a_later_incarnation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "18f829a9cb53d4bc11153db2a585367da9882f0ae54e4a810c84030ed248d338",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::stop_after_seal_intent(\"abaseal\");",
+      "assert_eq!(st, 503, \"the failpoint did not stop the close\");",
+      "crate::failpoints::stop_after_seal_intent_off(\"abaseal\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_seal_interrupted_before_publication_resumes_on_retry",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "72f8a355872d176ee458dd8ad21a23e41eb530dc6c44bda9095eaf3f93792d2e",
+    "mechanisms": [],
+    "configuration": [
+      "let _serial = gap_lock().lock().await; // global failpoint registry",
+      "crate::failpoints::stop_before_sealed_publish(\"sbr\");",
+      "crate::failpoints::stop_before_sealed_publish_off(\"sbr\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_seal_never_installs_over_a_pending_transition",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7eb0ddd40beac5d60f2f166ef5ba2ff598bde78611220c212b893b032d35ca49",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::arm_scaler_before_publish(\"deadl\");",
+      "crate::failpoints::release_scaler_before_publish(\"deadl\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-017"
+    ]
+  },
+  {
+    "name": "a_second_absorption_wave_trims_under_a_global_budget",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b4aad0d70b6587519cc3c178ab54df6c92e2d32e6713bff1dda4cbf650cb7f5e",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 96, FaultPlan::new(0, 0, 0));",
+      "// 30 s: same suite-saturation allowance as the restart-seed test."
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "HIS-012"
+    ]
+  },
+  {
+    "name": "a_split_consumers_deletion_fails_one_segment_then_retries_clean",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "43b20ea2d699399216b0e5fe02f0e74007b514452dee88b3567f0a7685f8147f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "QUE-011"
+    ]
+  },
+  {
+    "name": "a_stale_applied_cursor_is_refused_after_crash_restart",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7561265e34a1617d89fd84bf6397a0a2c3ae6fa4699b58704114a465606a3365",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_stale_cleanup_replay_never_touches_a_recreated_generation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "3238cb8902c084127014ba8f174c58f8d054fe2f1e8e1c36a66a537a06a76a17",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_stale_delete_after_cross_key_recreation_is_untouched_204",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "23e4ec815f7b5c138b9acc030f6dcf58792c2974180a097d133ca01e508ff1fb",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_stale_delete_retry_cannot_delete_the_replacement_consumer",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "3b67c5aee2bc0d39e490a1b8790f9e3b3e5ecca6c2d628191cfe3639db2f4aa2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "QUE-011"
+    ]
+  },
+  {
+    "name": "a_stale_epoch_final_releases_its_intent_on_both_surfaces",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "95c14397107e0ca8841e62d8c68445f69ca562ff14bd5920f8d7ec638a4b90a3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-010"
+    ]
+  },
+  {
+    "name": "a_stale_fork_release_does_not_touch_a_recreated_source",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0a9e1c848c082759df029abc156433bf193cd838cdc80ffff770711b7b2715dc",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_stale_initialization_never_becomes_visible",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "2188e60d2708bede69558c54cb1a6603f94d7f6a15f4853e83f72591fedf57ee",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "CRT-004"
+    ]
+  },
+  {
+    "name": "a_stream_seq_verdict_is_grounded_in_durable_state",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "5ca08bab96590e1200d3fa99c4fbaa2df45f2f70df7cb7d854894950bb7465a1",
+    "mechanisms": [],
+    "configuration": [
+      "\"the failpoint never fired\""
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "DUR-008"
+    ]
+  },
+  {
+    "name": "a_superseded_close_cannot_write_or_close",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "4220b12e923eb05926aee506d3177098dc9d728adbb33b88d148420ba33b724e",
+    "mechanisms": [],
+    "configuration": [
+      "let before = crate::failpoints::parked(crate::failpoints::Fp::CloseBeforeEnqueue, \"lease1\");",
+      "crate::failpoints::park_close_before_enqueue(\"lease1\");",
+      "if crate::failpoints::parked(crate::failpoints::Fp::CloseBeforeEnqueue, \"lease1\") > before {",
+      "crate::failpoints::release_close_before_enqueue(\"lease1\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-020"
+    ]
+  },
+  {
+    "name": "a_takeover_completes_an_old_close_that_won",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "440e1b69aaa716f6fca21a4d86c1e926a108e20c454227ef3f111c4a9b99bf90",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::stop_before_mark_committed(\"lease2\");",
+      "assert_eq!(st, 503, \"the failpoint did not stop A\");",
+      "crate::failpoints::stop_before_mark_committed_off(\"lease2\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "a_transient_producer_gap_does_not_lose_the_promised_record",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "70e486d165b7a2c7918b7d4a84c76644affe229f17360a3a7be1d2655456c794",
+    "mechanisms": [],
+    "configuration": [
+      "let before = crate::failpoints::parked(crate::failpoints::Fp::AppendBeforeEnqueue, \"gapwin\");",
+      "crate::failpoints::park_append_before_enqueue(\"gapwin\");",
+      "if crate::failpoints::parked(crate::failpoints::Fp::AppendBeforeEnqueue, \"gapwin\") > before",
+      "crate::failpoints::release_append_before_enqueue(\"gapwin\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "DUR-007",
+      "SEL-011"
+    ]
+  },
+  {
+    "name": "a_wrong_content_type_close_cannot_join_the_valid_intent",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "42fc3bc00185de549cec120c83125e95d73a95f62ea8e112130da5449049fb95",
+    "mechanisms": [],
+    "configuration": [
+      "let before = crate::failpoints::parked(crate::failpoints::Fp::CloseBeforeEnqueue, \"ctid\");",
+      "crate::failpoints::park_close_before_enqueue(\"ctid\");",
+      "if crate::failpoints::parked(crate::failpoints::Fp::CloseBeforeEnqueue, \"ctid\") > before {",
+      "crate::failpoints::release_close_before_enqueue(\"ctid\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-004"
+    ]
+  },
+  {
+    "name": "abandoned_list_stream_is_marked_cancelled",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "71c804cfd1222d35dab01c9ad40a30c70bad8305df97fd01060f3981ae708d59",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/streams.rs",
+    "scenarios": []
+  },
+  {
+    "name": "absorbed_boundary_and_maintenance_retire_atomically",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "61ac7eaa8cd71df361a37151d7edbc375e5105adc619cd105f284bc01f2f647b",
+    "mechanisms": [],
+    "configuration": [
+      "let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();",
+      "// Arm the absorbed-group failpoint, then start the absorber. Its",
+      "assert!(fired, \"absorbed-group failpoint never fired\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "absorber_drains_records_larger_than_the_per_stream_gather_cap",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "57ac436e0fdd41ee73f71512e33143f58d7de3d40598060c9c8e13715dfad17d",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 77, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "absorber_sweep_recovers_streams_whose_signals_were_lost",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6bc8a0b79a6dbd57beb2b7de4a21c09fd3108e90b11a8828b2d4453bd4f7b9ee",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 51, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "HIS-007"
+    ]
+  },
+  {
+    "name": "acked_records_survive_absorption_into_history",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8edcee1aaf542ebf5b07f736567d30dcd606e73e2b114bf2d241ef1643a41d4f",
+    "mechanisms": [
+      "READ_FROM_HISTORY"
+    ],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 17, FaultPlan::new(0, 0, 10));",
+      "if let Err(e) = cov.require(&[mech::READ_FROM_HISTORY]) {"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "HIS-001"
+    ]
+  },
+  {
+    "name": "acked_records_survive_store_faults",
+    "attributes": [
+      "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
+    ],
+    "function_sha256": "a91bdef30c448657bfd0f96bc14afe97ca7ef733866ea481d8e2e8a2a07eba78",
+    "mechanisms": [
+      "APPEND_ACKED",
+      "STORE_ERROR",
+      "STORE_LATENCY",
+      "STORE_LOST_RESPONSE"
+    ],
+    "configuration": [
+      "for seed in [1u64, 7, 99] {",
+      "let profile = FaultProfile::uniform(FaultPlan::new(0, 0, 40))",
+      ".with_class(ObjClass::Wal, FaultPlan::new(12, 8, 40));",
+      "let store = FaultStore::new(inner.clone(), seed, profile);",
+      "let engine = open_engine(store.clone(), &format!(\"dst-faults-{seed}\")).await;",
+      "assert!(log.total_acked() > 0, \"seed {seed}: nothing acked\");",
+      "panic!(\"seed {seed}: {e}\\ncoverage={:?}\", cov.snapshot());",
+      "if let Err(e) = cov.require(&[",
+      "panic!(\"seed {seed}: {e}\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "DUR-009"
+    ]
+  },
+  {
+    "name": "active_credential_omitted_then_same_version_active_is_refused",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "50ccdf5d820d33ee8f6738f672d2f3a4db487c61d119d6de09f9424c598587cf",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "adaptive_gather_estimate_seeds_decays_and_jumps",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "2c9d3a16715dc16ef1a94a640861e9eb4fac3687e68d4fdee0c68cd09c14f82b",
+    "mechanisms": [],
+    "configuration": [
+      "\"estimate must seed at the worst case\""
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "ambiguous_commit_survives_handoff_and_dedupes",
+    "attributes": [
+      "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
+    ],
+    "function_sha256": "543b76f699520cc2a9258bbbf559b50652f2a138a90d8cb9f5fd70df187f508b",
+    "mechanisms": [
+      "CLIENT_DEADLINE_EXPIRED",
+      "OLD_OWNER_FENCED",
+      "PRODUCER_DUPLICATE",
+      "STORE_LATENCY"
+    ],
+    "configuration": [
+      "FaultProfile::uniform(FaultPlan::new(0, 0, 15)).with_class(ObjClass::Wal, slow_wal);",
+      "if let Err(e) = cov.require(&["
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "DUR-011"
+    ]
+  },
+  {
+    "name": "an_exact_retry_renews_its_lease",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "50316aeb8ca53b130cd7210e9c1fc3cead0b1f04b00edf905804ff6a09b60773",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-024"
+    ]
+  },
+  {
+    "name": "an_impossible_final_never_publishes_an_intent",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "41bfc9a8b9eedf9ef0b43c4e1e0ff9997b0821afc5b7560a4a0199e786978cd4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-001",
+      "SEL-007"
+    ]
+  },
+  {
+    "name": "an_initialization_cannot_be_resumed_with_another_key",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "61c44827458ae8ced960e4157d8c01272a4fc5f94dbaeba556889b71e4b56394",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "CRT-003",
+      "SEC-004"
+    ]
+  },
+  {
+    "name": "an_ordering_verdict_keeps_its_intent_until_the_claim_is_abandoned",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d2baf923114e3bae14067b5003f3b4318139c0c97ec1aeabe075bc9b5070dd2b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "DUR-007",
+      "SEL-011"
+    ]
+  },
+  {
+    "name": "an_oversized_chunk_gathers_alone",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d3aaa1278e33f9552a49a74a08ad5cb9017e563d98696740ad67f933ca3ee098",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 92, FaultPlan::new(0, 0, 0));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "HIS-005"
+    ]
+  },
+  {
+    "name": "balanced_append_absorb_group_still_writes_progress",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "b05d3212850ad2ba0114465e442d6a346f0b6523890fe62f78aa91a32d615561",
+    "mechanisms": [],
+    "configuration": [
+      "let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "billing_meta_is_exact_durable_and_ackable",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c4403b2d2a20843904aff43af572e2b6fc21a5b0716fc770aa0d3e3c13df1215",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "budget_deferred_streams_absorb_on_the_next_tick",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b6215bb70b5bb851ce6ecd11cdc849c4f10386c0d878c08b93a861181b36ce5b",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 97, FaultPlan::new(0, 0, 0));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "HIS-006"
+    ]
+  },
+  {
+    "name": "catalog_failure_fails_the_stream_seed_closed",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a06224b203e2d0a7ea6bf976aef51fe9afb891d0233715a280eb2df3fbac726e",
+    "mechanisms": [],
+    "configuration": [
+      "\"catalog failure must fail the seed closed: {st} {}\",",
+      "// The failpoint consumed itself: the retry succeeds."
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "catalog_pages_without_scanning_the_world",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "5351071f918ff0e8bce1f4f071fb02b284ede953f2519abaf9beea5858eefac2",
+    "mechanisms": [],
+    "configuration": [
+      "let counting = FaultStore::uniform(inner, 7, FaultPlan::new(0, 0, 0));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "CRT-010"
+    ]
+  },
+  {
+    "name": "catalog_paging_survives_dense_dead_entries",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ba399641767cf0fb6b9c4a7411513791b47895189b9e5fd56760c4c67ef55192",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "CRT-010",
+      "SEC-007"
+    ]
+  },
+  {
+    "name": "certification_seal_publish_delay_widens_the_gap",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "937ec5512b4706be0c35fe7d5e73e4ac291f5f03cd7faf41d7937ad1b18dc4b7",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "closing_an_engine_answers_queued_appends_and_ends_every_task",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "aebf5de4c8f4ad516e9ff250c6adca8338623e6ca3c102408083d2c8a222fab0",
+    "mechanisms": [],
+    "configuration": [
+      "FaultProfile::uniform(FaultPlan::CLEAN).with_class(ObjClass::Wal, slow),"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "FLT-007",
+      "RES-001"
+    ]
+  },
+  {
+    "name": "cold_shard_maintenance_debt_survives_the_sweep_and_drains",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "bf82bf2056d543f708c1d7526059f313ee323e3478c5c6862dab86e87187c033",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "collection_seal_relays_segment_closes_to_the_foreign_owner",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "708f1163eb6e7435f1dcd4fd638b08ed5e6fd844913a9bcc5c5dfdb1e8acc323",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "commits_during_a_flush_do_not_extend_its_barrier",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "073b7db4a2fe0db6fae24d503beec4a4945703ae216db755456bf0f9c2cbd252",
+    "mechanisms": [],
+    "configuration": [
+      "FaultProfile::uniform(FaultPlan::CLEAN).with_class(ObjClass::Wal, slow_wal),"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "completed_operation_is_never_overwritten_by_cancellation",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "3be8ae6530cc9ef88a04961fba7d000dd56f1f3bb88d45813f52ca21eeeaad81",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/cancellation.rs",
+    "scenarios": []
+  },
+  {
+    "name": "concurrent_begins_with_reverse_finishes_resolve_every_event_exactly_once",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "f4c52bb6f0b9377bc93a379034d4efb58446421ac32e456be1fc16c8dd807165",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/concurrency.rs",
+    "scenarios": []
+  },
+  {
+    "name": "concurrent_finals_with_different_coordination_do_not_share_a_claim",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e53a6e3f40e76cb552e0509f2f0cafe72fe04c59e0a8d676b23b5ddf151b746c",
+    "mechanisms": [],
+    "configuration": [
+      "let before = crate::failpoints::parked(crate::failpoints::Fp::CloseBeforeEnqueue, \"sel027\");",
+      "crate::failpoints::park_close_before_enqueue(\"sel027\");",
+      "if crate::failpoints::parked(crate::failpoints::Fp::CloseBeforeEnqueue, \"sel027\") > before {",
+      "crate::failpoints::release_close_before_enqueue(\"sel027\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-027"
+    ]
+  },
+  {
+    "name": "concurrent_plain_seals_serialize_into_one_terminal_transition",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e8fb0797c930b7a9e84c3fd23a32455424fab0c0b63eebb587c448b4d57119fb",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "consumer_fence_survives_ownership_move",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "56a5ceec562c3d903db66a1c4e8c4050b090c795231ecda2eb34b5fe75f50ba1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "QUE-011",
+      "RES-002"
+    ]
+  },
+  {
+    "name": "corrupt_postings_fall_back_to_the_envelope",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7756278671fce8152ec21ef07aea367c6276ba8505c73becbd4faa84a6eb92b6",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 105, FaultPlan::new(0, 0, 0));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "HIS-019"
+    ]
+  },
+  {
+    "name": "create_replay_never_loses_the_initial_body",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "10ad5df5dd0886c2ac3ec17461ed272ff31dddeff1dd6c340ce5072af3c9dcdb",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "CRT-001",
+      "CRT-002"
+    ]
+  },
+  {
+    "name": "create_replay_recovers_from_a_failed_initial_write",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "37d5a7ed17fde556ee3938ad64188e65a79b20265707c7dd1ebf24b0cc89a9eb",
+    "mechanisms": [],
+    "configuration": [
+      "// Park the initial-content append pre-enqueue so the failpoint can",
+      "let before = crate::failpoints::parked(crate::failpoints::Fp::InitBeforeSeed, \"crt007\");",
+      "crate::failpoints::park_init_before_seed(\"crt007\");",
+      "let body = br#\"[{\"seed\":1},{\"seed\":2}]\"#;",
+      "if crate::failpoints::parked(crate::failpoints::Fp::InitBeforeSeed, \"crt007\") > before {",
+      "crate::failpoints::release_init_before_seed(\"crt007\");",
+      "\"the failpoint never fired\"",
+      "\"create reported success over a failed seed write: {cs}\"",
+      "assert_eq!(recs.len(), 2, \"seed content exactly once: {recs:?}\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "CRT-007"
+    ]
+  },
+  {
+    "name": "creation_does_not_report_success_after_a_concurrent_delete",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "71e0326a824a37f44826e92b26631c44e7ed5ea6f07e98a54432fea474822421",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::park_create_before_ready(\"racechild\");",
+      "crate::failpoints::release_create_before_ready(\"racechild\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "CRT-006"
+    ]
+  },
+  {
+    "name": "custody_declines_on_prior_external_use",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "5a564f3b7ca9988ca572aba0d85d32f2857d5c9b391b85efa052b7427660e622",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "customer_race_into_a_sweep_opened_engine_prevents_its_close",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9b31de01ed9c38ebcf01d5deeba23c181c3cbfc3017f46d36a92e437b43119a6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "customer_streams_with_hash_count_and_release",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0233ffc43041578e794fadb3fa461e80f52091664ae9a520ba6710ea4e37099e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "cut_resume_never_skips_a_durable_record",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 8)]"
+    ],
+    "function_sha256": "ffc97e75a490301e88a1297e283a5e4a76be5b903bd88e51e97b54f259233b5e",
+    "mechanisms": [],
+    "configuration": [
+      "let _l = gap_lock().lock().await; // shared failpoint schedule",
+      "Arc::new(FaultStore::uniform(mem(), 41, FaultPlan::new(0, 0, 25)));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "dab_noninterference_property",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7041b8ce9cfd7d792ef28ffe8be8c52f7d783d8f29f92268b6a51813e464a974",
+    "mechanisms": [],
+    "configuration": [
+      "for seed in [3u64, 17, 29] {",
+      "let tag = format!(\"ni{seed}\");",
+      "assert_eq!(st, 201, \"create seed {seed}\");",
+      "let mut rng = rand::rngs::StdRng::seed_from_u64(seed);",
+      "let tag2 = format!(\"ni{seed}x\");",
+      "assert_eq!(st, 201, \"world-2 create seed {seed}\");",
+      "\"observable counts, seed {seed}\"",
+      "\"seed {seed} observable {k} diverged: interleaved {:?} vs solo {:?}\","
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "dab_seal_intent_crash_leaves_foreign_stream_intact",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8f3aadab290a71ad71ef59b8c94c9540181d3e57ac30dfc3f7e0a3925564e9ed",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::stop_after_seal_intent(\"fpx\");",
+      "// \"Restart\": the failpoint clears and A retries; the seal must",
+      "crate::failpoints::stop_after_seal_intent_off(\"fpx\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "dab_transitions_matrix_leaves_foreign_streams_byte_identical",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "19c3a90355b893013a0451c37b7d268af9059a5cc9234c5c81d23a93aed3c49e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "dead_letter_link_requires_a_shared_key",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "09e87bcafb7a78cfcb794b9f8e5a851b3f728edb98c3faa5c2390af452c0792e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEC-004"
+    ]
+  },
+  {
+    "name": "debug_load_reports_typed_limiter_and_frame_totals",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9c5a311a628445f5d07c049d15ea6a3bf38cef22730bcc96efc3a28ff816edb3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "delete_stays_inside_the_requesting_project",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8eae62e4f6504f90c1c8f2e8a52d6f80a07e0306027a68bf560ff5d6ddce6635",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "delete_stream_delegates_exactly_once_and_traces_both_sides",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "031481e048d8cc44f70ca8deca22916dfe4ba98568cb5e95fab78c1f3011763f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/delete_accounting.rs",
+    "scenarios": []
+  },
+  {
+    "name": "delete_stream_dropped_consumer_triggers_no_extra_calls",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "b794f8ca9518485286ded595f0fc36b0afb426335c612f3fbae90f104cda2092",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/delete_accounting.rs",
+    "scenarios": []
+  },
+  {
+    "name": "delete_stream_never_fabricates_results",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "a24095ac0ce150cca6ed78c6c5b8a92a50313490e65656a0a15403ca9469bd83",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/delete_accounting.rs",
+    "scenarios": []
+  },
+  {
+    "name": "delete_stream_preserves_inner_failures",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "217318cc9f581b8f899436528ae6041a42e06ad1b212edb57b70db55f2841f43",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/delete_accounting.rs",
+    "scenarios": []
+  },
+  {
+    "name": "delete_stream_preserves_input_errors",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "f3fc151745983b4712fe1224fe3e71962070809239bb36fc2b6760dca6a3e8b5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/delete_accounting.rs",
+    "scenarios": []
+  },
+  {
+    "name": "deletes_and_reads_are_faulted_too",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "5465e7d30e8d54ff6f7d75e941037b390cb88897e35c0c584778e73ecbd1206c",
+    "mechanisms": [],
+    "configuration": [
+      "let s = FaultStore::uniform(inner.clone(), 3, FaultPlan::new(100, 0, 0));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "dirty_scan_retries_until_it_succeeds",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6c2a1d9eadacf1e5582fad0078e8c09d3cf04cf2e7db90c90de8b0e26b31cf72",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 99, FaultPlan::new(0, 0, 0));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "HIS-009"
+    ]
+  },
+  {
+    "name": "distinct_incarnations_have_distinct_pinned_identities",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "c8a6700b7bed34667be256f8f17a3be0d6ced358c6c8e0ed50598a0e943c7399",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "dropped_delete_stream_retires_exactly_once",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "3a3253e8012ae34c07cce62f65527fd99ae56a4b4af9168f3eadf0a3629ba256",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/streams.rs",
+    "scenarios": []
+  },
+  {
+    "name": "dropping_a_pending_point_operation_records_cancelled",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "92810ed46138e54c91c2edcee9b1732f45b4741ffccb3268c290537c7b700483",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/cancellation.rs",
+    "scenarios": []
+  },
+  {
+    "name": "dropping_multipart_futures_records_cancelled",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "2eca58ed92889269a45aec1c3b2fa34d85fc8e1fef05e8d5268bc7d598aa7b71",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/cancellation.rs",
+    "scenarios": []
+  },
+  {
+    "name": "dual_surface_equivalence_corpus",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ffffe2979acb900cb16d37fbde48620e166d485b422abdd186dd37745cf097bc",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEC-010"
+    ]
+  },
+  {
+    "name": "enforce_denials_journal_to_audit_events",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d9c1218a5b952f849c66bfa8457e188c042e2bdb202bfb8cffa42282bb6c33da",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "enforce_mode_gates_the_product_surface",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9a3fb0495111e44da012e13d845362009f42ecda20b22c8a298fb7a184c7f165",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "engine_shutdown_really_retires_and_closes_every_resident",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "817cebb9c07b49e66657b178f5340c9f82510b173cf2223826745628e5058671",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "errored_list_stream_serves_on_and_retires_at_exhaustion",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "53c7ff1df66aa91fde380f9bc46fc83ecdf77f5794b622e3b208645b5feaa6b9",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/streams.rs",
+    "scenarios": []
+  },
+  {
+    "name": "events_are_ordered_by_dispatch_seq",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "a88bb6d09c5fd8adcff45e3e79b573e21844cb98eeca46228a242dd997b7914a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/basic.rs",
+    "scenarios": []
+  },
+  {
+    "name": "expiry_closes_the_storage_gauge",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0484b6f919dea5cc28b5dab087ee7b1f447dcdfed591f8fe2efcab8928a1011b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "failpoint_registry_is_enumerable_and_described",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "dd676afb13d5f3f7ffbabb285f84540fd397ddf1090da303355494d193ac315b",
+    "mechanisms": [],
+    "configuration": [
+      "fn failpoint_registry_is_enumerable_and_described() {",
+      "use crate::failpoints::Fp;",
+      "crate::failpoints::parked(Fp::PullBeforeReceive, \"fp-enum-a\"),",
+      "crate::failpoints::arm(Fp::PullBeforeReceive, \"fp-enum-a\");",
+      "crate::failpoints::parked(Fp::PullBeforeReceive, \"fp-enum-b\"),",
+      "crate::failpoints::release(Fp::PullBeforeReceive, \"fp-enum-a\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "fault_placement_is_a_pure_function_of_the_seed",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "1a3ddf649e3fdb44f57d129cdb33935d1698279d5b1aaf3d6dfab36059117955",
+    "mechanisms": [],
+    "configuration": [
+      "async fn decisions(seed: u64, order: &[u64]) -> Vec<(u64, bool)> {",
+      "let s = FaultStore::uniform(mem(), seed, FaultPlan::new(25, 15, 30));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "faults_actually_fire",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "b6fbcb150041cbf7731bd770ba6d9b9ae7b49795ff7cc819ae953cbdd734df68",
+    "mechanisms": [],
+    "configuration": [
+      "let s = FaultStore::uniform(mem(), 7, FaultPlan::new(20, 20, 30));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "feed_high_water_survives_removal_and_replay",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "f1cc07054c68be6f4c8895ca682ccb34291f0cfe4aabe4d04ef01b5201485835",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "first_request_waits_for_restoration_then_sees_the_restored_ledger",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "67e4b36351fae77bccece5beb62c2c5cae815fe09bc8cb2961c8fad6c55c5fad",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "fork_cascade_hard_delete_releases_the_stream_slot",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "993c3fc7b7174d403e2c18dd62960dbd88af7676b33145490a8f89c9af25a4c6",
+    "mechanisms": [],
+    "configuration": [
+      "// Track + seed the deployment project at the CURRENT live count.",
+      ".expect(\"seed\"),"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "FRK-007"
+    ]
+  },
+  {
+    "name": "fork_creation_and_source_deletion_serialize",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c334cfb1ff7404909ac796dd18a003cf91a9a0d0bf9c057c82fac21b85b613c9",
+    "mechanisms": [],
+    "configuration": [
+      "let dbefore = crate::failpoints::parked(crate::failpoints::Fp::DeleteBeforeDecision, \"rsrc\");",
+      "crate::failpoints::park_delete_before_decision(\"rsrc\");",
+      "while crate::failpoints::parked(crate::failpoints::Fp::DeleteBeforeDecision, \"rsrc\") <= dbefore",
+      "crate::failpoints::release_delete_before_decision(\"rsrc\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "FRK-011",
+      "FRK-016"
+    ]
+  },
+  {
+    "name": "fork_lifecycle_and_stitched_reads",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9368de4bb3d30eeedeafdd087f8a9b39d9d18506b88b1bdba1da970181a7afee",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "FRK-001",
+      "FRK-002",
+      "FRK-006",
+      "FRK-007"
+    ]
+  },
+  {
+    "name": "fork_lifecycle_is_idempotent_and_epoch_checked",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "fb37ec2960f485920442ba50f90fe9204ea873c554907812122110a94b86de0a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "FRK-003",
+      "FRK-010",
+      "FRK-018"
+    ]
+  },
+  {
+    "name": "fork_materialized_partial_respects_the_record_ceiling",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e9ec46db4e49d001b6f25901ef4c0354580e4316360fda3727d624dc40ddbc47",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "FRK-002"
+    ]
+  },
+  {
+    "name": "frame_debt_survives_restart_via_tail_seed",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d00a6ec8fc702354b4d20772732c3a2416dbd50a455aed0b751f86b2a3a50d5c",
+    "mechanisms": [],
+    "configuration": [
+      "let _l = gap_lock().lock().await; // shared failpoint schedule"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "gather_pacing_preserves_outcomes_and_opens_windows",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "20a29cce088ad4fb2b5c0df0efc5fde165382b427a4186fbae679b9010aac510",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "gather_parallel_reads_preserve_outcomes_across_reopen",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "3340a572873f033e39e92d382279e43dba1ab97939fa507979574572e735ae98",
+    "mechanisms": [],
+    "configuration": [
+      "let rig = |path: &'static str, seed: u64, cfg: crate::history::AbsorberConfig| {",
+      "seed,"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "gather_pump_preserves_invariants_under_faults",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "53c57b172e629fcac9e194bea61ad3bd73df9cdea17812e6f310d317af35eb71",
+    "mechanisms": [],
+    "configuration": [
+      "for seed in [3u64, 17, 41] {",
+      "let profile = FaultProfile::uniform(FaultPlan::new(0, 0, 40))",
+      ".with_class(ObjClass::Wal, FaultPlan::new(8, 6, 40));",
+      "let store = FaultStore::new(inner.clone(), seed, profile);",
+      "let engine = open_engine_cfg(store.clone(), &format!(\"dst-gather-{seed}\"), cfg).await;",
+      "// path (gather windows) must have been exercised. Per-seed",
+      "assert!(flushes > 0, \"seed {seed}: the pump never flushed\");",
+      "panic!(\"seed {seed}: {e}\");",
+      "\"seed {seed}: idle append must ack, got {o:?}\"",
+      "\"seed {seed}: idle append took {took:?} \u2014 the gather window is \\",
+      "\"no seed ever exercised the gather/barrier path \u2014 the scenario \\"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "handle_capacity_cap_evicts_oldest_first",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9cf892492e02f140246f9ffef28222cc32b23eaff7ead4dc5878f5847bd7ac70",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 102, FaultPlan::new(0, 0, 0));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "hash_on_mode_records_content_hashes",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "d52a7d73ea565b028d0f53c5b1840c7b964a283685fa55482bcd67e149c33cd5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/basic.rs",
+    "scenarios": []
+  },
+  {
+    "name": "health_reports_unready_when_no_shard_has_ever_opened",
+    "attributes": [
+      "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
+    ],
+    "function_sha256": "0e175df8da1f9425f96f22355867fd1f62c96f7759f061279d26ac74b1a6423a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "hierarchical_names_do_not_shadow_subresources",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d1993560db2433cbc06c41fc57dcca8d822404ebabbb5a96798c46463a4e736c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "idempotent_successes_wait_for_durability",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8cbd8f24372a86599865abbe47f280ac42edf312fe6c39fc6b7bc3bc9dd36ce4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "DUR-003",
+      "DUR-005"
+    ]
+  },
+  {
+    "name": "identity_of_resolves_the_workspace_at_event",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6aba5fab5536db702ce0709416e4bf6b7379c807b601fb0607e02969c19f3c16",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "idle_engine_store_traffic_is_bounded_by_the_poll_cadence",
+    "attributes": [
+      "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
+    ],
+    "function_sha256": "ebd8cf2db4bf1a26a03716d8da99e98671cb514d9f8298a69702f50987631166",
+    "mechanisms": [
+      "STORE_LATENCY"
+    ],
+    "configuration": [
+      "let store = FaultStore::uniform(inner, 11, FaultPlan::new(0, 0, 100));",
+      "if let Err(e) = cov.require(&[mech::STORE_LATENCY]) {"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "COST-002"
+    ]
+  },
+  {
+    "name": "idle_stream_handles_evict_and_reload",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "fa29934e17259655d521d7b0d4a2017b757509fa7984a74ee9e655fd75d2039f",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 95, FaultPlan::new(0, 0, 0));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "RES-002"
+    ]
+  },
+  {
+    "name": "inflight_admission_answers_only_after_authentication",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "800ebdd605a08213c603c8e2e4e21d68d9cbcb8951e74fc4f8bb430adc8974b6",
+    "mechanisms": [],
+    "configuration": [
+      "let (st, _, b) = hreq(addr, \"PUT\", \"/v1/stream/adm\", &[auth, ct], b\"seed\").await;",
+      "\"seed: {st} {}\","
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "internal_producer_identities_are_unreachable_from_the_wire",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "071702af187defbf43fa97a9b26d08ef5b460880e4801c73f3a158b86c31c187",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-013"
+    ]
+  },
+  {
+    "name": "internal_segment_read_refuses_live_semantics",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "2ffaa543cf980470d553e4dde25d587298a90be533161f8df475aaa611103a73",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "internal_touch_does_not_leak_an_engine_from_the_rotation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d92cdc8203b6446093f024bc3af469a184d6b68a89e31439d33552c53972065b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "invoice_reconciliation_balances_and_detects_corruption",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "078cc1b4e00a47fade298172ea9ebd00a6bf2b482c3fd24c62dd93b4b74bf9be",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "jwks_kid_lifecycle_rules",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "2aff26c1e62164b25a1c296f8b8e7bc0daf1e393aa93b33a00c1a9a786bac466",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "jwt_only_fleet_relay_succeeds",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "1a226c6fae11890c133a964caeaf14e00e15b34e875eacc77858ae5b826e5399",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "keyed_frames_no_longer_count_twice_against_the_budget",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b45636c79f6a257ae0b2245dbbebfcabcdffc10cb2be9ebdb3881cc77b180c76",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 93, FaultPlan::new(0, 0, 0));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "keyed_tail_reads_serve_from_ring",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "74d987e47207f7bb11dd5abfa649f910513a2d039db320e1a403b09de383d98b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "kid_nudge_fired_before_the_waiter_is_not_lost",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "602810900a79142fa61d1b2cc144f7c32c4c169eb44be2f79963a0788d4a99f0",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "legacy_rows_are_rebuilt_and_legacy_tails_repaired_on_open",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "4f76f55622c0c49d180470675c3f14846b72ed676384e2d7b9c7873fcdd045bc",
+    "mechanisms": [],
+    "configuration": [
+      "let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "lineage_sse_refuses_authorization_invalidated_before_body_construction",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "15aebdebad301741c2b795a06885ef0cd7d7838ccb9c7e6fe10c511707839dc8",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::park_sse_before_lease_gate(\"f1l\");",
+      "if crate::failpoints::parked(crate::failpoints::Fp::SseBeforeLeaseGate, \"f1l\") > 0 {",
+      "crate::failpoints::parked(crate::failpoints::Fp::SseBeforeLeaseGate, \"f1l\") > 0,",
+      "crate::failpoints::release_sse_before_lease_gate(\"f1l\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_binary_base64_header_and_exact_bytes_out",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "78c3585b7e245527a8641eefdeb6b8ba5853c1f01fe281342cfe394e7675e72f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_blackholed_peer_never_suppresses_heartbeats",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7fb3477a7b6895b953df8823aca26eae5e3b6d4cf945bf25025b931900967816",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_budget_exhaustion_publishes_uncached_and_resumes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "76fe2dcb84073f71c632a82085b0e6ff73ef64c01cf8f9e13a6657d18e12c555",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_budget_noisy_project_cannot_evict_another",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9c788fea80cd396cae3891b875394d1d9e8e928b23ea1a29411314804ab909de",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_catches_up_from_beginning_cursor",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "552305eb9a7f08290c072529f454e14bd8d1570b7e6e57e4d9236b1ef290d0d1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_connect_after_two_sequential_splits",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "975808b7e66a4e4f930dc54d53d51fdf252dd674a488311b34518b56ddff0ef5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_connect_already_split_beginning_drains_lineage",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "45a75f6781bd0ea6d2267dbf91ceb599180d72ada6cd1f726e2814750084f4e5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_connect_already_split_cursor_in_sealed_predecessor",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6e59ac0081a1c024bbb4907c44c4b0968901d76509007270a14d68585b9aae67",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_connect_already_split_cursor_positions",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a599b560d95e11de8cbd99cb359c11f9297d5e62a1a426f769eb890cf4d92e34",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_connect_already_split_now",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6fae53765dd0a0258a837bd999b5b277a5d0347da91a2d84d1bec433e249200a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_connect_already_split_sealed_stream",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "de27d95dfb23d9ef5fa3c2d8f22768adffeba5e1d0745e031049c37ae1b5afa8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_cursor_now_uses_the_reconciled_source",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b7156fe4380bd6fda60f9b46296dbe506bcc87f0355f77b192b6ba79c086b89d",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::arm(crate::failpoints::Fp::SseFeedBeforeDrive, \"lfnow\");",
+      "// Unfreeze the drive failpoint (the first subscriber now swaps",
+      "crate::failpoints::release(crate::failpoints::Fp::SseFeedBeforeDrive, \"lfnow\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_delayed_reader_lands_on_the_current_scan_head",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c10b45d90ac43b670ab67c408ebfa3fae3c184e905825f974125c2d0a668d4a7",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_delete_recreate_isolates_incarnations",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c01706164c67507e551a2e1eef9a6b910ebf44a7bfc5df966015069b757a620b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_empty_seal_single_final_control",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0f7b04ab12ea16061001776cf7bb745dc078a2aabad59b5f88825c3ab2d3b477",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_exact_framing_mixed_surfaces_product_first",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8d0222cec6f7c0072e3fa267d7add6900382a460f2459f4bb944158facca4fb1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_exact_framing_mixed_surfaces_share_one_lane",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "5fcce0f9bea4613013b0791f468069735b85aa257679629e151d17ddec0c6737",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_fork_foreign_only_window_is_progress",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0731c6ed6f9dd2c0286935876d61facc78db984138b2548bbe27b2a44769853a",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::arm(crate::failpoints::Fp::SseFeedBeforeDrive, \"fcx\");",
+      "wait_parked(crate::failpoints::Fp::SseFeedBeforeDrive, \"fcx\", 1).await;",
+      "crate::failpoints::release(crate::failpoints::Fp::SseFeedBeforeDrive, \"fcx\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_fork_subscriptions_stitch_the_ancestor_chain",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8333744aec0afb86212e8649e5a039b3fb88963bfae4593dd0eb7a5e09230c06",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "FRK-001"
+    ]
+  },
+  {
+    "name": "livefeed_handoff_feed_advances_between_subscribe_and_session_start",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "afcc9edeb3418f56fcb78b56ba0258fb8cceb8c816f13fd3fa97f19fa409074c",
+    "mechanisms": [],
+    "configuration": [
+      "// Subscriber 2 attaches \u2014 and PARKS inside the failpoint with its",
+      "crate::failpoints::arm(crate::failpoints::Fp::SseFeedAfterSubscribe, \"lfh\");",
+      "wait_parked(crate::failpoints::Fp::SseFeedAfterSubscribe, \"lfh\", 1).await;",
+      "crate::failpoints::release(crate::failpoints::Fp::SseFeedAfterSubscribe, \"lfh\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_keyed_all_foreign_history_is_progress_not_lag",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "5ca432761841128603cb41c0fb820643249878780417cdf73a6eec5b410dca24",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_keyed_lane_scopes_records_and_shares_preparation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "62f585598b274d1697a97874f53be6b8790bd61846b3129fafcfbd9f096d19f8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_keyed_lane_survives_split",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ee29707c94ea602bb851be8a621a523ae46add66f5fcddaca06e40cab6efb728",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-018"
+    ]
+  },
+  {
+    "name": "livefeed_late_attach_never_claims_stale_up_to_date",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b21a6487b69479f6103994f93fe8b17e1d544fa21e672adf23f7efeaed793660",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::arm(crate::failpoints::Fp::SseFeedAfterSubscribe, \"lfst\");",
+      "wait_parked(crate::failpoints::Fp::SseFeedAfterSubscribe, \"lfst\", 1).await;",
+      "crate::failpoints::release(crate::failpoints::Fp::SseFeedAfterSubscribe, \"lfst\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_mass_disconnect_tears_down_within_deadline",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6864aef7d0c6555fbe2c29bc9db6bdb90f263f817382d88c25c731723163ca08",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_merge_continuation_in_place",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d02a065b7b389c0fd51203e385ce129c018f9792df0b4581c266cab0977ec953",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-011"
+    ]
+  },
+  {
+    "name": "livefeed_no_up_to_date_while_backlog_is_undriven",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d453e07f3f640108d0e5060bf92359d5ff70f0a9567fdea9121d0d3a3a377806",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::arm(crate::failpoints::Fp::SseFeedBeforeDrive, \"lfhb\");",
+      "wait_parked(crate::failpoints::Fp::SseFeedBeforeDrive, \"lfhb\", 1).await;",
+      "crate::failpoints::release(crate::failpoints::Fp::SseFeedBeforeDrive, \"lfhb\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_off_mode_subscription_ignores_staleness",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d9af3fe226da3e8859a87d8cf4c1fffadb60e5a7fd9260d573467289eb71f59c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_oversized_record_solo_in_place_shared_resumes_durably",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "28587a55b6f65ab71e115e4f7d9c257465b79baf6a17b77cf877d17d481f819f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_owner_movement_one_redirect_and_typed_cutoffs",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "467af92a934d4e5398ba973e5ce5ef623ec24d650919a283a2ac45a107fc7a42",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_park_appends_seal_matches_golden_semantics",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c7dfca4883f744fcc9c3593a198b6b1e6fe534dfa02f45d285868b471b35262b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_parked_live_session_is_cut_off_by_engine_close",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a5f470705e96e9fa202cac055195e1ed85af25a52245d87987d0647b283d1874",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_pending_transition_connect_drives_resume",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "da6d8ecf83c3098119b606e84479a6cc4e8e5bb29f3225ef7ce38af1db811565",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::arm_scaler_before_publish(\"xpend\");",
+      "crate::failpoints::release_scaler_before_publish(\"xpend\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-002",
+      "TOP-004"
+    ]
+  },
+  {
+    "name": "livefeed_raw_disconnects_without_terminal_on_split",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a5eeb5f9a308e62dac807f8de13dff9d6de328185b7833c869261b00661a6e96",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_raw_late_attach_after_swap_gets_no_lineage_scalars",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "520440362f821673aad81a29081691bfbb354e992e246a99b7bc8247d132458c",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::arm(crate::failpoints::Fp::SseBeforeLeaseGate, \"lfr3\");",
+      "wait_parked(crate::failpoints::Fp::SseBeforeLeaseGate, \"lfr3\", 1).await;",
+      "crate::failpoints::release(crate::failpoints::Fp::SseBeforeLeaseGate, \"lfr3\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_raw_surface_uses_the_raw_vocabulary",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "025b183fa1ba0aac2b3ba1a127458fe2aaad3772031249f98a5302a45326d3f7",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_raw_swap_between_peek_and_attach_is_refused",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0e3b71ef1742ef069d1ad20ee0bd061d7642dca724729ec113af8b05e65c3a79",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::arm(crate::failpoints::Fp::SseFeedBeforeSubscribe, \"lfr5\");",
+      "wait_parked(crate::failpoints::Fp::SseFeedBeforeSubscribe, \"lfr5\", 1).await;",
+      "crate::failpoints::release(crate::failpoints::Fp::SseFeedBeforeSubscribe, \"lfr5\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_rawkey_records_sse_survives_split",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e92b816997fdc79eb19af4e6345900a5c3b78094920bbae34178c4f1f54ead5d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_refresh_installs_after_external_completion",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9637b7615e73446a57892ddd62f7321df41b6d4199435a861218af5792da2781",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_remote_sealed_predecessor_streams_through_owner",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6a83c50969fe771c13aa8f46f7fbbd163ebcf3a12191a9a8c96cd5797ede4a0e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_revocation_terminates_the_subscription",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "54f3ee09aa3244d3eb8e808522e49c7ff8a4b648059093c9688fd268bd5f9633",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_ring_wrap_during_initial_handoff_recatchups",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6b53aa6580c9473b6cb0fe6cd50c62ac07a366218d9b509adbe577bd623b58a3",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::arm(crate::failpoints::Fp::SseFeedAfterSubscribe, \"lfw\");",
+      "wait_parked(crate::failpoints::Fp::SseFeedAfterSubscribe, \"lfw\", 1).await;",
+      "crate::failpoints::release(crate::failpoints::Fp::SseFeedAfterSubscribe, \"lfw\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_seal_publication_race_converges_without_heartbeat",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "58361448c2a7bb00473119b1b12fd3612ad16c35831fec21b9a180ebced044c2",
+    "mechanisms": [],
+    "configuration": [
+      "let _serial = gap_lock().lock().await; // global failpoint registry",
+      "crate::failpoints::stop_before_sealed_publish(\"lfsr\");",
+      "crate::failpoints::stop_before_sealed_publish_off(\"lfsr\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_seal_retry_is_one_task_per_feed_at_fanout",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7fc857308840e48637a2a5d1ebc6f34497c31570c3b4d49e255281be6ecc4dd7",
+    "mechanisms": [],
+    "configuration": [
+      "let _serial = gap_lock().lock().await; // global failpoint registry",
+      "crate::failpoints::stop_before_sealed_publish(\"lfherd\");",
+      "crate::failpoints::stop_before_sealed_publish_off(\"lfherd\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_seal_transcript_exact_tail",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "19e4f8416c09956b4c1abf6a4956b8362fc55b149b2f1fdebcaf4f982ae395a2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_shared_feed_revocation_gates_one_subscriber_only",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a19e61d41e46db28b0cfd6d6821e31788f9052b45dbb5c38b2fcdea645c16e70",
+    "mechanisms": [],
+    "configuration": [
+      "// next send into the failpoint with one trigger append.",
+      "crate::failpoints::arm(crate::failpoints::Fp::SseBeforeSend, \"rv3\");",
+      "wait_parked(crate::failpoints::Fp::SseBeforeSend, \"rv3\", 2).await;",
+      "crate::failpoints::release(crate::failpoints::Fp::SseBeforeSend, \"rv3\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_singleton_large_window_delivers_everything_exactly_once",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "2f2a4fbe9b63dba6f339282b1d27c07617d9af4bb4e9c97bd0707f2e12395071",
+    "mechanisms": [],
+    "configuration": [
+      "// failpoint: the 40 appends below all land before any source read.",
+      "crate::failpoints::arm(crate::failpoints::Fp::SseFeedBeforeDrive, \"lfbig\");",
+      "// The session is now parked at the drive failpoint with the whole",
+      "wait_parked(crate::failpoints::Fp::SseFeedBeforeDrive, \"lfbig\", 1).await;",
+      "crate::failpoints::release(crate::failpoints::Fp::SseFeedBeforeDrive, \"lfbig\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_source_swap_revocation_yields_zero_post_cutoff_frames",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a9d8d33f819da06dda0d752de4cc56c1c9c942d662157ed9c20fd488ddc9771e",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::arm(crate::failpoints::Fp::SseBeforeSend, \"rv4\");",
+      "wait_parked(crate::failpoints::Fp::SseBeforeSend, \"rv4\", 1).await;",
+      "crate::failpoints::release(crate::failpoints::Fp::SseBeforeSend, \"rv4\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_split_cursor_decodes_to_segment_local_and_resumes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b7ffb4704d7d13140500798c130505714f0da4d2455d9d0444eb17880a68db17",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_split_during_initial_catchup_delivers_everything",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7f5b6095a928dee70f52c0a463cf2282a969dddfb615580cfca740ea2d9b1704",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::arm(crate::failpoints::Fp::SseFeedAfterSubscribe, \"lfc2\");",
+      "wait_parked(crate::failpoints::Fp::SseFeedAfterSubscribe, \"lfc2\", 1).await;",
+      "crate::failpoints::release(crate::failpoints::Fp::SseFeedAfterSubscribe, \"lfc2\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-018"
+    ]
+  },
+  {
+    "name": "livefeed_split_held_publication_handoff_is_prompt",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6f5adf6e595e069c8e4b6101ee10e2abdbaf8cd11fb80e2cd1f24fc41e94e077",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::arm_scaler_before_publish(\"lfhp\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_split_parked_subscriber_continues_in_place",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "f5fe73daf689fd8a873aa3de883f15dc8c715719dfccbfc0729c11c036cc0e09",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-018"
+    ]
+  },
+  {
+    "name": "livefeed_split_seal_before_refresh_drains_then_terminates",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0cd8e2c9594a4fef4b0752ad74e7f85d642a66b4efb31c70d58ff82164a4d8b8",
+    "mechanisms": [],
+    "configuration": [
+      "// both sessions to actually PARK at the drive failpoint first",
+      "crate::failpoints::arm(crate::failpoints::Fp::SseFeedBeforeDrive, \"lfseal\");",
+      "wait_parked(crate::failpoints::Fp::SseFeedBeforeDrive, \"lfseal\", 2).await;",
+      "crate::failpoints::release(crate::failpoints::Fp::SseFeedBeforeDrive, \"lfseal\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_split_shared_subscribers_swap_once_deliver_twice",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7f51f124c5532f6ef6ae38ce500086416599e6516a5215d00713d9d127934240",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-018"
+    ]
+  },
+  {
+    "name": "livefeed_swap_externally_adopts_child_engines",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e1455246dbfb01fc150e5b7cd3ccdbf7d9cef2e64e09c726173b00568802368a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_two_sequential_splits_continue_in_place",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ba40f4313b39c9d518b14c2bd597f8cdfdc9e3930c8a71229202156838792e04",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "livefeed_two_subscribers_share_one_feed_and_one_source_read",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "3c19924568c4c27ba7639830834c6e62c1beec4bbd624bc6ea715f3c86ba890f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "COST-005"
+    ]
+  },
+  {
+    "name": "long_keyed_run_pages_with_progress",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "1b5b948f7223df56bdee59f9ace32965d97df6911235b920538048fd9013183b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "HIS-021"
+    ]
+  },
+  {
+    "name": "lost_response_counter_tracks_applied_behaviour_only",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "7784482be86fa8a4e4e9bf662cfbf502b66bf0772d1d20d37adfebdaf6aee9fe",
+    "mechanisms": [],
+    "configuration": [
+      "let s = FaultStore::uniform(inner.clone(), 11, FaultPlan::new(0, 100, 0));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "maintenance_failed_append_group_is_noop",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "c225d6384f11ea64b977981310a5c47385938d7eb7c26c6542d6f6d87ccc9532",
+    "mechanisms": [],
+    "configuration": [
+      "let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();",
+      "// Arm the failpoint; the append must FAIL through the production",
+      "\"failpoint must have fired\""
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "maintenance_uses_frame_bytes_not_payload_bytes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "dacc0d70b114b0b933ddfdb94173acf6748f482aedccd84f989d3b55f49aa444",
+    "mechanisms": [],
+    "configuration": [
+      "let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "max_streams_is_enforced_at_create",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "12742055dd3a9c1d9632a515641dc7a40309075bf712daa0f6b9db426c284449",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "CRT-011"
+    ]
+  },
+  {
+    "name": "max_streams_transition_seeds_from_reality",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "dbc80ca2ab60a7434d9c9a22d9411c89eb47db6c78cc317275043b5e6ef5517e",
+    "mechanisms": [],
+    "configuration": [
+      "\"re-enabled limit must seed from the real count: {st} {}\","
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "merge_phase_b_declines_under_sealing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7039cab7d15e6978a216e7ae40dd905c7686b4dabbb9a84d1220d1c86c884900",
+    "mechanisms": [],
+    "configuration": [
+      "let pbefore = crate::failpoints::parked(crate::failpoints::Fp::ScalerBeforePublish, \"sel019\");",
+      "crate::failpoints::arm_scaler_before_publish(\"sel019\");",
+      "while crate::failpoints::parked(crate::failpoints::Fp::ScalerBeforePublish, \"sel019\") <= pbefore",
+      "crate::failpoints::release_scaler_before_publish(\"sel019\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-019"
+    ]
+  },
+  {
+    "name": "merge_rejoins_cold_children_with_exact_lineage",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "41622b7cf257bd2f66d071236e83cf945b8b2837b7f7c5865408535d3f4d25e5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-011"
+    ]
+  },
+  {
+    "name": "mixed_append_absorb_group_refreshes_the_progress_clock",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "5edcc057625b1e9c7d414b3d7fe18f556d7a1f69b22aa36d923ee845a7ba135e",
+    "mechanisms": [],
+    "configuration": [
+      "let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "multipart_session_is_traced",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "353b494613fd40461536a3228b449dfc5c85009b0ac99806c7294a0f47a241b7",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/basic.rs",
+    "scenarios": []
+  },
+  {
+    "name": "noisy_neighbor_cannot_degrade_a_compliant_project",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "829c5107b96e03d2e69a111490b6825b4e8b05e349f5251e5a8256a467e30896",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "nondeployment_pending_split_resumes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9024c01c14d0383185a425851e9073f26ea975bdffe5f78ca1b227586adbe7be",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-002"
+    ]
+  },
+  {
+    "name": "object_classes_match_production_telemetry",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "826d61aa48cee6e96c853f292187807d11e605518bc2933fc816b59afdadc481",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "off_mode_subscriptions_are_untouched_by_staleness",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9d31f52f12c929a0873d8d35b3e6e28f5ab970cd787f7831f03dd52e59b42206",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "omit_reintroduce_owner_swap_gains_no_authority",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "5ddf6456d69bcd2f02993bf15048b35ed6bc23d5d275cc3e6871f92b56a4665a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "one_cell_serves_two_projects_with_full_isolation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "3c098a7e667280866c1b38236bf9082edcda0487f00bcc9d109d529977e563d2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "only_the_exact_signed_watch_route_skips_the_token",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "35483fa1afc1d22704e3512cd9b9649c2f6d7c5c98b1b2d5308a626bf6df8cdd",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEC-001",
+      "WAT-004"
+    ]
+  },
+  {
+    "name": "open_gate_escalates_holdoff_for_engines_that_die_young",
+    "attributes": [
+      "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
+    ],
+    "function_sha256": "b737e68ecd189bb75e0d070bbf6df2a20815d1f1859b2c8dec90cbdac032067f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "FLT-003"
+    ]
+  },
+  {
+    "name": "open_gate_survives_impatient_clients_without_a_storm",
+    "attributes": [
+      "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
+    ],
+    "function_sha256": "50e63f0369f90e3c1d24cf82afa883e8b1bf697e1f74f6363471d7a8ac0e68ff",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "FLT-001"
+    ]
+  },
+  {
+    "name": "ops_events_journal_end_to_end",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "1b08a8658c784465fd63483e4c16dbd04a4deb604cb649df36443f0e905296e1",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "ops_metrics_and_alerts_flow",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a9258159825c05e9e9e2b8c03dcb607cda72f38640d03f44093cd08dd3886efe",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "oracle_accepts_a_faithful_read",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "26a45dd82c9ca093056891119d624d121068a253a949293e829c91b3b282cf0c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "oracle_catches_a_record_that_was_never_issued",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "eccef1140f02dee4ab7c61df201588bf3c0853e704a622e2023bb24731911297",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "oracle_catches_a_rejected_write_that_committed",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "9ba89bcc906947866eda9883c89a3642ffcaa097c577f8670ad51d1452e3abce",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "oracle_catches_a_self_contradictory_ledger",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "3a1df87d2efd1619817bcc3b9145634f88f4ffe96f37dc8f7dff5e7459b6dc33",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "oracle_catches_an_idempotent_operation_stored_twice",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "f3c9c1b74d25c6d102c4139dba189e223bb63974efdb43089831812a25102f8b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "oracle_catches_duplicates",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "27b380305aa0541074ab18b2331129ba8045bf590c7fd5fcb6af5a5eabbb5165",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "oracle_catches_loss",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "7796129ae1cd778150ac86b34b959ad3b7fb0256b8941f353adb6cb9161214b6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "oracle_catches_reordering",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "1d6bd3a55d23c71a15b922f86ed9ccfc307b9238986bcd0d829427b9d89d8673",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "oracle_permits_a_non_idempotent_retry_committing_twice",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "953811f9d092a04f00e7899214a19cef44d5a99f215feda7570faef1ef09b313",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "DUR-015"
+    ]
+  },
+  {
+    "name": "ordinary_delete_counts_once_in_the_operation_ledger",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "f9a1503eecb09c4e57f2f5f209733cc49991a43b76e707c804302e1785ad13c3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/delete_accounting.rs",
+    "scenarios": []
+  },
+  {
+    "name": "outcome_is_recorded_on_error",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "487cf20cc00a87117145b34848d26c66f19222fb9ed9d21d8123f72d3f15c3cb",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/basic.rs",
+    "scenarios": []
+  },
+  {
+    "name": "over_retirement_fails_the_group_and_preserves_the_boundary",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "dd13d54045eb311fa4d9a81d523c83d9de6a4896e42f5cc30a8ec3f59ec3d2a2",
+    "mechanisms": [],
+    "configuration": [
+      "let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "overloaded_engine_sheds_while_sibling_admits",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "b045ee4bbdba1a86611a3f367e1c0827909f7feb9c578f4ba5eed5e3f8080011",
+    "mechanisms": [],
+    "configuration": [
+      "let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "RES-006"
+    ]
+  },
+  {
+    "name": "oversized_keyed_record_pages_through",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a2d1aafa07b5d04af90ffbcaa5a0bd1da525bc70e54f40e20cf2e362e50df2f5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "HIS-020"
+    ]
+  },
+  {
+    "name": "ownership_handoff_moves_backlog_without_aba",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "a5d98d9fd232578c4aa94c55aa9182d3c7b59ee4be89233ca75a270d49478a4a",
+    "mechanisms": [],
+    "configuration": [
+      "let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "FLT-008"
+    ]
+  },
+  {
+    "name": "ownership_replay_wins_over_a_latched_local_engine",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "30222fa9646d38c4dbfd605aca2400bf92657503e19dc53d8b500a7b41471c94",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "pending_summary_clears_on_shard_close",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "750c9241f6cd829eb6cce41966b832fb6aaf65d7d774a4e53b5415dc422b94dc",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 101, FaultPlan::new(0, 0, 0));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "FLT-008",
+      "HIS-011"
+    ]
+  },
+  {
+    "name": "post_split_throughput_scales",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 8)]"
+    ],
+    "function_sha256": "f67c90e12418e9d4ac1a9464d02c939d565a59c6cbb1d7e3a8bbc7c4dfc4bfc9",
+    "mechanisms": [],
+    "configuration": [
+      "..FaultPlan::new(0, 0, 0)"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-007"
+    ]
+  },
+  {
+    "name": "producer_lanes_scoped_per_routing_key",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "309850664c9b35b1291b91924e61100a64d60b11c0fead74b854380dd22ce342",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-010"
+    ]
+  },
+  {
+    "name": "producer_retries_across_a_split_commit_once",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "4193102873a10f03e65b835c80519e1a45a55d981b184bbe7ca1f712ab62802d",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 109, FaultPlan::new(0, 0, 0));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-010"
+    ]
+  },
+  {
+    "name": "producer_state_survives_a_handoff_and_suppresses_duplicates",
+    "attributes": [
+      "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
+    ],
+    "function_sha256": "aeb45ad473daa3dfd10003edba66b0e72bb2d58224728ff524cfdc938757128f",
+    "mechanisms": [
+      "APPEND_ACKED",
+      "OLD_OWNER_FENCED",
+      "PRODUCER_DUPLICATE"
+    ],
+    "configuration": [
+      "for seed in [5u64, 21] {",
+      "let store = FaultStore::uniform(inner.clone(), seed, FaultPlan::new(0, 0, 30));",
+      "let prefix = format!(\"dst-idem-{seed}\");",
+      "let pid = format!(\"producer-{seed}\");",
+      "let body_n = format!(\"{{\\\"op\\\":\\\"n\\\",\\\"seed\\\":{seed}}}\");",
+      "other => panic!(\"seed {seed}: producer seq 0 must commit, got {other:?}\"),",
+      "\"seed {seed}: the new owner did not recognise the retry as a \\",
+      "\"seed {seed}: duplicate ack must carry the ORIGINAL offset\"",
+      "other => panic!(\"seed {seed}: retry must be an acked duplicate, got {other:?}\"),",
+      "\"seed {seed}: the logical operation must appear exactly once (found {copies})\"",
+      "\"seed {seed}: a duplicate must not consume an offset\"",
+      "\"seed {seed}: sequence N+1 must commit after the handoff, got {next:?}\"",
+      "if let Err(e) = cov.require(&[",
+      "panic!(\"seed {seed}: {e}\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-016"
+    ]
+  },
+  {
+    "name": "producers_cannot_write_new_records_while_sealing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "f096cf9a0abeb9619c888212bcea6b633e56f14866e0c6f53a69cf39bfb097d8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-006"
+    ]
+  },
+  {
+    "name": "product_append_and_append_many",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "11c34b45c296bbac8fb8fdf728c246d7bf4ba5d2fe42ba8ff90c2363dcf7a722",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "product_append_producer_duplicate",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "fe796212b4a7b754e4af8c1b6140733b00f6015cdcecfedd62d671bb7add466d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "DUR-011"
+    ]
+  },
+  {
+    "name": "product_clean_switch_rejections",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "93be47743758f97595bab43e1e5716d3f93ab9a4295710b559de89290af05d23",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEC-009"
+    ]
+  },
+  {
+    "name": "product_consumer_config_lifecycle",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7e87f633f97a38d91759f033fbcd744e16e120531ac41eedfc81236f72ed855e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "product_consumer_dlq_flow",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0af01780b8f4772223ebb2e2bd8f7915d8dc6ccafafd728ef381ce6eb184b278",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "QUE-007"
+    ]
+  },
+  {
+    "name": "product_consumer_drains_lineage_across_split",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "71c7edeaed45c02a0273b6ddffe8be6e77c2d36e352adf90c957b7b20faa14f5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "QUE-009"
+    ]
+  },
+  {
+    "name": "product_consumer_expiry_and_stale_fencing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "3919e9cab29ceec99cc7c773f4ef6b8faa16b09f1a34d97dfac910e7a8940c11",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "QUE-002",
+      "QUE-005"
+    ]
+  },
+  {
+    "name": "product_consumer_per_key_fifo",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b1792f127547f9003ae5c9fa423d781cfe54617ac02958ea28f4cde8a86fbe75",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "QUE-001"
+    ]
+  },
+  {
+    "name": "product_create_metadata_roundtrip",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "f65ac38983262c51114617aa9dbfa8bc05e44af695e692a56179ac72fdae4243",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "CRT-011"
+    ]
+  },
+  {
+    "name": "product_long_poll_times_out_and_wakes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "eec26bacbdc87ee07275f7f8d26a9b499add2aedf9dff2102496fa8f48711e75",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "product_producer_hash_discipline",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "1fb64dd2883bca33c7d981b21a9a35bae5b230b9003c4903356d02e1790e37d3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "product_producer_hash_survives_split",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "43826a43b89940d8f517517c3e5039f71d19271426c9d587e18e2ea13ecf817b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-010"
+    ]
+  },
+  {
+    "name": "product_read_follows_split_lineage",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "bff9df2ad4984c0bfc0e8741852981a226ac4e68ded7b9fb28c1719e3e2c3232",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "product_read_pages_and_binds_cursors",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "988077fbfef5cb5de94e03e360700534f75beaf353e14811f2ce18b3cbee39d2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEC-006"
+    ]
+  },
+  {
+    "name": "product_requires_the_account_token",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "12a75181c8f9f3ca977e739671ff253ad2a8d3a9789ea82f2aeecb38b49aa5a7",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEC-001"
+    ]
+  },
+  {
+    "name": "product_responses_carry_cors_not_just_preflights",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7b633bf002644d91e9aee5b4f4e80cf933b0e3dfb5a62ed96f218227635b8c51",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEC-003"
+    ]
+  },
+  {
+    "name": "product_scan_bytes_stream",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "205b1fe84b5ce7f498580a1bd8dc2e394606ff08863af686b180fbab80cbc8ac",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "product_scan_is_snapshot_exact",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d71e246ea5e860f516720ba63f0901aa784d9029f3103c345e3f89aa22274051",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-019"
+    ]
+  },
+  {
+    "name": "product_scan_traverses_split_lineage",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "1cd4a1daa06b66fa262cf28414fa1af0be94631891a3db0697b194200096fc77",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-019"
+    ]
+  },
+  {
+    "name": "product_seal_collection_wide",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6d04b13982e828ea8c03bdab75b04c6f248ad864bc7f857638bd1c3c5e90f0d8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "product_seal_final_append_and_catalog",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "75c44f9ae6176594f2a450569b62be2f9456896240e66da2636573bef1977308",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "CRT-010",
+      "SDK-004"
+    ]
+  },
+  {
+    "name": "product_seal_final_needs_no_caller_producer",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a4da84930fc319eb02669c26132d8ae70991370ae6795020cfcb3bc4cc6d4220",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SDK-004"
+    ]
+  },
+  {
+    "name": "product_sse_controls_carry_signed_cursors",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c7723ce4fb3b07971ed21b565cae0e7fd625a853bf779d413c9c4a65795d8456",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "product_watch_wakes_on_matching_append",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "08ea66d173a7c8dd0e110b93a7fad9572c13ad45b41837f07c747d5c59409ffa",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "WAT-001"
+    ]
+  },
+  {
+    "name": "profiles_are_removed_from_every_surface",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e93a3815b15ca21cea4cf80d2fd00557ac3965d336f6fc2ee3fe0b4eaea8931d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEC-009"
+    ]
+  },
+  {
+    "name": "progress_clock_trips_only_without_progress",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "f56acc75f508be55b0aec59a0500be596fc3012f4e55bc9d0734b35cb1c430c7",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "project_memory_pressure_throttles_new_appends_only",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6ca2c20f7413a08c24bcf67f465c8feec03d6b7b1d27ff8d7dc3741abe4f4a98",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "RES-006"
+    ]
+  },
+  {
+    "name": "project_omitted_then_same_policy_version_is_refused",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "f6121ea4d5487c00bbd94e6f651d5afefb3306ff76e70ad9b3cc716e80bc4a87",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "project_rate_quota_backstop_answers_429",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "5e5e9cabae0d364c208d6ee56b85b7a63c6d98dac9e1f9b6941d7149c8776bb4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "publish_rejects_workspace_change_hidden_behind_omission",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "1030c2dbc1ac61a399db809dda15d95c37a9a86d3201d5be4d66186ab86e3209",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "publish_rejects_workspace_change_without_ownership_bump",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "24485edc7bda1928d1d6bf3d6aee35ed86b4a6549344352d6ca1c5e2ceac4cfb",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "put_records_byte_count",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "acc310423b8c22448d56dd1de7567e199202424bec4eb321a190045fc517393a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/basic.rs",
+    "scenarios": []
+  },
+  {
+    "name": "queue_config_delete_is_group_local",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "eda657c62a73d992f4bb49f8b622c0842801e1c18f53059a04c7e2f624fb699d",
+    "mechanisms": [],
+    "configuration": [
+      "\"the failpoint never fired\""
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "QUE-011"
+    ]
+  },
+  {
+    "name": "queued_append_bytes_charge_and_release",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "670a71341418b4c33be301801e3d16138f4262eec880d65877cec1c4d927f9d3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "queued_frame_is_discarded_and_unbilled_at_revocation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b893543885673a507a45b84077af45455fd9038e0b99b510201d0b47e20773dd",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::arm(crate::failpoints::Fp::SseBodyBeforeYield, \"rvq\");",
+      "wait_parked(crate::failpoints::Fp::SseBodyBeforeYield, \"rvq\", 1).await;",
+      "crate::failpoints::release(crate::failpoints::Fp::SseBodyBeforeYield, \"rvq\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r15_bodyless_and_unauthorized_requests_never_poll_the_body",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "b2c460045ec66cdcb944da6f466ac57796bee4a9c349d70435e4a9e80584d6ac",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/review_security.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r16_unauthorized_watch_shapes_are_independent_of_existence",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "c9167bb2446afc6005f0f503c58d1a75fa549d7eb8e5c7a20b513c15746cf971",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/review_security.rs",
+    "scenarios": []
+  },
+  {
+    "name": "ranged_get_records_span",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "d95c004fbca4babf769f2f47aad7e6e40a399adfe90028bd2b8132ed327bf673",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/basic.rs",
+    "scenarios": []
+  },
+  {
+    "name": "raw_and_operator_surfaces_are_internal_under_enforce",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6cc9f72d6295e5f8b34681f863b7354dbdf38ab661643505499b22057b02ac6d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "raw_forks_show_only_the_default_key",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a58edd5730d1a837f0152db029561ca269d3ff46d5cf9ad75cd67426458e214d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "FRK-005",
+      "SEC-005"
+    ]
+  },
+  {
+    "name": "raw_hierarchical_append_sheds_typed_503_under_backlog",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0870edc1665e6a703875f5781ab63128f82d67a82e7ff295e013f2fbf3d66b64",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "RES-006"
+    ]
+  },
+  {
+    "name": "raw_route_is_the_default_key_view_across_splits",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c418aafb17134fb104792548822e55e65ac9d78b03eb45bd804dbf5ad5ade709",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEC-005",
+      "SEC-010"
+    ]
+  },
+  {
+    "name": "raw_sse_terminates_at_workload_token_expiry",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "60d917056400af73af4c7bc234da8af9fbecb1b3c0afbdce3fe0c10554590790",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "read_batches_survive_crash_in_the_spool",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "597ff9f4e4966a451f5445f7c01554a7d03424f9c86707e2540fc666bf2bbb87",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "read_meter_covers_the_matrix_exactly",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8e86c9a68483fe7e531758af8488b6b2742c478bec55194c5851d3bd3dadde07",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "readiness_endpoint_refuses_each_permanent_critical_exit",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "650887ca19c494c8ed4e394f8f48d3af0b96fb214b4ea16d7fc7d47d8bbc56a2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/review_readiness.rs",
+    "scenarios": []
+  },
+  {
+    "name": "receive_then_delete_in_one_group_leaves_no_stale_lease",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "960197965f04903085fbd08ec6231e062d085721ba62ef17cd365c909d1e683f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "QUE-011"
+    ]
+  },
+  {
+    "name": "record_ceiling_refuses_one_oversized_record_not_the_batch",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "81cc0e098607ff4ffef5df88b14b197cd2a32417d43c0b98c4ba5a3abb1ab909",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "CRT-011",
+      "SEL-001"
+    ]
+  },
+  {
+    "name": "redaction_hashes_paths_and_never_stores_payload_bytes_by_default",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "e92ed2219421a358b9c38fa0d7eed3810e5d20d58dd87f06afab9720a1aec572",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/basic.rs",
+    "scenarios": []
+  },
+  {
+    "name": "reopen_storm_reproduces_the_eu_central_wedge",
+    "attributes": [
+      "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
+    ],
+    "function_sha256": "86c11dd7ea4e89c751ab89ed683a702c84348f959ba0657c64cc75819b9fbf83",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "FLT-001"
+    ]
+  },
+  {
+    "name": "repeated_keyed_reads_hit_the_postings_cache",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d0147be950bb6da647ccfb24d9040ed3e5953f8fe89c1f3017b1bbe31d11bcbe",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 107, FaultPlan::new(0, 0, 0));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "COST-004"
+    ]
+  },
+  {
+    "name": "reserved_namespace_refuses_customer_credentials",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "586fa683c218b3ada4143ef6bf1c854c5d7bbe48edcb9e10815a01de99bde0f5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "reserved_streams_append_through_a_latched_engine",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d440a3d482cbd447a5a786c07365f04d0320b2dc887fedf2ca3660d8cb92674e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "reserved_system_streams_are_recognized",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "473679d9b688f0164daabd9a3766852a92597db2807e555ec008f6555fe3a036",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "reset_after_completion_is_clean_and_ids_stay_monotonic",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "3f555c2a6ce7e4193c1b9c2c9c7d34b4cf1b5daa0ee9d54b98b9554c66de679e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/streams.rs",
+    "scenarios": []
+  },
+  {
+    "name": "reset_racing_with_begin_cannot_orphan_an_operation",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "0af3035e8f1f73dc56ffb640b23759bf3fefe71246ee4254b4de4e945b05648f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/concurrency.rs",
+    "scenarios": []
+  },
+  {
+    "name": "reset_refuses_while_a_delete_stream_is_active",
+    "attributes": [
+      "#[tokio::test]",
+      "#[should_panic(expected = \"while operations are active\")]"
+    ],
+    "function_sha256": "de851de9882ea1adde826bdea69b064db139283d4d83f0e813c6f9b3655e603e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/streams.rs",
+    "scenarios": []
+  },
+  {
+    "name": "reset_refuses_while_an_errored_list_stream_is_still_open",
+    "attributes": [
+      "#[tokio::test]",
+      "#[should_panic(expected = \"while operations are active\")]"
+    ],
+    "function_sha256": "98c131e4cfb3cd77ba0ff83d911d0b15c3f6b80033392a00800b081f01e75318",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/streams.rs",
+    "scenarios": []
+  },
+  {
+    "name": "reset_refuses_while_in_flight",
+    "attributes": [
+      "#[tokio::test]",
+      "#[should_panic(expected = \"while operations are active\")]"
+    ],
+    "function_sha256": "8dbca7724f55e7f2f2d9c3a7fdad5701e038a944e2bdd39d259839d152c0ce70",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/streams.rs",
+    "scenarios": []
+  },
+  {
+    "name": "restart_invalidates_process_local_touch_cursors",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8736a63f7e3097ed69f19020a119c78faaf54c0ba8bc274e072f5a3a39fe319e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "retirement_and_opening_take_the_gate_locks_in_one_order",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "58598837905c351ed1cf83e75e4db50e188911117c53c4c275bcf87ce91a7195",
+    "mechanisms": [],
+    "configuration": [
+      ".worker_threads(2)",
+      ".worker_threads(2)"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "retirement_arms_the_holdoff_and_a_stale_close_cannot_evict_a_replacement",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "3ae03c96c15ebf5a8320cc87000f8dad0ffb15ae9bd79a859238b6d236ab0093",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "revocation_interrupts_active_direct_delivery",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "aa01a093b9fbc224abcce094eb51f5cd2e490c7556a55aeb11edc26430801f7e",
+    "mechanisms": [],
+    "configuration": [
+      "// then force the next send through the failpoint with a trigger",
+      "crate::failpoints::arm(crate::failpoints::Fp::SseBeforeSend, \"rv2\");",
+      "wait_parked(crate::failpoints::Fp::SseBeforeSend, \"rv2\", 1).await;",
+      "crate::failpoints::release(crate::failpoints::Fp::SseBeforeSend, \"rv2\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "revoked_close_keeps_the_identical_engine_with_no_new_open",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "cc01d21c3aec5e42d990524c59d2ca9f1459aa9d734839405e4cd3e14f9498dd",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "rig_clock_is_the_runtime_clock",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "2b020ffbf820a1cd747d5be287f0d7d9755842f829869f7bf375f4da179c6967",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "ring_ordering_paging_and_duplicates_at_offset_level",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "13db6eea52f73841429d7376ff71a1ee1f982eb0f93727ac09c91f85581211cc",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 93, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "rotated_workload_jwt_refreshes_and_retries",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "db01e30f7f114cd88aaf058e247447f23b6615262ad9f122a22c901aaba55301",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "same_feed_generation_cannot_gain_entries",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "8fc9bafd995ddd2f84de6894d26981bdfe03707b2ac886bce6278f538de78eae",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "same_group_config_puts_see_each_other",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "993051261d460bf30ab0237ef42e82e8498769623dfd8e1e7d4996b7fb37d8e4",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "same_incarnation_reproduces_identities_epochs_and_registry_trace",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "85ae2f51e04fa23b4d0e4ed04bd77a977fa14ff02187823ebcedbba790d56257",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "same_name_cross_project_usage_attributes_exactly",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "96376e5b93ceac4654c41b5dee53ededec74cb65189d3e64cb5b8fbd188bbd30",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "same_version_with_changed_content_is_refused",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "e57ca46dedb83f51a7ba43888a31f28eaab2b8d1f8fbb50ba747c79e907f1d95",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "scaler_heat_and_terminal_proof_are_incarnation_scoped",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6b95ddd4cbcbfc82946088bd566bac4f429f7439fea25222467ad2dc25775e55",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-028",
+      "TOP-012"
+    ]
+  },
+  {
+    "name": "seal_converges_through_transient_commit_group_failures",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ff72f63cacff3cea1eca2a2c0961a21cf27dfa682fcb2d51db7c8f08d5a5f9c2",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "seal_fence_resolves_the_owning_project",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0f6ac8e6e6b0e7c5e952981341165336574ec0e59217e3f613c299e180fa4dfb",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "seal_gap_cancel_then_retry",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "bed2928f1babad33b7801c7e0b2041088e01aa405ee08fbd38d001d44865070c",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::release_scaler_before_publish(\"gapcancel\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-003"
+    ]
+  },
+  {
+    "name": "seal_gap_cold_read_mid_gap",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "aca94904aee6b2ce97b85126b579cfa31b6e6b59cdd5ba65ef1fe5df1adf4663",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::release_scaler_before_publish(\"gapcold\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-003"
+    ]
+  },
+  {
+    "name": "seal_gap_get_never_reports_closure",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0bbb7e68e93e7503085a9126f89b70dae5fbbcbd05931f429d8aa85635c57858",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::release_scaler_before_publish(\"gapget\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-003"
+    ]
+  },
+  {
+    "name": "seal_gap_head_no_closure",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8e5b071058eaf7f37d1547ec52ef64989edeeb3c0d5e2393c2e9af60a2b02a95",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::release_scaler_before_publish(\"gaphead\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-003"
+    ]
+  },
+  {
+    "name": "seal_gap_long_poll_wakes_without_closure",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "449a784548d544532ab354a731628cde387fad50d57c584df7e4f588652111b3",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::arm_scaler_before_publish(\"gappoll\");",
+      "crate::failpoints::release_scaler_before_publish(\"gappoll\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-003"
+    ]
+  },
+  {
+    "name": "seal_gap_stale_descriptor_redispatches",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "5e3dbfa45a51a8055311100e06ea3bb8bc7d01f494776aceecd31a1988f42c8e",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::arm_scaler_before_publish(\"gapstale\");",
+      "crate::failpoints::release_scaler_before_publish(\"gapstale\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-003"
+    ]
+  },
+  {
+    "name": "seal_is_a_resumable_transition",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "fbbf10c0d44a8c827f88391572616f1a0ef0972c51779624c41d50289b5f089f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "seal_only_takes_over_an_abandoned_final_claim",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c64d015f5951b2460c68e6cb5ed0e552eaab554f758803c8df75bf1ded8eab7a",
+    "mechanisms": [],
+    "configuration": [
+      "crate::failpoints::stop_after_seal_intent(\"rescue\");",
+      "crate::failpoints::stop_after_seal_intent_off(\"rescue\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-005"
+    ]
+  },
+  {
+    "name": "seal_requests_are_identified_and_validated_exactly",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "f6f2dd1675d155b913d7addae37639e2b2d654a8f52cca5543dd9d893fe2317a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEC-004",
+      "SEL-001",
+      "SEL-002",
+      "SEL-003",
+      "SEL-004"
+    ]
+  },
+  {
+    "name": "segment_close_receiver_scopes_authorizes_and_is_idempotent",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "917a0b497fbbaf317e30c7cbf2d97a88e89b67de6d33dacfefa39d14e4b235de",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "settle_then_delete_in_one_group_leaves_no_stale_rows",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "20191f9b099c93198e91212c96516e036c2c722b17be9032fff665d4f719c1ca",
+    "mechanisms": [],
+    "configuration": [
+      ".expect(\"seed receive\")"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "QUE-011"
+    ]
+  },
+  {
+    "name": "shadow_mode_observes_without_enforcing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b4869c326aca3a8bdf9aaa1477f211ec5704e161fbbf42df285ada5e54b8328b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "shared_cell_certification_smoke",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9512ae9bfb9e1aa59418201e99a6359854b6c450a33e1504ec1ab422126e096e",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "shutdown_releases_the_listener_for_immediate_rebinding",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d9c2eb6d07b4b135be349964347ef9b2ba00c73d079165f6c559a2db80e099a0",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "shutdown_terminates_a_live_keep_alive_connection",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "50a91eb90632232eac874f21aa24afaca3ea32a0aa129a11b82dc4c54086c99c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "shutdown_terminates_a_live_sse_subscription",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "d46ffb8e29f3fc4b0108d8ffa8a455b10e976c6f0050232247b30131e41022ff",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "sparse_absorption_wave_bounds_append_latency",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "f97b15245a9aa86d3c40b7dd261b21095e8489b86c5f9101556968b570dbfb7f",
+    "mechanisms": [],
+    "configuration": [
+      "// Sparse seed: ~2 KiB per stream \u2014 the 10k-tenant field shape in"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "sparse_key_reads_page_with_bounded_spans",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "32bbe393fe3970e971ea92f7fdd35fd72d473898bcd7233f7b6dbb8a01f095cf",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 104, FaultPlan::new(0, 0, 0));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "COST-004",
+      "HIS-017"
+    ]
+  },
+  {
+    "name": "sparse_records_rediscovered_after_restart_are_absorbed",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "9e82b1b4e20f173a3501a4ca2f82ba28b3efa281986e5df5c06463b635a43708",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 100, FaultPlan::new(0, 0, 0));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "HIS-010"
+    ]
+  },
+  {
+    "name": "split_child_sheds_while_sibling_child_admits",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e7ec7d450d347f948c2d6ea32c63e186c6132e75b301c3a3e2078eb9948b8cdc",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "split_children_land_on_distinct_engines",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b14305d9ac6856a75734c2bb9f516a66fbbdea464e3eee2f7df7f05a82727f7d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-006"
+    ]
+  },
+  {
+    "name": "sse_follows_lineage_across_split",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6fac8f29d358e56b1881a4ec3695f9173a9cfa76e260b53ab5089c702131ed1c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-018"
+    ]
+  },
+  {
+    "name": "sse_send_disconnects_a_stalled_subscriber",
+    "attributes": [
+      "#[tokio::test(start_paused = true)]"
+    ],
+    "function_sha256": "7fdb3bc2603c5d59e06acbf053c9a5b58916007a92cdcee1bc89bdb973fcf95a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "stale_jwks_maps_to_retryable_503",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "259ef1de94ad4abfd6d8497175f5baeee306127eb39c29015c379e05c263b44f",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "stale_lineage_read_stays_inside_the_requesting_project",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "90f029cd4cc9a28017fdb693ac3f25b665598d5118a4980d529cd842c9b4e8bc",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "stale_policy_fails_watch_capabilities_closed",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8087ef451f2a9b1a6f3911d9ba34f318176db48631ca60e7e32c6f72918f97e3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "stale_scaler_and_ttl_decisions_decline_after_recreate",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "4030c286e14ce26b7745cbf5f52e15cae50c1f908f817b920c64fa059d9e788a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-012"
+    ]
+  },
+  {
+    "name": "state_dependent_conflicts_wait_for_durability",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7499282b0fddb8022af8d5da1212f1e493e93c0f58be9b638a500b059b2a6474",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "DUR-006",
+      "DUR-008"
+    ]
+  },
+  {
+    "name": "static_token_is_dead_in_workload_mode",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a923e270cd890df130dcdc582f28ce8d0920129d66437a0a9a579bce80f4f835",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "storage_latency_creates_client_ambiguity_resolved_by_idempotence",
+    "attributes": [
+      "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
+    ],
+    "function_sha256": "56e3925a442e199fd70e076cbd17dc5400c2be78fded196f5c3d8adc2244b8a0",
+    "mechanisms": [
+      "APPEND_UNKNOWN",
+      "CLIENT_DEADLINE_EXPIRED",
+      "PRODUCER_DUPLICATE",
+      "STORE_LATENCY"
+    ],
+    "configuration": [
+      "let profile = FaultProfile::uniform(FaultPlan::new(0, 0, 20)).with_class(ObjClass::Wal, slow);",
+      "if let Err(e) = cov.require(&["
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "DUR-010"
+    ]
+  },
+  {
+    "name": "store_errors_surface_as_latency_not_as_failed_appends",
+    "attributes": [
+      "#[tokio::test(flavor = \"current_thread\", start_paused = true)]"
+    ],
+    "function_sha256": "9d0c30a9e66eba5a9412a0c5c3dcbf2d6f4fb86d0375e51a08d120f992f783fa",
+    "mechanisms": [],
+    "configuration": [
+      "let profile = FaultProfile::uniform(FaultPlan::new(0, 0, 20))",
+      ".with_class(ObjClass::Wal, FaultPlan::new(95, 0, 5));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "DUR-009"
+    ]
+  },
+  {
+    "name": "stored_references_bind_inside_the_referring_project",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "04a8cca7dbaabd84e5737bd06da3d026a56922a73e9f9cb34c26c18f883914c8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "stream_epoch_survives_restart_but_not_recreation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "1f7172683095fcfbfa5d463dbc9b05558cad69fb6da0cf9af4e6cf29f63b1991",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "stream_seq_is_scoped_to_the_routing_key",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "7bee8825ffd8ab669d2a48322c6f0a30e6e3061236167dda4f9e932ed2813ed9",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 108, FaultPlan::new(0, 0, 0));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "stream_seq_resolves_through_predecessors",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "604f7ebcae153cdca3a6e3b710ac51d1a0d91cab35c7731637ce9a7e1427f1dc",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "TOP-009"
+    ]
+  },
+  {
+    "name": "subscription_survives_when_both_feeds_refresh_before_the_deadline",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "072bae60200dfbffb212cd974b95a97891dd4c2d0d1d135cb236482ab501ae3c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "subscription_terminates_at_token_expiry",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "906b8c3b62ebcb02b1f309b4f52fb8d6f3a2a6f9beb17a3b3e0041edaecce67d",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "subscription_terminates_when_only_the_grant_feed_goes_stale",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6d67d300aa36088066ed23ea3b63391faba1601ccd45c4d4bee55975a2a2668a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "suspension_terminates_established_subscriptions",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e257ba49bbe4859d10ac254f1e27dea540fcab5c9ae601698e1616e9ba4b4a26",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "sweep_peak_open_never_exceeds_the_budget",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c427ff76758f8fe6efb3f1885b37fb35f9ee3d73471720472049b6d222907992",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "sweep_residency_bound_rotates_over_many_indebted_shards",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "5e60209ec3e26de84805f44b23f38132b7ee003b4f3537f8891891913100ea81",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "tail_ring_matches_the_db_scan_and_restarts_cold",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "34c9889a8b863dcc87a149e0f8644334d861ca2d8f1aacc0f6677bf32740c612",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 13, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "tail_ring_serves_live_reads_and_survives_eviction",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "117ef0ab2c21d2b677061c32981722b7e59387453f7ba564c5be9f1da7930a0d",
+    "mechanisms": [],
+    "configuration": [
+      "for seed in [9u64, 33] {",
+      "let store = FaultStore::uniform(inner.clone(), seed, FaultPlan::new(0, 0, 25));",
+      "let engine = open_engine_cfg(store.clone(), &format!(\"dst-ring-{seed}\"), cfg).await;",
+      "\"seed {seed}: nothing was ever published to the ring\"",
+      "assert!(evicted > 0, \"seed {seed}: budget never forced an eviction\");",
+      "panic!(\"seed {seed}: ring-backed reads broke the canon: {e}\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "telemetry_crash_points_and_cost_gates",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "de55ae270da9d4c95cdb34b6ef65123d607a5f0c0228ba1cb53daa0f3f4c247b",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "RES-004"
+    ]
+  },
+  {
+    "name": "termination_reasons_count_exactly_once_per_subscription",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c2eebccfc93dd7588e5476148e990204a696937ae691870d7da47e37969813a9",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_first_advance_seals_the_history_layout",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a546f8f58f27f9b678a3b98253c10f7b695e3f7f36ed75f9e2772ae8ee0d0007",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 103, FaultPlan::new(0, 0, 0));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "the_gather_window_waits_for_ack_dispatch",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "0e405cc9f5a707382c8c37a7f9c6bde23e7885089c376c27fa4de38cf7a2f9d5",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 87, FaultPlan::new(0, 0, 30));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "DUR-001"
+    ]
+  },
+  {
+    "name": "tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "3ad4d3ca35ae9f18a95ba497082e22c0064c313c1bb87ad0bc5c587c65260c56",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 57, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "HIS-010"
+    ]
+  },
+  {
+    "name": "token_expiry_interrupts_slowly_progressing_delivery",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "95d36ac1e07559b96e779d83cf842a59e461f71fde507c62811b6257bcfe4ec6",
+    "mechanisms": [],
+    "configuration": [
+      "// failpoint PAST the lease's expiry.",
+      "// into the failpoint, and let the lease expire while it is held.",
+      "crate::failpoints::arm(crate::failpoints::Fp::SseBeforeSend, \"ex1\");",
+      "wait_parked(crate::failpoints::Fp::SseBeforeSend, \"ex1\", 1).await;",
+      "crate::failpoints::release(crate::failpoints::Fp::SseBeforeSend, \"ex1\");"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "tombstone_walk_fairness_under_occupied_budget",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e0c7d25a8be48339beb510131c181b28ebf3aeaa682037b53a4df2fdd2da4a68",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "tombstone_walk_peak_residency_stays_under_the_budget",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "8635c61ad23e2db2413ab2c3c7fabe220e145bdfc1dab4aa197091a6d84dfa0c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "topology_transitions_are_fenced_by_sealing",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "1da18971fd1e67307e3447364edcae329f78135f79fc27a8dde172c324847350",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "SEL-018"
+    ]
+  },
+  {
+    "name": "touch_close_shard_matches_route_hash_not_storage_hash",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6448d5b98129cf9aa053469b2172650a75556f1c00f8c5b833121018032eddaf",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "WAT-001",
+      "WAT-002"
+    ]
+  },
+  {
+    "name": "transfer_terminates_established_subscriptions",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e56f9999a1087a9ec491c6861ae9e5d526409cde42793a32e2f6d05e94b4d56a",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "transition_append_stays_inside_the_requesting_project",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "52affb012a5d1dec776a2a29e1019802f3af369da8a41d502659cd8c0f43ad29",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "ttl_slide_stays_inside_the_owning_project",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "c53d5238819d4dd2bcc111ee5db063de7d507ba119fd82b2c4d137255d4bcde6",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "two_runtimes_never_share_fleet_state",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "628e8d17cdb65094ac5748aacf41b1dba9b40407e3633e274d3448ebf960c8ea",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "typed_creation_dual_contract",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b1844ed9c312c732d073431a467162b8f51840bdc6aada067ba01c7631ef77a8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "CRT-012",
+      "SEC-010"
+    ]
+  },
+  {
+    "name": "unknown_kid_nudge_is_rate_limited",
+    "attributes": [
+      "#[test]"
+    ],
+    "function_sha256": "f0acf865c4b55aa82eaad31e0b46044ee4ecb6e201bc6acd5511b4937ca991c3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "unpolled_point_operation_records_nothing",
+    "attributes": [
+      "#[tokio::test]"
+    ],
+    "function_sha256": "275d4a6f4744e1bc442b88946d9e8b31e5dc2cfaccf09bf0516371bb3a94eb92",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/trace_store_tests/cancellation.rs",
+    "scenarios": []
+  },
+  {
+    "name": "untouched_streams_absorb_after_restart",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "607fa56e7c9a52e4754314f8c2b640c202c6a6d9891172c0b812f387f3b3e441",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 94, FaultPlan::new(0, 0, 0));",
+      "// this test must come from the durable index seed ALONE, and",
+      "// sweep would then find it and mask a broken seed).",
+      "// absorbers (~50% flake rate measured 2026-08-12); a real seed"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "HIS-007"
+    ]
+  },
+  {
+    "name": "usage_pipeline_end_to_end_exactly_once",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a253f87cdf5ff14d6348823e3c012ceadc9dfc0875ae8c614377275219fa3a63",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "RES-004"
+    ]
+  },
+  {
+    "name": "v2_absorbs_without_customer_keys",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "6c3f7c5b71122f140a2ca2fbc2d216bcfdec29956930983af2ea37dcd943e68e",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 61, FaultPlan::new(0, 0, 10));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "HIS-002"
+    ]
+  },
+  {
+    "name": "v2_gather_packs_to_the_aggregate_budget",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "42ed86a0b483f501f7bfd920a6a4add20e89a7f52b6a2bf47879be06169d81a9",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 91, FaultPlan::new(0, 0, 0));"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "HIS-004"
+    ]
+  },
+  {
+    "name": "v2_history_survives_engine_handoff",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a43927b3e9ef2da870f4e2c817735f0300b5261db6b1474e87f80c232096dc6e",
+    "mechanisms": [],
+    "configuration": [
+      "let store = FaultStore::uniform(inner.clone(), 67, FaultPlan::CLEAN);"
+    ],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "HIS-003"
+    ]
+  },
+  {
+    "name": "valid_transfer_bills_each_workspace_on_its_own_side",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "aa0063ca6d5f5c75fdb09c27e8a853ca44dd3aa62e797ee19ae86e1f2f1f3b54",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "volume_quotas_meter_appends_and_reads",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "fef89b46c3bd31cf75be89baa1fcff6794293a83706871d59a79825760c1c4f8",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "watch_capability_respects_project_suspension",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "180cf90d1f74d8f05cc59792cf8034ce44cf06aeaaa38bcd7bf1d9ba6c3bd5d3",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "watch_capability_waits_occupy_project_admission",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "143108edf1c629465eaf4262614f2a82105d543b10fa5afc0ad49e3fb0826c87",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "watch_urls_verify_on_a_process_that_never_saw_the_key",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "ae41d518a4f92209da97d1f73cf4804451d7471f8e35ff33cc6a569d4de02fcd",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": [
+      "WAT-003"
+    ]
+  },
+  {
+    "name": "watch_waits_occupy_the_subscription_pool",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "48b2f55f168e0e3c58f9e77294711fc50a450fdea0b6e85a28739b0173083d79",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  },
+  {
+    "name": "workload_jwt_operations_scope_the_internal_surface",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "10ed9811bdbc51d3a38cb428fb16b282120b1e3682161fe0c9a2548de7e423aa",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/dst_tests.rs",
+    "scenarios": []
+  }
+]

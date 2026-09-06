@@ -26,8 +26,8 @@ if [ "${RUN_SDK:-1}" = "1" ]; then
   rm -rf "$PACKDIR"
 fi
 
-# DST scenario totals, by test-name family, from the source of truth.
-echo "dst_scenario_tests: $(grep -c '#\[tokio::test' src/dst/dst_tests.rs)"
+# The recursive inventory includes test attributes and owner modules.
+echo "dst_tests_total: $(python3 scripts/test-inventory.py --count)"
 
 if [ "${RUN_SUITE:-0}" = "1" ]; then
   echo "--- running cargo test --release (this is slow) ---"

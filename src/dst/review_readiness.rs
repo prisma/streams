@@ -1,5 +1,9 @@
-//! Actual readiness requests after a required task terminates.
-use super::{HttpRigOptions, RigRuntime, hreq, http_rig_build, mem};
+use super::fixture_http::{HttpRigOptions, http_rig_build};
+use super::fixture_requests::hreq;
+use super::fixture_runtime::RigRuntime;
+use super::fixture_storage::mem;
+
+// Actual readiness requests after a required task terminates.
 use crate::tasks::{Policy, TaskResult};
 use std::time::Duration;
 

@@ -1,0 +1,16 @@
+[
+  {
+    "name": "livefeed_refresh_installs_after_external_completion",
+    "before_sha256": "9637b7615e73446a57892ddd62f7321df41b6d4199435a861218af5792da2781",
+    "after_sha256": "689560b1629d9638be85a0e180e9ce32fcbae869a75960717879c7efff0cec08",
+    "finding": "R06",
+    "reason": "Pass the explicit ReadService capability to refresh_transition after its application-owner extraction. All inputs and assertions remain unchanged."
+  },
+  {
+    "name": "r15_bodyless_and_unauthorized_requests_never_poll_the_body",
+    "before_sha256": "b2c460045ec66cdcb944da6f466ac57796bee4a9c349d70435e4a9e80584d6ac",
+    "after_sha256": "00e28c0916562954d9b107952969b64161b0335fe11b1e75e03a1a90a2144e11",
+    "finding": "R15",
+    "reason": "Commit012ba73 adds valid and expired signed watch capability body-poll sentinels; retains all previous scenarios and strengthens security assertions."
+  }
+]

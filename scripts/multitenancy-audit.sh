@@ -47,12 +47,18 @@ scan() {
 }
 
 collect() {
+  # Contract-owned DST modules remain inside the identity audit after
+  # extraction; a shallow src/dst/*.rs glob silently drops their sites.
+  local dst_sources=()
+  while IFS= read -r source; do
+    dst_sources+=("$source")
+  done < <(find src/dst -type f -name '*.rs' | LC_ALL=C sort)
   {
-    scan stream-hash 'stream_hash\(' src/*.rs src/config/*.rs src/dst/*.rs src/bin/*.rs |
+    scan stream-hash 'stream_hash\(' src/*.rs src/config/*.rs "${dst_sources[@]}" src/bin/*.rs |
       grep -v $'\tsrc/crypto.rs\t' || true
     scan registry-bare-name \
       'registry[[:space:]]*\.[[:space:]]*(get|recreate|update|cas_update[a-z_]*|mutate_incarnation|invalidate|list_page)\("' \
-      src/*.rs src/config/*.rs src/dst/*.rs
+      src/*.rs src/config/*.rs "${dst_sources[@]}"
     scan registry-bare-name \
       'fn (get|recreate|update|cas_update[a-z_]*|mutate_incarnation|invalidate|list_page)[^(]*\([^)]*name[^)]*&str' \
       src/registry.rs

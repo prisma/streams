@@ -64,7 +64,7 @@ echo "== tests =="
 cargo test --lib -- --skip post_split_throughput_scales
 
 echo "== capacity mechanism gate (owns the machine) =="
-cargo test --lib post_split_throughput_scales -- --exact dst::dst_tests::post_split_throughput_scales
+cargo test --lib post_split_throughput_scales -- --exact dst::dst_tests::topology_scaling::post_split_throughput_scales
 
 echo "== livefeed engine matrix =="
 echo "== supply chain =="

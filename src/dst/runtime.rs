@@ -532,3 +532,7 @@ pub async fn drain_observed(
     }
     out
 }
+
+#[cfg(test)]
+#[path = "tests/oracle_model.rs"]
+mod tests;

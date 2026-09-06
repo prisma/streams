@@ -543,3 +543,7 @@ impl ObjectStore for FaultStore {
             .boxed()
     }
 }
+
+#[cfg(test)]
+#[path = "tests/fault_substrate.rs"]
+mod tests;

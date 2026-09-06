@@ -1,0 +1,2288 @@
+[
+  {
+    "name": "fault_placement_is_a_pure_function_of_the_seed",
+    "before": "dst::dst_tests::fault_placement_is_a_pure_function_of_the_seed",
+    "after": "dst::fault_store::tests::fault_placement_is_a_pure_function_of_the_seed",
+    "file": "src/dst/tests/fault_substrate.rs"
+  },
+  {
+    "name": "faults_actually_fire",
+    "before": "dst::dst_tests::faults_actually_fire",
+    "after": "dst::fault_store::tests::faults_actually_fire",
+    "file": "src/dst/tests/fault_substrate.rs"
+  },
+  {
+    "name": "a_lost_response_still_wrote_the_object",
+    "before": "dst::dst_tests::a_lost_response_still_wrote_the_object",
+    "after": "dst::fault_store::tests::a_lost_response_still_wrote_the_object",
+    "file": "src/dst/tests/fault_substrate.rs"
+  },
+  {
+    "name": "deletes_and_reads_are_faulted_too",
+    "before": "dst::dst_tests::deletes_and_reads_are_faulted_too",
+    "after": "dst::fault_store::tests::deletes_and_reads_are_faulted_too",
+    "file": "src/dst/tests/fault_substrate.rs"
+  },
+  {
+    "name": "lost_response_counter_tracks_applied_behaviour_only",
+    "before": "dst::dst_tests::lost_response_counter_tracks_applied_behaviour_only",
+    "after": "dst::fault_store::tests::lost_response_counter_tracks_applied_behaviour_only",
+    "file": "src/dst/tests/fault_substrate.rs"
+  },
+  {
+    "name": "object_classes_match_production_telemetry",
+    "before": "dst::dst_tests::object_classes_match_production_telemetry",
+    "after": "dst::fault_store::tests::object_classes_match_production_telemetry",
+    "file": "src/dst/tests/fault_substrate.rs"
+  },
+  {
+    "name": "acked_records_survive_store_faults",
+    "before": "dst::dst_tests::acked_records_survive_store_faults",
+    "after": "dst::dst_tests::persistence_faults::acked_records_survive_store_faults",
+    "file": "src/dst/tests/persistence_faults.rs"
+  },
+  {
+    "name": "store_errors_surface_as_latency_not_as_failed_appends",
+    "before": "dst::dst_tests::store_errors_surface_as_latency_not_as_failed_appends",
+    "after": "dst::dst_tests::persistence_faults::store_errors_surface_as_latency_not_as_failed_appends",
+    "file": "src/dst/tests/persistence_faults.rs"
+  },
+  {
+    "name": "producer_state_survives_a_handoff_and_suppresses_duplicates",
+    "before": "dst::dst_tests::producer_state_survives_a_handoff_and_suppresses_duplicates",
+    "after": "dst::dst_tests::producer_handoff::producer_state_survives_a_handoff_and_suppresses_duplicates",
+    "file": "src/dst/tests/producer_handoff.rs"
+  },
+  {
+    "name": "ambiguous_commit_survives_handoff_and_dedupes",
+    "before": "dst::dst_tests::ambiguous_commit_survives_handoff_and_dedupes",
+    "after": "dst::dst_tests::producer_handoff::ambiguous_commit_survives_handoff_and_dedupes",
+    "file": "src/dst/tests/producer_handoff.rs"
+  },
+  {
+    "name": "storage_latency_creates_client_ambiguity_resolved_by_idempotence",
+    "before": "dst::dst_tests::storage_latency_creates_client_ambiguity_resolved_by_idempotence",
+    "after": "dst::dst_tests::producer_handoff::storage_latency_creates_client_ambiguity_resolved_by_idempotence",
+    "file": "src/dst/tests/producer_handoff.rs"
+  },
+  {
+    "name": "a_fenced_owner_acknowledges_nothing",
+    "before": "dst::dst_tests::a_fenced_owner_acknowledges_nothing",
+    "after": "dst::dst_tests::persistence_faults::a_fenced_owner_acknowledges_nothing",
+    "file": "src/dst/tests/persistence_faults.rs"
+  },
+  {
+    "name": "a_handoff_with_an_append_in_flight_resolves_safely",
+    "before": "dst::dst_tests::a_handoff_with_an_append_in_flight_resolves_safely",
+    "after": "dst::dst_tests::persistence_faults::a_handoff_with_an_append_in_flight_resolves_safely",
+    "file": "src/dst/tests/persistence_faults.rs"
+  },
+  {
+    "name": "acked_records_survive_absorption_into_history",
+    "before": "dst::dst_tests::acked_records_survive_absorption_into_history",
+    "after": "dst::dst_tests::history_absorption::acked_records_survive_absorption_into_history",
+    "file": "src/dst/tests/history_absorption.rs"
+  },
+  {
+    "name": "absorber_sweep_recovers_streams_whose_signals_were_lost",
+    "before": "dst::dst_tests::absorber_sweep_recovers_streams_whose_signals_were_lost",
+    "after": "dst::dst_tests::history_absorption::absorber_sweep_recovers_streams_whose_signals_were_lost",
+    "file": "src/dst/tests/history_absorption.rs"
+  },
+  {
+    "name": "absorber_drains_records_larger_than_the_per_stream_gather_cap",
+    "before": "dst::dst_tests::absorber_drains_records_larger_than_the_per_stream_gather_cap",
+    "after": "dst::dst_tests::history_absorption::absorber_drains_records_larger_than_the_per_stream_gather_cap",
+    "file": "src/dst/tests/history_absorption.rs"
+  },
+  {
+    "name": "v2_absorbs_without_customer_keys",
+    "before": "dst::dst_tests::v2_absorbs_without_customer_keys",
+    "after": "dst::dst_tests::history_absorption::v2_absorbs_without_customer_keys",
+    "file": "src/dst/tests/history_absorption.rs"
+  },
+  {
+    "name": "v2_history_survives_engine_handoff",
+    "before": "dst::dst_tests::v2_history_survives_engine_handoff",
+    "after": "dst::dst_tests::history_absorption::v2_history_survives_engine_handoff",
+    "file": "src/dst/tests/history_absorption.rs"
+  },
+  {
+    "name": "tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch",
+    "before": "dst::dst_tests::tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch",
+    "after": "dst::dst_tests::history_absorption::tiny_residuals_age_absorb_and_cannot_starve_the_progress_latch",
+    "file": "src/dst/tests/history_absorption.rs"
+  },
+  {
+    "name": "a_fenced_owners_absorber_exits",
+    "before": "dst::dst_tests::a_fenced_owners_absorber_exits",
+    "after": "dst::dst_tests::runtime_isolation::a_fenced_owners_absorber_exits",
+    "file": "src/dst/tests/runtime_isolation.rs"
+  },
+  {
+    "name": "closing_an_engine_answers_queued_appends_and_ends_every_task",
+    "before": "dst::dst_tests::closing_an_engine_answers_queued_appends_and_ends_every_task",
+    "after": "dst::dst_tests::runtime_isolation::closing_an_engine_answers_queued_appends_and_ends_every_task",
+    "file": "src/dst/tests/runtime_isolation.rs"
+  },
+  {
+    "name": "the_gather_window_waits_for_ack_dispatch",
+    "before": "dst::dst_tests::the_gather_window_waits_for_ack_dispatch",
+    "after": "dst::dst_tests::durability_failures::the_gather_window_waits_for_ack_dispatch",
+    "file": "src/dst/tests/durability_failures.rs"
+  },
+  {
+    "name": "commits_during_a_flush_do_not_extend_its_barrier",
+    "before": "dst::dst_tests::commits_during_a_flush_do_not_extend_its_barrier",
+    "after": "dst::dst_tests::durability_failures::commits_during_a_flush_do_not_extend_its_barrier",
+    "file": "src/dst/tests/durability_failures.rs"
+  },
+  {
+    "name": "a_busy_next_generation_skips_the_gather_window",
+    "before": "dst::dst_tests::a_busy_next_generation_skips_the_gather_window",
+    "after": "dst::dst_tests::durability_failures::a_busy_next_generation_skips_the_gather_window",
+    "file": "src/dst/tests/durability_failures.rs"
+  },
+  {
+    "name": "gather_pump_preserves_invariants_under_faults",
+    "before": "dst::dst_tests::gather_pump_preserves_invariants_under_faults",
+    "after": "dst::dst_tests::durability_failures::gather_pump_preserves_invariants_under_faults",
+    "file": "src/dst/tests/durability_failures.rs"
+  },
+  {
+    "name": "ring_ordering_paging_and_duplicates_at_offset_level",
+    "before": "dst::dst_tests::ring_ordering_paging_and_duplicates_at_offset_level",
+    "after": "dst::dst_tests::reads_ring::ring_ordering_paging_and_duplicates_at_offset_level",
+    "file": "src/dst/tests/reads_ring.rs"
+  },
+  {
+    "name": "tail_ring_serves_live_reads_and_survives_eviction",
+    "before": "dst::dst_tests::tail_ring_serves_live_reads_and_survives_eviction",
+    "after": "dst::dst_tests::reads_ring::tail_ring_serves_live_reads_and_survives_eviction",
+    "file": "src/dst/tests/reads_ring.rs"
+  },
+  {
+    "name": "tail_ring_matches_the_db_scan_and_restarts_cold",
+    "before": "dst::dst_tests::tail_ring_matches_the_db_scan_and_restarts_cold",
+    "after": "dst::dst_tests::reads_ring::tail_ring_matches_the_db_scan_and_restarts_cold",
+    "file": "src/dst/tests/reads_ring.rs"
+  },
+  {
+    "name": "a_duplicate_absorbed_op_does_not_advance_the_trim",
+    "before": "dst::dst_tests::a_duplicate_absorbed_op_does_not_advance_the_trim",
+    "after": "dst::dst_tests::reads_ring::a_duplicate_absorbed_op_does_not_advance_the_trim",
+    "file": "src/dst/tests/reads_ring.rs"
+  },
+  {
+    "name": "oracle_accepts_a_faithful_read",
+    "before": "dst::dst_tests::oracle_accepts_a_faithful_read",
+    "after": "dst::runtime::tests::oracle_accepts_a_faithful_read",
+    "file": "src/dst/tests/oracle_model.rs"
+  },
+  {
+    "name": "oracle_catches_loss",
+    "before": "dst::dst_tests::oracle_catches_loss",
+    "after": "dst::runtime::tests::oracle_catches_loss",
+    "file": "src/dst/tests/oracle_model.rs"
+  },
+  {
+    "name": "oracle_catches_duplicates",
+    "before": "dst::dst_tests::oracle_catches_duplicates",
+    "after": "dst::runtime::tests::oracle_catches_duplicates",
+    "file": "src/dst/tests/oracle_model.rs"
+  },
+  {
+    "name": "oracle_catches_reordering",
+    "before": "dst::dst_tests::oracle_catches_reordering",
+    "after": "dst::runtime::tests::oracle_catches_reordering",
+    "file": "src/dst/tests/oracle_model.rs"
+  },
+  {
+    "name": "oracle_catches_a_record_that_was_never_issued",
+    "before": "dst::dst_tests::oracle_catches_a_record_that_was_never_issued",
+    "after": "dst::runtime::tests::oracle_catches_a_record_that_was_never_issued",
+    "file": "src/dst/tests/oracle_model.rs"
+  },
+  {
+    "name": "oracle_catches_a_rejected_write_that_committed",
+    "before": "dst::dst_tests::oracle_catches_a_rejected_write_that_committed",
+    "after": "dst::runtime::tests::oracle_catches_a_rejected_write_that_committed",
+    "file": "src/dst/tests/oracle_model.rs"
+  },
+  {
+    "name": "oracle_catches_an_idempotent_operation_stored_twice",
+    "before": "dst::dst_tests::oracle_catches_an_idempotent_operation_stored_twice",
+    "after": "dst::runtime::tests::oracle_catches_an_idempotent_operation_stored_twice",
+    "file": "src/dst/tests/oracle_model.rs"
+  },
+  {
+    "name": "oracle_permits_a_non_idempotent_retry_committing_twice",
+    "before": "dst::dst_tests::oracle_permits_a_non_idempotent_retry_committing_twice",
+    "after": "dst::runtime::tests::oracle_permits_a_non_idempotent_retry_committing_twice",
+    "file": "src/dst/tests/oracle_model.rs"
+  },
+  {
+    "name": "oracle_catches_a_self_contradictory_ledger",
+    "before": "dst::dst_tests::oracle_catches_a_self_contradictory_ledger",
+    "after": "dst::runtime::tests::oracle_catches_a_self_contradictory_ledger",
+    "file": "src/dst/tests/oracle_model.rs"
+  },
+  {
+    "name": "reopen_storm_reproduces_the_eu_central_wedge",
+    "before": "dst::dst_tests::reopen_storm_reproduces_the_eu_central_wedge",
+    "after": "dst::dst_tests::runtime_open_gate::reopen_storm_reproduces_the_eu_central_wedge",
+    "file": "src/dst/tests/runtime_open_gate.rs"
+  },
+  {
+    "name": "open_gate_survives_impatient_clients_without_a_storm",
+    "before": "dst::dst_tests::open_gate_survives_impatient_clients_without_a_storm",
+    "after": "dst::dst_tests::runtime_open_gate::open_gate_survives_impatient_clients_without_a_storm",
+    "file": "src/dst/tests/runtime_open_gate.rs"
+  },
+  {
+    "name": "idle_engine_store_traffic_is_bounded_by_the_poll_cadence",
+    "before": "dst::dst_tests::idle_engine_store_traffic_is_bounded_by_the_poll_cadence",
+    "after": "dst::dst_tests::runtime_open_gate::idle_engine_store_traffic_is_bounded_by_the_poll_cadence",
+    "file": "src/dst/tests/runtime_open_gate.rs"
+  },
+  {
+    "name": "health_reports_unready_when_no_shard_has_ever_opened",
+    "before": "dst::dst_tests::health_reports_unready_when_no_shard_has_ever_opened",
+    "after": "dst::dst_tests::runtime_open_gate::health_reports_unready_when_no_shard_has_ever_opened",
+    "file": "src/dst/tests/runtime_open_gate.rs"
+  },
+  {
+    "name": "retirement_arms_the_holdoff_and_a_stale_close_cannot_evict_a_replacement",
+    "before": "dst::dst_tests::retirement_arms_the_holdoff_and_a_stale_close_cannot_evict_a_replacement",
+    "after": "dst::dst_tests::runtime_retirement::retirement_arms_the_holdoff_and_a_stale_close_cannot_evict_a_replacement",
+    "file": "src/dst/tests/runtime_retirement.rs"
+  },
+  {
+    "name": "a_declined_retirement_keeps_the_engine_and_arms_nothing",
+    "before": "dst::dst_tests::a_declined_retirement_keeps_the_engine_and_arms_nothing",
+    "after": "dst::dst_tests::runtime_retirement::a_declined_retirement_keeps_the_engine_and_arms_nothing",
+    "file": "src/dst/tests/runtime_retirement.rs"
+  },
+  {
+    "name": "retirement_and_opening_take_the_gate_locks_in_one_order",
+    "before": "dst::dst_tests::retirement_and_opening_take_the_gate_locks_in_one_order",
+    "after": "dst::dst_tests::runtime_retirement::retirement_and_opening_take_the_gate_locks_in_one_order",
+    "file": "src/dst/tests/runtime_retirement.rs"
+  },
+  {
+    "name": "engine_shutdown_really_retires_and_closes_every_resident",
+    "before": "dst::dst_tests::engine_shutdown_really_retires_and_closes_every_resident",
+    "after": "dst::dst_tests::runtime_retirement::engine_shutdown_really_retires_and_closes_every_resident",
+    "file": "src/dst/tests/runtime_retirement.rs"
+  },
+  {
+    "name": "open_gate_escalates_holdoff_for_engines_that_die_young",
+    "before": "dst::dst_tests::open_gate_escalates_holdoff_for_engines_that_die_young",
+    "after": "dst::dst_tests::runtime_open_gate::open_gate_escalates_holdoff_for_engines_that_die_young",
+    "file": "src/dst/tests/runtime_open_gate.rs"
+  },
+  {
+    "name": "a_hung_open_is_deadlined_and_its_late_engine_reaped",
+    "before": "dst::dst_tests::a_hung_open_is_deadlined_and_its_late_engine_reaped",
+    "after": "dst::dst_tests::runtime_open_gate::a_hung_open_is_deadlined_and_its_late_engine_reaped",
+    "file": "src/dst/tests/runtime_open_gate.rs"
+  },
+  {
+    "name": "sse_send_disconnects_a_stalled_subscriber",
+    "before": "dst::dst_tests::sse_send_disconnects_a_stalled_subscriber",
+    "after": "dst::dst_tests::sse_delivery::sse_send_disconnects_a_stalled_subscriber",
+    "file": "src/dst/tests/sse_delivery.rs"
+  },
+  {
+    "name": "adaptive_gather_estimate_seeds_decays_and_jumps",
+    "before": "dst::dst_tests::adaptive_gather_estimate_seeds_decays_and_jumps",
+    "after": "dst::dst_tests::history_gather::adaptive_gather_estimate_seeds_decays_and_jumps",
+    "file": "src/dst/tests/history_gather.rs"
+  },
+  {
+    "name": "gather_parallel_reads_preserve_outcomes_across_reopen",
+    "before": "dst::dst_tests::gather_parallel_reads_preserve_outcomes_across_reopen",
+    "after": "dst::dst_tests::history_gather::gather_parallel_reads_preserve_outcomes_across_reopen",
+    "file": "src/dst/tests/history_gather.rs"
+  },
+  {
+    "name": "gather_pacing_preserves_outcomes_and_opens_windows",
+    "before": "dst::dst_tests::gather_pacing_preserves_outcomes_and_opens_windows",
+    "after": "dst::dst_tests::history_gather::gather_pacing_preserves_outcomes_and_opens_windows",
+    "file": "src/dst/tests/history_gather.rs"
+  },
+  {
+    "name": "sparse_absorption_wave_bounds_append_latency",
+    "before": "dst::dst_tests::sparse_absorption_wave_bounds_append_latency",
+    "after": "dst::dst_tests::history_gather::sparse_absorption_wave_bounds_append_latency",
+    "file": "src/dst/tests/history_gather.rs"
+  },
+  {
+    "name": "v2_gather_packs_to_the_aggregate_budget",
+    "before": "dst::dst_tests::v2_gather_packs_to_the_aggregate_budget",
+    "after": "dst::dst_tests::history_gather::v2_gather_packs_to_the_aggregate_budget",
+    "file": "src/dst/tests/history_gather.rs"
+  },
+  {
+    "name": "an_oversized_chunk_gathers_alone",
+    "before": "dst::dst_tests::an_oversized_chunk_gathers_alone",
+    "after": "dst::dst_tests::history_gather::an_oversized_chunk_gathers_alone",
+    "file": "src/dst/tests/history_gather.rs"
+  },
+  {
+    "name": "keyed_frames_no_longer_count_twice_against_the_budget",
+    "before": "dst::dst_tests::keyed_frames_no_longer_count_twice_against_the_budget",
+    "after": "dst::dst_tests::history_gather::keyed_frames_no_longer_count_twice_against_the_budget",
+    "file": "src/dst/tests/history_gather.rs"
+  },
+  {
+    "name": "untouched_streams_absorb_after_restart",
+    "before": "dst::dst_tests::untouched_streams_absorb_after_restart",
+    "after": "dst::dst_tests::history_gather::untouched_streams_absorb_after_restart",
+    "file": "src/dst/tests/history_gather.rs"
+  },
+  {
+    "name": "idle_stream_handles_evict_and_reload",
+    "before": "dst::dst_tests::idle_stream_handles_evict_and_reload",
+    "after": "dst::dst_tests::history_recovery::idle_stream_handles_evict_and_reload",
+    "file": "src/dst/tests/history_recovery.rs"
+  },
+  {
+    "name": "a_second_absorption_wave_trims_under_a_global_budget",
+    "before": "dst::dst_tests::a_second_absorption_wave_trims_under_a_global_budget",
+    "after": "dst::dst_tests::history_recovery::a_second_absorption_wave_trims_under_a_global_budget",
+    "file": "src/dst/tests/history_recovery.rs"
+  },
+  {
+    "name": "budget_deferred_streams_absorb_on_the_next_tick",
+    "before": "dst::dst_tests::budget_deferred_streams_absorb_on_the_next_tick",
+    "after": "dst::dst_tests::history_recovery::budget_deferred_streams_absorb_on_the_next_tick",
+    "file": "src/dst/tests/history_recovery.rs"
+  },
+  {
+    "name": "a_large_record_absorbs_after_restart_under_default_policy",
+    "before": "dst::dst_tests::a_large_record_absorbs_after_restart_under_default_policy",
+    "after": "dst::dst_tests::history_recovery::a_large_record_absorbs_after_restart_under_default_policy",
+    "file": "src/dst/tests/history_recovery.rs"
+  },
+  {
+    "name": "dirty_scan_retries_until_it_succeeds",
+    "before": "dst::dst_tests::dirty_scan_retries_until_it_succeeds",
+    "after": "dst::dst_tests::history_recovery::dirty_scan_retries_until_it_succeeds",
+    "file": "src/dst/tests/history_recovery.rs"
+  },
+  {
+    "name": "sparse_records_rediscovered_after_restart_are_absorbed",
+    "before": "dst::dst_tests::sparse_records_rediscovered_after_restart_are_absorbed",
+    "after": "dst::dst_tests::history_recovery::sparse_records_rediscovered_after_restart_are_absorbed",
+    "file": "src/dst/tests/history_recovery.rs"
+  },
+  {
+    "name": "pending_summary_clears_on_shard_close",
+    "before": "dst::dst_tests::pending_summary_clears_on_shard_close",
+    "after": "dst::dst_tests::history_recovery::pending_summary_clears_on_shard_close",
+    "file": "src/dst/tests/history_recovery.rs"
+  },
+  {
+    "name": "handle_capacity_cap_evicts_oldest_first",
+    "before": "dst::dst_tests::handle_capacity_cap_evicts_oldest_first",
+    "after": "dst::dst_tests::history_recovery::handle_capacity_cap_evicts_oldest_first",
+    "file": "src/dst/tests/history_recovery.rs"
+  },
+  {
+    "name": "the_first_advance_seals_the_history_layout",
+    "before": "dst::dst_tests::the_first_advance_seals_the_history_layout",
+    "after": "dst::dst_tests::reads_history::the_first_advance_seals_the_history_layout",
+    "file": "src/dst/tests/reads_history.rs"
+  },
+  {
+    "name": "sparse_key_reads_page_with_bounded_spans",
+    "before": "dst::dst_tests::sparse_key_reads_page_with_bounded_spans",
+    "after": "dst::dst_tests::reads_history::sparse_key_reads_page_with_bounded_spans",
+    "file": "src/dst/tests/reads_history.rs"
+  },
+  {
+    "name": "corrupt_postings_fall_back_to_the_envelope",
+    "before": "dst::dst_tests::corrupt_postings_fall_back_to_the_envelope",
+    "after": "dst::dst_tests::reads_history::corrupt_postings_fall_back_to_the_envelope",
+    "file": "src/dst/tests/reads_history.rs"
+  },
+  {
+    "name": "repeated_keyed_reads_hit_the_postings_cache",
+    "before": "dst::dst_tests::repeated_keyed_reads_hit_the_postings_cache",
+    "after": "dst::dst_tests::reads_history::repeated_keyed_reads_hit_the_postings_cache",
+    "file": "src/dst/tests/reads_history.rs"
+  },
+  {
+    "name": "stream_seq_is_scoped_to_the_routing_key",
+    "before": "dst::dst_tests::stream_seq_is_scoped_to_the_routing_key",
+    "after": "dst::dst_tests::producer_protocol::stream_seq_is_scoped_to_the_routing_key",
+    "file": "src/dst/tests/producer_protocol.rs"
+  },
+  {
+    "name": "producer_retries_across_a_split_commit_once",
+    "before": "dst::dst_tests::producer_retries_across_a_split_commit_once",
+    "after": "dst::dst_tests::producer_protocol::producer_retries_across_a_split_commit_once",
+    "file": "src/dst/tests/producer_protocol.rs"
+  },
+  {
+    "name": "rig_clock_is_the_runtime_clock",
+    "before": "dst::dst_tests::rig_clock_is_the_runtime_clock",
+    "after": "dst::dst_tests::runtime_isolation::rig_clock_is_the_runtime_clock",
+    "file": "src/dst/tests/runtime_isolation.rs"
+  },
+  {
+    "name": "same_incarnation_reproduces_identities_epochs_and_registry_trace",
+    "before": "dst::dst_tests::same_incarnation_reproduces_identities_epochs_and_registry_trace",
+    "after": "dst::dst_tests::runtime_isolation::same_incarnation_reproduces_identities_epochs_and_registry_trace",
+    "file": "src/dst/tests/runtime_isolation.rs"
+  },
+  {
+    "name": "distinct_incarnations_have_distinct_pinned_identities",
+    "before": "dst::dst_tests::distinct_incarnations_have_distinct_pinned_identities",
+    "after": "dst::dst_tests::runtime_isolation::distinct_incarnations_have_distinct_pinned_identities",
+    "file": "src/dst/tests/runtime_isolation.rs"
+  },
+  {
+    "name": "two_runtimes_never_share_fleet_state",
+    "before": "dst::dst_tests::two_runtimes_never_share_fleet_state",
+    "after": "dst::dst_tests::runtime_isolation::two_runtimes_never_share_fleet_state",
+    "file": "src/dst/tests/runtime_isolation.rs"
+  },
+  {
+    "name": "shutdown_releases_the_listener_for_immediate_rebinding",
+    "before": "dst::dst_tests::shutdown_releases_the_listener_for_immediate_rebinding",
+    "after": "dst::dst_tests::runtime_isolation::shutdown_releases_the_listener_for_immediate_rebinding",
+    "file": "src/dst/tests/runtime_isolation.rs"
+  },
+  {
+    "name": "shutdown_terminates_a_live_keep_alive_connection",
+    "before": "dst::dst_tests::shutdown_terminates_a_live_keep_alive_connection",
+    "after": "dst::dst_tests::runtime_isolation::shutdown_terminates_a_live_keep_alive_connection",
+    "file": "src/dst/tests/runtime_isolation.rs"
+  },
+  {
+    "name": "shutdown_terminates_a_live_sse_subscription",
+    "before": "dst::dst_tests::shutdown_terminates_a_live_sse_subscription",
+    "after": "dst::dst_tests::runtime_isolation::shutdown_terminates_a_live_sse_subscription",
+    "file": "src/dst/tests/runtime_isolation.rs"
+  },
+  {
+    "name": "restart_invalidates_process_local_touch_cursors",
+    "before": "dst::dst_tests::restart_invalidates_process_local_touch_cursors",
+    "after": "dst::dst_tests::runtime_isolation::restart_invalidates_process_local_touch_cursors",
+    "file": "src/dst/tests/runtime_isolation.rs"
+  },
+  {
+    "name": "stream_epoch_survives_restart_but_not_recreation",
+    "before": "dst::dst_tests::stream_epoch_survives_restart_but_not_recreation",
+    "after": "dst::dst_tests::runtime_isolation::stream_epoch_survives_restart_but_not_recreation",
+    "file": "src/dst/tests/runtime_isolation.rs"
+  },
+  {
+    "name": "seal_gap_get_never_reports_closure",
+    "before": "dst::dst_tests::seal_gap_get_never_reports_closure",
+    "after": "dst::dst_tests::reads_raw::seal_gap_get_never_reports_closure",
+    "file": "src/dst/tests/reads_raw.rs"
+  },
+  {
+    "name": "seal_gap_head_no_closure",
+    "before": "dst::dst_tests::seal_gap_head_no_closure",
+    "after": "dst::dst_tests::reads_raw::seal_gap_head_no_closure",
+    "file": "src/dst/tests/reads_raw.rs"
+  },
+  {
+    "name": "seal_gap_long_poll_wakes_without_closure",
+    "before": "dst::dst_tests::seal_gap_long_poll_wakes_without_closure",
+    "after": "dst::dst_tests::reads_raw::seal_gap_long_poll_wakes_without_closure",
+    "file": "src/dst/tests/reads_raw.rs"
+  },
+  {
+    "name": "seal_gap_cold_read_mid_gap",
+    "before": "dst::dst_tests::seal_gap_cold_read_mid_gap",
+    "after": "dst::dst_tests::reads_raw::seal_gap_cold_read_mid_gap",
+    "file": "src/dst/tests/reads_raw.rs"
+  },
+  {
+    "name": "seal_gap_cancel_then_retry",
+    "before": "dst::dst_tests::seal_gap_cancel_then_retry",
+    "after": "dst::dst_tests::reads_raw::seal_gap_cancel_then_retry",
+    "file": "src/dst/tests/reads_raw.rs"
+  },
+  {
+    "name": "seal_gap_stale_descriptor_redispatches",
+    "before": "dst::dst_tests::seal_gap_stale_descriptor_redispatches",
+    "after": "dst::dst_tests::reads_raw::seal_gap_stale_descriptor_redispatches",
+    "file": "src/dst/tests/reads_raw.rs"
+  },
+  {
+    "name": "oversized_keyed_record_pages_through",
+    "before": "dst::dst_tests::oversized_keyed_record_pages_through",
+    "after": "dst::dst_tests::reads_raw::oversized_keyed_record_pages_through",
+    "file": "src/dst/tests/reads_raw.rs"
+  },
+  {
+    "name": "long_keyed_run_pages_with_progress",
+    "before": "dst::dst_tests::long_keyed_run_pages_with_progress",
+    "after": "dst::dst_tests::reads_raw::long_keyed_run_pages_with_progress",
+    "file": "src/dst/tests/reads_raw.rs"
+  },
+  {
+    "name": "stream_seq_resolves_through_predecessors",
+    "before": "dst::dst_tests::stream_seq_resolves_through_predecessors",
+    "after": "dst::dst_tests::producer_protocol::stream_seq_resolves_through_predecessors",
+    "file": "src/dst/tests/producer_protocol.rs"
+  },
+  {
+    "name": "producer_lanes_scoped_per_routing_key",
+    "before": "dst::dst_tests::producer_lanes_scoped_per_routing_key",
+    "after": "dst::dst_tests::producer_protocol::producer_lanes_scoped_per_routing_key",
+    "file": "src/dst/tests/producer_protocol.rs"
+  },
+  {
+    "name": "split_children_land_on_distinct_engines",
+    "before": "dst::dst_tests::split_children_land_on_distinct_engines",
+    "after": "dst::dst_tests::topology_scaling::split_children_land_on_distinct_engines",
+    "file": "src/dst/tests/topology_scaling.rs"
+  },
+  {
+    "name": "post_split_throughput_scales",
+    "before": "dst::dst_tests::post_split_throughput_scales",
+    "after": "dst::dst_tests::topology_scaling::post_split_throughput_scales",
+    "file": "src/dst/tests/topology_scaling.rs"
+  },
+  {
+    "name": "merge_rejoins_cold_children_with_exact_lineage",
+    "before": "dst::dst_tests::merge_rejoins_cold_children_with_exact_lineage",
+    "after": "dst::dst_tests::topology_scaling::merge_rejoins_cold_children_with_exact_lineage",
+    "file": "src/dst/tests/topology_scaling.rs"
+  },
+  {
+    "name": "sse_follows_lineage_across_split",
+    "before": "dst::dst_tests::sse_follows_lineage_across_split",
+    "after": "dst::dst_tests::sse_delivery::sse_follows_lineage_across_split",
+    "file": "src/dst/tests/sse_delivery.rs"
+  },
+  {
+    "name": "product_create_metadata_roundtrip",
+    "before": "dst::dst_tests::product_create_metadata_roundtrip",
+    "after": "dst::dst_tests::product_lifecycle::product_create_metadata_roundtrip",
+    "file": "src/dst/tests/product_lifecycle.rs"
+  },
+  {
+    "name": "product_clean_switch_rejections",
+    "before": "dst::dst_tests::product_clean_switch_rejections",
+    "after": "dst::dst_tests::product_lifecycle::product_clean_switch_rejections",
+    "file": "src/dst/tests/product_lifecycle.rs"
+  },
+  {
+    "name": "product_seal_collection_wide",
+    "before": "dst::dst_tests::product_seal_collection_wide",
+    "after": "dst::dst_tests::product_lifecycle::product_seal_collection_wide",
+    "file": "src/dst/tests/product_lifecycle.rs"
+  },
+  {
+    "name": "product_append_and_append_many",
+    "before": "dst::dst_tests::product_append_and_append_many",
+    "after": "dst::dst_tests::producer_protocol::product_append_and_append_many",
+    "file": "src/dst/tests/producer_protocol.rs"
+  },
+  {
+    "name": "product_append_producer_duplicate",
+    "before": "dst::dst_tests::product_append_producer_duplicate",
+    "after": "dst::dst_tests::producer_protocol::product_append_producer_duplicate",
+    "file": "src/dst/tests/producer_protocol.rs"
+  },
+  {
+    "name": "product_read_pages_and_binds_cursors",
+    "before": "dst::dst_tests::product_read_pages_and_binds_cursors",
+    "after": "dst::dst_tests::reads_product::product_read_pages_and_binds_cursors",
+    "file": "src/dst/tests/reads_product.rs"
+  },
+  {
+    "name": "product_read_follows_split_lineage",
+    "before": "dst::dst_tests::product_read_follows_split_lineage",
+    "after": "dst::dst_tests::reads_product::product_read_follows_split_lineage",
+    "file": "src/dst/tests/reads_product.rs"
+  },
+  {
+    "name": "product_long_poll_times_out_and_wakes",
+    "before": "dst::dst_tests::product_long_poll_times_out_and_wakes",
+    "after": "dst::dst_tests::reads_product::product_long_poll_times_out_and_wakes",
+    "file": "src/dst/tests/reads_product.rs"
+  },
+  {
+    "name": "product_sse_controls_carry_signed_cursors",
+    "before": "dst::dst_tests::product_sse_controls_carry_signed_cursors",
+    "after": "dst::dst_tests::sse_delivery::product_sse_controls_carry_signed_cursors",
+    "file": "src/dst/tests/sse_delivery.rs"
+  },
+  {
+    "name": "product_scan_is_snapshot_exact",
+    "before": "dst::dst_tests::product_scan_is_snapshot_exact",
+    "after": "dst::dst_tests::reads_product::product_scan_is_snapshot_exact",
+    "file": "src/dst/tests/reads_product.rs"
+  },
+  {
+    "name": "product_scan_traverses_split_lineage",
+    "before": "dst::dst_tests::product_scan_traverses_split_lineage",
+    "after": "dst::dst_tests::reads_product::product_scan_traverses_split_lineage",
+    "file": "src/dst/tests/reads_product.rs"
+  },
+  {
+    "name": "product_scan_bytes_stream",
+    "before": "dst::dst_tests::product_scan_bytes_stream",
+    "after": "dst::dst_tests::reads_product::product_scan_bytes_stream",
+    "file": "src/dst/tests/reads_product.rs"
+  },
+  {
+    "name": "product_producer_hash_discipline",
+    "before": "dst::dst_tests::product_producer_hash_discipline",
+    "after": "dst::dst_tests::producer_protocol::product_producer_hash_discipline",
+    "file": "src/dst/tests/producer_protocol.rs"
+  },
+  {
+    "name": "product_producer_hash_survives_split",
+    "before": "dst::dst_tests::product_producer_hash_survives_split",
+    "after": "dst::dst_tests::producer_protocol::product_producer_hash_survives_split",
+    "file": "src/dst/tests/producer_protocol.rs"
+  },
+  {
+    "name": "product_consumer_config_lifecycle",
+    "before": "dst::dst_tests::product_consumer_config_lifecycle",
+    "after": "dst::dst_tests::consumer_product::product_consumer_config_lifecycle",
+    "file": "src/dst/tests/consumer_product.rs"
+  },
+  {
+    "name": "product_consumer_per_key_fifo",
+    "before": "dst::dst_tests::product_consumer_per_key_fifo",
+    "after": "dst::dst_tests::consumer_product::product_consumer_per_key_fifo",
+    "file": "src/dst/tests/consumer_product.rs"
+  },
+  {
+    "name": "product_consumer_expiry_and_stale_fencing",
+    "before": "dst::dst_tests::product_consumer_expiry_and_stale_fencing",
+    "after": "dst::dst_tests::consumer_product::product_consumer_expiry_and_stale_fencing",
+    "file": "src/dst/tests/consumer_product.rs"
+  },
+  {
+    "name": "product_consumer_dlq_flow",
+    "before": "dst::dst_tests::product_consumer_dlq_flow",
+    "after": "dst::dst_tests::consumer_product::product_consumer_dlq_flow",
+    "file": "src/dst/tests/consumer_product.rs"
+  },
+  {
+    "name": "product_consumer_drains_lineage_across_split",
+    "before": "dst::dst_tests::product_consumer_drains_lineage_across_split",
+    "after": "dst::dst_tests::consumer_product::product_consumer_drains_lineage_across_split",
+    "file": "src/dst/tests/consumer_product.rs"
+  },
+  {
+    "name": "touch_close_shard_matches_route_hash_not_storage_hash",
+    "before": "dst::dst_tests::touch_close_shard_matches_route_hash_not_storage_hash",
+    "after": "dst::dst_tests::watch_observation::touch_close_shard_matches_route_hash_not_storage_hash",
+    "file": "src/dst/tests/watch_observation.rs"
+  },
+  {
+    "name": "product_watch_wakes_on_matching_append",
+    "before": "dst::dst_tests::product_watch_wakes_on_matching_append",
+    "after": "dst::dst_tests::watch_observation::product_watch_wakes_on_matching_append",
+    "file": "src/dst/tests/watch_observation.rs"
+  },
+  {
+    "name": "profiles_are_removed_from_every_surface",
+    "before": "dst::dst_tests::profiles_are_removed_from_every_surface",
+    "after": "dst::dst_tests::product_lifecycle::profiles_are_removed_from_every_surface",
+    "file": "src/dst/tests/product_lifecycle.rs"
+  },
+  {
+    "name": "typed_creation_dual_contract",
+    "before": "dst::dst_tests::typed_creation_dual_contract",
+    "after": "dst::dst_tests::product_lifecycle::typed_creation_dual_contract",
+    "file": "src/dst/tests/product_lifecycle.rs"
+  },
+  {
+    "name": "product_seal_final_append_and_catalog",
+    "before": "dst::dst_tests::product_seal_final_append_and_catalog",
+    "after": "dst::dst_tests::product_lifecycle::product_seal_final_append_and_catalog",
+    "file": "src/dst/tests/product_lifecycle.rs"
+  },
+  {
+    "name": "product_seal_final_needs_no_caller_producer",
+    "before": "dst::dst_tests::product_seal_final_needs_no_caller_producer",
+    "after": "dst::dst_tests::seal_coordination::product_seal_final_needs_no_caller_producer",
+    "file": "src/dst/tests/seal_coordination.rs"
+  },
+  {
+    "name": "watch_urls_verify_on_a_process_that_never_saw_the_key",
+    "before": "dst::dst_tests::watch_urls_verify_on_a_process_that_never_saw_the_key",
+    "after": "dst::dst_tests::watch_observation::watch_urls_verify_on_a_process_that_never_saw_the_key",
+    "file": "src/dst/tests/watch_observation.rs"
+  },
+  {
+    "name": "dead_letter_link_requires_a_shared_key",
+    "before": "dst::dst_tests::dead_letter_link_requires_a_shared_key",
+    "after": "dst::dst_tests::consumer_product::dead_letter_link_requires_a_shared_key",
+    "file": "src/dst/tests/consumer_product.rs"
+  },
+  {
+    "name": "hierarchical_names_do_not_shadow_subresources",
+    "before": "dst::dst_tests::hierarchical_names_do_not_shadow_subresources",
+    "after": "dst::dst_tests::security_routes::hierarchical_names_do_not_shadow_subresources",
+    "file": "src/dst/tests/security_routes.rs"
+  },
+  {
+    "name": "only_the_exact_signed_watch_route_skips_the_token",
+    "before": "dst::dst_tests::only_the_exact_signed_watch_route_skips_the_token",
+    "after": "dst::dst_tests::security_routes::only_the_exact_signed_watch_route_skips_the_token",
+    "file": "src/dst/tests/security_routes.rs"
+  },
+  {
+    "name": "product_responses_carry_cors_not_just_preflights",
+    "before": "dst::dst_tests::product_responses_carry_cors_not_just_preflights",
+    "after": "dst::dst_tests::security_routes::product_responses_carry_cors_not_just_preflights",
+    "file": "src/dst/tests/security_routes.rs"
+  },
+  {
+    "name": "a_stale_initialization_never_becomes_visible",
+    "before": "dst::dst_tests::a_stale_initialization_never_becomes_visible",
+    "after": "dst::dst_tests::lifecycle_creation::a_stale_initialization_never_becomes_visible",
+    "file": "src/dst/tests/lifecycle_creation.rs"
+  },
+  {
+    "name": "an_initialization_cannot_be_resumed_with_another_key",
+    "before": "dst::dst_tests::an_initialization_cannot_be_resumed_with_another_key",
+    "after": "dst::dst_tests::lifecycle_creation::an_initialization_cannot_be_resumed_with_another_key",
+    "file": "src/dst/tests/lifecycle_creation.rs"
+  },
+  {
+    "name": "catalog_paging_survives_dense_dead_entries",
+    "before": "dst::dst_tests::catalog_paging_survives_dense_dead_entries",
+    "after": "dst::dst_tests::lifecycle_creation::catalog_paging_survives_dense_dead_entries",
+    "file": "src/dst/tests/lifecycle_creation.rs"
+  },
+  {
+    "name": "a_plain_seal_cannot_finish_someone_elses_final",
+    "before": "dst::dst_tests::a_plain_seal_cannot_finish_someone_elses_final",
+    "after": "dst::dst_tests::seal_coordination::a_plain_seal_cannot_finish_someone_elses_final",
+    "file": "src/dst/tests/seal_coordination.rs"
+  },
+  {
+    "name": "producers_cannot_write_new_records_while_sealing",
+    "before": "dst::dst_tests::producers_cannot_write_new_records_while_sealing",
+    "after": "dst::dst_tests::seal_coordination::producers_cannot_write_new_records_while_sealing",
+    "file": "src/dst/tests/seal_coordination.rs"
+  },
+  {
+    "name": "topology_transitions_are_fenced_by_sealing",
+    "before": "dst::dst_tests::topology_transitions_are_fenced_by_sealing",
+    "after": "dst::dst_tests::seal_coordination::topology_transitions_are_fenced_by_sealing",
+    "file": "src/dst/tests/seal_coordination.rs"
+  },
+  {
+    "name": "raw_forks_show_only_the_default_key",
+    "before": "dst::dst_tests::raw_forks_show_only_the_default_key",
+    "after": "dst::dst_tests::fork_lifecycle::raw_forks_show_only_the_default_key",
+    "file": "src/dst/tests/fork_lifecycle.rs"
+  },
+  {
+    "name": "a_half_deleted_fork_finishes_its_cleanup",
+    "before": "dst::dst_tests::a_half_deleted_fork_finishes_its_cleanup",
+    "after": "dst::dst_tests::fork_lifecycle::a_half_deleted_fork_finishes_its_cleanup",
+    "file": "src/dst/tests/fork_lifecycle.rs"
+  },
+  {
+    "name": "a_parked_split_cannot_publish_under_a_sealed_collection",
+    "before": "dst::dst_tests::a_parked_split_cannot_publish_under_a_sealed_collection",
+    "after": "dst::dst_tests::seal_coordination::a_parked_split_cannot_publish_under_a_sealed_collection",
+    "file": "src/dst/tests/seal_coordination.rs"
+  },
+  {
+    "name": "a_fork_initialization_is_bound_to_its_source_incarnation",
+    "before": "dst::dst_tests::a_fork_initialization_is_bound_to_its_source_incarnation",
+    "after": "dst::dst_tests::fork_lifecycle::a_fork_initialization_is_bound_to_its_source_incarnation",
+    "file": "src/dst/tests/fork_lifecycle.rs"
+  },
+  {
+    "name": "a_crashed_fork_cascade_can_be_resumed",
+    "before": "dst::dst_tests::a_crashed_fork_cascade_can_be_resumed",
+    "after": "dst::dst_tests::fork_lifecycle::a_crashed_fork_cascade_can_be_resumed",
+    "file": "src/dst/tests/fork_lifecycle.rs"
+  },
+  {
+    "name": "seal_requests_are_identified_and_validated_exactly",
+    "before": "dst::dst_tests::seal_requests_are_identified_and_validated_exactly",
+    "after": "dst::dst_tests::seal_coordination::seal_requests_are_identified_and_validated_exactly",
+    "file": "src/dst/tests/seal_coordination.rs"
+  },
+  {
+    "name": "a_raw_close_with_content_owes_its_records",
+    "before": "dst::dst_tests::a_raw_close_with_content_owes_its_records",
+    "after": "dst::dst_tests::seal_coordination::a_raw_close_with_content_owes_its_records",
+    "file": "src/dst/tests/seal_coordination.rs"
+  },
+  {
+    "name": "a_crashed_raw_final_close_is_resumed_by_an_ordinary_retry",
+    "before": "dst::dst_tests::a_crashed_raw_final_close_is_resumed_by_an_ordinary_retry",
+    "after": "dst::dst_tests::seal_coordination::a_crashed_raw_final_close_is_resumed_by_an_ordinary_retry",
+    "file": "src/dst/tests/seal_coordination.rs"
+  },
+  {
+    "name": "a_seal_never_installs_over_a_pending_transition",
+    "before": "dst::dst_tests::a_seal_never_installs_over_a_pending_transition",
+    "after": "dst::dst_tests::seal_recovery::a_seal_never_installs_over_a_pending_transition",
+    "file": "src/dst/tests/seal_recovery.rs"
+  },
+  {
+    "name": "fork_creation_and_source_deletion_serialize",
+    "before": "dst::dst_tests::fork_creation_and_source_deletion_serialize",
+    "after": "dst::dst_tests::fork_lifecycle::fork_creation_and_source_deletion_serialize",
+    "file": "src/dst/tests/fork_lifecycle.rs"
+  },
+  {
+    "name": "an_impossible_final_never_publishes_an_intent",
+    "before": "dst::dst_tests::an_impossible_final_never_publishes_an_intent",
+    "after": "dst::dst_tests::seal_recovery::an_impossible_final_never_publishes_an_intent",
+    "file": "src/dst/tests/seal_recovery.rs"
+  },
+  {
+    "name": "a_raw_final_close_resumes_after_its_records_are_durable",
+    "before": "dst::dst_tests::a_raw_final_close_resumes_after_its_records_are_durable",
+    "after": "dst::dst_tests::seal_recovery::a_raw_final_close_resumes_after_its_records_are_durable",
+    "file": "src/dst/tests/seal_recovery.rs"
+  },
+  {
+    "name": "a_fork_initialization_resumes_against_a_retained_source",
+    "before": "dst::dst_tests::a_fork_initialization_resumes_against_a_retained_source",
+    "after": "dst::dst_tests::fork_lifecycle::a_fork_initialization_resumes_against_a_retained_source",
+    "file": "src/dst/tests/fork_lifecycle.rs"
+  },
+  {
+    "name": "an_ordering_verdict_keeps_its_intent_until_the_claim_is_abandoned",
+    "before": "dst::dst_tests::an_ordering_verdict_keeps_its_intent_until_the_claim_is_abandoned",
+    "after": "dst::dst_tests::seal_recovery::an_ordering_verdict_keeps_its_intent_until_the_claim_is_abandoned",
+    "file": "src/dst/tests/seal_recovery.rs"
+  },
+  {
+    "name": "internal_producer_identities_are_unreachable_from_the_wire",
+    "before": "dst::dst_tests::internal_producer_identities_are_unreachable_from_the_wire",
+    "after": "dst::dst_tests::security_routes::internal_producer_identities_are_unreachable_from_the_wire",
+    "file": "src/dst/tests/security_routes.rs"
+  },
+  {
+    "name": "a_refused_raw_close_does_not_strand_the_collection",
+    "before": "dst::dst_tests::a_refused_raw_close_does_not_strand_the_collection",
+    "after": "dst::dst_tests::seal_recovery::a_refused_raw_close_does_not_strand_the_collection",
+    "file": "src/dst/tests/seal_recovery.rs"
+  },
+  {
+    "name": "a_transient_producer_gap_does_not_lose_the_promised_record",
+    "before": "dst::dst_tests::a_transient_producer_gap_does_not_lose_the_promised_record",
+    "after": "dst::dst_tests::seal_recovery::a_transient_producer_gap_does_not_lose_the_promised_record",
+    "file": "src/dst/tests/seal_recovery.rs"
+  },
+  {
+    "name": "a_superseded_close_cannot_write_or_close",
+    "before": "dst::dst_tests::a_superseded_close_cannot_write_or_close",
+    "after": "dst::dst_tests::seal_fencing::a_superseded_close_cannot_write_or_close",
+    "file": "src/dst/tests/seal_fencing.rs"
+  },
+  {
+    "name": "a_takeover_completes_an_old_close_that_won",
+    "before": "dst::dst_tests::a_takeover_completes_an_old_close_that_won",
+    "after": "dst::dst_tests::seal_fencing::a_takeover_completes_an_old_close_that_won",
+    "file": "src/dst/tests/seal_fencing.rs"
+  },
+  {
+    "name": "an_exact_retry_renews_its_lease",
+    "before": "dst::dst_tests::an_exact_retry_renews_its_lease",
+    "after": "dst::dst_tests::seal_fencing::an_exact_retry_renews_its_lease",
+    "file": "src/dst/tests/seal_fencing.rs"
+  },
+  {
+    "name": "a_resumed_mark_never_seals_a_later_incarnation",
+    "before": "dst::dst_tests::a_resumed_mark_never_seals_a_later_incarnation",
+    "after": "dst::dst_tests::seal_fencing::a_resumed_mark_never_seals_a_later_incarnation",
+    "file": "src/dst/tests/seal_fencing.rs"
+  },
+  {
+    "name": "a_wrong_content_type_close_cannot_join_the_valid_intent",
+    "before": "dst::dst_tests::a_wrong_content_type_close_cannot_join_the_valid_intent",
+    "after": "dst::dst_tests::seal_fencing::a_wrong_content_type_close_cannot_join_the_valid_intent",
+    "file": "src/dst/tests/seal_fencing.rs"
+  },
+  {
+    "name": "seal_only_takes_over_an_abandoned_final_claim",
+    "before": "dst::dst_tests::seal_only_takes_over_an_abandoned_final_claim",
+    "after": "dst::dst_tests::seal_fencing::seal_only_takes_over_an_abandoned_final_claim",
+    "file": "src/dst/tests/seal_fencing.rs"
+  },
+  {
+    "name": "stale_scaler_and_ttl_decisions_decline_after_recreate",
+    "before": "dst::dst_tests::stale_scaler_and_ttl_decisions_decline_after_recreate",
+    "after": "dst::dst_tests::topology_lifecycle::stale_scaler_and_ttl_decisions_decline_after_recreate",
+    "file": "src/dst/tests/topology_lifecycle.rs"
+  },
+  {
+    "name": "a_fence_waits_for_durability_before_reporting_closed",
+    "before": "dst::dst_tests::a_fence_waits_for_durability_before_reporting_closed",
+    "after": "dst::dst_tests::durability_fences::a_fence_waits_for_durability_before_reporting_closed",
+    "file": "src/dst/tests/durability_fences.rs"
+  },
+  {
+    "name": "a_lower_takeover_reservation_cannot_install",
+    "before": "dst::dst_tests::a_lower_takeover_reservation_cannot_install",
+    "after": "dst::dst_tests::durability_fences::a_lower_takeover_reservation_cannot_install",
+    "file": "src/dst/tests/durability_fences.rs"
+  },
+  {
+    "name": "a_fence_survives_handle_eviction",
+    "before": "dst::dst_tests::a_fence_survives_handle_eviction",
+    "after": "dst::dst_tests::durability_fences::a_fence_survives_handle_eviction",
+    "file": "src/dst/tests/durability_fences.rs"
+  },
+  {
+    "name": "a_product_seal_never_binds_to_a_recreated_incarnation",
+    "before": "dst::dst_tests::a_product_seal_never_binds_to_a_recreated_incarnation",
+    "after": "dst::dst_tests::seal_incarnation::a_product_seal_never_binds_to_a_recreated_incarnation",
+    "file": "src/dst/tests/seal_incarnation.rs"
+  },
+  {
+    "name": "a_non_closing_duplicate_releases_its_own_intent",
+    "before": "dst::dst_tests::a_non_closing_duplicate_releases_its_own_intent",
+    "after": "dst::dst_tests::seal_incarnation::a_non_closing_duplicate_releases_its_own_intent",
+    "file": "src/dst/tests/seal_incarnation.rs"
+  },
+  {
+    "name": "scaler_heat_and_terminal_proof_are_incarnation_scoped",
+    "before": "dst::dst_tests::scaler_heat_and_terminal_proof_are_incarnation_scoped",
+    "after": "dst::dst_tests::topology_lifecycle::scaler_heat_and_terminal_proof_are_incarnation_scoped",
+    "file": "src/dst/tests/topology_lifecycle.rs"
+  },
+  {
+    "name": "idempotent_successes_wait_for_durability",
+    "before": "dst::dst_tests::idempotent_successes_wait_for_durability",
+    "after": "dst::dst_tests::durability_fences::idempotent_successes_wait_for_durability",
+    "file": "src/dst/tests/durability_fences.rs"
+  },
+  {
+    "name": "state_dependent_conflicts_wait_for_durability",
+    "before": "dst::dst_tests::state_dependent_conflicts_wait_for_durability",
+    "after": "dst::dst_tests::durability_fences::state_dependent_conflicts_wait_for_durability",
+    "file": "src/dst/tests/durability_fences.rs"
+  },
+  {
+    "name": "a_fence_outlives_the_maintenance_sweep",
+    "before": "dst::dst_tests::a_fence_outlives_the_maintenance_sweep",
+    "after": "dst::dst_tests::durability_fences::a_fence_outlives_the_maintenance_sweep",
+    "file": "src/dst/tests/durability_fences.rs"
+  },
+  {
+    "name": "a_product_final_never_writes_into_a_recreated_incarnation",
+    "before": "dst::dst_tests::a_product_final_never_writes_into_a_recreated_incarnation",
+    "after": "dst::dst_tests::seal_incarnation::a_product_final_never_writes_into_a_recreated_incarnation",
+    "file": "src/dst/tests/seal_incarnation.rs"
+  },
+  {
+    "name": "a_failed_group_write_fails_its_duplicate_too",
+    "before": "dst::dst_tests::a_failed_group_write_fails_its_duplicate_too",
+    "after": "dst::dst_tests::durability_failures::a_failed_group_write_fails_its_duplicate_too",
+    "file": "src/dst/tests/durability_failures.rs"
+  },
+  {
+    "name": "a_reuse_verdict_dies_with_its_failed_group",
+    "before": "dst::dst_tests::a_reuse_verdict_dies_with_its_failed_group",
+    "after": "dst::dst_tests::durability_failures::a_reuse_verdict_dies_with_its_failed_group",
+    "file": "src/dst/tests/durability_failures.rs"
+  },
+  {
+    "name": "a_failed_group_fails_the_close_and_its_retry_together",
+    "before": "dst::dst_tests::a_failed_group_fails_the_close_and_its_retry_together",
+    "after": "dst::dst_tests::durability_failures::a_failed_group_fails_the_close_and_its_retry_together",
+    "file": "src/dst/tests/durability_failures.rs"
+  },
+  {
+    "name": "a_fence_in_a_failed_group_reports_failure_not_closed",
+    "before": "dst::dst_tests::a_fence_in_a_failed_group_reports_failure_not_closed",
+    "after": "dst::dst_tests::durability_failures::a_fence_in_a_failed_group_reports_failure_not_closed",
+    "file": "src/dst/tests/durability_failures.rs"
+  },
+  {
+    "name": "a_stream_seq_verdict_is_grounded_in_durable_state",
+    "before": "dst::dst_tests::a_stream_seq_verdict_is_grounded_in_durable_state",
+    "after": "dst::dst_tests::durability_failures::a_stream_seq_verdict_is_grounded_in_durable_state",
+    "file": "src/dst/tests/durability_failures.rs"
+  },
+  {
+    "name": "create_replay_recovers_from_a_failed_initial_write",
+    "before": "dst::dst_tests::create_replay_recovers_from_a_failed_initial_write",
+    "after": "dst::dst_tests::lifecycle_creation::create_replay_recovers_from_a_failed_initial_write",
+    "file": "src/dst/tests/lifecycle_creation.rs"
+  },
+  {
+    "name": "merge_phase_b_declines_under_sealing",
+    "before": "dst::dst_tests::merge_phase_b_declines_under_sealing",
+    "after": "dst::dst_tests::topology_lifecycle::merge_phase_b_declines_under_sealing",
+    "file": "src/dst/tests/topology_lifecycle.rs"
+  },
+  {
+    "name": "concurrent_finals_with_different_coordination_do_not_share_a_claim",
+    "before": "dst::dst_tests::concurrent_finals_with_different_coordination_do_not_share_a_claim",
+    "after": "dst::dst_tests::topology_lifecycle::concurrent_finals_with_different_coordination_do_not_share_a_claim",
+    "file": "src/dst/tests/topology_lifecycle.rs"
+  },
+  {
+    "name": "a_child_deleted_before_the_source_ref_cannot_pin_the_source",
+    "before": "dst::dst_tests::a_child_deleted_before_the_source_ref_cannot_pin_the_source",
+    "after": "dst::dst_tests::topology_lifecycle::a_child_deleted_before_the_source_ref_cannot_pin_the_source",
+    "file": "src/dst/tests/topology_lifecycle.rs"
+  },
+  {
+    "name": "a_stale_epoch_final_releases_its_intent_on_both_surfaces",
+    "before": "dst::dst_tests::a_stale_epoch_final_releases_its_intent_on_both_surfaces",
+    "after": "dst::dst_tests::seal_incarnation::a_stale_epoch_final_releases_its_intent_on_both_surfaces",
+    "file": "src/dst/tests/seal_incarnation.rs"
+  },
+  {
+    "name": "a_failed_queue_write_leaves_no_phantom_leases",
+    "before": "dst::dst_tests::a_failed_queue_write_leaves_no_phantom_leases",
+    "after": "dst::dst_tests::consumer_atomicity::a_failed_queue_write_leaves_no_phantom_leases",
+    "file": "src/dst/tests/consumer_atomicity.rs"
+  },
+  {
+    "name": "a_crashed_creators_late_reference_is_repaired_by_delete_retry",
+    "before": "dst::dst_tests::a_crashed_creators_late_reference_is_repaired_by_delete_retry",
+    "after": "dst::dst_tests::fork_cleanup::a_crashed_creators_late_reference_is_repaired_by_delete_retry",
+    "file": "src/dst/tests/fork_cleanup.rs"
+  },
+  {
+    "name": "a_failed_settle_leaves_no_phantom_acks",
+    "before": "dst::dst_tests::a_failed_settle_leaves_no_phantom_acks",
+    "after": "dst::dst_tests::consumer_atomicity::a_failed_settle_leaves_no_phantom_acks",
+    "file": "src/dst/tests/consumer_atomicity.rs"
+  },
+  {
+    "name": "queue_config_delete_is_group_local",
+    "before": "dst::dst_tests::queue_config_delete_is_group_local",
+    "after": "dst::dst_tests::consumer_atomicity::queue_config_delete_is_group_local",
+    "file": "src/dst/tests/consumer_atomicity.rs"
+  },
+  {
+    "name": "receive_then_delete_in_one_group_leaves_no_stale_lease",
+    "before": "dst::dst_tests::receive_then_delete_in_one_group_leaves_no_stale_lease",
+    "after": "dst::dst_tests::consumer_atomicity::receive_then_delete_in_one_group_leaves_no_stale_lease",
+    "file": "src/dst/tests/consumer_atomicity.rs"
+  },
+  {
+    "name": "settle_then_delete_in_one_group_leaves_no_stale_rows",
+    "before": "dst::dst_tests::settle_then_delete_in_one_group_leaves_no_stale_rows",
+    "after": "dst::dst_tests::consumer_atomicity::settle_then_delete_in_one_group_leaves_no_stale_rows",
+    "file": "src/dst/tests/consumer_atomicity.rs"
+  },
+  {
+    "name": "a_receive_after_delete_in_the_same_group_is_refused",
+    "before": "dst::dst_tests::a_receive_after_delete_in_the_same_group_is_refused",
+    "after": "dst::dst_tests::consumer_atomicity::a_receive_after_delete_in_the_same_group_is_refused",
+    "file": "src/dst/tests/consumer_atomicity.rs"
+  },
+  {
+    "name": "a_split_consumers_deletion_fails_one_segment_then_retries_clean",
+    "before": "dst::dst_tests::a_split_consumers_deletion_fails_one_segment_then_retries_clean",
+    "after": "dst::dst_tests::consumer_delete::a_split_consumers_deletion_fails_one_segment_then_retries_clean",
+    "file": "src/dst/tests/consumer_delete.rs"
+  },
+  {
+    "name": "a_parked_pull_cannot_lease_after_its_generation_was_deleted",
+    "before": "dst::dst_tests::a_parked_pull_cannot_lease_after_its_generation_was_deleted",
+    "after": "dst::dst_tests::consumer_delete::a_parked_pull_cannot_lease_after_its_generation_was_deleted",
+    "file": "src/dst/tests/consumer_delete.rs"
+  },
+  {
+    "name": "a_failed_config_scan_aborts_the_delete_untouched",
+    "before": "dst::dst_tests::a_failed_config_scan_aborts_the_delete_untouched",
+    "after": "dst::dst_tests::consumer_delete::a_failed_config_scan_aborts_the_delete_untouched",
+    "file": "src/dst/tests/consumer_delete.rs"
+  },
+  {
+    "name": "same_group_config_puts_see_each_other",
+    "before": "dst::dst_tests::same_group_config_puts_see_each_other",
+    "after": "dst::dst_tests::consumer_delete::same_group_config_puts_see_each_other",
+    "file": "src/dst/tests/consumer_delete.rs"
+  },
+  {
+    "name": "a_stale_fork_release_does_not_touch_a_recreated_source",
+    "before": "dst::dst_tests::a_stale_fork_release_does_not_touch_a_recreated_source",
+    "after": "dst::dst_tests::fork_cleanup::a_stale_fork_release_does_not_touch_a_recreated_source",
+    "file": "src/dst/tests/fork_cleanup.rs"
+  },
+  {
+    "name": "shadow_mode_observes_without_enforcing",
+    "before": "dst::dst_tests::shadow_mode_observes_without_enforcing",
+    "after": "dst::dst_tests::security_modes::shadow_mode_observes_without_enforcing",
+    "file": "src/dst/tests/security_modes.rs"
+  },
+  {
+    "name": "enforce_mode_gates_the_product_surface",
+    "before": "dst::dst_tests::enforce_mode_gates_the_product_surface",
+    "after": "dst::dst_tests::security_modes::enforce_mode_gates_the_product_surface",
+    "file": "src/dst/tests/security_modes.rs"
+  },
+  {
+    "name": "project_rate_quota_backstop_answers_429",
+    "before": "dst::dst_tests::project_rate_quota_backstop_answers_429",
+    "after": "dst::dst_tests::quota_enforcement::project_rate_quota_backstop_answers_429",
+    "file": "src/dst/tests/quota_enforcement.rs"
+  },
+  {
+    "name": "volume_quotas_meter_appends_and_reads",
+    "before": "dst::dst_tests::volume_quotas_meter_appends_and_reads",
+    "after": "dst::dst_tests::quota_enforcement::volume_quotas_meter_appends_and_reads",
+    "file": "src/dst/tests/quota_enforcement.rs"
+  },
+  {
+    "name": "one_cell_serves_two_projects_with_full_isolation",
+    "before": "dst::dst_tests::one_cell_serves_two_projects_with_full_isolation",
+    "after": "dst::dst_tests::security_isolation::one_cell_serves_two_projects_with_full_isolation",
+    "file": "src/dst/tests/security_isolation.rs"
+  },
+  {
+    "name": "noisy_neighbor_cannot_degrade_a_compliant_project",
+    "before": "dst::dst_tests::noisy_neighbor_cannot_degrade_a_compliant_project",
+    "after": "dst::dst_tests::security_isolation::noisy_neighbor_cannot_degrade_a_compliant_project",
+    "file": "src/dst/tests/security_isolation.rs"
+  },
+  {
+    "name": "same_name_cross_project_usage_attributes_exactly",
+    "before": "dst::dst_tests::same_name_cross_project_usage_attributes_exactly",
+    "after": "dst::dst_tests::billing_attribution::same_name_cross_project_usage_attributes_exactly",
+    "file": "src/dst/tests/billing_attribution.rs"
+  },
+  {
+    "name": "invoice_reconciliation_balances_and_detects_corruption",
+    "before": "dst::dst_tests::invoice_reconciliation_balances_and_detects_corruption",
+    "after": "dst::dst_tests::billing_attribution::invoice_reconciliation_balances_and_detects_corruption",
+    "file": "src/dst/tests/billing_attribution.rs"
+  },
+  {
+    "name": "enforce_denials_journal_to_audit_events",
+    "before": "dst::dst_tests::enforce_denials_journal_to_audit_events",
+    "after": "dst::dst_tests::security_audit::enforce_denials_journal_to_audit_events",
+    "file": "src/dst/tests/security_audit.rs"
+  },
+  {
+    "name": "shared_cell_certification_smoke",
+    "before": "dst::dst_tests::shared_cell_certification_smoke",
+    "after": "dst::dst_tests::security_audit::shared_cell_certification_smoke",
+    "file": "src/dst/tests/security_audit.rs"
+  },
+  {
+    "name": "delete_stays_inside_the_requesting_project",
+    "before": "dst::dst_tests::delete_stays_inside_the_requesting_project",
+    "after": "dst::dst_tests::security_lineage::delete_stays_inside_the_requesting_project",
+    "file": "src/dst/tests/security_lineage.rs"
+  },
+  {
+    "name": "transition_append_stays_inside_the_requesting_project",
+    "before": "dst::dst_tests::transition_append_stays_inside_the_requesting_project",
+    "after": "dst::dst_tests::security_lineage::transition_append_stays_inside_the_requesting_project",
+    "file": "src/dst/tests/security_lineage.rs"
+  },
+  {
+    "name": "stale_lineage_read_stays_inside_the_requesting_project",
+    "before": "dst::dst_tests::stale_lineage_read_stays_inside_the_requesting_project",
+    "after": "dst::dst_tests::security_lineage::stale_lineage_read_stays_inside_the_requesting_project",
+    "file": "src/dst/tests/security_lineage.rs"
+  },
+  {
+    "name": "stale_jwks_maps_to_retryable_503",
+    "before": "dst::dst_tests::stale_jwks_maps_to_retryable_503",
+    "after": "dst::dst_tests::security_lineage::stale_jwks_maps_to_retryable_503",
+    "file": "src/dst/tests/security_lineage.rs"
+  },
+  {
+    "name": "ttl_slide_stays_inside_the_owning_project",
+    "before": "dst::dst_tests::ttl_slide_stays_inside_the_owning_project",
+    "after": "dst::dst_tests::security_lineage::ttl_slide_stays_inside_the_owning_project",
+    "file": "src/dst/tests/security_lineage.rs"
+  },
+  {
+    "name": "seal_fence_resolves_the_owning_project",
+    "before": "dst::dst_tests::seal_fence_resolves_the_owning_project",
+    "after": "dst::dst_tests::security_lineage::seal_fence_resolves_the_owning_project",
+    "file": "src/dst/tests/security_lineage.rs"
+  },
+  {
+    "name": "watch_capability_respects_project_suspension",
+    "before": "dst::dst_tests::watch_capability_respects_project_suspension",
+    "after": "dst::dst_tests::watch_observation::watch_capability_respects_project_suspension",
+    "file": "src/dst/tests/watch_observation.rs"
+  },
+  {
+    "name": "watch_capability_waits_occupy_project_admission",
+    "before": "dst::dst_tests::watch_capability_waits_occupy_project_admission",
+    "after": "dst::dst_tests::watch_observation::watch_capability_waits_occupy_project_admission",
+    "file": "src/dst/tests/watch_observation.rs"
+  },
+  {
+    "name": "nondeployment_pending_split_resumes",
+    "before": "dst::dst_tests::nondeployment_pending_split_resumes",
+    "after": "dst::dst_tests::topology_lifecycle::nondeployment_pending_split_resumes",
+    "file": "src/dst/tests/topology_lifecycle.rs"
+  },
+  {
+    "name": "feed_high_water_survives_removal_and_replay",
+    "before": "dst::dst_tests::feed_high_water_survives_removal_and_replay",
+    "after": "dst::dst_tests::security_policy::feed_high_water_survives_removal_and_replay",
+    "file": "src/dst/tests/security_policy.rs"
+  },
+  {
+    "name": "unknown_kid_nudge_is_rate_limited",
+    "before": "dst::dst_tests::unknown_kid_nudge_is_rate_limited",
+    "after": "dst::dst_tests::security_policy::unknown_kid_nudge_is_rate_limited",
+    "file": "src/dst/tests/security_policy.rs"
+  },
+  {
+    "name": "raw_and_operator_surfaces_are_internal_under_enforce",
+    "before": "dst::dst_tests::raw_and_operator_surfaces_are_internal_under_enforce",
+    "after": "dst::dst_tests::security_policy::raw_and_operator_surfaces_are_internal_under_enforce",
+    "file": "src/dst/tests/security_policy.rs"
+  },
+  {
+    "name": "stored_references_bind_inside_the_referring_project",
+    "before": "dst::dst_tests::stored_references_bind_inside_the_referring_project",
+    "after": "dst::dst_tests::security_policy::stored_references_bind_inside_the_referring_project",
+    "file": "src/dst/tests/security_policy.rs"
+  },
+  {
+    "name": "a_release_parked_across_recreation_cannot_touch_the_replacement",
+    "before": "dst::dst_tests::a_release_parked_across_recreation_cannot_touch_the_replacement",
+    "after": "dst::dst_tests::lifecycle_incarnation::a_release_parked_across_recreation_cannot_touch_the_replacement",
+    "file": "src/dst/tests/lifecycle_incarnation.rs"
+  },
+  {
+    "name": "a_parked_create_never_publishes_readiness_for_a_later_incarnation",
+    "before": "dst::dst_tests::a_parked_create_never_publishes_readiness_for_a_later_incarnation",
+    "after": "dst::dst_tests::lifecycle_incarnation::a_parked_create_never_publishes_readiness_for_a_later_incarnation",
+    "file": "src/dst/tests/lifecycle_incarnation.rs"
+  },
+  {
+    "name": "a_seal_in_flight_never_closes_a_later_incarnation",
+    "before": "dst::dst_tests::a_seal_in_flight_never_closes_a_later_incarnation",
+    "after": "dst::dst_tests::lifecycle_incarnation::a_seal_in_flight_never_closes_a_later_incarnation",
+    "file": "src/dst/tests/lifecycle_incarnation.rs"
+  },
+  {
+    "name": "a_parked_delete_never_removes_a_later_incarnation",
+    "before": "dst::dst_tests::a_parked_delete_never_removes_a_later_incarnation",
+    "after": "dst::dst_tests::lifecycle_incarnation::a_parked_delete_never_removes_a_later_incarnation",
+    "file": "src/dst/tests/lifecycle_incarnation.rs"
+  },
+  {
+    "name": "a_fork_stamp_never_lands_on_a_later_incarnation",
+    "before": "dst::dst_tests::a_fork_stamp_never_lands_on_a_later_incarnation",
+    "after": "dst::dst_tests::lifecycle_incarnation::a_fork_stamp_never_lands_on_a_later_incarnation",
+    "file": "src/dst/tests/lifecycle_incarnation.rs"
+  },
+  {
+    "name": "creation_does_not_report_success_after_a_concurrent_delete",
+    "before": "dst::dst_tests::creation_does_not_report_success_after_a_concurrent_delete",
+    "after": "dst::dst_tests::lifecycle_incarnation::creation_does_not_report_success_after_a_concurrent_delete",
+    "file": "src/dst/tests/lifecycle_incarnation.rs"
+  },
+  {
+    "name": "dual_surface_equivalence_corpus",
+    "before": "dst::dst_tests::dual_surface_equivalence_corpus",
+    "after": "dst::dst_tests::product_lifecycle::dual_surface_equivalence_corpus",
+    "file": "src/dst/tests/product_lifecycle.rs"
+  },
+  {
+    "name": "fork_lifecycle_and_stitched_reads",
+    "before": "dst::dst_tests::fork_lifecycle_and_stitched_reads",
+    "after": "dst::dst_tests::fork_lifecycle::fork_lifecycle_and_stitched_reads",
+    "file": "src/dst/tests/fork_lifecycle.rs"
+  },
+  {
+    "name": "product_requires_the_account_token",
+    "before": "dst::dst_tests::product_requires_the_account_token",
+    "after": "dst::dst_tests::security_routes::product_requires_the_account_token",
+    "file": "src/dst/tests/security_routes.rs"
+  },
+  {
+    "name": "create_replay_never_loses_the_initial_body",
+    "before": "dst::dst_tests::create_replay_never_loses_the_initial_body",
+    "after": "dst::dst_tests::lifecycle_creation::create_replay_never_loses_the_initial_body",
+    "file": "src/dst/tests/lifecycle_creation.rs"
+  },
+  {
+    "name": "seal_is_a_resumable_transition",
+    "before": "dst::dst_tests::seal_is_a_resumable_transition",
+    "after": "dst::dst_tests::seal_recovery::seal_is_a_resumable_transition",
+    "file": "src/dst/tests/seal_recovery.rs"
+  },
+  {
+    "name": "fork_lifecycle_is_idempotent_and_epoch_checked",
+    "before": "dst::dst_tests::fork_lifecycle_is_idempotent_and_epoch_checked",
+    "after": "dst::dst_tests::fork_lifecycle::fork_lifecycle_is_idempotent_and_epoch_checked",
+    "file": "src/dst/tests/fork_lifecycle.rs"
+  },
+  {
+    "name": "raw_route_is_the_default_key_view_across_splits",
+    "before": "dst::dst_tests::raw_route_is_the_default_key_view_across_splits",
+    "after": "dst::dst_tests::reads_raw::raw_route_is_the_default_key_view_across_splits",
+    "file": "src/dst/tests/reads_raw.rs"
+  },
+  {
+    "name": "catalog_pages_without_scanning_the_world",
+    "before": "dst::dst_tests::catalog_pages_without_scanning_the_world",
+    "after": "dst::dst_tests::reads_raw::catalog_pages_without_scanning_the_world",
+    "file": "src/dst/tests/reads_raw.rs"
+  },
+  {
+    "name": "a_applied_read_and_long_poll_serve_the_tail_before_durability",
+    "before": "dst::dst_tests::a_applied_read_and_long_poll_serve_the_tail_before_durability",
+    "after": "dst::dst_tests::reads_applied::a_applied_read_and_long_poll_serve_the_tail_before_durability",
+    "file": "src/dst/tests/reads_applied.rs"
+  },
+  {
+    "name": "a_lost_applied_suffix_rewinds_to_the_durable_frontier",
+    "before": "dst::dst_tests::a_lost_applied_suffix_rewinds_to_the_durable_frontier",
+    "after": "dst::dst_tests::reads_applied::a_lost_applied_suffix_rewinds_to_the_durable_frontier",
+    "file": "src/dst/tests/reads_applied.rs"
+  },
+  {
+    "name": "a_stale_applied_cursor_is_refused_after_crash_restart",
+    "before": "dst::dst_tests::a_stale_applied_cursor_is_refused_after_crash_restart",
+    "after": "dst::dst_tests::reads_applied::a_stale_applied_cursor_is_refused_after_crash_restart",
+    "file": "src/dst/tests/reads_applied.rs"
+  },
+  {
+    "name": "a_stale_cleanup_replay_never_touches_a_recreated_generation",
+    "before": "dst::dst_tests::a_stale_cleanup_replay_never_touches_a_recreated_generation",
+    "after": "dst::dst_tests::consumer_generations::a_stale_cleanup_replay_never_touches_a_recreated_generation",
+    "file": "src/dst/tests/consumer_generations.rs"
+  },
+  {
+    "name": "a_stale_delete_retry_cannot_delete_the_replacement_consumer",
+    "before": "dst::dst_tests::a_stale_delete_retry_cannot_delete_the_replacement_consumer",
+    "after": "dst::dst_tests::consumer_generations::a_stale_delete_retry_cannot_delete_the_replacement_consumer",
+    "file": "src/dst/tests/consumer_generations.rs"
+  },
+  {
+    "name": "a_parked_saga_never_touches_a_recreated_stream",
+    "before": "dst::dst_tests::a_parked_saga_never_touches_a_recreated_stream",
+    "after": "dst::dst_tests::consumer_generations::a_parked_saga_never_touches_a_recreated_stream",
+    "file": "src/dst/tests/consumer_generations.rs"
+  },
+  {
+    "name": "a_bounded_cleanup_drains_residue_without_touching_the_live_generation",
+    "before": "dst::dst_tests::a_bounded_cleanup_drains_residue_without_touching_the_live_generation",
+    "after": "dst::dst_tests::consumer_generations::a_bounded_cleanup_drains_residue_without_touching_the_live_generation",
+    "file": "src/dst/tests/consumer_generations.rs"
+  },
+  {
+    "name": "failpoint_registry_is_enumerable_and_described",
+    "before": "dst::dst_tests::failpoint_registry_is_enumerable_and_described",
+    "after": "dst::dst_tests::consumer_generations::failpoint_registry_is_enumerable_and_described",
+    "file": "src/dst/tests/consumer_generations.rs"
+  },
+  {
+    "name": "a_saga_refresh_failure_is_retryable_not_stable",
+    "before": "dst::dst_tests::a_saga_refresh_failure_is_retryable_not_stable",
+    "after": "dst::dst_tests::consumer_saga::a_saga_refresh_failure_is_retryable_not_stable",
+    "file": "src/dst/tests/consumer_saga.rs"
+  },
+  {
+    "name": "a_saga_vanished_collection_is_idempotent_success",
+    "before": "dst::dst_tests::a_saga_vanished_collection_is_idempotent_success",
+    "after": "dst::dst_tests::consumer_saga::a_saga_vanished_collection_is_idempotent_success",
+    "file": "src/dst/tests/consumer_saga.rs"
+  },
+  {
+    "name": "a_saga_never_finalizes_under_a_pending_transition",
+    "before": "dst::dst_tests::a_saga_never_finalizes_under_a_pending_transition",
+    "after": "dst::dst_tests::consumer_saga::a_saga_never_finalizes_under_a_pending_transition",
+    "file": "src/dst/tests/consumer_saga.rs"
+  },
+  {
+    "name": "a_stale_delete_after_cross_key_recreation_is_untouched_204",
+    "before": "dst::dst_tests::a_stale_delete_after_cross_key_recreation_is_untouched_204",
+    "after": "dst::dst_tests::consumer_saga::a_stale_delete_after_cross_key_recreation_is_untouched_204",
+    "file": "src/dst/tests/consumer_saga.rs"
+  },
+  {
+    "name": "consumer_fence_survives_ownership_move",
+    "before": "dst::dst_tests::consumer_fence_survives_ownership_move",
+    "after": "dst::dst_tests::consumer_saga::consumer_fence_survives_ownership_move",
+    "file": "src/dst/tests/consumer_saga.rs"
+  },
+  {
+    "name": "reserved_namespace_refuses_customer_credentials",
+    "before": "dst::dst_tests::reserved_namespace_refuses_customer_credentials",
+    "after": "dst::dst_tests::billing_usage::reserved_namespace_refuses_customer_credentials",
+    "file": "src/dst/tests/billing_usage.rs"
+  },
+  {
+    "name": "read_meter_covers_the_matrix_exactly",
+    "before": "dst::dst_tests::read_meter_covers_the_matrix_exactly",
+    "after": "dst::dst_tests::billing_usage::read_meter_covers_the_matrix_exactly",
+    "file": "src/dst/tests/billing_usage.rs"
+  },
+  {
+    "name": "billing_meta_is_exact_durable_and_ackable",
+    "before": "dst::dst_tests::billing_meta_is_exact_durable_and_ackable",
+    "after": "dst::dst_tests::billing_usage::billing_meta_is_exact_durable_and_ackable",
+    "file": "src/dst/tests/billing_usage.rs"
+  },
+  {
+    "name": "usage_pipeline_end_to_end_exactly_once",
+    "before": "dst::dst_tests::usage_pipeline_end_to_end_exactly_once",
+    "after": "dst::dst_tests::billing_usage::usage_pipeline_end_to_end_exactly_once",
+    "file": "src/dst/tests/billing_usage.rs"
+  },
+  {
+    "name": "ops_events_journal_end_to_end",
+    "before": "dst::dst_tests::ops_events_journal_end_to_end",
+    "after": "dst::dst_tests::billing_usage::ops_events_journal_end_to_end",
+    "file": "src/dst/tests/billing_usage.rs"
+  },
+  {
+    "name": "ops_metrics_and_alerts_flow",
+    "before": "dst::dst_tests::ops_metrics_and_alerts_flow",
+    "after": "dst::dst_tests::billing_usage::ops_metrics_and_alerts_flow",
+    "file": "src/dst/tests/billing_usage.rs"
+  },
+  {
+    "name": "telemetry_crash_points_and_cost_gates",
+    "before": "dst::dst_tests::telemetry_crash_points_and_cost_gates",
+    "after": "dst::dst_tests::billing_usage::telemetry_crash_points_and_cost_gates",
+    "file": "src/dst/tests/billing_usage.rs"
+  },
+  {
+    "name": "read_batches_survive_crash_in_the_spool",
+    "before": "dst::dst_tests::read_batches_survive_crash_in_the_spool",
+    "after": "dst::dst_tests::billing_usage::read_batches_survive_crash_in_the_spool",
+    "file": "src/dst/tests/billing_usage.rs"
+  },
+  {
+    "name": "expiry_closes_the_storage_gauge",
+    "before": "dst::dst_tests::expiry_closes_the_storage_gauge",
+    "after": "dst::dst_tests::billing_maintenance::expiry_closes_the_storage_gauge",
+    "file": "src/dst/tests/billing_maintenance.rs"
+  },
+  {
+    "name": "maintenance_uses_frame_bytes_not_payload_bytes",
+    "before": "dst::dst_tests::maintenance_uses_frame_bytes_not_payload_bytes",
+    "after": "dst::dst_tests::billing_maintenance::maintenance_uses_frame_bytes_not_payload_bytes",
+    "file": "src/dst/tests/billing_maintenance.rs"
+  },
+  {
+    "name": "maintenance_failed_append_group_is_noop",
+    "before": "dst::dst_tests::maintenance_failed_append_group_is_noop",
+    "after": "dst::dst_tests::billing_maintenance::maintenance_failed_append_group_is_noop",
+    "file": "src/dst/tests/billing_maintenance.rs"
+  },
+  {
+    "name": "absorbed_boundary_and_maintenance_retire_atomically",
+    "before": "dst::dst_tests::absorbed_boundary_and_maintenance_retire_atomically",
+    "after": "dst::dst_tests::billing_maintenance::absorbed_boundary_and_maintenance_retire_atomically",
+    "file": "src/dst/tests/billing_maintenance.rs"
+  },
+  {
+    "name": "mixed_append_absorb_group_refreshes_the_progress_clock",
+    "before": "dst::dst_tests::mixed_append_absorb_group_refreshes_the_progress_clock",
+    "after": "dst::dst_tests::billing_maintenance::mixed_append_absorb_group_refreshes_the_progress_clock",
+    "file": "src/dst/tests/billing_maintenance.rs"
+  },
+  {
+    "name": "balanced_append_absorb_group_still_writes_progress",
+    "before": "dst::dst_tests::balanced_append_absorb_group_still_writes_progress",
+    "after": "dst::dst_tests::billing_maintenance::balanced_append_absorb_group_still_writes_progress",
+    "file": "src/dst/tests/billing_maintenance.rs"
+  },
+  {
+    "name": "over_retirement_fails_the_group_and_preserves_the_boundary",
+    "before": "dst::dst_tests::over_retirement_fails_the_group_and_preserves_the_boundary",
+    "after": "dst::dst_tests::billing_maintenance::over_retirement_fails_the_group_and_preserves_the_boundary",
+    "file": "src/dst/tests/billing_maintenance.rs"
+  },
+  {
+    "name": "legacy_rows_are_rebuilt_and_legacy_tails_repaired_on_open",
+    "before": "dst::dst_tests::legacy_rows_are_rebuilt_and_legacy_tails_repaired_on_open",
+    "after": "dst::dst_tests::billing_maintenance::legacy_rows_are_rebuilt_and_legacy_tails_repaired_on_open",
+    "file": "src/dst/tests/billing_maintenance.rs"
+  },
+  {
+    "name": "ownership_handoff_moves_backlog_without_aba",
+    "before": "dst::dst_tests::ownership_handoff_moves_backlog_without_aba",
+    "after": "dst::dst_tests::billing_maintenance::ownership_handoff_moves_backlog_without_aba",
+    "file": "src/dst/tests/billing_maintenance.rs"
+  },
+  {
+    "name": "overloaded_engine_sheds_while_sibling_admits",
+    "before": "dst::dst_tests::overloaded_engine_sheds_while_sibling_admits",
+    "after": "dst::dst_tests::admission_maintenance::overloaded_engine_sheds_while_sibling_admits",
+    "file": "src/dst/tests/admission_maintenance.rs"
+  },
+  {
+    "name": "progress_clock_trips_only_without_progress",
+    "before": "dst::dst_tests::progress_clock_trips_only_without_progress",
+    "after": "dst::dst_tests::admission_maintenance::progress_clock_trips_only_without_progress",
+    "file": "src/dst/tests/admission_maintenance.rs"
+  },
+  {
+    "name": "reserved_system_streams_are_recognized",
+    "before": "dst::dst_tests::reserved_system_streams_are_recognized",
+    "after": "dst::dst_tests::admission_maintenance::reserved_system_streams_are_recognized",
+    "file": "src/dst/tests/admission_maintenance.rs"
+  },
+  {
+    "name": "raw_hierarchical_append_sheds_typed_503_under_backlog",
+    "before": "dst::dst_tests::raw_hierarchical_append_sheds_typed_503_under_backlog",
+    "after": "dst::dst_tests::admission_maintenance::raw_hierarchical_append_sheds_typed_503_under_backlog",
+    "file": "src/dst/tests/admission_maintenance.rs"
+  },
+  {
+    "name": "split_child_sheds_while_sibling_child_admits",
+    "before": "dst::dst_tests::split_child_sheds_while_sibling_child_admits",
+    "after": "dst::dst_tests::admission_maintenance::split_child_sheds_while_sibling_child_admits",
+    "file": "src/dst/tests/admission_maintenance.rs"
+  },
+  {
+    "name": "ownership_replay_wins_over_a_latched_local_engine",
+    "before": "dst::dst_tests::ownership_replay_wins_over_a_latched_local_engine",
+    "after": "dst::dst_tests::admission_maintenance::ownership_replay_wins_over_a_latched_local_engine",
+    "file": "src/dst/tests/admission_maintenance.rs"
+  },
+  {
+    "name": "first_request_waits_for_restoration_then_sees_the_restored_ledger",
+    "before": "dst::dst_tests::first_request_waits_for_restoration_then_sees_the_restored_ledger",
+    "after": "dst::dst_tests::admission_maintenance::first_request_waits_for_restoration_then_sees_the_restored_ledger",
+    "file": "src/dst/tests/admission_maintenance.rs"
+  },
+  {
+    "name": "reserved_streams_append_through_a_latched_engine",
+    "before": "dst::dst_tests::reserved_streams_append_through_a_latched_engine",
+    "after": "dst::dst_tests::admission_maintenance::reserved_streams_append_through_a_latched_engine",
+    "file": "src/dst/tests/admission_maintenance.rs"
+  },
+  {
+    "name": "debug_load_reports_typed_limiter_and_frame_totals",
+    "before": "dst::dst_tests::debug_load_reports_typed_limiter_and_frame_totals",
+    "after": "dst::dst_tests::admission_maintenance::debug_load_reports_typed_limiter_and_frame_totals",
+    "file": "src/dst/tests/admission_maintenance.rs"
+  },
+  {
+    "name": "cold_shard_maintenance_debt_survives_the_sweep_and_drains",
+    "before": "dst::dst_tests::cold_shard_maintenance_debt_survives_the_sweep_and_drains",
+    "after": "dst::dst_tests::runtime_sweep::cold_shard_maintenance_debt_survives_the_sweep_and_drains",
+    "file": "src/dst/tests/runtime_sweep.rs"
+  },
+  {
+    "name": "sweep_residency_bound_rotates_over_many_indebted_shards",
+    "before": "dst::dst_tests::sweep_residency_bound_rotates_over_many_indebted_shards",
+    "after": "dst::dst_tests::runtime_sweep::sweep_residency_bound_rotates_over_many_indebted_shards",
+    "file": "src/dst/tests/runtime_sweep.rs"
+  },
+  {
+    "name": "sweep_peak_open_never_exceeds_the_budget",
+    "before": "dst::dst_tests::sweep_peak_open_never_exceeds_the_budget",
+    "after": "dst::dst_tests::runtime_sweep::sweep_peak_open_never_exceeds_the_budget",
+    "file": "src/dst/tests/runtime_sweep.rs"
+  },
+  {
+    "name": "customer_race_into_a_sweep_opened_engine_prevents_its_close",
+    "before": "dst::dst_tests::customer_race_into_a_sweep_opened_engine_prevents_its_close",
+    "after": "dst::dst_tests::runtime_sweep::customer_race_into_a_sweep_opened_engine_prevents_its_close",
+    "file": "src/dst/tests/runtime_sweep.rs"
+  },
+  {
+    "name": "custody_declines_on_prior_external_use",
+    "before": "dst::dst_tests::custody_declines_on_prior_external_use",
+    "after": "dst::dst_tests::runtime_sweep::custody_declines_on_prior_external_use",
+    "file": "src/dst/tests/runtime_sweep.rs"
+  },
+  {
+    "name": "internal_touch_does_not_leak_an_engine_from_the_rotation",
+    "before": "dst::dst_tests::internal_touch_does_not_leak_an_engine_from_the_rotation",
+    "after": "dst::dst_tests::runtime_sweep::internal_touch_does_not_leak_an_engine_from_the_rotation",
+    "file": "src/dst/tests/runtime_sweep.rs"
+  },
+  {
+    "name": "tombstone_walk_peak_residency_stays_under_the_budget",
+    "before": "dst::dst_tests::tombstone_walk_peak_residency_stays_under_the_budget",
+    "after": "dst::dst_tests::runtime_sweep::tombstone_walk_peak_residency_stays_under_the_budget",
+    "file": "src/dst/tests/runtime_sweep.rs"
+  },
+  {
+    "name": "tombstone_walk_fairness_under_occupied_budget",
+    "before": "dst::dst_tests::tombstone_walk_fairness_under_occupied_budget",
+    "after": "dst::dst_tests::runtime_sweep::tombstone_walk_fairness_under_occupied_budget",
+    "file": "src/dst/tests/runtime_sweep.rs"
+  },
+  {
+    "name": "revoked_close_keeps_the_identical_engine_with_no_new_open",
+    "before": "dst::dst_tests::revoked_close_keeps_the_identical_engine_with_no_new_open",
+    "after": "dst::dst_tests::runtime_sweep::revoked_close_keeps_the_identical_engine_with_no_new_open",
+    "file": "src/dst/tests/runtime_sweep.rs"
+  },
+  {
+    "name": "dab_transitions_matrix_leaves_foreign_streams_byte_identical",
+    "before": "dst::dst_tests::dab_transitions_matrix_leaves_foreign_streams_byte_identical",
+    "after": "dst::dst_tests::security_noninterference::dab_transitions_matrix_leaves_foreign_streams_byte_identical",
+    "file": "src/dst/tests/security_noninterference.rs"
+  },
+  {
+    "name": "dab_noninterference_property",
+    "before": "dst::dst_tests::dab_noninterference_property",
+    "after": "dst::dst_tests::security_noninterference::dab_noninterference_property",
+    "file": "src/dst/tests/security_noninterference.rs"
+  },
+  {
+    "name": "dab_seal_intent_crash_leaves_foreign_stream_intact",
+    "before": "dst::dst_tests::dab_seal_intent_crash_leaves_foreign_stream_intact",
+    "after": "dst::dst_tests::security_noninterference::dab_seal_intent_crash_leaves_foreign_stream_intact",
+    "file": "src/dst/tests/security_noninterference.rs"
+  },
+  {
+    "name": "raw_sse_terminates_at_workload_token_expiry",
+    "before": "dst::dst_tests::raw_sse_terminates_at_workload_token_expiry",
+    "after": "dst::dst_tests::security_workload::raw_sse_terminates_at_workload_token_expiry",
+    "file": "src/dst/tests/security_workload.rs"
+  },
+  {
+    "name": "internal_segment_read_refuses_live_semantics",
+    "before": "dst::dst_tests::internal_segment_read_refuses_live_semantics",
+    "after": "dst::dst_tests::security_workload::internal_segment_read_refuses_live_semantics",
+    "file": "src/dst/tests/security_workload.rs"
+  },
+  {
+    "name": "workload_jwt_operations_scope_the_internal_surface",
+    "before": "dst::dst_tests::workload_jwt_operations_scope_the_internal_surface",
+    "after": "dst::dst_tests::security_workload::workload_jwt_operations_scope_the_internal_surface",
+    "file": "src/dst/tests/security_workload.rs"
+  },
+  {
+    "name": "active_credential_omitted_then_same_version_active_is_refused",
+    "before": "dst::dst_tests::active_credential_omitted_then_same_version_active_is_refused",
+    "after": "dst::dst_tests::security_policy::active_credential_omitted_then_same_version_active_is_refused",
+    "file": "src/dst/tests/security_policy.rs"
+  },
+  {
+    "name": "project_omitted_then_same_policy_version_is_refused",
+    "before": "dst::dst_tests::project_omitted_then_same_policy_version_is_refused",
+    "after": "dst::dst_tests::security_policy::project_omitted_then_same_policy_version_is_refused",
+    "file": "src/dst/tests/security_policy.rs"
+  },
+  {
+    "name": "same_version_with_changed_content_is_refused",
+    "before": "dst::dst_tests::same_version_with_changed_content_is_refused",
+    "after": "dst::dst_tests::security_policy::same_version_with_changed_content_is_refused",
+    "file": "src/dst/tests/security_policy.rs"
+  },
+  {
+    "name": "stale_policy_fails_watch_capabilities_closed",
+    "before": "dst::dst_tests::stale_policy_fails_watch_capabilities_closed",
+    "after": "dst::dst_tests::watch_observation::stale_policy_fails_watch_capabilities_closed",
+    "file": "src/dst/tests/watch_observation.rs"
+  },
+  {
+    "name": "jwt_only_fleet_relay_succeeds",
+    "before": "dst::dst_tests::jwt_only_fleet_relay_succeeds",
+    "after": "dst::dst_tests::security_workload::jwt_only_fleet_relay_succeeds",
+    "file": "src/dst/tests/security_workload.rs"
+  },
+  {
+    "name": "rotated_workload_jwt_refreshes_and_retries",
+    "before": "dst::dst_tests::rotated_workload_jwt_refreshes_and_retries",
+    "after": "dst::dst_tests::security_workload::rotated_workload_jwt_refreshes_and_retries",
+    "file": "src/dst/tests/security_workload.rs"
+  },
+  {
+    "name": "max_streams_is_enforced_at_create",
+    "before": "dst::dst_tests::max_streams_is_enforced_at_create",
+    "after": "dst::dst_tests::quota_enforcement::max_streams_is_enforced_at_create",
+    "file": "src/dst/tests/quota_enforcement.rs"
+  },
+  {
+    "name": "queued_append_bytes_charge_and_release",
+    "before": "dst::dst_tests::queued_append_bytes_charge_and_release",
+    "after": "dst::dst_tests::quota_enforcement::queued_append_bytes_charge_and_release",
+    "file": "src/dst/tests/quota_enforcement.rs"
+  },
+  {
+    "name": "watch_waits_occupy_the_subscription_pool",
+    "before": "dst::dst_tests::watch_waits_occupy_the_subscription_pool",
+    "after": "dst::dst_tests::quota_enforcement::watch_waits_occupy_the_subscription_pool",
+    "file": "src/dst/tests/quota_enforcement.rs"
+  },
+  {
+    "name": "static_token_is_dead_in_workload_mode",
+    "before": "dst::dst_tests::static_token_is_dead_in_workload_mode",
+    "after": "dst::dst_tests::security_workload::static_token_is_dead_in_workload_mode",
+    "file": "src/dst/tests/security_workload.rs"
+  },
+  {
+    "name": "customer_streams_with_hash_count_and_release",
+    "before": "dst::dst_tests::customer_streams_with_hash_count_and_release",
+    "after": "dst::dst_tests::quota_enforcement::customer_streams_with_hash_count_and_release",
+    "file": "src/dst/tests/quota_enforcement.rs"
+  },
+  {
+    "name": "catalog_failure_fails_the_stream_seed_closed",
+    "before": "dst::dst_tests::catalog_failure_fails_the_stream_seed_closed",
+    "after": "dst::dst_tests::quota_enforcement::catalog_failure_fails_the_stream_seed_closed",
+    "file": "src/dst/tests/quota_enforcement.rs"
+  },
+  {
+    "name": "fork_cascade_hard_delete_releases_the_stream_slot",
+    "before": "dst::dst_tests::fork_cascade_hard_delete_releases_the_stream_slot",
+    "after": "dst::dst_tests::quota_enforcement::fork_cascade_hard_delete_releases_the_stream_slot",
+    "file": "src/dst/tests/quota_enforcement.rs"
+  },
+  {
+    "name": "max_streams_transition_seeds_from_reality",
+    "before": "dst::dst_tests::max_streams_transition_seeds_from_reality",
+    "after": "dst::dst_tests::quota_enforcement::max_streams_transition_seeds_from_reality",
+    "file": "src/dst/tests/quota_enforcement.rs"
+  },
+  {
+    "name": "jwks_kid_lifecycle_rules",
+    "before": "dst::dst_tests::jwks_kid_lifecycle_rules",
+    "after": "dst::dst_tests::security_policy::jwks_kid_lifecycle_rules",
+    "file": "src/dst/tests/security_policy.rs"
+  },
+  {
+    "name": "same_feed_generation_cannot_gain_entries",
+    "before": "dst::dst_tests::same_feed_generation_cannot_gain_entries",
+    "after": "dst::dst_tests::security_policy::same_feed_generation_cannot_gain_entries",
+    "file": "src/dst/tests/security_policy.rs"
+  },
+  {
+    "name": "kid_nudge_fired_before_the_waiter_is_not_lost",
+    "before": "dst::dst_tests::kid_nudge_fired_before_the_waiter_is_not_lost",
+    "after": "dst::dst_tests::security_policy::kid_nudge_fired_before_the_waiter_is_not_lost",
+    "file": "src/dst/tests/security_policy.rs"
+  },
+  {
+    "name": "keyed_tail_reads_serve_from_ring",
+    "before": "dst::dst_tests::keyed_tail_reads_serve_from_ring",
+    "after": "dst::dst_tests::reads_ring::keyed_tail_reads_serve_from_ring",
+    "file": "src/dst/tests/reads_ring.rs"
+  },
+  {
+    "name": "identity_of_resolves_the_workspace_at_event",
+    "before": "dst::dst_tests::identity_of_resolves_the_workspace_at_event",
+    "after": "dst::dst_tests::security_subscription::identity_of_resolves_the_workspace_at_event",
+    "file": "src/dst/tests/security_subscription.rs"
+  },
+  {
+    "name": "valid_transfer_bills_each_workspace_on_its_own_side",
+    "before": "dst::dst_tests::valid_transfer_bills_each_workspace_on_its_own_side",
+    "after": "dst::dst_tests::security_subscription::valid_transfer_bills_each_workspace_on_its_own_side",
+    "file": "src/dst/tests/security_subscription.rs"
+  },
+  {
+    "name": "transfer_terminates_established_subscriptions",
+    "before": "dst::dst_tests::transfer_terminates_established_subscriptions",
+    "after": "dst::dst_tests::security_subscription::transfer_terminates_established_subscriptions",
+    "file": "src/dst/tests/security_subscription.rs"
+  },
+  {
+    "name": "subscription_terminates_at_token_expiry",
+    "before": "dst::dst_tests::subscription_terminates_at_token_expiry",
+    "after": "dst::dst_tests::security_subscription::subscription_terminates_at_token_expiry",
+    "file": "src/dst/tests/security_subscription.rs"
+  },
+  {
+    "name": "suspension_terminates_established_subscriptions",
+    "before": "dst::dst_tests::suspension_terminates_established_subscriptions",
+    "after": "dst::dst_tests::security_subscription::suspension_terminates_established_subscriptions",
+    "file": "src/dst/tests/security_subscription.rs"
+  },
+  {
+    "name": "publish_rejects_workspace_change_without_ownership_bump",
+    "before": "dst::dst_tests::publish_rejects_workspace_change_without_ownership_bump",
+    "after": "dst::dst_tests::security_policy::publish_rejects_workspace_change_without_ownership_bump",
+    "file": "src/dst/tests/security_policy.rs"
+  },
+  {
+    "name": "publish_rejects_workspace_change_hidden_behind_omission",
+    "before": "dst::dst_tests::publish_rejects_workspace_change_hidden_behind_omission",
+    "after": "dst::dst_tests::security_policy::publish_rejects_workspace_change_hidden_behind_omission",
+    "file": "src/dst/tests/security_policy.rs"
+  },
+  {
+    "name": "omit_reintroduce_owner_swap_gains_no_authority",
+    "before": "dst::dst_tests::omit_reintroduce_owner_swap_gains_no_authority",
+    "after": "dst::dst_tests::security_policy::omit_reintroduce_owner_swap_gains_no_authority",
+    "file": "src/dst/tests/security_policy.rs"
+  },
+  {
+    "name": "subscription_terminates_when_only_the_grant_feed_goes_stale",
+    "before": "dst::dst_tests::subscription_terminates_when_only_the_grant_feed_goes_stale",
+    "after": "dst::dst_tests::security_revocation::subscription_terminates_when_only_the_grant_feed_goes_stale",
+    "file": "src/dst/tests/security_revocation.rs"
+  },
+  {
+    "name": "subscription_survives_when_both_feeds_refresh_before_the_deadline",
+    "before": "dst::dst_tests::subscription_survives_when_both_feeds_refresh_before_the_deadline",
+    "after": "dst::dst_tests::security_revocation::subscription_survives_when_both_feeds_refresh_before_the_deadline",
+    "file": "src/dst/tests/security_revocation.rs"
+  },
+  {
+    "name": "off_mode_subscriptions_are_untouched_by_staleness",
+    "before": "dst::dst_tests::off_mode_subscriptions_are_untouched_by_staleness",
+    "after": "dst::dst_tests::security_revocation::off_mode_subscriptions_are_untouched_by_staleness",
+    "file": "src/dst/tests/security_revocation.rs"
+  },
+  {
+    "name": "revocation_interrupts_active_direct_delivery",
+    "before": "dst::dst_tests::revocation_interrupts_active_direct_delivery",
+    "after": "dst::dst_tests::security_revocation::revocation_interrupts_active_direct_delivery",
+    "file": "src/dst/tests/security_revocation.rs"
+  },
+  {
+    "name": "token_expiry_interrupts_slowly_progressing_delivery",
+    "before": "dst::dst_tests::token_expiry_interrupts_slowly_progressing_delivery",
+    "after": "dst::dst_tests::security_revocation::token_expiry_interrupts_slowly_progressing_delivery",
+    "file": "src/dst/tests/security_revocation.rs"
+  },
+  {
+    "name": "queued_frame_is_discarded_and_unbilled_at_revocation",
+    "before": "dst::dst_tests::queued_frame_is_discarded_and_unbilled_at_revocation",
+    "after": "dst::dst_tests::security_revocation::queued_frame_is_discarded_and_unbilled_at_revocation",
+    "file": "src/dst/tests/security_revocation.rs"
+  },
+  {
+    "name": "livefeed_shared_feed_revocation_gates_one_subscriber_only",
+    "before": "dst::dst_tests::livefeed_shared_feed_revocation_gates_one_subscriber_only",
+    "after": "dst::dst_tests::security_revocation::livefeed_shared_feed_revocation_gates_one_subscriber_only",
+    "file": "src/dst/tests/security_revocation.rs"
+  },
+  {
+    "name": "livefeed_source_swap_revocation_yields_zero_post_cutoff_frames",
+    "before": "dst::dst_tests::livefeed_source_swap_revocation_yields_zero_post_cutoff_frames",
+    "after": "dst::dst_tests::security_revocation::livefeed_source_swap_revocation_yields_zero_post_cutoff_frames",
+    "file": "src/dst/tests/security_revocation.rs"
+  },
+  {
+    "name": "lineage_sse_refuses_authorization_invalidated_before_body_construction",
+    "before": "dst::dst_tests::lineage_sse_refuses_authorization_invalidated_before_body_construction",
+    "after": "dst::dst_tests::security_subscription::lineage_sse_refuses_authorization_invalidated_before_body_construction",
+    "file": "src/dst/tests/security_subscription.rs"
+  },
+  {
+    "name": "a_benign_descriptor_conflict_never_fails_a_seal",
+    "before": "dst::dst_tests::a_benign_descriptor_conflict_never_fails_a_seal",
+    "after": "dst::dst_tests::seal_convergence::a_benign_descriptor_conflict_never_fails_a_seal",
+    "file": "src/dst/tests/seal_convergence.rs"
+  },
+  {
+    "name": "termination_reasons_count_exactly_once_per_subscription",
+    "before": "dst::dst_tests::termination_reasons_count_exactly_once_per_subscription",
+    "after": "dst::dst_tests::sse_delivery::termination_reasons_count_exactly_once_per_subscription",
+    "file": "src/dst/tests/sse_delivery.rs"
+  },
+  {
+    "name": "a_seal_interrupted_before_publication_resumes_on_retry",
+    "before": "dst::dst_tests::a_seal_interrupted_before_publication_resumes_on_retry",
+    "after": "dst::dst_tests::seal_convergence::a_seal_interrupted_before_publication_resumes_on_retry",
+    "file": "src/dst/tests/seal_convergence.rs"
+  },
+  {
+    "name": "concurrent_plain_seals_serialize_into_one_terminal_transition",
+    "before": "dst::dst_tests::concurrent_plain_seals_serialize_into_one_terminal_transition",
+    "after": "dst::dst_tests::seal_convergence::concurrent_plain_seals_serialize_into_one_terminal_transition",
+    "file": "src/dst/tests/seal_convergence.rs"
+  },
+  {
+    "name": "seal_converges_through_transient_commit_group_failures",
+    "before": "dst::dst_tests::seal_converges_through_transient_commit_group_failures",
+    "after": "dst::dst_tests::seal_convergence::seal_converges_through_transient_commit_group_failures",
+    "file": "src/dst/tests/seal_convergence.rs"
+  },
+  {
+    "name": "segment_close_receiver_scopes_authorizes_and_is_idempotent",
+    "before": "dst::dst_tests::segment_close_receiver_scopes_authorizes_and_is_idempotent",
+    "after": "dst::dst_tests::seal_convergence::segment_close_receiver_scopes_authorizes_and_is_idempotent",
+    "file": "src/dst/tests/seal_convergence.rs"
+  },
+  {
+    "name": "collection_seal_relays_segment_closes_to_the_foreign_owner",
+    "before": "dst::dst_tests::collection_seal_relays_segment_closes_to_the_foreign_owner",
+    "after": "dst::dst_tests::seal_convergence::collection_seal_relays_segment_closes_to_the_foreign_owner",
+    "file": "src/dst/tests/seal_convergence.rs"
+  },
+  {
+    "name": "livefeed_park_appends_seal_matches_golden_semantics",
+    "before": "dst::dst_tests::livefeed_park_appends_seal_matches_golden_semantics",
+    "after": "dst::dst_tests::livefeed_basics::livefeed_park_appends_seal_matches_golden_semantics",
+    "file": "src/dst/tests/livefeed_basics.rs"
+  },
+  {
+    "name": "livefeed_catches_up_from_beginning_cursor",
+    "before": "dst::dst_tests::livefeed_catches_up_from_beginning_cursor",
+    "after": "dst::dst_tests::livefeed_basics::livefeed_catches_up_from_beginning_cursor",
+    "file": "src/dst/tests/livefeed_basics.rs"
+  },
+  {
+    "name": "livefeed_two_subscribers_share_one_feed_and_one_source_read",
+    "before": "dst::dst_tests::livefeed_two_subscribers_share_one_feed_and_one_source_read",
+    "after": "dst::dst_tests::livefeed_basics::livefeed_two_subscribers_share_one_feed_and_one_source_read",
+    "file": "src/dst/tests/livefeed_basics.rs"
+  },
+  {
+    "name": "livefeed_revocation_terminates_the_subscription",
+    "before": "dst::dst_tests::livefeed_revocation_terminates_the_subscription",
+    "after": "dst::dst_tests::livefeed_basics::livefeed_revocation_terminates_the_subscription",
+    "file": "src/dst/tests/livefeed_basics.rs"
+  },
+  {
+    "name": "livefeed_keyed_lane_scopes_records_and_shares_preparation",
+    "before": "dst::dst_tests::livefeed_keyed_lane_scopes_records_and_shares_preparation",
+    "after": "dst::dst_tests::livefeed_basics::livefeed_keyed_lane_scopes_records_and_shares_preparation",
+    "file": "src/dst/tests/livefeed_basics.rs"
+  },
+  {
+    "name": "livefeed_fork_subscriptions_stitch_the_ancestor_chain",
+    "before": "dst::dst_tests::livefeed_fork_subscriptions_stitch_the_ancestor_chain",
+    "after": "dst::dst_tests::livefeed_basics::livefeed_fork_subscriptions_stitch_the_ancestor_chain",
+    "file": "src/dst/tests/livefeed_basics.rs"
+  },
+  {
+    "name": "livefeed_raw_surface_uses_the_raw_vocabulary",
+    "before": "dst::dst_tests::livefeed_raw_surface_uses_the_raw_vocabulary",
+    "after": "dst::dst_tests::livefeed_basics::livefeed_raw_surface_uses_the_raw_vocabulary",
+    "file": "src/dst/tests/livefeed_basics.rs"
+  },
+  {
+    "name": "livefeed_singleton_large_window_delivers_everything_exactly_once",
+    "before": "dst::dst_tests::livefeed_singleton_large_window_delivers_everything_exactly_once",
+    "after": "dst::dst_tests::livefeed_basics::livefeed_singleton_large_window_delivers_everything_exactly_once",
+    "file": "src/dst/tests/livefeed_basics.rs"
+  },
+  {
+    "name": "livefeed_keyed_all_foreign_history_is_progress_not_lag",
+    "before": "dst::dst_tests::livefeed_keyed_all_foreign_history_is_progress_not_lag",
+    "after": "dst::dst_tests::livefeed_basics::livefeed_keyed_all_foreign_history_is_progress_not_lag",
+    "file": "src/dst/tests/livefeed_basics.rs"
+  },
+  {
+    "name": "livefeed_exact_framing_mixed_surfaces_share_one_lane",
+    "before": "dst::dst_tests::livefeed_exact_framing_mixed_surfaces_share_one_lane",
+    "after": "dst::dst_tests::livefeed_basics::livefeed_exact_framing_mixed_surfaces_share_one_lane",
+    "file": "src/dst/tests/livefeed_basics.rs"
+  },
+  {
+    "name": "livefeed_exact_framing_mixed_surfaces_product_first",
+    "before": "dst::dst_tests::livefeed_exact_framing_mixed_surfaces_product_first",
+    "after": "dst::dst_tests::livefeed_basics::livefeed_exact_framing_mixed_surfaces_product_first",
+    "file": "src/dst/tests/livefeed_basics.rs"
+  },
+  {
+    "name": "livefeed_handoff_feed_advances_between_subscribe_and_session_start",
+    "before": "dst::dst_tests::livefeed_handoff_feed_advances_between_subscribe_and_session_start",
+    "after": "dst::dst_tests::livefeed_basics::livefeed_handoff_feed_advances_between_subscribe_and_session_start",
+    "file": "src/dst/tests/livefeed_basics.rs"
+  },
+  {
+    "name": "livefeed_ring_wrap_during_initial_handoff_recatchups",
+    "before": "dst::dst_tests::livefeed_ring_wrap_during_initial_handoff_recatchups",
+    "after": "dst::dst_tests::livefeed_basics::livefeed_ring_wrap_during_initial_handoff_recatchups",
+    "file": "src/dst/tests/livefeed_basics.rs"
+  },
+  {
+    "name": "livefeed_fork_foreign_only_window_is_progress",
+    "before": "dst::dst_tests::livefeed_fork_foreign_only_window_is_progress",
+    "after": "dst::dst_tests::livefeed_basics::livefeed_fork_foreign_only_window_is_progress",
+    "file": "src/dst/tests/livefeed_basics.rs"
+  },
+  {
+    "name": "livefeed_binary_base64_header_and_exact_bytes_out",
+    "before": "dst::dst_tests::livefeed_binary_base64_header_and_exact_bytes_out",
+    "after": "dst::dst_tests::livefeed_tail::livefeed_binary_base64_header_and_exact_bytes_out",
+    "file": "src/dst/tests/livefeed_tail.rs"
+  },
+  {
+    "name": "livefeed_seal_transcript_exact_tail",
+    "before": "dst::dst_tests::livefeed_seal_transcript_exact_tail",
+    "after": "dst::dst_tests::livefeed_tail::livefeed_seal_transcript_exact_tail",
+    "file": "src/dst/tests/livefeed_tail.rs"
+  },
+  {
+    "name": "livefeed_split_parked_subscriber_continues_in_place",
+    "before": "dst::dst_tests::livefeed_split_parked_subscriber_continues_in_place",
+    "after": "dst::dst_tests::livefeed_tail::livefeed_split_parked_subscriber_continues_in_place",
+    "file": "src/dst/tests/livefeed_tail.rs"
+  },
+  {
+    "name": "livefeed_seal_publication_race_converges_without_heartbeat",
+    "before": "dst::dst_tests::livefeed_seal_publication_race_converges_without_heartbeat",
+    "after": "dst::dst_tests::livefeed_tail::livefeed_seal_publication_race_converges_without_heartbeat",
+    "file": "src/dst/tests/livefeed_tail.rs"
+  },
+  {
+    "name": "livefeed_off_mode_subscription_ignores_staleness",
+    "before": "dst::dst_tests::livefeed_off_mode_subscription_ignores_staleness",
+    "after": "dst::dst_tests::livefeed_tail::livefeed_off_mode_subscription_ignores_staleness",
+    "file": "src/dst/tests/livefeed_tail.rs"
+  },
+  {
+    "name": "livefeed_empty_seal_single_final_control",
+    "before": "dst::dst_tests::livefeed_empty_seal_single_final_control",
+    "after": "dst::dst_tests::livefeed_tail::livefeed_empty_seal_single_final_control",
+    "file": "src/dst/tests/livefeed_tail.rs"
+  },
+  {
+    "name": "livefeed_no_up_to_date_while_backlog_is_undriven",
+    "before": "dst::dst_tests::livefeed_no_up_to_date_while_backlog_is_undriven",
+    "after": "dst::dst_tests::livefeed_tail::livefeed_no_up_to_date_while_backlog_is_undriven",
+    "file": "src/dst/tests/livefeed_tail.rs"
+  },
+  {
+    "name": "livefeed_late_attach_never_claims_stale_up_to_date",
+    "before": "dst::dst_tests::livefeed_late_attach_never_claims_stale_up_to_date",
+    "after": "dst::dst_tests::livefeed_tail::livefeed_late_attach_never_claims_stale_up_to_date",
+    "file": "src/dst/tests/livefeed_tail.rs"
+  },
+  {
+    "name": "livefeed_oversized_record_solo_in_place_shared_resumes_durably",
+    "before": "dst::dst_tests::livefeed_oversized_record_solo_in_place_shared_resumes_durably",
+    "after": "dst::dst_tests::livefeed_tail::livefeed_oversized_record_solo_in_place_shared_resumes_durably",
+    "file": "src/dst/tests/livefeed_tail.rs"
+  },
+  {
+    "name": "livefeed_budget_exhaustion_publishes_uncached_and_resumes",
+    "before": "dst::dst_tests::livefeed_budget_exhaustion_publishes_uncached_and_resumes",
+    "after": "dst::dst_tests::livefeed_tail::livefeed_budget_exhaustion_publishes_uncached_and_resumes",
+    "file": "src/dst/tests/livefeed_tail.rs"
+  },
+  {
+    "name": "fork_materialized_partial_respects_the_record_ceiling",
+    "before": "dst::dst_tests::fork_materialized_partial_respects_the_record_ceiling",
+    "after": "dst::dst_tests::livefeed_history::fork_materialized_partial_respects_the_record_ceiling",
+    "file": "src/dst/tests/livefeed_history.rs"
+  },
+  {
+    "name": "livefeed_remote_sealed_predecessor_streams_through_owner",
+    "before": "dst::dst_tests::livefeed_remote_sealed_predecessor_streams_through_owner",
+    "after": "dst::dst_tests::livefeed_history::livefeed_remote_sealed_predecessor_streams_through_owner",
+    "file": "src/dst/tests/livefeed_history.rs"
+  },
+  {
+    "name": "livefeed_rawkey_records_sse_survives_split",
+    "before": "dst::dst_tests::livefeed_rawkey_records_sse_survives_split",
+    "after": "dst::dst_tests::livefeed_history::livefeed_rawkey_records_sse_survives_split",
+    "file": "src/dst/tests/livefeed_history.rs"
+  },
+  {
+    "name": "livefeed_owner_movement_one_redirect_and_typed_cutoffs",
+    "before": "dst::dst_tests::livefeed_owner_movement_one_redirect_and_typed_cutoffs",
+    "after": "dst::dst_tests::livefeed_ownership::livefeed_owner_movement_one_redirect_and_typed_cutoffs",
+    "file": "src/dst/tests/livefeed_ownership.rs"
+  },
+  {
+    "name": "certification_seal_publish_delay_widens_the_gap",
+    "before": "dst::dst_tests::certification_seal_publish_delay_widens_the_gap",
+    "after": "dst::dst_tests::livefeed_ownership::certification_seal_publish_delay_widens_the_gap",
+    "file": "src/dst/tests/livefeed_ownership.rs"
+  },
+  {
+    "name": "livefeed_pending_transition_connect_drives_resume",
+    "before": "dst::dst_tests::livefeed_pending_transition_connect_drives_resume",
+    "after": "dst::dst_tests::livefeed_ownership::livefeed_pending_transition_connect_drives_resume",
+    "file": "src/dst/tests/livefeed_ownership.rs"
+  },
+  {
+    "name": "livefeed_parked_live_session_is_cut_off_by_engine_close",
+    "before": "dst::dst_tests::livefeed_parked_live_session_is_cut_off_by_engine_close",
+    "after": "dst::dst_tests::livefeed_ownership::livefeed_parked_live_session_is_cut_off_by_engine_close",
+    "file": "src/dst/tests/livefeed_ownership.rs"
+  },
+  {
+    "name": "livefeed_blackholed_peer_never_suppresses_heartbeats",
+    "before": "dst::dst_tests::livefeed_blackholed_peer_never_suppresses_heartbeats",
+    "after": "dst::dst_tests::livefeed_ownership::livefeed_blackholed_peer_never_suppresses_heartbeats",
+    "file": "src/dst/tests/livefeed_ownership.rs"
+  },
+  {
+    "name": "livefeed_seal_retry_is_one_task_per_feed_at_fanout",
+    "before": "dst::dst_tests::livefeed_seal_retry_is_one_task_per_feed_at_fanout",
+    "after": "dst::dst_tests::livefeed_ownership::livefeed_seal_retry_is_one_task_per_feed_at_fanout",
+    "file": "src/dst/tests/livefeed_ownership.rs"
+  },
+  {
+    "name": "record_ceiling_refuses_one_oversized_record_not_the_batch",
+    "before": "dst::dst_tests::record_ceiling_refuses_one_oversized_record_not_the_batch",
+    "after": "dst::dst_tests::livefeed_ownership::record_ceiling_refuses_one_oversized_record_not_the_batch",
+    "file": "src/dst/tests/livefeed_ownership.rs"
+  },
+  {
+    "name": "livefeed_budget_noisy_project_cannot_evict_another",
+    "before": "dst::dst_tests::livefeed_budget_noisy_project_cannot_evict_another",
+    "after": "dst::dst_tests::admission_memory::livefeed_budget_noisy_project_cannot_evict_another",
+    "file": "src/dst/tests/admission_memory.rs"
+  },
+  {
+    "name": "livefeed_delayed_reader_lands_on_the_current_scan_head",
+    "before": "dst::dst_tests::livefeed_delayed_reader_lands_on_the_current_scan_head",
+    "after": "dst::dst_tests::admission_memory::livefeed_delayed_reader_lands_on_the_current_scan_head",
+    "file": "src/dst/tests/admission_memory.rs"
+  },
+  {
+    "name": "livefeed_mass_disconnect_tears_down_within_deadline",
+    "before": "dst::dst_tests::livefeed_mass_disconnect_tears_down_within_deadline",
+    "after": "dst::dst_tests::admission_memory::livefeed_mass_disconnect_tears_down_within_deadline",
+    "file": "src/dst/tests/admission_memory.rs"
+  },
+  {
+    "name": "livefeed_split_during_initial_catchup_delivers_everything",
+    "before": "dst::dst_tests::livefeed_split_during_initial_catchup_delivers_everything",
+    "after": "dst::dst_tests::livefeed_swap::livefeed_split_during_initial_catchup_delivers_everything",
+    "file": "src/dst/tests/livefeed_swap.rs"
+  },
+  {
+    "name": "livefeed_keyed_lane_survives_split",
+    "before": "dst::dst_tests::livefeed_keyed_lane_survives_split",
+    "after": "dst::dst_tests::livefeed_swap::livefeed_keyed_lane_survives_split",
+    "file": "src/dst/tests/livefeed_swap.rs"
+  },
+  {
+    "name": "livefeed_raw_disconnects_without_terminal_on_split",
+    "before": "dst::dst_tests::livefeed_raw_disconnects_without_terminal_on_split",
+    "after": "dst::dst_tests::livefeed_swap::livefeed_raw_disconnects_without_terminal_on_split",
+    "file": "src/dst/tests/livefeed_swap.rs"
+  },
+  {
+    "name": "livefeed_two_sequential_splits_continue_in_place",
+    "before": "dst::dst_tests::livefeed_two_sequential_splits_continue_in_place",
+    "after": "dst::dst_tests::livefeed_swap::livefeed_two_sequential_splits_continue_in_place",
+    "file": "src/dst/tests/livefeed_swap.rs"
+  },
+  {
+    "name": "livefeed_delete_recreate_isolates_incarnations",
+    "before": "dst::dst_tests::livefeed_delete_recreate_isolates_incarnations",
+    "after": "dst::dst_tests::livefeed_swap::livefeed_delete_recreate_isolates_incarnations",
+    "file": "src/dst/tests/livefeed_swap.rs"
+  },
+  {
+    "name": "livefeed_split_cursor_decodes_to_segment_local_and_resumes",
+    "before": "dst::dst_tests::livefeed_split_cursor_decodes_to_segment_local_and_resumes",
+    "after": "dst::dst_tests::livefeed_swap::livefeed_split_cursor_decodes_to_segment_local_and_resumes",
+    "file": "src/dst/tests/livefeed_swap.rs"
+  },
+  {
+    "name": "livefeed_split_shared_subscribers_swap_once_deliver_twice",
+    "before": "dst::dst_tests::livefeed_split_shared_subscribers_swap_once_deliver_twice",
+    "after": "dst::dst_tests::livefeed_swap::livefeed_split_shared_subscribers_swap_once_deliver_twice",
+    "file": "src/dst/tests/livefeed_swap.rs"
+  },
+  {
+    "name": "livefeed_split_held_publication_handoff_is_prompt",
+    "before": "dst::dst_tests::livefeed_split_held_publication_handoff_is_prompt",
+    "after": "dst::dst_tests::livefeed_swap::livefeed_split_held_publication_handoff_is_prompt",
+    "file": "src/dst/tests/livefeed_swap.rs"
+  },
+  {
+    "name": "livefeed_split_seal_before_refresh_drains_then_terminates",
+    "before": "dst::dst_tests::livefeed_split_seal_before_refresh_drains_then_terminates",
+    "after": "dst::dst_tests::livefeed_swap::livefeed_split_seal_before_refresh_drains_then_terminates",
+    "file": "src/dst/tests/livefeed_swap.rs"
+  },
+  {
+    "name": "livefeed_raw_late_attach_after_swap_gets_no_lineage_scalars",
+    "before": "dst::dst_tests::livefeed_raw_late_attach_after_swap_gets_no_lineage_scalars",
+    "after": "dst::dst_tests::livefeed_swap::livefeed_raw_late_attach_after_swap_gets_no_lineage_scalars",
+    "file": "src/dst/tests/livefeed_swap.rs"
+  },
+  {
+    "name": "livefeed_swap_externally_adopts_child_engines",
+    "before": "dst::dst_tests::livefeed_swap_externally_adopts_child_engines",
+    "after": "dst::dst_tests::livefeed_swap::livefeed_swap_externally_adopts_child_engines",
+    "file": "src/dst/tests/livefeed_swap.rs"
+  },
+  {
+    "name": "livefeed_raw_swap_between_peek_and_attach_is_refused",
+    "before": "dst::dst_tests::livefeed_raw_swap_between_peek_and_attach_is_refused",
+    "after": "dst::dst_tests::livefeed_swap::livefeed_raw_swap_between_peek_and_attach_is_refused",
+    "file": "src/dst/tests/livefeed_swap.rs"
+  },
+  {
+    "name": "livefeed_refresh_installs_after_external_completion",
+    "before": "dst::dst_tests::livefeed_refresh_installs_after_external_completion",
+    "after": "dst::dst_tests::livefeed_swap::livefeed_refresh_installs_after_external_completion",
+    "file": "src/dst/tests/livefeed_swap.rs"
+  },
+  {
+    "name": "livefeed_connect_already_split_beginning_drains_lineage",
+    "before": "dst::dst_tests::livefeed_connect_already_split_beginning_drains_lineage",
+    "after": "dst::dst_tests::livefeed_history::livefeed_connect_already_split_beginning_drains_lineage",
+    "file": "src/dst/tests/livefeed_history.rs"
+  },
+  {
+    "name": "livefeed_connect_already_split_now",
+    "before": "dst::dst_tests::livefeed_connect_already_split_now",
+    "after": "dst::dst_tests::livefeed_history::livefeed_connect_already_split_now",
+    "file": "src/dst/tests/livefeed_history.rs"
+  },
+  {
+    "name": "livefeed_connect_already_split_cursor_in_sealed_predecessor",
+    "before": "dst::dst_tests::livefeed_connect_already_split_cursor_in_sealed_predecessor",
+    "after": "dst::dst_tests::livefeed_history::livefeed_connect_already_split_cursor_in_sealed_predecessor",
+    "file": "src/dst/tests/livefeed_history.rs"
+  },
+  {
+    "name": "livefeed_connect_already_split_cursor_positions",
+    "before": "dst::dst_tests::livefeed_connect_already_split_cursor_positions",
+    "after": "dst::dst_tests::livefeed_history::livefeed_connect_already_split_cursor_positions",
+    "file": "src/dst/tests/livefeed_history.rs"
+  },
+  {
+    "name": "livefeed_connect_already_split_sealed_stream",
+    "before": "dst::dst_tests::livefeed_connect_already_split_sealed_stream",
+    "after": "dst::dst_tests::livefeed_history::livefeed_connect_already_split_sealed_stream",
+    "file": "src/dst/tests/livefeed_history.rs"
+  },
+  {
+    "name": "livefeed_connect_after_two_sequential_splits",
+    "before": "dst::dst_tests::livefeed_connect_after_two_sequential_splits",
+    "after": "dst::dst_tests::livefeed_history::livefeed_connect_after_two_sequential_splits",
+    "file": "src/dst/tests/livefeed_history.rs"
+  },
+  {
+    "name": "livefeed_merge_continuation_in_place",
+    "before": "dst::dst_tests::livefeed_merge_continuation_in_place",
+    "after": "dst::dst_tests::livefeed_history::livefeed_merge_continuation_in_place",
+    "file": "src/dst/tests/livefeed_history.rs"
+  },
+  {
+    "name": "livefeed_cursor_now_uses_the_reconciled_source",
+    "before": "dst::dst_tests::livefeed_cursor_now_uses_the_reconciled_source",
+    "after": "dst::dst_tests::livefeed_history::livefeed_cursor_now_uses_the_reconciled_source",
+    "file": "src/dst/tests/livefeed_history.rs"
+  },
+  {
+    "name": "inflight_admission_answers_only_after_authentication",
+    "before": "dst::dst_tests::inflight_admission_answers_only_after_authentication",
+    "after": "dst::dst_tests::security_routes::inflight_admission_answers_only_after_authentication",
+    "file": "src/dst/tests/security_routes.rs"
+  },
+  {
+    "name": "project_memory_pressure_throttles_new_appends_only",
+    "before": "dst::dst_tests::project_memory_pressure_throttles_new_appends_only",
+    "after": "dst::dst_tests::admission_memory::project_memory_pressure_throttles_new_appends_only",
+    "file": "src/dst/tests/admission_memory.rs"
+  },
+  {
+    "name": "frame_debt_survives_restart_via_tail_seed",
+    "before": "dst::dst_tests::frame_debt_survives_restart_via_tail_seed",
+    "after": "dst::dst_tests::admission_memory::frame_debt_survives_restart_via_tail_seed",
+    "file": "src/dst/tests/admission_memory.rs"
+  },
+  {
+    "name": "cut_resume_never_skips_a_durable_record",
+    "before": "dst::dst_tests::cut_resume_never_skips_a_durable_record",
+    "after": "dst::dst_tests::persistence_faults::cut_resume_never_skips_a_durable_record",
+    "file": "src/dst/tests/persistence_faults.rs"
+  }
+]
