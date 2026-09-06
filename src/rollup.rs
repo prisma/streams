@@ -399,6 +399,26 @@ impl RollupSlot {
 
 pub struct UsageRollup {
     pub db: Arc<Db>,
+    close_rows_visited: std::sync::atomic::AtomicU64,
+}
+
+/// SlateDB scan_prefix subranges are SUFFIX-relative. Exclude the exact
+/// persisted cursor and let SlateDB enforce the prefix's upper bound.
+fn close_scan_range(
+    prefix: &[u8],
+    after: Option<&[u8]>,
+) -> anyhow::Result<(std::ops::Bound<Vec<u8>>, std::ops::Bound<Vec<u8>>)> {
+    use std::ops::Bound;
+    let lower = match after {
+        None => Bound::Unbounded,
+        Some(cursor) => Bound::Excluded(
+            cursor
+                .strip_prefix(prefix)
+                .ok_or_else(|| anyhow::anyhow!("month-close cursor outside expected prefix"))?
+                .to_vec(),
+        ),
+    };
+    Ok((lower, Bound::Unbounded))
 }
 
 /// Missing rows alone initialize state; corrupt/unavailable rows block progress.
@@ -489,7 +509,10 @@ impl UsageRollup {
                 .await
         })
         .await?;
-        Ok(UsageRollup { db: Arc::new(db) })
+        Ok(UsageRollup {
+            db: Arc::new(db),
+            close_rows_visited: Default::default(),
+        })
     }
 
     pub async fn cursor(&self) -> anyhow::Result<Option<String>> {
@@ -1366,6 +1389,11 @@ impl UsageRollup {
     /// resumes mid-month with no lost or repeated accrual (the carry is
     /// guarded by per-segment `final_seen`/boundary checks, so a replay
     /// applies zero).
+    pub fn close_rows_visited(&self) -> u64 {
+        self.close_rows_visited
+            .load(std::sync::atomic::Ordering::Relaxed)
+    }
+
     pub async fn close_month(&self, year: i32, month: u32, grace_ms: i64) -> anyhow::Result<usize> {
         // Round-22 item 9: chunks are bounded by ROWS AND BYTES — a
         // month of few-but-huge rows (a stream with thousands of
@@ -1389,13 +1417,16 @@ impl UsageRollup {
             let mut page: Vec<(Vec<u8>, SegmentState)> = Vec::new();
             let mut page_bytes = 0usize;
             {
-                let mut iter = self.db.scan_prefix(&b"segment/"[..], ..).await?;
+                let mut iter = self
+                    .db
+                    .scan_prefix(
+                        &b"segment/"[..],
+                        close_scan_range(b"segment/", after.as_deref())?,
+                    )
+                    .await?;
                 while let Some(kv) = iter.next().await? {
-                    if let Some(a) = &after
-                        && kv.key.as_ref() <= &a[..]
-                    {
-                        continue;
-                    }
+                    self.close_rows_visited
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     page_bytes += kv.value.len();
                     page.push((kv.key.to_vec(), decode_json::<SegmentState>(&kv.value)?));
                     // Byte-bound only once something is in the page —
@@ -1488,6 +1519,13 @@ impl UsageRollup {
             }
             wb.put(seg_cursor_key.clone(), last_key.clone());
             self.db.write(wb).await?;
+            #[cfg(test)]
+            if read_faults().lock().unwrap().remove(&(
+                Arc::as_ptr(&self.db) as usize,
+                b"stop-after-close-chunk".to_vec(),
+            )) {
+                anyhow::bail!("test interruption after committed close chunk");
+            }
             after = Some(last_key);
         }
         // ---- pass B: finalize the month's rows, chunked ----
@@ -1501,13 +1539,13 @@ impl UsageRollup {
             let mut page: Vec<(Vec<u8>, MonthRow)> = Vec::new();
             let mut page_bytes = 0usize;
             {
-                let mut iter = self.db.scan_prefix(&pfx[..], ..).await?;
+                let mut iter = self
+                    .db
+                    .scan_prefix(&pfx[..], close_scan_range(&pfx, fin_after.as_deref())?)
+                    .await?;
                 while let Some(kv) = iter.next().await? {
-                    if let Some(a) = &fin_after
-                        && kv.key.as_ref() <= &a[..]
-                    {
-                        continue;
-                    }
+                    self.close_rows_visited
+                        .fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                     page_bytes += kv.value.len();
                     page.push((kv.key.to_vec(), decode_json::<MonthRow>(&kv.value)?));
                     if page.len() >= CLOSE_CHUNK
@@ -2569,7 +2607,10 @@ mod accounting_failure_tests {
                 .await
                 .unwrap(),
         );
-        let r = UsageRollup { db: db.clone() };
+        let r = UsageRollup {
+            db: db.clone(),
+            close_rows_visited: Default::default(),
+        };
         r.apply_page(&[batch(0)], "c0").await.unwrap();
         let before = snapshot(&db).await;
         for key in [
@@ -2617,7 +2658,10 @@ mod accounting_failure_tests {
             .await
             .unwrap(),
         );
-        let r = UsageRollup { db: db.clone() };
+        let r = UsageRollup {
+            db: db.clone(),
+            close_rows_visited: Default::default(),
+        };
         r.apply_page(&[batch(0)], "c0").await.unwrap();
         for len in [0, 1, 2, 3, 4, 5, 6, 7, 9] {
             db.put(k_source("boot"), vec![0; len]).await.unwrap();
@@ -2647,5 +2691,105 @@ mod accounting_failure_tests {
         assert!(r.close_month(2026, 7, 0).await.is_err());
         assert_eq!(snapshot(&db).await, before);
         db.close().await.unwrap();
+    }
+}
+
+#[cfg(test)]
+mod close_seek_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r23_seek_boundaries_are_exclusive_and_prefix_bounded() {
+        let db = Db::builder(
+            "r23-boundary",
+            Arc::new(object_store::memory::InMemory::new()),
+        )
+        .build()
+        .await
+        .unwrap();
+        for key in [
+            "month/2026-06/a",
+            "month/2026-07/a",
+            "month/2026-07/b",
+            "month/2026-08/a",
+        ] {
+            db.put(key, b"row").await.unwrap();
+        }
+        let prefix = b"month/2026-07/";
+        let mut it = db
+            .scan_prefix(
+                prefix,
+                close_scan_range(prefix, Some(b"month/2026-07/a")).unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(
+            it.next().await.unwrap().unwrap().key.as_ref(),
+            b"month/2026-07/b"
+        );
+        assert!(it.next().await.unwrap().is_none());
+        assert!(close_scan_range(prefix, Some(b"month/2026-06/a")).is_err());
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r23_close_visits_scale_linearly_across_chunk_restart() {
+        for n in [1001usize, 2002] {
+            let db = Arc::new(
+                Db::builder(
+                    format!("r23-{n}"),
+                    Arc::new(object_store::memory::InMemory::new()),
+                )
+                .build()
+                .await
+                .unwrap(),
+            );
+            let mut wb = WriteBatch::new();
+            for segment in 0..n {
+                wb.put(
+                    k_segment("a", "p", "s", segment as u32),
+                    serde_json::to_vec(&SegmentState {
+                        account_id: "a".into(),
+                        stream_name: "orders".into(),
+                        owned_frame_bytes_current: 1,
+                        storage_accounted_through_ms: month_start_ms(2026, 7),
+                        ..Default::default()
+                    })
+                    .unwrap(),
+                );
+            }
+            db.write(wb).await.unwrap();
+            let first = UsageRollup {
+                db: db.clone(),
+                close_rows_visited: Default::default(),
+            };
+            read_faults().lock().unwrap().insert((
+                Arc::as_ptr(&db) as usize,
+                b"stop-after-close-chunk".to_vec(),
+            ));
+            assert!(first.close_month(2026, 7, 0).await.is_err());
+            let visited = first.close_rows_visited();
+            assert_eq!(visited, 1000);
+            drop(first);
+            let reopened = UsageRollup {
+                db: db.clone(),
+                close_rows_visited: Default::default(),
+            };
+            assert_eq!(reopened.close_month(2026, 7, 0).await.unwrap(), 1);
+            assert_eq!(
+                visited + reopened.close_rows_visited(),
+                n as u64 + 1,
+                "one visit per segment plus one shared monthly row"
+            );
+            let month = reopened
+                .month_row("2026-07", "a", "p", "s")
+                .await
+                .unwrap()
+                .unwrap();
+            let span = (month_start_ms(2026, 8) - month_start_ms(2026, 7)) as u128;
+            assert_eq!(month.storage_byte_ms(), span * n as u128);
+            assert_eq!(month.segments.len(), n);
+            db.close().await.unwrap();
+        }
     }
 }
