@@ -200,113 +200,17 @@ async fn resume_deletion(
     let mut cur_desc = desc.clone();
     for _round in 0..5 {
         let segs = consumer_segments(&cur_desc);
-        // The incarnation this round's sweep is bound to. A relayed
-        // step carries it so a peer can refuse the request outright if
-        // the name has since been recreated (round-19 ABA).
-        let round_epoch = cur_desc.epoch_bytes();
-        let sweeps = segs.iter().copied().map(|(seg_id, identity, route, _)| {
-            let state = state.clone();
-            let cname = cname.clone();
-            let name = name.clone();
-            let project = cur_desc.project_id.clone();
-            let steps_left = steps_left.clone();
-            async move {
-                let engine = match state.engine_for(&route).await {
-                    Ok(e) => e,
-                    Err(r) => {
-                        // Cross-owner sweep fan-out: run this segment's
-                        // DeleteStep loop on its owner. The borrow of r
-                        // ends before the await (axum Body is !Sync).
-                        let peer = r
-                            .owner
-                            .as_deref()
-                            .and_then(|owner| state.peer.url_for(owner));
-                        if let Some(base) = peer {
-                            let Some(stream_epoch) = round_epoch else {
-                                return Err((
-                                    "segment_unavailable",
-                                    format!(
-                                        "segment {seg_id}: no incarnation to bind the \
-                                         relayed sweep to; retry"
-                                    ),
-                                ));
-                            };
-                            let t = InternalTarget {
-                                project_id: project.clone(),
-                                stream_epoch,
-                                seg_id,
-                                identity,
-                            };
-                            return relay_sweep_segment(
-                                &state,
-                                &base,
-                                &name,
-                                &t,
-                                &cname,
-                                cgen + 1,
-                                &steps_left,
-                            )
-                            .await;
-                        }
-                        return Err((
-                            "segment_unavailable",
-                            format!(
-                                "segment {seg_id}'s owner is unavailable; the deletion \
-                                 is incomplete — retry"
-                            ),
-                        ));
-                    }
-                };
-                loop {
-                    if steps_left.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) <= 0 {
-                        return Err((
-                            "segment_cleanup_incomplete",
-                            format!(
-                                "segment {seg_id} still has rows after this request's \
-                                 cleanup budget; progress is durable — retry to resume"
-                            ),
-                        ));
-                    }
-                    match engine
-                        .submit_queue(
-                            identity,
-                            crate::queue::QueueOp::ConfigDeleteStep {
-                                consumer: cname.clone(),
-                                fence_below: cgen + 1,
-                                max_rows: CONSUMER_DELETE_STEP_ROWS,
-                                max_bytes: CONSUMER_DELETE_STEP_BYTES,
-                            },
-                        )
-                        .await
-                    {
-                        Ok(crate::queue::QueueOut::DeleteStep { complete: true, .. }) => {
-                            return Ok(());
-                        }
-                        Ok(crate::queue::QueueOut::DeleteStep {
-                            complete: false, ..
-                        }) => continue,
-                        Ok(_) => {
-                            return Err((
-                                "segment_cleanup_failed",
-                                format!(
-                                    "segment {seg_id} cleanup answered an unexpected \
-                                     outcome; the deletion is incomplete — retry"
-                                ),
-                            ));
-                        }
-                        Err(m) => {
-                            return Err((
-                                "segment_cleanup_failed",
-                                format!(
-                                    "segment {seg_id} cleanup failed ({m}); the \
-                                     deletion is incomplete — retry"
-                                ),
-                            ));
-                        }
-                    }
-                }
-            }
-        });
+        let target = SweepTarget {
+            name: name.clone(),
+            project: cur_desc.project_id.clone(),
+            epoch: cur_desc.epoch_bytes(),
+            consumer: cname.clone(),
+            generation: cgen,
+        };
+        let sweeps = segs
+            .iter()
+            .copied()
+            .map(|segment| sweep_segment(&state, &target, segment, &steps_left));
         use futures_util::StreamExt as _;
         let results: Vec<Result<(), (&'static str, String)>> = futures_util::stream::iter(sweeps)
             .buffer_unordered(CONSUMER_DELETE_SEGMENT_CONCURRENCY)
@@ -396,4 +300,121 @@ async fn resume_deletion(
         None,
         true,
     ))
+}
+
+/// The exact stream incarnation and consumer generation authorized for one
+/// topology round. Every local or relayed step shares the request's budget.
+struct SweepTarget {
+    name: String,
+    project: crate::tenant::ProjectId,
+    epoch: Option<[u8; 16]>,
+    consumer: String,
+    generation: u64,
+}
+async fn sweep_segment(
+    state: &Arc<ConsumerService>,
+    target: &SweepTarget,
+    segment: (u32, [u8; 16], [u8; 16], Option<u64>),
+    steps_left: &Arc<std::sync::atomic::AtomicI64>,
+) -> Result<(), (&'static str, String)> {
+    let (seg_id, identity, route, _) = segment;
+    let name = &target.name;
+    let project = &target.project;
+    let round_epoch = target.epoch;
+    let cname = &target.consumer;
+    let cgen = target.generation;
+    let engine = match state.engine_for(&route).await {
+        Ok(e) => e,
+        Err(r) => {
+            // Cross-owner sweep fan-out: run this segment's
+            // DeleteStep loop on its owner. The borrow of r
+            // ends before the await (axum Body is !Sync).
+            let peer = r
+                .owner
+                .as_deref()
+                .and_then(|owner| state.peer.url_for(owner));
+            if let Some(base) = peer {
+                let Some(stream_epoch) = round_epoch else {
+                    return Err((
+                        "segment_unavailable",
+                        format!(
+                            "segment {seg_id}: no incarnation to bind the \
+                         relayed sweep to; retry"
+                        ),
+                    ));
+                };
+                let t = InternalTarget {
+                    project_id: project.clone(),
+                    stream_epoch,
+                    seg_id,
+                    identity,
+                };
+                return relay_sweep_segment(
+                    &state,
+                    &base,
+                    &name,
+                    &t,
+                    &cname,
+                    cgen + 1,
+                    &steps_left,
+                )
+                .await;
+            }
+            return Err((
+                "segment_unavailable",
+                format!(
+                    "segment {seg_id}'s owner is unavailable; the deletion \
+                 is incomplete — retry"
+                ),
+            ));
+        }
+    };
+    loop {
+        if steps_left.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) <= 0 {
+            return Err((
+                "segment_cleanup_incomplete",
+                format!(
+                    "segment {seg_id} still has rows after this request's \
+                 cleanup budget; progress is durable — retry to resume"
+                ),
+            ));
+        }
+        match engine
+            .submit_queue(
+                identity,
+                crate::queue::QueueOp::ConfigDeleteStep {
+                    consumer: cname.clone(),
+                    fence_below: cgen + 1,
+                    max_rows: CONSUMER_DELETE_STEP_ROWS,
+                    max_bytes: CONSUMER_DELETE_STEP_BYTES,
+                },
+            )
+            .await
+        {
+            Ok(crate::queue::QueueOut::DeleteStep { complete: true, .. }) => {
+                return Ok(());
+            }
+            Ok(crate::queue::QueueOut::DeleteStep {
+                complete: false, ..
+            }) => continue,
+            Ok(_) => {
+                return Err((
+                    "segment_cleanup_failed",
+                    format!(
+                        "segment {seg_id} cleanup answered an unexpected \
+                     outcome; the deletion is incomplete — retry"
+                    ),
+                ));
+            }
+            Err(m) => {
+                return Err((
+                    "segment_cleanup_failed",
+                    format!(
+                        "segment {seg_id} cleanup failed ({m}); the \
+                     deletion is incomplete — retry"
+                    ),
+                ));
+            }
+        }
+    }
 }

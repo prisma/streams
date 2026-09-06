@@ -107,3 +107,7 @@ Two additional defects found during final audit are fixed: record ceilings are r
 ### R09 spool health inspection
 
 Final source audit found `ReadSpool::depth` still materialized the entire pending spool for each health read and converted scan failure to zero. It now reads the exact resident-row counter already rebuilt at open and updated on accepted spool puts/removals. Health inspection is constant work regardless of ledger backlog and cannot reinterpret a failed scan as an empty spool. This small follow-up is covered by the existing spool depth/replay tests in the final release suite.
+
+### R07 consumer phase follow-up
+
+Consumer pull delegates durable read coverage and lease-message encoding to focused phases. Their inputs retain the exact stream key/epoch, segment and consumer generation; lease submission, predecessor-first traversal, dead-letter settlement and wait bounds remain in the coordinator. Consumer deletion delegates each local/remote segment sweep with an explicit pinned target and the same shared step budget, while the coordinator retains map refresh, epoch verification and final tombstone publication. Both former long functions are now below the 200-line new-owner budget. Rust lib-test typechecking reported no consumer errors; the full source check encountered the concurrent history helper edit and final integrated release validation covers the consumer regressions.

@@ -99,56 +99,22 @@ pub(crate) async fn pull(
                     continue; // drained predecessor
                 }
             }
-            let handle = match engine.stream_handle(identity).await {
-                Ok(h) => h,
-                Err(e) => {
-                    return Err(failure(
-                        FailureClass::Internal,
-                        "internal",
-                        &e.to_string(),
-                        None,
-                        true,
-                    ));
-                }
-            };
-            state.keys.put(identity, skey.clone(), epoch);
-            let cursor = engine
-                .queue_cursor(identity, &cname, cgen)
-                .await
-                .map_err(|m| {
-                    failure(
-                        FailureClass::Unavailable,
-                        "queue_unavailable",
-                        &m.to_string(),
-                        None,
-                        true,
-                    )
-                })?;
-            let out = match crate::application::read::read_merged(
-                &skey,
-                &epoch,
-                &handle,
+            let DeliveryCoverage {
+                keys_map,
+                by_off,
+                covered_to,
+            } = read_coverage(
+                DeliveryRead {
+                    state: &state,
+                    key: &skey,
+                    epoch,
+                    consumer: &cname,
+                    generation: cgen,
+                },
                 &engine,
-                cursor,
-                None,
-                4 << 20,
-                crate::shard::Deliver::Durable,
+                identity,
             )
-            .await
-            {
-                Ok(o) => o,
-                Err(m) => {
-                    return Err(failure(FailureClass::Internal, "internal", &m, None, true));
-                }
-            };
-            let mut keys_map: std::collections::HashMap<u64, [u8; 16]> = Default::default();
-            let mut by_off: std::collections::HashMap<u64, (String, Bytes)> = Default::default();
-            let mut covered_to = cursor;
-            for r in &out.recs {
-                keys_map.insert(r.off, crate::crypto::stream_hash(&r.rkey));
-                by_off.insert(r.off, (r.rkey.clone(), r.payload.clone()));
-                covered_to = covered_to.max(r.off + 1);
-            }
+            .await?;
             #[cfg(test)]
             crate::failpoints::pause_pull_before_receive(&desc.name).await;
             let qout = engine
@@ -206,39 +172,18 @@ pub(crate) async fn pull(
             }
             if !leased.is_empty() {
                 let now = crate::shard::now_ms();
-                let mut messages = Vec::with_capacity(leased.len());
-                for (off, lease_gen, attempts, kh) in &leased {
-                    let Some((rkey, payload)) = by_off.get(off) else {
-                        continue;
-                    };
-                    let msg = crate::product_cursor::MessageId {
+                let messages = delivery_messages(
+                    MessageContext {
+                        desc: &desc,
+                        key: &skey,
                         epoch,
-                        key_hash: *kh,
-                        seg_id,
-                        offset: *off,
-                    };
-                    let lease = crate::product_cursor::LeaseToken {
-                        msg: msg.clone(),
-                        lease_gen: *lease_gen,
-                        consumer_gen: cgen,
+                        segment: seg_id,
+                        generation: cgen,
                         deadline_ms: now + visibility as i64,
-                    };
-                    let value: serde_json::Value = if desc.is_json() {
-                        serde_json::from_slice(payload).unwrap_or(serde_json::Value::Null)
-                    } else {
-                        use base64::Engine;
-                        serde_json::Value::String(
-                            base64::engine::general_purpose::STANDARD.encode(payload),
-                        )
-                    };
-                    messages.push(DeliveryMessage {
-                        id: msg.encode(&desc.project_id, &skey),
-                        routing_key: rkey.clone(),
-                        attempts: *attempts,
-                        lease_token: lease.encode(&desc.project_id, &skey),
-                        value,
-                    });
-                }
+                    },
+                    &leased,
+                    &by_off,
+                );
                 let delivered_payload: u64 = leased
                     .iter()
                     .filter_map(|(off, ..)| by_off.get(off))
@@ -269,6 +214,145 @@ pub(crate) async fn pull(
             descriptor: desc,
         });
     }
+}
+
+/// Encode only leases granted by the committer, with the same key, stream
+/// epoch, segment and consumer generation used for the durable Receive.
+struct MessageContext<'a> {
+    desc: &'a StreamDesc,
+    key: &'a crate::crypto::StreamKey,
+    epoch: [u8; 16],
+    segment: u32,
+    generation: u64,
+    deadline_ms: i64,
+}
+fn delivery_messages(
+    context: MessageContext<'_>,
+    leased: &[(u64, u32, u32, [u8; 16])],
+    by_off: &std::collections::HashMap<u64, (String, Bytes)>,
+) -> Vec<DeliveryMessage> {
+    let MessageContext {
+        desc,
+        key: skey,
+        epoch,
+        segment: seg_id,
+        generation: cgen,
+        deadline_ms,
+    } = context;
+    let mut messages = Vec::with_capacity(leased.len());
+    for (off, lease_gen, attempts, kh) in leased {
+        let Some((rkey, payload)) = by_off.get(off) else {
+            continue;
+        };
+        let msg = crate::product_cursor::MessageId {
+            epoch,
+            key_hash: *kh,
+            seg_id,
+            offset: *off,
+        };
+        let lease = crate::product_cursor::LeaseToken {
+            msg: msg.clone(),
+            lease_gen: *lease_gen,
+            consumer_gen: cgen,
+            deadline_ms,
+        };
+        let value: serde_json::Value = if desc.is_json() {
+            serde_json::from_slice(payload).unwrap_or(serde_json::Value::Null)
+        } else {
+            use base64::Engine;
+            serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(payload))
+        };
+        messages.push(DeliveryMessage {
+            id: msg.encode(&desc.project_id, &skey),
+            routing_key: rkey.clone(),
+            attempts: *attempts,
+            lease_token: lease.encode(&desc.project_id, &skey),
+            value,
+        });
+    }
+    messages
+}
+
+/// A durable read pins the stream key/epoch and consumer generation used by Receive.
+struct DeliveryRead<'a> {
+    state: &'a ConsumerService,
+    key: &'a crate::crypto::StreamKey,
+    epoch: [u8; 16],
+    consumer: &'a str,
+    generation: u64,
+}
+struct DeliveryCoverage {
+    keys_map: std::collections::HashMap<u64, [u8; 16]>,
+    by_off: std::collections::HashMap<u64, (String, Bytes)>,
+    covered_to: u64,
+}
+async fn read_coverage(
+    input: DeliveryRead<'_>,
+    engine: &Arc<crate::shard::ShardEngine>,
+    identity: [u8; 16],
+) -> Result<DeliveryCoverage, ConsumerFailure> {
+    let DeliveryRead {
+        state,
+        key: skey,
+        epoch,
+        consumer: cname,
+        generation: cgen,
+    } = input;
+    let handle = match engine.stream_handle(identity).await {
+        Ok(h) => h,
+        Err(e) => {
+            return Err(failure(
+                FailureClass::Internal,
+                "internal",
+                &e.to_string(),
+                None,
+                true,
+            ));
+        }
+    };
+    state.keys.put(identity, skey.clone(), epoch);
+    let cursor = engine
+        .queue_cursor(identity, &cname, cgen)
+        .await
+        .map_err(|m| {
+            failure(
+                FailureClass::Unavailable,
+                "queue_unavailable",
+                &m.to_string(),
+                None,
+                true,
+            )
+        })?;
+    let out = match crate::application::read::read_merged(
+        &skey,
+        &epoch,
+        &handle,
+        &engine,
+        cursor,
+        None,
+        4 << 20,
+        crate::shard::Deliver::Durable,
+    )
+    .await
+    {
+        Ok(o) => o,
+        Err(m) => {
+            return Err(failure(FailureClass::Internal, "internal", &m, None, true));
+        }
+    };
+    let mut keys_map: std::collections::HashMap<u64, [u8; 16]> = Default::default();
+    let mut by_off: std::collections::HashMap<u64, (String, Bytes)> = Default::default();
+    let mut covered_to = cursor;
+    for r in &out.recs {
+        keys_map.insert(r.off, crate::crypto::stream_hash(&r.rkey));
+        by_off.insert(r.off, (r.rkey.clone(), r.payload.clone()));
+        covered_to = covered_to.max(r.off + 1);
+    }
+    Ok(DeliveryCoverage {
+        keys_map,
+        by_off,
+        covered_to,
+    })
 }
 
 pub(crate) async fn settle(
