@@ -4332,7 +4332,7 @@ impl ShardEngine {
         }
 
         let mut tails = Vec::with_capacity(locals.len());
-        let mut ring_pub: Vec<(Arc<StreamHandle>, Vec<(u64, Bytes)>)> = Vec::new();
+        let mut ring_pub: Vec<commit_plan::RingPublication> = Vec::new();
         let mut signals = Vec::new();
         let mut changed = false;
         // R24-A (superseded unit; see below): payload bytes for the

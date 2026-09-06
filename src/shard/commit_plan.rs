@@ -27,20 +27,17 @@ pub enum EnqueueError {
     Closed,
 }
 
+type ReplyEffect<T, E> = (oneshot::Sender<Result<T, E>>, Result<T, E>);
+pub(super) type RingPublication = (Arc<StreamHandle>, Vec<(u64, Bytes)>);
+
 /// Effects whose truth requires the group's REMOTE durability sequence.
 /// No sender/tail/ring/touch escapes this plan before durable dispatch.
 #[derive(Default)]
 pub(super) struct DurableEffects {
-    pub acks: Vec<(
-        oneshot::Sender<Result<AppendAck, AppendErr>>,
-        Result<AppendAck, AppendErr>,
-    )>,
-    pub queue_acks: Vec<(
-        oneshot::Sender<Result<crate::queue::QueueOut, String>>,
-        Result<crate::queue::QueueOut, String>,
-    )>,
+    pub acks: Vec<ReplyEffect<AppendAck, AppendErr>>,
+    pub queue_acks: Vec<ReplyEffect<crate::queue::QueueOut, String>>,
     pub tails: Vec<(Arc<StreamHandle>, TailFields)>,
-    pub ring_pub: Vec<(Arc<StreamHandle>, Vec<(u64, Bytes)>)>,
+    pub ring_pub: Vec<RingPublication>,
     pub signals: Vec<AbsorbSignal>,
     pub touches: Vec<TouchFeed>,
     pub usage: Vec<(Arc<crate::usage::Counters>, u64, u64)>,
