@@ -7,6 +7,9 @@
 //! Scope remains seeded object-store fault injection; Tokio task scheduling
 //! is not claimed to be globally deterministic (see docs/DST.md).
 
+#[path = "tests/watch_admission.rs"]
+mod watch_admission;
+
 #[path = "tests/seal_cancellation.rs"]
 mod seal_cancellation;
 
@@ -208,8 +211,8 @@ mod review_security;
 #[path = "review_readiness.rs"]
 mod review_readiness;
 
-#[path = "tests/watch_admission.rs"]
-mod watch_admission;
-
 #[path = "tests/append_application.rs"]
 mod append_application;
+
+#[path = "tests/consumer_dlq.rs"]
+mod consumer_dlq;

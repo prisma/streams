@@ -30,7 +30,6 @@ pub use crate::tenant::RESERVED_ROOT;
 /// route matching happens before wildcard names (spec Stage 8 §4.1);
 /// with hierarchical names on one wildcard route, that means these
 /// cannot terminate a stream name.
-const RESERVED_FINAL_SEGMENTS: [&str; 3] = ["records", "consumers", "watches"];
 
 /// Stable product error shape (spec Stage 8 §11).
 pub fn perr(
@@ -64,76 +63,7 @@ pub fn perr(
 /// checks here and pinned agreement with a debug assertion; now the
 /// identity layer is THE validator and this type adds only what is
 /// product-specific.
-pub struct ProductStreamName(crate::tenant::CanonicalStreamName);
-
-/// Why a name is not product-addressable. Wire messages are pinned to
-/// the exact pre-WP-03 strings (characterization rule: same wire).
-pub enum ProductNameError {
-    Structural(crate::tenant::NameError),
-    ReservedSubresourceName,
-    SubresourceShapedName,
-}
-
-impl ProductNameError {
-    fn message(&self) -> &'static str {
-        use crate::tenant::NameError as N;
-        match self {
-            // The product surface collapses length problems into one
-            // message and reports positions never — exactly as before.
-            Self::Structural(N::Empty | N::TooLong { .. }) => {
-                "stream name must be 1-512 UTF-8 bytes"
-            }
-            Self::Structural(N::ControlChar { .. }) => "control characters are not allowed",
-            Self::Structural(N::EmptyComponent) => "empty path segments are not allowed",
-            Self::Structural(N::DotComponent) => "'.' and '..' segments are not allowed",
-            Self::Structural(N::ReservedRoot) => "the __ds namespace is reserved",
-            Self::ReservedSubresourceName => {
-                "'records', 'consumers' and 'watches' are reserved subresource names"
-            }
-            Self::SubresourceShapedName => {
-                "this name is already a subresource path (…/records, …/consumers/{name}, …/watches/…)"
-            }
-        }
-    }
-}
-
-impl TryFrom<&str> for ProductStreamName {
-    type Error = ProductNameError;
-
-    fn try_from(raw: &str) -> Result<Self, ProductNameError> {
-        // No structural rule is repeated here (PR 4.1): the canonical
-        // layer owns error precedence, including the historical
-        // `__ds/..` corner (structural problems before the reserved
-        // root); this adapter only maps one canonical error.
-        let canonical =
-            crate::tenant::CanonicalStreamName::new(raw).map_err(ProductNameError::Structural)?;
-        let segments: Vec<&str> = raw.split('/').collect();
-        if let Some(last) = segments.last()
-            && RESERVED_FINAL_SEGMENTS.contains(last)
-        {
-            return Err(ProductNameError::ReservedSubresourceName);
-        }
-        // A name that itself reads as a subresource path would be
-        // unaddressable: `x/consumers/records` as a COLLECTION can never
-        // be written, because that URL already means consumer "records"
-        // on collection `x`. Refuse it at creation rather than hand out
-        // a name whose own URL points somewhere else.
-        if split_subresource(raw).is_some() {
-            return Err(ProductNameError::SubresourceShapedName);
-        }
-        Ok(Self(canonical))
-    }
-}
-
-impl ProductStreamName {
-    pub fn as_str(&self) -> &str {
-        self.0.as_str()
-    }
-
-    pub fn into_canonical(self) -> crate::tenant::CanonicalStreamName {
-        self.0
-    }
-}
+pub use crate::application::names::{ProductNameError, ProductStreamName};
 
 /// Canonical stream-name validation (spec Stage 8 §4.1). The wildcard
 /// path arrives percent-decoded exactly once by the router; this
@@ -976,13 +906,6 @@ impl ProductAuthorization {
             _ => None,
         }
     }
-
-    fn into_principal(self) -> Option<crate::auth::RequestPrincipal> {
-        match self {
-            Self::Principal(principal) => Some(principal),
-            _ => None,
-        }
-    }
 }
 
 pub(crate) fn product_auth_gate(
@@ -1121,8 +1044,7 @@ pub async fn product_entry(
             .body(Body::empty())
             .unwrap();
     }
-    // Authentication proof is carried from the transport gate; the request
-    // already owns its one admission slot for the full handler lifetime.
+    // Entry owns verification and admission; preserve its explicit authority.
     let principal = authorization.principal().cloned();
     // Stage 5d: the VERIFIED principal selects the tenant-qualified
     // storage identity. Off/shadow requests (and §15 capability
@@ -1255,27 +1177,35 @@ pub async fn product_entry(
             name,
             consumer: cname,
         } => {
+            let access = match &authorization {
+                ProductAuthorization::Principal(p) => {
+                    crate::application::consumer::ConsumerAccess::Account(p)
+                }
+                ProductAuthorization::Deployment => {
+                    crate::application::consumer::ConsumerAccess::Deployment
+                }
+                ProductAuthorization::CapabilityCarrier | ProductAuthorization::Preflight => {
+                    return perr(
+                        StatusCode::FORBIDDEN,
+                        "unauthorized",
+                        "consumer authorization required",
+                        None,
+                        false,
+                    );
+                }
+            };
             return match (method.clone(), verb.as_deref()) {
                 (Method::PUT, None) => {
-                    product_consumer_put(
-                        state,
-                        &tenant,
-                        name,
-                        cname,
-                        headers,
-                        body,
-                        principal.as_ref(),
-                    )
-                    .await
+                    product_consumer_put(state, &tenant, name, cname, headers, body, access).await
                 }
                 (Method::GET, None) => {
-                    product_consumer_get(state, &tenant, name, cname, headers).await
+                    product_consumer_get(state, &tenant, name, cname, headers, access).await
                 }
                 (Method::DELETE, None) => {
-                    product_consumer_delete(state, &tenant, name, cname, headers).await
+                    product_consumer_delete(state, &tenant, name, cname, headers, access).await
                 }
                 (Method::POST, Some("pull")) => {
-                    product_consumer_pull(state, &tenant, name, cname, headers, body).await
+                    product_consumer_pull(state, &tenant, name, cname, headers, body, access).await
                 }
                 (Method::POST, Some("settle")) => {
                     let r = product_consumer_settle(
@@ -1285,6 +1215,7 @@ pub async fn product_entry(
                         cname,
                         headers,
                         body,
+                        access,
                     )
                     .await;
                     let ok = r.status().is_success();
@@ -1349,8 +1280,8 @@ pub async fn product_entry(
                     headers,
                     &query,
                     match &authorization {
-                        ProductAuthorization::Principal(principal) => {
-                            crate::application::watch::WatchAccess::AdmittedAccount(principal)
+                        ProductAuthorization::Principal(p) => {
+                            crate::application::watch::WatchAccess::AdmittedAccount(p)
                         }
                         ProductAuthorization::CapabilityCarrier => {
                             crate::application::watch::WatchAccess::CapabilityCarrier
@@ -1413,45 +1344,12 @@ pub async fn product_entry(
 /// `x/consumers/records`, where the trailing segment is a consumer
 /// named "records" and not a records subresource, since no collection
 /// may be called `x/consumers`.
-fn split_subresource(path: &str) -> Option<(&str, &str)> {
-    let seg: Vec<&str> = path.split('/').collect();
-    let n = seg.len();
-    // (segments consumed from the end, the shape's leading keyword)
-    let shapes: [(usize, &str); 7] = [
-        (4, "watches"),   // watches/{watch}/keys/{key}
-        (2, "watches"),   // watches/{watch}
-        (2, "consumers"), // consumers/{consumer}
-        (2, "usage"),     // usage/current
-        (1, "watches"),   // watches
-        (1, "records"),   // records
-        (1, "usage"),     // usage (§10 customer lookup)
-    ];
-    for (take, head) in shapes {
-        if n <= take || seg[n - take] != head {
-            continue;
-        }
-        if take == 4 && seg[n - 2] != "keys" {
-            continue;
-        }
-        let stream_len: usize = seg[..n - take].iter().map(|s| s.len() + 1).sum();
-        let stream = &path[..stream_len - 1];
-        if stream.is_empty() || !addressable_name(stream) {
-            continue;
-        }
-        return Some((stream, &path[stream_len..]));
-    }
-    None
-}
+use crate::application::names::split_subresource;
 
 /// Whether a prefix could be a collection name at all. A name may not
 /// end in a reserved subresource word (enforced at create), so a
 /// candidate split that would require one is not a real split.
-fn addressable_name(name: &str) -> bool {
-    !name
-        .rsplit('/')
-        .next()
-        .is_some_and(|last| RESERVED_FINAL_SEGMENTS.contains(&last))
-}
+use crate::application::names::addressable_name;
 
 fn product_key(headers: &HeaderMap) -> Option<String> {
     headers
@@ -3424,126 +3322,12 @@ async fn product_scan(
 
 // ---- Stage 2a: consumer groups --------------------------------------
 
-fn valid_consumer_name(n: &str) -> Option<String> {
-    if n.is_empty()
-        || n.len() > 128
-        || n.contains('/')
-        || n == "."
-        || n == ".."
-        || n.chars().any(|c| c.is_control())
-        || n.contains(':')
-    {
-        return None;
-    }
-    Some(n.to_string())
-}
+use crate::application::names::valid_consumer_name;
 
 /// (desc, stream key, epoch) or an error response — the shared entry
 /// discipline for every consumer operation.
-async fn consumer_ctx(
-    state: &Arc<AppState>,
-    tenant: &crate::tenant::ProjectId,
-    name: &str,
-    headers: &HeaderMap,
-) -> Result<(StreamDesc, crate::crypto::StreamKey, [u8; 16]), Response> {
-    let Some(key_b64) = product_key(headers) else {
-        return Err(perr(
-            StatusCode::BAD_REQUEST,
-            "missing_key",
-            "Prisma-Encryption-Key required",
-            None,
-            false,
-        ));
-    };
-    let desc = match state.registry.get(&tenant.stream_ref(name)).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => {
-            if crate::http::initializing(&d) {
-                return Err(perr(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "creating",
-                    "stream is still being created; retry",
-                    None,
-                    true,
-                ));
-            }
-            d
-        }
-        Ok(_) => {
-            return Err(perr(
-                StatusCode::NOT_FOUND,
-                "not_found",
-                "stream not found",
-                None,
-                false,
-            ));
-        }
-        Err(e) => {
-            return Err(perr(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &e.to_string(),
-                None,
-                true,
-            ));
-        }
-    };
-    match crate::http::check_key(Some(&key_b64), &desc) {
-        crate::http::KeyCheck::Ok(k, e) => Ok((desc, k, e)),
-        crate::http::KeyCheck::Wrong => Err(crate::audit::tag(
-            perr(
-                StatusCode::FORBIDDEN,
-                "wrong_key",
-                "encryption key mismatch",
-                None,
-                false,
-            ),
-            "wrong_key",
-        )),
-        _ => Err(perr(
-            StatusCode::BAD_REQUEST,
-            "missing_key",
-            "Prisma-Encryption-Key required",
-            None,
-            false,
-        )),
-    }
-}
 
 /// Config ops live on the PARENT identity's committer lane.
-async fn consumer_config_op(
-    state: &Arc<AppState>,
-    desc: &StreamDesc,
-    op: crate::queue::QueueOp,
-) -> Result<crate::queue::QueueOut, Response> {
-    let route = crate::crypto::RouteHash::for_stream(&desc.sref()).0;
-    let engine = state
-        .engine_for(&route)
-        .await
-        .map_err(translate_read_error)?;
-    engine
-        .submit_queue(desc.storage_hash(), op)
-        .await
-        .map_err(|m| {
-            perr(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &m,
-                None,
-                true,
-            )
-        })
-}
-
-fn consumer_cfg_json(cname: &str, cfg: &crate::queue::ConsumerConfig) -> String {
-    json!({
-        "name": cname,
-        "visibilityTimeoutMs": cfg.visibility_timeout_ms,
-        "maxAttempts": cfg.max_attempts,
-        "deadLetterStream": cfg.dead_letter_stream,
-        "maxBatchRecords": cfg.max_batch_records,
-    })
-    .to_string()
-}
 
 /// Opaque consumer version: `{stream_epoch, consumer_generation}`,
 /// base64url-encoded. Returned from consumer PUT/GET as
@@ -3552,28 +3336,83 @@ fn consumer_cfg_json(cname: &str, cfg: &crate::queue::ConsumerConfig) -> String 
 /// deleted the replacement consumer; an unpinned saga could rebind to
 /// a recreated stream). Not signed: possessing delete authorization is
 /// the capability, the token only pins WHICH incarnation it targets.
-pub(crate) fn consumer_version_token(epoch: &[u8; 16], generation: u64) -> String {
-    use base64::Engine;
-    let mut v = [0u8; 24];
-    v[..16].copy_from_slice(epoch);
-    v[16..].copy_from_slice(&generation.to_be_bytes());
-    base64::engine::general_purpose::URL_SAFE_NO_PAD.encode(v)
-}
+pub(crate) use crate::application::consumer::consumer_version_token;
 
-fn parse_consumer_version(tok: &str) -> Option<([u8; 16], u64)> {
-    use base64::Engine;
-    let v = base64::engine::general_purpose::URL_SAFE_NO_PAD
-        .decode(tok.as_bytes())
-        .ok()?;
-    if v.len() != 24 {
-        return None;
+fn consumer_failure_response(error: crate::application::consumer::ConsumerFailure) -> Response {
+    use crate::application::consumer::FailureClass as C;
+    if let Some(debt) = &error.deletion_debt {
+        tracing::debug!(stream=%debt.stream,consumer=%debt.consumer,generation=debt.generation,epoch=%crate::crypto::hex(&debt.epoch),code=error.code,"consumer cleanup remains resumable");
     }
-    let mut epoch = [0u8; 16];
-    epoch.copy_from_slice(&v[..16]);
-    let generation = u64::from_be_bytes(v[16..].try_into().ok()?);
-    Some((epoch, generation))
-}
 
+    if let Some(auth) = error.auth {
+        return auth_failure_response(&auth);
+    }
+    let status = match error.class {
+        C::Invalid => StatusCode::BAD_REQUEST,
+        C::Denied => StatusCode::FORBIDDEN,
+        C::Missing => StatusCode::NOT_FOUND,
+        C::Conflict => StatusCode::CONFLICT,
+        C::Unavailable => StatusCode::SERVICE_UNAVAILABLE,
+        C::Internal => StatusCode::INTERNAL_SERVER_ERROR,
+    };
+    let mut response = perr(
+        status,
+        error.code,
+        &error.message,
+        error.details,
+        error.retryable,
+    );
+    if error.code == "wrong_key" {
+        response = crate::audit::tag(response, "wrong_key");
+    }
+    if let Some(version) = error
+        .version
+        .and_then(|v| axum::http::HeaderValue::from_str(&v).ok())
+    {
+        response
+            .headers_mut()
+            .insert("prisma-consumer-version", version);
+    }
+    if let Some(owner) = error
+        .owner
+        .and_then(|v| axum::http::HeaderValue::from_str(&v).ok())
+    {
+        response.headers_mut().insert("streams-replay-to", owner);
+    }
+    response
+}
+fn consumer_config_response(
+    cname: &str,
+    out: crate::application::consumer::ConfigOutcome,
+) -> Response {
+    Response::builder()
+        .status(if out.created {
+            StatusCode::CREATED
+        } else {
+            StatusCode::OK
+        })
+        .header(header::CONTENT_TYPE, "application/json")
+        .header(header::CACHE_CONTROL, "no-store")
+        .header(
+            "prisma-consumer-version",
+            consumer_version_token(&out.epoch, out.record.generation),
+        )
+        .body(Body::from(
+            crate::application::consumer::config_value(cname, &out.record.config).to_string(),
+        ))
+        .unwrap()
+}
+fn consumer_key(headers: &HeaderMap) -> Result<String, Response> {
+    product_key(headers).ok_or_else(|| {
+        perr(
+            StatusCode::BAD_REQUEST,
+            "missing_key",
+            "Prisma-Encryption-Key required",
+            None,
+            false,
+        )
+    })
+}
 async fn product_consumer_put(
     state: Arc<AppState>,
     tenant: &crate::tenant::ProjectId,
@@ -3581,24 +3420,30 @@ async fn product_consumer_put(
     cname: String,
     headers: HeaderMap,
     body: Bytes,
-    principal: Option<&crate::auth::RequestPrincipal>,
+    access: crate::application::consumer::ConsumerAccess<'_>,
 ) -> Response {
-    let (desc, _k, epoch) = match consumer_ctx(&state, tenant, &name, &headers).await {
-        Ok(v) => v,
+    let key = match consumer_key(&headers) {
+        Ok(k) => k,
         Err(r) => return r,
     };
-    #[derive(serde::Deserialize, Default)]
-    #[serde(deny_unknown_fields, rename_all = "camelCase")]
-    struct Doc {
-        visibility_timeout_ms: Option<u32>,
-        max_attempts: Option<u32>,
-        dead_letter_stream: Option<String>,
-        max_batch_records: Option<u16>,
-    }
-    let doc: Doc = if body.is_empty() {
-        Doc::default()
+    let service = state.consumer_service();
+    let context = match service
+        .authorize(
+            &tenant.stream_ref(&name),
+            cname.clone(),
+            &key,
+            &access,
+            crate::tenant::Scope::ConsumersConfigure,
+        )
+        .await
+    {
+        Ok(c) => c,
+        Err(e) => return consumer_failure_response(e),
+    };
+    let doc = if body.is_empty() {
+        crate::application::consumer::ConfigInput::default()
     } else {
-        match serde_json::from_slice(&body) {
+        match serde_json::from_slice::<crate::application::consumer::ConfigInput>(&body) {
             Ok(d) => d,
             Err(e) => {
                 return perr(
@@ -3611,195 +3456,9 @@ async fn product_consumer_put(
             }
         }
     };
-    let mut cfg = crate::queue::ConsumerConfig::default();
-    if let Some(v) = doc.visibility_timeout_ms {
-        cfg.visibility_timeout_ms = v.clamp(1_000, 12 * 3600 * 1000);
-    }
-    if let Some(v) = doc.max_attempts {
-        cfg.max_attempts = v.clamp(1, 1_000);
-    }
-    if let Some(v) = doc.max_batch_records {
-        cfg.max_batch_records = v.clamp(1, 1_000);
-    }
-    if let Some(d) = doc.dead_letter_stream {
-        // §6.1 review item 4 — the compound rule, each leg independent:
-        // the GATE already authorized the source consumer
-        // (consumers.configure + prefix over the source); wiring a
-        // dead-letter target additionally takes dlq.configure AND the
-        // credential's prefix grant over the DESTINATION stream —
-        // same-project lookup alone is not authorization.
-        if let Some(p) = principal {
-            if let Err(e) = p.require(crate::tenant::Scope::DlqConfigure) {
-                return crate::audit::tag_project(auth_failure_response(&e), &p.project_id);
-            }
-            if let Err(e) = p.require_stream(&d) {
-                return crate::audit::tag_project(auth_failure_response(&e), &p.project_id);
-            }
-        }
-        if canonical_name(&d).is_err() {
-            return perr(
-                StatusCode::BAD_REQUEST,
-                "invalid_config",
-                "deadLetterStream is not a valid stream name",
-                None,
-                false,
-            );
-        }
-        // DLQ capability model. A dead-letter record is written with the
-        // SOURCE stream's encryption key, because that is the only key
-        // the delivery path holds — there is no key-exchange step and
-        // the server never stores stream keys. So the target must be a
-        // real, writable collection under THAT key, and configuring the
-        // link requires presenting a key valid for both. Validating it
-        // here turns a silent, permanent delivery block (the poisoned
-        // key stays leased forever while every DLQ append 403s) into an
-        // error the caller sees while it can still fix it.
-        if d == name {
-            return perr(
-                StatusCode::BAD_REQUEST,
-                "invalid_config",
-                "deadLetterStream must not be the source collection",
-                None,
-                false,
-            );
-        }
-        // The link binds inside the SOURCE collection's project — a
-        // dead-letter target in another project is unrepresentable.
-        let target = match state.registry.get(&desc.ref_in_project(&d)).await {
-            Ok(Some(t)) if crate::http::desc_alive(&t) && !crate::http::initializing(&t) => t,
-            Ok(_) => {
-                return perr(
-                    StatusCode::BAD_REQUEST,
-                    "unknown_dead_letter_stream",
-                    "deadLetterStream does not exist; create it first, with the same encryption key",
-                    None,
-                    false,
-                );
-            }
-            Err(_) => {
-                return perr(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "unavailable",
-                    "registry unavailable",
-                    None,
-                    true,
-                );
-            }
-        };
-        if target.sealed || target.sealing.is_some() {
-            return perr(
-                StatusCode::BAD_REQUEST,
-                "dead_letter_sealed",
-                "deadLetterStream is sealed and cannot accept dead-letter records",
-                None,
-                false,
-            );
-        }
-        let same_key = product_key(&headers).is_some_and(|kb| {
-            matches!(
-                crate::http::check_key(Some(&kb), &target),
-                crate::http::KeyCheck::Ok(..)
-            )
-        });
-        if !same_key {
-            return perr(
-                StatusCode::BAD_REQUEST,
-                "dead_letter_key_mismatch",
-                "deadLetterStream uses a different encryption key; dead-letter delivery writes with the source collection's key",
-                None,
-                false,
-            );
-        }
-        cfg.dead_letter_epoch = Some(target.stream_epoch.clone());
-        cfg.dead_letter_stream = Some(d);
-    }
-    let out = match consumer_config_op(
-        &state,
-        &desc,
-        crate::queue::QueueOp::ConfigPut {
-            consumer: cname.clone(),
-            cfg,
-        },
-    )
-    .await
-    {
-        Ok(o) => o,
-        Err(r) => return r,
-    };
-    match out {
-        crate::queue::QueueOut::Config {
-            conflict: true,
-            rec: Some(existing),
-            ..
-        } if existing.state == crate::queue::ConsumerLifecycle::Deleting => {
-            // The name is owned by an in-flight deletion until the
-            // saga settles; recreating now would race its fan-out.
-            // The response CARRIES the deleting incarnation's version
-            // token (round 18): if the client that started the
-            // deletion died without persisting it, this is the public
-            // way for ANY process to obtain the token and resume the
-            // saga (DELETE with it), instead of the consumer staying
-            // Deleting forever.
-            let mut r = perr(
-                StatusCode::CONFLICT,
-                "consumer_deleting",
-                "a deletion of this consumer is in progress; resume it by \
-                 retrying DELETE with the Prisma-Consumer-Version on this \
-                 response, or retry this create shortly",
-                None,
-                true,
-            );
-            if let Ok(v) = axum::http::HeaderValue::from_str(&consumer_version_token(
-                &epoch,
-                existing.generation,
-            )) {
-                r.headers_mut().insert("prisma-consumer-version", v);
-            }
-            r
-        }
-        crate::queue::QueueOut::Config {
-            conflict: true,
-            rec: Some(existing),
-            ..
-        } => {
-            let mut r = perr(
-                StatusCode::CONFLICT,
-                "consumer_config_conflict",
-                "consumer exists with different configuration",
-                serde_json::from_str(&consumer_cfg_json(&cname, &existing.config)).ok(),
-                false,
-            );
-            r.headers_mut().insert(
-                header::CACHE_CONTROL,
-                axum::http::HeaderValue::from_static("no-store"),
-            );
-            r
-        }
-        crate::queue::QueueOut::Config {
-            rec: Some(c),
-            created,
-            ..
-        } => Response::builder()
-            .status(if created {
-                StatusCode::CREATED
-            } else {
-                StatusCode::OK
-            })
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::CACHE_CONTROL, "no-store")
-            .header(
-                "Prisma-Consumer-Version",
-                consumer_version_token(&epoch, c.generation),
-            )
-            .body(Body::from(consumer_cfg_json(&cname, &c.config)))
-            .unwrap(),
-        _ => perr(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            "unexpected config outcome",
-            None,
-            true,
-        ),
+    match crate::application::consumer::put(context, doc, access).await {
+        Ok(out) => consumer_config_response(&cname, out),
+        Err(e) => consumer_failure_response(e),
     }
 }
 
@@ -3809,42 +3468,29 @@ async fn product_consumer_get(
     name: String,
     cname: String,
     headers: HeaderMap,
+    access: crate::application::consumer::ConsumerAccess<'_>,
 ) -> Response {
-    let (desc, _k, epoch) = match consumer_ctx(&state, tenant, &name, &headers).await {
-        Ok(v) => v,
+    let key = match consumer_key(&headers) {
+        Ok(k) => k,
         Err(r) => return r,
     };
-    match consumer_config_op(
-        &state,
-        &desc,
-        crate::queue::QueueOp::ConfigGet {
-            consumer: cname.clone(),
-        },
-    )
-    .await
+    let service = state.consumer_service();
+    let context = match service
+        .authorize(
+            &tenant.stream_ref(&name),
+            cname.clone(),
+            &key,
+            &access,
+            crate::tenant::Scope::MetadataRead,
+        )
+        .await
     {
-        Ok(crate::queue::QueueOut::Config { rec: Some(c), .. })
-            if c.state == crate::queue::ConsumerLifecycle::Active =>
-        {
-            Response::builder()
-                .status(StatusCode::OK)
-                .header(header::CONTENT_TYPE, "application/json")
-                .header(header::CACHE_CONTROL, "no-store")
-                .header(
-                    "Prisma-Consumer-Version",
-                    consumer_version_token(&epoch, c.generation),
-                )
-                .body(Body::from(consumer_cfg_json(&cname, &c.config)))
-                .unwrap()
-        }
-        Ok(_) => perr(
-            StatusCode::NOT_FOUND,
-            "unknown_consumer",
-            "no such consumer",
-            None,
-            false,
-        ),
-        Err(r) => r,
+        Ok(c) => c,
+        Err(e) => return consumer_failure_response(e),
+    };
+    match crate::application::consumer::get(context).await {
+        Ok(out) => consumer_config_response(&cname, out),
+        Err(e) => consumer_failure_response(e),
     }
 }
 
@@ -3853,12 +3499,8 @@ async fn product_consumer_get(
 /// many bounded, durably-committed steps — each retryable request makes
 /// monotone progress against the reduced durable row set instead of
 /// rebuilding one unbounded batch (round-17 P0).
-const CONSUMER_DELETE_STEP_ROWS: usize = 4096;
-const CONSUMER_DELETE_STEP_BYTES: usize = 1 << 20;
-const CONSUMER_DELETE_REQUEST_STEPS: u32 = 512;
 /// Segments are physically independent (own engines, own rows): sweep
 /// them concurrently, boundedly.
-const CONSUMER_DELETE_SEGMENT_CONCURRENCY: usize = 8;
 
 // ---- fleet-internal segment fan-out (cross-owner consumer ops) ------
 
@@ -3987,97 +3629,6 @@ pub(crate) fn verify_internal_target(
 /// Relay one segment's ConfigDeleteStep loop to its owner. Chunks the
 /// caller's remaining step budget so a relayed segment obeys the same
 /// per-request bound as a local one (durable progress either way).
-async fn relay_sweep_segment(
-    state: &Arc<AppState>,
-    base: &str,
-    name: &str,
-    target: &InternalTarget,
-    cname: &str,
-    fence_below: u64,
-    steps_left: &std::sync::Arc<std::sync::atomic::AtomicI64>,
-) -> Result<(), (&'static str, String)> {
-    let seg_id = target.seg_id;
-    /// Per-relay chunk. Reserved ATOMICALLY before the request goes out
-    /// (round-19): eight concurrent sweeps that each merely READ
-    /// steps_left could each ask for a full chunk and collectively blow
-    /// past the per-request step budget.
-    const RELAY_CHUNK: i64 = 128;
-    loop {
-        // Reserve first, refund the unused remainder after the reply —
-        // a load-then-send left the budget shared, not partitioned.
-        let mut reserved = 0i64;
-        loop {
-            let cur = steps_left.load(std::sync::atomic::Ordering::SeqCst);
-            if cur <= 0 {
-                break;
-            }
-            let take = cur.min(RELAY_CHUNK);
-            if steps_left
-                .compare_exchange(
-                    cur,
-                    cur - take,
-                    std::sync::atomic::Ordering::SeqCst,
-                    std::sync::atomic::Ordering::SeqCst,
-                )
-                .is_ok()
-            {
-                reserved = take;
-                break;
-            }
-        }
-        if reserved <= 0 {
-            return Err((
-                "segment_cleanup_incomplete",
-                format!(
-                    "segment {seg_id} still has rows after this request's \
-                     cleanup budget; progress is durable — retry to resume"
-                ),
-            ));
-        }
-        let mut req = crate::http::peer_client()
-            .post(format!(
-                "{base}/v1/internal/sweep-segment/{}",
-                crate::http::encode_stream_name_path(name)
-            ))
-            .timeout(std::time::Duration::from_secs(30))
-            .json(&json!({
-                "consumer": cname,
-                "segId": seg_id,
-                "fenceBelow": fence_below,
-                "maxSteps": reserved,
-            }));
-        for (k, v) in target.headers() {
-            req = req.header(k, v);
-        }
-        let mk = |bearer: Option<&str>| {
-            let mut req = req.try_clone().expect("fleet sweep request is clonable");
-            if let Some(t) = bearer {
-                req = req.header("authorization", format!("Bearer {t}"));
-            }
-            req
-        };
-        let reply: Option<serde_json::Value> = match state.peer.send(mk).await {
-            Ok(r) if r.status().is_success() => r.json().await.ok(),
-            _ => None,
-        };
-        let Some(v) = reply else {
-            // Refund: the peer may have used nothing at all.
-            steps_left.fetch_add(reserved, std::sync::atomic::Ordering::SeqCst);
-            return Err((
-                "segment_unavailable",
-                format!(
-                    "segment {seg_id}'s owner did not complete the relayed \
-                     sweep; the deletion is incomplete — retry"
-                ),
-            ));
-        };
-        let used = v["steps"].as_i64().unwrap_or(reserved).clamp(0, reserved);
-        steps_left.fetch_add(reserved - used, std::sync::atomic::Ordering::SeqCst);
-        if v["complete"].as_bool() == Some(true) {
-            return Ok(());
-        }
-    }
-}
 
 /// Fleet-internal sweep target: run bounded ConfigDeleteStep rounds for
 /// ONE locally-owned segment. fence_below arrives from the caller so
@@ -4148,44 +3699,24 @@ pub(crate) async fn internal_sweep_segment(
             false,
         );
     };
-    let engine = match state.engine_for(&route).await {
-        Ok(e) => e,
-        Err(r) => return r, // ownership moved: the 409 tells the relayer
-    };
-    let mut steps = 0i64;
-    loop {
-        if steps >= doc.max_steps.clamp(1, CONSUMER_DELETE_REQUEST_STEPS as i64) {
-            return json_ok(json!({"complete": false, "steps": steps}));
-        }
-        steps += 1;
-        match engine
-            .submit_queue(
+    match state
+        .consumer_service()
+        .sweep_local(
+            InternalTarget {
+                project_id: desc.project_id.clone(),
+                stream_epoch: desc.epoch(),
+                seg_id,
                 identity,
-                crate::queue::QueueOp::ConfigDeleteStep {
-                    consumer: doc.consumer.clone(),
-                    fence_below: doc.fence_below,
-                    max_rows: CONSUMER_DELETE_STEP_ROWS,
-                    max_bytes: CONSUMER_DELETE_STEP_BYTES,
-                },
-            )
-            .await
-        {
-            Ok(crate::queue::QueueOut::DeleteStep { complete: true, .. }) => {
-                return json_ok(json!({"complete": true, "steps": steps}));
-            }
-            Ok(crate::queue::QueueOut::DeleteStep {
-                complete: false, ..
-            }) => continue,
-            other => {
-                return perr(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "segment_cleanup_failed",
-                    &format!("relayed cleanup step failed: {other:?}"),
-                    None,
-                    true,
-                );
-            }
-        }
+            },
+            route,
+            doc.consumer,
+            doc.fence_below,
+            doc.max_steps,
+        )
+        .await
+    {
+        Ok(out) => json_ok(serde_json::to_value(out).expect("sweep outcome serializable")),
+        Err(e) => consumer_failure_response(e),
     }
 }
 
@@ -4247,61 +3778,28 @@ pub(crate) async fn internal_queue_cursor(
             false,
         );
     };
-    let engine = match state.engine_for(&route).await {
-        Ok(e) => e,
-        Err(r) => return r,
-    };
-    let cursor = engine
-        .queue_cursor(identity, &consumer, cgen)
+    match state
+        .consumer_service()
+        .queue_position(
+            InternalTarget {
+                project_id: desc.project_id.clone(),
+                stream_epoch: desc.epoch(),
+                seg_id,
+                identity,
+            },
+            route,
+            &consumer,
+            cgen,
+        )
         .await
-        .unwrap_or(0);
-    let local = match engine.stream_handle(identity).await {
-        Ok(h) => h.state.lock().unwrap().durable.next,
-        Err(_) => 0,
-    };
-    // Same adoption as the read path — the local counter understates a
-    // segment whose interim commits landed under another owner.
-    let tail = match engine.durable_absorbed(&identity).await {
-        Ok((remote, _)) => local.max(remote),
-        Err(_) => local,
-    };
-    json_ok(json!({"cursor": cursor, "tail": tail}))
+    {
+        Ok(out) => json_ok(serde_json::to_value(out).expect("queue position serializable")),
+        Err(e) => consumer_failure_response(e),
+    }
 }
 
 /// Relay a cursor/tail probe to a segment's owner. None on any failure
 /// — the caller falls back to its normal ownership error.
-async fn relay_queue_cursor(
-    state: &Arc<AppState>,
-    base: &str,
-    name: &str,
-    target: &InternalTarget,
-    cname: &str,
-    cgen: u64,
-) -> Option<(u64, u64)> {
-    let mut req = crate::http::peer_client()
-        .get(format!(
-            "{base}/v1/internal/queue-cursor/{}",
-            crate::http::encode_stream_name_path(name)
-        ))
-        .timeout(std::time::Duration::from_secs(15))
-        .header("streams-internal-consumer", cname)
-        .header("streams-internal-gen", cgen.to_string());
-    for (k, v) in target.headers() {
-        req = req.header(k, v);
-    }
-    let mk = |bearer: Option<&str>| {
-        let mut req = req.try_clone().expect("fleet GET request is clonable");
-        if let Some(t) = bearer {
-            req = req.header("authorization", format!("Bearer {t}"));
-        }
-        req
-    };
-    let v: serde_json::Value = match state.peer.send(mk).await {
-        Ok(r) if r.status().is_success() => r.json().await.ok()?,
-        _ => return None,
-    };
-    Some((v["cursor"].as_u64()?, v["tail"].as_u64()?))
-}
 
 /// Fleet-internal scan-page source: read_merged over the wire for ONE
 /// locally-owned segment, records with their routing keys (a raw page
@@ -4500,46 +3998,25 @@ async fn product_consumer_delete(
     name: String,
     cname: String,
     headers: HeaderMap,
+    access: crate::application::consumer::ConsumerAccess<'_>,
 ) -> Response {
-    // Entry ordering is DELIBERATE and differs from consumer_ctx
-    // (round 18): the version token's stream epoch is compared BEFORE
-    // the encryption key is validated. A client retrying a stale
-    // DELETE after the collection was deleted and recreated under a
-    // DIFFERENT key holds the OLD key — the honest answer is the
-    // no-touch 204 ("your target is gone"), not 403. Bearer
-    // authorization already ran at the route gate; the key check
-    // still guards every path that touches a LIVE target.
-    let Some(key_b64) = product_key(&headers) else {
-        return perr(
-            StatusCode::BAD_REQUEST,
-            "missing_key",
-            "Prisma-Encryption-Key required",
-            None,
-            false,
-        );
+    let key = match consumer_key(&headers) {
+        Ok(k) => k,
+        Err(r) => return r,
     };
-    let no_touch_204 = || {
-        Response::builder()
-            .status(StatusCode::NO_CONTENT)
-            .header(header::CACHE_CONTROL, "no-store")
-            .body(Body::empty())
-            .unwrap()
-    };
-    let Some(vtok) = headers
+    let Some(token) = headers
         .get("prisma-consumer-version")
         .and_then(|v| v.to_str().ok())
     else {
         return perr(
             StatusCode::BAD_REQUEST,
             "missing_consumer_version",
-            "DELETE requires Prisma-Consumer-Version (returned by consumer create/get, \
-             and by the consumer_deleting conflict); a deletion targets an incarnation, \
-             not a name",
+            "DELETE requires Prisma-Consumer-Version (returned by consumer create/get, and by the consumer_deleting conflict); a deletion targets an incarnation, not a name",
             None,
             false,
         );
     };
-    let Some((expect_epoch, expect_gen)) = parse_consumer_version(vtok) else {
+    let Some(version) = crate::application::consumer::parse_consumer_version(token) else {
         return perr(
             StatusCode::BAD_REQUEST,
             "invalid_consumer_version",
@@ -4548,417 +4025,22 @@ async fn product_consumer_delete(
             false,
         );
     };
-    let desc = match state.registry.get(&tenant.stream_ref(&name)).await {
-        Ok(Some(d)) if crate::http::desc_alive(&d) => {
-            if crate::http::initializing(&d) {
-                return perr(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "creating",
-                    "stream is still being created; retry",
-                    None,
-                    true,
-                );
-            }
-            d
-        }
-        Ok(_) => {
-            // The collection is gone; so is the token's target.
-            return no_touch_204();
-        }
-        Err(e) => {
-            return perr(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "unavailable",
-                &format!("registry unavailable: {e}"),
-                None,
-                true,
-            );
-        }
-    };
-    let Some(epoch) = desc.epoch_bytes() else {
-        return perr(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            "bad descriptor",
-            None,
-            true,
-        );
-    };
-    if expect_epoch != epoch {
-        // The stream incarnation the version was minted under no longer
-        // exists — the old target died with it. Idempotent success, the
-        // CURRENT stream untouched, and deliberately BEFORE the key
-        // check (the old client may hold a rotated-away key).
-        return no_touch_204();
-    }
-    // Same incarnation: from here on we may touch live state, so the
-    // key must validate.
-    if !matches!(
-        crate::http::check_key(Some(&key_b64), &desc),
-        crate::http::KeyCheck::Ok(..)
-    ) {
-        return crate::audit::tag(
-            perr(
-                StatusCode::FORBIDDEN,
-                "wrong_key",
-                "encryption key mismatch",
-                None,
-                false,
-            ),
-            "wrong_key",
-        );
-    }
-    // Collection-wide deletion as a GENERATION-FENCED SAGA (rounds
-    // 16-17). Invariant: 204 means the TARGETED INCARNATION's deletion
-    // is collection-wide — every segment's dead-generation rows are
-    // gone and no write of that generation can land afterwards. Any
-    // failure propagates; the retry (same endpoint, same version)
-    // resumes from the Deleting state and the durably reduced row set.
-    //
-    //   0. The request names an INCARNATION, not a name: the required
-    //      Prisma-Consumer-Version pins {stream epoch, consumer
-    //      generation}. A stale retry whose target no longer exists
-    //      gets an idempotent 204 and touches NOTHING (round-17 ABA).
-    //   1. Parent record: Active -> Deleting, fenced to the exact
-    //      generation. New pull/settle refuse from this instant.
-    //   2. Every segment (current AND predecessor — the pull lineage):
-    //      install the generation fence, then delete the dead
-    //      generations' rows in bounded steps, segments swept
-    //      concurrently. Any engine/submit failure -> 503, no 204.
-    //   3. Re-read the segment map — REFUSING a changed stream epoch —
-    //      and repeat until stable across a fan-out round (a split
-    //      racing the saga gets its new children swept too).
-    //   4. Parent record: Deleting -> Deleted (a TOMBSTONE, kept so
-    //      recreation allocates generation+1 and dead-generation
-    //      residue stays inert forever).
-    let rec = match consumer_config_op(
-        &state,
-        &desc,
-        crate::queue::QueueOp::ConfigGet {
-            consumer: cname.clone(),
-        },
+    match crate::application::consumer::delete(
+        state.consumer_service(),
+        tenant.stream_ref(&name),
+        cname,
+        key,
+        version,
+        access,
     )
     .await
     {
-        Ok(crate::queue::QueueOut::Config { rec, .. }) => rec,
-        Ok(_) => unreachable!("ConfigGet answers Config"),
-        Err(r) => return r,
-    };
-    let rec = match rec {
-        None => {
-            // The version claims a generation this server never made
-            // (or whose tombstone is gone — impossible pre-GC). With
-            // no record at all there is nothing to protect and nothing
-            // to do.
-            return no_touch_204();
-        }
-        Some(r) => r,
-    };
-    if rec.generation > expect_gen {
-        // The named generation is already dead and buried (the record
-        // has moved on — tombstone or a recreated consumer). The old
-        // target is gone; the CURRENT generation is another
-        // incarnation's property. Idempotent success, no mutation.
-        return no_touch_204();
-    }
-    if rec.generation < expect_gen {
-        // A version newer than the record is impossible from an honest
-        // client: refuse without mutating anything.
-        return perr(
-            StatusCode::CONFLICT,
-            "consumer_version_conflict",
-            "the presented consumer version is newer than the server's record",
-            None,
-            false,
-        );
-    }
-    if rec.state == crate::queue::ConsumerLifecycle::Deleted {
-        // Exactly the targeted generation, already fully deleted.
-        return no_touch_204();
-    }
-    let cgen = rec.generation;
-    if rec.state == crate::queue::ConsumerLifecycle::Active
-        && let Err(r) = consumer_config_op(
-            &state,
-            &desc,
-            crate::queue::QueueOp::ConfigLifecycle {
-                consumer: cname.clone(),
-                expect_gen: cgen,
-                deleting: true,
-            },
-        )
-        .await
-    {
-        return r;
-    }
-    // Fan out until the segment set is stable across a full round.
-    // Segments are swept CONCURRENTLY (bounded) and each segment is
-    // stepped to completion within this request's step budget.
-    let steps_left = std::sync::Arc::new(std::sync::atomic::AtomicI64::new(
-        CONSUMER_DELETE_REQUEST_STEPS as i64,
-    ));
-    let mut cur_desc = desc.clone();
-    for _round in 0..5 {
-        let segs = consumer_segments(&cur_desc);
-        // The incarnation this round's sweep is bound to. A relayed
-        // step carries it so a peer can refuse the request outright if
-        // the name has since been recreated (round-19 ABA).
-        let round_epoch = cur_desc.epoch_bytes();
-        let sweeps = segs.iter().copied().map(|(seg_id, identity, route, _)| {
-            let state = state.clone();
-            let cname = cname.clone();
-            let name = name.clone();
-            let project = cur_desc.project_id.clone();
-            let steps_left = steps_left.clone();
-            async move {
-                let engine = match state.engine_for(&route).await {
-                    Ok(e) => e,
-                    Err(r) => {
-                        // Cross-owner sweep fan-out: run this segment's
-                        // DeleteStep loop on its owner. The borrow of r
-                        // ends before the await (axum Body is !Sync).
-                        let peer = crate::http::replay_peer_url(&state, &r).map(|(_, b)| b);
-                        if let Some(base) = peer {
-                            let Some(stream_epoch) = round_epoch else {
-                                return Err((
-                                    "segment_unavailable",
-                                    format!(
-                                        "segment {seg_id}: no incarnation to bind the \
-                                         relayed sweep to; retry"
-                                    ),
-                                ));
-                            };
-                            let t = InternalTarget {
-                                project_id: project.clone(),
-                                stream_epoch,
-                                seg_id,
-                                identity,
-                            };
-                            return relay_sweep_segment(
-                                &state,
-                                &base,
-                                &name,
-                                &t,
-                                &cname,
-                                cgen + 1,
-                                &steps_left,
-                            )
-                            .await;
-                        }
-                        return Err((
-                            "segment_unavailable",
-                            format!(
-                                "segment {seg_id}'s owner is unavailable; the deletion \
-                                 is incomplete — retry"
-                            ),
-                        ));
-                    }
-                };
-                loop {
-                    if steps_left.fetch_sub(1, std::sync::atomic::Ordering::SeqCst) <= 0 {
-                        return Err((
-                            "segment_cleanup_incomplete",
-                            format!(
-                                "segment {seg_id} still has rows after this request's \
-                                 cleanup budget; progress is durable — retry to resume"
-                            ),
-                        ));
-                    }
-                    match engine
-                        .submit_queue(
-                            identity,
-                            crate::queue::QueueOp::ConfigDeleteStep {
-                                consumer: cname.clone(),
-                                fence_below: cgen + 1,
-                                max_rows: CONSUMER_DELETE_STEP_ROWS,
-                                max_bytes: CONSUMER_DELETE_STEP_BYTES,
-                            },
-                        )
-                        .await
-                    {
-                        Ok(crate::queue::QueueOut::DeleteStep { complete: true, .. }) => {
-                            return Ok(());
-                        }
-                        Ok(crate::queue::QueueOut::DeleteStep {
-                            complete: false, ..
-                        }) => continue,
-                        Ok(_) => {
-                            return Err((
-                                "segment_cleanup_failed",
-                                format!(
-                                    "segment {seg_id} cleanup answered an unexpected \
-                                     outcome; the deletion is incomplete — retry"
-                                ),
-                            ));
-                        }
-                        Err(m) => {
-                            return Err((
-                                "segment_cleanup_failed",
-                                format!(
-                                    "segment {seg_id} cleanup failed ({m}); the \
-                                     deletion is incomplete — retry"
-                                ),
-                            ));
-                        }
-                    }
-                }
-            }
-        });
-        use futures_util::StreamExt as _;
-        let results: Vec<Result<(), (&'static str, String)>> = futures_util::stream::iter(sweeps)
-            .buffer_unordered(CONSUMER_DELETE_SEGMENT_CONCURRENCY)
-            .collect::<Vec<_>>()
-            .await;
-        for r in results {
-            if let Err((code, msg)) = r {
-                return perr(StatusCode::SERVICE_UNAVAILABLE, code, &msg, None, true);
-            }
-        }
-        let mut swept_ids: Vec<u32> = segs.iter().map(|(id, ..)| *id).collect();
-        swept_ids.sort_unstable();
-        #[cfg(test)]
-        crate::failpoints::pause_consumer_saga_before_refresh(&name).await;
-        // FAIL-CLOSED refresh (round 18). Completion is proven by a
-        // SUCCESSFUL post-sweep read of the authoritative map: the
-        // segments swept this round must equal the segments visible
-        // AFTER the sweep, with no topology transition pending. The
-        // previous shape treated a refresh error — or a vanished
-        // descriptor — as "keep the cached map", which could let a
-        // stale pre-split map look stable for two rounds and publish
-        // a false collection-wide 204.
-        state.registry.invalidate(&tenant.stream_ref(&name));
-        let fresh = match state.registry.get(&tenant.stream_ref(&name)).await {
-            Ok(Some(d)) if crate::http::desc_alive(&d) => d,
-            Ok(_) => {
-                // The collection is gone mid-saga; so is the target.
-                // Nothing to finalize, nothing to touch.
-                return no_touch_204();
-            }
-            Err(e) => {
-                return perr(
-                    StatusCode::SERVICE_UNAVAILABLE,
-                    "segment_map_unverified",
-                    &format!(
-                        "cannot verify the segment map after cleanup ({e}); \
-                         the deletion is incomplete — retry"
-                    ),
-                    None,
-                    true,
-                );
-            }
-        };
-        // EPOCH PIN (round-17 P0): the refresh is by NAME, and the
-        // name may now belong to a recreated stream. This saga's
-        // authority extends only to the incarnation it targeted — a
-        // changed epoch means the old stream (and with it the old
-        // consumer) is gone. Idempotent success, replacement
-        // untouched.
-        if fresh.epoch_bytes() != Some(epoch) {
-            return no_touch_204();
-        }
-        let pending = fresh.segments.as_ref().is_some_and(|m| m.pending.is_some());
-        let mut fresh_ids: Vec<u32> = consumer_segments(&fresh)
-            .iter()
-            .map(|(id, ..)| *id)
-            .collect();
-        fresh_ids.sort_unstable();
-        if !pending && fresh_ids == swept_ids {
-            // Everything that can hold this consumer's rows was swept
-            // AFTER its fence went up, and the authoritative map —
-            // read successfully, transition-free — confirms no segment
-            // escaped the sweep. (A split landing after this read
-            // cannot mint state for a Deleting consumer: pulls consult
-            // the parent record first.)
-            if let Err(r) = consumer_config_op(
-                &state,
-                &desc,
-                crate::queue::QueueOp::ConfigLifecycle {
-                    consumer: cname.clone(),
-                    expect_gen: cgen,
-                    deleting: false,
-                },
-            )
-            .await
-            {
-                return r;
-            }
-            return Response::builder()
-                .status(StatusCode::NO_CONTENT)
-                .header(header::CACHE_CONTROL, "no-store")
-                .body(Body::empty())
-                .unwrap();
-        }
-        cur_desc = fresh;
-    }
-    perr(
-        StatusCode::SERVICE_UNAVAILABLE,
-        "segment_map_unstable",
-        "the collection kept splitting during deletion; retry",
-        None,
-        true,
-    )
-}
-
-fn consumer_segments(desc: &StreamDesc) -> Vec<(u32, [u8; 16], [u8; 16], Option<u64>)> {
-    match &desc.segments {
-        Some(map) if !map.segments.is_empty() => {
-            let mut v: Vec<_> = map.segments.iter().collect();
-            v.sort_by_key(|sg| (sg.created_ms, sg.seg_id));
-            v.iter()
-                .map(|sg| {
-                    (
-                        sg.seg_id,
-                        desc.dynamic_segment_identity(sg.seg_id),
-                        desc.segment_route(sg),
-                        sg.sealed_next_offset,
-                    )
-                })
-                .collect()
-        }
-        _ => {
-            let ro = desc.resolve_segment("");
-            vec![(ro.seg_id, ro.identity, ro.shard_route, None)]
-        }
-    }
-}
-
-async fn load_consumer_record(
-    state: &Arc<AppState>,
-    desc: &StreamDesc,
-    cname: &str,
-) -> Result<crate::queue::ConsumerRecord, Response> {
-    match consumer_config_op(
-        state,
-        desc,
-        crate::queue::QueueOp::ConfigGet {
-            consumer: cname.to_string(),
-        },
-    )
-    .await?
-    {
-        crate::queue::QueueOut::Config { rec: Some(r), .. }
-            if r.state == crate::queue::ConsumerLifecycle::Active =>
-        {
-            Ok(r)
-        }
-        crate::queue::QueueOut::Config { rec: Some(r), .. }
-            if r.state == crate::queue::ConsumerLifecycle::Deleting =>
-        {
-            Err(perr(
-                StatusCode::CONFLICT,
-                "consumer_deleting",
-                "this consumer is being deleted",
-                None,
-                false,
-            ))
-        }
-        _ => Err(perr(
-            StatusCode::NOT_FOUND,
-            "unknown_consumer",
-            "no such consumer; create it first",
-            None,
-            false,
-        )),
+        Ok(_) => Response::builder()
+            .status(StatusCode::NO_CONTENT)
+            .header(header::CACHE_CONTROL, "no-store")
+            .body(Body::empty())
+            .unwrap(),
+        Err(e) => consumer_failure_response(e),
     }
 }
 
@@ -4968,138 +4050,6 @@ async fn load_consumer_record(
 /// source lease. No dead-letter stream configured -> the poison is
 /// dropped by acking directly.
 #[allow(clippy::too_many_arguments)]
-async fn dlq_and_settle(
-    state: &Arc<AppState>,
-    desc: &StreamDesc,
-    cfg: &crate::queue::ConsumerConfig,
-    cgen: u64,
-    cname: &str,
-    key_b64: &str,
-    skey: &crate::crypto::StreamKey,
-    epoch: &[u8; 16],
-    identity: [u8; 16],
-    route: [u8; 16],
-    seg_id: u32,
-    poisoned: &[(u64, u32, u32, [u8; 16])],
-    by_off: &std::collections::HashMap<u64, (String, Bytes)>,
-) -> (usize, usize) {
-    let mut settled = 0usize;
-    // Deliveries the target refused for a reason retrying cannot fix.
-    let mut blocked = 0usize;
-    // The target must still be the incarnation that was configured.
-    let dlq_identity_ok = match (&cfg.dead_letter_stream, &cfg.dead_letter_epoch) {
-        (Some(dlq), Some(want)) => match state.registry.get(&desc.ref_in_project(dlq)).await {
-            Ok(Some(t)) => &t.stream_epoch == want,
-            _ => false,
-        },
-        _ => true,
-    };
-    for (off, lgen, attempts, kh) in poisoned {
-        if let Some(dlq) = &cfg.dead_letter_stream {
-            if !dlq_identity_ok {
-                blocked += 1;
-                tracing::warn!(
-                    stream = %desc.name,
-                    consumer = %cname,
-                    dead_letter_stream = %dlq,
-                    "dead-letter target is a different incarnation than the one \
-                     configured; refusing to deliver"
-                );
-                continue;
-            }
-            let Some((rkey, payload)) = by_off.get(off) else {
-                // Outside this pass's read window; a later pull retries.
-                continue;
-            };
-            let msg_id = crate::product_cursor::MessageId {
-                epoch: *epoch,
-                key_hash: *kh,
-                seg_id,
-                offset: *off,
-            }
-            .encode(&desc.project_id, skey);
-            let value: serde_json::Value = if desc.is_json() {
-                serde_json::from_slice(payload).unwrap_or(serde_json::Value::Null)
-            } else {
-                use base64::Engine;
-                serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(payload))
-            };
-            let body = json!({
-                "sourceStream": desc.name,
-                "consumer": cname,
-                "messageId": msg_id,
-                "routingKey": rkey,
-                "attempts": attempts,
-                "value": value,
-            })
-            .to_string();
-            let mut ih = HeaderMap::new();
-            if let Ok(v) = axum::http::HeaderValue::from_str(key_b64) {
-                ih.insert("prisma-encryption-key", v);
-            }
-            let pid = format!("dlq:{cname}:{}", &msg_id[..msg_id.len().min(200)]);
-            if let Ok(v) = axum::http::HeaderValue::from_str(&pid) {
-                ih.insert("producer-id", v);
-            }
-            ih.insert("producer-epoch", axum::http::HeaderValue::from_static("1"));
-            ih.insert("producer-seq", axum::http::HeaderValue::from_static("0"));
-            let resp = product_append(
-                state.clone(),
-                &desc.project_id,
-                dlq.clone(),
-                ih,
-                Bytes::from(body),
-                false,
-                None,
-            )
-            .await;
-            if !resp.status().is_success() {
-                // DLQ append not durable: leave the lease; the key stays
-                // blocked and a later pass retries idempotently. The
-                // link is validated when the consumer is configured, so
-                // a client-error status here means the target drifted
-                // afterwards (deleted, re-created under another key,
-                // sealed). That never resolves on its own, so say it
-                // out loud instead of blocking the key in silence.
-                let st = resp.status();
-                if st.is_client_error() && st != StatusCode::TOO_MANY_REQUESTS {
-                    blocked += 1;
-                    tracing::warn!(
-                        stream = %desc.name,
-                        consumer = %cname,
-                        dead_letter_stream = %dlq,
-                        status = st.as_u16(),
-                        "dead-letter delivery permanently refused; the key stays blocked \
-                         until the target accepts the source collection's key again"
-                    );
-                }
-                continue;
-            }
-        }
-        let engine = match state.engine_for(&route).await {
-            Ok(e) => e,
-            Err(_) => continue,
-        };
-        if engine
-            .submit_queue(
-                identity,
-                crate::queue::QueueOp::Settle {
-                    consumer: cname.to_string(),
-                    cgen,
-                    acks: vec![(*off, *lgen)],
-                    retries: Vec::new(),
-                    extends: Vec::new(),
-                    max_deliveries: cfg.max_attempts,
-                },
-            )
-            .await
-            .is_ok()
-        {
-            settled += 1;
-        }
-    }
-    (settled, blocked)
-}
 
 async fn product_consumer_pull(
     state: Arc<AppState>,
@@ -5108,29 +4058,34 @@ async fn product_consumer_pull(
     cname: String,
     headers: HeaderMap,
     body: Bytes,
+    access: crate::application::consumer::ConsumerAccess<'_>,
 ) -> Response {
-    let key_b64 = product_key(&headers).unwrap_or_default();
-    let (desc, skey, epoch) = match consumer_ctx(&state, tenant, &name, &headers).await {
-        Ok(v) => v,
+    let key = match consumer_key(&headers) {
+        Ok(k) => k,
         Err(r) => return r,
     };
-    let rec = match load_consumer_record(&state, &desc, &cname).await {
+    let service = state.consumer_service();
+    let context = match service
+        .authorize(
+            &tenant.stream_ref(&name),
+            cname.clone(),
+            &key,
+            &access,
+            crate::tenant::Scope::ConsumersPull,
+        )
+        .await
+    {
         Ok(c) => c,
-        Err(r) => return r,
+        Err(e) => return consumer_failure_response(e),
     };
-    let cgen = rec.generation;
-    let cfg = rec.config;
-    #[derive(serde::Deserialize, Default)]
-    #[serde(deny_unknown_fields, rename_all = "camelCase")]
-    struct PullDoc {
-        max: Option<usize>,
-        wait_ms: Option<u64>,
-        visibility_ms: Option<u64>,
-    }
-    let doc: PullDoc = if body.is_empty() {
-        PullDoc::default()
+    let context = match service.active(context).await {
+        Ok(c) => c,
+        Err(e) => return consumer_failure_response(e),
+    };
+    let doc = if body.is_empty() {
+        crate::application::consumer::PullInput::default()
     } else {
-        match serde_json::from_slice(&body) {
+        match serde_json::from_slice::<crate::application::consumer::PullInput>(&body) {
             Ok(d) => d,
             Err(e) => {
                 return perr(
@@ -5143,233 +4098,19 @@ async fn product_consumer_pull(
             }
         }
     };
-    let max = doc
-        .max
-        .unwrap_or(cfg.max_batch_records as usize)
-        .clamp(1, cfg.max_batch_records as usize);
-    let visibility = doc
-        .visibility_ms
-        .unwrap_or(cfg.visibility_timeout_ms as u64)
-        .clamp(1_000, 12 * 3600 * 1000);
-    let wait = doc.wait_ms.unwrap_or(0).min(25_000);
-    let deadline = tokio::time::Instant::now() + std::time::Duration::from_millis(wait);
-
-    let lineage = consumer_segments(&desc);
-
-    'outer: loop {
-        // Walk the lineage oldest-first. A sealed, fully-settled
-        // segment is skipped; a sealed segment with backlog STOPS the
-        // walk (strict predecessor-first — successors of an undrained
-        // predecessor never deliver); an empty LIVE segment yields to
-        // its siblings (split leaves hold disjoint key ranges, so no
-        // ordering constraint exists between them).
-        let mut total_backlog = 0u64;
-        for (seg_id, identity, route, sealed_end) in lineage.iter().copied() {
-            let engine = match state.engine_for(&route).await {
-                Ok(e) => e,
-                Err(r) => {
-                    // Cross-owner pull: a FOREIGN drained predecessor or
-                    // empty live sibling must not stop the walk — probe
-                    // its cursor/tail on the owner and skip past it. A
-                    // foreign segment with deliverable backlog keeps the
-                    // ownership 409 (leases are owner-local; the router
-                    // replays the pull to the owner, which now skips OUR
-                    // segments the same way — converges).
-                    let peer = crate::http::replay_peer_url(&state, &r).map(|(_, b)| b);
-                    if let Some(base) = peer
-                        && let Some((cur, tail)) = match InternalTarget::of(&desc, seg_id) {
-                            Some(t) => {
-                                relay_queue_cursor(&state, &base, &desc.name, &t, &cname, cgen)
-                                    .await
-                            }
-                            None => None,
-                        }
-                    {
-                        match sealed_end {
-                            Some(end) if cur >= end => continue,
-                            None if tail <= cur => continue,
-                            _ => {}
-                        }
-                    }
-                    return translate_read_error(r);
-                }
-            };
-            if let Some(end) = sealed_end {
-                let cursor = engine
-                    .queue_cursor(identity, &cname, cgen)
-                    .await
-                    .unwrap_or(0);
-                if cursor >= end {
-                    continue; // drained predecessor
-                }
+    match crate::application::consumer::pull(context, doc).await {
+        Ok(out) => {
+            if !out.messages.is_empty() {
+                crate::billing::meter_pull(
+                    &state,
+                    &out.descriptor,
+                    out.payload_bytes,
+                    out.messages.len() as u64,
+                );
             }
-            let handle = match engine.stream_handle(identity).await {
-                Ok(h) => h,
-                Err(e) => {
-                    return perr(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal",
-                        &e.to_string(),
-                        None,
-                        true,
-                    );
-                }
-            };
-            state.keys.put(identity, skey.clone(), epoch);
-            let cursor = engine
-                .queue_cursor(identity, &cname, cgen)
-                .await
-                .unwrap_or(0);
-            let out = match crate::application::read::read_merged(
-                &skey,
-                &epoch,
-                &handle,
-                &engine,
-                cursor,
-                None,
-                4 << 20,
-                crate::shard::Deliver::Durable,
-            )
-            .await
-            {
-                Ok(o) => o,
-                Err(m) => {
-                    return perr(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal",
-                        &m,
-                        None,
-                        true,
-                    );
-                }
-            };
-            let mut keys_map: std::collections::HashMap<u64, [u8; 16]> = Default::default();
-            let mut by_off: std::collections::HashMap<u64, (String, Bytes)> = Default::default();
-            let mut covered_to = cursor;
-            for r in &out.recs {
-                keys_map.insert(r.off, crate::crypto::stream_hash(&r.rkey));
-                by_off.insert(r.off, (r.rkey.clone(), r.payload.clone()));
-                covered_to = covered_to.max(r.off + 1);
-            }
-            #[cfg(test)]
-            crate::failpoints::pause_pull_before_receive(&desc.name).await;
-            let qout = engine
-                .submit_queue(
-                    identity,
-                    crate::queue::QueueOp::Receive {
-                        consumer: cname.clone(),
-                        cgen,
-                        max,
-                        visibility_ms: visibility,
-                        max_deliveries: cfg.max_attempts,
-                        keys: keys_map,
-                        covered_to,
-                    },
-                )
-                .await;
-            let (leased, backlog, poisoned) = match qout {
-                Ok(crate::queue::QueueOut::Received {
-                    leased,
-                    backlog,
-                    poisoned,
-                }) => (leased, backlog, poisoned),
-                Ok(_) => unreachable!("receive answers Received"),
-                Err(m) if m.starts_with("consumer_not_found") => {
-                    return perr(StatusCode::NOT_FOUND, "consumer_not_found", &m, None, false);
-                }
-                Err(m) if m.starts_with("consumer_generation_fenced") => {
-                    return perr(StatusCode::CONFLICT, "consumer_deleted", &m, None, false);
-                }
-                Err(m) => {
-                    return perr(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal",
-                        &m,
-                        None,
-                        true,
-                    );
-                }
-            };
-            if !poisoned.is_empty() {
-                let _ = dlq_and_settle(
-                    &state, &desc, &cfg, cgen, &cname, &key_b64, &skey, &epoch, identity, route,
-                    seg_id, &poisoned, &by_off,
-                )
-                .await;
-                // Settling poison may have drained this segment or
-                // unblocked keys — restart the walk.
-                continue 'outer;
-            }
-            if !leased.is_empty() {
-                let now = crate::shard::now_ms();
-                let mut messages = Vec::with_capacity(leased.len());
-                for (off, lease_gen, attempts, kh) in &leased {
-                    let Some((rkey, payload)) = by_off.get(off) else {
-                        continue;
-                    };
-                    let msg = crate::product_cursor::MessageId {
-                        epoch,
-                        key_hash: *kh,
-                        seg_id,
-                        offset: *off,
-                    };
-                    let lease = crate::product_cursor::LeaseToken {
-                        msg: msg.clone(),
-                        lease_gen: *lease_gen,
-                        consumer_gen: cgen,
-                        deadline_ms: now + visibility as i64,
-                    };
-                    let value: serde_json::Value = if desc.is_json() {
-                        serde_json::from_slice(payload).unwrap_or(serde_json::Value::Null)
-                    } else {
-                        use base64::Engine;
-                        serde_json::Value::String(
-                            base64::engine::general_purpose::STANDARD.encode(payload),
-                        )
-                    };
-                    messages.push(json!({
-                        "id": msg.encode(&desc.project_id, &skey),
-                        "routingKey": rkey,
-                        "attempts": attempts,
-                        "leaseToken": lease.encode(&desc.project_id, &skey),
-                        "value": value,
-                    }));
-                }
-                let delivered_payload: u64 = leased
-                    .iter()
-                    .filter_map(|(off, ..)| by_off.get(off))
-                    .map(|(_, p)| p.len() as u64)
-                    .sum();
-                crate::billing::meter_pull(&state, &desc, delivered_payload, messages.len() as u64);
-                return Response::builder()
-                    .status(StatusCode::OK)
-                    .header(header::CONTENT_TYPE, "application/json")
-                    .header(header::CACHE_CONTROL, "no-store")
-                    .body(Body::from(
-                        json!({"messages": messages, "backlog": total_backlog + backlog})
-                            .to_string(),
-                    ))
-                    .unwrap();
-            }
-            total_backlog += backlog;
-            if sealed_end.is_some() && backlog > 0 {
-                // Undrained sealed predecessor (all remaining records
-                // leased/blocked): successors must wait.
-                break;
-            }
+            json_ok(json!({"messages":out.messages,"backlog":out.backlog}))
         }
-        if tokio::time::Instant::now() < deadline {
-            tokio::time::sleep(std::time::Duration::from_millis(50)).await;
-            continue 'outer;
-        }
-        return Response::builder()
-            .status(StatusCode::OK)
-            .header(header::CONTENT_TYPE, "application/json")
-            .header(header::CACHE_CONTROL, "no-store")
-            .body(Body::from(
-                json!({"messages": [], "backlog": total_backlog}).to_string(),
-            ))
-            .unwrap();
+        Err(e) => consumer_failure_response(e),
     }
 }
 
@@ -5380,38 +4121,31 @@ async fn product_consumer_settle(
     cname: String,
     headers: HeaderMap,
     body: Bytes,
+    access: crate::application::consumer::ConsumerAccess<'_>,
 ) -> Response {
-    let key_b64 = product_key(&headers).unwrap_or_default();
-    let (desc, skey, epoch) = match consumer_ctx(&state, tenant, &name, &headers).await {
-        Ok(v) => v,
+    let key = match consumer_key(&headers) {
+        Ok(k) => k,
         Err(r) => return r,
     };
-    let rec = match load_consumer_record(&state, &desc, &cname).await {
+    let service = state.consumer_service();
+    let context = match service
+        .authorize(
+            &tenant.stream_ref(&name),
+            cname.clone(),
+            &key,
+            &access,
+            crate::tenant::Scope::ConsumersSettle,
+        )
+        .await
+    {
         Ok(c) => c,
-        Err(r) => return r,
+        Err(e) => return consumer_failure_response(e),
     };
-    let cgen = rec.generation;
-    let cfg = rec.config;
-    #[derive(serde::Deserialize, Default)]
-    #[serde(deny_unknown_fields, rename_all = "camelCase")]
-    struct Item {
-        lease_token: String,
-        #[serde(default)]
-        delay_ms: Option<u64>,
-        #[serde(default)]
-        visibility_ms: Option<u64>,
-    }
-    #[derive(serde::Deserialize, Default)]
-    #[serde(deny_unknown_fields, rename_all = "camelCase")]
-    struct Doc {
-        #[serde(default)]
-        acks: Vec<Item>,
-        #[serde(default)]
-        retries: Vec<Item>,
-        #[serde(default)]
-        extends: Vec<Item>,
-    }
-    let doc: Doc = match serde_json::from_slice(&body) {
+    let context = match service.active(context).await {
+        Ok(c) => c,
+        Err(e) => return consumer_failure_response(e),
+    };
+    let doc = match serde_json::from_slice::<crate::application::consumer::SettleInput>(&body) {
         Ok(d) => d,
         Err(e) => {
             return perr(
@@ -5423,168 +4157,10 @@ async fn product_consumer_settle(
             );
         }
     };
-    // Tokens name their segment: group per segment, one committer
-    // settle each. Invalid or foreign tokens are counted, never errors
-    // (spec §2.5).
-    let lineage = consumer_segments(&desc);
-    let mut stale_local = 0usize;
-    type SegOps = (Vec<(u64, u32)>, Vec<(u64, u32, u64)>, Vec<(u64, u32, u64)>);
-    let mut per_seg: std::collections::HashMap<u32, SegOps> = Default::default();
-    let mut tok = |t: &str| -> Option<(u32, u64, u32)> {
-        match crate::product_cursor::LeaseToken::decode(t, &desc.project_id, &skey, &epoch) {
-            // A token from a DELETED consumer generation is stale by
-            // definition — even if the name has since been recreated,
-            // this lease belongs to a dead incarnation (round 16).
-            Ok(lt)
-                if lt.consumer_gen == cgen
-                    && lineage.iter().any(|(sid, ..)| *sid == lt.msg.seg_id) =>
-            {
-                Some((lt.msg.seg_id, lt.msg.offset, lt.lease_gen))
-            }
-            _ => {
-                stale_local += 1;
-                None
-            }
-        }
-    };
-    for i in &doc.acks {
-        if let Some((sid, o, g)) = tok(&i.lease_token) {
-            per_seg.entry(sid).or_default().0.push((o, g));
-        }
+    match crate::application::consumer::settle(context, doc).await {
+        Ok(out) => json_ok(serde_json::to_value(out).expect("settle outcome serializable")),
+        Err(e) => consumer_failure_response(e),
     }
-    for i in &doc.retries {
-        if let Some((sid, o, g)) = tok(&i.lease_token) {
-            per_seg
-                .entry(sid)
-                .or_default()
-                .1
-                .push((o, g, i.delay_ms.unwrap_or(1_000)));
-        }
-    }
-    for i in &doc.extends {
-        if let Some((sid, o, g)) = tok(&i.lease_token) {
-            per_seg.entry(sid).or_default().2.push((
-                o,
-                g,
-                i.visibility_ms.unwrap_or(cfg.visibility_timeout_ms as u64),
-            ));
-        }
-    }
-    let (mut acked, mut retried, mut extended, mut dlq, mut backlog, mut stale) =
-        (0usize, 0usize, 0usize, 0usize, 0u64, 0usize);
-    let mut dlq_blocked = 0usize;
-    for (sid, (acks, retries, extends)) in per_seg {
-        let Some((seg_id, identity, route, _)) = lineage.iter().find(|(s, ..)| *s == sid).copied()
-        else {
-            continue;
-        };
-        let engine = match state.engine_for(&route).await {
-            Ok(e) => e,
-            Err(r) => return translate_read_error(r),
-        };
-        let out = engine
-            .submit_queue(
-                identity,
-                crate::queue::QueueOp::Settle {
-                    consumer: cname.clone(),
-                    cgen,
-                    acks,
-                    retries,
-                    extends,
-                    max_deliveries: cfg.max_attempts,
-                },
-            )
-            .await;
-        let (a, r, e2, d, bl, st2, poisoned) = match out {
-            Ok(crate::queue::QueueOut::Settled {
-                acked,
-                retried,
-                extended,
-                dlq,
-                backlog,
-                stale,
-                poisoned,
-            }) => (acked, retried, extended, dlq, backlog, stale, poisoned),
-            Ok(_) => unreachable!("settle answers Settled"),
-            Err(m) if m.starts_with("consumer_not_found") => {
-                return perr(StatusCode::NOT_FOUND, "consumer_not_found", &m, None, false);
-            }
-            Err(m) if m.starts_with("consumer_generation_fenced") => {
-                return perr(StatusCode::CONFLICT, "consumer_deleted", &m, None, false);
-            }
-            Err(m) => {
-                return perr(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    &m,
-                    None,
-                    true,
-                );
-            }
-        };
-        acked += a;
-        retried += r;
-        extended += e2;
-        backlog += bl;
-        stale += st2;
-        if poisoned.is_empty() {
-            dlq += d;
-        } else {
-            let handle = match engine.stream_handle(identity).await {
-                Ok(h) => h,
-                Err(e) => {
-                    return perr(
-                        StatusCode::INTERNAL_SERVER_ERROR,
-                        "internal",
-                        &e.to_string(),
-                        None,
-                        true,
-                    );
-                }
-            };
-            state.keys.put(identity, skey.clone(), epoch);
-            let lo = poisoned.iter().map(|(o, ..)| *o).min().unwrap_or(0);
-            let mut by_off: std::collections::HashMap<u64, (String, Bytes)> = Default::default();
-            if let Ok(out) = crate::application::read::read_merged(
-                &skey,
-                &epoch,
-                &handle,
-                &engine,
-                lo,
-                None,
-                4 << 20,
-                crate::shard::Deliver::Durable,
-            )
-            .await
-            {
-                for r in &out.recs {
-                    by_off.insert(r.off, (r.rkey.clone(), r.payload.clone()));
-                }
-            }
-            let (d, b) = dlq_and_settle(
-                &state, &desc, &cfg, cgen, &cname, &key_b64, &skey, &epoch, identity, route,
-                seg_id, &poisoned, &by_off,
-            )
-            .await;
-            dlq += d;
-            dlq_blocked += b;
-        }
-    }
-    Response::builder()
-        .status(StatusCode::OK)
-        .header(header::CONTENT_TYPE, "application/json")
-        .header(header::CACHE_CONTROL, "no-store")
-        .body(Body::from(
-            json!({
-                "acked": acked, "retried": retried, "extended": extended,
-                "dlq": dlq, "stale": stale + stale_local, "backlog": backlog,
-                // Non-zero means the dead-letter target is refusing the
-                // source collection's key: those keys stay blocked.
-                "dlqBlocked": dlq_blocked,
-            })
-            .to_string(),
-        ))
-        .unwrap()
 }
 
 // ---- Stage 2b: watches ----------------------------------------------
@@ -6447,89 +5023,6 @@ mod tests {
     }
 }
 
-fn watch_failure_response(error: crate::application::watch::WatchFailure) -> Response {
-    use crate::application::watch::WatchFailure;
-    match error {
-        WatchFailure::Unauthorized(project) => {
-            let response = crate::audit::tag(
-                perr(
-                    StatusCode::FORBIDDEN,
-                    "watch_unauthorized",
-                    "a valid observation capability or Prisma-Encryption-Key is required",
-                    None,
-                    false,
-                ),
-                "watch_unauthorized",
-            );
-            match project {
-                Some(project) => crate::audit::tag_project(response, &project),
-                None => response,
-            }
-        }
-        WatchFailure::PolicyStale(project) => crate::audit::tag_project(
-            perr(
-                StatusCode::SERVICE_UNAVAILABLE,
-                "policy_stale",
-                "project policy is stale; retry shortly",
-                None,
-                true,
-            ),
-            &project,
-        ),
-        WatchFailure::ProjectInactive(project) => crate::audit::tag_project(
-            crate::audit::tag(
-                perr(
-                    StatusCode::FORBIDDEN,
-                    "project_not_active",
-                    "the project is not active",
-                    None,
-                    false,
-                ),
-                "project_not_active",
-            ),
-            &project,
-        ),
-        WatchFailure::Quota(project, refusal) => {
-            crate::audit::tag_project(quota_refusal_response(&refusal), &project)
-        }
-        WatchFailure::InvalidKey => perr(
-            StatusCode::BAD_REQUEST,
-            "invalid_watch_key",
-            "watch key must be 16 hex chars",
-            None,
-            false,
-        ),
-        WatchFailure::Creating => perr(
-            StatusCode::SERVICE_UNAVAILABLE,
-            "creating",
-            "stream is still being created; retry",
-            None,
-            true,
-        ),
-        WatchFailure::NotFound => perr(
-            StatusCode::NOT_FOUND,
-            "not_found",
-            "stream not found",
-            None,
-            false,
-        ),
-        WatchFailure::UnknownWatch => perr(
-            StatusCode::NOT_FOUND,
-            "unknown_watch",
-            "no such watch definition",
-            None,
-            false,
-        ),
-        WatchFailure::Storage(message) => perr(
-            StatusCode::INTERNAL_SERVER_ERROR,
-            "internal",
-            &message,
-            None,
-            true,
-        ),
-    }
-}
-
 pub(crate) use crate::application::lifecycle::{
     EnterSeal, SealTicket, seal_op_id_full, seal_op_id_semantic,
 };
@@ -6686,4 +5179,87 @@ pub(crate) async fn run_seal(
         claim_gen,
     )
     .await
+}
+
+fn watch_failure_response(error: crate::application::watch::WatchFailure) -> Response {
+    use crate::application::watch::WatchFailure;
+    match error {
+        WatchFailure::Unauthorized(project) => {
+            let response = crate::audit::tag(
+                perr(
+                    StatusCode::FORBIDDEN,
+                    "watch_unauthorized",
+                    "a valid observation capability or Prisma-Encryption-Key is required",
+                    None,
+                    false,
+                ),
+                "watch_unauthorized",
+            );
+            match project {
+                Some(project) => crate::audit::tag_project(response, &project),
+                None => response,
+            }
+        }
+        WatchFailure::PolicyStale(project) => crate::audit::tag_project(
+            perr(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "policy_stale",
+                "project policy is stale; retry shortly",
+                None,
+                true,
+            ),
+            &project,
+        ),
+        WatchFailure::ProjectInactive(project) => crate::audit::tag_project(
+            crate::audit::tag(
+                perr(
+                    StatusCode::FORBIDDEN,
+                    "project_not_active",
+                    "the project is not active",
+                    None,
+                    false,
+                ),
+                "project_not_active",
+            ),
+            &project,
+        ),
+        WatchFailure::Quota(project, refusal) => {
+            crate::audit::tag_project(quota_refusal_response(&refusal), &project)
+        }
+        WatchFailure::InvalidKey => perr(
+            StatusCode::BAD_REQUEST,
+            "invalid_watch_key",
+            "watch key must be 16 hex chars",
+            None,
+            false,
+        ),
+        WatchFailure::Creating => perr(
+            StatusCode::SERVICE_UNAVAILABLE,
+            "creating",
+            "stream is still being created; retry",
+            None,
+            true,
+        ),
+        WatchFailure::NotFound => perr(
+            StatusCode::NOT_FOUND,
+            "not_found",
+            "stream not found",
+            None,
+            false,
+        ),
+        WatchFailure::UnknownWatch => perr(
+            StatusCode::NOT_FOUND,
+            "unknown_watch",
+            "no such watch definition",
+            None,
+            false,
+        ),
+        WatchFailure::Storage(message) => perr(
+            StatusCode::INTERNAL_SERVER_ERROR,
+            "internal",
+            &message,
+            None,
+            true,
+        ),
+    }
 }

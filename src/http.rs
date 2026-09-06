@@ -280,6 +280,18 @@ impl AppState {
 }
 
 impl AppState {
+    pub(crate) fn consumer_service(
+        self: &Arc<Self>,
+    ) -> Arc<crate::application::consumer::ConsumerService> {
+        Arc::new(crate::application::consumer::ConsumerService {
+            registry: self.registry.clone(),
+            shards: self.shards.clone(),
+            peer: self.peer.clone(),
+            keys: self.keys.clone(),
+            append: Arc::new(self.append_service()),
+        })
+    }
+
     pub(crate) fn creation_service(
         self: &Arc<Self>,
     ) -> Arc<crate::application::creation::CreationService> {
