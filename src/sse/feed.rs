@@ -1366,7 +1366,7 @@ pub(crate) mod tests {
     use std::sync::atomic::AtomicBool;
 
     pub(crate) fn test_desc(name: &str) -> crate::registry::StreamDesc {
-        crate::registry::StreamDesc {
+        crate::registry::PersistedDescriptor {
             seal_gen_counter: 0,
             account_id: None,
             project_id: crate::tenant::ProjectId::new("proj-feed-test").unwrap(),
@@ -1392,6 +1392,8 @@ pub(crate) mod tests {
             seal_op: None,
             layout_version: crate::registry::LAYOUT_VERSION,
         }
+        .try_into()
+        .expect("valid descriptor fixture")
     }
 
     /// Deterministic in-memory source: offsets [0, frontier) each with a

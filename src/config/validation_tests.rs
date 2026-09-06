@@ -182,9 +182,9 @@ mod config_validation_tests {
         // binary all stay under worst_prepared_charge.
         let bound = |n: usize| crate::sse::feed::worst_prepared_charge(n).expect("plausible size");
         let text_desc = {
-            let mut d = crate::sse::feed::tests::test_desc("wcase");
+            let mut d = crate::sse::feed::tests::test_desc("wcase").to_persisted();
             d.content_type = "text/plain".into();
-            d
+            crate::registry::StreamDesc::try_from(d).unwrap()
         };
         let newlines = vec![b'\n'; 1024];
         assert!(
@@ -197,9 +197,9 @@ mod config_validation_tests {
             "lossy invalid UTF-8 must fit the worst-case bound"
         );
         let bin_desc = {
-            let mut d = crate::sse::feed::tests::test_desc("wcase2");
+            let mut d = crate::sse::feed::tests::test_desc("wcase2").to_persisted();
             d.content_type = "application/octet-stream".into();
-            d
+            crate::registry::StreamDesc::try_from(d).unwrap()
         };
         assert!(crate::sse::wire::sse_data_event(&bin_desc, &invalid).len() <= bound(1024));
         let json_desc = crate::sse::feed::tests::test_desc("wcase3");

@@ -12520,7 +12520,7 @@ async fn topology_transitions_are_fenced_by_sealing() {
             .await
             .unwrap()
             .unwrap()
-            .stream_epoch;
+            .stream_epoch.clone();
         crate::product::run_seal(
             &state,
             &state.deployment.raw_adapter_sref("fenced"),
@@ -12774,7 +12774,7 @@ async fn a_parked_split_cannot_publish_under_a_sealed_collection() {
                 .await
                 .unwrap()
                 .unwrap()
-                .stream_epoch;
+                .stream_epoch.clone();
             crate::product::run_seal(
                 &st2,
                 &st2.deployment.raw_adapter_sref("parked"),
@@ -12873,7 +12873,7 @@ async fn a_fork_initialization_is_bound_to_its_source_incarnation() {
         .await
         .unwrap()
         .unwrap()
-        .stream_epoch;
+        .stream_epoch.clone();
 
     // A child initialization claimed against incarnation A.
     let fh = [
@@ -13808,7 +13808,7 @@ async fn a_fork_initialization_resumes_against_a_retained_source() {
         .await
         .unwrap()
         .unwrap()
-        .forked_from
+        .forked_from.clone()
         .unwrap();
     assert!(!real_hash.fork_id.is_empty(), "the child stamped its id");
 
@@ -14589,7 +14589,7 @@ async fn an_exact_retry_renews_its_lease() {
         .await
         .unwrap()
         .unwrap()
-        .stream_epoch;
+        .stream_epoch.clone();
 
     let intent = crate::registry::SealIntent::Final {
         routing_key: String::new(),
@@ -14795,7 +14795,7 @@ async fn a_wrong_content_type_close_cannot_join_the_valid_intent() {
         .await
         .unwrap()
         .unwrap()
-        .sealing
+        .sealing.clone()
         .expect("A published no intent");
 
     // B: same body, same producer trio, WRONG content type. Its
@@ -15015,10 +15015,11 @@ async fn stale_scaler_and_ttl_decisions_decline_after_recreate() {
     // A TTL slide spawned against the old incarnation: it computes a
     // huge target from the OLD descriptor's ttl and must not extend
     // the replacement.
-    let mut fake_old = fresh.clone();
+    let mut fake_old = fresh.to_persisted();
     fake_old.stream_epoch = old.stream_epoch.clone();
     fake_old.ttl_secs = Some(3_600);
     fake_old.expires_at_ms = Some(crate::shard::now_ms() + 1_000);
+    let fake_old = crate::registry::StreamDesc::try_from(fake_old).unwrap();
     crate::http::touch_ttl(&state, &fake_old);
     tokio::time::sleep(std::time::Duration::from_millis(300)).await;
     state
@@ -15066,7 +15067,7 @@ async fn a_fence_waits_for_durability_before_reporting_closed() {
         .unwrap();
     let epoch = desc.stream_epoch.clone();
     let seg = desc.resolve_segment("");
-    let route = desc.segment_route_by_id(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
     let engine = state.engine_for(&route).await.unwrap();
 
     // Hold durability dispatch, then send A's final-bearing close: its
@@ -15376,7 +15377,7 @@ async fn a_fence_survives_handle_eviction() {
         .unwrap();
     let epoch = desc.stream_epoch.clone();
     let seg = desc.resolve_segment("");
-    let route = desc.segment_route_by_id(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
     let engine = state.engine_for(&route).await.unwrap();
 
     // Raise the fence to 10, then evict every idle handle.
@@ -15722,7 +15723,7 @@ async fn idempotent_successes_wait_for_durability() {
         .unwrap()
         .unwrap();
     let seg = desc.resolve_segment("");
-    let route = desc.segment_route_by_id(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
     let engine = state.engine_for(&route).await.unwrap();
 
     // Hold durability dispatch; the ORIGINAL producer write commits
@@ -15856,7 +15857,7 @@ async fn state_dependent_conflicts_wait_for_durability() {
         .unwrap()
         .unwrap();
     let seg = desc.resolve_segment("");
-    let route = desc.segment_route_by_id(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
     let engine = state.engine_for(&route).await.unwrap();
 
     // Original held pre-durability.
@@ -15937,7 +15938,7 @@ async fn a_fence_outlives_the_maintenance_sweep() {
         .unwrap();
     let epoch = desc.stream_epoch.clone();
     let seg = desc.resolve_segment("");
-    let route = desc.segment_route_by_id(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
     let engine = state.engine_for(&route).await.unwrap();
 
     let closed = crate::http::fence_segment_for_key(
@@ -16140,7 +16141,7 @@ async fn a_failed_group_write_fails_its_duplicate_too() {
         .unwrap()
         .unwrap();
     let seg = desc.resolve_segment("");
-    let route = desc.segment_route_by_id(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
     let identity = desc.dynamic_segment_identity(seg.seg_id);
     let engine = state.engine_for(&route).await.unwrap();
 
@@ -16243,7 +16244,7 @@ async fn a_reuse_verdict_dies_with_its_failed_group() {
         .unwrap()
         .unwrap();
     let seg = desc.resolve_segment("");
-    let route = desc.segment_route_by_id(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
     let identity = desc.dynamic_segment_identity(seg.seg_id);
     let engine = state.engine_for(&route).await.unwrap();
 
@@ -16351,7 +16352,7 @@ async fn a_failed_group_fails_the_close_and_its_retry_together() {
         .unwrap()
         .unwrap();
     let seg = desc.resolve_segment("");
-    let route = desc.segment_route_by_id(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
     let identity = desc.dynamic_segment_identity(seg.seg_id);
     let engine = state.engine_for(&route).await.unwrap();
 
@@ -16482,7 +16483,7 @@ async fn a_fence_in_a_failed_group_reports_failure_not_closed() {
         .unwrap();
     let epoch = desc.stream_epoch.clone();
     let seg = desc.resolve_segment("");
-    let route = desc.segment_route_by_id(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
     let identity = desc.dynamic_segment_identity(seg.seg_id);
     let engine = state.engine_for(&route).await.unwrap();
 
@@ -16523,7 +16524,7 @@ async fn a_fence_in_a_failed_group_reports_failure_not_closed() {
         .await
         .unwrap()
         .unwrap()
-        .sealing
+        .sealing.clone()
         .expect("no claim installed");
     // FORCED same group: hold the committer, release the close into
     // the queue, land the fence behind it, arm, release. The fence and
@@ -16653,7 +16654,7 @@ async fn a_stream_seq_verdict_is_grounded_in_durable_state() {
         .unwrap()
         .unwrap();
     let seg = desc.resolve_segment("");
-    let route = desc.segment_route_by_id(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
     let identity = desc.dynamic_segment_identity(seg.seg_id);
     let engine = state.engine_for(&route).await.unwrap();
 
@@ -16733,7 +16734,7 @@ async fn create_replay_recovers_from_a_failed_initial_write() {
         .unwrap();
     assert!(desc.init.is_some(), "no initialization claim");
     let seg = desc.resolve_segment("");
-    let route = desc.segment_route_by_id(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
     let identity = desc.dynamic_segment_identity(seg.seg_id);
     let engine = state.engine_for(&route).await.unwrap();
     engine.fail_next_group_for(identity);
@@ -16985,7 +16986,7 @@ async fn concurrent_finals_with_different_coordination_do_not_share_a_claim() {
         .await
         .unwrap()
         .unwrap()
-        .sealing
+        .sealing.clone()
         .expect("A published no claim");
 
     // B: same bytes, DIFFERENT sequence — a different operation.
@@ -17013,7 +17014,7 @@ async fn concurrent_finals_with_different_coordination_do_not_share_a_claim() {
         .await
         .unwrap()
         .unwrap()
-        .sealing
+        .sealing.clone()
         .expect("B's refusal tore down A's claim");
     assert_eq!(now_claim.operation_id, a_claim.operation_id);
     assert!(now_claim.owes_final(), "A's promise was cleared");
@@ -17324,7 +17325,7 @@ async fn a_failed_queue_write_leaves_no_phantom_leases() {
         .unwrap()
         .unwrap();
     let seg = desc.resolve_segment("");
-    let route = desc.segment_route_by_id(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
     let identity = desc.dynamic_segment_identity(seg.seg_id);
     let engine = state.engine_for(&route).await.unwrap();
 
@@ -17572,7 +17573,7 @@ async fn a_failed_settle_leaves_no_phantom_acks() {
         .unwrap()
         .unwrap();
     let seg = desc.resolve_segment("");
-    let route = desc.segment_route_by_id(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
     let identity = desc.dynamic_segment_identity(seg.seg_id);
     let engine = state.engine_for(&route).await.unwrap();
     engine.fail_next_group_for(identity);
@@ -17684,7 +17685,7 @@ async fn queue_config_delete_is_group_local() {
         .unwrap()
         .unwrap();
     let seg = desc.resolve_segment("");
-    let route = desc.segment_route_by_id(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
     let identity = desc.dynamic_segment_identity(seg.seg_id);
     let engine = state.engine_for(&route).await.unwrap();
     engine.fail_next_group_for(identity);
@@ -18595,7 +18596,7 @@ async fn a_failed_config_scan_aborts_the_delete_untouched() {
         .unwrap()
         .unwrap();
     let seg = desc.resolve_segment("");
-    let route = desc.segment_route_by_id(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
     let engine = state.engine_for(&route).await.unwrap();
     engine.fail_next_config_scan();
 
@@ -18675,7 +18676,7 @@ async fn same_group_config_puts_see_each_other() {
         .await
         .unwrap()
         .unwrap();
-    let route = desc.segment_route_by_id(desc.resolve_segment("").seg_id);
+    let route = desc.segment_route_by_id(desc.resolve_segment("").seg_id).unwrap();
     let engine = state.engine_for(&route).await.unwrap();
 
     let cfg = br#"{"visibilityTimeoutMs":30000,"maxAttempts":3}"#;
@@ -18742,7 +18743,7 @@ async fn a_stale_fork_release_does_not_touch_a_recreated_source() {
         .await
         .unwrap()
         .unwrap()
-        .stream_epoch;
+        .stream_epoch.clone();
 
     // Recreate the source name at a new incarnation: DELETE (childless,
     // so a clean hard delete) then PUT.
@@ -21635,7 +21636,7 @@ async fn delete_stays_inside_the_requesting_project() {
         .await
         .expect("registry read");
     assert!(
-        d.as_ref().is_some_and(crate::http::desc_alive),
+        d.as_ref().is_some_and(|d| crate::http::desc_alive(d)),
         "deployment tenant's same-named stream must be untouched by B's delete: {d:?}"
     );
     engine_shutdown(&state).await;
@@ -22573,7 +22574,7 @@ async fn stored_references_bind_inside_the_referring_project() {
             crate::tenant::CanonicalStreamName::new(name).unwrap(),
         )
     };
-    let foreign_desc = |name: &str, epoch: &str| crate::registry::StreamDesc {
+    let foreign_desc = |name: &str, epoch: &str| crate::registry::PersistedDescriptor {
         seal_gen_counter: 0,
         account_id: None,
         project_id: po.clone(),
@@ -22621,7 +22622,7 @@ async fn stored_references_bind_inside_the_referring_project() {
         .await
         .unwrap()
         .unwrap()
-        .stream_epoch;
+        .stream_epoch.clone();
     // The look-alike: same name, same fork id, soft-deleted — an
     // unscoped release would remove its last child and TOMBSTONE it.
     let eb = format!("{:032x}", 0xb4d_u64);
@@ -22778,7 +22779,7 @@ async fn a_release_parked_across_recreation_cannot_touch_the_replacement() {
         .await
         .unwrap()
         .unwrap()
-        .stream_epoch;
+        .stream_epoch.clone();
 
     // The in-flight release, parked between its snapshot (epoch A
     // validated) and its mutation.
@@ -23150,7 +23151,7 @@ async fn a_parked_delete_never_removes_a_later_incarnation() {
         .await
         .unwrap()
         .unwrap()
-        .stream_epoch;
+        .stream_epoch.clone();
 
     // Park a delete just before it decides.
     let dbefore = crate::failpoints::parked(crate::failpoints::Fp::DeleteBeforeDecision, "abadel");
@@ -24370,7 +24371,7 @@ async fn catalog_pages_without_scanning_the_world() {
     const N: usize = 1_200;
     for i in 0..N {
         let name = format!("cat-{i:05}");
-        let d = crate::registry::StreamDesc {
+        let d = crate::registry::PersistedDescriptor {
             seal_gen_counter: 0,
             account_id: None,
             project_id: crate::tenant::ProjectId::new("proj-test").unwrap(),
@@ -24523,7 +24524,7 @@ async fn a_applied_read_and_long_poll_serve_the_tail_before_durability() {
         .unwrap()
         .unwrap();
     let seg = desc.resolve_segment("");
-    let route = desc.segment_route_by_id(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
     let engine = state.engine_for(&route).await.unwrap();
     let handle = engine.stream_handle(seg.identity).await.unwrap();
     assert_eq!(handle.state.lock().unwrap().durable.next, 1);
@@ -24884,7 +24885,7 @@ async fn a_stale_applied_cursor_is_refused_after_crash_restart() {
         .unwrap()
         .unwrap();
     let seg = desc.resolve_segment("");
-    let route = desc.segment_route_by_id(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
     let engine = state2.engine_for(&route).await.unwrap();
     let handle = engine.stream_handle(seg.identity).await.unwrap();
     let guard = engine.test_hold_dispatch().await;
@@ -26075,7 +26076,7 @@ async fn consumer_fence_survives_ownership_move() {
         .unwrap()
         .unwrap();
     let seg = desc.resolve_segment("");
-    let route = desc.segment_route_by_id(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
     let identity = desc.dynamic_segment_identity(seg.seg_id);
     let engine = state.engine_for(&route).await.unwrap();
 
@@ -28157,7 +28158,7 @@ async fn split_child_sheds_while_sibling_child_admits() {
         keys.iter()
             .find(|k| {
                 let seg = desc.resolve_segment(k);
-                desc.segment_route_by_id(seg.seg_id) == route
+                desc.segment_route_by_id(seg.seg_id).unwrap() == route
             })
             .copied()
             .expect("a key routing to this child")
@@ -33443,7 +33444,7 @@ async fn seal_converges_through_transient_commit_group_failures() {
         .unwrap()
         .unwrap();
     let seg = desc.resolve_segment("");
-    let route = desc.segment_route_by_id(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id).unwrap();
     let identity = desc.dynamic_segment_identity(seg.seg_id);
     let engine = state.engine_for(&route).await.unwrap();
     let tripped0 = engine.group_failures_tripped();
@@ -35386,10 +35387,10 @@ async fn livefeed_remote_sealed_predecessor_streams_through_owner() {
     // The parent's shard belongs to A (an override on B + A's peer
     // URL); the child's shard differs, so B serves it itself. The
     // fixed stream name makes both routes deterministic.
-    let p_parent = state_b.shards.prefix_for(&desc.segment_route_by_id(0));
+    let p_parent = state_b.shards.prefix_for(&desc.segment_route_by_id(0).unwrap());
     let p_child = state_b
         .shards
-        .prefix_for(&desc.segment_route_by_id(child_seg));
+        .prefix_for(&desc.segment_route_by_id(child_seg).unwrap());
     assert_ne!(
         p_parent, p_child,
         "pick a stream name whose parent/child routes differ"
@@ -35596,10 +35597,10 @@ async fn livefeed_owner_movement_one_redirect_and_typed_cutoffs() {
     state_b.registry.invalidate(&sref);
     let desc = state_b.registry.get(&sref).await.unwrap().unwrap();
     let child_seg = desc.resolve_segment("").seg_id;
-    let p_parent = state_b.shards.prefix_for(&desc.segment_route_by_id(0));
+    let p_parent = state_b.shards.prefix_for(&desc.segment_route_by_id(0).unwrap());
     let p_child = state_b
         .shards
-        .prefix_for(&desc.segment_route_by_id(child_seg));
+        .prefix_for(&desc.segment_route_by_id(child_seg).unwrap());
     assert_ne!(p_parent, p_child);
     let all = ["inst-a", "inst-b", "inst-c"].map(str::to_string).to_vec();
     state_b.ownership.set_ring_active(all.clone());
@@ -35976,10 +35977,10 @@ async fn livefeed_blackholed_peer_never_suppresses_heartbeats() {
     state_b.registry.invalidate(&sref);
     let desc = state_b.registry.get(&sref).await.unwrap().unwrap();
     let child_seg = desc.resolve_segment("").seg_id;
-    let p_parent = state_b.shards.prefix_for(&desc.segment_route_by_id(0));
+    let p_parent = state_b.shards.prefix_for(&desc.segment_route_by_id(0).unwrap());
     let p_child = state_b
         .shards
-        .prefix_for(&desc.segment_route_by_id(child_seg));
+        .prefix_for(&desc.segment_route_by_id(child_seg).unwrap());
     assert_ne!(p_parent, p_child);
     state_b
         .ownership
@@ -37237,7 +37238,7 @@ async fn livefeed_swap_externally_adopts_child_engines() {
     // The child engine must carry the external adoption stamp from the
     // LiveFeed build (last_external_seq > 0), and sweeps must neither
     // close it nor install custody.
-    let child_route = desc.segment_route_by_id(desc.resolve_segment("").seg_id);
+    let child_route = desc.segment_route_by_id(desc.resolve_segment("").seg_id).unwrap();
     let prefix = state.shards.prefix_for(&child_route);
     let engine = state
         .shards

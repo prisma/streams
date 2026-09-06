@@ -535,8 +535,8 @@ mod descriptor_json {
     }
 
     /// Every skip-able field populated, every always-on field distinct.
-    fn full_desc() -> StreamDesc {
-        StreamDesc {
+    fn full_desc() -> crate::registry::PersistedDescriptor {
+        crate::registry::PersistedDescriptor {
             name: "orders".into(),
             account_id: Some("acct-1".into()),
             project_id: proj(),
@@ -589,8 +589,8 @@ mod descriptor_json {
     const FULL_JSON: &str = r#"{"name":"orders","account_id":"acct-1","project_id":"proj-test","stream_epoch":"00112233445566778899aabbccddeeff","key_fingerprint":"fp-abc","created_ms":1700000000123,"expires_at_ms":1800000000000,"deleted":true,"soft_deleted":true,"logical_close_ms":1700100000000,"forked_from":{"source":"parent","source_epoch":"ffeeddccbbaa99887766554433221100","fork_offset":42,"fork_sub":3,"fork_id":"fork-1"},"fork_children":["child-1","child-2"],"init":{"request_hash":"rh-1","key_fingerprint":"kfp-1","claimed_ms":5},"content_type":"application/json","ttl_secs":3600,"segments":{"version":1,"next_seg_id":1,"segments":[{"seg_id":0,"lo":0,"hi":18446744073709551615,"shard_prefix":"shard-0","route_hash":[0,0,0,0,0,0,0,0,0,0,0,0,0,0,0,0],"created_ms":1700000000000,"predecessors":[],"sealed_ms":null,"sealed_next_offset":null}]},"sealed":true,"seal_gen_counter":7,"sealing":{"operation_id":"op-1","intent":{"kind":"final","routing_key":"rk","request_hash":"rq","final_committed":true},"claimed_ms":9,"claim_generation":2},"seal_op":"op-0","watch_definitions":[{"name":"w1","fields":["/a","/b"]}],"parent_ref_pending":true,"watch_sig_key":"wsk-1","layout_version":4}"#;
 
     /// All optional/empty/defaultable fields at their defaults.
-    fn minimal_desc() -> StreamDesc {
-        StreamDesc {
+    fn minimal_desc() -> crate::registry::PersistedDescriptor {
+        crate::registry::PersistedDescriptor {
             name: "min".into(),
             account_id: None,
             project_id: proj(),
@@ -636,7 +636,11 @@ mod descriptor_json {
         // The golden JSON decodes through the PRODUCTION fail-closed
         // path and re-serializes byte-identically (field order pinned
         // both directions).
-        let back = decode_desc(FULL_JSON.as_bytes(), None).expect("layout-4 desc decodes");
+        // DTO wire preservation is independent from serving validity: this
+        // synthetic every-field fixture intentionally combines incompatible
+        // lifecycle flags, so it cannot become serving state.
+        let back: crate::registry::PersistedDescriptor = serde_json::from_str(FULL_JSON).unwrap();
+        assert!(decode_desc(FULL_JSON.as_bytes(), None).is_err());
         assert_eq!(serde_json::to_string(&back).unwrap(), FULL_JSON);
     }
 
@@ -654,7 +658,7 @@ mod descriptor_json {
         // stream_epoch, key_fingerprint, created_ms): every other field
         // takes its documented serde default. layout_version defaults to
         // 0 — precisely what the layout gate then refuses.
-        let d: StreamDesc = serde_json::from_str(
+        let d: crate::registry::PersistedDescriptor = serde_json::from_str(
             r#"{"name":"min","project_id":"proj-test","stream_epoch":"00000000000000000000000000000001","key_fingerprint":"fp","created_ms":1}"#,
         )
         .unwrap();

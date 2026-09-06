@@ -2695,7 +2695,11 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
                 .map(|m| m.segments.iter().map(|sg| sg.seg_id).collect())
                 .unwrap_or_else(|| vec![0]);
             for sid in seg_ids {
-                let route = d.segment_route_by_id(sid);
+                let Some(route) = d.segment_route_by_id(sid) else {
+                    tracing::error!(segment = sid, "billing sweep encountered missing validated segment");
+                    state.billing.set_sweep_walk_cursor(after.clone());
+                    return;
+                };
                 // Foreign routes are skipped — every instance walks the
                 // same registry and closes what IT owns.
                 let budget = sweep_resident_budget(&state.config.billing);

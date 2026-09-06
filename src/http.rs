@@ -2204,7 +2204,7 @@ fn key_version(headers: &HeaderMap) -> u32 {
         .unwrap_or(0)
 }
 
-pub(crate) fn desc_alive(desc: &StreamDesc) -> bool {
+pub(crate) fn desc_alive(desc: &crate::registry::PersistedDescriptor) -> bool {
     !desc.deleted && !desc.soft_deleted && desc.expires_at_ms.map(|e| now_ms() < e).unwrap_or(true)
 }
 
@@ -2257,7 +2257,7 @@ pub(crate) fn create_request_hash(
 /// finished — the original field anomaly, delayed. Whether the claim is
 /// stale decides only WHO MAY TAKE OVER the work (see
 /// [`init_claim_stale`]); it never makes incomplete content visible.
-pub(crate) fn initializing(desc: &StreamDesc) -> bool {
+pub(crate) fn initializing(desc: &crate::registry::PersistedDescriptor) -> bool {
     desc.init.is_some()
 }
 
@@ -2265,7 +2265,7 @@ pub(crate) fn initializing(desc: &StreamDesc) -> bool {
 /// take it over. A creator is a single in-process task, so a crash must
 /// not wedge the name forever — but taking over means REDOING the work,
 /// not declaring it done.
-pub(crate) fn init_claim_stale(desc: &StreamDesc) -> bool {
+pub(crate) fn init_claim_stale(desc: &crate::registry::PersistedDescriptor) -> bool {
     desc.init
         .as_ref()
         .is_some_and(|i| now_ms() - i.claimed_ms > crate::registry::INIT_CLAIM_MS)
@@ -2529,7 +2529,7 @@ async fn clear_parent_debt(
                 None => x.forked_from.is_none(),
             };
             if x.parent_ref_pending && debt_matches {
-                let mut next = x.clone();
+                let mut next = x.to_persisted();
                 next.parent_ref_pending = false;
                 crate::registry::Mutation::Write(next, ())
             } else {
@@ -2749,9 +2749,9 @@ fn fresh_desc(
     content_type: String,
     ttl_secs: Option<u64>,
     expires_at_ms: Option<i64>,
-) -> StreamDesc {
+) -> crate::registry::PersistedDescriptor {
     let epoch = state.runtime.epoch();
-    StreamDesc {
+    crate::registry::PersistedDescriptor {
         name: name.to_string(),
         account_id: Some(state.deployment.account_id().to_string()),
         // mt-lint: allow(state-tenant-read): the RAW descriptor builder — raw creates are deployment-tenant by definition (SS14.3)
@@ -2793,7 +2793,7 @@ pub(crate) fn fresh_desc_product(
     content_type: String,
     ttl_secs: Option<u64>,
     expires_at_ms: Option<i64>,
-) -> StreamDesc {
+) -> crate::registry::PersistedDescriptor {
     // Stage 5d: the descriptor is BORN into the request's project —
     // the deployment tenant must never leak into a principal-created
     // stream's identity.
@@ -3451,7 +3451,7 @@ pub(crate) async fn create_stream(
     };
 
     let hash = desc.resolve_segment("").identity;
-    let epoch_bytes = desc.epoch_bytes().unwrap_or([0u8; 16]);
+    let epoch_bytes = desc.epoch();
     state.keys.put(hash, key.clone(), epoch_bytes);
     // Shard choice keys off the stream NAME hash (COMPUTE-SPEC R1) so the
     // router can compute placement without knowing the stream epoch; the
@@ -3543,9 +3543,14 @@ pub(crate) async fn create_stream(
             // `desc.forked_from.fork_id`, and a stale empty id
             // silently skipped the release — the source stayed
             // pinned by a child deleted mid-creation (FRK-013).
-            if let Some(f) = desc.forked_from.as_mut() {
+            let mut stamped_desc = desc.to_persisted();
+            if let Some(f) = stamped_desc.forked_from.as_mut() {
                 f.fork_id = fork_id.clone();
             }
+            desc = match StreamDesc::try_from(stamped_desc) {
+                Ok(desc) => desc,
+                Err(error) => return err_resp(StatusCode::INTERNAL_SERVER_ERROR, "invalid_descriptor", &error.to_string()),
+            };
         }
         // The CHILD must still exist to be worth anchoring: a
         // half-made child deleted in the stamp-to-install window
@@ -4017,7 +4022,7 @@ fn release_fork_ref(
             .registry
             .mutate_incarnation(&src_ref, &source_epoch, |x| {
                 let before = x.fork_children.len();
-                let mut next = x.clone();
+                let mut next = x.to_persisted();
                 next.fork_children.retain(|c| c != &fork_id);
                 let removed = next.fork_children.len() != before;
                 let expired = next.expires_at_ms.map(|e| now_ms() >= e).unwrap_or(false);
@@ -4272,7 +4277,7 @@ fn delete_lifecycle(
                 .unwrap_or_else(|| vec![0]);
             for sid in seg_ids {
                 let identity = d.dynamic_segment_identity(sid);
-                let route = d.segment_route_by_id(sid);
+                let route = d.segment_route_by_id(sid).expect("segment selected from validated topology");
                 if let Ok(engine) = state.engine_for(&route).await
                     && let Err(e) = engine.submit_billing_close(identity, close_stamp).await
                 {
@@ -4496,7 +4501,7 @@ pub(crate) async fn fence_segment_for_key(
     };
     let seg = desc.resolve_segment(routing_key);
     let identity = desc.dynamic_segment_identity(seg.seg_id);
-    let route = desc.segment_route_by_id(seg.seg_id);
+    let route = desc.segment_route_by_id(seg.seg_id).ok_or("unknown segment")?;
     let engine = state
         .engine_for(&route)
         .await
@@ -7161,7 +7166,9 @@ async fn internal_segment_close(
             "segment identity does not match this stream's lineage",
         );
     }
-    let route = desc.segment_route_by_id(params.seg_id);
+    let Some(route) = desc.segment_route_by_id(params.seg_id) else {
+        return err_resp(StatusCode::BAD_REQUEST, "unknown_segment", "segment is not part of this incarnation");
+    };
     let engine = match state.engine_for_quiet(&route).await {
         Ok(e) => e,
         Err(resp) => {

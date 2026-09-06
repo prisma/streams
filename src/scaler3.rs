@@ -455,7 +455,7 @@ async fn seal_identity(
     // The seal must reach the engine that OWNS this segment's appends —
     // hard-coding the parent route here sealed the wrong shard for any
     // child with a real route (review blocker 1).
-    let route = desc.segment_route_by_id(seg_id);
+    let route = desc.segment_route_by_id(seg_id)?;
     // Round-4 follow-up review, finding 3: the scaler resolution used
     // to be `.ok()`ed into None, so a wrong-owner response, an owner
     // convergence holdoff, an open failure and a capacity refusal were
@@ -860,7 +860,9 @@ pub async fn resume(
             if !pending_matches {
                 return false; // someone else already completed it
             }
-            let low_route = d.segment_route_by_id(seg_id);
+            let Some(low_route) = d.segment_route_by_id(seg_id) else {
+                return false;
+            };
             // The high child's route must land on a DIFFERENT shard
             // prefix than the parent whenever the topology has one —
             // otherwise the "split" keeps both children behind the same
@@ -962,7 +964,9 @@ async fn resume_merge(
             if !pending_matches {
                 return false;
             }
-            let child_route = d.segment_route_by_id(a_id);
+            let Some(child_route) = d.segment_route_by_id(a_id) else {
+                return false;
+            };
             let map = d.segments.as_mut().expect("checked");
             match map.merge(a_id, b_id, fa, fb, child_route, crate::shard::now_ms()) {
                 Ok(_) => {
@@ -1109,7 +1113,7 @@ mod tests {
     use super::*;
 
     fn test_desc(name: &str) -> StreamDesc {
-        StreamDesc {
+        crate::registry::PersistedDescriptor {
             seal_gen_counter: 0,
             account_id: None,
             project_id: crate::tenant::ProjectId::new("proj-test").unwrap(),
@@ -1135,6 +1139,8 @@ mod tests {
             seal_op: None,
             layout_version: crate::registry::LAYOUT_VERSION,
         }
+        .try_into()
+        .expect("valid descriptor fixture")
     }
 
     fn sketch(epoch: &str, now: i64, hot: bool, key: u8) -> SegSketch {

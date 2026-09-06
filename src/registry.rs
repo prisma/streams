@@ -52,7 +52,7 @@ fn retryable_cas_error(error: &anyhow::Error) -> bool {
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StreamDesc {
+pub struct PersistedDescriptor {
     pub name: String,
     /// Billing tenant boundary (docs/OBSERVABILITY-BILLING.md §3.2):
     /// captured from the deployment's authenticated context at creation
@@ -296,7 +296,7 @@ pub enum Mutation<T> {
     /// Leave the descriptor unchanged; carry a typed reason out.
     Decline(T),
     /// Replace the descriptor with this one; carry a typed result out.
-    Write(StreamDesc, T),
+    Write(PersistedDescriptor, T),
 }
 
 /// The outcome of a [`Registry::mutate_incarnation`] call. Every
@@ -385,62 +385,92 @@ pub struct SegRoute {
 /// layout gate: any layout_version other than LAYOUT_VERSION — including
 /// 0, which every pre-cutover descriptor deserializes to — refuses the
 /// namespace rather than decoding it (spec §0: no legacy decoders).
-pub(crate) fn decode_desc(
-    raw: &[u8],
-    expect: Option<&crate::tenant::TenantStreamRef>,
-) -> Result<StreamDesc, object_store::Error> {
-    // Layout gate FIRST, on a minimal probe: a legacy descriptor must
-    // be refused as unsupported_storage_layout — the precise
-    // operator-facing diagnostic — not as a parse error on the fields
-    // layout 4 made mandatory.
-    #[derive(serde::Deserialize)]
-    struct LayoutProbe {
-        #[serde(default)]
-        layout_version: u32,
-        #[serde(default)]
-        name: String,
+/// Immutable serving state. Persisted JSON is never itself a serving
+/// descriptor: conversion validates identity, lifecycle and topology once.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+#[serde(try_from = "PersistedDescriptor", into = "PersistedDescriptor")]
+pub struct StreamDesc {
+    persisted: PersistedDescriptor,
+    epoch: [u8; 16],
+}
+
+impl std::ops::Deref for StreamDesc {
+    type Target = PersistedDescriptor;
+    fn deref(&self) -> &Self::Target {
+        &self.persisted
     }
-    let probe: LayoutProbe =
-        serde_json::from_slice(raw).map_err(|e| object_store::Error::Generic {
-            store: "registry",
-            source: format!("descriptor parse: {e}").into(),
-        })?;
-    if probe.layout_version != LAYOUT_VERSION {
-        return Err(object_store::Error::Generic {
-            store: "registry",
-            source: format!(
-                "unsupported_storage_layout: descriptor '{}' has layout {} (this binary \
-                 reads only {}); this namespace was written by a different implementation \
-                 — deploy against a fresh bucket/PATH_PREFIX",
-                probe.name, probe.layout_version, LAYOUT_VERSION
-            )
-            .into(),
-        });
+}
+
+impl From<StreamDesc> for PersistedDescriptor {
+    fn from(desc: StreamDesc) -> Self {
+        desc.persisted
     }
-    let d: StreamDesc = serde_json::from_slice(raw).map_err(|e| object_store::Error::Generic {
+}
+
+impl TryFrom<PersistedDescriptor> for StreamDesc {
+    type Error = object_store::Error;
+    fn try_from(persisted: PersistedDescriptor) -> Result<Self, Self::Error> {
+        let epoch = validate_descriptor(&persisted)?;
+        Ok(Self { persisted, epoch })
+    }
+}
+
+#[derive(Debug)]
+pub enum Lifecycle<'a> {
+    Active,
+    Initializing(&'a InitState),
+    Sealing(&'a SealState),
+    Sealed,
+    RetainedForks,
+    Deleted { parent_ref_pending: bool },
+}
+
+impl StreamDesc {
+    pub fn key_point(routing_key: &str) -> u64 {
+        PersistedDescriptor::key_point(routing_key)
+    }
+    pub fn epoch_bytes(&self) -> Option<[u8; 16]> {
+        Some(self.epoch)
+    }
+    pub fn epoch(&self) -> [u8; 16] {
+        self.epoch
+    }
+    pub fn to_persisted(&self) -> PersistedDescriptor {
+        self.persisted.clone()
+    }
+    pub fn lifecycle(&self) -> Lifecycle<'_> {
+        if self.deleted {
+            Lifecycle::Deleted {
+                parent_ref_pending: self.parent_ref_pending,
+            }
+        } else if self.soft_deleted {
+            Lifecycle::RetainedForks
+        } else if let Some(init) = &self.init {
+            Lifecycle::Initializing(init)
+        } else if let Some(seal) = &self.sealing {
+            Lifecycle::Sealing(seal)
+        } else if self.sealed {
+            Lifecycle::Sealed
+        } else {
+            Lifecycle::Active
+        }
+    }
+}
+
+fn invalid_descriptor(name: &str, reason: &str) -> object_store::Error {
+    object_store::Error::Generic {
         store: "registry",
-        source: format!("descriptor parse: {e}").into(),
-    })?;
+        source: format!("descriptor '{name}' corruption: {reason}").into(),
+    }
+}
+
+fn validate_descriptor(d: &PersistedDescriptor) -> Result<[u8; 16], object_store::Error> {
     // The sref() invariant: a decoded name must be structurally
     // canonical, or every downstream identity derivation is unsound.
     if crate::tenant::CanonicalStreamName::new(&d.name).is_err() {
         return Err(object_store::Error::Generic {
             store: "registry",
             source: format!("descriptor name {:?} is not canonical — corruption", d.name).into(),
-        });
-    }
-    // §10.1: content must match the path it was read from; a mismatch
-    // is corruption (or a cross-project copy) and NEVER decodes.
-    if let Some(exp) = expect
-        && (d.project_id != *exp.project_id() || d.name != exp.name().as_str())
-    {
-        return Err(object_store::Error::Generic {
-            store: "registry",
-            source: format!(
-                "descriptor identity mismatch: path says {}, content says {}\u{00a7}{} — corruption",
-                exp, d.project_id, d.name
-            )
-            .into(),
         });
     }
     if d.layout_version != LAYOUT_VERSION {
@@ -458,9 +488,6 @@ pub(crate) fn decode_desc(
     // WP-03/PR 5 (descriptor conversion rules): stored-REFERENCE
     // invariants the typed reconstructions rely on. Corruption REFUSES
     // here — never a downstream panic, never a silent repair.
-    // (stream_epoch width stays Option-tolerated at decode — the
-    // epoch_bytes() contract today; the width rule lands with the
-    // persisted-DTO/domain split.)
     if let Some(f) = &d.forked_from {
         if crate::tenant::CanonicalStreamName::new(&f.source).is_err() {
             return Err(object_store::Error::Generic {
@@ -497,14 +524,95 @@ pub(crate) fn decode_desc(
             });
         }
     }
-    Ok(d)
+    let epoch: [u8; 16] = crate::crypto::unhex(&d.stream_epoch)
+        .and_then(|bytes| bytes.try_into().ok())
+        .ok_or_else(|| {
+            invalid_descriptor(&d.name, "stream_epoch must be exactly 16 hex-encoded bytes")
+        })?;
+    if let Some(map) = &d.segments {
+        map.validate()
+            .map_err(|error| invalid_descriptor(&d.name, &format!("topology: {error}")))?;
+    }
+    if d.sealed && d.sealing.is_some() {
+        return Err(invalid_descriptor(
+            &d.name,
+            "sealed descriptor retains a sealing claim",
+        ));
+    }
+    if d.init.is_some() && (d.sealed || d.sealing.is_some()) {
+        return Err(invalid_descriptor(
+            &d.name,
+            "initializing descriptor cannot be sealing or sealed",
+        ));
+    }
+    if let Some(claim) = &d.sealing {
+        if claim.claim_generation > d.seal_gen_counter {
+            return Err(invalid_descriptor(
+                &d.name,
+                "seal claim generation exceeds its allocator",
+            ));
+        }
+        if d.segments.as_ref().is_some_and(|map| map.pending.is_some()) {
+            return Err(invalid_descriptor(
+                &d.name,
+                "seal and topology claims are mutually exclusive",
+            ));
+        }
+    }
+    Ok(epoch)
+}
+
+pub(crate) fn decode_desc(
+    raw: &[u8],
+    expect: Option<&crate::tenant::TenantStreamRef>,
+) -> Result<StreamDesc, object_store::Error> {
+    // Layout gate FIRST, on a minimal probe: a legacy descriptor must
+    // be refused as unsupported_storage_layout — the precise
+    // operator-facing diagnostic — not as a parse error on the fields
+    // layout 4 made mandatory.
+    #[derive(serde::Deserialize)]
+    struct LayoutProbe {
+        #[serde(default)]
+        layout_version: u32,
+        #[serde(default)]
+        name: String,
+    }
+    let probe: LayoutProbe =
+        serde_json::from_slice(raw).map_err(|e| object_store::Error::Generic {
+            store: "registry",
+            source: format!("descriptor parse: {e}").into(),
+        })?;
+    if probe.layout_version != LAYOUT_VERSION {
+        return Err(object_store::Error::Generic {
+            store: "registry",
+            source: format!(
+                "unsupported_storage_layout: descriptor '{}' has layout {} (this binary \
+                 reads only {}); this namespace was written by a different implementation \
+                 — deploy against a fresh bucket/PATH_PREFIX",
+                probe.name, probe.layout_version, LAYOUT_VERSION
+            )
+            .into(),
+        });
+    }
+    let persisted: PersistedDescriptor = serde_json::from_slice(raw)
+        .map_err(|error| invalid_descriptor("<unknown>", &format!("parse: {error}")))?;
+    let desc = StreamDesc::try_from(persisted)?;
+    if let Some(expected) = expect {
+        if desc.project_id != *expected.project_id() || desc.name != expected.name().as_str() {
+            return Err(invalid_descriptor(
+                &desc.name,
+                &format!("identity mismatch with path {expected}"),
+            ));
+        }
+    }
+    Ok(desc)
 }
 
 fn default_content_type() -> String {
     "application/octet-stream".to_string()
 }
 
-impl StreamDesc {
+impl PersistedDescriptor {
     pub fn epoch_bytes(&self) -> Option<[u8; 16]> {
         crate::crypto::unhex(&self.stream_epoch)?.try_into().ok()
     }
@@ -595,14 +703,14 @@ impl StreamDesc {
         }
     }
 
-    /// segment_route by id; unknown ids fall back to the parent route
-    /// (the implicit single segment).
-    pub fn segment_route_by_id(&self, seg_id: u32) -> [u8; 16] {
-        self.segments
-            .as_ref()
-            .and_then(|m| m.get(seg_id))
-            .map(|sg| self.segment_route(sg))
-            .unwrap_or_else(|| crate::crypto::RouteHash::for_stream(&self.sref()).0)
+    /// Unknown explicit segments have no routing authority. The parent
+    /// route belongs only to the absent-map implicit segment zero.
+    pub fn segment_route_by_id(&self, seg_id: u32) -> Option<[u8; 16]> {
+        match &self.segments {
+            Some(map) => map.get(seg_id).map(|segment| self.segment_route(segment)),
+            None if seg_id == 0 => Some(crate::crypto::RouteHash::for_stream(&self.sref()).0),
+            None => None,
+        }
     }
 
     pub fn resolve_segment(&self, routing_key: &str) -> SegRoute {
@@ -641,8 +749,7 @@ impl StreamDesc {
                     hi: seg.hi,
                 };
             }
-            // Unreachable for any map save() accepts; fall through to
-            // the implicit segment rather than failing the append.
+            unreachable!("validated explicit topology covers every routing point");
         }
         SegRoute {
             seg_id: 0,
@@ -899,8 +1006,9 @@ impl Registry {
     /// Create a descriptor; on a lost CAS race, return the winner's.
     pub async fn create(
         &self,
-        desc: StreamDesc,
+        desc: impl Into<PersistedDescriptor>,
     ) -> Result<(bool, StreamDesc), object_store::Error> {
+        let desc = StreamDesc::try_from(desc.into())?;
         let sref = desc.sref();
         let raw = serde_json::to_vec(&desc).expect("desc json");
         match self
@@ -946,9 +1054,16 @@ impl Registry {
     pub async fn recreate(
         &self,
         sref: &crate::tenant::TenantStreamRef,
-        fresh: StreamDesc,
+        fresh: impl Into<PersistedDescriptor>,
         still_dead: impl Fn(&StreamDesc) -> bool,
     ) -> Result<(bool, StreamDesc), object_store::Error> {
+        let fresh = StreamDesc::try_from(fresh.into())?;
+        if fresh.sref() != *sref {
+            return Err(invalid_descriptor(
+                &fresh.name,
+                "recreation identity mismatch",
+            ));
+        }
         for _ in 0..5 {
             let got = match self.store.get(&desc_path(&self.cell, sref)).await {
                 Ok(r) => r,
@@ -1000,7 +1115,7 @@ impl Registry {
 
     /// CAS-update the descriptor (delete = tombstone).
     #[allow(dead_code)] // production callers converted to fenced APIs; kept as the corruption fail-closed probe (tests) pending a Stage-4 cleanup decision
-    pub async fn update<F: Fn(&mut StreamDesc)>(
+    pub async fn update<F: Fn(&mut PersistedDescriptor)>(
         &self,
         sref: &crate::tenant::TenantStreamRef,
         apply: F,
@@ -1014,8 +1129,9 @@ impl Registry {
             let etag = got.meta.e_tag.clone();
             let raw = got.bytes().await?;
             // Fail CLOSED on corruption (was: treated as missing).
-            let mut desc: StreamDesc = decode_desc(&raw, Some(sref))?;
+            let mut desc = decode_desc(&raw, Some(sref))?.to_persisted();
             apply(&mut desc);
+            let desc = StreamDesc::try_from(desc)?;
             let body = serde_json::to_vec(&desc).expect("desc json");
             match self
                 .store
@@ -1070,7 +1186,7 @@ impl Registry {
         &self,
         sref: &crate::tenant::TenantStreamRef,
         expected_epoch: &str,
-        mutate: impl FnMut(&mut StreamDesc) -> bool,
+        mutate: impl FnMut(&mut PersistedDescriptor) -> bool,
     ) -> anyhow::Result<bool> {
         Ok(matches!(
             self.cas_update_incarnation_outcome(sref, expected_epoch, mutate)
@@ -1083,7 +1199,7 @@ impl Registry {
         &self,
         sref: &crate::tenant::TenantStreamRef,
         expected_epoch: &str,
-        mut mutate: impl FnMut(&mut StreamDesc) -> bool,
+        mut mutate: impl FnMut(&mut PersistedDescriptor) -> bool,
     ) -> anyhow::Result<IncarnationCas> {
         let mut moved = false;
         let applied = self
@@ -1145,6 +1261,14 @@ impl Registry {
                 Mutation::Decline(t) => return Ok(MutationResult::Declined(t)),
                 Mutation::Write(next, t) => (next, t),
             };
+            let next = StreamDesc::try_from(next)?;
+            if next.sref() != *sref || next.stream_epoch != expected_epoch {
+                return Err(invalid_descriptor(
+                    &next.name,
+                    "mutation changed incarnation identity",
+                )
+                .into());
+            }
             let body = serde_json::to_vec(&next)?;
             let mode = ConditionalUpdateToken::from_etag(etag)?.mode();
             match self
@@ -1181,7 +1305,7 @@ impl Registry {
     pub async fn cas_update_retry(
         &self,
         sref: &crate::tenant::TenantStreamRef,
-        mut mutate: impl FnMut(&mut StreamDesc) -> bool,
+        mut mutate: impl FnMut(&mut PersistedDescriptor) -> bool,
     ) -> anyhow::Result<bool> {
         let mut last = None;
         for attempt in 0..5u32 {
@@ -1203,7 +1327,7 @@ impl Registry {
     pub async fn cas_update(
         &self,
         sref: &crate::tenant::TenantStreamRef,
-        mut mutate: impl FnMut(&mut StreamDesc) -> bool,
+        mut mutate: impl FnMut(&mut PersistedDescriptor) -> bool,
     ) -> anyhow::Result<bool> {
         let path = desc_path(&self.cell, sref);
         let got = match self.store.get(&path).await {
@@ -1213,13 +1337,18 @@ impl Registry {
         };
         let etag = got.meta.e_tag.clone();
         let bytes = got.bytes().await?;
-        let mut desc: StreamDesc =
-            decode_desc(&bytes, Some(sref)).map_err(|e| anyhow::anyhow!("{e}"))?;
+        let mut desc = decode_desc(&bytes, Some(sref))?.to_persisted();
         if desc.deleted {
             return Ok(false);
         }
         if !mutate(&mut desc) {
             return Ok(false);
+        }
+        let desc = StreamDesc::try_from(desc)?;
+        if desc.sref() != *sref {
+            return Err(
+                invalid_descriptor(&desc.name, "mutation changed descriptor identity").into(),
+            );
         }
         let body = serde_json::to_vec(&desc)?;
         let mode = ConditionalUpdateToken::from_etag(etag)?.mode();
@@ -1580,6 +1709,112 @@ mod tests {
         }
     }
 
+    #[tokio::test]
+    async fn r04_invalid_descriptors_cannot_reach_storage() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let registry = Registry::new(
+            store.clone(),
+            &crate::tenant::CellId::new("test-cell").unwrap(),
+        );
+        let valid = desc("validated", "00112233445566778899aabbccddeeff", false);
+        let mut invalid = Vec::new();
+        let mut d = valid.clone();
+        d.stream_epoch = "00".into();
+        invalid.push(d);
+        let mut d = valid.clone();
+        d.stream_epoch = "z".repeat(32);
+        invalid.push(d);
+        let mut d = valid.clone();
+        d.segments = Some(crate::segmap::SegmentMap {
+            version: 1,
+            next_seg_id: 1,
+            segments: vec![],
+            pending: None,
+        });
+        invalid.push(d);
+        let map = crate::segmap::SegmentMap::initial("", 1);
+        let mut d = valid.clone();
+        let mut m = map.clone();
+        m.segments[0].lo = 1;
+        d.segments = Some(m);
+        invalid.push(d);
+        let mut d = valid.clone();
+        let mut m = map.clone();
+        m.segments.push(m.segments[0].clone());
+        d.segments = Some(m);
+        invalid.push(d);
+        let mut d = valid.clone();
+        let mut m = map.clone();
+        m.segments[0].predecessors.push(77);
+        d.segments = Some(m);
+        invalid.push(d);
+        let mut d = valid.clone();
+        d.sealed = true;
+        d.sealing = Some(SealState {
+            operation_id: "op".into(),
+            claimed_ms: 1,
+            claim_generation: 0,
+            intent: SealIntent::Empty,
+        });
+        invalid.push(d);
+        for (index, descriptor) in invalid.into_iter().enumerate() {
+            assert!(
+                StreamDesc::try_from(descriptor.clone()).is_err(),
+                "invalid case {index}"
+            );
+            assert!(
+                registry.create(descriptor).await.is_err(),
+                "invalid case {index} reached create"
+            );
+            assert!(matches!(
+                store.get(&desc_path("test-cell", &valid.sref())).await,
+                Err(object_store::Error::NotFound { .. })
+            ));
+        }
+    }
+
+    #[test]
+    fn r04_valid_transition_and_sealed_predecessor_snapshots() {
+        let mut dto = desc("validated", "00112233445566778899aabbccddeeff", false);
+        let mut map = crate::segmap::SegmentMap::initial("", 1);
+        map.pending = Some(crate::segmap::PendingTransition {
+            kind: "split".into(),
+            segs: vec![0],
+            split_at: u64::MAX / 2,
+            started_ms: 1,
+            seal_gen: 0,
+        });
+        dto.segments = Some(map.clone());
+        assert!(
+            StreamDesc::try_from(dto.clone()).is_ok(),
+            "pending split is a valid recovery state"
+        );
+        map.pending = None;
+        let (a, b) = map.split(0, u64::MAX / 2, 7, [1; 16], [2; 16], 2).unwrap();
+        dto.segments = Some(map.clone());
+        assert!(StreamDesc::try_from(dto.clone()).is_ok());
+        map.merge(a, b, 3, 4, [3; 16], 3).unwrap();
+        dto.segments = Some(map.clone());
+        assert!(StreamDesc::try_from(dto.clone()).is_ok());
+        for segment in map.segments.iter_mut().filter(|segment| segment.is_live()) {
+            segment.sealed_ms = Some(4);
+            segment.sealed_next_offset = Some(5);
+        }
+        dto.segments = Some(map);
+        dto.sealed = true;
+        let descriptor = StreamDesc::try_from(dto).unwrap();
+        assert!(matches!(descriptor.lifecycle(), Lifecycle::Sealed));
+        assert_eq!(
+            descriptor.epoch(),
+            [
+                0x00, 0x11, 0x22, 0x33, 0x44, 0x55, 0x66, 0x77, 0x88, 0x99, 0xaa, 0xbb, 0xcc, 0xdd,
+                0xee, 0xff
+            ]
+        );
+        assert!(descriptor.segment_route_by_id(999).is_none());
+        assert!(descriptor.resolve_segment("key").sealed);
+    }
+
     fn tp() -> crate::tenant::ProjectId {
         crate::tenant::ProjectId::new("proj-test").unwrap()
     }
@@ -1592,7 +1827,7 @@ mod tests {
         let pa = crate::tenant::ProjectId::new("proj-a").unwrap();
         let pb = crate::tenant::ProjectId::new("proj-b").unwrap();
         let mk = |p: &crate::tenant::ProjectId| {
-            let mut d = desc("orders", "e1", false);
+            let mut d = desc("orders", "00000000000000000000000000000001", false);
             d.project_id = p.clone();
             d
         };
@@ -1631,8 +1866,8 @@ mod tests {
         )
     }
 
-    fn desc(name: &str, epoch: &str, deleted: bool) -> StreamDesc {
-        StreamDesc {
+    fn desc(name: &str, epoch: &str, deleted: bool) -> PersistedDescriptor {
+        PersistedDescriptor {
             seal_gen_counter: 0,
             account_id: None,
             project_id: tp(),
@@ -1802,7 +2037,7 @@ mod tests {
             conflict.clone(),
             &crate::tenant::CellId::new("test-cell").unwrap(),
         );
-        let mut src = desc("src", "e1", false);
+        let mut src = desc("src", "00000000000000000000000000000001", false);
         src.soft_deleted = true;
         src.fork_children = vec!["C".into()];
         reg.create(src).await.unwrap();
@@ -1810,7 +2045,7 @@ mod tests {
         // The concurrent install that attempt 1 will lose to: the same
         // descriptor with child D added (and C still present, since
         // attempt 1 hasn't committed its removal).
-        let mut installed = desc("src", "e1", false);
+        let mut installed = desc("src", "00000000000000000000000000000001", false);
         installed.soft_deleted = true;
         installed.fork_children = vec!["C".into(), "D".into()];
         *conflict.inject.lock().unwrap() = Some(serde_json::to_vec(&installed).unwrap());
@@ -1819,8 +2054,8 @@ mod tests {
             .store(true, std::sync::atomic::Ordering::SeqCst);
 
         let outcome = reg
-            .mutate_incarnation(&ts("src"), "e1", |x| {
-                let mut next = x.clone();
+            .mutate_incarnation(&ts("src"), "00000000000000000000000000000001", |x| {
+                let mut next = x.to_persisted();
                 let before = next.fork_children.len();
                 next.fork_children.retain(|c| c != "C");
                 let removed = next.fork_children.len() != before;
@@ -1953,11 +2188,17 @@ mod tests {
             counting.clone(),
             &crate::tenant::CellId::new("test-cell").unwrap(),
         );
-        let (created, _) = reg.create(desc("s", "e1", false)).await.unwrap();
+        let (created, _) = reg
+            .create(desc("s", "00000000000000000000000000000001", false))
+            .await
+            .unwrap();
         assert!(created);
 
         // Warm read: cache hit, no store traffic at all.
-        assert_eq!(reg.get(&ts("s")).await.unwrap().unwrap().stream_epoch, "e1");
+        assert_eq!(
+            reg.get(&ts("s")).await.unwrap().unwrap().stream_epoch,
+            "00000000000000000000000000000001"
+        );
         assert_eq!(
             counting.gets.load(Relaxed),
             0,
@@ -1967,7 +2208,10 @@ mod tests {
         // TTL expiry on an unchanged descriptor: exactly one conditional
         // GET, answered 304, still serving the cached descriptor.
         reg.expire_for_tests(&ts("s"));
-        assert_eq!(reg.get(&ts("s")).await.unwrap().unwrap().stream_epoch, "e1");
+        assert_eq!(
+            reg.get(&ts("s")).await.unwrap().unwrap().stream_epoch,
+            "00000000000000000000000000000001"
+        );
         assert_eq!(
             counting.conditional.load(Relaxed),
             1,
@@ -1981,7 +2225,10 @@ mod tests {
 
         // The 304 renews the TTL: the next read is a cache hit again.
         let gets_now = counting.gets.load(Relaxed);
-        assert_eq!(reg.get(&ts("s")).await.unwrap().unwrap().stream_epoch, "e1");
+        assert_eq!(
+            reg.get(&ts("s")).await.unwrap().unwrap().stream_epoch,
+            "00000000000000000000000000000001"
+        );
         assert_eq!(
             counting.gets.load(Relaxed),
             gets_now,
@@ -2009,9 +2256,13 @@ mod tests {
             store.clone(),
             &crate::tenant::CellId::new("test-cell").unwrap(),
         );
-        reg.create(desc("alive", "e1", false)).await.unwrap();
-        reg.create(desc("gone", "e2", false)).await.unwrap();
-        let mut ex = desc("expired", "e3", false);
+        reg.create(desc("alive", "00000000000000000000000000000001", false))
+            .await
+            .unwrap();
+        reg.create(desc("gone", "00000000000000000000000000000002", false))
+            .await
+            .unwrap();
+        let mut ex = desc("expired", "00000000000000000000000000000003", false);
         ex.expires_at_ms = Some(1); // long past
         reg.create(ex).await.unwrap();
         // Tombstone with the stamp in the SAME write.
@@ -2075,7 +2326,9 @@ mod tests {
             store.clone(),
             &crate::tenant::CellId::new("test-cell").unwrap(),
         );
-        reg.create(desc("base", "e1", false)).await.unwrap();
+        reg.create(desc("base", "00000000000000000000000000000001", false))
+            .await
+            .unwrap();
         let raw = store
             .get(&desc_path("test-cell", &ts("base")))
             .await
@@ -2189,29 +2442,43 @@ mod tests {
             store.clone(),
             &crate::tenant::CellId::new("test-cell").unwrap(),
         );
-        let (created, _) = reg.create(desc("s", "dead", true)).await.unwrap();
+        let (created, _) = reg
+            .create(desc("s", "00000000000000000000000000000006", true))
+            .await
+            .unwrap();
         assert!(created);
 
         let alive = |d: &StreamDesc| !d.deleted;
         let (won_a, got_a) = reg
-            .recreate(&ts("s"), desc("s", "epoch-a", false), |d| !alive(d))
+            .recreate(
+                &ts("s"),
+                desc("s", "00000000000000000000000000000007", false),
+                |d| !alive(d),
+            )
             .await
             .unwrap();
         assert!(won_a, "first recreate must win");
-        assert_eq!(got_a.stream_epoch, "epoch-a");
+        assert_eq!(got_a.stream_epoch, "00000000000000000000000000000007");
 
         // Second recreator raced and lost: descriptor is now alive, so the
         // predicate fails and it must observe epoch-a, not install epoch-b.
         let (won_b, got_b) = reg
-            .recreate(&ts("s"), desc("s", "epoch-b", false), |d| !alive(d))
+            .recreate(
+                &ts("s"),
+                desc("s", "00000000000000000000000000000008", false),
+                |d| !alive(d),
+            )
             .await
             .unwrap();
         assert!(!won_b, "second recreate must lose");
-        assert_eq!(got_b.stream_epoch, "epoch-a");
+        assert_eq!(got_b.stream_epoch, "00000000000000000000000000000007");
 
         reg.invalidate(&ts("s"));
         let stored = reg.get(&ts("s")).await.unwrap().unwrap();
-        assert_eq!(stored.stream_epoch, "epoch-a", "loser overwrote the winner");
+        assert_eq!(
+            stored.stream_epoch, "00000000000000000000000000000007",
+            "loser overwrote the winner"
+        );
     }
 
     // ---- ROUTING-V3 resolution (docs/ROUTING-V3.md §1-2) ------------
@@ -2221,7 +2488,7 @@ mod tests {
     /// zero-move migration guarantee.
     #[test]
     fn implicit_map_is_the_old_total_order_layout() {
-        let d = desc("t", "e1", false);
+        let d = desc("t", "00000000000000000000000000000001", false);
         for rk in ["", "a", "user-42", "\u{1F600}"] {
             let r = d.resolve_segment(rk);
             assert_eq!(r.seg_id, 0);
@@ -2244,7 +2511,7 @@ mod tests {
     /// that shard.
     #[test]
     fn dynamic_map_resolution_selects_the_live_cover() {
-        let mut d = desc("dyn", "e3", false);
+        let mut d = desc("dyn", "00000000000000000000000000000003", false);
         let mut map = crate::segmap::SegmentMap::initial("", 1);
         // Split the keyspace in half: seg 0 sealed, children 1 and 2.
         let mid = u64::MAX / 2;
@@ -2322,7 +2589,7 @@ mod tests {
     /// round-trips.
     #[test]
     fn descriptor_segments_serde_roundtrip() {
-        let d = desc("s", "e4", false);
+        let d = desc("s", "00000000000000000000000000000004", false);
         let j = serde_json::to_string(&d).unwrap();
         assert!(
             !j.contains("\"segments\""),
@@ -2331,7 +2598,7 @@ mod tests {
         let legacy: StreamDesc = serde_json::from_str(&j.replace("\"name\"", "\"name\"")).unwrap();
         assert!(legacy.segments.is_none());
 
-        let mut with_map = desc("s2", "e5", false);
+        let mut with_map = desc("s2", "00000000000000000000000000000005", false);
         with_map.segments = Some(crate::segmap::SegmentMap::initial("sh", 7));
         let j2 = serde_json::to_string(&with_map).unwrap();
         let back: StreamDesc = serde_json::from_str(&j2).unwrap();

@@ -97,6 +97,8 @@ pub enum MapError {
     NotAdjacent(u32, u32),
     NotSealed(u32),
     SingleSegmentStream,
+    InvalidSplitPoint,
+    IdExhausted,
 }
 
 impl SegmentMap {
@@ -154,6 +156,128 @@ impl SegmentMap {
             .collect()
     }
 
+    /// Validate persisted topology, including sealed predecessor coverage and
+    /// partially closed transitions. Requiring every segment to be live would
+    /// reject legitimate recovery states; terminal leaves must cover keyspace.
+    pub fn validate(&self) -> Result<(), String> {
+        use std::collections::HashSet;
+        if self.segments.is_empty() {
+            return Err("explicit map is empty".into());
+        }
+        let mut ids = HashSet::new();
+        for segment in &self.segments {
+            if !ids.insert(segment.seg_id) {
+                return Err(format!("duplicate segment {}", segment.seg_id));
+            }
+            if segment.seg_id >= self.next_seg_id {
+                return Err(format!("segment {} exceeds allocator", segment.seg_id));
+            }
+            if segment.lo >= segment.hi {
+                return Err(format!(
+                    "segment {} has empty/reversed range",
+                    segment.seg_id
+                ));
+            }
+            if segment.sealed_ms.is_some() != segment.sealed_next_offset.is_some() {
+                return Err(format!(
+                    "segment {} has incomplete seal metadata",
+                    segment.seg_id
+                ));
+            }
+            if segment.is_live() && !segment.successors.is_empty() {
+                return Err(format!("live segment {} has successors", segment.seg_id));
+            }
+        }
+        for segment in &self.segments {
+            for (references, successor) in
+                [(&segment.predecessors, false), (&segment.successors, true)]
+            {
+                let mut seen = HashSet::new();
+                for id in references {
+                    if !seen.insert(*id) || *id == segment.seg_id {
+                        return Err(format!(
+                            "segment {} has duplicate/self reference",
+                            segment.seg_id
+                        ));
+                    }
+                    let Some(other) = self.get(*id) else {
+                        // Absorbed predecessors may have been pruned. Their
+                        // allocated IDs remain historical references; a missing
+                        // successor would instead lose future routing authority.
+                        if !successor && *id < segment.seg_id {
+                            continue;
+                        }
+                        return Err(format!(
+                            "segment {} references missing segment {id}",
+                            segment.seg_id
+                        ));
+                    };
+                    if (successor && *id <= segment.seg_id) || (!successor && *id >= segment.seg_id)
+                    {
+                        return Err(format!(
+                            "segment {} has cyclic/reversed lineage",
+                            segment.seg_id
+                        ));
+                    }
+                    if other.lo >= segment.hi || segment.lo >= other.hi {
+                        return Err("lineage ranges do not overlap".into());
+                    }
+                    if successor && !other.predecessors.contains(&segment.seg_id) {
+                        return Err("successor does not reference parent".into());
+                    }
+                    if !successor && other.is_live() {
+                        return Err("predecessor remains live".into());
+                    }
+                }
+            }
+        }
+        let mut leaves: Vec<_> = self
+            .segments
+            .iter()
+            .filter(|segment| segment.successors.is_empty())
+            .map(|segment| (segment.lo, segment.hi))
+            .collect();
+        leaves.sort_unstable();
+        if leaves.first().map(|range| range.0) != Some(0)
+            || leaves.last().map(|range| range.1) != Some(KEYSPACE_END)
+            || !leaves.windows(2).all(|ranges| ranges[0].1 == ranges[1].0)
+        {
+            return Err("terminal segments do not exactly cover keyspace".into());
+        }
+        if let Some(pending) = &self.pending {
+            let required = match pending.kind.as_str() {
+                "split" => 1,
+                "merge" => 2,
+                _ => return Err("unknown transition kind".into()),
+            };
+            if pending.segs.len() != required {
+                return Err("transition parent count is invalid".into());
+            }
+            if pending.segs.iter().collect::<HashSet<_>>().len() != required {
+                return Err("transition repeats a parent".into());
+            }
+            for id in &pending.segs {
+                if self.get(*id).is_none() {
+                    return Err("transition parent is missing".into());
+                }
+            }
+            if pending.kind == "split" {
+                let parent = self.get(pending.segs[0]).unwrap();
+                if pending.split_at <= parent.lo || pending.split_at >= parent.hi {
+                    return Err("split point is outside parent".into());
+                }
+            }
+            if pending.kind == "merge" {
+                let a = self.get(pending.segs[0]).unwrap();
+                let b = self.get(pending.segs[1]).unwrap();
+                if a.hi != b.lo && b.hi != a.lo {
+                    return Err("merge parents are not adjacent".into());
+                }
+            }
+        }
+        Ok(())
+    }
+
     /// Partition invariant: live segments exactly tile [0, KEYSPACE_END).
     pub fn check_partition(&self) -> bool {
         let mut ranges: Vec<(u64, u64)> = self.live().map(|s| (s.lo, s.hi)).collect();
@@ -184,6 +308,9 @@ impl SegmentMap {
         high_route: [u8; 16],
         now_ms: i64,
     ) -> Result<(u32, u32), MapError> {
+        let a = self.next_seg_id;
+        let b = a.checked_add(1).ok_or(MapError::IdExhausted)?;
+        let next = b.checked_add(1).ok_or(MapError::IdExhausted)?;
         let parent = self
             .segments
             .iter_mut()
@@ -193,13 +320,13 @@ impl SegmentMap {
             return Err(MapError::AlreadySealed(seg_id));
         }
         let (lo, hi) = (parent.lo, parent.hi);
-        assert!(split_at > lo && split_at < hi, "split point inside range");
+        if split_at <= lo || split_at >= hi {
+            return Err(MapError::InvalidSplitPoint);
+        }
         parent.sealed_ms = Some(now_ms);
         parent.sealed_next_offset = Some(sealed_next_offset);
-        let a = self.next_seg_id;
-        let b = self.next_seg_id + 1;
         parent.successors = vec![a, b];
-        self.next_seg_id += 2;
+        self.next_seg_id = next;
         self.segments.push(SegmentDesc {
             seg_id: a,
             lo,
@@ -421,6 +548,7 @@ pub async fn load(
             let etag = got.meta.e_tag.clone();
             let bytes = got.bytes().await?;
             let map: SegmentMap = serde_json::from_slice(&bytes)?;
+            map.validate().map_err(anyhow::Error::msg)?;
             Ok(Some((map, etag)))
         }
         Err(object_store::Error::NotFound { .. }) => Ok(None),
@@ -438,6 +566,7 @@ pub async fn save(
     map: &SegmentMap,
     etag: Option<String>,
 ) -> anyhow::Result<()> {
+    map.validate().map_err(anyhow::Error::msg)?;
     let body = serde_json::to_vec(map)?;
     let mode = match etag {
         None => PutMode::Create,

@@ -927,7 +927,7 @@ mod tests {
     /// segment.
     #[test]
     fn product_cursor_names_the_actual_live_segment() {
-        let mut desc = crate::sse::feed::tests::test_desc("segtest");
+        let mut desc = crate::sse::feed::tests::test_desc("segtest").to_persisted();
         desc.segments = Some(crate::segmap::SegmentMap {
             version: 7,
             next_seg_id: 6,
@@ -945,6 +945,7 @@ mod tests {
                 sealed_next_offset: None,
             }],
         });
+        let desc = crate::registry::StreamDesc::try_from(desc).unwrap();
         let key = crate::crypto::StreamKey([9u8; 32]);
         let epoch = [3u8; 16];
         let lane_rk = String::new();
@@ -1018,8 +1019,9 @@ mod tests {
         let desc = crate::sse::feed::tests::test_desc("ident");
         let key = feed_key_of(&desc, &None);
         assert_eq!(key.identity, desc.storage_hash());
-        let mut other = crate::sse::feed::tests::test_desc("ident");
+        let mut other = crate::sse::feed::tests::test_desc("ident").to_persisted();
         other.stream_epoch = "ffffffffffffffffffffffffffffffff".into();
+        let other = crate::registry::StreamDesc::try_from(other).unwrap();
         assert_ne!(
             feed_key_of(&other, &None).identity,
             key.identity,

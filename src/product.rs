@@ -1576,9 +1576,7 @@ async fn product_create(
                 false,
             ));
         }
-        let epoch: [u8; 16] = crate::crypto::unhex(&d.stream_epoch)
-            .and_then(|v| v.try_into().ok())
-            .unwrap_or_default();
+        let epoch = d.epoch();
         if d.key_fingerprint != key.fingerprint(&epoch) {
             return Err(crate::audit::tag(
                 perr(
@@ -3522,7 +3520,7 @@ async fn translate_append_response(
             .unwrap_or(tail_next);
         let cursor = match crate::crypto::StreamKey::from_b64(key_b64) {
             Ok(k) => {
-                let epoch = desc.epoch_bytes().unwrap_or_default();
+                let epoch = desc.epoch();
                 crate::product_cursor::KeyCursor {
                     epoch,
                     key_hash: crate::crypto::stream_hash(routing_key),
@@ -3616,7 +3614,7 @@ async fn translate_append_response(
             Some("producer_stale_epoch") => (
                 "stale_producer_epoch",
                 "producer epoch is stale",
-                Some(json!({"currentEpoch": cur_epoch})),
+                Some(json!({ "currentEpoch": cur_epoch })),
                 false,
             ),
             Some("producer_sequence_reused") => (
@@ -5413,7 +5411,15 @@ pub(crate) async fn internal_sweep_segment(
             false,
         );
     }
-    let route = desc.segment_route_by_id(seg_id);
+    let Some(route) = desc.segment_route_by_id(seg_id) else {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "unknown_segment",
+            "segment is not part of this incarnation",
+            None,
+            false,
+        );
+    };
     let engine = match state.engine_for(&route).await {
         Ok(e) => e,
         Err(r) => return r, // ownership moved: the 409 tells the relayer
@@ -5504,7 +5510,15 @@ pub(crate) async fn internal_queue_cursor(
         Ok(v) => v,
         Err(r) => return r,
     };
-    let route = desc.segment_route_by_id(seg_id);
+    let Some(route) = desc.segment_route_by_id(seg_id) else {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "unknown_segment",
+            "segment is not part of this incarnation",
+            None,
+            false,
+        );
+    };
     let engine = match state.engine_for(&route).await {
         Ok(e) => e,
         Err(r) => return r,
@@ -5620,7 +5634,15 @@ pub(crate) async fn internal_segment_scan(
         crate::http::KeyCheck::Ok(k, e) => (k, e),
         _ => return perr(StatusCode::FORBIDDEN, "wrong_key", "key", None, false),
     };
-    let route = desc.segment_route_by_id(seg_id);
+    let Some(route) = desc.segment_route_by_id(seg_id) else {
+        return perr(
+            StatusCode::BAD_REQUEST,
+            "unknown_segment",
+            "segment is not part of this incarnation",
+            None,
+            false,
+        );
+    };
     let engine = match state.engine_for(&route).await {
         Ok(e) => e,
         Err(r) => return r,
@@ -7154,7 +7176,7 @@ async fn product_watches_list(
         .status(StatusCode::OK)
         .header(header::CONTENT_TYPE, "application/json")
         .header(header::CACHE_CONTROL, "no-store")
-        .body(Body::from(json!({"watches": defs}).to_string()))
+        .body(Body::from(json!({ "watches": defs }).to_string()))
         .unwrap()
 }
 
@@ -8134,7 +8156,7 @@ mod tests {
     // to whatever descriptor holds that name when it LANDS. These pin
     // the guard that makes a stale relay refuse instead.
     fn desc_with(name: &str, epoch_hex: &str) -> StreamDesc {
-        StreamDesc {
+        crate::registry::PersistedDescriptor {
             name: name.to_string(),
             account_id: None,
             project_id: crate::tenant::ProjectId::new("proj-test").unwrap(),
@@ -8160,6 +8182,8 @@ mod tests {
             parent_ref_pending: false,
             layout_version: crate::registry::LAYOUT_VERSION,
         }
+        .try_into()
+        .expect("valid descriptor fixture")
     }
 
     fn target_headers(d: &StreamDesc, seg: u32) -> HeaderMap {
@@ -8200,8 +8224,9 @@ mod tests {
         // matches — a silent project swap here is a cross-tenant bind.
         let d = desc_with("orders", &"55".repeat(16));
         let h = target_headers(&d, 0);
-        let mut foreign = d.clone();
+        let mut foreign = d.to_persisted();
         foreign.project_id = crate::tenant::ProjectId::new("proj-other").unwrap();
+        let foreign = StreamDesc::try_from(foreign).unwrap();
         let err = verify_internal_target(&foreign, &h).expect_err("foreign project must refuse");
         assert_eq!(err.status(), StatusCode::CONFLICT);
     }
