@@ -3417,7 +3417,7 @@ impl ShardEngine {
                             consumers: HashMap::new(),
                             loaded: true,
                         };
-                        'tags: for tag in [b'c', b'l', b'x'] {
+                        'tags: for tag in *b"clx" {
                             let mut pfx = Vec::with_capacity(17);
                             pfx.extend_from_slice(&hash);
                             pfx.push(tag);
@@ -3837,7 +3837,7 @@ impl ShardEngine {
                                 scan_err = Some("injected config-scan failure".into());
                             }
                             if scan_err.is_none() {
-                                'scans: for tag in [b'c', b'l', b'x'] {
+                                'scans: for tag in *b"clx" {
                                     let pfx = state_prefix(&hash, tag, &consumer);
                                     match self.db.scan_prefix(&pfx[..], ..).await {
                                         Ok(mut iter) => loop {
@@ -4967,7 +4967,7 @@ impl ShardEngine {
         consumer: &str,
     ) -> Result<usize, String> {
         let mut n = 0usize;
-        for tag in [b'c', b'l', b'x'] {
+        for tag in *b"clx" {
             let pfx = crate::queue::state_prefix(&hash, tag, consumer);
             let mut iter = self
                 .db
@@ -5055,7 +5055,7 @@ impl ShardEngine {
     /// Presence probe for residency decisions: at most one row from
     /// each outbox index, including orphaned final rows.
     pub async fn has_billing_debt(&self) -> anyhow::Result<bool> {
-        for tag in [b'U', b'V'] {
+        for tag in *b"UV" {
             let mut prefix = crate::billing::USAGE_DIRTY_SENTINEL.to_vec();
             prefix.push(tag);
             if self
