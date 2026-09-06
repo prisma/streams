@@ -401,11 +401,71 @@ pub struct UsageRollup {
     pub db: Arc<Db>,
 }
 
-async fn get_json<T: for<'a> Deserialize<'a> + Default>(db: &Db, key: &[u8]) -> T {
-    match db.get(key).await {
-        Ok(Some(v)) => serde_json::from_slice(&v).unwrap_or_default(),
-        _ => T::default(),
+/// Missing rows alone initialize state; corrupt/unavailable rows block progress.
+async fn get_json<T: for<'a> Deserialize<'a> + Default>(db: &Db, key: &[u8]) -> anyhow::Result<T> {
+    Ok(read_json(db, key).await?.unwrap_or_default())
+}
+
+async fn read_bytes(db: &Db, key: &[u8]) -> anyhow::Result<Option<bytes::Bytes>> {
+    #[cfg(test)]
+    if read_faults()
+        .lock()
+        .unwrap()
+        .remove(&(db as *const Db as usize, key.to_vec()))
+    {
+        anyhow::bail!("injected rollup repository read failure");
     }
+    Ok(db.get(key).await?)
+}
+
+async fn read_json<T: for<'a> Deserialize<'a>>(db: &Db, key: &[u8]) -> anyhow::Result<Option<T>> {
+    read_bytes(db, key)
+        .await?
+        .map(|raw| decode_json(&raw))
+        .transpose()
+}
+
+fn decode_json<T: for<'a> Deserialize<'a>>(raw: &[u8]) -> anyhow::Result<T> {
+    // Persisted decimal fields intentionally accept the historical empty
+    // representation of zero. Nonempty malformed values never become zero.
+    fn validate(v: &serde_json::Value) -> anyhow::Result<()> {
+        match v {
+            serde_json::Value::Object(fields) => {
+                for (key, value) in fields {
+                    if key.contains("storage_byte_ms") {
+                        let number = value
+                            .as_str()
+                            .ok_or_else(|| anyhow::anyhow!("invalid decimal accounting field"))?;
+                        if !number.is_empty() {
+                            if key.ends_with("delta") {
+                                number.parse::<i128>()?;
+                            } else {
+                                number.parse::<u128>()?;
+                            }
+                        }
+                    }
+                    validate(value)?;
+                }
+            }
+            serde_json::Value::Array(values) => {
+                for value in values {
+                    validate(value)?;
+                }
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+    validate(&serde_json::from_slice::<serde_json::Value>(raw)?)?;
+    Ok(serde_json::from_slice(raw)?)
+}
+
+#[cfg(test)]
+fn read_faults() -> &'static std::sync::Mutex<std::collections::HashSet<(usize, Vec<u8>)>> {
+    static FAULTS: std::sync::OnceLock<
+        std::sync::Mutex<std::collections::HashSet<(usize, Vec<u8>)>>,
+    > = std::sync::OnceLock::new();
+    FAULTS.get_or_init(Default::default)
 }
 
 impl UsageRollup {
@@ -432,13 +492,11 @@ impl UsageRollup {
         Ok(UsageRollup { db: Arc::new(db) })
     }
 
-    pub async fn cursor(&self) -> Option<String> {
-        self.db
-            .get(K_CURSOR)
-            .await
-            .ok()
-            .flatten()
-            .and_then(|v| String::from_utf8(v.to_vec()).ok())
+    pub async fn cursor(&self) -> anyhow::Result<Option<String>> {
+        read_bytes(&self.db, K_CURSOR)
+            .await?
+            .map(|v| String::from_utf8(v.to_vec()).map_err(Into::into))
+            .transpose()
     }
 
     /// Apply one ledger page transactionally (§9.3). `next_cursor` is
@@ -461,6 +519,8 @@ impl UsageRollup {
         let now = crate::shard::now_ms();
 
         for env in envelopes {
+            // Validate the same financial decimal encodings at input and storage boundaries.
+            decode_json::<UsageEnvelope>(&serde_json::to_vec(env)?)?;
             match &env.payload {
                 UsagePayload::ReadBatch(rb) => {
                     self.apply_read_batch(
@@ -471,7 +531,7 @@ impl UsageRollup {
                         &mut projects,
                         &mut extra,
                     )
-                    .await;
+                    .await?;
                 }
                 UsagePayload::SegmentSnapshot(snap) => {
                     self.apply_snapshot(
@@ -482,7 +542,7 @@ impl UsageRollup {
                         &mut projects,
                         &mut extra,
                     )
-                    .await;
+                    .await?;
                 }
                 UsagePayload::StreamLifecycle(_) => {
                     // Informational in v1: recreation isolation is
@@ -497,7 +557,7 @@ impl UsageRollup {
                     );
                     let mut row: MonthRow = match months.get(&key) {
                         Some(r) => r.clone(),
-                        None => get_json(&self.db, &key).await,
+                        None => get_json(&self.db, &key).await?,
                     };
                     // Round-22 item 8: fill provenance for envelope-
                     // supplied corrections from the envelope itself.
@@ -515,7 +575,7 @@ impl UsageRollup {
                         c.created_at_ms = env.emitted_ms;
                     }
                     self.push_correction(&mut row, c, &mut names, &mut projects, &mut extra)
-                        .await;
+                        .await?;
                     row.updated_ms = now;
                     months.insert(key, row);
                 }
@@ -556,14 +616,14 @@ impl UsageRollup {
         names: &mut std::collections::HashMap<Vec<u8>, AggRow>,
         projects: &mut std::collections::HashMap<Vec<u8>, AggRow>,
         extra: &mut Vec<(Vec<u8>, Vec<u8>)>,
-    ) {
+    ) -> anyhow::Result<()> {
         if !c.correction_id.is_empty()
             && mr
                 .corrections
                 .iter()
                 .any(|x| x.correction_id == c.correction_id)
         {
-            return;
+            return Ok(());
         }
         mr.corr.absorb(&c);
         for (key, is_name) in [
@@ -583,7 +643,7 @@ impl UsageRollup {
         ] {
             let mut a: AggRow = match names.get(&key).or_else(|| projects.get(&key)) {
                 Some(r) => r.clone(),
-                None => get_json(&self.db, &key).await,
+                None => get_json(&self.db, &key).await?,
             };
             a.corr.absorb(&c);
             if is_name {
@@ -601,11 +661,10 @@ impl UsageRollup {
                 c.identity.stream_id,
                 c.correction_id.replace('/', "~"),
             );
-            if let Ok(v) = serde_json::to_vec(&c) {
-                extra.push((pk.into_bytes(), v));
-            }
+            extra.push((pk.into_bytes(), serde_json::to_vec(&c)?));
         }
         mr.corrections.push(c);
+        Ok(())
     }
 
     async fn apply_read_batch(
@@ -616,26 +675,21 @@ impl UsageRollup {
         names: &mut std::collections::HashMap<Vec<u8>, AggRow>,
         projects: &mut std::collections::HashMap<Vec<u8>, AggRow>,
         extra: &mut Vec<(Vec<u8>, Vec<u8>)>,
-    ) {
+    ) -> anyhow::Result<()> {
         let boot = rb.source.boot.clone();
         let floor = match sources.get(&boot) {
             Some(v) => *v,
             None => {
-                let stored: u64 = self
-                    .db
-                    .get(&k_source(&boot)[..])
-                    .await
-                    .ok()
-                    .flatten()
-                    .map(|v| u64::from_le_bytes(v[..8].try_into().unwrap_or([0; 8])))
-                    // The sentinel for "nothing processed" is MAX so
-                    // seq 0 (a fresh boot's first batch) still applies.
+                let stored = read_bytes(&self.db, &k_source(&boot))
+                    .await?
+                    .map(|v| crate::shard::decode_cursor(&v))
+                    .transpose()?
                     .unwrap_or(u64::MAX);
                 stored
             }
         };
         if floor != u64::MAX && rb.seq <= floor {
-            return; // duplicate delivery of an applied batch
+            return Ok(()); // duplicate delivery of an applied batch
         }
         sources.insert(boot, rb.seq);
         // Round-22 item 5: EXACT integer allocation across every UTC
@@ -648,7 +702,7 @@ impl UsageRollup {
         let spans = month_spans(rb.from_ms, rb.to_ms);
         if spans.len() == 1 {
             self.apply_read_rows(rb, &spans[0].0, months, names, projects, extra)
-                .await;
+                .await?;
         } else {
             let total: i64 = spans.iter().map(|(_, d)| *d).sum::<i64>().max(1);
             let mut allocated: Vec<Vec<[u64; 5]>> = vec![vec![[0; 5]; rb.rows.len()]; spans.len()];
@@ -694,9 +748,10 @@ impl UsageRollup {
                         .collect(),
                 };
                 self.apply_read_rows(&scaled, month, months, names, projects, extra)
-                    .await;
+                    .await?;
             }
         }
+        Ok(())
     }
 
     async fn apply_read_rows(
@@ -707,7 +762,7 @@ impl UsageRollup {
         names: &mut std::collections::HashMap<Vec<u8>, AggRow>,
         projects: &mut std::collections::HashMap<Vec<u8>, AggRow>,
         extra: &mut Vec<(Vec<u8>, Vec<u8>)>,
-    ) {
+    ) -> anyhow::Result<()> {
         let scale = |v: u64| -> u64 { v };
         for row in &rb.rows {
             let mkey = k_month(
@@ -718,7 +773,7 @@ impl UsageRollup {
             );
             let mut mr: MonthRow = match months.get(&mkey) {
                 Some(r) => r.clone(),
-                None => get_json(&self.db, &mkey).await,
+                None => get_json(&self.db, &mkey).await?,
             };
             if mr.finalized_at_ms.is_some() {
                 // Late reads after finalization: explicit correction
@@ -748,7 +803,7 @@ impl UsageRollup {
                     storage_byte_ms_delta: "0".into(),
                 };
                 self.push_correction(&mut mr, c, names, projects, extra)
-                    .await;
+                    .await?;
                 months.insert(mkey, mr);
                 continue;
             }
@@ -777,7 +832,7 @@ impl UsageRollup {
             ] {
                 let mut a: AggRow = match names.get(&key).or_else(|| projects.get(&key)) {
                     Some(r) => r.clone(),
-                    None => get_json(&self.db, &key).await,
+                    None => get_json(&self.db, &key).await?,
                 };
                 a.read_payload_bytes += scale(row.read_payload_bytes);
                 a.read_records += scale(row.read_records);
@@ -794,6 +849,7 @@ impl UsageRollup {
                 }
             }
         }
+        Ok(())
     }
 
     async fn apply_snapshot(
@@ -804,7 +860,7 @@ impl UsageRollup {
         names: &mut std::collections::HashMap<Vec<u8>, AggRow>,
         projects: &mut std::collections::HashMap<Vec<u8>, AggRow>,
         extra: &mut Vec<(Vec<u8>, Vec<u8>)>,
-    ) {
+    ) -> anyhow::Result<()> {
         let id = &snap.identity;
         let skey = k_segment(
             &id.account_id,
@@ -814,12 +870,12 @@ impl UsageRollup {
         );
         let mut st: SegmentState = match segs.get(&skey) {
             Some(r) => r.clone(),
-            None => get_json(&self.db, &skey).await,
+            None => get_json(&self.db, &skey).await?,
         };
         let mkey = k_month(&snap.month, &id.account_id, &id.project_id, &id.stream_id);
         let mut mr: MonthRow = match months.get(&mkey) {
             Some(r) => r.clone(),
-            None => get_json(&self.db, &mkey).await,
+            None => get_json(&self.db, &mkey).await?,
         };
         let finalized = mr.finalized_at_ms.is_some();
         let sm = mr.segments.entry(snap.segment_id).or_default();
@@ -827,14 +883,14 @@ impl UsageRollup {
         // month-final can carry the same version family; a strictly
         // older snapshot applies as nothing.
         if snap.usage_version <= sm.usage_version && !snap.month_final {
-            return;
+            return Ok(());
         }
         if snap.month_final && sm.final_seen && !finalized {
-            return; // replayed final
+            return Ok(()); // replayed final
         }
         if finalized {
             if snap.month_final && sm.final_seen && snap.usage_version <= sm.usage_version {
-                return; // replayed final against a closed month
+                return Ok(()); // replayed final against a closed month
             }
             // LATE data into a FINALIZED month (round-21 blocker 8):
             // the frozen base never mutates — the delta becomes an
@@ -881,10 +937,10 @@ impl UsageRollup {
                     storage_byte_ms_delta: d_ms.to_string(),
                 };
                 self.push_correction(&mut mr, c, names, projects, extra)
-                    .await;
+                    .await?;
             }
             months.insert(mkey, mr);
-            return;
+            return Ok(());
         }
         // Deltas against the last applied absolutes.
         let d_bytes = snap
@@ -932,7 +988,7 @@ impl UsageRollup {
         ] {
             let mut a: AggRow = match names.get(&key).or_else(|| projects.get(&key)) {
                 Some(r) => r.clone(),
-                None => get_json(&self.db, &key).await,
+                None => get_json(&self.db, &key).await?,
             };
             a.ingest_bytes += d_bytes;
             a.ingest_records += d_recs;
@@ -946,6 +1002,7 @@ impl UsageRollup {
                 projects.insert(key, a);
             }
         }
+        Ok(())
     }
 
     /// L0 posture of the rollup DB (same in-memory manifest probe as
@@ -962,13 +1019,8 @@ impl UsageRollup {
         account: &str,
         project: &str,
         stream_id: &str,
-    ) -> Option<MonthRow> {
-        self.db
-            .get(&k_month(month, account, project, stream_id)[..])
-            .await
-            .ok()
-            .flatten()
-            .and_then(|v| serde_json::from_slice(&v).ok())
+    ) -> anyhow::Result<Option<MonthRow>> {
+        read_json(&self.db, &k_month(month, account, project, stream_id)).await
     }
 
     // mt-lint: allow(name-param-shared-core): rollup lookup; project is an explicit sibling parameter
@@ -978,22 +1030,17 @@ impl UsageRollup {
         account: &str,
         project: &str,
         name: &str,
-    ) -> Option<AggRow> {
-        self.db
-            .get(&k_name(month, account, project, name)[..])
-            .await
-            .ok()
-            .flatten()
-            .and_then(|v| serde_json::from_slice(&v).ok())
+    ) -> anyhow::Result<Option<AggRow>> {
+        read_json(&self.db, &k_name(month, account, project, name)).await
     }
 
-    pub async fn project_row(&self, month: &str, account: &str, project: &str) -> Option<AggRow> {
-        self.db
-            .get(&k_project(month, account, project)[..])
-            .await
-            .ok()
-            .flatten()
-            .and_then(|v| serde_json::from_slice(&v).ok())
+    pub async fn project_row(
+        &self,
+        month: &str,
+        account: &str,
+        project: &str,
+    ) -> anyhow::Result<Option<AggRow>> {
+        read_json(&self.db, &k_project(month, account, project)).await
     }
 
     /// Invoice reconciliation (MULTITENANCY Stage 7): recompute every
@@ -1126,17 +1173,14 @@ impl UsageRollup {
         account: &str,
         project: &str,
         stream_id: &str,
-    ) -> Vec<SegmentState> {
+    ) -> anyhow::Result<Vec<SegmentState>> {
         let pfx = format!("segment/{account}/{project}/{stream_id}/").into_bytes();
         let mut out = Vec::new();
-        if let Ok(mut iter) = self.db.scan_prefix(&pfx[..], ..).await {
-            while let Ok(Some(kv)) = iter.next().await {
-                if let Ok(st) = serde_json::from_slice::<SegmentState>(&kv.value) {
-                    out.push(st);
-                }
-            }
+        let mut iter = self.db.scan_prefix(&pfx[..], ..).await?;
+        while let Some(kv) = iter.next().await? {
+            out.push(decode_json(&kv.value)?);
         }
-        out
+        Ok(out)
     }
 
     /// Pending monthly artifacts (blocker 7): (pending key, month,
@@ -1261,11 +1305,9 @@ impl UsageRollup {
         let (cy, cm) = crate::billing::utc_year_month(now);
         let (mut y, mut m) = match self.db.get(MARKER).await? {
             Some(v) => {
-                let s = String::from_utf8_lossy(&v).to_string();
-                match parse_month(&s) {
-                    Some(x) => x,
-                    None => prev_month(cy, cm),
-                }
+                let s = std::str::from_utf8(&v)?;
+                parse_month(s)
+                    .ok_or_else(|| anyhow::anyhow!("invalid oldest-unclosed-month cursor"))?
             }
             None => {
                 // First run: start at the OLDEST month with data — a
@@ -1274,11 +1316,11 @@ impl UsageRollup {
                 // key names the oldest.
                 let mut it = self.db.scan_prefix(&b"month/"[..], ..).await?;
                 match it.next().await? {
-                    Some(kv) => String::from_utf8_lossy(&kv.key)
+                    Some(kv) => std::str::from_utf8(&kv.key)?
                         .split('/')
                         .nth(1)
                         .and_then(parse_month)
-                        .unwrap_or_else(|| prev_month(cy, cm)),
+                        .ok_or_else(|| anyhow::anyhow!("invalid month index key"))?,
                     None => prev_month(cy, cm),
                 }
             }
@@ -1340,13 +1382,8 @@ impl UsageRollup {
         }
         // ---- pass A: carry idle gauges into the closing month ----
         let seg_cursor_key = format!("meta/close-seg-cursor/{mstr}").into_bytes();
-        let mut after: Option<Vec<u8>> = self
-            .db
-            .get(&seg_cursor_key[..])
-            .await
-            .ok()
-            .flatten()
-            .map(|v| v.to_vec());
+        let mut after: Option<Vec<u8>> =
+            self.db.get(&seg_cursor_key[..]).await?.map(|v| v.to_vec());
         loop {
             let mut wb = WriteBatch::new();
             let mut page: Vec<(Vec<u8>, SegmentState)> = Vec::new();
@@ -1360,9 +1397,7 @@ impl UsageRollup {
                         continue;
                     }
                     page_bytes += kv.value.len();
-                    if let Ok(st) = serde_json::from_slice::<SegmentState>(&kv.value) {
-                        page.push((kv.key.to_vec(), st));
-                    }
+                    page.push((kv.key.to_vec(), decode_json::<SegmentState>(&kv.value)?));
                     // Byte-bound only once something is in the page —
                     // an empty page must mean "pass done", never
                     // "chunk full of undecodable rows".
@@ -1386,23 +1421,27 @@ impl UsageRollup {
             let mut mrows: std::collections::HashMap<Vec<u8>, MonthRow> = Default::default();
             let mut arows: std::collections::HashMap<Vec<u8>, AggRow> = Default::default();
             for (key, mut st) in page {
+                // key = segment/<account>/<project>/<stream-id>/<seg>
+                let parts: Vec<&str> = std::str::from_utf8(&key)?.split('/').collect();
+                anyhow::ensure!(
+                    parts.len() == 5
+                        && parts[0] == "segment"
+                        && parts.iter().all(|p| !p.is_empty()),
+                    "invalid segment accounting key"
+                );
+                let (account, project, stream_id) = (parts[1], parts[2], parts[3]);
+                let seg_id: u32 = parts[4].parse()?;
+                anyhow::ensure!(
+                    st.account_id == account,
+                    "segment accounting identity mismatch"
+                );
                 if st.storage_accounted_through_ms >= boundary {
                     continue;
                 }
-                // key = segment/<account>/<project>/<stream-id>/<seg>
-                let parts: Vec<&str> = std::str::from_utf8(&key)
-                    .unwrap_or("")
-                    .splitn(5, '/')
-                    .collect();
-                if parts.len() != 5 {
-                    continue;
-                }
-                let (account, project, stream_id) = (parts[1], parts[2], parts[3]);
-                let seg_id: u32 = parts[4].parse().unwrap_or(0);
                 let mkey = k_month(&mstr, account, project, stream_id);
                 let mut row: MonthRow = match mrows.get(&mkey) {
                     Some(rw) => rw.clone(),
-                    None => get_json(&self.db, &mkey).await,
+                    None => get_json(&self.db, &mkey).await?,
                 };
                 let sm = row.segments.entry(seg_id).or_default();
                 if !sm.final_seen {
@@ -1419,7 +1458,7 @@ impl UsageRollup {
                         ] {
                             let mut a: AggRow = match arows.get(&akey) {
                                 Some(x) => x.clone(),
-                                None => get_json(&self.db, &akey).await,
+                                None => get_json(&self.db, &akey).await?,
                             };
                             a.add_storage(add);
                             if is_name && !a.incarnations.contains(&stream_id.to_string()) {
@@ -1453,13 +1492,8 @@ impl UsageRollup {
         }
         // ---- pass B: finalize the month's rows, chunked ----
         let fin_cursor_key = format!("meta/close-fin-cursor/{mstr}").into_bytes();
-        let mut fin_after: Option<Vec<u8>> = self
-            .db
-            .get(&fin_cursor_key[..])
-            .await
-            .ok()
-            .flatten()
-            .map(|v| v.to_vec());
+        let mut fin_after: Option<Vec<u8>> =
+            self.db.get(&fin_cursor_key[..]).await?.map(|v| v.to_vec());
         let pfx = k_month_prefix(&mstr);
         let mut closed = 0usize;
         loop {
@@ -1475,9 +1509,7 @@ impl UsageRollup {
                         continue;
                     }
                     page_bytes += kv.value.len();
-                    if let Ok(row) = serde_json::from_slice::<MonthRow>(&kv.value) {
-                        page.push((kv.key.to_vec(), row));
-                    }
+                    page.push((kv.key.to_vec(), decode_json::<MonthRow>(&kv.value)?));
                     if page.len() >= CLOSE_CHUNK
                         || (page_bytes >= CLOSE_CHUNK_BYTES && !page.is_empty())
                     {
@@ -1490,6 +1522,18 @@ impl UsageRollup {
             }
             let last_key = page.last().unwrap().0.clone();
             for (key, mut row) in page {
+                let parts: Vec<&str> = std::str::from_utf8(&key)?.split('/').collect();
+                anyhow::ensure!(
+                    parts.len() == 5
+                        && parts[0] == "month"
+                        && parts[1] == mstr
+                        && parts.iter().all(|p| !p.is_empty()),
+                    "invalid month accounting key"
+                );
+                anyhow::ensure!(
+                    row.account_id == parts[2],
+                    "month accounting identity mismatch"
+                );
                 if row.finalized_at_ms.is_some() {
                     continue;
                 }
@@ -1519,14 +1563,11 @@ impl UsageRollup {
                     queue_operations: row.queue_operations,
                     append_requests: row.append_requests,
                 });
-                let parts: Vec<&str> = std::str::from_utf8(&key)
-                    .unwrap_or("")
-                    .splitn(4, '/')
-                    .collect();
-                if parts.len() == 4 {
-                    let pkey = format!("artifact-pending/{mstr}/{}/{}", parts[2], parts[3]);
-                    wb.put(pkey.into_bytes(), serde_json::to_vec(&row)?);
-                }
+                let pkey = format!(
+                    "artifact-pending/{mstr}/{}/{}/{}",
+                    parts[2], parts[3], parts[4]
+                );
+                wb.put(pkey.into_bytes(), serde_json::to_vec(&row)?);
                 wb.put(key, serde_json::to_vec(&row)?);
                 closed += 1;
             }
@@ -1655,6 +1696,7 @@ mod tests {
         let jul = r
             .month_row("2026-07", "acct", "proj", &id().stream_id)
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(jul.storage_byte_ms(), 17 * day * total_gauge);
         // August, fully idle: 31 days x 600 — the multi-segment carry
@@ -1663,14 +1705,20 @@ mod tests {
         let aug = r
             .month_row("2026-08", "acct", "proj", &id().stream_id)
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(aug.storage_byte_ms(), 31 * day * total_gauge);
         assert_eq!(aug.segments.len(), 3, "every segment carried");
-        let agg = r.project_row("2026-08", "acct", "proj").await.unwrap();
+        let agg = r
+            .project_row("2026-08", "acct", "proj")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(agg.storage_byte_ms, (31 * day * total_gauge).to_string());
         let name = r
             .name_row("2026-08", "acct", "proj", "orders")
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(name.storage_byte_ms, (31 * day * total_gauge).to_string());
     }
@@ -1735,7 +1783,8 @@ mod tests {
         .unwrap();
         let st = &r
             .stream_segment_states("acct", "proj", &id().stream_id)
-            .await[0];
+            .await
+            .unwrap()[0];
         assert_eq!(
             st.owned_frame_bytes_current, 400,
             "the live snapshot must win the same-version tie"
@@ -1746,6 +1795,7 @@ mod tests {
         let aug = r
             .month_row("2026-08", "acct", "proj", &id().stream_id)
             .await
+            .unwrap()
             .unwrap();
         let day = 86_400_000u128;
         assert_eq!(
@@ -1796,10 +1846,12 @@ mod tests {
         let jul = r
             .month_row("2026-07", "acct", "proj", &id().stream_id)
             .await
+            .unwrap()
             .unwrap_or_default();
         let aug = r
             .month_row("2026-08", "acct", "proj", &id().stream_id)
             .await
+            .unwrap()
             .unwrap_or_default();
         assert_eq!(
             jul.read_payload_bytes + aug.read_payload_bytes,
@@ -1840,6 +1892,7 @@ mod tests {
             let row = r
                 .month_row(m, "acct", "proj", &id().stream_id)
                 .await
+                .unwrap()
                 .unwrap_or_default();
             sums[0] += row.read_payload_bytes;
             sums[1] += row.read_records;
@@ -1919,6 +1972,7 @@ mod tests {
         let nov = r
             .month_row("2026-11", "acct", "proj", &id().stream_id)
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(
             nov.storage_byte_ms(),
@@ -2008,13 +2062,18 @@ mod tests {
         // The durable segment state still knows the gauge.
         let states = r
             .stream_segment_states("acct", "proj", &id().stream_id)
-            .await;
+            .await
+            .unwrap();
         assert_eq!(states.len(), 1);
         assert_eq!(states[0].owned_frame_bytes_current, 100);
         // Replays are no-ops.
         assert_eq!(r.close_month(2026, 8, 0).await.unwrap(), 0);
         // Aggregates carried the idle storage too.
-        let aug_proj = r.project_row("2026-08", "acct", "proj").await.unwrap();
+        let aug_proj = r
+            .project_row("2026-08", "acct", "proj")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(aug_proj.storage_byte_ms, (31 * day * 100).to_string());
     }
 
@@ -2041,15 +2100,21 @@ mod tests {
         let row = r
             .month_row("2026-07", "acct", "proj", &id().stream_id)
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(row.ingest_bytes(), 250, "absolute, not summed");
         assert_eq!(row.storage_byte_ms(), 9000);
-        let proj = r.project_row("2026-07", "acct", "proj").await.unwrap();
+        let proj = r
+            .project_row("2026-07", "acct", "proj")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(proj.ingest_bytes, 250, "aggregate absorbed deltas once");
         assert_eq!(proj.storage_byte_ms, "9000");
         let name = r
             .name_row("2026-07", "acct", "proj", "orders")
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(name.incarnations, vec![id().stream_id]);
 
@@ -2089,6 +2154,7 @@ mod tests {
         let row = r
             .month_row("2026-07", "acct", "proj", &id().stream_id)
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(row.read_payload_bytes, 77, "source-seq dedupe");
         assert_eq!(row.append_requests, 4);
@@ -2111,6 +2177,7 @@ mod tests {
         let closed = r
             .month_row("2026-07", "acct", "proj", &id().stream_id)
             .await
+            .unwrap()
             .unwrap();
         assert!(closed.finalized_at_ms.is_some());
         // Second close: nothing left to do.
@@ -2146,6 +2213,7 @@ mod tests {
         let corrected = r
             .month_row("2026-07", "acct", "proj", &id().stream_id)
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(corrected.corrections.len(), 1);
         assert_eq!(
@@ -2161,6 +2229,7 @@ mod tests {
         let after_snap = r
             .month_row("2026-07", "acct", "proj", &id().stream_id)
             .await
+            .unwrap()
             .unwrap();
         let frozen = after_snap.frozen.clone().expect("frozen at finalization");
         assert_eq!(
@@ -2182,6 +2251,7 @@ mod tests {
         let replay = r
             .month_row("2026-07", "acct", "proj", &id().stream_id)
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(replay.corrections.len(), 2, "late replay corrected twice");
 
@@ -2216,6 +2286,7 @@ mod tests {
         let after_read = r
             .month_row("2026-07", "acct", "proj", &id().stream_id)
             .await
+            .unwrap()
             .unwrap();
         assert_eq!(after_read.read_payload_bytes, 77, "base reads untouched");
         assert_eq!(after_read.corrections.len(), 3);
@@ -2258,6 +2329,7 @@ mod tests {
         let row = r
             .month_row("2026-07", "acct", "proj", &id().stream_id)
             .await
+            .unwrap()
             .unwrap();
         for c in &row.corrections {
             assert!(!c.correction_id.is_empty(), "correction_id set");
@@ -2274,7 +2346,11 @@ mod tests {
             frozen_b + 12 + 9,
             "effective = frozen base + corrections"
         );
-        let agg = r.project_row("2026-07", "acct", "proj").await.unwrap();
+        let agg = r
+            .project_row("2026-07", "acct", "proj")
+            .await
+            .unwrap()
+            .unwrap();
         assert_eq!(
             agg.corr.read_payload_bytes_delta,
             12 + 9,
@@ -2383,7 +2459,7 @@ impl UsageRollup {
             let key = k_ops_m1(&s.instance, minute);
             let mut agg: OpsM1 = match m1s.get(&key) {
                 Some(a) => a.clone(),
-                None => get_json(&self.db, &key).await,
+                None => get_json(&self.db, &key).await?,
             };
             for (k, v) in &s.counters {
                 agg.counters.insert(k.clone(), *v); // cumulative: last wins
@@ -2436,5 +2512,140 @@ impl UsageRollup {
             self.db.write(wb).await?;
         }
         Ok(n)
+    }
+}
+
+#[cfg(test)]
+mod accounting_failure_tests {
+    use super::*;
+
+    fn batch(seq: u64) -> UsageEnvelope {
+        UsageEnvelope {
+            v: 1,
+            event_id: format!("read/boot/{seq}"),
+            event_time_ms: 0,
+            emitted_ms: 0,
+            cell: "c".into(),
+            payload: UsagePayload::ReadBatch(ReadBatch {
+                source: crate::billing::MeterSource {
+                    cell: "c".into(),
+                    instance: "i".into(),
+                    boot: "boot".into(),
+                },
+                seq,
+                from_ms: month_start_ms(2026, 7),
+                to_ms: month_start_ms(2026, 7) + 100,
+                rows: vec![ReadRow {
+                    identity: crate::billing::BillingIdentity {
+                        account_id: "a".into(),
+                        project_id: "p".into(),
+                        stream_id: "s".into(),
+                        stream_name: "orders".into(),
+                    },
+                    read_payload_bytes: 101,
+                    read_records: 3,
+                    read_operations: 2,
+                    queue_operations: 4,
+                    append_requests: 5,
+                }],
+            }),
+        }
+    }
+
+    async fn snapshot(db: &Db) -> Vec<(Vec<u8>, Vec<u8>)> {
+        let mut rows = vec![];
+        let mut iter = db.scan(..).await.unwrap();
+        while let Some(kv) = iter.next().await.unwrap() {
+            rows.push((kv.key.to_vec(), kv.value.to_vec()));
+        }
+        rows
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r14_required_read_failures_leave_every_row_and_checkpoint_unchanged() {
+        let db = Arc::new(
+            Db::builder("r14-reads", Arc::new(object_store::memory::InMemory::new()))
+                .build()
+                .await
+                .unwrap(),
+        );
+        let r = UsageRollup { db: db.clone() };
+        r.apply_page(&[batch(0)], "c0").await.unwrap();
+        let before = snapshot(&db).await;
+        for key in [
+            k_source("boot"),
+            k_month("2026-07", "a", "p", "s"),
+            k_name("2026-07", "a", "p", "orders"),
+            k_project("2026-07", "a", "p"),
+        ] {
+            read_faults()
+                .lock()
+                .unwrap()
+                .insert((Arc::as_ptr(&db) as usize, key.clone()));
+            assert!(r.apply_page(&[batch(1)], "c1").await.is_err());
+            assert_eq!(snapshot(&db).await, before, "key={key:?}");
+        }
+        read_faults()
+            .lock()
+            .unwrap()
+            .insert((Arc::as_ptr(&db) as usize, K_CURSOR.to_vec()));
+        assert!(r.cursor().await.is_err());
+        assert_eq!(snapshot(&db).await, before);
+        r.apply_page(&[batch(1)], "c1").await.unwrap();
+        let after = snapshot(&db).await;
+        r.apply_page(&[batch(1)], "c1").await.unwrap();
+        assert_eq!(snapshot(&db).await, after, "replay must be exact");
+        assert_eq!(
+            r.month_row("2026-07", "a", "p", "s")
+                .await
+                .unwrap()
+                .unwrap()
+                .read_payload_bytes,
+            202
+        );
+        db.close().await.unwrap();
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r14_corrupt_watermarks_rows_and_close_keys_block_progress() {
+        let db = Arc::new(
+            Db::builder(
+                "r14-corruption",
+                Arc::new(object_store::memory::InMemory::new()),
+            )
+            .build()
+            .await
+            .unwrap(),
+        );
+        let r = UsageRollup { db: db.clone() };
+        r.apply_page(&[batch(0)], "c0").await.unwrap();
+        for len in [0, 1, 2, 3, 4, 5, 6, 7, 9] {
+            db.put(k_source("boot"), vec![0; len]).await.unwrap();
+            let before = snapshot(&db).await;
+            assert!(r.apply_page(&[batch(1)], "c1").await.is_err());
+            assert_eq!(snapshot(&db).await, before);
+        }
+        db.put(k_source("boot"), 0u64.to_le_bytes()).await.unwrap();
+        db.put(k_month("2026-07", "a", "p", "s"), b"malformed json")
+            .await
+            .unwrap();
+        let before = snapshot(&db).await;
+        assert!(r.apply_page(&[batch(1)], "c1").await.is_err());
+        assert!(r.close_month(2026, 7, 0).await.is_err());
+        assert_eq!(snapshot(&db).await, before);
+        db.put(
+            b"segment/a/p/s/not-a-number",
+            serde_json::to_vec(&SegmentState {
+                account_id: "a".into(),
+                ..Default::default()
+            })
+            .unwrap(),
+        )
+        .await
+        .unwrap();
+        let before = snapshot(&db).await;
+        assert!(r.close_month(2026, 7, 0).await.is_err());
+        assert_eq!(snapshot(&db).await, before);
+        db.close().await.unwrap();
     }
 }

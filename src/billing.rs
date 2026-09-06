@@ -1551,7 +1551,11 @@ pub async fn rollup_step(state: &std::sync::Arc<crate::http::AppState>) -> Resul
         "stream-encryption-key",
         HeaderValue::from_str(&key).map_err(|_| "bad usage key".to_string())?,
     );
-    let cursor = rollup.cursor().await.filter(|c| !c.is_empty());
+    let cursor = rollup
+        .cursor()
+        .await
+        .map_err(|e| e.to_string())?
+        .filter(|c| !c.is_empty());
     let Some((body, next)) = system_read(state, USAGE_STREAM, &key, cursor).await? else {
         return Ok(0); // ledger not created yet
     };

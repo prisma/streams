@@ -7749,18 +7749,41 @@ async fn product_usage(
     if let Some(sid) = q.get("streamId").map(String::as_str) {
         id.stream_id = sid.to_string();
     }
-    let row: crate::rollup::MonthRow = rollup
+    let row: crate::rollup::MonthRow = match rollup
         .month_row(&month, &id.account_id, &id.project_id, &id.stream_id)
         .await
-        .unwrap_or_default();
+    {
+        Ok(row) => row.unwrap_or_default(),
+        Err(error) => {
+            return perr(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "usage_unavailable",
+                &error.to_string(),
+                None,
+                true,
+            );
+        }
+    };
     let is_current = month == current;
     // Round-21 blocker 2: a retained-but-idle stream has no month row
     // yet for the CURRENT month — the durable segment index still knows
     // its gauge, so provisional storage never reads as zero.
     let (fallback_byte_ms, fallback_owned) = if is_current && row.segments.is_empty() {
-        let states = rollup
+        let states = match rollup
             .stream_segment_states(&id.account_id, &id.project_id, &id.stream_id)
-            .await;
+            .await
+        {
+            Ok(states) => states,
+            Err(error) => {
+                return perr(
+                    StatusCode::SERVICE_UNAVAILABLE,
+                    "usage_unavailable",
+                    &error.to_string(),
+                    None,
+                    true,
+                );
+            }
+        };
         let mstart = {
             let (y, m) = crate::billing::parse_month(&month).unwrap();
             crate::billing::month_start_ms(y, m)
@@ -7790,9 +7813,21 @@ async fn product_usage(
     };
     let avg_bytes = byte_ms / month_ms.max(1);
     let gb_month = byte_ms as f64 / month_ms as f64 / 1e9;
-    let name_agg = rollup
+    let name_agg = match rollup
         .name_row(&month, &id.account_id, &id.project_id, &id.stream_name)
-        .await;
+        .await
+    {
+        Ok(row) => row,
+        Err(error) => {
+            return perr(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "usage_unavailable",
+                &error.to_string(),
+                None,
+                true,
+            );
+        }
+    };
     let status = if row.finalized_at_ms.is_some() {
         if row.corrections.is_empty() {
             "finalized"
@@ -7931,10 +7966,18 @@ pub async fn project_usage(
     } else {
         state.deployment.account_id().to_string()
     };
-    let agg = rollup
-        .project_row(&month, &account, &project)
-        .await
-        .unwrap_or_default();
+    let agg = match rollup.project_row(&month, &account, &project).await {
+        Ok(row) => row.unwrap_or_default(),
+        Err(error) => {
+            return perr(
+                StatusCode::SERVICE_UNAVAILABLE,
+                "usage_unavailable",
+                &error.to_string(),
+                None,
+                true,
+            );
+        }
+    };
     let byte_ms: u128 = agg.storage_byte_ms.parse().unwrap_or(0);
     json_ok(json!({
         "accountId": account,
