@@ -112,6 +112,45 @@ impl PeerClient {
     }
 }
 
+/// Percent-encode a stream name for use as a URL PATH, preserving the
+/// hierarchy separator. Product names are hierarchical UTF-8 and may
+/// legally contain '?', '#', '%' — interpolating one raw into a relay
+/// URL turned the rest of the name into a query, fragment, or invalid
+/// escape and addressed the wrong stream (round-19 fleet-contract
+/// finding). Every internal relay must route its name through this.
+pub(crate) fn encode_stream_name_path(name: &str) -> String {
+    let mut out = String::with_capacity(name.len() + 8);
+    for seg in name.split('/') {
+        if !out.is_empty() {
+            out.push('/');
+        }
+        for b in seg.bytes() {
+            match b {
+                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
+                    out.push(b as char)
+                }
+                _ => out.push_str(&format!("%{b:02X}")),
+            }
+        }
+    }
+    out
+}
+
+/// Shared client for fleet-internal peer calls (segment fan-out). One
+/// pool, HTTP/1.1, idle timeout under the platform's ~5 s VM-suspend
+/// socket kill (same rule as the store client and the pilot LB).
+pub(crate) fn client() -> &'static reqwest::Client {
+    static C: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
+    C.get_or_init(|| {
+        reqwest::Client::builder()
+            .http1_only()
+            .pool_idle_timeout(std::time::Duration::from_secs(4))
+            .tcp_nodelay(true)
+            .build()
+            .expect("peer client")
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -168,43 +207,4 @@ mod tests {
         assert_eq!(none.outbound_bearer(false), None);
         assert!(!none.inbound_static_ok(Some("anything")));
     }
-}
-
-/// Percent-encode a stream name for use as a URL PATH, preserving the
-/// hierarchy separator. Product names are hierarchical UTF-8 and may
-/// legally contain '?', '#', '%' — interpolating one raw into a relay
-/// URL turned the rest of the name into a query, fragment, or invalid
-/// escape and addressed the wrong stream (round-19 fleet-contract
-/// finding). Every internal relay must route its name through this.
-pub(crate) fn encode_stream_name_path(name: &str) -> String {
-    let mut out = String::with_capacity(name.len() + 8);
-    for seg in name.split('/') {
-        if !out.is_empty() {
-            out.push('/');
-        }
-        for b in seg.bytes() {
-            match b {
-                b'A'..=b'Z' | b'a'..=b'z' | b'0'..=b'9' | b'-' | b'.' | b'_' | b'~' => {
-                    out.push(b as char)
-                }
-                _ => out.push_str(&format!("%{b:02X}")),
-            }
-        }
-    }
-    out
-}
-
-/// Shared client for fleet-internal peer calls (segment fan-out). One
-/// pool, HTTP/1.1, idle timeout under the platform's ~5 s VM-suspend
-/// socket kill (same rule as the store client and the pilot LB).
-pub(crate) fn client() -> &'static reqwest::Client {
-    static C: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
-    C.get_or_init(|| {
-        reqwest::Client::builder()
-            .http1_only()
-            .pool_idle_timeout(std::time::Duration::from_secs(4))
-            .tcp_nodelay(true)
-            .build()
-            .expect("peer client")
-    })
 }
