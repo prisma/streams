@@ -71,7 +71,6 @@ pub(crate) fn decode_at(raw: &[u8], offset: u64) -> Result<DecodedFrame<'_>, Rec
 pub struct FrameReadResult {
     pub frames: Vec<Bytes>,
     pub last_offset: Option<u64>,
-    pub end: u64,
 }
 
 /// Range-bounded frame read: scans `[scan_from, scan_to)` regardless of the
@@ -90,7 +89,6 @@ pub async fn read_frames_range(
     let mut out = FrameReadResult {
         frames: Vec::new(),
         last_offset: None,
-        end: scan_to,
     };
     if scan_from >= scan_to {
         return Ok(out);
@@ -129,6 +127,7 @@ pub async fn read_frames_range(
     Ok(out)
 }
 
+#[cfg(test)]
 pub async fn read_frames(
     engine: &ShardEngine,
     handle: &StreamHandle,
@@ -174,7 +173,6 @@ pub(crate) async fn read_frames_until(
     let mut out = FrameReadResult {
         frames: Vec::new(),
         last_offset: None,
-        end,
     };
     if scan_from >= end {
         return Ok(out);

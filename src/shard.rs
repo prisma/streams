@@ -18,7 +18,9 @@ use slatedb::{Db, WriteBatch};
 use tokio::sync::{Notify, mpsc, oneshot};
 
 pub(crate) mod record;
-pub use record::{FrameReadResult, read_frames, read_frames_range};
+#[cfg(test)]
+pub use record::read_frames;
+pub use record::{FrameReadResult, read_frames_range};
 mod commit_plan;
 mod history_partition;
 mod lifecycle;
@@ -2625,7 +2627,6 @@ impl ShardEngine {
         let mut out = FrameReadResult {
             frames: Vec::new(),
             last_offset: None,
-            end: scan_to,
         };
         let mut total = 0usize;
         for b in ring.batches.iter() {
@@ -2697,7 +2698,6 @@ impl ShardEngine {
         let mut out = FrameReadResult {
             frames: Vec::new(),
             last_offset: None,
-            end: scan_to,
         };
         let mut total = 0usize;
         for b in ring.batches.iter() {
