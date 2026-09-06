@@ -47,3 +47,24 @@ No independent cryptographic approval, live split/merge/fork/fencing campaign or
 Regressions: `r03_producer_decision_keeps_duplicate_before_close_and_new_epoch_fence`; `r03_failed_group_discards_close_and_fence_effects_together`; `r03_close_and_fence_wait_for_write_remote_durability_and_dispatch`. The last test independently holds pre-write acceptance, an actual WAL object-store PUT, and callback dispatch. It observes an applied close with no remotely durable tail, then a remotely durable tail with no replies, releases dispatch, and reopens to verify the closed tail. It is a true remote-durability mechanism test on the pinned backend with an in-memory fault store, distinct from historical dispatch-only scenarios.
 
 Combined Rust 1.98.1 command `cargo test --locked --lib -- r01_ r03_ r12_ r13_ r14_ r23_ --nocapture`: **15 passed**, 0 failed, 768 filtered, 0.58s execution. The first combined run exposed two test-fixture mistakes (R12 corruption seed was not yet remote-durable; R03 cleanup closed an already closed DB), both corrected before this passing run. No product failure was hidden by weakening the durability assertions.
+
+## R09 — billing/history controller continuation (storage portion)
+
+Billing discovery visits at most four rotating engines, 64 dirty rows per engine and 32 month-final rows per segment. Dirty and history cursors use exclusive storage seeks. Partial final acknowledgements delete exact published keys while retaining the dirty marker until all finals were emitted. Residency probes read at most one row per outbox index. Error/cancellation leaves durable debt discoverable. Optional-mode read batches now have a Drop guard which requeues them if cancellation occurs at any await before ledger acceptance.
+
+History restart discovery reads 256 dirty identities per page and continues subsequent ticks from the stored-in-owner cursor. Pending work is capped at 8,192 streams; excess signals rely on their durable dirty markers. Bounded due selection rotates in hash order so an indefinitely hot prefix cannot starve eligible successors. The redundant whole-resident backlog materialization was removed.
+
+Regressions: `r09_cancelled_optional_read_drain_requeues_owned_batches`, `r09_budget_exhaustion_on_first_engine_still_rotates_every_engine`, `r09_hot_prefix_cannot_starve_other_due_streams`, `r09_discovery_pages_progress_without_exceeding_pending_capacity`, `r09_dirty_and_final_pages_are_bounded_and_partial_ack_preserves_debt`. These measure finite discovery/read work and exact retained outbox keys. Cloud request/latency comparisons and noisy-neighbor capacity campaign remain pending.
+
+R09 execution: the integrated Rust 1.98.1 test binary (793 tests compiled) ran `r09_`: **5 passed**, 0 failed, 788 filtered, 0.03s. A preceding compile exhausted disk space in generated incremental artifacts; after the composition owner removed only those artifacts, the rebuilt binary passed. Work counts and pending capacity are bounded; individual storage request latency remains governed by the backend and controller cancellation.
+
+## Implementation commit references
+
+- R12: `78c5940` (remote fixture correction included with R03 tests).
+- R13: `d985f00`.
+- R14: `814d3a5`.
+- R23: `320478d`.
+- R01: `031ae5b`.
+- R03: `fd1706e`.
+
+All source commits are reviewable changes; the external acceptance conditions above are not marked as passed.

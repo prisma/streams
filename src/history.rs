@@ -660,6 +660,9 @@ impl Default for AbsorberConfig {
     }
 }
 
+const MAX_PENDING_STREAMS: usize = 8192;
+const DISCOVERY_PAGE_STREAMS: usize = 256;
+
 struct PendingAbsorb {
     bytes: u64,
     since: Instant,
@@ -668,6 +671,30 @@ struct PendingAbsorb {
     failures: u32,
     /// Earliest next attempt (backoff); zero-delay until the first failure.
     retry_after: Option<Instant>,
+}
+
+/// Selection walks a capacity-bounded roster. Hash-order continuation
+/// reserves turns for cold streams even while earlier keys stay hot.
+fn due_streams(
+    pending: &HashMap<[u8; 16], PendingAbsorb>,
+    cfg: &AbsorberConfig,
+    now: Instant,
+    after: Option<[u8; 16]>,
+) -> Vec<([u8; 16], u64)> {
+    let mut due: Vec<_> = pending
+        .iter()
+        .filter(|(_, p)| {
+            (p.bytes >= cfg.threshold_bytes || now.duration_since(p.since) >= cfg.threshold_age)
+                && p.retry_after.is_none_or(|retry| now >= retry)
+        })
+        .map(|(hash, p)| (*hash, p.bytes))
+        .collect();
+    due.sort_unstable_by_key(|entry| entry.0);
+    if let Some(after) = after {
+        let split = due.partition_point(|entry| entry.0 <= after);
+        due.rotate_left(split);
+    }
+    due
 }
 
 /// Per-stream classification of one v2 gather (review round 4, P1): the
@@ -742,6 +769,7 @@ pub struct Absorber {
     /// published state again, which is safe because re-absorbing is
     /// idempotent.
     submitted: std::sync::Mutex<HashMap<[u8; 16], (u64, bool)>>,
+    discovery_after: std::sync::Mutex<Option<[u8; 16]>>,
 }
 
 /// Must exceed the small lane's concurrency, or a tick's concurrent
@@ -768,6 +796,7 @@ impl Absorber {
             keys,
             cfg,
             submitted: std::sync::Mutex::new(HashMap::new()),
+            discovery_after: Default::default(),
             // Seeded at the worst-case est: boot-time gathers (restart
             // rediscovery drains the whole backlog) reserve like the
             // pre-adaptive code and the estimate decays toward observed
@@ -820,6 +849,7 @@ impl Absorber {
         let absorber = Self::new(data_store, shard, keys, cfg);
         tokio::spawn(async move {
             let mut pending: HashMap<[u8; 16], PendingAbsorb> = HashMap::new();
+            let mut classify_after: Option<[u8; 16]> = None;
             // Restart rediscovery (static audit P1, hardened round 4):
             // seed from the durable dirty-stream index so work left
             // outstanding by a previous owner converges WITHOUT the
@@ -882,6 +912,10 @@ impl Absorber {
                 tokio::select! {
                     sig = rx.recv() => {
                         let Some(sig) = sig else { return };
+                        if pending.len() >= MAX_PENDING_STREAMS && !pending.contains_key(&sig.hash) {
+                            // Its durable dirty marker is the bounded discovery fallback.
+                            continue;
+                        }
                         let e = pending.entry(sig.hash).or_insert(PendingAbsorb {
                             bytes: 0,
                             since: Instant::now(),
@@ -898,6 +932,7 @@ impl Absorber {
                         // rescan at low cadence as a safety net.
                         if (!seeded && tick_n >= seed_next_tick)
                             || (seeded && tick_n.is_multiple_of(RESCAN_EVERY))
+                            || absorber.discovery_after.lock().unwrap().is_some()
                         {
                             match absorber.seed_from_dirty_index(&mut pending).await {
                                 Ok(n) => {
@@ -908,7 +943,7 @@ impl Absorber {
                                             absorber.shard.prefix
                                         );
                                     }
-                                    seeded = true;
+                                    seeded = absorber.discovery_after.lock().unwrap().is_none();
                                 }
                                 Err(e) => {
                                     if seeded {
@@ -938,19 +973,6 @@ impl Absorber {
                         // than anything evicted: 2.3 GB RSS in seven
                         // minutes). Fat backlogs enter due-now and big.
                         if tick_n.is_multiple_of(absorber.cfg.sweep_every.max(1)) {
-                            for (hash, backlog_records) in absorber.shard.absorb_backlog() {
-                                pending.entry(hash).or_insert_with(|| PendingAbsorb {
-                                    // Signals carry exact appended bytes;
-                                    // the sweep only knows the record
-                                    // count. Estimate ~1 KiB/record so
-                                    // fat recovered backlogs become due
-                                    // and thin ones defer with the rest.
-                                    bytes: backlog_records.saturating_mul(1024),
-                                    since: Instant::now(),
-                                    failures: 0,
-                                    retry_after: None,
-                                });
-                            }
                             // Prune the submitted high-water map (it
                             // otherwise grows with every stream ever
                             // absorbed): an entry is only load-bearing
@@ -1010,20 +1032,7 @@ impl Absorber {
                         // absorbs EVERYTHING — no sparse floor (R26-1):
                         // any durable residual left to sit forever is a
                         // no-progress stall to the maintenance latch.
-                        let mut due: Vec<([u8; 16], u64)> = pending
-                            .iter()
-                            .filter(|(_, p)| {
-                                (p.bytes >= absorber.cfg.threshold_bytes
-                                    || p.since.elapsed() >= absorber.cfg.threshold_age)
-                                    && p.retry_after.map(|t| now >= t).unwrap_or(true)
-                            })
-                            .map(|(h, p)| (*h, p.bytes))
-                            .collect();
-                        // Fattest first: under backlog pressure the hot
-                        // streams (large pending bytes) must not queue
-                        // behind ten thousand one-record strays — their
-                        // unabsorbed bytes are what grows the shard log.
-                        due.sort_unstable_by(|a, b| b.1.cmp(&a.1));
+                        let due = due_streams(&pending, &absorber.cfg, now, classify_after);
                         // Three lanes. V2 (shared partition, one flush for
                         // the whole lane) takes every stream whose
                         // history lives — or will live — in the shared
@@ -1047,6 +1056,7 @@ impl Absorber {
                             if v2_lane.len() >= V2_LANE_PER_TICK {
                                 break;
                             }
+                            classify_after = Some(hash);
                             let Ok(handle) = absorber.shard.stream_handle(hash).await else {
                                 continue;
                             };
@@ -1233,9 +1243,17 @@ impl Absorber {
         // was the R24 defect: the first request after a restart could be
         // admitted before the backlog was known, and a late restore
         // could overwrite state a new append had already advanced.
-        let dirty = self.shard.scan_dirty_streams().await?;
+        let after = *self.discovery_after.lock().unwrap();
+        let (dirty, more) = self
+            .shard
+            .scan_dirty_streams_page(after, DISCOVERY_PAGE_STREAMS)
+            .await?;
+        let last = dirty.last().map(|entry| entry.0);
         let mut absorb_seeded = 0usize;
         for (h, absorbed, next) in dirty {
+            if pending.len() >= MAX_PENDING_STREAMS && !pending.contains_key(&h) {
+                continue;
+            }
             let (recs, bytes) = match self.shard.tail_fields(&h).await {
                 Ok(Some(t)) => {
                     if t.trimmed < t.trim_safe_to {
@@ -1300,6 +1318,7 @@ impl Absorber {
             });
             absorb_seeded += 1;
         }
+        *self.discovery_after.lock().unwrap() = if more { last } else { None };
         Ok(absorb_seeded)
     }
 
@@ -2604,5 +2623,117 @@ mod tests {
             engine.oldest_inflight_ms() > 5_000,
             "the stale-durability component specifically must be the signal"
         );
+    }
+}
+
+#[cfg(test)]
+mod bounded_discovery_tests {
+    use super::*;
+
+    #[test]
+    fn r09_hot_prefix_cannot_starve_other_due_streams() {
+        let now = Instant::now();
+        let cfg = AbsorberConfig::default();
+        let pending: HashMap<_, _> = (0..6u8)
+            .map(|id| {
+                (
+                    [id; 16],
+                    PendingAbsorb {
+                        bytes: u64::MAX - id as u64,
+                        since: now,
+                        failures: 0,
+                        retry_after: None,
+                    },
+                )
+            })
+            .collect();
+        let first: Vec<_> = due_streams(&pending, &cfg, now, None)
+            .into_iter()
+            .take(3)
+            .map(|(hash, _)| hash)
+            .collect();
+        let second: Vec<_> = due_streams(&pending, &cfg, now, first.last().copied())
+            .into_iter()
+            .take(3)
+            .map(|(hash, _)| hash)
+            .collect();
+        assert_eq!(first, vec![[0; 16], [1; 16], [2; 16]]);
+        assert_eq!(second, vec![[3; 16], [4; 16], [5; 16]]);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r09_discovery_pages_progress_without_exceeding_pending_capacity() {
+        let store: Arc<dyn ObjectStore> = Arc::new(object_store::memory::InMemory::new());
+        let db = Arc::new(
+            Db::builder("r09-history", store.clone())
+                .build()
+                .await
+                .unwrap(),
+        );
+        let mut batch = WriteBatch::new();
+        for id in 0..260u64 {
+            let mut hash = [0; 16];
+            hash[..8].copy_from_slice(&id.to_be_bytes());
+            let mut marker = vec![0; 8];
+            marker.extend_from_slice(&1u64.to_le_bytes());
+            batch.put(crate::shard::dirty_key(&hash), marker);
+            batch.put(
+                crate::shard::tail_key(&hash),
+                crate::shard::encode_tail_for_tests(&crate::shard::TailFields {
+                    next: 1,
+                    unabsorbed_bytes: 64,
+                    route: [1; 16],
+                    ..Default::default()
+                }),
+            );
+        }
+        db.write(batch).await.unwrap();
+        let (tx, _rx) = tokio::sync::mpsc::channel(1);
+        let engine = ShardEngine::start(
+            "r09-history".into(),
+            db.clone(),
+            store.clone(),
+            crate::shard::ShardConfig::default(),
+            tx,
+            None,
+            Default::default(),
+        );
+        let absorber = Absorber::new(
+            store,
+            engine.clone(),
+            Arc::new(KeyCache::default()),
+            AbsorberConfig::default(),
+        );
+        let mut pending = HashMap::new();
+        assert_eq!(
+            absorber.seed_from_dirty_index(&mut pending).await.unwrap(),
+            DISCOVERY_PAGE_STREAMS
+        );
+        assert_eq!(pending.len(), DISCOVERY_PAGE_STREAMS);
+        assert!(absorber.discovery_after.lock().unwrap().is_some());
+        assert_eq!(
+            absorber.seed_from_dirty_index(&mut pending).await.unwrap(),
+            4
+        );
+        assert_eq!(pending.len(), 260);
+        assert!(absorber.discovery_after.lock().unwrap().is_none());
+        pending.clear();
+        for id in 0..MAX_PENDING_STREAMS {
+            let mut hash = [255; 16];
+            hash[..8].copy_from_slice(&(id as u64).to_be_bytes());
+            pending.insert(
+                hash,
+                PendingAbsorb {
+                    bytes: 1,
+                    since: Instant::now(),
+                    failures: 0,
+                    retry_after: None,
+                },
+            );
+        }
+        absorber.seed_from_dirty_index(&mut pending).await.unwrap();
+        assert_eq!(pending.len(), MAX_PENDING_STREAMS);
+        engine.begin_close();
+        let _ = db.close().await;
     }
 }

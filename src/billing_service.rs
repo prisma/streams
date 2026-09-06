@@ -20,6 +20,33 @@ struct Inner {
     reads: Arc<ReadUsageAccumulator>,
     read_spool: OnceLock<Arc<ReadSpool>>,
     sweep: SweepSched,
+    drain_progress: std::sync::Mutex<DrainProgress>,
+}
+
+#[derive(Default)]
+struct DrainProgress {
+    engine_after: Option<String>,
+    rows_after: std::collections::HashMap<String, [u8; 16]>,
+}
+
+/// Volatile, optional-mode batches remain owned until the ledger accepts
+/// them. Cancellation at any await requeues exactly these batches.
+pub(crate) struct ReadDrain {
+    service: BillingService,
+    pub batches: Vec<ReadBatch>,
+}
+
+impl ReadDrain {
+    pub fn accepted(&mut self) {
+        self.batches.clear();
+    }
+}
+
+impl Drop for ReadDrain {
+    fn drop(&mut self) {
+        self.service
+            .requeue_reads(std::mem::take(&mut self.batches));
+    }
 }
 
 /// What the operator surfaces show about the durable read spool.
@@ -39,6 +66,7 @@ impl BillingService {
                 reads,
                 read_spool: OnceLock::new(),
                 sweep: SweepSched::default(),
+                drain_progress: Default::default(),
             }),
         }
     }
@@ -72,6 +100,56 @@ impl BillingService {
     /// Seal the open read window once it is older than `max_age_ms`.
     pub fn seal_aged_reads(&self, max_age_ms: i64) {
         self.inner.reads.seal_if_aged(max_age_ms);
+    }
+
+    pub(crate) fn read_drain(&self, max: usize) -> ReadDrain {
+        ReadDrain {
+            service: self.clone(),
+            batches: self.drain_sealed_reads(max),
+        }
+    }
+
+    /// Fair bounded engine visits; cursors are advisory and durable outbox
+    /// rows retain the work on cancellation, failure or owner replacement.
+    pub(crate) fn drain_engines(
+        &self,
+        mut engines: Vec<Arc<crate::shard::ShardEngine>>,
+        max: usize,
+    ) -> Vec<Arc<crate::shard::ShardEngine>> {
+        engines.sort_by(|a, b| a.prefix.cmp(&b.prefix));
+        let mut progress = self.inner.drain_progress.lock().unwrap();
+        progress
+            .rows_after
+            .retain(|prefix, _| engines.iter().any(|e| &e.prefix == prefix));
+        if let Some(after) = &progress.engine_after {
+            let split = engines.partition_point(|engine| &engine.prefix <= after);
+            engines.rotate_left(split);
+        }
+        engines.truncate(max);
+        engines
+    }
+
+    pub(crate) fn begin_drain_engine(&self, prefix: &str) {
+        self.inner.drain_progress.lock().unwrap().engine_after = Some(prefix.to_string());
+    }
+
+    pub(crate) fn drain_row_cursor(&self, prefix: &str) -> Option<[u8; 16]> {
+        self.inner
+            .drain_progress
+            .lock()
+            .unwrap()
+            .rows_after
+            .get(prefix)
+            .copied()
+    }
+
+    pub(crate) fn set_drain_row_cursor(&self, prefix: &str, after: Option<[u8; 16]>) {
+        let mut progress = self.inner.drain_progress.lock().unwrap();
+        if let Some(after) = after {
+            progress.rows_after.insert(prefix.to_string(), after);
+        } else {
+            progress.rows_after.remove(prefix);
+        }
     }
 
     /// Take up to `max` sealed read batches for the ledger.
@@ -293,5 +371,109 @@ mod tests {
             1,
             "quantum accounting reset with custody"
         );
+    }
+}
+
+#[cfg(test)]
+mod drain_ownership_tests {
+    use super::*;
+    use crate::billing::MeterSource;
+
+    #[tokio::test]
+    async fn r09_cancelled_optional_read_drain_requeues_owned_batches() {
+        let source = MeterSource {
+            cell: "c".into(),
+            instance: "i".into(),
+            boot: "b".into(),
+        };
+        let service = BillingService::new(
+            Some("key".into()),
+            Arc::new(ReadUsageAccumulator::new(source.clone())),
+        );
+        service.requeue_reads(vec![ReadBatch {
+            source,
+            seq: 7,
+            from_ms: 10,
+            to_ms: 20,
+            rows: vec![],
+        }]);
+        let (entered_tx, entered_rx) = tokio::sync::oneshot::channel();
+        let task_service = service.clone();
+        let task = tokio::spawn(async move {
+            let drain = task_service.read_drain(1);
+            assert_eq!(drain.batches[0].seq, 7);
+            entered_tx.send(()).unwrap();
+            std::future::pending::<()>().await;
+            drop(drain);
+        });
+        entered_rx.await.unwrap();
+        task.abort();
+        let _ = task.await;
+        let mut recovered = service.read_drain(1);
+        assert_eq!(recovered.batches.len(), 1);
+        assert_eq!(recovered.batches[0].seq, 7);
+        recovered.accepted();
+        drop(recovered);
+        assert!(service.drain_sealed_reads(1).is_empty());
+    }
+}
+
+#[cfg(test)]
+mod drain_fairness_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r09_budget_exhaustion_on_first_engine_still_rotates_every_engine() {
+        let service = BillingService::new(
+            None,
+            Arc::new(ReadUsageAccumulator::new(crate::billing::MeterSource {
+                cell: "c".into(),
+                instance: "i".into(),
+                boot: "b".into(),
+            })),
+        );
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        let mut engines = Vec::new();
+        for index in 0..5 {
+            let prefix = format!("r09-fair/{index}");
+            let db = Arc::new(
+                slatedb::Db::builder(prefix.as_str(), store.clone())
+                    .build()
+                    .await
+                    .unwrap(),
+            );
+            let (tx, _rx) = tokio::sync::mpsc::channel(1);
+            engines.push(crate::shard::ShardEngine::start(
+                prefix,
+                db,
+                store.clone(),
+                crate::shard::ShardConfig::default(),
+                tx,
+                None,
+                Default::default(),
+            ));
+        }
+        let mut seen = Vec::new();
+        for _ in 0..10 {
+            let page = service.drain_engines(engines.clone(), 4);
+            assert_eq!(page.len(), 4);
+            // Model a byte budget consumed by this first engine. The
+            // unvisited reserved engines must not advance the cursor.
+            service.begin_drain_engine(&page[0].prefix);
+            seen.push(page[0].prefix.clone());
+        }
+        for engine in &engines {
+            assert_eq!(
+                seen.iter()
+                    .filter(|prefix| *prefix == &engine.prefix)
+                    .count(),
+                2
+            );
+        }
+        for engine in engines {
+            engine.begin_close();
+            let _ = engine.db.close().await;
+        }
     }
 }

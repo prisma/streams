@@ -2097,6 +2097,7 @@ impl ShardEngine {
         *self.maintenance.write().unwrap() = m;
     }
 
+    #[cfg(test)]
     pub async fn scan_dirty_streams(&self) -> anyhow::Result<Vec<([u8; 16], u64, u64)>> {
         #[cfg(test)]
         {
@@ -2124,6 +2125,50 @@ impl ShardEngine {
             out.push((h, absorbed, next));
         }
         Ok(out)
+    }
+
+    pub async fn scan_dirty_streams_page(
+        &self,
+        after: Option<[u8; 16]>,
+        limit: usize,
+    ) -> anyhow::Result<(Vec<([u8; 16], u64, u64)>, bool)> {
+        use std::ops::Bound;
+        anyhow::ensure!(limit > 0, "dirty page limit must be positive");
+        #[cfg(test)]
+        {
+            let mut faults = dirty_scan_faults().lock().unwrap();
+            if let Some(n) = faults.get_mut(&self.prefix)
+                && *n > 0
+            {
+                *n -= 1;
+                anyhow::bail!("injected dirty-scan fault (test hook)");
+            }
+        }
+        let mut prefix = DIRTY_SENTINEL.to_vec();
+        prefix.push(b'D');
+        let range = (
+            after.map_or(Bound::Unbounded, |h| Bound::Excluded(h.to_vec())),
+            Bound::<Vec<u8>>::Unbounded,
+        );
+        let mut scan = self.db.scan_prefix(prefix, range).await?;
+        let mut rows = Vec::new();
+        while let Some(kv) = scan.next().await? {
+            if rows.len() == limit {
+                return Ok((rows, true));
+            }
+            let hash: [u8; 16] = kv
+                .key
+                .get(17..)
+                .ok_or_else(|| anyhow::anyhow!("invalid dirty-stream key"))?
+                .try_into()?;
+            anyhow::ensure!(kv.value.len() == 16, "invalid dirty-stream value");
+            rows.push((
+                hash,
+                decode_cursor(&kv.value[..8])?,
+                decode_cursor(&kv.value[8..])?,
+            ));
+        }
+        Ok((rows, false))
     }
 
     /// The durable tail for one stream WITHOUT materializing a handle —
@@ -4898,6 +4943,7 @@ impl ShardEngine {
     /// billing state has versions `_usage` has not acknowledged.
     /// (hash, unacked version). One prefix scan; the drainer's
     /// discovery path after restart or ownership move.
+    #[cfg(test)]
     pub async fn usage_dirty_scan(&self) -> anyhow::Result<Vec<([u8; 16], u64)>> {
         let mut pfx = Vec::with_capacity(17);
         pfx.extend_from_slice(&crate::billing::USAGE_DIRTY_SENTINEL);
@@ -4914,6 +4960,79 @@ impl ShardEngine {
             out.push((h, v));
         }
         Ok(out)
+    }
+
+    /// Presence probe for residency decisions: at most one row from
+    /// each outbox index, including orphaned final rows.
+    pub async fn has_billing_debt(&self) -> anyhow::Result<bool> {
+        for tag in [b'U', b'V'] {
+            let mut prefix = crate::billing::USAGE_DIRTY_SENTINEL.to_vec();
+            prefix.push(tag);
+            if self
+                .db
+                .scan_prefix(prefix, ..)
+                .await?
+                .next()
+                .await?
+                .is_some()
+            {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
+    /// One bounded page of the dirty index, with an exclusive identity
+    /// continuation. Only the caller's finite page is materialized.
+    pub async fn usage_dirty_page(
+        &self,
+        after: Option<[u8; 16]>,
+        limit: usize,
+    ) -> anyhow::Result<(Vec<([u8; 16], u64)>, bool)> {
+        use std::ops::Bound;
+        anyhow::ensure!(limit > 0, "dirty page limit must be positive");
+        let mut prefix = crate::billing::USAGE_DIRTY_SENTINEL.to_vec();
+        prefix.push(b'U');
+        let range = (
+            after.map_or(Bound::Unbounded, |h| Bound::Excluded(h.to_vec())),
+            Bound::<Vec<u8>>::Unbounded,
+        );
+        let mut scan = self.db.scan_prefix(&prefix, range).await?;
+        let mut rows = Vec::new();
+        while let Some(kv) = scan.next().await? {
+            if rows.len() == limit {
+                return Ok((rows, true));
+            }
+            let hash: [u8; 16] = kv
+                .key
+                .get(17..)
+                .ok_or_else(|| anyhow::anyhow!("invalid usage dirty key"))?
+                .try_into()?;
+            rows.push((hash, decode_cursor(&kv.value)?));
+        }
+        Ok((rows, false))
+    }
+
+    /// Bounded finals for a single dirty segment. More finals keep its
+    /// dirty marker alive even after this page's exact keys are acked.
+    pub async fn usage_month_finals_page(
+        &self,
+        hash: [u8; 16],
+        limit: usize,
+    ) -> anyhow::Result<(Vec<(Vec<u8>, crate::billing::SegmentSnapshot)>, bool)> {
+        anyhow::ensure!(limit > 0, "final page limit must be positive");
+        let mut prefix = crate::billing::USAGE_DIRTY_SENTINEL.to_vec();
+        prefix.push(b'V');
+        prefix.extend_from_slice(&hash);
+        let mut scan = self.db.scan_prefix(&prefix, ..).await?;
+        let mut rows = Vec::new();
+        while let Some(kv) = scan.next().await? {
+            if rows.len() == limit {
+                return Ok((rows, true));
+            }
+            rows.push((kv.key.to_vec(), serde_json::from_slice(&kv.value)?));
+        }
+        Ok((rows, false))
     }
 
     /// Missing means never billed. Read errors and invalid rows remain errors.
@@ -4967,6 +5086,7 @@ impl ShardEngine {
 
     /// Closed-month final snapshots awaiting ledger acknowledgment
     /// (sentinel-'V' rows): (exact key, snapshot).
+    #[cfg(test)]
     pub async fn usage_month_finals(
         &self,
     ) -> anyhow::Result<Vec<(Vec<u8>, crate::billing::SegmentSnapshot)>> {
@@ -4976,9 +5096,7 @@ impl ShardEngine {
         let mut out = Vec::new();
         let mut iter = self.db.scan_prefix(&pfx[..], ..).await?;
         while let Some(kv) = iter.next().await? {
-            if let Ok(snap) = serde_json::from_slice(&kv.value) {
-                out.push((kv.key.to_vec(), snap));
-            }
+            out.push((kv.key.to_vec(), serde_json::from_slice(&kv.value)?));
         }
         Ok(out)
     }
@@ -5974,6 +6092,118 @@ mod commit_command_tests {
                 .unwrap()
                 .applied
                 .closed
+        );
+        engine.begin_close();
+        let _ = db.close().await;
+    }
+}
+
+#[cfg(test)]
+mod bounded_outbox_tests {
+    use super::*;
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn r09_dirty_and_final_pages_are_bounded_and_partial_ack_preserves_debt() {
+        let store: Arc<dyn object_store::ObjectStore> =
+            Arc::new(object_store::memory::InMemory::new());
+        let db = Arc::new(
+            Db::builder("r09-outbox", store.clone())
+                .build()
+                .await
+                .unwrap(),
+        );
+        let (tx, _rx) = mpsc::channel(1);
+        let engine = ShardEngine::start(
+            "r09-outbox".into(),
+            db.clone(),
+            store,
+            ShardConfig::default(),
+            tx,
+            None,
+            Default::default(),
+        );
+        let mut batch = WriteBatch::new();
+        for id in 0..130u64 {
+            let mut hash = [0; 16];
+            hash[..8].copy_from_slice(&id.to_be_bytes());
+            batch.put(crate::billing::usage_dirty_key(&hash), 8u64.to_le_bytes());
+        }
+        let hash = [0; 16];
+        let meta = crate::billing::SegmentBillingMetaV1 {
+            v: 1,
+            stream_id: "s".into(),
+            usage_version: 8,
+            month_year: 2026,
+            month_month: 7,
+            ..Default::default()
+        };
+        batch.put(
+            crate::billing::billing_meta_key(&hash),
+            serde_json::to_vec(&meta).unwrap(),
+        );
+        for n in 0..35u32 {
+            batch.put(
+                crate::billing::usage_month_final_key(&hash, 2020 + (n / 12) as i32, n % 12 + 1),
+                serde_json::to_vec(&meta.to_snapshot(true)).unwrap(),
+            );
+        }
+        db.write(batch).await.unwrap();
+        assert!(engine.has_billing_debt().await.unwrap());
+        let (first, more) = engine.usage_dirty_page(None, 64).await.unwrap();
+        assert!(more);
+        assert_eq!(first.len(), 64);
+        let (second, more) = engine
+            .usage_dirty_page(Some(first.last().unwrap().0), 64)
+            .await
+            .unwrap();
+        assert!(more);
+        assert_eq!(second.len(), 64);
+        assert!(first.last().unwrap().0 < second[0].0);
+        let (last, more) = engine
+            .usage_dirty_page(Some(second.last().unwrap().0), 64)
+            .await
+            .unwrap();
+        assert!(!more);
+        assert_eq!(last.len(), 2);
+        let (finals, more) = engine.usage_month_finals_page(hash, 32).await.unwrap();
+        assert!(more);
+        assert_eq!(finals.len(), 32);
+        engine
+            .commit_group(
+                vec![CommitOp::UsageAck {
+                    hash,
+                    version: 0,
+                    month_final_keys: finals.into_iter().map(|(key, _)| key).collect(),
+                }],
+                &ShardConfig::default(),
+            )
+            .await;
+        let (remaining, more) = engine.usage_month_finals_page(hash, 32).await.unwrap();
+        assert!(!more);
+        assert_eq!(remaining.len(), 3);
+        assert_eq!(
+            db.get(crate::billing::usage_dirty_key(&hash))
+                .await
+                .unwrap()
+                .unwrap()
+                .as_ref(),
+            &8u64.to_le_bytes()
+        );
+        engine
+            .commit_group(
+                vec![CommitOp::UsageAck {
+                    hash,
+                    version: 8,
+                    month_final_keys: remaining.into_iter().map(|(key, _)| key).collect(),
+                }],
+                &ShardConfig::default(),
+            )
+            .await;
+        assert!(
+            db.get(crate::billing::usage_dirty_key(&hash))
+                .await
+                .unwrap()
+                .is_none()
         );
         engine.begin_close();
         let _ = db.close().await;

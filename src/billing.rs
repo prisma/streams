@@ -1117,7 +1117,7 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
     // in-memory accumulator keeps rotating normally.
     state.billing.seal_aged_reads(READ_FLUSH_INTERVAL_MS);
     let mut spooled_keys: Vec<Vec<u8>> = Vec::new();
-    let mut memless: Vec<ReadBatch> = Vec::new();
+    let mut memless = state.billing.read_drain(0);
     let mut body_bytes = 0usize;
     if state.billing.read_spool_open() {
         state.billing.spool_sealed_reads(64).await?;
@@ -1141,8 +1141,8 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
         );
     } else {
         // No spool configured (bare test rigs): the pre-spool path.
-        memless = state.billing.drain_sealed_reads(16);
-        for rb in &memless {
+        memless = state.billing.read_drain(16);
+        for rb in &memless.batches {
             let env = envelope(
                 &cell,
                 UsagePayload::ReadBatch(rb.clone()),
@@ -1155,7 +1155,7 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
     }
 
     // 2. Dirty segment snapshots + month finals from every open engine.
-    let engines: Vec<std::sync::Arc<crate::shard::ShardEngine>> = state.shards.engines();
+    let engines = state.billing.drain_engines(state.shards.engines(), 4);
     let mut acks: Vec<(
         std::sync::Arc<crate::shard::ShardEngine>,
         [u8; 16],
@@ -1173,29 +1173,37 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
     const DRAIN_MAX_BYTES: usize = 1_000_000;
     const LIFECYCLE_EST: usize = 512;
     'engines: for engine in engines {
+        state.billing.begin_drain_engine(&engine.prefix);
         // Round-22 item 6: financial scans fail CLOSED. A scan error
         // skips this engine's contribution entirely — no emit and no
         // ack, so every dirty row stays dirty and the next round
         // retries — instead of treating "scan failed" as "nothing
         // exists" and acking finals away against an empty list.
-        let dirty = match engine.usage_dirty_scan().await {
-            Ok(d) => d,
+        let (dirty, more_dirty) = match engine
+            .usage_dirty_page(state.billing.drain_row_cursor(&engine.prefix), 64)
+            .await
+        {
+            Ok(page) => page,
             Err(e) => {
                 tracing::warn!("usage dirty scan failed (engine drain deferred): {e}");
                 continue;
             }
         };
         if dirty.is_empty() {
+            state.billing.set_drain_row_cursor(&engine.prefix, None);
             continue;
-        }
-        let finals = match engine.usage_month_finals().await {
-            Ok(f) => f,
-            Err(e) => {
-                tracing::warn!("month-final scan failed (engine drain deferred, fail closed): {e}");
-                continue;
-            }
         };
         for (hash, version) in dirty {
+            state
+                .billing
+                .set_drain_row_cursor(&engine.prefix, Some(hash));
+            let (row_finals, more_finals) = match engine.usage_month_finals_page(hash, 32).await {
+                Ok(page) => page,
+                Err(error) => {
+                    tracing::error!("month-final read failed (dirty row deferred): {error}");
+                    continue;
+                }
+            };
             let mut meta = match engine.load_billing_meta(hash).await {
                 Ok(Some(meta)) => meta,
                 Ok(None) => continue,
@@ -1215,11 +1223,6 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
             // snapshot, and headroom for a possible lifecycle event.
             // (A first row larger than the whole budget still ships
             // alone — the bound is per-append, not a wedge.)
-            let row_finals: Vec<(&Vec<u8>, &SegmentSnapshot)> = finals
-                .iter()
-                .filter(|(k, _)| k.len() >= 33 && k[17..33] == hash)
-                .map(|(k, f)| (k, f))
-                .collect();
             let snap_probe = meta.to_snapshot(false);
             let mut row_bytes = LIFECYCLE_EST
                 + encoded_size(&envelope(
@@ -1231,7 +1234,7 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
             for (_, fs) in &row_finals {
                 row_bytes += encoded_size(&envelope(
                     &cell,
-                    UsagePayload::SegmentSnapshot((*fs).clone()),
+                    UsagePayload::SegmentSnapshot(fs.clone()),
                     fs.storage_accounted_through_ms,
                     String::new(),
                 ));
@@ -1403,7 +1406,17 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
             body_bytes += encoded_size(&env);
             envelopes.push(env);
             let _ = version;
-            acks.push((engine.clone(), hash, ver, final_keys));
+            // Partial final pages must not erase discovery of remaining
+            // finals. Version zero cannot acknowledge an existing billed row.
+            acks.push((
+                engine.clone(),
+                hash,
+                if more_finals { 0 } else { ver },
+                final_keys,
+            ));
+        }
+        if !more_dirty {
+            state.billing.set_drain_row_cursor(&engine.prefix, None);
         }
     }
 
@@ -1413,6 +1426,7 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
     let body = serde_json::to_vec(&envelopes).map_err(|e| e.to_string())?;
     match usage_ledger_append(state, &key, body).await {
         Ok(()) => {
+            memless.accepted();
             // Spooled batches leave the spool ONLY now, after the
             // ledger acknowledged durably.
             state.billing.remove_spooled(&spooled_keys).await?;
@@ -1424,7 +1438,8 @@ pub async fn drain_once(state: &std::sync::Arc<crate::http::AppState>) -> Result
         Err(e) => {
             // Spooled batches stay durable in the spool; memless ones
             // requeue at the accumulator's front.
-            state.billing.requeue_reads(memless);
+            // ReadDrain's Drop requeues optional-mode volatile batches,
+            // including cancellation before this match is reached.
             Err(e)
         }
     }
@@ -2423,13 +2438,7 @@ impl Debt {
 /// Probe failures count as debt: discovery must not lose to a
 /// transient scan fault.
 async fn probe_debt(engine: &std::sync::Arc<crate::shard::ShardEngine>) -> Debt {
-    let billing = match engine.usage_dirty_scan().await {
-        Ok(d) => !d.is_empty(),
-        Err(_) => true,
-    } || match engine.usage_month_finals().await {
-        Ok(f) => !f.is_empty(),
-        Err(_) => true,
-    };
+    let billing = engine.has_billing_debt().await.unwrap_or(true);
     Debt {
         billing,
         maintenance: engine.maintenance_snapshot().unabsorbed_frame_bytes,
@@ -2696,7 +2705,10 @@ pub async fn tombstone_walk(state: &std::sync::Arc<crate::http::AppState>) {
                 .unwrap_or_else(|| vec![0]);
             for sid in seg_ids {
                 let Some(route) = d.segment_route_by_id(sid) else {
-                    tracing::error!(segment = sid, "billing sweep encountered missing validated segment");
+                    tracing::error!(
+                        segment = sid,
+                        "billing sweep encountered missing validated segment"
+                    );
                     state.billing.set_sweep_walk_cursor(after.clone());
                     return;
                 };
