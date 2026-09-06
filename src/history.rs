@@ -2696,9 +2696,13 @@ mod bounded_discovery_tests {
         for id in 0..260u64 {
             let mut hash = [0; 16];
             hash[..8].copy_from_slice(&id.to_be_bytes());
-            let mut marker = vec![0; 8];
-            marker.extend_from_slice(&1u64.to_le_bytes());
-            batch.put(crate::shard::dirty_key(&hash), marker);
+            let marker = crate::shard::dirty_value_for_tests(&crate::shard::StreamMaintenance {
+                next: 1,
+                unabsorbed_bytes: 64,
+                ..Default::default()
+            });
+            let width = [16, 24, 32][id as usize % 3];
+            batch.put(crate::shard::dirty_key(&hash), &marker[..width]);
             batch.put(
                 crate::shard::tail_key(&hash),
                 crate::shard::encode_tail_for_tests(&crate::shard::TailFields {

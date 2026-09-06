@@ -786,3 +786,53 @@ async fn ownership_handoff_moves_backlog_without_aba() {
     );
     engine_b.begin_close();
 }
+
+/// The bounded discovery reader must consume the marker written by the real
+/// committer, not only a hand-built legacy fixture.
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn r09_committer_dirty_markers_survive_bounded_discovery() {
+    let engine = open_engine(mem(), "r09-current-marker").await;
+    let hash = [39; 16];
+    let coverage = FaultStore::uniform(mem(), 1, FaultPlan::CLEAN).coverage();
+    let workload = Workload::new(coverage);
+    assert!(matches!(
+        workload
+            .attempt_with_deadline(&engine, hash, &skey(), "k", "record", None, None)
+            .await,
+        Outcome::Acked { .. }
+    ));
+    let key = crate::shard::dirty_key(&hash);
+    let marker = engine.db.get(&key).await.unwrap().unwrap();
+    assert_eq!(
+        marker.len(),
+        32,
+        "current writer includes byte and age fields"
+    );
+    let (rows, more) = engine.scan_dirty_streams_page(None, 1).await.unwrap();
+    assert_eq!(rows, vec![(hash, 0, 1)]);
+    assert!(!more);
+    for width in 0..40 {
+        let raw = vec![0; width];
+        assert_eq!(
+            crate::shard::decode_dirty_value(&raw).is_some(),
+            matches!(width, 16 | 24 | 32),
+            "width {width}"
+        );
+    }
+    let corrupt = marker.slice(..17);
+    engine
+        .db
+        .put(&key, corrupt.clone())
+        .await
+        .unwrap()
+        .await_durable()
+        .await
+        .unwrap();
+    assert!(engine.scan_dirty_streams_page(None, 1).await.is_err());
+    assert_eq!(
+        engine.db.get(&key).await.unwrap().unwrap(),
+        corrupt,
+        "failed discovery preserves evidence"
+    );
+    engine.begin_close();
+}

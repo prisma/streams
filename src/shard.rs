@@ -551,7 +551,9 @@ async fn rebuild_maintenance_from_tails(db: &Db) -> anyhow::Result<ShardMaintena
 }
 
 pub fn decode_dirty_value(v: &[u8]) -> Option<StreamMaintenance> {
-    if v.len() < 16 {
+    // Preserve complete legacy fields (16/24 bytes) and current v2 (32).
+    // Partial fields or unknown extensions are corrupt, never an empty marker.
+    if !matches!(v.len(), 16 | 24 | 32) {
         return None;
     }
     let g8 = |o: usize| u64::from_le_bytes(v[o..o + 8].try_into().unwrap());
@@ -2138,12 +2140,13 @@ impl ShardEngine {
                 .get(17..)
                 .ok_or_else(|| anyhow::anyhow!("invalid dirty-stream key"))?
                 .try_into()?;
-            anyhow::ensure!(kv.value.len() == 16, "invalid dirty-stream value");
-            rows.push((
-                hash,
-                decode_cursor(&kv.value[..8])?,
-                decode_cursor(&kv.value[8..])?,
-            ));
+            let marker = decode_dirty_value(&kv.value)
+                .ok_or_else(|| anyhow::anyhow!("invalid dirty-stream value"))?;
+            anyhow::ensure!(
+                marker.absorbed <= marker.next,
+                "invalid dirty-stream boundaries"
+            );
+            rows.push((hash, marker.absorbed, marker.next));
         }
         Ok((rows, false))
     }
