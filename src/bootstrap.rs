@@ -662,6 +662,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
     let config = Arc::new(config);
     let state = Arc::new(AppState {
         runtime: runtime_caps.clone(),
+        protocol_clock: runtime_caps.clock.clone(),
         config: config.clone(),
         registry: Arc::new(registry),
         reads: std::sync::OnceLock::new(),

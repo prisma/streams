@@ -376,6 +376,9 @@ pub(super) async fn http_rig_build(
     );
     let state = Arc::new(crate::http::AppState {
         runtime: rig_runtime.clone(),
+        // These fixtures mint external JWTs, policies and watch capabilities
+        // with real wall time; their seeded manual clock controls local tests.
+        protocol_clock: Arc::new(crate::runtime::SystemClock::default()),
         config: rig_config.clone(),
         registry: Arc::new(registry),
         reads: std::sync::OnceLock::new(),

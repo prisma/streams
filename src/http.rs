@@ -88,6 +88,10 @@ pub struct AppState {
     /// Per-runtime capabilities (WP-15/PR 4): clock, entropy, and this
     /// runtime's identity. Owned here, never process-global.
     pub runtime: crate::runtime::RuntimeCaps,
+    /// Trusted wall time for externally exchanged credentials and durable
+    /// lifecycle leases. Production shares RuntimeCaps.clock; wire fixtures
+    /// explicitly supply the same real-time domain as their JWT/policy feeds.
+    pub(crate) protocol_clock: Arc<dyn crate::runtime::Clock>,
     pub registry: Arc<Registry>,
     pub(crate) reads: std::sync::OnceLock<Arc<crate::application::read::ReadService>>,
     pub(crate) creations: std::sync::OnceLock<Arc<crate::application::creation::CreationService>>,
@@ -174,7 +178,7 @@ impl AppState {
         crate::application::lifecycle::LifecycleService {
             registry: self.registry.clone(),
             topology: self.topology_service(),
-            clock: self.runtime.clock.clone(),
+            clock: self.protocol_clock.clone(),
             cert_sealed_publish_delay_ms: self.cert_sealed_publish_delay_ms.clone(),
         }
     }
