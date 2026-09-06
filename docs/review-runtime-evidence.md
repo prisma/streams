@@ -32,3 +32,10 @@ zero entries in incarnation cleanup. First-segment admission and an epoch
 change still remove obsolete sibling heat and cooldowns. The test measures
 actual cleanup visits and includes an epoch-change positive control; periodic
 idle pruning remains amortized every 4,096 appends.
+
+R09 database-open handoffs carry a close-on-drop owner through the result
+channel. Cancellation before completion or after a result is queued closes
+the eventual database; successful handoff transfers that responsibility to the
+caller. The worker retains an in-progress SlateDB open to completion, preserving
+the existing OpenGate/reaper contract instead of aborting partially constructed
+storage actors. Two real-Db controls exercise delayed and queued abandonment.

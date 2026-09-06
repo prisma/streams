@@ -98,20 +98,8 @@ pub fn slatedb_runtime() -> &'static tokio::runtime::Runtime {
     })
 }
 
-/// Run `fut` to completion on the SlateDB runtime. Used for every
-/// `Db::builder(...).build()` / `DbReader` open so all slatedb-internal
-/// tasks land on `slatedb_runtime()`'s threads.
-pub async fn on_slatedb_rt<F>(fut: F) -> F::Output
-where
-    F: std::future::Future + Send + 'static,
-    F::Output: Send + 'static,
-{
-    let (tx, rx) = tokio::sync::oneshot::channel();
-    slatedb_runtime().spawn(async move {
-        let _ = tx.send(fut.await);
-    });
-    rx.await.expect("slatedb-rt task dropped")
-}
+mod runtime_handoff;
+pub use runtime_handoff::on_slatedb_rt;
 
 /// The server bootstrap: the composition root hands in ONE owned,
 /// PROVEN [`ValidatedServerConfig`] (PR 3.2: validation is complete
