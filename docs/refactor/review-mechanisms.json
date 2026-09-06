@@ -352,6 +352,140 @@
           "sha256": "5ff948b05acefebb084079dab20566f3ae6948a55f7af6e97bf8c253e3d2f5ba"
         }
       ]
+    },
+    {
+      "id": "active-telemetry-cancellation",
+      "obligations": [
+        "R09"
+      ],
+      "owner": "Billing owned active pass and tombstone cursor",
+      "mechanism": "Cancel both real entered spool PUT and catalog LIST; enumerate a 513-entry catalog in one bounded page per pass",
+      "entered_proof": "FaultStore hold counters for PUT/SST seed 910 and LIST/Other seed 909 are both nonzero; read batch has left the queue before shutdown",
+      "oracle": "Both tasks finish cooperatively without hard abort; exact source/sequence/bytes are recovered and retried; incomplete catalog cursor stays unchanged; completed page cursors are bounded-255, bounded-511, then None",
+      "configuration": {
+        "worker_threads": [
+          4,
+          2
+        ],
+        "shutdown_ms": 300,
+        "catalog_entries": 513,
+        "page_limit": 256
+      },
+      "limitations": "Pinned local SlateDB and in-memory object store; live storage cancellation/debt reconciliation remains pending.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/dst/tests/billing_controller.rs",
+          "name": "r09_active_telemetry_cancels_entered_storage_and_preserves_debt",
+          "sha256": "0a20fdf3b9c2013b97674a46b6e34da7b236eef0a116d6d31884bb5d4cad1108"
+        },
+        {
+          "file": "src/dst/tests/billing_controller.rs",
+          "name": "r09_tombstone_walk_advances_one_catalog_page_per_pass",
+          "sha256": "1cb06a6d626617b38cbfadb394e553b39dd8ead0858f33b9a4d3e9e70577bacd"
+        }
+      ]
+    },
+    {
+      "id": "abandoned-database-handoff",
+      "obligations": [
+        "R09"
+      ],
+      "owner": "Bootstrap SlateDB runtime handoff",
+      "mechanism": "Cancel an entered open before it returns and separately discard an already queued database result",
+      "entered_proof": "Oneshot proves worker entry; receiver cancellation is awaited before worker release; queued-result test proves successful send before receiver drop",
+      "oracle": "Actual Db observer reads succeed for the live control and fail after abandoned-result cleanup; ownership covers both late completion and channel-queued result",
+      "configuration": {
+        "runtime": "owned SlateDB runtime",
+        "cleanup_probe_timeout_seconds": 5
+      },
+      "limitations": "Local database ownership cleanup; deployment process shutdown behavior still requires live campaign evidence.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/bootstrap/runtime_handoff.rs",
+          "name": "abandoned_open_closes_its_late_database_and_live_handoff_stays_open",
+          "sha256": "b98674d3282542a5ceddae7e06ee959c4f8ca7e941787d9ad4d9434e2625c2af"
+        },
+        {
+          "file": "src/bootstrap/runtime_handoff.rs",
+          "name": "abandoning_an_already_queued_database_result_also_closes_it",
+          "sha256": "e6223de7f378620a42cef3ced4220de229b2535227002646662976e5bbb3f7c7"
+        }
+      ]
+    },
+    {
+      "id": "cancelled-telemetry-batch-ownership",
+      "obligations": [
+        "R09"
+      ],
+      "owner": "Ops/audit batch guards and fleet durable outbox",
+      "mechanism": "Cancel entered batch append; restore older events ahead of concurrent arrivals; overflow requeue; cancel fleet append and actual fleet CAS clear",
+      "entered_proof": "Sink notification occurs after dequeue; fleet CAS-clear FaultStore PUT/Fleet hold counter is observed after successful append",
+      "oracle": "Original event order and deterministic IDs survive cancellation and failed retry, successful retry disarms requeue; bounded overflow restores prior 17-event gap plus one new loss; fleet source stays durable until append and exact-ID clear succeed",
+      "configuration": {
+        "queue_capacity": "OPS_QUEUE_CAP and AUDIT_QUEUE_CAP",
+        "prior_gap": 17,
+        "fleet_fault_seed": 79
+      },
+      "limitations": "Ops/audit use a controlled entered append sink; fleet clear uses actual in-memory ObjectStore CAS. Production restart/ledger reconciliation remains pending.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/ops.rs",
+          "name": "cancelled_ops_append_restores_batch_order_and_retry_ids",
+          "sha256": "c0254b35ff80ca6760e797ae3c61fff986d75fb6afb698e6ccf9cc6f8bd2642b"
+        },
+        {
+          "file": "src/ops.rs",
+          "name": "cancelled_ops_batch_overflow_preserves_full_gap_magnitude",
+          "sha256": "aee4109bd7d74a749e94dd18f3511c303d402ff03475d297e8295efb73e38e02"
+        },
+        {
+          "file": "src/audit.rs",
+          "name": "cancelled_audit_append_restores_batch_order_and_retry_ids",
+          "sha256": "66f054c9ee56f841ada43dd328270739219bf04e9c5f4d8d18da762b763658cf"
+        },
+        {
+          "file": "src/audit.rs",
+          "name": "cancelled_audit_batch_overflow_preserves_full_gap_magnitude",
+          "sha256": "77113ca753571ec370b94d6d74707dd87b73ebb820001aa53ea09c182aada4bd"
+        },
+        {
+          "file": "src/fleet/outbox.rs",
+          "name": "cancelled_fleet_append_keeps_durable_outbox_and_same_retry_id",
+          "sha256": "af94fd6da10ba82f9522f976095dc2eff98671b1e53d11bb695a814025330fcc"
+        },
+        {
+          "file": "src/fleet/outbox.rs",
+          "name": "cancelled_fleet_clear_follows_append_and_retains_retry_source",
+          "sha256": "c139fc6e04e1f52f57abb95392ca48bea8c5671409295608aaf3d29bc06d77d7"
+        }
+      ]
+    },
+    {
+      "id": "steady-append-sketch-cost",
+      "obligations": [
+        "R18"
+      ],
+      "owner": "Scaler owned incarnation/sketch state",
+      "mechanism": "Repeated known-segment appends at full sketch population; replacement epoch positive control",
+      "entered_proof": "Fill SKETCH_MAX including target sibling segments and count actual incarnation cleanup entries visited",
+      "oracle": "All 256 steady appends visit zero unrelated entries; changed epoch visits the populated cleanup set and removes old sibling sketches, hot state and cooldowns while preserving the new epoch",
+      "configuration": {
+        "known_appends": 256,
+        "population": "SKETCH_MAX",
+        "replacement_epoch_byte": 42
+      },
+      "limitations": "Operation-count regression proves the fast path; production latency/allocation/storage-request comparisons remain pending.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/scaler3.rs",
+          "name": "repeated_appends_do_not_scan_other_streams_for_incarnation_cleanup",
+          "sha256": "692af23484a4cf77a3acabd509b9d263531705e6e02f12a29b1aa22a2db4727a"
+        }
+      ]
     }
   ],
   "external_legs": [
@@ -395,5 +529,16 @@
     "commit": "a7e2070f3b4346b3e54d552069ff91c56e900130",
     "file": "docs/refactor/clippy-review-baseline.txt",
     "sha256": "796e86199db02216bb082cbe2a8b835786ef878bc3ca58ee229049838b6a7d45"
-  }
+  },
+  "fixture_changes": [
+    {
+      "file": "src/dst/tests/fixture_http.rs",
+      "name": "http_rig_cold_absorb",
+      "finding": "R09",
+      "before_commit": "b1864fffaca3f753a34129f95b8f5734cccd0a4a",
+      "before_sha256": "47f14df77af2f670858e162ddd04e9efe3f62ad5fa328ef6359ddafde6416615",
+      "after_sha256": "5a2235bc615964ad95e9abed560bfa287ca2b03b8985bc56343bbbae935cdb46",
+      "reason": "Startup dirty discovery correctly backdates recovery work beyond even a large age threshold. The cold fixture now explicitly pauses its already owned HistoryResources before callers append, enforcing the existing cold schedule promise. Existing scenario bodies, assertions and mechanism/configuration metadata are unchanged."
+    }
+  ]
 }

@@ -19,11 +19,11 @@
   ],
   "budget_exceptions": {
     "file:src/billing.rs": {
-      "limit": 3006,
+      "limit": 3051,
       "owner": "Billing outbox drain",
-      "finding": "R13/R14",
-      "rationale": "Additional required-read failure handling preserves dirty accounting debt and validates progress before advancing an outbox. Retain the existing billing owner and its focused regressions. Three explanatory lines record the bounded resident-depth gauge; no full accounting cursor scan is reintroduced.",
-      "source_obligation": "r13_failed_accounting_reads_preserve_group_and_newer_dirty_version; billing delivery retries"
+      "finding": "R09/R13/R14",
+      "rationale": "Additional required-read failure handling preserves dirty accounting debt and validates progress before advancing an outbox. Retain the existing billing owner and its focused regressions. Three explanatory lines record the bounded resident-depth gauge; no full accounting cursor scan is reintroduced. Forty-five further lines give acquired read-spool resources a close owner and make the existing active telemetry passes cancellation-aware, preserving their Drop-owned debt and bounded tombstone cursor. No additional HTTP reverse dependency is permitted.",
+      "source_obligation": "r13_failed_accounting_reads_preserve_group_and_newer_dirty_version; billing delivery retries; r09_active_telemetry_cancels_entered_storage_and_preserves_debt; r09_tombstone_walk_advances_one_catalog_page_per_pass"
     },
     "function:src/billing.rs::drain_once": {
       "limit": 352,

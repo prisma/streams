@@ -20,7 +20,7 @@ sys.dont_write_bytecode = True
 ROOT = Path(__file__).resolve().parent.parent
 MANIFEST = ROOT / 'docs/refactor/review-mechanisms.json'
 DISPOSITIONS = ROOT / 'docs/refactor/scenario-dispositions.json'
-REQUIRED = {'R01', 'R13', 'R14', 'R15', 'R17', 'R19', 'R20', 'R21', 'R22',
+REQUIRED = {'R01', 'R09', 'R13', 'R14', 'R15', 'R17', 'R18', 'R19', 'R20', 'R21', 'R22',
             'DUR-005', 'SEL-022', 'DUR-014'}
 spec = importlib.util.spec_from_file_location('inventory', ROOT / 'scripts/test-inventory.py')
 inventory = importlib.util.module_from_spec(spec)
@@ -76,6 +76,18 @@ def validate_clippy(original: set[str], current: set[str], proofs: list[dict]) -
     return failures
 
 
+def fixture_change_failures(change: dict, before_source: str, after_source: str) -> list[str]:
+    """A fixture edit can change preserved tests without changing their bodies."""
+    failures = []
+    if not all(change.get(field) for field in ('finding', 'reason', 'name', 'file')):
+        failures.append('fixture change requires its finding, reason and source identity')
+    for label, source in [('before', before_source), ('after', after_source)]:
+        found = [function for function in inventory.functions(source, include_helpers=True) if function['name'] == change['name']]
+        if len(found) != 1 or found[0]['function_sha256'] != change.get(label + '_sha256'):
+            failures.append(f'{change["name"]}: {label} fixture body changed or missing')
+    return failures
+
+
 def check() -> list[str]:
     scenarios = json.loads((ROOT / 'docs/refactor/test-scenario-map.json').read_text())
     manifest = json.loads(MANIFEST.read_text())
@@ -87,6 +99,25 @@ def check() -> list[str]:
     failures.extend(validate_clippy(set(original.decode().splitlines()),
                     set((ROOT / 'scripts/clippy-baseline-fingerprints.txt').read_text().splitlines()),
                     json.loads((ROOT / 'docs/refactor/clippy-review-dispositions.json').read_text())))
+
+    required_fixtures = {('src/dst/tests/fixture_http.rs', 'http_rig_cold_absorb')}
+    recorded_fixtures = set()
+    for change in manifest.get('fixture_changes', []):
+        identity = (change.get('file'), change.get('name'))
+        if identity in recorded_fixtures:
+            failures.append('duplicate fixture change provenance')
+        recorded_fixtures.add(identity)
+        if change.get('before_commit') != 'b1864fffaca3f753a34129f95b8f5734cccd0a4a':
+            failures.append('fixture pre-audit source commit mismatch')
+            continue
+        path = ROOT / change['file']
+        if not path.is_file():
+            failures.append(f'missing fixture source: {change["file"]}')
+            continue
+        original_source = git('show', f'{change["before_commit"]}:{change["file"]}')
+        failures.extend(fixture_change_failures(change, original_source, path.read_text()))
+    if required_fixtures - recorded_fixtures:
+        failures.append('required cold-absorber fixture provenance missing')
     obligations = set()
     for entry in manifest['mechanisms']:
         obligations.update(entry['obligations'])
@@ -205,7 +236,17 @@ def self_test() -> None:
     assert validate_clippy({old}, {'method `new` is never used :: src/old.rs'}, [proof])
     assert validate_clippy({old}, {new}, [{**proof, 'current_fingerprint': 'method `three` is never used :: src/old.rs'}])
     assert validate_clippy({old}, {new}, [{**proof, 'kind': 'relocation'}])
-    print('review-evidence self-test: OK (25 controls)')
+    old_fixture = 'fn fixture() -> u8 { 1 }'
+    new_fixture = 'fn fixture() -> u8 { 2 }'
+    fixture = {'finding': 'R09', 'reason': 'owned pause establishes the cold schedule',
+               'file': 'fixture.rs', 'name': 'fixture',
+               'before_sha256': inventory.functions(old_fixture, include_helpers=True)[0]['function_sha256'],
+               'after_sha256': inventory.functions(new_fixture, include_helpers=True)[0]['function_sha256']}
+    assert not fixture_change_failures(fixture, old_fixture, new_fixture)
+    assert fixture_change_failures(fixture, new_fixture, new_fixture)
+    assert fixture_change_failures(fixture, old_fixture, old_fixture)
+    assert fixture_change_failures({**fixture, 'reason': ''}, old_fixture, new_fixture)
+    print('review-evidence self-test: OK (29 controls)')
 
 
 def main() -> int:

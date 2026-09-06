@@ -32,8 +32,8 @@ current evidence and pending work. Historical reader-cache obligations retain
 their original IDs and state the replacement mechanism; they are not renamed
 away. Current symbol line numbers replace the obsolete monolith positions.
 
-The DST inventory preserves all 410 original tests and records thirteen reviewed
-additions (423 total, zero ignored). Five fixture body adaptations have exact
+The DST inventory preserves all 410 original tests and records fifteen reviewed
+additions (425 total, zero ignored). Five fixture body adaptations have exact
 old/new hashes and reasons: valid allocated seal generations and the legal
 competing transition at the parked phase-B seam. The new SEC-002 mapping is a
 separately recorded metadata adaptation. Two append contract unit tests moved
@@ -46,13 +46,33 @@ A valid map means source references are internally consistent. It does not
 mean every schedule, production backend or runtime was exercised. The
 `review-mechanisms.json` manifest separately names the actual fault/frontier,
 entered proof, oracle, seed/configuration, exact regression body hashes and
-limitations for the required R01/R13–R15/R17/R19–R22 controls. A modified or
+limitations for the required R01/R09/R13–R15/R17–R22 controls. A modified or
 ignored Rust regression, changed SDK regression script, missing obligation or
 missing disposition fails `review-evidence.py --check`. This source checker
 never emits execution certification.
 
+The cold-absorber fixture has separate enforced before/after token hashes from
+pre-audit commit `b1864fffaca3f753a34129f95b8f5734cccd0a4a`. Startup recovery
+correctly backdates dirty work beyond large age thresholds; the fixture now
+pauses its owned history resource before callers append to enforce its promised
+cold schedule. No existing test body or assertion changes. Removing the fixture
+record, changing either body or omitting its rationale fails the source checker.
+The evidence checker includes 29 mutation controls, including four fixture
+provenance controls.
+
 ## New mechanism controls
 
+- R09: held real spool PUT and catalog LIST operations prove both active
+  telemetry tasks finish cooperatively and retain exact batch bytes and the
+  incomplete-page cursor. A 513-entry catalog advances in three bounded passes.
+  Additional controls cancel entered ops/audit appends and fleet append/CAS
+  clear operations; original event ordering, retry IDs, bounded overflow gap
+  magnitude and durable outbox sources survive. Two actual database handoff
+  tests cover cancellation before completion and after a result is queued.
+- R18: at full sketch capacity, 256 repeated known-segment appends visit zero
+  unrelated incarnation entries. An epoch replacement must exercise cleanup
+  and remove old sibling sketches, hot state and cooldowns. The oracle counts
+  actual scan visits instead of inferring constant cost from source shape.
 - DUR-005/SEL-022: `r24_prior_group_close_retry_and_fence_wait_on_actual_remote_frontier`
   holds an actual WAL object-store PUT with `FaultStore` seed 2405 and a 5 ms
   SlateDB flush cadence. It observes applied closed state with no Remote tail,

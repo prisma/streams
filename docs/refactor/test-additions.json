@@ -179,6 +179,25 @@
   },
   {
     "finding": "R09",
+    "reason": "Cancel actual entered spool PUT and catalog LIST; cooperative task completion retains exact batch identity and incomplete-page cursor for retry.",
+    "test": {
+      "name": "r09_active_telemetry_cancels_entered_storage_and_preserves_debt",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+      ],
+      "function_sha256": "0a20fdf3b9c2013b97674a46b6e34da7b236eef0a116d6d31884bb5d4cad1108",
+      "mechanisms": [],
+      "configuration": [
+        "..FaultPlan::CLEAN",
+        "\"/v1/stream/cancel-seed\",",
+        "let spool_store = FaultStore::uniform(mem(), 910, FaultPlan::CLEAN);"
+      ],
+      "file": "src/dst/tests/billing_controller.rs",
+      "scenarios": []
+    }
+  },
+  {
+    "finding": "R09",
     "reason": "Discover actual committer dirty markers with bounded cursor pages; validate restart compatibility and committed tail absorption.",
     "test": {
       "name": "r09_committer_dirty_markers_survive_bounded_discovery",
@@ -191,6 +210,24 @@
         "let coverage = FaultStore::uniform(mem(), 1, FaultPlan::CLEAN).coverage();"
       ],
       "file": "src/dst/tests/billing_maintenance.rs",
+      "scenarios": []
+    }
+  },
+  {
+    "finding": "R09",
+    "reason": "A 513-entry catalog requires three bounded passes with exact continuation cursors; prevents a full catalog loop in one pass.",
+    "test": {
+      "name": "r09_tombstone_walk_advances_one_catalog_page_per_pass",
+      "attributes": [
+        "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+      ],
+      "function_sha256": "1cb06a6d626617b38cbfadb394e553b39dd8ead0858f33b9a4d3e9e70577bacd",
+      "mechanisms": [],
+      "configuration": [
+        "let seed = state",
+        "let mut row = seed.to_persisted();"
+      ],
+      "file": "src/dst/tests/billing_controller.rs",
       "scenarios": []
     }
   },

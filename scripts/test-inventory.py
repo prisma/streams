@@ -89,8 +89,8 @@ def function_hash(code: str, path: Path | None = None) -> str:
     return hashlib.sha256(canonical_tokens(code).encode()).hexdigest()
 
 
-def functions(source: str, path: Path | None = None) -> list[dict]:
-    """Lex functions with their adjacent attributes, preserving original text."""
+def functions(source: str, path: Path | None = None, *, include_helpers: bool = False) -> list[dict]:
+    """Lex tests, or explicitly requested support functions, preserving their bodies."""
     masked = scenario_map.mask_noncode(source)
     found = []
     for match in re.finditer(r"^(?P<indent> *)(?:pub(?:\([^\n]*\))? )?(?:async )?fn (?P<name>\w+)\s*\(", masked, re.M):
@@ -105,7 +105,7 @@ def functions(source: str, path: Path | None = None) -> list[dict]:
             else:
                 break
         prefix = source[prefix_start:start]
-        if not re.search(r"#\[(?:tokio::)?test\b", scenario_map.mask_noncode(prefix)):
+        if not include_helpers and not re.search(r"#\[(?:tokio::)?test\b", scenario_map.mask_noncode(prefix)):
             continue
         opening = masked.find("{", match.end())
         if opening < 0:
