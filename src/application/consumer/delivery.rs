@@ -226,7 +226,7 @@ async fn foreign_segment_drained(
         return false;
     };
     let Some((cursor, tail)) =
-        relay_queue_cursor(state, &base, &desc.name, &target, consumer, generation).await
+        relay_queue_cursor(state, &base, &desc.sref(), &target, consumer, generation).await
     else {
         return false;
     };

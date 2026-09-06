@@ -4,7 +4,7 @@
 configuration, pull/settle, DLQ handoff, and resumable deletion. Its contexts
 retain the exact descriptor epoch, consumer name/generation and an `Arc` to the
 explicit registry/shard/peer/key/append capabilities that authorized them.
-The owner facade is747 lines, deletion400 and delivery587; none exceeds the
+The owner facade and its focused deletion/delivery modules remain below the
 1,000-line module target.
 `ConsumerAccess` distinguishes account authority from deployment authority;
 capability carriers and preflights cannot enter consumer dispatch.
@@ -42,3 +42,11 @@ Executed locally with the isolated Rust1.98 toolchain and locked dependencies:
 Watch ownership/admission evidence is recorded with the companion R07 watch
 change. Scenario mapping validity does not certify unavailable fleet/capacity
 campaigns; those outcomes remain explicit in final review evidence.
+
+The recursive identity lint additionally exposed reconstructed tenant/name pairs
+in deletion refresh and bare stream names in peer relay APIs. Deletion now
+retains its authorized `TenantStreamRef` through every sweep and catalog
+refresh; queue-cursor and sweep relays take that typed reference for the URL.
+The wire target retains the already pinned epoch, segment and identity, and
+the exact receiver-side verification remains in place. No stream identity is
+reconstructed inside either application owner.

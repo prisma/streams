@@ -7,7 +7,7 @@ use std::sync::Arc;
 pub(super) async fn relay_queue_cursor(
     state: &Arc<ConsumerService>,
     base: &str,
-    name: &str,
+    sref: &crate::tenant::TenantStreamRef,
     target: &InternalTarget,
     cname: &str,
     cgen: u64,
@@ -15,7 +15,7 @@ pub(super) async fn relay_queue_cursor(
     let mut req = crate::peer::client()
         .get(format!(
             "{base}/v1/internal/queue-cursor/{}",
-            crate::peer::encode_stream_name_path(name)
+            crate::peer::encode_stream_name_path(sref.name().as_str())
         ))
         .timeout(std::time::Duration::from_secs(15))
         .header("streams-internal-consumer", cname)
@@ -40,7 +40,7 @@ pub(super) async fn relay_queue_cursor(
 pub(super) async fn relay_sweep_segment(
     state: &Arc<ConsumerService>,
     base: &str,
-    name: &str,
+    sref: &crate::tenant::TenantStreamRef,
     target: &InternalTarget,
     cname: &str,
     fence_below: u64,
@@ -87,7 +87,7 @@ pub(super) async fn relay_sweep_segment(
         let mut req = crate::peer::client()
             .post(format!(
                 "{base}/v1/internal/sweep-segment/{}",
-                crate::peer::encode_stream_name_path(name)
+                crate::peer::encode_stream_name_path(sref.name().as_str())
             ))
             .timeout(std::time::Duration::from_secs(30))
             .json(&json!({

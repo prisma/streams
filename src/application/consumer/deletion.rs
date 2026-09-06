@@ -18,10 +18,8 @@ pub(crate) async fn delete(
     access: ConsumerAccess<'_>,
 ) -> Result<DeleteOutcome, ConsumerFailure> {
     access.require(&sref, crate::tenant::Scope::ConsumersConfigure)?;
-    let tenant = sref.project_id();
-    let name = sref.name().as_str().to_string();
     let (expect_epoch, expect_gen) = version;
-    let desc = match state.registry.get(&tenant.stream_ref(&name)).await {
+    let desc = match state.registry.get(&sref).await {
         Ok(Some(d)) if desc_alive(&d) => {
             if initializing(&d) {
                 return Err(failure(
@@ -171,8 +169,9 @@ async fn resume_deletion(
         target,
         lifecycle: desc_deleting_state,
     } = context;
-    let tenant = target.stream.project_id();
-    let name = target.stream.name().as_str().to_string();
+    let sref = target.stream;
+    #[cfg(test)]
+    let name = sref.name().as_str();
     let cname = target.consumer;
     let epoch = target.epoch;
     let cgen = target.generation;
@@ -201,8 +200,7 @@ async fn resume_deletion(
     for _round in 0..5 {
         let segs = consumer_segments(&cur_desc);
         let target = SweepTarget {
-            name: name.clone(),
-            project: cur_desc.project_id.clone(),
+            sref: sref.clone(),
             epoch: cur_desc.epoch_bytes(),
             consumer: cname.clone(),
             generation: cgen,
@@ -224,7 +222,7 @@ async fn resume_deletion(
         let mut swept_ids: Vec<u32> = segs.iter().map(|(id, ..)| *id).collect();
         swept_ids.sort_unstable();
         #[cfg(test)]
-        crate::failpoints::pause_consumer_saga_before_refresh(&name).await;
+        crate::failpoints::pause_consumer_saga_before_refresh(name).await;
         // FAIL-CLOSED refresh (round 18). Completion is proven by a
         // SUCCESSFUL post-sweep read of the authoritative map: the
         // segments swept this round must equal the segments visible
@@ -233,8 +231,8 @@ async fn resume_deletion(
         // descriptor — as "keep the cached map", which could let a
         // stale pre-split map look stable for two rounds and publish
         // a false collection-wide 204.
-        state.registry.invalidate(&tenant.stream_ref(&name));
-        let fresh = match state.registry.get(&tenant.stream_ref(&name)).await {
+        state.registry.invalidate(&sref);
+        let fresh = match state.registry.get(&sref).await {
             Ok(Some(d)) if desc_alive(&d) => d,
             Ok(_) => {
                 // The collection is gone mid-saga; so is the target.
@@ -302,8 +300,7 @@ async fn resume_deletion(
 /// The exact stream incarnation and consumer generation authorized for one
 /// topology round. Every local or relayed step shares the request's budget.
 struct SweepTarget {
-    name: String,
-    project: crate::tenant::ProjectId,
+    sref: crate::tenant::TenantStreamRef,
     epoch: Option<[u8; 16]>,
     consumer: String,
     generation: u64,
@@ -315,8 +312,7 @@ async fn sweep_segment(
     steps_left: &Arc<std::sync::atomic::AtomicI64>,
 ) -> Result<(), (&'static str, String)> {
     let (seg_id, identity, route, _) = segment;
-    let name = &target.name;
-    let project = &target.project;
+    let sref = &target.sref;
     let round_epoch = target.epoch;
     let cname = &target.consumer;
     let cgen = target.generation;
@@ -341,12 +337,12 @@ async fn sweep_segment(
                     ));
                 };
                 let t = InternalTarget {
-                    project_id: project.clone(),
+                    project_id: sref.project_id().clone(),
                     stream_epoch,
                     seg_id,
                     identity,
                 };
-                return relay_sweep_segment(state, &base, name, &t, cname, cgen + 1, steps_left)
+                return relay_sweep_segment(state, &base, sref, &t, cname, cgen + 1, steps_left)
                     .await;
             }
             return Err((
