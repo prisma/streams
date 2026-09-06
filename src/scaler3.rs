@@ -408,21 +408,7 @@ fn evaluate_state(
 
 // Transport compatibility entry points contain no transition decisions.
 // The same topology owner serves HTTP, append, live reads and autonomous scaling.
-pub async fn seal_segment_identity(
-    state: &std::sync::Arc<crate::http::AppState>,
-    desc: &StreamDesc,
-    seg_id: u32,
-    seal_gen: Option<u64>,
-) -> Option<u64> {
-    crate::application::topology::seal_segment_identity(
-        &state.topology_service(),
-        desc,
-        seg_id,
-        seal_gen,
-    )
-    .await
-}
-
+#[cfg(test)]
 pub async fn execute_split(
     st: &std::sync::Arc<crate::http::AppState>,
     sref: &crate::tenant::TenantStreamRef,
@@ -450,6 +436,7 @@ pub async fn execute_split_fenced(
     .await
 }
 
+#[cfg(test)]
 pub async fn execute_merge(
     st: &std::sync::Arc<crate::http::AppState>,
     sref: &crate::tenant::TenantStreamRef,
