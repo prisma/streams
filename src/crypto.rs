@@ -460,6 +460,7 @@ impl FrameCipher {
 
     // Private: only new random-nonce invocations reach this in production.
     // Fixed nonces exist solely for codec vectors and misuse regressions.
+    #[allow(clippy::too_many_arguments)] // Exact frame fields plus a nonce; codec vectors must control every authenticated byte.
     fn encrypt_with_nonce(
         &self,
         stream_hash: &[u8; 16],
