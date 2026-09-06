@@ -11,6 +11,46 @@ use serde::{Deserialize, Serialize};
 
 use crate::crypto::hex;
 
+/// A conditional update may never silently become an unconditional PUT.
+/// Keep the storage token opaque so every existing-object writer shares this
+/// fail-closed boundary (creation uses PutMode::Create independently).
+#[derive(Debug)]
+struct ConditionalUpdateToken(UpdateVersion);
+
+#[derive(Debug)]
+struct MissingConditionalToken;
+impl std::fmt::Display for MissingConditionalToken {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("existing descriptor has no conditional-update token")
+    }
+}
+impl std::error::Error for MissingConditionalToken {}
+
+impl ConditionalUpdateToken {
+    fn from_etag(etag: Option<String>) -> Result<Self, object_store::Error> {
+        match etag.filter(|value| !value.is_empty()) {
+            Some(etag) => Ok(Self(UpdateVersion {
+                e_tag: Some(etag),
+                version: None,
+            })),
+            None => Err(object_store::Error::Generic {
+                store: "registry",
+                source: Box::new(MissingConditionalToken),
+            }),
+        }
+    }
+    fn mode(self) -> PutMode {
+        PutMode::Update(self.0)
+    }
+}
+
+fn retryable_cas_error(error: &anyhow::Error) -> bool {
+    matches!(
+        error.downcast_ref::<object_store::Error>(),
+        Some(object_store::Error::Precondition { .. } | object_store::Error::AlreadyExists { .. })
+    )
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct StreamDesc {
     pub name: String,
@@ -940,10 +980,7 @@ impl Registry {
                 .put_opts(
                     &desc_path(&self.cell, sref),
                     PutPayload::from(body),
-                    PutOptions::from(PutMode::Update(UpdateVersion {
-                        e_tag: etag,
-                        version: None,
-                    })),
+                    PutOptions::from(ConditionalUpdateToken::from_etag(etag)?.mode()),
                 )
                 .await
             {
@@ -985,10 +1022,7 @@ impl Registry {
                 .put_opts(
                     &desc_path(&self.cell, sref),
                     PutPayload::from(body),
-                    PutOptions::from(PutMode::Update(UpdateVersion {
-                        e_tag: etag,
-                        version: None,
-                    })),
+                    PutOptions::from(ConditionalUpdateToken::from_etag(etag)?.mode()),
                 )
                 .await
             {
@@ -1112,13 +1146,7 @@ impl Registry {
                 Mutation::Write(next, t) => (next, t),
             };
             let body = serde_json::to_vec(&next)?;
-            let mode = match etag {
-                Some(e_tag) => PutMode::Update(UpdateVersion {
-                    e_tag: Some(e_tag),
-                    version: None,
-                }),
-                None => PutMode::Overwrite,
-            };
+            let mode = ConditionalUpdateToken::from_etag(etag)?.mode();
             match self
                 .store
                 .put_opts(
@@ -1138,10 +1166,13 @@ impl Registry {
                 // Precondition conflict: another writer moved the
                 // descriptor. Re-read and re-decide from scratch —
                 // `decide` is pure, so this is always safe.
-                Err(e) => {
+                Err(e @ object_store::Error::Precondition { .. }) => {
                     last = Some(e.into());
-                    tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
+                    if attempt < 4 {
+                        tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
+                    }
                 }
+                Err(e) => return Err(e.into()),
             }
         }
         Err(last.unwrap_or_else(|| anyhow::anyhow!("mutate_incarnation exhausted")))
@@ -1157,10 +1188,13 @@ impl Registry {
             self.invalidate(sref);
             match self.cas_update(sref, &mut mutate).await {
                 Ok(v) => return Ok(v),
-                Err(e) => {
+                Err(e) if retryable_cas_error(&e) => {
                     last = Some(e);
-                    tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
+                    if attempt < 4 {
+                        tokio::time::sleep(std::time::Duration::from_millis(10 << attempt)).await;
+                    }
                 }
+                Err(e) => return Err(e),
             }
         }
         Err(last.unwrap_or_else(|| anyhow::anyhow!("cas_update_retry exhausted")))
@@ -1188,13 +1222,7 @@ impl Registry {
             return Ok(false);
         }
         let body = serde_json::to_vec(&desc)?;
-        let mode = match etag {
-            Some(e_tag) => PutMode::Update(UpdateVersion {
-                e_tag: Some(e_tag),
-                version: None,
-            }),
-            None => PutMode::Overwrite,
-        };
+        let mode = ConditionalUpdateToken::from_etag(etag)?.mode();
         #[cfg(test)]
         if self.take_fail_next_put(sref) {
             // One-shot injected put failure standing in for the etag
@@ -1202,7 +1230,11 @@ impl Registry {
             // produces — the same Err class `cas_update_retry` exists
             // to absorb (this function's anyhow boundary is where the
             // store error lands anyway).
-            return Err(anyhow::anyhow!("injected registry put conflict"));
+            return Err(object_store::Error::Precondition {
+                path: path.to_string(),
+                source: "injected registry put conflict".into(),
+            }
+            .into());
         }
         self.store
             .put_opts(
@@ -1518,6 +1550,35 @@ mod tests {
     use super::*;
     use crate::crypto::stream_hash;
     use object_store::ObjectStoreExt;
+
+    #[test]
+    fn r08_missing_conditional_token_fails_closed() {
+        for token in [None, Some(String::new())] {
+            let error = ConditionalUpdateToken::from_etag(token).unwrap_err();
+            assert!(matches!(error, object_store::Error::Generic { .. }));
+        }
+        assert!(matches!(
+            ConditionalUpdateToken::from_etag(Some("etag".into()))
+                .unwrap()
+                .mode(),
+            PutMode::Update(_)
+        ));
+    }
+
+    #[test]
+    fn r08_only_precondition_conflicts_are_retried() {
+        let conflict = anyhow::Error::from(object_store::Error::Precondition {
+            path: "descriptor".into(),
+            source: "wording is irrelevant".into(),
+        });
+        assert!(retryable_cas_error(&conflict));
+        for error in [
+            anyhow::anyhow!("precondition conflict"),
+            anyhow::Error::from(ConditionalUpdateToken::from_etag(None).unwrap_err()),
+        ] {
+            assert!(!retryable_cas_error(&error));
+        }
+    }
 
     fn tp() -> crate::tenant::ProjectId {
         crate::tenant::ProjectId::new("proj-test").unwrap()

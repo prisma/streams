@@ -15,3 +15,9 @@ Key/query diagnostics now occur only after a capability or encryption key verifi
 Regression: `r16_unauthorized_watch_shapes_are_independent_of_existence` compares status, all headers and complete structured body across missing/live/initializing/deleted descriptors, three malformed/expired/forged carriers, malformed/short/valid keys and valid/unknown/duplicate/malformed query parameters. All 144 requests also use the R15 never-finishing oversized body sentinel.
 
 Executed both security tests with the Rust 1.98.1 debug test binary: `target/debug/deps/streams_slate-17369d5781ba9293 review_security --nocapture`: 2 passed, 0 failed. Local loopback binding required sandbox escalation; the first sandbox-restricted attempt failed at socket binding before the test request, not in product behavior. Full conformance and production auth-mode security matrix remain part of the final repository gates.
+
+## R08 — conditional registry updates
+
+All existing-descriptor update paths now construct an opaque conditional-update token; a missing or empty ETag is an explicit storage error, including recreation and test-only update paths. No mutation may select `PutMode::Overwrite`. Mutation retries now recognize typed object-store precondition conflicts; invalid data, missing conditional tokens, ordinary I/O failure, and ambiguous completion return immediately. Test-injected conflicts use the same typed precondition error as production.
+
+Regressions: `r08_missing_conditional_token_fails_closed`, `r08_only_precondition_conflicts_are_retried`. The latter proves that changing human text to contain “precondition conflict” does not make an unclassified error retryable. Further application typed-error migration follows with lifecycle ownership.
