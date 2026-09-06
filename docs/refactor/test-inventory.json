@@ -4110,6 +4110,39 @@
     "scenarios": []
   },
   {
+    "name": "r06a_collection_scan_shares_one_budget_across_frozen_segments",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "34ec9082a0b1562be9426b342d1841b3fcd04b46b8cee5c4b0ccfaf5d2098592",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_page_assembly.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r06a_compressed_local_and_peer_pages_have_identical_complete_sequences",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "b23c57c7f7608427bca97e6c6486b3e3849cd4272d24fb32d366de3eefb49eab",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_page_limits.rs",
+    "scenarios": []
+  },
+  {
+    "name": "r06a_fork_page_keeps_the_child_record_withheld_after_ancestor_bytes",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "34109758ab5ca808278cacc47b2413a51efdfcd7a0fde74c4568963121dd9da5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_page_assembly.rs",
+    "scenarios": []
+  },
+  {
     "name": "r07_failed_dlq_commit_retains_source_lease_and_exact_retry_settles_once",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
