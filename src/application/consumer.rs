@@ -361,7 +361,9 @@ pub(crate) fn parse_consumer_version(tok: &str) -> Option<([u8; 16], u64)> {
     Some((epoch, generation))
 }
 
-fn consumer_segments(desc: &StreamDesc) -> Vec<(u32, [u8; 16], [u8; 16], Option<u64>)> {
+type ConsumerSegment = (u32, [u8; 16], [u8; 16], Option<u64>);
+
+fn consumer_segments(desc: &StreamDesc) -> Vec<ConsumerSegment> {
     match &desc.segments {
         Some(map) if !map.segments.is_empty() => {
             let mut v: Vec<_> = map.segments.iter().collect();

@@ -276,7 +276,7 @@ async fn resume_deletion(
             // escaped the sweep. (A split landing after this read
             // cannot mint state for a Deleting consumer: pulls consult
             // the parent record first.)
-            if let Err(r) = consumer_config_op(
+            consumer_config_op(
                 &state,
                 &desc,
                 crate::queue::QueueOp::ConfigLifecycle {
@@ -285,10 +285,7 @@ async fn resume_deletion(
                     deleting: false,
                 },
             )
-            .await
-            {
-                return Err(r);
-            }
+            .await?;
             return Ok(DeleteOutcome::Cleaned);
         }
         cur_desc = fresh;
@@ -314,7 +311,7 @@ struct SweepTarget {
 async fn sweep_segment(
     state: &Arc<ConsumerService>,
     target: &SweepTarget,
-    segment: (u32, [u8; 16], [u8; 16], Option<u64>),
+    segment: super::ConsumerSegment,
     steps_left: &Arc<std::sync::atomic::AtomicI64>,
 ) -> Result<(), (&'static str, String)> {
     let (seg_id, identity, route, _) = segment;
@@ -349,16 +346,8 @@ async fn sweep_segment(
                     seg_id,
                     identity,
                 };
-                return relay_sweep_segment(
-                    &state,
-                    &base,
-                    &name,
-                    &t,
-                    &cname,
-                    cgen + 1,
-                    &steps_left,
-                )
-                .await;
+                return relay_sweep_segment(state, &base, name, &t, cname, cgen + 1, steps_left)
+                    .await;
             }
             return Err((
                 "segment_unavailable",

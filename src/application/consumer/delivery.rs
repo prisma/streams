@@ -60,24 +60,18 @@ pub(crate) async fn pull(
                     // ownership 409 (leases are owner-local; the router
                     // replays the pull to the owner, which now skips OUR
                     // segments the same way — converges).
-                    let peer = r
-                        .owner
-                        .as_deref()
-                        .and_then(|owner| state.peer.url_for(owner));
-                    if let Some(base) = peer
-                        && let Some((cur, tail)) = match InternalTarget::of(&desc, seg_id) {
-                            Some(t) => {
-                                relay_queue_cursor(&state, &base, &desc.name, &t, &cname, cgen)
-                                    .await
-                            }
-                            None => None,
-                        }
+                    if foreign_segment_drained(
+                        &state,
+                        &desc,
+                        seg_id,
+                        &cname,
+                        cgen,
+                        sealed_end,
+                        r.owner.as_deref(),
+                    )
+                    .await
                     {
-                        match sealed_end {
-                            Some(end) if cur >= end => continue,
-                            None if tail <= cur => continue,
-                            _ => {}
-                        }
+                        continue;
                     }
                     return Err(r);
                 }
@@ -216,6 +210,32 @@ pub(crate) async fn pull(
     }
 }
 
+async fn foreign_segment_drained(
+    state: &Arc<ConsumerService>,
+    desc: &StreamDesc,
+    segment: u32,
+    consumer: &str,
+    generation: u64,
+    sealed_end: Option<u64>,
+    owner: Option<&str>,
+) -> bool {
+    let Some(base) = owner.and_then(|owner| state.peer.url_for(owner)) else {
+        return false;
+    };
+    let Some(target) = InternalTarget::of(desc, segment) else {
+        return false;
+    };
+    let Some((cursor, tail)) =
+        relay_queue_cursor(state, &base, &desc.name, &target, consumer, generation).await
+    else {
+        return false;
+    };
+    match sealed_end {
+        Some(end) => cursor >= end,
+        None => tail <= cursor,
+    }
+}
+
 /// Encode only leases granted by the committer, with the same key, stream
 /// epoch, segment and consumer generation used for the durable Receive.
 struct MessageContext<'a> {
@@ -263,10 +283,10 @@ fn delivery_messages(
             serde_json::Value::String(base64::engine::general_purpose::STANDARD.encode(payload))
         };
         messages.push(DeliveryMessage {
-            id: msg.encode(&desc.project_id, &skey),
+            id: msg.encode(&desc.project_id, skey),
             routing_key: rkey.clone(),
             attempts: *attempts,
-            lease_token: lease.encode(&desc.project_id, &skey),
+            lease_token: lease.encode(&desc.project_id, skey),
             value,
         });
     }
@@ -312,7 +332,7 @@ async fn read_coverage(
     };
     state.keys.put(identity, skey.clone(), epoch);
     let cursor = engine
-        .queue_cursor(identity, &cname, cgen)
+        .queue_cursor(identity, cname, cgen)
         .await
         .map_err(|m| {
             failure(
@@ -324,10 +344,10 @@ async fn read_coverage(
             )
         })?;
     let out = match crate::application::read::read_merged(
-        &skey,
+        skey,
         &epoch,
         &handle,
-        &engine,
+        engine,
         cursor,
         None,
         4 << 20,
