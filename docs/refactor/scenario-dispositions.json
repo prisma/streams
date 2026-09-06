@@ -763,7 +763,7 @@
     "owner": "sdk/src/index.ts",
     "state": "local_mechanism",
     "mechanism": "abort during fetch and during Retry-After sleep; prompt termination.",
-    "disposition": "Existing real-server smoke aborts fetch. Controlled Node runtime tests additionally park a pull and abort a five-second Retry-After wait, asserting prompt completion and no replay. These mocked transport legs do not substitute for the pending Bun/Deno/live-server runtime matrix.",
+    "disposition": "Actual backoff timer capture proves pending-before-abort and completion-before-timer-release; live fetch abort smoke remains separate. Node controlled transport evidence is available; real-server Bun/Deno/runtime matrix remains pending.",
     "closure_evidence": {
       "source_tests": [
         "sdk/smoke.mjs::abort leg of smoke.mjs",

@@ -317,7 +317,7 @@
       ],
       "owner": "SDK request/subscription retry",
       "mechanism": "421 and 503 header/body wrong-cell, permanent auth/domain failures, status backoff and transport rollback",
-      "entered_proof": "Mock fetch counts, provider counts, body cancellation and five-second Retry-After aborted",
+      "entered_proof": "Mock fetch/provider counters and body cancellation; actual 5000ms backoff timer is captured and its callback withheld. Operation remains pending before abort, then completes and clears that timer while callback remains withheld.",
       "oracle": "Permanent failures surfaced after one request; no auth refresh on wrong-cell; transient recovery resumes durable cursor",
       "configuration": {
         "runtime": "Node built package",
@@ -329,27 +329,27 @@
         {
           "file": "sdk/scripts/retry-classification.test.mjs",
           "name": "wrong-cell after one request and no refresh",
-          "sha256": "acc29a2cfd312f1eb7f4b9d2f5e63e97849e2da3a55cf6013297c4417b8c0952"
+          "sha256": "5ff948b05acefebb084079dab20566f3ae6948a55f7af6e97bf8c253e3d2f5ba"
         },
         {
           "file": "sdk/scripts/retry-classification.test.mjs",
           "name": "subscription propagates permanent token-provider failures without any fetch",
-          "sha256": "acc29a2cfd312f1eb7f4b9d2f5e63e97849e2da3a55cf6013297c4417b8c0952"
+          "sha256": "5ff948b05acefebb084079dab20566f3ae6948a55f7af6e97bf8c253e3d2f5ba"
         },
         {
           "file": "sdk/scripts/retry-classification.test.mjs",
           "name": "cancellation interrupts status backoff without replay",
-          "sha256": "acc29a2cfd312f1eb7f4b9d2f5e63e97849e2da3a55cf6013297c4417b8c0952"
+          "sha256": "5ff948b05acefebb084079dab20566f3ae6948a55f7af6e97bf8c253e3d2f5ba"
         },
         {
           "file": "sdk/scripts/retry-classification.test.mjs",
           "name": "header wrong-cell cancels an unused response body",
-          "sha256": "acc29a2cfd312f1eb7f4b9d2f5e63e97849e2da3a55cf6013297c4417b8c0952"
+          "sha256": "5ff948b05acefebb084079dab20566f3ae6948a55f7af6e97bf8c253e3d2f5ba"
         },
         {
           "file": "sdk/scripts/retry-classification.test.mjs",
           "name": "explicitly permanent 503 domain errors are not replayed",
-          "sha256": "acc29a2cfd312f1eb7f4b9d2f5e63e97849e2da3a55cf6013297c4417b8c0952"
+          "sha256": "5ff948b05acefebb084079dab20566f3ae6948a55f7af6e97bf8c253e3d2f5ba"
         }
       ]
     }

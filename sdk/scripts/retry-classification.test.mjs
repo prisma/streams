@@ -53,15 +53,45 @@ test("subscription propagates permanent token-provider failures without any fetc
 
 test("cancellation interrupts status backoff without replay", async () => {
   const controller = new AbortController();
-  let requests = 0;
+  let requests = 0, entered, releaseTimer, settled = false, cancelled = false;
+  const enteredBackoff = new Promise(resolve => { entered = resolve; });
+  const nativeSetTimeout = globalThis.setTimeout, nativeClearTimeout = globalThis.clearTimeout;
+  const heldTimer = {};
+  globalThis.setTimeout = (callback, delay, ...args) => {
+    if (delay !== 5000) return nativeSetTimeout(callback, delay, ...args);
+    releaseTimer = () => callback(...args);
+    entered();
+    return heldTimer;
+  };
+  globalThis.clearTimeout = timer => {
+    if (timer === heldTimer) { cancelled = true; return; }
+    return nativeClearTimeout(timer);
+  };
   const s = new StreamsClient({ url: "https://cell.example", fetch: async () => {
     requests++;
-    const res = new Response("", { status: 503, headers: { "retry-after": "5" } });
-    setImmediate(() => controller.abort());
-    return res;
+    return new Response("", { status: 503, headers: { "retry-after": "5" } });
   } }).stream("orders", { encryptionKey: "A".repeat(43) });
-  assert.deepEqual(await s.subscribe({ signal: controller.signal })[Symbol.asyncIterator]().next(), { value: undefined, done: true });
-  assert.equal(requests, 1);
+  const observed = s.subscribe({ signal: controller.signal })[Symbol.asyncIterator]().next()
+    .then(value => { settled = true; return { value }; }, error => { settled = true; return { error }; });
+  try {
+    assert.equal(await Promise.race([enteredBackoff.then(() => true), observed.then(() => false)]), true);
+    await new Promise(setImmediate);
+    assert.equal(settled, false, "the actual backoff timer is entered and withheld");
+    controller.abort();
+    await new Promise(setImmediate);
+    assert.equal(settled, true, "cancellation must complete before the timer callback is released");
+    assert.equal(cancelled, true, "cancellation clears the entered backoff timer");
+    assert.deepEqual(await observed, { value: { value: undefined, done: true } });
+    assert.equal(requests, 1);
+  } finally {
+    controller.abort();
+    // A failed assertion still releases the controlled timer and observes
+    // the pending outcome before restoring this test's scheduler hooks.
+    if (!settled && releaseTimer) releaseTimer();
+    await observed;
+    globalThis.setTimeout = nativeSetTimeout;
+    globalThis.clearTimeout = nativeClearTimeout;
+  }
 });
 
 test("header wrong-cell cancels an unused response body", async () => {

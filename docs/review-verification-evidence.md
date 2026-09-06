@@ -70,6 +70,14 @@ never emits execution certification.
   every injected rejection. Peak map size is exactly 128 and every cohort
   returns to zero, including rejected operations. This exercises sparse-key
   eviction separately from retained producer-state storage.
+- SDK-002: the actual five-second Retry-After timer is captured and its
+  callback withheld. The operation must be pending before abort, then complete
+  and clear the timer before that callback is released. An isolated copy of
+  the built SDK with the sleep abort listener removed fails this exact
+  assertion; the unchanged SDK passes all 14 retry-classification controls.
+  This negative control prevents eventual completion after a full backoff
+  from masquerading as prompt cancellation. The mutation never touches the
+  repository's built SDK or production source.
 
 Local targeted runs before final integration: both new Rust controls passed
 (2 tests, 0 failed/ignored); the million-scope control passed with all four

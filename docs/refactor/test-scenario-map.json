@@ -2469,7 +2469,7 @@
     ],
     "mapped": true,
     "coverage": "full",
-    "note": "Existing real-server smoke aborts fetch. Controlled Node runtime tests additionally park a pull and abort a five-second Retry-After wait, asserting prompt completion and no replay. These mocked transport legs do not substitute for the pending Bun/Deno/live-server runtime matrix."
+    "note": "Existing real-server smoke aborts fetch. Controlled Node runtime tests park a pull and capture the actual five-second Retry-After timer. The operation is pending before abort, then must complete and clear the held timer before its callback is released; no replay. Mocked transport legs do not substitute for the pending Bun/Deno/live-server runtime matrix."
   },
   {
     "id": "SDK-003",
