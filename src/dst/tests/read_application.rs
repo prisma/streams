@@ -97,7 +97,7 @@ async fn r06_empty_filtered_page_has_one_position_across_application_and_protoco
         &desc.project_id,
         &skey(),
         &desc.epoch(),
-        &crate::crypto::stream_hash(""),
+        &crate::crypto::RoutingKeyHash::of("").0,
     )
     .unwrap();
     assert_eq!(
