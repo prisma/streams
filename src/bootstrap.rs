@@ -665,6 +665,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         config: config.clone(),
         registry: Arc::new(registry),
         reads: std::sync::OnceLock::new(),
+        creations: std::sync::OnceLock::new(),
         shards: shard_directory,
         admission,
         peer,

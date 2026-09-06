@@ -282,12 +282,7 @@ fn parse_idle_secs(s: &str) -> Option<u64> {
     (v > 0).then_some(v.checked_mul(mult)?)
 }
 
-struct ParsedCreate {
-    content_type: String,
-    ttl_secs: Option<u64>,
-    expires_at_ms: Option<i64>,
-    watches: Vec<WatchDefinition>,
-}
+use crate::application::creation::ProductCreateConfig as ParsedCreate;
 
 fn parse_create_doc(body: &Bytes) -> Result<ParsedCreate, Response> {
     if body.len() > MAX_CONFIG_BODY {
@@ -1482,235 +1477,29 @@ async fn product_create(
     {
         return crate::audit::tag_project(auth_failure_response(&e), &p.project_id);
     }
-    if let Some(r) = crate::http::ring_owner_check(&state, &tenant.stream_ref(&name)) {
-        return r;
-    }
-    // SR2-4 max_streams: reserve a slot BEFORE creating, race-safely.
-    // Only a genuinely NEW stream needs one — the idempotent-replay
-    // path (an alive descriptor already holds this name) skips it, and
-    // a reservation whose create turns out NOT to be the true init is
-    // rolled back on drop. Split children ('#'-composed) never pass
-    // through here and are not counted.
-    let mut stream_reservation: Option<crate::quota::StreamReservation> = None;
-    if let Some(p) = principal
-        && p.quotas.max_streams > 0
-    {
-        let sref = tenant.stream_ref(&name);
-        let exists = matches!(
-            state.registry.get(&sref).await,
-            Ok(Some(d)) if crate::http::desc_alive(&d)
-        );
-        if !exists {
-            let seed = if state.quotas.needs_stream_seed(&p.project_id) {
-                match count_project_streams(&state, tenant).await {
-                    Ok(n) => Some(n),
-                    Err(()) => {
-                        // Fail CLOSED: a partial count must never seed
-                        // the limiter.
-                        return crate::audit::tag_project(
-                            perr(
-                                StatusCode::SERVICE_UNAVAILABLE,
-                                "catalog_unavailable",
-                                "stream count unavailable; retry",
-                                None,
-                                true,
-                            ),
-                            &p.project_id,
-                        );
-                    }
-                }
-            } else {
-                None
+    let result = state.creation_service().create_product(tenant,name,key,cfg,principal.map(|p| &p.quotas)).await;
+    match result {
+        Ok((created,desc)) => metadata_response(&desc, if created {StatusCode::CREATED} else {StatusCode::OK}),
+        Err(crate::application::creation::ProductCreateError::Quota(refusal)) => {
+            let response=quota_refusal_response(&refusal);
+            if let Some(p)=principal {crate::audit::tag_project(response,&p.project_id)} else {response}
+        }
+        Err(crate::application::creation::ProductCreateError::Creation(error)) => {
+            use crate::application::creation::CreationFailure as F;
+            let status=match error.kind {
+                F::Invalid=>StatusCode::BAD_REQUEST,F::Conflict=>StatusCode::CONFLICT,F::Missing=>StatusCode::NOT_FOUND,
+                F::Gone=>StatusCode::GONE,F::WrongKey=>StatusCode::FORBIDDEN,F::Storage=>StatusCode::INTERNAL_SERVER_ERROR,
+                F::TooLarge=>StatusCode::PAYLOAD_TOO_LARGE,F::Overloaded=>StatusCode::TOO_MANY_REQUESTS,
+                F::Ambiguous=>StatusCode::REQUEST_TIMEOUT,F::Opening=>StatusCode::SERVICE_UNAVAILABLE,
             };
-            match state.quotas.reserve_stream(&p.project_id, &p.quotas, seed) {
-                Ok(r) => stream_reservation = r,
-                Err(r) => {
-                    return crate::audit::tag_project(quota_refusal_response(&r), &p.project_id);
-                }
-            }
+            let retryable=matches!(error.kind,F::Storage|F::Overloaded|F::Ambiguous|F::Opening);
+            let mut response=perr(status,error.code,&error.message,None,retryable);
+            if error.kind==F::WrongKey {response=crate::audit::tag(response,"wrong_key");}
+            if let Some(owner)=error.owner.and_then(|v| v.parse().ok()) {response.headers_mut().insert("streams-replay-to",owner);}
+            if let Some(p)=principal {response=crate::audit::tag_project(response,&p.project_id);}
+            response
         }
     }
-
-    let build_fresh = || {
-        let mut d = crate::http::fresh_desc_product(
-            &state,
-            tenant,
-            &name,
-            &key,
-            cfg.content_type.clone(),
-            cfg.ttl_secs,
-            cfg.expires_at_ms,
-        );
-        d.watch_definitions = cfg.watches.clone();
-        // Persist the URL-signature verifier now, while a key holder is
-        // here to derive it from. The server never stores the stream
-        // key, so this is its only chance: after create, a signed watch
-        // URL must verify on any process, cold, with nothing cached.
-        if let Some(ep) = d.epoch_bytes() {
-            use base64::Engine;
-            let tok = crate::crypto::touch_token(&key, &ep);
-            d.watch_sig_key = Some(
-                base64::engine::general_purpose::STANDARD
-                    .encode(crate::crypto::wait_sig_key(&tok, &ep)),
-            );
-        }
-        d.layout_version = LAYOUT_VERSION;
-        d
-    };
-    // Idempotent compare (Stage 7 §7): normalized protocol config plus
-    // normalized watch config.
-    let same_config = |d: &StreamDesc| {
-        crate::registry::media_type(&d.content_type)
-            == crate::registry::media_type(&cfg.content_type)
-            && d.ttl_secs == cfg.ttl_secs
-            && (cfg.ttl_secs.is_some() || d.expires_at_ms == cfg.expires_at_ms)
-            && d.watch_definitions == cfg.watches
-    };
-    let validate_live = |d: StreamDesc| -> Result<StreamDesc, Response> {
-        if !same_config(&d) {
-            return Err(perr(
-                StatusCode::CONFLICT,
-                "config_mismatch",
-                "stream exists with different immutable configuration",
-                None,
-                false,
-            ));
-        }
-        let epoch = d.epoch();
-        if d.key_fingerprint != key.fingerprint(&epoch) {
-            return Err(crate::audit::tag(
-                perr(
-                    StatusCode::FORBIDDEN,
-                    "wrong_key",
-                    "encryption key mismatch",
-                    None,
-                    false,
-                ),
-                "wrong_key",
-            ));
-        }
-        Ok(d)
-    };
-
-    let existing = match state.registry.get(&tenant.stream_ref(&name)).await {
-        Ok(v) => v,
-        Err(e) => {
-            return perr(
-                StatusCode::INTERNAL_SERVER_ERROR,
-                "internal",
-                &e.to_string(),
-                None,
-                true,
-            );
-        }
-    };
-    let (created, desc) = match existing {
-        Some(d) if crate::http::desc_alive(&d) => match validate_live(d) {
-            Ok(d) => (false, d),
-            Err(r) => return r,
-        },
-        Some(_) => match state
-            .registry
-            .recreate(&tenant.stream_ref(&name), build_fresh(), |d| {
-                // Never replace a descriptor that still backs live
-                // forks (audit P0: the product path replaced the
-                // soft-deleted/expired sources the raw path blocks,
-                // because desc_alive() is false for both).
-                !crate::http::desc_alive(d) && !d.soft_deleted && d.fork_children.is_empty()
-            })
-            .await
-        {
-            Ok((true, d)) => (true, d),
-            Ok((false, winner)) => {
-                // The predicate declined: either a live winner (normal
-                // idempotent path) or a retained fork source, which is
-                // a conflict rather than a config mismatch.
-                if winner.soft_deleted || !winner.fork_children.is_empty() {
-                    return perr(
-                        StatusCode::CONFLICT,
-                        "gone",
-                        "name is retained for live forks",
-                        None,
-                        false,
-                    );
-                }
-                match validate_live(winner) {
-                    Ok(d) => (false, d),
-                    Err(r) => return r,
-                }
-            }
-            Err(e) => {
-                return perr(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    &e.to_string(),
-                    None,
-                    true,
-                );
-            }
-        },
-        None => match state.registry.create(build_fresh()).await {
-            Ok((true, d)) => (true, d),
-            Ok((false, d)) => match validate_live(d) {
-                Ok(d) => (false, d),
-                Err(r) => return r,
-            },
-            Err(e) => {
-                return perr(
-                    StatusCode::INTERNAL_SERVER_ERROR,
-                    "internal",
-                    &e.to_string(),
-                    None,
-                    true,
-                );
-            }
-        },
-    };
-    let status = if created {
-        StatusCode::CREATED
-    } else {
-        StatusCode::OK
-    };
-    // SR2-4: keep the +1 only when THIS request was the true init;
-    // replays and losers roll back on drop.
-    if created && let Some(r) = stream_reservation.take() {
-        r.commit();
-    }
-    metadata_response(&desc, status)
-}
-
-/// SR2-4/SR3-2: count the project's streams for the max_streams seed —
-/// catalog truth, alive or soft-deleted (fork-retained sources hold
-/// storage and the name until their terminal hard delete). FAILS
-/// CLOSED: a registry error mid-walk returns Err and the create
-/// answers a retryable 503 — a partial count must never seed the
-/// limiter (round-3 finding 2.1). No name-syntax classification:
-/// layout-4 unified descriptors keep segments INSIDE the descriptor,
-/// so every registry entry here is a customer stream — including
-/// names that contain '#' (round-3 finding 2.2).
-async fn count_project_streams(
-    state: &AppState,
-    project: &crate::tenant::ProjectId,
-) -> Result<u64, ()> {
-    let mut n = 0u64;
-    let mut after: Option<String> = None;
-    loop {
-        let page = state
-            .registry
-            .list_page(project, after.as_deref(), 512)
-            .await
-            .map_err(|_| ())?;
-        n += page
-            .streams
-            .iter()
-            .filter(|d| crate::http::desc_alive(d) || d.soft_deleted)
-            .count() as u64;
-        if page.exhausted || page.next_after.is_none() {
-            break;
-        }
-        after = page.next_after;
-    }
-    Ok(n)
 }
 
 fn metadata_response(desc: &StreamDesc, status: StatusCode) -> Response {

@@ -899,6 +899,15 @@ fn identity_inner(
     desc: &crate::registry::StreamDesc,
     count_miss: bool,
 ) -> BillingIdentity {
+    identity_with_capabilities(&state.auth, &state.deployment, desc, count_miss)
+}
+
+pub(crate) fn identity_with_capabilities(
+    auth: &crate::auth::AuthService,
+    deployment: &crate::deployment::DeploymentIdentity,
+    desc: &crate::registry::StreamDesc,
+    count_miss: bool,
+) -> BillingIdentity {
     // Stage 7 (workspace-at-event): under shadow/enforce the billable
     // owner is the WORKSPACE the policy snapshot names for the
     // descriptor's project AT METERING TIME — invoices attach to the
@@ -909,20 +918,20 @@ fn identity_inner(
     // from the platform feed by construction — counting there would
     // drown the signal in noise); in Off mode the deployment account
     // is the single-tenant truth.
-    let account_id = if state.auth.mode != crate::auth::AuthMode::Off {
-        match state.auth.workspace_for(&desc.project_id) {
+    let account_id = if auth.mode != crate::auth::AuthMode::Off {
+        match auth.workspace_for(&desc.project_id) {
             Some(ws) => ws.as_str().to_string(),
             None => {
-                if count_miss && state.auth.mode == crate::auth::AuthMode::Enforce {
+                if count_miss && auth.mode == crate::auth::AuthMode::Enforce {
                     UNOWNED_METER_EVENTS.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
                 }
-                state.deployment.account_id().to_string()
+                deployment.account_id().to_string()
             }
         }
     } else {
         desc.account_id
             .clone()
-            .unwrap_or_else(|| state.deployment.account_id().to_string())
+            .unwrap_or_else(|| deployment.account_id().to_string())
     };
     BillingIdentity {
         account_id,

@@ -379,6 +379,7 @@ pub(super) async fn http_rig_build(
         config: rig_config.clone(),
         registry: Arc::new(registry),
         reads: std::sync::OnceLock::new(),
+        creations: std::sync::OnceLock::new(),
         peer,
         livefeed,
         bearer,

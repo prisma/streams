@@ -62,6 +62,12 @@ R09 execution: the integrated Rust 1.98.1 test binary (793 tests compiled) ran `
 
 Absorber fencing now inspects SlateDB `ErrorKind::Closed` through the complete anyhow source chain. Display strings and outer context cannot change fence/retry behavior. `r08_fence_disposition_uses_error_kind_through_context` tests fenced/clean closure with arbitrary messages and misleading fence words on unavailable/untyped errors. Integrated Rust 1.98.1 execution: **1 passed**, 0 failed, 792 filtered. The existing actual two-opener ownership-loss absorber exit scenario remains retained.
 
+## R05 — creation, fork and deletion owner (storage/application portion)
+
+`application::creation::CreationService` now owns raw initialization, fork seed/anchoring, product creation and quota reservation, deletion/cascade debt and TTL sliding. Its cached runtime-scoped capabilities are explicit; no HTTP state, headers or responses cross the service boundary. Raw and product adapters render typed outcomes. All remaining creation/deletion/TTL boolean CAS paths became typed attempt-result mutations; fork stamping and hard-deletion verdicts cannot leak from failed attempts. The old implementations and unused helpers were removed. TTL single-flight storage is runtime-owned with cancellation cleanup. Billing attribution and quota handles were exposed as shared capabilities without changing ownership-at-event or quota policy.
+
+The transition table and separate-storage-domain recovery contract are in `docs/creation-transitions.md`. Existing integrated loopback regressions for creation replay, failed writes, stale initialization, fork lifecycle, deletion/cascade, wrong-key replay, same-name recreation, tenant isolation, product create and dual-surface equivalence, and stream quota reservation/release: **31 passed**, 0 failed, 763 filtered, 0.50s. The initial sandboxed invocation could not bind its loopback fixture; authorized loopback execution passed. A broader topology set additionally exposed one pre-existing fixture that manufactured simultaneous sealing/topology claims rejected by R04 validation; the topology owner is correcting that fixture separately.
+
 ## Implementation commit references
 
 - R12: `78c5940` (remote fixture correction included with R03 tests).
@@ -71,5 +77,6 @@ Absorber fencing now inspects SlateDB `ErrorKind::Closed` through the complete a
 - R01: `031ae5b`.
 - R03: `fd1706e`.
 - R09 storage: `01ef5d0`.
+- R08 storage: `e8b4257`.
 
 All source commits are reviewable changes; the external acceptance conditions above are not marked as passed.

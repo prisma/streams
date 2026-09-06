@@ -510,9 +510,9 @@ impl Drop for SubscriptionGuard {
     }
 }
 
-#[derive(Default)]
+#[derive(Default, Clone)]
 pub struct QuotaRegistry {
-    projects: Mutex<HashMap<ProjectId, Arc<ProjectAdmission>>>,
+    projects: Arc<Mutex<HashMap<ProjectId, Arc<ProjectAdmission>>>>,
 }
 
 impl QuotaRegistry {
