@@ -404,10 +404,9 @@ pub struct UsageRollup {
 
 /// SlateDB scan_prefix subranges are SUFFIX-relative. Exclude the exact
 /// persisted cursor and let SlateDB enforce the prefix's upper bound.
-fn close_scan_range(
-    prefix: &[u8],
-    after: Option<&[u8]>,
-) -> anyhow::Result<(std::ops::Bound<Vec<u8>>, std::ops::Bound<Vec<u8>>)> {
+type CloseScanRange = (std::ops::Bound<Vec<u8>>, std::ops::Bound<Vec<u8>>);
+
+fn close_scan_range(prefix: &[u8], after: Option<&[u8]>) -> anyhow::Result<CloseScanRange> {
     use std::ops::Bound;
     let lower = match after {
         None => Bound::Unbounded,
@@ -703,13 +702,11 @@ impl UsageRollup {
         let boot = rb.source.boot.clone();
         let floor = match sources.get(&boot) {
             Some(v) => *v,
-            None => {
-                read_bytes(&self.db, &k_source(&boot))
-                    .await?
-                    .map(|v| crate::shard::decode_cursor(&v))
-                    .transpose()?
-                    .unwrap_or(u64::MAX)
-            }
+            None => read_bytes(&self.db, &k_source(&boot))
+                .await?
+                .map(|v| crate::shard::decode_cursor(&v))
+                .transpose()?
+                .unwrap_or(u64::MAX),
         };
         if floor != u64::MAX && rb.seq <= floor {
             return Ok(()); // duplicate delivery of an applied batch
@@ -1389,6 +1386,7 @@ impl UsageRollup {
     /// resumes mid-month with no lost or repeated accrual (the carry is
     /// guarded by per-segment `final_seen`/boundary checks, so a replay
     /// applies zero).
+    #[cfg(test)]
     pub fn close_rows_visited(&self) -> u64 {
         self.close_rows_visited
             .load(std::sync::atomic::Ordering::Relaxed)
