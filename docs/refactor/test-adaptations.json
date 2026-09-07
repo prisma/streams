@@ -96,8 +96,8 @@
   {
     "name": "cut_resume_never_skips_a_durable_record",
     "before_sha256": "ffc97e75a490301e88a1297e283a5e4a76be5b903bd88e51e97b54f259233b5e",
-    "after_sha256": "42a2302f68530b5e7a3dae8c1bc4047393732a48ea4b45b963c416c689f2c843",
+    "after_sha256": "b64516660ab97aaf7bb24e41e16beea0f5001281e9d2871b39014f1ded5fa3b4",
     "finding": "CI verification: cut/resume readiness",
-    "reason": "1a4c661: the failed b08c097 run captured an initial cursor=now at offset 1 and then falsely required record 0. Replace the unverified 500 ms startup sleep with both real subscriptions observing authenticated offset-zero upToDate controls before appending. The 1200 records, fault plan, retention cuts, absorb schedule and exact acknowledged-record reconciliation remain unchanged."
+    "reason": "1a4c661: the failed b08c097 run captured an initial cursor=now at offset 1 and then falsely required record 0. Replace the unverified 500 ms startup sleep with both real subscriptions observing authenticated offset-zero upToDate controls before appending. The 1200 records, fault plan, retention cuts, absorb schedule and exact acknowledged-record reconciliation remain unchanged. The readiness guard uses the equivalent chained condition required by Clippy; readiness is still consumed only after upToDate."
   }
 ]

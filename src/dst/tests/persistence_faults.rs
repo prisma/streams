@@ -318,10 +318,10 @@ async fn cut_resume_never_skips_a_durable_record() {
                             break;
                         }
                     }
-                    if complete.contains("\"upToDate\":true") {
-                        if let Some(tx) = ready_tx.take() {
-                            let _ = tx.send(cursor.clone().expect("initial control has a cursor"));
-                        }
+                    if complete.contains("\"upToDate\":true")
+                        && let Some(tx) = ready_tx.take()
+                    {
+                        let _ = tx.send(cursor.clone().expect("initial control has a cursor"));
                     }
                     let mut at = 0usize;
                     while let Some(p) = complete[at..].find("\"q\":") {
