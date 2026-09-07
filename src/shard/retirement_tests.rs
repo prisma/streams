@@ -211,6 +211,8 @@ async fn duplicate_order(retire: bool, attach_first: bool) {
     .await;
     let engine = &fixture.engine;
     let handle = engine.stream_handle(HASH).await.unwrap();
+    let status = engine.db.subscribe();
+    let durable_before = status.borrow().durable_seq;
     let entered = fixture
         .store
         .hold_class(crate::dst::StoreOp::Put, crate::dst::ObjClass::Wal, 1);
@@ -272,8 +274,12 @@ async fn duplicate_order(retire: bool, attach_first: bool) {
             Err(oneshot::error::TryRecvError::Empty)
         ));
     }
-    fixture.remote_missing().await;
+    // Close can already be awaiting its held WAL flush, at which point
+    // ordinary Db reads correctly refuse Closed(Clean). The retained status
+    // remains observable and proves retirement did not advance durability.
+    assert_eq!(status.borrow().durable_seq, durable_before);
     if !retire {
+        fixture.remote_missing().await;
         fixture.store.release_hold();
     }
     let first = tokio::time::timeout(Duration::from_secs(1), first).await;

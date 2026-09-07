@@ -801,6 +801,28 @@
           "name": "r17b_late_successful_write_settles_without_publishing_retired_effects",
           "sha256": "bc4f5869cdc1e62dd93e116b65edcb96accbd243ed5b521060ce4aad469559b1"
         }
+      ],
+      "support_functions": [
+        {
+          "file": "src/shard/retirement_tests.rs",
+          "name": "duplicate_order",
+          "sha256": "e5ede34dafe09be919f256ed44e0bd6b3bfd28fb34375b0e4d63acf30fa8cd54"
+        },
+        {
+          "file": "src/shard/retirement_tests.rs",
+          "name": "assert_moved",
+          "sha256": "d9a8d4808a3db995bca6c6eb497228981eee88e5faa932ed123b315003e6a177"
+        },
+        {
+          "file": "src/shard/retirement_tests.rs",
+          "name": "completion_checkpoint",
+          "sha256": "d87ad10780a4cc8f849978f51421f7d32f29f9eb1e790e0e9db40ac25e5b92a9"
+        },
+        {
+          "file": "src/shard/retirement_tests.rs",
+          "name": "remote_missing",
+          "sha256": "d0034a501beab9073a0482cfaf0591844827be9907349cdcd6c1840f3aabfc00"
+        }
       ]
     },
     {
