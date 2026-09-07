@@ -285,7 +285,15 @@ async fn r03a_mixed_transaction_preserves_every_row_reply_and_publication() {
                 before,
                 "failed {failure} changes no stored row"
             );
-            assert!(fixture.engine.in_flight.lock().unwrap().is_empty());
+            assert!(
+                fixture
+                    .engine
+                    .in_flight
+                    .lock()
+                    .unwrap()
+                    .pending()
+                    .is_empty()
+            );
             for reply in replies {
                 assert!(matches!(reply.await.unwrap(), Err(AppendErr::Internal(_))));
             }
@@ -332,7 +340,7 @@ async fn r03a_mixed_transaction_preserves_every_row_reply_and_publication() {
         }
         {
             let inflight = fixture.engine.in_flight.lock().unwrap();
-            let effects = &inflight.last().unwrap().effects;
+            let effects = &inflight.pending().last().unwrap().effects;
             assert_eq!(
                 (
                     effects.acks.len(),

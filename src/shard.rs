@@ -21,6 +21,8 @@ pub(crate) mod record;
 #[cfg(test)]
 pub use record::read_frames;
 pub use record::{FrameReadResult, read_frames_range};
+mod commit_handoff;
+use commit_handoff::{Attachment, CommitHandoff};
 mod commit_plan;
 mod history_partition;
 mod lifecycle;
@@ -1168,7 +1170,7 @@ pub struct ShardEngine {
     /// which is the exact lifetime the fence protects.
     seal_fences: Mutex<HashMap<[u8; 16], u64>>,
     tx: mpsc::Sender<CommitOp>,
-    in_flight: Mutex<Vec<InFlightGroup>>,
+    in_flight: Mutex<CommitHandoff>,
     /// Serializes durable-dispatch between the pump (post-flush barrier)
     /// and the acker (failsafe + fencing path). Group drains are already
     /// exclusive via the in_flight lock; this additionally keeps tail
@@ -1183,6 +1185,8 @@ pub struct ShardEngine {
     // died, and the release never came (deadlock, all threads parked).
     // An async lock parks the TASK and the runtime keeps breathing.
     commit_gate: tokio::sync::Mutex<()>,
+    #[cfg(test)]
+    completion_pause: Mutex<Option<Arc<retirement_tests::CompletionPause>>>,
     #[cfg(test)]
     appends_enqueued: std::sync::atomic::AtomicU64,
     #[cfg(test)]
@@ -1374,6 +1378,8 @@ impl ShardEngine {
             #[cfg(test)]
             commit_gate: tokio::sync::Mutex::new(()),
             #[cfg(test)]
+            completion_pause: Mutex::new(None),
+            #[cfg(test)]
             appends_enqueued: std::sync::atomic::AtomicU64::new(0),
             #[cfg(test)]
             fail_group_for: Mutex::new(None),
@@ -1385,7 +1391,7 @@ impl ShardEngine {
             #[cfg(test)]
             fail_next_absorbed_group: std::sync::atomic::AtomicBool::new(false),
             tx,
-            in_flight: Mutex::new(Vec::new()),
+            in_flight: Mutex::new(CommitHandoff::default()),
             dispatch_gate: tokio::sync::Mutex::new(()),
             pump_flushes: AtomicU64::new(0),
             pump_barrier_acked: AtomicU64::new(0),
@@ -1485,7 +1491,7 @@ impl ShardEngine {
                     // froze the buffer and waits a full extra PUT behind
                     // it (closed-loop A/B measured 52 ms vs 29 ms
                     // durable_wait on identical load).
-                    if pump.in_flight.lock().unwrap().is_empty() {
+                    if pump.in_flight.lock().unwrap().pending().is_empty() {
                         continue;
                     }
                     if let Some(t0) = last_start {
@@ -1523,6 +1529,7 @@ impl ShardEngine {
                     // wait on — the NEXT generation: deadlock shape).
                     let (target_seq, fl_reqs, fl_records, fl_bytes) = {
                         let q = pump.in_flight.lock().unwrap();
+                        let q = q.pending();
                         (
                             q.last().map(|g| g.seq),
                             q.iter().map(|g| g.reqs as u64).sum::<u64>(),
@@ -1632,6 +1639,7 @@ impl ShardEngine {
                             // tiers).
                             let (drifted, pend_reqs, pend_bytes) = {
                                 let q = pump.in_flight.lock().unwrap();
+                        let q = q.pending();
                                 (
                                     !q.is_empty(),
                                     q.iter().map(|g| g.reqs).sum::<u32>(),
@@ -1650,7 +1658,7 @@ impl ShardEngine {
                                 // What the window caught: requests present
                                 // now that were not pending when it opened.
                                 let after: u32 =
-                                    pump.in_flight.lock().unwrap().iter().map(|g| g.reqs).sum();
+                                    pump.in_flight.lock().unwrap().pending().iter().map(|g| g.reqs).sum();
                                 pump.pump_gathered_reqs.fetch_add(
                                     after.saturating_sub(pend_reqs) as u64,
                                     Ordering::Relaxed,
@@ -1832,9 +1840,16 @@ impl ShardEngine {
     /// propagates — clients sat out their full timeout (ladder D3:
     /// exactly one in-flight batch per worker lost at the move moment).
     pub fn begin_close(&self) {
-        // Fence before touching shared worker state: a panicked worker can
-        // poison those mutexes. One owner starts even if cleanup then fails.
-        let first = !self.closed.swap(true, Ordering::SeqCst);
+        // This is the terminal handoff, shared with transaction publication,
+        // no-write attachment and durable dispatch. Recover poisoning so a
+        // failed worker still fences admission and retains shutdown authority.
+        let stranded = {
+            let mut handoff = self.in_flight.lock().unwrap_or_else(|e| e.into_inner());
+            let stranded = handoff.retire();
+            self.closed.store(true, Ordering::SeqCst);
+            stranded
+        };
+        let first = stranded.is_some();
         if first {
             let _ = self.close_tx.send(true);
             self.pump_wake.notify_one();
@@ -1865,19 +1880,8 @@ impl ShardEngine {
         if !first {
             return; // already closing
         }
-        let stranded: Vec<InFlightGroup> = self
-            .in_flight
-            .lock()
-            .unwrap_or_else(|e| e.into_inner())
-            .drain(..)
-            .collect();
-        for group in stranded {
-            for (resp, _) in group.effects.acks {
-                let _ = resp.send(Err(AppendErr::Moved));
-            }
-            for (resp, _) in group.effects.queue_acks {
-                let _ = resp.send(Err("shard fenced/moved; retry".into()));
-            }
+        for group in stranded.unwrap() {
+            group.effects.reject(AppendErr::Moved);
         }
         if let Some(cb) = &self.on_close {
             cb();
@@ -1923,6 +1927,7 @@ impl ShardEngine {
         self.in_flight
             .lock()
             .unwrap()
+            .pending()
             .first()
             .map(|g| g.written_at.elapsed().as_millis().min(i64::MAX as u128) as i64)
             .unwrap_or(0)
@@ -3125,11 +3130,15 @@ impl ShardEngine {
     /// barrier right after its flush returns).
     async fn dispatch_durable(&self, durable_seq: u64) -> u32 {
         let _order = self.dispatch_gate.lock().await;
-        let ready: Vec<InFlightGroup> = {
-            let mut q = self.in_flight.lock().unwrap();
-            let split = q.partition_point(|g| g.seq <= durable_seq);
-            q.drain(..split).collect()
-        };
+        // Claim only proven remote-durable groups while this owner is live.
+        // Retirement after the claim does not revoke that already-durable
+        // completion; effects run outside the synchronous handoff mutex.
+        let ready = self.in_flight.lock().unwrap().take_durable(durable_seq);
+        #[cfg(test)]
+        if !ready.is_empty() {
+            self.completion_checkpoint(retirement_tests::CompletionPhase::Durable)
+                .await;
+        }
         let mut dispatched = 0u32;
         for group in ready {
             dispatched += group.reqs;
@@ -4146,3 +4155,6 @@ impl ShardEngine {
 
 #[cfg(test)]
 mod transaction_tests;
+
+#[cfg(test)]
+mod retirement_tests;

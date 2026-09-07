@@ -72,6 +72,10 @@ impl EngineTasks {
             .map_err(|_| "engine workers still running; join authority retained".into())
     }
     #[cfg(test)]
+    pub(super) fn task_handle_for_test(&self, role: &str) -> tokio::task::AbortHandle {
+        self.supervisor.task_handle_for_test(role)
+    }
+    #[cfg(test)]
     pub(super) fn abort(&self, role: &str) -> tokio::task::AbortHandle {
         self.supervisor.abort_named(role)
     }

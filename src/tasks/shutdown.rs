@@ -127,15 +127,19 @@ impl TaskSupervisor {
     }
 
     #[cfg(test)]
-    pub(crate) fn abort_named(&self, role: &str) -> tokio::task::AbortHandle {
+    pub(crate) fn task_handle_for_test(&self, role: &str) -> tokio::task::AbortHandle {
         let state = self.inner.state.lock().unwrap();
-        let handle = state
+        state
             .tasks
             .values()
             .find(|task| task.name == role)
             .expect("registered role")
             .handle
-            .abort_handle();
+            .abort_handle()
+    }
+    #[cfg(test)]
+    pub(crate) fn abort_named(&self, role: &str) -> tokio::task::AbortHandle {
+        let handle = self.task_handle_for_test(role);
         handle.abort();
         handle
     }

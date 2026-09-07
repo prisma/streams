@@ -10,7 +10,11 @@ impl CommitTransaction<'_> {
         // A no-write group observes prior applied truth. Attach all its
         // replies (including fences/refusals) to the newest existing barrier.
         if !self.has_writes() {
-            self.join_prior_barrier();
+            #[cfg(test)]
+            self.engine
+                .completion_checkpoint(retirement_tests::CompletionPhase::NoWrite)
+                .await;
+            self.join_prior_barrier().await;
             return;
         }
         #[cfg(test)]
@@ -34,19 +38,20 @@ impl CommitTransaction<'_> {
             || !self.effects.touches.is_empty()
             || self.extra_writes
     }
-    fn join_prior_barrier(mut self) {
-        let mut inflight = self.engine.in_flight.lock().unwrap();
-        if let Some(last) = inflight.last_mut() {
-            last.effects.acks.append(&mut self.effects.acks);
-            last.effects.queue_acks.append(&mut self.effects.queue_acks);
-        } else {
-            drop(inflight);
-            for (sender, result) in self.effects.acks {
-                let _ = sender.send(result);
-            }
-            for (sender, result) in self.effects.queue_acks {
-                let _ = sender.send(result);
-            }
+    async fn join_prior_barrier(mut self) {
+        // Complete any prior durable publications before treating an OPEN
+        // empty queue as completed truth. Retirement never needs this gate.
+        let _dispatch = self.engine.dispatch_gate.lock().await;
+        let attachment = self
+            .engine
+            .in_flight
+            .lock()
+            .unwrap()
+            .attach(&mut self.effects);
+        match attachment {
+            Attachment::Pending => {}
+            Attachment::Durable => self.effects.reply(),
+            Attachment::Retired => self.effects.reject(AppendErr::Moved),
         }
     }
     fn stage_stream_rows(&mut self) {
@@ -169,7 +174,13 @@ impl CommitTransaction<'_> {
             .store(0, Ordering::SeqCst);
         let write_us = started.elapsed().as_micros().min(u32::MAX as u128) as u32;
         match result {
-            Ok(handle) => self.publish(handle.seqnum(), maintenance, encode_us, write_us),
+            Ok(handle) => {
+                #[cfg(test)]
+                self.engine
+                    .completion_checkpoint(retirement_tests::CompletionPhase::Written)
+                    .await;
+                self.publish(handle.seqnum(), maintenance, encode_us, write_us);
+            }
             Err(error) => self.reject(&error.to_string()),
         }
     }

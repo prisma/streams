@@ -754,6 +754,54 @@
           "sha256": "335463099ab95f15798d05847fc8000a355fca442fb3bfc1ad85dbe7e7d26079"
         }
       ]
+    },
+    {
+      "id": "terminal-commit-retirement-handoff",
+      "obligations": [
+        "R03",
+        "R17",
+        "R17-B"
+      ],
+      "owner": "ShardEngine CommitHandoff and retained EngineTasks",
+      "mechanism": "Per-engine transaction checkpoints after actual staging, successful Db write, and remote-durable dispatch claim; independently held real WAL PUT",
+      "entered_proof": "Applied tail with missing Remote tail, staged duplicate, successful Memory row, observed natural acker exit, retained DbStatus before held close",
+      "oracle": "Retired replies map to moved/unknown promptly with no stranded senders or new live mirrors; actual durable claims retain exact completion; replacement recovers all canonical data/config/close/billing rows once",
+      "configuration": {
+        "seed": 1718,
+        "worker_threads": 4,
+        "flush_interval_ms": 5,
+        "wal_group_commit": false,
+        "tail_ring_bytes": 1048576
+      },
+      "limitations": "Pinned SlateDB with in-memory FaultStore; no cloud or independent execution claim.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/shard/retirement_tests.rs",
+          "name": "r17b_retirement_before_duplicate_attachment_cannot_erase_remote_dependency",
+          "sha256": "43b8f8d9f4c5dc0164f2fd3b59f569745f99cb217ce30ddaacebe1ec649633ae"
+        },
+        {
+          "file": "src/shard/retirement_tests.rs",
+          "name": "r17b_retirement_after_duplicate_attachment_owns_every_reply",
+          "sha256": "a51dd84a22aee7ce41348e4472d2637e9e24a1f469240547698180584a0d4967"
+        },
+        {
+          "file": "src/shard/retirement_tests.rs",
+          "name": "r17b_live_duplicate_waits_for_actual_remote_durability",
+          "sha256": "22376e4b22dfa9cf15c46042a0975f9ab3add2851496c0f2d148ec9980f55ff0"
+        },
+        {
+          "file": "src/shard/retirement_tests.rs",
+          "name": "r17b_durable_dispatch_claim_before_retirement_keeps_its_completion",
+          "sha256": "f91e7c37af2d16dc1435d9b373680696aba67081b8a5750817b6f6f19c05647b"
+        },
+        {
+          "file": "src/shard/retirement_tests.rs",
+          "name": "r17b_late_successful_write_settles_without_publishing_retired_effects",
+          "sha256": "25394435670d087a8bf5b9d1ce3eab184bb8950a307e3bfbcee90b09bbb63c73"
+        }
+      ]
     }
   ],
   "external_legs": [
@@ -899,6 +947,15 @@
       "after_sha256": "aa4fc29e612b51bb634fedf7ee1a667e26fde77e33776b167ac3724a104c1cc3",
       "finding": "R09-A",
       "reason": "Replace the obsolete standalone HashSet/Drop guard fixture with the actual supervised request owner: the deadline cancels one entered job, only its key is released, the other job stays admitted, the same key can retry, and runtime shutdown joins the remainder. Held registry-CAS integration tests separately establish real TTL cancellation and recreation fencing. The original key isolation and retry assertions remain explicit; cancellation of a request observer now intentionally leaves its owned job running."
+    },
+    {
+      "file": "src/shard/transaction_tests.rs",
+      "name": "r03a_mixed_transaction_preserves_every_row_reply_and_publication",
+      "before_commit": "89884ab114b22929aa93707361e9e8d52c762bc2",
+      "before_sha256": "940599f041678935429f3f7443f1f452085df84c9fa48c02ccf9578cf79f4c7f",
+      "after_sha256": "bf37a0aae5e06ba86fba41c4bca669e8f5ba2f0508dc6eb36cf6d92452c85eb7",
+      "finding": "R17-B",
+      "reason": "Inspect the same groups through CommitHandoff.pending() instead of a bare vector. Every exact row/reply/accounting/publication assertion is unchanged."
     }
   ]
 }

@@ -141,6 +141,7 @@ def check() -> list[str]:
     required_units[('src/fleet/repository/document_tests.rs', 'r09_fleet_document_deadlines_leave_cas_source_retryable')] = 'e273b3a94f6de769b361f8eeef3433b308c6eb07'
     required_units[('src/history/controller_tests.rs', 'active_absorber_cancel')] = '93f77ecfdb053850773bb698b3512e3777ce3354'
     required_units[('src/application/creation.rs', 'r05_cancelled_ttl_attempt_releases_only_its_owned_slot')] = '24cfdac0dfcf6618fd1ac51eae0ef70d458e29d1'
+    required_units[('src/shard/transaction_tests.rs', 'r03a_mixed_transaction_preserves_every_row_reply_and_publication')] = '89884ab114b22929aa93707361e9e8d52c762bc2'
     for section, required_changes in [('fixture_changes', required_fixtures), ('source_adaptations', required_units)]:
         changes = manifest.get(section, [])
         failures.extend(source_anchor_failures(changes, required_changes))

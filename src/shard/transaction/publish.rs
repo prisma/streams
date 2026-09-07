@@ -9,6 +9,15 @@ impl CommitTransaction<'_> {
         encode_us: u32,
         write_us: u32,
     ) {
+        let mut handoff = self.engine.in_flight.lock().unwrap();
+        let Some(pending) = handoff.publication() else {
+            drop(handoff);
+            // Storage may have accepted the batch. Its replacement recovers
+            // canonical rows; the retired incarnation publishes no new live
+            // mirrors, accounting, rings or success. Outcome remains unknown.
+            self.effects.reject(AppendErr::Moved);
+            return;
+        };
         if let Some(m) = maintenance_after {
             self.engine.publish_maintenance(m);
         }
@@ -34,9 +43,6 @@ impl CommitTransaction<'_> {
             if let Some(q) = &local.queue.state {
                 st.queue = (*q).clone();
             }
-        }
-        for local in self.streams.values() {
-            local.handle.applied_notify.notify_waiters();
         }
         {
             let mut debt = self.engine.trim_debt.lock().unwrap();
@@ -65,7 +71,7 @@ impl CommitTransaction<'_> {
             .fetch_add(self.stats.records, Ordering::Relaxed);
 
         crate::history::INGEST_BYTES_TOTAL.fetch_add(self.stats.appended_bytes, Ordering::Relaxed);
-        self.engine.in_flight.lock().unwrap().push(InFlightGroup {
+        pending.push(InFlightGroup {
             seq: sequence,
             written_at: std::time::Instant::now(),
             queue_wait_us: self.queue_wait_us,
@@ -76,6 +82,10 @@ impl CommitTransaction<'_> {
             bytes: self.stats.appended_bytes,
             effects: self.effects,
         });
+        drop(handoff);
+        for local in self.streams.values() {
+            local.handle.applied_notify.notify_waiters();
+        }
         self.engine.flush_wake.notify_one();
         self.engine.pump_wake.notify_one();
     }

@@ -44,12 +44,24 @@ pub(super) struct DurableEffects {
 }
 
 impl DurableEffects {
+    pub fn reply(self) {
+        for (reply, result) in self.acks {
+            let _ = reply.send(result);
+        }
+        for (reply, result) in self.queue_acks {
+            let _ = reply.send(result);
+        }
+    }
     pub fn reject(self, error: AppendErr) {
+        let queue_error = match &error {
+            AppendErr::Moved => "shard fenced/moved; retry".to_owned(),
+            error => format!("{error:?}"),
+        };
         for (reply, _) in self.acks {
             let _ = reply.send(Err(error.clone()));
         }
         for (reply, _) in self.queue_acks {
-            let _ = reply.send(Err(format!("{error:?}")));
+            let _ = reply.send(Err(queue_error.clone()));
         }
     }
 }
