@@ -102,7 +102,7 @@ impl FrameReadResult {
         from: u64,
     ) -> bool {
         self.coverage.as_ref().is_some_and(|proof| {
-            proof.owner.ptr_eq(&std::sync::Arc::downgrade(&engine.db))
+            proof.owner.as_ptr() == std::sync::Arc::as_ptr(&engine.db)
                 && proof.hash == hash
                 && proof.from == from
                 && self.last_offset.and_then(|last| last.checked_add(1)) == Some(proof.to)

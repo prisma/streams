@@ -649,6 +649,8 @@ pub struct StreamState {
 }
 
 pub struct StreamHandle {
+    /// Physical database opening that admitted this handle and its durable ring.
+    owner: std::sync::Weak<Db>,
     pub hash: [u8; 16],
     pub state: Mutex<StreamState>,
     pub notify: Notify,
@@ -2336,6 +2338,7 @@ impl ShardEngine {
             self.trim_debt.lock().unwrap().insert(hash);
         }
         let handle = Arc::new(StreamHandle {
+            owner: Arc::downgrade(&self.db),
             hash,
             state: Mutex::new(StreamState {
                 durable: tail.clone(),
@@ -2615,6 +2618,7 @@ impl ShardEngine {
         max_bytes: usize,
     ) -> Option<FrameReadResult> {
         if !self.ring_enabled
+            || handle.owner.as_ptr() != Arc::as_ptr(&self.db)
             || scan_from >= scan_to
             || scan_to > handle.state.lock().unwrap().durable.next
         {
@@ -2716,6 +2720,7 @@ impl ShardEngine {
         max_bytes: usize,
     ) -> Option<FrameReadResult> {
         if !self.ring_enabled
+            || handle.owner.as_ptr() != Arc::as_ptr(&self.db)
             || scan_from >= scan_to
             || scan_to > handle.state.lock().unwrap().durable.next
         {

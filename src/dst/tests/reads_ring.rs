@@ -483,6 +483,12 @@ async fn o3_retained_ring_coverage_skips_only_the_redundant_marker() {
     assert!(!partial.proves_durable_ring(&engine, [0x84; 16], 0));
     let other = open_engine(mem(), "o3-other-owner").await;
     assert!(!partial.proves_durable_ring(&other, hash, 0));
+    assert!(other.ring_read(&handle, 0, 4, usize::MAX).is_none());
+    assert!(
+        other
+            .ring_read_keyed(&handle, 0, 4, "hot", usize::MAX)
+            .is_none()
+    );
     other.begin_close();
 
     // Applied visibility cannot borrow a durable proof, even when this particular

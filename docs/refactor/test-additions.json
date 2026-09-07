@@ -370,7 +370,7 @@
       "attributes": [
         "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
       ],
-      "function_sha256": "420d9aec8d18027057da31ef91143637568ea912181c69d5911b672e94061d0c",
+      "function_sha256": "e3b05aec38219db136e1b2778e3ff0f99b29f8f9f556e162611fe8ee675969aa",
       "mechanisms": [],
       "configuration": [],
       "file": "src/dst/tests/reads_ring.rs",
