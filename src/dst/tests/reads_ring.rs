@@ -481,7 +481,21 @@ async fn o3_retained_ring_coverage_skips_only_the_redundant_marker() {
     assert!(partial.proves_durable_ring(&engine, hash, 0));
     assert!(!partial.proves_durable_ring(&engine, hash, 1));
     assert!(!partial.proves_durable_ring(&engine, [0x84; 16], 0));
-    let other = open_engine(mem(), "o3-other-owner").await;
+    let other = open_engine_cfg(
+        mem(),
+        "o3-other-owner",
+        crate::shard::ShardConfig {
+            tail_ring_bytes: 1024 * 1024,
+            ..Default::default()
+        },
+    )
+    .await;
+    append_sized(&other, hash, &key, "hot", 1024).await;
+    let other_handle = other.stream_handle(hash).await.unwrap();
+    assert!(
+        other.ring_read(&other_handle, 0, 1, usize::MAX).is_some(),
+        "the other engine's ring must be enabled for the cross-owner control"
+    );
     assert!(!partial.proves_durable_ring(&other, hash, 0));
     assert!(other.ring_read(&handle, 0, 4, usize::MAX).is_none());
     assert!(
