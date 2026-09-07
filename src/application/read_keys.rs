@@ -14,7 +14,7 @@ pub(super) struct ReadKeys<'a> {
     segment: [u8; 16],
     // mt-lint: allow(name-keyed-map): routing keys within this fixed StreamKey, epoch,
     // and physical segment are data lanes, never unqualified stream identities.
-    entries: HashMap<(String, u32), KeyEntry>,
+    entries: HashMap<u32, HashMap<String, KeyEntry>>,
     cached: usize,
 }
 impl<'a> ReadKeys<'a> {
@@ -33,24 +33,26 @@ impl<'a> ReadKeys<'a> {
         raw: &[u8],
         limit: usize,
     ) -> Result<Option<Vec<u8>>, String> {
-        let entry = self
-            .entries
-            .entry((frame.header.routing_key.clone(), frame.header.key_version))
-            .or_insert_with(|| {
-                let subkey = derive_subkey(
-                    self.key,
-                    self.epoch,
-                    &frame.header.routing_key,
-                    frame.header.key_version,
-                );
-                let cipher = if self.cached < MAX_CIPHERS {
-                    self.cached += 1;
-                    Some(Box::new(FrameDecryptor::new(&subkey, &self.segment)))
-                } else {
-                    None
-                };
-                KeyEntry { subkey, cipher }
-            });
+        let lanes = self.entries.entry(frame.header.key_version).or_default();
+        let entry = if let Some(entry) = lanes.get(frame.header.routing_key) {
+            entry
+        } else {
+            let subkey = derive_subkey(
+                self.key,
+                self.epoch,
+                frame.header.routing_key,
+                frame.header.key_version,
+            );
+            let cipher = if self.cached < MAX_CIPHERS {
+                self.cached += 1;
+                Some(Box::new(FrameDecryptor::new(&subkey, &self.segment)))
+            } else {
+                None
+            };
+            lanes
+                .entry(frame.header.routing_key.to_owned())
+                .or_insert(KeyEntry { subkey, cipher })
+        };
         match &entry.cipher {
             Some(cipher) => cipher.decrypt(frame, raw, limit),
             None => decrypt_frame_limited(&entry.subkey, &self.segment, frame, raw, limit),
@@ -86,11 +88,12 @@ mod tests {
             assert!(keys.decrypt(&frame, &raw, 11).unwrap().is_none());
             encoded.push(raw);
         }
-        assert_eq!(keys.entries.len(), 128);
+        assert_eq!(keys.entries.values().map(HashMap::len).sum::<usize>(), 128);
         assert_eq!(keys.cached, MAX_CIPHERS);
         assert_eq!(
             keys.entries
                 .values()
+                .flat_map(HashMap::values)
                 .filter(|entry| entry.cipher.is_some())
                 .count(),
             MAX_CIPHERS

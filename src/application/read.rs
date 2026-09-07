@@ -2,7 +2,7 @@
 //! result; scanned progress never depends on the number of matching records.
 use super::read_budget::{MAX_SCAN_BATCH_BYTES, PageBudget, SCAN_WINDOW};
 use super::read_keys::ReadKeys;
-use crate::crypto::{StreamKey, decode_frame};
+use crate::crypto::StreamKey;
 use crate::shard::{Deliver, ShardEngine, StreamHandle};
 use bytes::Bytes;
 use std::sync::Arc;
@@ -111,15 +111,15 @@ pub(crate) struct ReadPage {
 /// Returns false at the first withheld matching record. Earlier filtered misses
 /// are consumed, but the low-level scan's later cursor must then be discarded.
 fn decode_frames_into(
-    frames: &[Bytes],
+    frames: &[crate::shard::record::CheckedFrame],
     keys: &mut ReadKeys<'_>,
     out: &mut ReadPage,
     budget: &mut PageBudget,
 ) -> Result<bool, String> {
     for raw in frames {
-        let frame = decode_frame(raw).ok_or("bad frame")?;
+        let frame = raw.view();
         let offset = frame.header.offset;
-        if !budget.metadata_fits(&frame.header.routing_key) {
+        if !budget.metadata_fits(frame.header.routing_key) {
             out.last = offset.checked_sub(1);
             return Ok(false);
         }
@@ -130,14 +130,14 @@ fn decode_frames_into(
             out.last = offset.checked_sub(1);
             return Ok(false);
         };
-        if !budget.admit(pt.len(), &frame.header.routing_key) {
+        if !budget.admit(pt.len(), frame.header.routing_key) {
             out.last = offset.checked_sub(1);
             return Ok(false);
         }
         out.recs.push(PlainRec {
             off: offset,
             payload: Bytes::from(pt),
-            rkey: frame.header.routing_key,
+            rkey: frame.header.routing_key.to_owned(),
         });
         out.last = Some(offset);
     }
@@ -830,10 +830,7 @@ async fn absorption_race(
             // detects head AND mid-page gaps without touching the
             // hot path's per-frame budget (the O(n) version cost
             // the capacity gate ~2%).
-            let first = match decode_frame(&part.frames[0]) {
-                Some(f) => f.header.offset,
-                None => return Err("bad frame".into()),
-            };
+            let first = part.frames[0].view().header.offset;
             first > cursor
                 || part
                     .last_offset

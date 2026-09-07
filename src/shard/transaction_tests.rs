@@ -183,7 +183,7 @@ impl Fixture {
                 crate::crypto::decrypt_frame(&[1; 32], &hash, &decoded, &frame).unwrap();
             let header = &decoded.header;
             assert_eq!(
-                (header.offset, header.ts_ms, header.routing_key.as_str()),
+                (header.offset, header.ts_ms, header.routing_key),
                 (0, 77, "lane")
             );
             assert_eq!(plaintext, b"payload");

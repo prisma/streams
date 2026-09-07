@@ -3,7 +3,8 @@
 //! fail before either matching or match-free progress can be published.
 use super::{Deliver, ShardEngine, StreamHandle, record_key};
 use crate::crypto::{DecodedFrame, decode_frame};
-use bytes::Bytes;
+mod checked;
+pub use checked::CheckedFrame;
 use slatedb::config::{DurabilityLevel, ScanOptions};
 
 #[derive(Debug, PartialEq, Eq)]
@@ -69,7 +70,7 @@ pub(crate) fn decode_at(raw: &[u8], offset: u64) -> Result<DecodedFrame<'_>, Rec
 /// Frames with offset in [scan_from, durable_next), optionally filtered by
 /// routing key (frame metadata; no decryption needed).
 pub struct FrameReadResult {
-    pub frames: Vec<Bytes>,
+    pub frames: Vec<CheckedFrame>,
     pub last_offset: Option<u64>,
 }
 
@@ -115,10 +116,10 @@ pub async fn read_frames_range(
         .await?;
     let mut total = 0usize;
     while let Some(kv) = iter.next().await? {
-        let frame = decode_row(&kv.key, &prefix[..17], &kv.value)?;
-        let off = frame.header.offset;
-        total += kv.value.len();
-        out.frames.push(kv.value);
+        let frame = CheckedFrame::from_row(&kv.key, &prefix[..17], kv.value)?;
+        let off = frame.view().header.offset;
+        total += frame.len();
+        out.frames.push(frame);
         out.last_offset = Some(off);
         if total >= max_bytes {
             break;
@@ -212,11 +213,11 @@ pub(crate) async fn read_frames_until(
         .await?;
     let mut total = 0usize;
     while let Some(kv) = iter.next().await? {
-        let frame = decode_row(&kv.key, &prefix[..17], &kv.value)?;
-        let off = frame.header.offset;
-        total += kv.value.len();
-        if !key_filter.is_some_and(|kf| frame.header.routing_key != kf) {
-            out.frames.push(kv.value);
+        let frame = CheckedFrame::from_row(&kv.key, &prefix[..17], kv.value)?;
+        let off = frame.view().header.offset;
+        total += frame.len();
+        if !key_filter.is_some_and(|kf| frame.view().header.routing_key != kf) {
+            out.frames.push(frame);
         }
         out.last_offset = Some(off);
         if total >= max_bytes {

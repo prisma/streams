@@ -370,11 +370,12 @@ fn nonce_for_offset(offset: u64) -> [u8; 12] {
     n
 }
 
-pub struct FrameHeader {
+#[derive(Clone, Copy)]
+pub struct FrameHeader<R = String> {
     pub offset: u64,
     pub ts_ms: i64,
     pub key_version: u32,
-    pub routing_key: String,
+    pub routing_key: R,
 }
 
 /// Independent domain from all legacy AES-GCM keys, and from sibling
@@ -512,8 +513,10 @@ impl FrameCipher {
     }
 }
 
+pub type ReadFrameHeader<'a> = FrameHeader<&'a str>;
+
 pub struct DecodedFrame<'a> {
-    pub header: FrameHeader,
+    pub header: ReadFrameHeader<'a>,
     pub header_len: usize,
     pub ciphertext: &'a [u8],
     /// Frame version byte (FRAME_VER or FRAME_VER_Z); decides whether the
@@ -536,12 +539,12 @@ pub fn decode_frame(buf: &[u8]) -> Option<DecodedFrame<'_>> {
     let key_version = u32::from_be_bytes(buf[17..21].try_into().ok()?);
     let rk_len = u16::from_be_bytes(buf[21..23].try_into().ok()?) as usize;
     let routing_end = 23 + rk_len;
-    let routing_key = String::from_utf8(buf.get(23..routing_end)?.to_vec()).ok()?;
+    let routing_key = std::str::from_utf8(buf.get(23..routing_end)?).ok()?;
     let header_len = routing_end + if buf[0] >= FRAME_VER { 12 } else { 0 };
     let ct_len = u32::from_be_bytes(buf.get(header_len..header_len + 4)?.try_into().ok()?) as usize;
     let ciphertext = buf.get(header_len + 4..header_len + 4 + ct_len)?;
     Some(DecodedFrame {
-        header: FrameHeader {
+        header: ReadFrameHeader {
             offset,
             ts_ms,
             key_version,

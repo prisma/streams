@@ -1147,9 +1147,6 @@ impl Absorber {
                 let mut chunk_bytes = 0usize;
                 let mut chunk_raw = 0u64;
                 for raw in &chunk.frames {
-                    if crate::crypto::decode_frame(raw).is_none() {
-                        anyhow::bail!("undecodable frame during v2 gather");
-                    }
                     chunk_raw += raw.len() as u64;
                     // Canonical row + a conservative per-record postings
                     // allowance (~key 65 B amortized + a few varints). The
@@ -1181,8 +1178,7 @@ impl Absorber {
                     let offs: Vec<u64> = chunk
                         .frames
                         .iter()
-                        .filter_map(|raw| crate::crypto::decode_frame(raw))
-                        .map(|f| f.header.offset)
+                        .map(|raw| raw.view().header.offset)
                         .collect();
                     eprintln!(
                         "GATHER {} from={from} upto={upto} frames={offs:?}",
@@ -1198,13 +1194,11 @@ impl Absorber {
                 // GC surface of its own.
                 let mut pages = crate::postings::PageBuilder::default();
                 for raw in &chunk.frames {
-                    let Some(frame) = crate::crypto::decode_frame(raw) else {
-                        anyhow::bail!("undecodable frame during v2 gather");
-                    };
+                    let frame = raw.view();
                     let off = frame.header.offset;
-                    wb.put(hist2_record_key(route, inc, off), raw.clone());
+                    wb.put(hist2_record_key(route, inc, off), Bytes::from(raw.clone()));
                     pages.note_frame(
-                        crate::postings::rk_hash(&frame.header.routing_key),
+                        crate::postings::rk_hash(frame.header.routing_key),
                         off,
                         raw.len() as u64,
                     );
@@ -1354,7 +1348,7 @@ pub async fn read_history2(
     upto: u64,
     key_filter: Option<&str>,
     max_bytes: usize,
-) -> anyhow::Result<(Vec<Bytes>, Option<u64>, bool)> {
+) -> anyhow::Result<(Vec<crate::shard::record::CheckedFrame>, Option<u64>, bool)> {
     match key_filter {
         Some(rk) => read_history2_keyed(part, route, inc, rk, from, upto, max_bytes).await,
         None => read_history2_scan(part, route, inc, from, upto, max_bytes).await,
@@ -1370,8 +1364,8 @@ async fn read_history2_scan(
     from: u64,
     upto: u64,
     max_bytes: usize,
-) -> anyhow::Result<(Vec<Bytes>, Option<u64>, bool)> {
-    let mut frames: Vec<Bytes> = Vec::new();
+) -> anyhow::Result<(Vec<crate::shard::record::CheckedFrame>, Option<u64>, bool)> {
+    let mut frames: Vec<crate::shard::record::CheckedFrame> = Vec::new();
     let mut last: Option<u64> = None;
     let mut completed = true;
     let mut total = 0usize;
@@ -1379,10 +1373,10 @@ async fn read_history2_scan(
     let range = hist2_record_key(route, inc, from)..hist2_record_key(route, inc, upto);
     let mut iter = part.scan_with_options(range, &hist_scan_opts()).await?;
     while let Some(kv) = iter.next().await? {
-        let frame = crate::shard::record::decode_row(&kv.key, &prefix[..33], &kv.value)?;
-        let off = frame.header.offset;
-        total += kv.value.len();
-        frames.push(kv.value);
+        let frame = crate::shard::record::CheckedFrame::from_row(&kv.key, &prefix[..33], kv.value)?;
+        let off = frame.view().header.offset;
+        total += frame.len();
+        frames.push(frame);
         last = Some(off);
         if total >= max_bytes {
             completed = false;
@@ -1418,7 +1412,7 @@ async fn read_history2_keyed(
     from: u64,
     upto: u64,
     max_bytes: usize,
-) -> anyhow::Result<(Vec<Bytes>, Option<u64>, bool)> {
+) -> anyhow::Result<(Vec<crate::shard::record::CheckedFrame>, Option<u64>, bool)> {
     use std::sync::atomic::Ordering::Relaxed;
     if from >= upto {
         return Ok((Vec::new(), None, true));
@@ -1503,7 +1497,7 @@ pub async fn read_history2_keyed_cached(
     upto: u64,
     absorbed: u64,
     max_bytes: usize,
-) -> anyhow::Result<(Vec<Bytes>, Option<u64>, bool)> {
+) -> anyhow::Result<(Vec<crate::shard::record::CheckedFrame>, Option<u64>, bool)> {
     use std::sync::atomic::Ordering::Relaxed;
     if from >= upto {
         return Ok((Vec::new(), None, true));
@@ -1537,7 +1531,7 @@ async fn execute_postings_plan(
     provable_to: u64,
     upto: u64,
     max_bytes: usize,
-) -> anyhow::Result<(Vec<Bytes>, Option<u64>, bool)> {
+) -> anyhow::Result<(Vec<crate::shard::record::CheckedFrame>, Option<u64>, bool)> {
     use std::sync::atomic::Ordering::Relaxed;
     // 3. Plan bounded spans.
     let cfg = crate::postings::PlanCfg {
@@ -1546,7 +1540,7 @@ async fn execute_postings_plan(
     };
     let plan = crate::postings::plan_spans(&clipped, provable_to, &cfg);
     let mut spans_used = 0u64;
-    let mut frames: Vec<Bytes> = Vec::new();
+    let mut frames: Vec<crate::shard::record::CheckedFrame> = Vec::new();
     let mut last: Option<u64> = None;
     let mut total = 0usize;
     let mut truncated = false;
@@ -1581,24 +1575,28 @@ async fn execute_postings_plan(
                     ..Default::default()
                 };
                 let mut iter = part.scan_with_options(range, &opts).await?;
-                let mut hits: Vec<(u64, Bytes)> = Vec::new();
+                let mut hits: Vec<(u64, crate::shard::record::CheckedFrame)> = Vec::new();
                 let mut span_bytes = 0usize;
                 let mut span_trunc = false;
                 let mut span_last = None;
                 while let Some(kv) = iter.next().await? {
                     READ_FRAMES_SCANNED.fetch_add(1, Relaxed);
-                    let f = crate::shard::record::decode_row(&kv.key, &prefix[..33], &kv.value)?;
-                    if span_last.is_some() && span_bytes + kv.value.len() > max_bytes {
+                    let f = crate::shard::record::CheckedFrame::from_row(
+                        &kv.key,
+                        &prefix[..33],
+                        kv.value,
+                    )?;
+                    if span_last.is_some() && span_bytes + f.len() > max_bytes {
                         span_trunc = true;
                         break;
                     }
-                    span_bytes += kv.value.len();
-                    span_last = Some(f.header.offset);
-                    if f.header.routing_key != rk {
+                    span_bytes += f.len();
+                    span_last = Some(f.view().header.offset);
+                    if f.view().header.routing_key != rk {
                         continue;
                     }
                     READ_FRAMES_MATCHED.fetch_add(1, Relaxed);
-                    hits.push((f.header.offset, kv.value));
+                    hits.push((f.view().header.offset, f));
                 }
                 anyhow::Ok((span, hits, span_trunc, span_last))
             }
@@ -1657,8 +1655,8 @@ async fn read_history2_keyed_envelope(
     from: u64,
     upto: u64,
     max_bytes: usize,
-) -> anyhow::Result<(Vec<Bytes>, Option<u64>, bool)> {
-    let mut frames: Vec<Bytes> = Vec::new();
+) -> anyhow::Result<(Vec<crate::shard::record::CheckedFrame>, Option<u64>, bool)> {
+    let mut frames: Vec<crate::shard::record::CheckedFrame> = Vec::new();
     let mut last: Option<u64> = None;
     let mut completed = true;
     let mut total = 0usize;
@@ -1666,11 +1664,11 @@ async fn read_history2_keyed_envelope(
     let range = hist2_record_key(route, inc, from)..hist2_record_key(route, inc, upto);
     let mut iter = part.scan_with_options(range, &hist_scan_opts()).await?;
     while let Some(kv) = iter.next().await? {
-        let f = crate::shard::record::decode_row(&kv.key, &prefix[..33], &kv.value)?;
-        let off = f.header.offset;
-        total += kv.value.len();
-        if f.header.routing_key == rk {
-            frames.push(kv.value);
+        let f = crate::shard::record::CheckedFrame::from_row(&kv.key, &prefix[..33], kv.value)?;
+        let off = f.view().header.offset;
+        total += f.len();
+        if f.view().header.routing_key == rk {
+            frames.push(f);
         }
         last = Some(off);
         if total >= max_bytes {

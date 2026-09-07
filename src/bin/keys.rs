@@ -113,7 +113,7 @@ fn main() -> anyhow::Result<()> {
             let sub = crypto::derive_subkey(
                 &k,
                 &epoch,
-                &frame.header.routing_key,
+                frame.header.routing_key,
                 frame.header.key_version,
             );
             let pt =

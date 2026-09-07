@@ -2650,9 +2650,9 @@ impl ShardEngine {
                 if *off >= scan_to {
                     break;
                 }
-                record::decode_at(f, *off).ok()?;
+                let checked = record::CheckedFrame::from_ring(f, *off, None).ok()??;
                 total += f.len();
-                out.frames.push(f.clone());
+                out.frames.push(checked);
                 out.last_offset = Some(*off);
                 if total >= max_bytes {
                     self.ring_hits.fetch_add(1, Ordering::Relaxed);
@@ -2721,10 +2721,10 @@ impl ShardEngine {
                 if *off >= scan_to {
                     break;
                 }
-                let matched = record::decode_at(f, *off).ok()?.header.routing_key == rk;
+                let checked = record::CheckedFrame::from_ring(f, *off, Some(rk)).ok()?;
                 total += f.len();
-                if matched {
-                    out.frames.push(f.clone());
+                if let Some(checked) = checked {
+                    out.frames.push(checked);
                 }
                 // Consumed progress covers NON-matching frames too.
                 out.last_offset = Some(*off);
