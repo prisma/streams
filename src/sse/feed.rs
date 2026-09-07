@@ -1362,6 +1362,7 @@ pub(crate) enum DriveOutcome {
 // ==================================================================
 #[cfg(test)]
 pub(crate) mod tests {
+    mod fixture;
     use super::*;
     use std::sync::atomic::AtomicBool;
 
@@ -1469,8 +1470,7 @@ pub(crate) mod tests {
                 anyhow::bail!("injected source failure");
             }
             if self.block_reads.load(Ordering::Relaxed) {
-                self.read_started.notify_waiters();
-                self.read_release.notified().await;
+                fixture::hold_until_release(&self.read_started, &self.read_release).await;
             }
             if self.empty_pages.load(Ordering::Relaxed) {
                 return Ok(SourceBatch {
@@ -1532,8 +1532,7 @@ pub(crate) mod tests {
         }
         async fn next_source(&self) -> anyhow::Result<SourceTransition> {
             if self.next_source_block.load(Ordering::Relaxed) {
-                self.next_started.notify_waiters();
-                self.next_release.notified().await;
+                fixture::hold_until_release(&self.next_started, &self.next_release).await;
             }
             if let Some(next) = self.next_result.lock().unwrap().take() {
                 return Ok(SourceTransition::NewSource(next));
