@@ -241,7 +241,7 @@ pub(super) async fn seal_ok(addr: std::net::SocketAddr, name: &str) {
 }
 
 pub(super) async fn hub_append_lf(addr: std::net::SocketAddr, name: &str, body: &str) {
-    let (st, _, _) = preq(
+    let (st, headers, response) = preq(
         addr,
         "POST",
         &format!("/v1/streams/{name}/records"),
@@ -249,7 +249,11 @@ pub(super) async fn hub_append_lf(addr: std::net::SocketAddr, name: &str, body: 
         body.as_bytes(),
     )
     .await;
-    assert!(st == 200 || st == 204, "append {st}");
+    assert!(
+        st == 200 || st == 204,
+        "{name} append request={body:?}: status={st}, headers={headers:?}, response={}",
+        String::from_utf8_lossy(&response)
+    );
 }
 
 // ==================================================================
