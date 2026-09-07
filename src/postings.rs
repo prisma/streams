@@ -473,6 +473,7 @@ impl RunWindow {
 /// one requested range). Coalesces a following run into the current
 /// span when the intervening gap is small in BYTES; otherwise opens a
 /// new span. Stops at span/byte budgets with an honest partial.
+#[cfg(test)]
 pub fn plan_spans(runs: &[AbsRun], upto: u64, cfg: &PlanCfg) -> Plan {
     plan_spans_iter(runs.iter().copied(), upto, cfg)
 }
