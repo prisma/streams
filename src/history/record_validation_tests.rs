@@ -73,9 +73,18 @@ async fn r08a_history_scan_envelope_and_postings_reject_corrupt_rows() {
             gap_bytes_before: 0,
         }];
         assert!(
-            execute_postings_plan(&db, route, inc, "wanted", runs, 512, 512, 1024)
-                .await
-                .is_err(),
+            execute_postings_plan(
+                &db,
+                route,
+                inc,
+                "wanted",
+                crate::postings::RunWindow::new(runs.into(), 0, 512),
+                512,
+                512,
+                1024
+            )
+            .await
+            .is_err(),
             "{label}: postings span"
         );
         assert_eq!(db.get(&key).await.unwrap().unwrap().as_ref(), value);
