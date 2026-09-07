@@ -423,7 +423,7 @@ pub struct Span {
     pub scan_bytes: u64,
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq, Eq)]
 pub struct Plan {
     pub spans: Vec<Span>,
     /// The read provably consumed matches up to here (exclusive): the
@@ -433,11 +433,55 @@ pub struct Plan {
     pub complete: bool,
 }
 
+/// Immutable admitted postings with a bounded view into the requested range.
+/// Boundary estimates retain the whole run's bytes, just like canonical clipping.
+pub struct RunWindow {
+    owner: std::sync::Arc<[AbsRun]>,
+    indices: std::ops::Range<usize>,
+    from: u64,
+    upto: u64,
+}
+impl RunWindow {
+    pub(crate) fn new(owner: std::sync::Arc<[AbsRun]>, from: u64, upto: u64) -> Self {
+        let start = owner.partition_point(|r| r.start + r.count as u64 <= from);
+        let end = if from >= upto {
+            start
+        } else {
+            start + owner[start..].partition_point(|r| r.start < upto)
+        };
+        Self {
+            owner,
+            indices: start..end,
+            from,
+            upto,
+        }
+    }
+    pub(crate) fn iter(&self) -> impl Iterator<Item = AbsRun> + '_ {
+        self.owner[self.indices.clone()].iter().map(|r| {
+            let start = r.start.max(self.from);
+            let end = (r.start + r.count as u64).min(self.upto);
+            AbsRun {
+                start,
+                count: (end - start) as u32,
+                ..*r
+            }
+        })
+    }
+}
+
 /// Plan bounded canonical spans over absolute runs (ascending, within
 /// one requested range). Coalesces a following run into the current
 /// span when the intervening gap is small in BYTES; otherwise opens a
 /// new span. Stops at span/byte budgets with an honest partial.
 pub fn plan_spans(runs: &[AbsRun], upto: u64, cfg: &PlanCfg) -> Plan {
+    plan_spans_iter(runs.iter().copied(), upto, cfg)
+}
+
+pub(crate) fn plan_spans_iter(
+    runs: impl IntoIterator<Item = AbsRun>,
+    upto: u64,
+    cfg: &PlanCfg,
+) -> Plan {
     let mut plan = Plan {
         spans: Vec::new(),
         consumed_to: 0,
@@ -805,6 +849,101 @@ mod tests {
             plan.consumed_to,
             7 * 1_000_000 + 1,
             "cursor resumes at the first unplanned run"
+        );
+    }
+}
+
+#[cfg(test)]
+mod o4_tests {
+    use super::*;
+    use std::sync::Arc;
+
+    fn old_clip(runs: &[AbsRun], from: u64, upto: u64) -> Vec<AbsRun> {
+        runs.iter()
+            .filter_map(|r| {
+                let start = r.start.max(from);
+                let end = (r.start + r.count as u64).min(upto);
+                (start < end).then(|| AbsRun {
+                    start,
+                    count: (end - start) as u32,
+                    ..*r
+                })
+            })
+            .collect()
+    }
+
+    #[test]
+    fn o4_window_matches_double_clipping_and_every_plan_field() {
+        let mut seed = 0x04a7e2070u64;
+        let mut next = || {
+            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
+            seed
+        };
+        for case in 0..2048 {
+            let mut runs = Vec::new();
+            let mut offset = 0u64;
+            for _ in 0..case % 129 {
+                offset += next() % 32;
+                let count = (next() % 64 + 1) as u32;
+                runs.push(AbsRun {
+                    start: offset,
+                    count,
+                    matching_bytes: (next() % 65536 + 1) * count as u64,
+                    gap_bytes_before: if next() % 7 == 0 {
+                        GAP_UNKNOWN
+                    } else {
+                        next() % 131072
+                    },
+                });
+                offset += count as u64;
+            }
+            let runs: Arc<[AbsRun]> = runs.into();
+            for _ in 0..20 {
+                let from = next() % (offset + 2);
+                let upto = from + next() % (offset + 2);
+                let provable_to = from + next() % (upto - from + 1);
+                let cfg = PlanCfg {
+                    max_spans: (next() % 9) as usize,
+                    max_scan_bytes: next() % (8 * 1024 * 1024),
+                    max_gap_bytes: next() % 131072,
+                    ..Default::default()
+                };
+                let old = old_clip(&old_clip(&runs, from, provable_to), from, provable_to);
+                let window = RunWindow::new(runs.clone(), from, provable_to);
+                assert!(Arc::ptr_eq(&runs, &window.owner));
+                assert_eq!(window.iter().collect::<Vec<_>>(), old);
+                assert_eq!(
+                    plan_spans_iter(window.iter(), provable_to, &cfg),
+                    plan_spans(&old, provable_to, &cfg),
+                    "case {case}: {from}..{provable_to}/{upto}"
+                );
+            }
+        }
+    }
+
+    #[test]
+    fn o4_late_window_seeks_and_retains_whole_run_estimates() {
+        let owner: Arc<[AbsRun]> = (0..100_000)
+            .map(|i| AbsRun {
+                start: i * 16,
+                count: 8,
+                matching_bytes: 8192,
+                gap_bytes_before: 4096,
+            })
+            .collect::<Vec<_>>()
+            .into();
+        let window = RunWindow::new(owner.clone(), 99_990 * 16 + 3, 99_992 * 16 + 1);
+        assert!(Arc::ptr_eq(&window.owner, &owner));
+        assert_eq!(window.indices, 99_990..99_993);
+        let selected = window.iter().collect::<Vec<_>>();
+        assert_eq!(
+            selected.iter().map(|r| r.count).collect::<Vec<_>>(),
+            vec![5, 8, 1]
+        );
+        assert!(
+            selected
+                .iter()
+                .all(|r| r.matching_bytes == 8192 && r.gap_bytes_before == 4096)
         );
     }
 }

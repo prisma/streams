@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use slatedb::Db;
 
 use crate::crypto::{RouteHash, RoutingKeyHash, SegmentHash};
-use crate::postings::{AbsRun, BUCKET_OFFSETS};
+use crate::postings::{AbsRun, BUCKET_OFFSETS, RunWindow};
 
 /// Default PROCESS-WIDE decoded-byte budget (spec §7.1; review finding
 /// 7: one budget for the whole process — engines share one cache in
@@ -120,10 +120,10 @@ pub struct PostingsCache {
 
 /// Outcome of a cache consultation for one read.
 pub enum CacheRuns {
-    /// Runs (already clipped to cover the request range's buckets) plus
+    /// An immutable run window covering the request range plus
     /// how far the index provably covers. `provable_to >= upto` means
     /// the whole request range is index-verified.
-    Runs { runs: Vec<AbsRun>, provable_to: u64 },
+    Runs { runs: RunWindow, provable_to: u64 },
     /// A page in the range failed to decode: the caller must serve the
     /// range through the §8.6 canonical envelope and must NOT treat the
     /// index as authoritative.
@@ -466,7 +466,7 @@ impl PostingsCache {
                 Decision::Hit(s, covered_to) => {
                     self.hits.fetch_add(1, Ordering::Relaxed);
                     self.maybe_prefetch(part, route, inc, kh, &s, upto, absorbed, covered_to);
-                    let runs = clip_runs(&s.runs, from, upto);
+                    let runs = RunWindow::new(s.runs.clone(), from, upto);
                     return Ok(CacheRuns::Runs {
                         runs,
                         provable_to: upto,
@@ -481,7 +481,7 @@ impl PostingsCache {
                     }
                     let pt = provable_to.min(upto);
                     return Ok(CacheRuns::Runs {
-                        runs: clip_runs(&runs, from, pt),
+                        runs: RunWindow::new(runs.into(), from, pt),
                         provable_to: pt,
                     });
                 }
@@ -558,7 +558,7 @@ impl PostingsCache {
                 }
                 let pt = provable_to.min(upto);
                 return Ok(CacheRuns::Runs {
-                    runs: clip_runs(&runs, from, pt),
+                    runs: RunWindow::new(runs.into(), from, pt),
                     provable_to: pt,
                 });
             }
@@ -572,7 +572,7 @@ impl PostingsCache {
         }
         let pt = provable_to.min(upto);
         Ok(CacheRuns::Runs {
-            runs: clip_runs(&runs, from, pt),
+            runs: RunWindow::new(runs.into(), from, pt),
             provable_to: pt,
         })
     }
@@ -782,24 +782,6 @@ impl PostingsCache {
     }
 }
 
-fn clip_runs(runs: &[AbsRun], from: u64, upto: u64) -> Vec<AbsRun> {
-    let mut out = Vec::new();
-    for r in runs {
-        let start = r.start.max(from);
-        let end = (r.start + r.count as u64).min(upto);
-        if start >= end {
-            continue;
-        }
-        out.push(AbsRun {
-            start,
-            count: (end - start) as u32,
-            matching_bytes: r.matching_bytes,
-            gap_bytes_before: r.gap_bytes_before,
-        });
-    }
-    out
-}
-
 /// One contiguous postings scan from `start_bucket` toward
 /// `target_offset`, bounded by the cold-load window (spec §7.2).
 /// Returns (runs, encoded bytes read, provable-to offset, corrupt).
@@ -904,7 +886,7 @@ mod tests {
         {
             CacheRuns::Runs { runs, provable_to } => {
                 assert!(provable_to >= upto, "honest coverage to the request");
-                runs
+                runs.iter().collect()
             }
             CacheRuns::Corrupt => panic!("unexpected corruption"),
         }

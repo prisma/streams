@@ -1452,33 +1452,8 @@ async fn read_history2_keyed(
         POSTINGS_CORRUPT.fetch_add(1, Relaxed);
         return read_history2_keyed_envelope(part, route, inc, rk, from, upto, max_bytes).await;
     }
-    let clipped = clip_runs_to(&runs, from, upto);
-    execute_postings_plan(part, route, inc, rk, clipped, upto, upto, max_bytes).await
-}
-
-fn clip_runs_to(
-    runs: &[crate::postings::AbsRun],
-    from: u64,
-    upto: u64,
-) -> Vec<crate::postings::AbsRun> {
-    let mut clipped: Vec<crate::postings::AbsRun> = Vec::new();
-    for r in runs {
-        let start = r.start.max(from);
-        let end = (r.start + r.count as u64).min(upto);
-        if start >= end {
-            continue;
-        }
-        // Byte fields stay whole-run estimates after clipping — the
-        // planner treats them as estimates, and the byte budget below
-        // enforces the real cap during execution.
-        clipped.push(crate::postings::AbsRun {
-            start,
-            count: (end - start) as u32,
-            matching_bytes: r.matching_bytes,
-            gap_bytes_before: r.gap_bytes_before,
-        });
-    }
-    clipped
+    let window = crate::postings::RunWindow::new(runs.into(), from, upto);
+    execute_postings_plan(part, route, inc, rk, window, upto, upto, max_bytes).await
 }
 
 /// Keyed read through the DECODED SLICE CACHE (spec §7): the engine's
@@ -1512,8 +1487,7 @@ pub async fn read_history2_keyed_cached(
             read_history2_keyed_envelope(part, route, inc, rk, from, upto, max_bytes).await
         }
         crate::postings_cache::CacheRuns::Runs { runs, provable_to } => {
-            let clipped = clip_runs_to(&runs, from, provable_to);
-            execute_postings_plan(part, route, inc, rk, clipped, provable_to, upto, max_bytes).await
+            execute_postings_plan(part, route, inc, rk, runs, provable_to, upto, max_bytes).await
         }
     }
 }
@@ -1527,7 +1501,7 @@ async fn execute_postings_plan(
     route: RouteHash,
     inc: SegmentHash,
     rk: &str,
-    clipped: Vec<crate::postings::AbsRun>,
+    window: crate::postings::RunWindow,
     provable_to: u64,
     upto: u64,
     max_bytes: usize,
@@ -1538,7 +1512,7 @@ async fn execute_postings_plan(
         max_scan_bytes: (max_bytes as u64).min(crate::postings::PlanCfg::default().max_scan_bytes),
         ..Default::default()
     };
-    let plan = crate::postings::plan_spans(&clipped, provable_to, &cfg);
+    let plan = crate::postings::plan_spans_iter(window.iter(), provable_to, &cfg);
     let mut spans_used = 0u64;
     let mut frames: Vec<crate::shard::record::CheckedFrame> = Vec::new();
     let mut last: Option<u64> = None;
