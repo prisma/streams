@@ -803,8 +803,8 @@ async fn decode_history_range(
 }
 
 /// A tail page is accepted only after ruling out a concurrent durable trim.
-/// Unfiltered density is checked in O(1); filtered scans query the same shared
-/// durable tracker because an empty match cannot prove absence of a trim.
+/// A retained dense durable-ring interval already proves what was inspected.
+/// Other filtered scans still need the remotely durable boundary/layout tuple.
 async fn absorption_race(
     engine: &Arc<ShardEngine>,
     hash: [u8; 16],
@@ -813,6 +813,9 @@ async fn absorption_race(
     end: u64,
     unfiltered: bool,
 ) -> Result<Option<(u64, bool)>, String> {
+    if part.proves_durable_ring(engine, hash, cursor) {
+        return Ok(None);
+    }
     Ok(if unfiltered {
         // Unfiltered offsets below the durable frontier are dense,
         // so ANY gap in the page IS the absorb/trim race — head OR

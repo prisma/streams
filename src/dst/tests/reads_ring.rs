@@ -418,3 +418,117 @@ async fn keyed_tail_reads_serve_from_ring() {
         "the default-lane read must be served from the tail ring (hits {hits0} -> {hits1})"
     );
 }
+
+/// The held operation is inside durable_absorbed itself, after handle warming.
+/// A retained dense keyed ring page never enters it; fallback and applied reads do.
+#[tokio::test(flavor = "multi_thread", worker_threads = 4)]
+async fn o3_retained_ring_coverage_skips_only_the_redundant_marker() {
+    use crate::shard::{Deliver, record::TEST_MARKER_HOLD};
+    use std::time::Duration;
+    use tokio::sync::Notify;
+    let key = skey();
+    let hash = [0x83; 16];
+    let engine = open_engine_cfg(
+        mem(),
+        "o3-retained-ring",
+        crate::shard::ShardConfig {
+            tail_ring_bytes: 1024 * 1024,
+            ..Default::default()
+        },
+    )
+    .await;
+    for lane in ["other", "hot", "other", "hot"] {
+        append_sized(&engine, hash, &key, lane, 1024).await;
+    }
+    let handle = engine.stream_handle(hash).await.unwrap();
+    let entered = Arc::new(Notify::new());
+    let release = Arc::new(Notify::new());
+    let read = |deliver| {
+        crate::http::read_merged(
+            &key,
+            &hash,
+            &handle,
+            &engine,
+            0,
+            Some("hot"),
+            1024 * 1024,
+            deliver,
+        )
+    };
+    let page = tokio::time::timeout(
+        Duration::from_secs(2),
+        TEST_MARKER_HOLD.scope((entered.clone(), release.clone()), read(Deliver::Durable)),
+    )
+    .await
+    .expect("proven ring must not wait on marker")
+    .unwrap();
+    assert_eq!(
+        page.recs.iter().map(|r| r.off).collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    assert!(page.recs.iter().all(|r| r.payload.as_ref() == [0x5a; 1024]));
+    assert_eq!(page.last, Some(3));
+    assert!(page.completed);
+    assert!(
+        tokio::time::timeout(Duration::from_millis(10), entered.notified())
+            .await
+            .is_err()
+    );
+
+    let partial = engine.ring_read_keyed(&handle, 0, 4, "hot", 1).unwrap();
+    assert!(partial.frames.is_empty());
+    assert_eq!(partial.last_offset, Some(0));
+    assert!(partial.proves_durable_ring(&engine, hash, 0));
+    assert!(!partial.proves_durable_ring(&engine, hash, 1));
+    assert!(!partial.proves_durable_ring(&engine, [0x84; 16], 0));
+    let other = open_engine(mem(), "o3-other-owner").await;
+    assert!(!partial.proves_durable_ring(&other, hash, 0));
+    other.begin_close();
+
+    // Applied visibility cannot borrow a durable proof, even when this particular
+    // requested prefix also happens to be durable. The canonical check remains.
+    let applied =
+        TEST_MARKER_HOLD.scope((entered.clone(), release.clone()), read(Deliver::Applied));
+    tokio::pin!(applied);
+    tokio::select! {
+        _ = entered.notified() => {},
+        _ = &mut applied => panic!("applied bypassed the marker"),
+        _ = tokio::time::sleep(Duration::from_secs(2)) => panic!("applied never entered marker"),
+    }
+    release.notify_one();
+    let page = applied.await.unwrap();
+    assert!(page.completed);
+    assert_eq!(page.last, Some(3));
+
+    // Remove a middle row while preserving floor/ceiling. Neither keyed nor
+    // unfiltered ring reads may use endpoint metadata as a density proof.
+    {
+        let mut ring = handle.ring.lock().unwrap();
+        for batch in &mut ring.batches {
+            batch.frames.retain(|(off, _)| *off != 1);
+        }
+    }
+    assert!(engine.ring_read(&handle, 0, 4, usize::MAX).is_none());
+    assert!(
+        engine
+            .ring_read_keyed(&handle, 0, 4, "hot", usize::MAX)
+            .is_none()
+    );
+    let fallback =
+        TEST_MARKER_HOLD.scope((entered.clone(), release.clone()), read(Deliver::Durable));
+    tokio::pin!(fallback);
+    tokio::select! {
+        _ = entered.notified() => {},
+        _ = &mut fallback => panic!("fallback bypassed marker"),
+        _ = tokio::time::sleep(Duration::from_secs(2)) => panic!("fallback never entered marker"),
+    }
+    release.notify_one();
+    let page = fallback.await.unwrap();
+    assert_eq!(
+        page.recs.iter().map(|r| r.off).collect::<Vec<_>>(),
+        vec![1, 3]
+    );
+    assert!(page.completed);
+    assert_eq!(page.last, Some(3));
+    engine.begin_close();
+}

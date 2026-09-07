@@ -2227,6 +2227,11 @@ impl ShardEngine {
     /// in-memory layout flag would refuse a v2 history range as v1
     /// (observed in the first-absorption flush-to-dispatch window).
     pub async fn durable_absorbed(&self, hash: &[u8; 16]) -> Result<(u64, bool), slatedb::Error> {
+        #[cfg(test)]
+        if let Ok((entered, release)) = record::TEST_MARKER_HOLD.try_with(Clone::clone) {
+            entered.notify_one();
+            release.notified().await;
+        }
         let v = self
             .db
             .get_with_options(
@@ -2609,7 +2614,10 @@ impl ShardEngine {
         scan_to: u64,
         max_bytes: usize,
     ) -> Option<FrameReadResult> {
-        if !self.ring_enabled || scan_from >= scan_to {
+        if !self.ring_enabled
+            || scan_from >= scan_to
+            || scan_to > handle.state.lock().unwrap().durable.next
+        {
             return None;
         }
         let ring = handle.ring.lock().unwrap();
@@ -2634,8 +2642,10 @@ impl ShardEngine {
         let mut out = FrameReadResult {
             frames: Vec::new(),
             last_offset: None,
+            coverage: None,
         };
         let mut total = 0usize;
+        let mut expected = scan_from;
         for b in ring.batches.iter() {
             if b.next <= scan_from {
                 continue;
@@ -2650,16 +2660,38 @@ impl ShardEngine {
                 if *off >= scan_to {
                     break;
                 }
+                // Floor/ceiling alone cannot prove density after eviction or
+                // malformed cached batch metadata. Every inspected row counts,
+                // including filtered misses and a byte-limited final row.
+                if *off != expected {
+                    return None;
+                }
                 let checked = record::CheckedFrame::from_ring(f, *off, None).ok()??;
+                expected = off.checked_add(1)?;
                 total += f.len();
                 out.frames.push(checked);
                 out.last_offset = Some(*off);
                 if total >= max_bytes {
+                    out.coverage = Some(record::DurableRingCoverage::new(
+                        self,
+                        handle.hash,
+                        scan_from,
+                        expected,
+                    ));
                     self.ring_hits.fetch_add(1, Ordering::Relaxed);
                     return Some(out);
                 }
             }
         }
+        if expected != scan_to {
+            return None;
+        }
+        out.coverage = Some(record::DurableRingCoverage::new(
+            self,
+            handle.hash,
+            scan_from,
+            expected,
+        ));
         self.ring_hits.fetch_add(1, Ordering::Relaxed);
         Some(out)
     }
@@ -2683,7 +2715,10 @@ impl ShardEngine {
         rk: &str,
         max_bytes: usize,
     ) -> Option<FrameReadResult> {
-        if !self.ring_enabled || scan_from >= scan_to {
+        if !self.ring_enabled
+            || scan_from >= scan_to
+            || scan_to > handle.state.lock().unwrap().durable.next
+        {
             return None;
         }
         let ring = handle.ring.lock().unwrap();
@@ -2705,8 +2740,10 @@ impl ShardEngine {
         let mut out = FrameReadResult {
             frames: Vec::new(),
             last_offset: None,
+            coverage: None,
         };
         let mut total = 0usize;
+        let mut expected = scan_from;
         for b in ring.batches.iter() {
             if b.next <= scan_from {
                 continue;
@@ -2721,7 +2758,14 @@ impl ShardEngine {
                 if *off >= scan_to {
                     break;
                 }
+                // Floor/ceiling alone cannot prove density after eviction or
+                // malformed cached batch metadata. Every inspected row counts,
+                // including filtered misses and a byte-limited final row.
+                if *off != expected {
+                    return None;
+                }
                 let checked = record::CheckedFrame::from_ring(f, *off, Some(rk)).ok()?;
+                expected = off.checked_add(1)?;
                 total += f.len();
                 if let Some(checked) = checked {
                     out.frames.push(checked);
@@ -2729,11 +2773,26 @@ impl ShardEngine {
                 // Consumed progress covers NON-matching frames too.
                 out.last_offset = Some(*off);
                 if total >= max_bytes {
+                    out.coverage = Some(record::DurableRingCoverage::new(
+                        self,
+                        handle.hash,
+                        scan_from,
+                        expected,
+                    ));
                     self.ring_hits.fetch_add(1, Ordering::Relaxed);
                     return Some(out);
                 }
             }
         }
+        if expected != scan_to {
+            return None;
+        }
+        out.coverage = Some(record::DurableRingCoverage::new(
+            self,
+            handle.hash,
+            scan_from,
+            expected,
+        ));
         self.ring_hits.fetch_add(1, Ordering::Relaxed);
         Some(out)
     }

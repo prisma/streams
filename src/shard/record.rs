@@ -72,6 +72,43 @@ pub(crate) fn decode_at(raw: &[u8], offset: u64) -> Result<DecodedFrame<'_>, Rec
 pub struct FrameReadResult {
     pub frames: Vec<CheckedFrame>,
     pub last_offset: Option<u64>,
+    pub(super) coverage: Option<DurableRingCoverage>,
+}
+
+/// Retained admission fact, not a caller-supplied permission to skip checks.
+/// Weak ownership binds this proof to one physical DB opening and keeps its
+/// allocation identity unique even after retirement. `hash` binds incarnation.
+pub(super) struct DurableRingCoverage {
+    owner: std::sync::Weak<slatedb::Db>,
+    hash: [u8; 16],
+    from: u64,
+    to: u64,
+}
+impl DurableRingCoverage {
+    pub(super) fn new(engine: &ShardEngine, hash: [u8; 16], from: u64, to: u64) -> Self {
+        Self {
+            owner: std::sync::Arc::downgrade(&engine.db),
+            hash,
+            from,
+            to,
+        }
+    }
+}
+impl FrameReadResult {
+    pub(crate) fn proves_durable_ring(
+        &self,
+        engine: &ShardEngine,
+        hash: [u8; 16],
+        from: u64,
+    ) -> bool {
+        self.coverage.as_ref().is_some_and(|proof| {
+            proof.owner.ptr_eq(&std::sync::Arc::downgrade(&engine.db))
+                && proof.hash == hash
+                && proof.from == from
+                && self.last_offset.and_then(|last| last.checked_add(1)) == Some(proof.to)
+                && proof.to > from
+        })
+    }
 }
 
 /// Range-bounded frame read: scans `[scan_from, scan_to)` regardless of the
@@ -90,6 +127,7 @@ pub async fn read_frames_range(
     let mut out = FrameReadResult {
         frames: Vec::new(),
         last_offset: None,
+        coverage: None,
     };
     if scan_from >= scan_to {
         return Ok(out);
@@ -174,6 +212,7 @@ pub(crate) async fn read_frames_until(
     let mut out = FrameReadResult {
         frames: Vec::new(),
         last_offset: None,
+        coverage: None,
     };
     if scan_from >= end {
         return Ok(out);
@@ -225,4 +264,11 @@ pub(crate) async fn read_frames_until(
         }
     }
     Ok(out)
+}
+
+// Scoped to the actual read future, so a held redundant marker operation does
+// not block handle warming, the absorber, or another test's engine.
+#[cfg(test)]
+tokio::task_local! {
+    pub(crate) static TEST_MARKER_HOLD: (std::sync::Arc<tokio::sync::Notify>, std::sync::Arc<tokio::sync::Notify>);
 }
