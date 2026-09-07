@@ -268,10 +268,14 @@ async fn cut_resume_never_skips_a_durable_record() {
         .map(|_| Arc::new(std::sync::Mutex::new(Vec::new())))
         .collect();
     let mut subtasks = Vec::new();
+    let mut ready_receivers = Vec::new();
     for (bm, ev) in bitmaps.iter().cloned().zip(events.iter().cloned()) {
         let stopf = stopf.clone();
+        let (ready_tx, ready_rx) = tokio::sync::oneshot::channel();
+        ready_receivers.push(ready_rx);
         subtasks.push(tokio::spawn(async move {
             use tokio::io::AsyncReadExt;
+            let mut ready_tx = Some(ready_tx);
             let mut cursor: Option<String> = None;
             let mut reconnects = 0u32;
             'outer: while !stopf.load(std::sync::atomic::Ordering::Relaxed) {
@@ -314,6 +318,11 @@ async fn cut_resume_never_skips_a_durable_record() {
                             break;
                         }
                     }
+                    if complete.contains("\"upToDate\":true") {
+                        if let Some(tx) = ready_tx.take() {
+                            let _ = tx.send(cursor.clone().expect("initial control has a cursor"));
+                        }
+                    }
                     let mut at = 0usize;
                     while let Some(p) = complete[at..].find("\"q\":") {
                         let s2 = at + p + 4;
@@ -338,8 +347,30 @@ async fn cut_resume_never_skips_a_durable_record() {
             }
         }));
     }
-    // Wait for both to park.
-    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+    // cursor=now is sampled by the server, not when the tasks spawn.
+    // Both subscriptions must observe the empty stream before q=0 is
+    // appended; elapsed startup time cannot establish that precondition.
+    let desc = state
+        .registry
+        .get(&state.deployment.raw_adapter_sref("race"))
+        .await
+        .unwrap()
+        .unwrap();
+    for (i, ready) in ready_receivers.into_iter().enumerate() {
+        let cursor = tokio::time::timeout(std::time::Duration::from_secs(30), ready)
+            .await
+            .expect("subscriber must reach its initial upToDate control")
+            .expect("subscriber must retain its readiness sender");
+        let position = crate::product_cursor::KeyCursor::decode(
+            &cursor,
+            &desc.project_id,
+            &skey(),
+            &desc.epoch_bytes().unwrap(),
+            &crate::crypto::stream_hash(""),
+        )
+        .expect("initial cursor must authenticate for this stream");
+        assert_eq!(position.offset, 0, "sub{i} must start before q=0");
+    }
 
     // Absorb-boundary swinger: WAL->history retirement races reads.
     let stop2 = stopf.clone();
