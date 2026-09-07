@@ -799,7 +799,7 @@
         {
           "file": "src/shard/retirement_tests.rs",
           "name": "r17b_late_successful_write_settles_without_publishing_retired_effects",
-          "sha256": "25394435670d087a8bf5b9d1ce3eab184bb8950a307e3bfbcee90b09bbb63c73"
+          "sha256": "bc4f5869cdc1e62dd93e116b65edcb96accbd243ed5b521060ce4aad469559b1"
         }
       ]
     },

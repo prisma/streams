@@ -463,11 +463,12 @@ async fn r17b_late_successful_write_settles_without_publishing_retired_effects()
     assert_moved(result.expect("append settles promptly").unwrap());
     assert_moved(closed.expect("close settles promptly").unwrap());
     assert!(config.expect("queue settles promptly").unwrap().is_err());
-    let state = handle.state.lock().unwrap();
-    assert_eq!(state.applied.next, 0);
-    assert_eq!(state.durable.next, 0);
-    assert!(state.producers.is_empty());
-    drop(state);
+    {
+        let state = handle.state.lock().unwrap();
+        assert_eq!(state.applied.next, 0);
+        assert_eq!(state.durable.next, 0);
+        assert!(state.producers.is_empty());
+    }
     assert!(!secondary.state.lock().unwrap().applied.closed);
     assert_eq!(handle.ring.lock().unwrap().bytes, 0);
     assert_eq!(pressure.unabsorbed_frame_bytes_now(), 0);
