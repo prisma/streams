@@ -1513,6 +1513,9 @@ async fn execute_postings_plan(
         ..Default::default()
     };
     let plan = crate::postings::plan_spans_iter(window.iter(), provable_to, &cfg);
+    // Planning is synchronous. Do not pin an evicted cached run array while
+    // asynchronous canonical scans or a slow reader wait for their result.
+    drop(window);
     let mut spans_used = 0u64;
     let mut frames: Vec<crate::shard::record::CheckedFrame> = Vec::new();
     let mut last: Option<u64> = None;
