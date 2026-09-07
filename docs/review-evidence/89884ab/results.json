@@ -1,0 +1,1326 @@
+{
+  "source": {
+    "head": "89884ab114b22929aa93707361e9e8d52c762bc2",
+    "tree": "dc26e246b25fb6275374d3d56088c165901d19c9",
+    "branch": "slate",
+    "followup_baseline": "43813b12b3d13025ba32435a4c8b761ab752b486",
+    "original_baseline": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+    "followup_commit_count": 18,
+    "full_commit_count": 111,
+    "clean": true
+  },
+  "local": {
+    "rust": {
+      "counts": {
+        "passed": 885,
+        "failed": 0,
+        "ignored": 0,
+        "bad_summary": false
+      },
+      "log_sha256": "ea8eab5eac6c345f13de77b3bc62825d85667b5a81b72e371d98100002d3310c",
+      "toolchains": {
+        "rustc --version": "rustc 1.98.1 (48a229cea 2026-09-01)",
+        "cargo --version": "cargo 1.98.1 (797e8a9bc 2026-08-05)"
+      },
+      "configuration": {
+        "expected_library_tests": 885,
+        "gate_script_sha256": "e82b93a1ea4519b2480769daac8b6a790bffc47b11f8a2339b677c544df4c803",
+        "incremental": false,
+        "library": "all tests; capacity isolated by repository gate",
+        "offline": true,
+        "profile": "release",
+        "runner_sha256": "bd079558ad012a34899c087173df13ef821cef890cbd1d3725f9e03a224418da",
+        "workflow_lint": "actionlint 1.7.12"
+      }
+    },
+    "binaries": {
+      "counts": {
+        "passed": 76,
+        "failed": 0,
+        "ignored": 0,
+        "bad_summary": false
+      },
+      "log_sha256": "f3db5b493a9791de8ee36feb7fbafd6ee183fc9ca0510d054c81559eed5fff45",
+      "toolchains": {
+        "rustc --version": "rustc 1.98.1 (48a229cea 2026-09-01)",
+        "cargo --version": "cargo 1.98.1 (797e8a9bc 2026-08-05)"
+      },
+      "configuration": {
+        "expected_binary_tests": 76,
+        "incremental": false,
+        "offline": true,
+        "profile": "release",
+        "targets": "all binaries and rustdoc"
+      }
+    },
+    "sdk": {
+      "counts": {
+        "passed": 33,
+        "failed": 0,
+        "ignored": 0,
+        "bad_summary": false
+      },
+      "log_sha256": "8a70c7200fdaffcf3cea2dcf80f8a6016577d80fe21c554230f66d563f2c99c9",
+      "toolchains": {
+        "node --version": "v22.22.2",
+        "npm --version": "10.9.7"
+      },
+      "configuration": {
+        "runtime": "Node22",
+        "node": "22.22.2",
+        "transport": "controlled fetch",
+        "typescript": "5.9.3",
+        "checks": [
+          "typecheck",
+          "build",
+          "33 runtime tests",
+          "auth behavior",
+          "watch capability vector"
+        ]
+      }
+    },
+    "protocol": {
+      "counts": {
+        "passed": 332,
+        "failed": 0,
+        "ignored": 0,
+        "bad_summary": false
+      },
+      "log_sha256": "7223fb88f9a0dab26382caed88dff498618a18273f9357510008f6e0ccf498e3",
+      "toolchains": {
+        "node --version": "v22.22.2",
+        "npm --version": "10.9.7",
+        "rustc --version": "rustc 1.98.1 (48a229cea 2026-09-01)",
+        "cargo --version": "cargo 1.98.1 (797e8a9bc 2026-08-05)"
+      },
+      "configuration": {
+        "expected_head": "89884ab114b22929aa93707361e9e8d52c762bc2",
+        "suite": "@durable-streams/server-conformance-tests@0.3.6",
+        "expected": {
+          "suite": "@durable-streams/server-conformance-tests@0.3.6",
+          "note": "Pinned in src/protocol_pin.rs \u2014 update BOTH together, and re-record these numbers from a real run.",
+          "numTotalTests": 338,
+          "numPassedTests": 332,
+          "numFailedTests": 0,
+          "numPendingTests": 6,
+          "skippedAreAllIn": "Reserved subscription APIs"
+        },
+        "server_profile": "release",
+        "storage": "local s3lite in-memory isolated bucket",
+        "storage_latency_ms": 2,
+        "flush_interval_ms": 1,
+        "wal_flush_gap_ms": 2,
+        "max_unflushed_bytes": 67108864,
+        "auth": "synthetic generated conformance-default key",
+        "runner_sha256": "65f5dcb75d1c690cf439039ca08fe765f72a4a6fb1db83b067843cae40507892"
+      },
+      "exact": {
+        "numPassedTests": 332,
+        "numFailedTests": 0,
+        "numPendingTests": 6,
+        "numTotalTests": 338
+      }
+    },
+    "rust_distinct_executions": {
+      "library_general": 884,
+      "capacity_isolated": 1,
+      "library_total": 885,
+      "binary": 76,
+      "rustdoc": 0,
+      "total": 961,
+      "note": "Capacity is included once in library total. Binary totals are separate target executions, including crypto modules shared across three binaries."
+    },
+    "static": {
+      "architecture_rust_files": 250,
+      "fixed_architecture_baseline": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+      "inventory_tests": 441,
+      "inventory_ignored": 0,
+      "scenarios": {
+        "total": 189,
+        "full": 117,
+        "partial": 23,
+        "external": 2,
+        "unmapped": 47
+      },
+      "new_clippy_fingerprints": 0,
+      "fresh_checkouts": 2
+    }
+  },
+  "external": {
+    "E01": "Independent crypto/historical-data/rollout acceptance pending; repository owner appoints independent reviewer and operations owner.",
+    "E03": "No agreed absolute budget or waiver; product/repository owner decision pending.",
+    "E04": "Authorized platform/release owner must complete deployed Prisma Compute/Tigris, noisy-neighbor, restart/fencing, cost and unresolved scenario campaigns."
+  },
+  "performance": {
+    "baseline": {
+      "revision": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+      "quantile_method": "nearest-rank on pooled request samples; cold n=5 reports individual/min/median/max, no tail percentiles",
+      "workloads": [
+        {
+          "kind": "append",
+          "name": "local-perf-product-1024",
+          "runs": 5,
+          "requests": 640,
+          "payload_bytes_per_request": 1024,
+          "p50_us": 6534,
+          "p95_us": 7284,
+          "p99_us": 7918,
+          "mean_us": 6488.417,
+          "run_p50_us": [
+            6525,
+            6640,
+            6412,
+            6497,
+            6504
+          ],
+          "allocation_calls": 498256,
+          "allocated_bytes": 202273333,
+          "payload_capacity_allocations": 18431,
+          "object_get_attempts": 947,
+          "successful_object_gets": 0,
+          "object_get_range_bytes": 0,
+          "product_payload_bridges": 640,
+          "product_bridge_copies": 640,
+          "product_bridge_copy_bytes": 655360,
+          "allocation_calls_per_request": 778.525,
+          "allocated_bytes_per_request": 316052.083,
+          "payload_capacity_allocations_per_request": 28.798,
+          "object_get_attempts_per_request": 1.48,
+          "successful_object_gets_per_request": 0.0,
+          "object_get_range_bytes_per_request": 0.0,
+          "product_payload_bridges_per_request": 1.0,
+          "product_bridge_copies_per_request": 1.0,
+          "product_bridge_copy_bytes_per_request": 1024.0
+        },
+        {
+          "kind": "append",
+          "name": "local-perf-product-65536",
+          "runs": 5,
+          "requests": 640,
+          "payload_bytes_per_request": 65536,
+          "p50_us": 6490,
+          "p95_us": 7392,
+          "p99_us": 7966,
+          "mean_us": 6489.012,
+          "run_p50_us": [
+            6490,
+            6393,
+            6454,
+            6494,
+            6561
+          ],
+          "allocation_calls": 361704,
+          "allocated_bytes": 735173839,
+          "payload_capacity_allocations": 7374,
+          "object_get_attempts": 395,
+          "successful_object_gets": 24,
+          "object_get_range_bytes": 26967,
+          "product_payload_bridges": 640,
+          "product_bridge_copies": 640,
+          "product_bridge_copy_bytes": 41943040,
+          "allocation_calls_per_request": 565.163,
+          "allocated_bytes_per_request": 1148709.123,
+          "payload_capacity_allocations_per_request": 11.522,
+          "object_get_attempts_per_request": 0.617,
+          "successful_object_gets_per_request": 0.037,
+          "object_get_range_bytes_per_request": 42.136,
+          "product_payload_bridges_per_request": 1.0,
+          "product_bridge_copies_per_request": 1.0,
+          "product_bridge_copy_bytes_per_request": 65536.0
+        },
+        {
+          "kind": "append",
+          "name": "local-perf-raw-1024",
+          "runs": 5,
+          "requests": 640,
+          "payload_bytes_per_request": 1024,
+          "p50_us": 6481,
+          "p95_us": 7392,
+          "p99_us": 7798,
+          "mean_us": 6510.394,
+          "run_p50_us": [
+            6442,
+            6505,
+            6523,
+            6445,
+            6596
+          ],
+          "allocation_calls": 430061,
+          "allocated_bytes": 180068532,
+          "payload_capacity_allocations": 15593,
+          "object_get_attempts": 791,
+          "successful_object_gets": 0,
+          "object_get_range_bytes": 0,
+          "product_payload_bridges": 0,
+          "product_bridge_copies": 0,
+          "product_bridge_copy_bytes": 0,
+          "allocation_calls_per_request": 671.97,
+          "allocated_bytes_per_request": 281357.081,
+          "payload_capacity_allocations_per_request": 24.364,
+          "object_get_attempts_per_request": 1.236,
+          "successful_object_gets_per_request": 0.0,
+          "object_get_range_bytes_per_request": 0.0,
+          "product_payload_bridges_per_request": 0.0,
+          "product_bridge_copies_per_request": 0.0,
+          "product_bridge_copy_bytes_per_request": 0.0
+        },
+        {
+          "kind": "append",
+          "name": "local-perf-raw-65536",
+          "runs": 5,
+          "requests": 640,
+          "payload_bytes_per_request": 65536,
+          "p50_us": 6460,
+          "p95_us": 7351,
+          "p99_us": 7670,
+          "mean_us": 6499.031,
+          "run_p50_us": [
+            6467,
+            6566,
+            6369,
+            6470,
+            6402
+          ],
+          "allocation_calls": 358344,
+          "allocated_bytes": 773772880,
+          "payload_capacity_allocations": 7641,
+          "object_get_attempts": 585,
+          "successful_object_gets": 48,
+          "object_get_range_bytes": 52845,
+          "product_payload_bridges": 0,
+          "product_bridge_copies": 0,
+          "product_bridge_copy_bytes": 0,
+          "allocation_calls_per_request": 559.913,
+          "allocated_bytes_per_request": 1209020.125,
+          "payload_capacity_allocations_per_request": 11.939,
+          "object_get_attempts_per_request": 0.914,
+          "successful_object_gets_per_request": 0.075,
+          "object_get_range_bytes_per_request": 82.57,
+          "product_payload_bridges_per_request": 0.0,
+          "product_bridge_copies_per_request": 0.0,
+          "product_bridge_copy_bytes_per_request": 0.0
+        },
+        {
+          "kind": "history-read",
+          "name": "postings-hot",
+          "runs": 5,
+          "requests": 640,
+          "payload_bytes_per_request": 16384,
+          "records_per_request": 16,
+          "p50_us": 407,
+          "p95_us": 765,
+          "p99_us": 1090,
+          "mean_us": 465.567,
+          "run_p50_us": [
+            394,
+            426,
+            406,
+            407,
+            399
+          ],
+          "allocation_calls": 1781929,
+          "allocated_bytes": 373353205,
+          "payload_capacity_allocations": 114893,
+          "object_get_attempts": 114,
+          "successful_object_gets": 1,
+          "object_get_range_bytes": 442,
+          "product_payload_bridges": 0,
+          "product_bridge_copies": 0,
+          "product_bridge_copy_bytes": 0,
+          "index_loads": 0,
+          "postings_cache_hits": 1280,
+          "canonical_pages": 1280,
+          "allocation_calls_per_request": 2784.264,
+          "allocated_bytes_per_request": 583364.383,
+          "payload_capacity_allocations_per_request": 179.52,
+          "object_get_attempts_per_request": 0.178,
+          "successful_object_gets_per_request": 0.002,
+          "object_get_range_bytes_per_request": 0.691,
+          "product_payload_bridges_per_request": 0.0,
+          "product_bridge_copies_per_request": 0.0,
+          "product_bridge_copy_bytes_per_request": 0.0,
+          "index_loads_per_request": 0.0,
+          "postings_cache_hits_per_request": 2.0,
+          "canonical_pages_per_request": 2.0
+        },
+        {
+          "kind": "history-read",
+          "name": "process-cold",
+          "runs": 5,
+          "requests": 5,
+          "payload_bytes_per_request": 16384,
+          "records_per_request": 16,
+          "p50_us": 6877,
+          "p95_us": null,
+          "p99_us": null,
+          "mean_us": 8603.8,
+          "run_p50_us": [
+            5316,
+            13537,
+            4338,
+            12951,
+            6877
+          ],
+          "individual_cold_us": [
+            4338,
+            5316,
+            6877,
+            12951,
+            13537
+          ],
+          "min_us": 4338,
+          "max_us": 13537,
+          "allocation_calls": 73721,
+          "allocated_bytes": 30573558,
+          "payload_capacity_allocations": 1970,
+          "object_get_attempts": 413,
+          "successful_object_gets": 128,
+          "object_get_range_bytes": 387443,
+          "product_payload_bridges": 0,
+          "product_bridge_copies": 0,
+          "product_bridge_copy_bytes": 0,
+          "index_loads": 5,
+          "postings_cache_hits": 10,
+          "canonical_pages": 10,
+          "allocation_calls_per_request": 14744.2,
+          "allocated_bytes_per_request": 6114711.6,
+          "payload_capacity_allocations_per_request": 394.0,
+          "object_get_attempts_per_request": 82.6,
+          "successful_object_gets_per_request": 25.6,
+          "object_get_range_bytes_per_request": 77488.6,
+          "product_payload_bridges_per_request": 0.0,
+          "product_bridge_copies_per_request": 0.0,
+          "product_bridge_copy_bytes_per_request": 0.0,
+          "index_loads_per_request": 1.0,
+          "postings_cache_hits_per_request": 2.0,
+          "canonical_pages_per_request": 2.0
+        },
+        {
+          "kind": "product-replay",
+          "name": "local-perf-product-1024",
+          "runs": 5,
+          "requests": 640,
+          "payload_bytes_per_request": 65536,
+          "record_payload_bytes": 1024,
+          "p50_us": 1428,
+          "p95_us": 2490,
+          "p99_us": 3075,
+          "mean_us": 1555.316,
+          "run_p50_us": [
+            1178,
+            1308,
+            1343,
+            1377,
+            1995
+          ],
+          "allocation_calls": 1775531,
+          "allocated_bytes": 817590105,
+          "payload_capacity_allocations": 2646,
+          "object_get_attempts": 98,
+          "successful_object_gets": 0,
+          "object_get_range_bytes": 0,
+          "product_payload_bridges": 0,
+          "product_bridge_copies": 0,
+          "product_bridge_copy_bytes": 0,
+          "allocation_calls_per_request": 2774.267,
+          "allocated_bytes_per_request": 1277484.539,
+          "payload_capacity_allocations_per_request": 4.134,
+          "object_get_attempts_per_request": 0.153,
+          "successful_object_gets_per_request": 0.0,
+          "object_get_range_bytes_per_request": 0.0,
+          "product_payload_bridges_per_request": 0.0,
+          "product_bridge_copies_per_request": 0.0,
+          "product_bridge_copy_bytes_per_request": 0.0
+        },
+        {
+          "kind": "product-replay",
+          "name": "local-perf-product-65536",
+          "runs": 5,
+          "requests": 640,
+          "payload_bytes_per_request": 65536,
+          "record_payload_bytes": 65536,
+          "p50_us": 1064,
+          "p95_us": 2208,
+          "p99_us": 2513,
+          "mean_us": 1278.417,
+          "run_p50_us": [
+            841,
+            874,
+            1009,
+            1466,
+            1926
+          ],
+          "allocation_calls": 273442,
+          "allocated_bytes": 359135533,
+          "payload_capacity_allocations": 3266,
+          "object_get_attempts": 66,
+          "successful_object_gets": 0,
+          "object_get_range_bytes": 0,
+          "product_payload_bridges": 0,
+          "product_bridge_copies": 0,
+          "product_bridge_copy_bytes": 0,
+          "allocation_calls_per_request": 427.253,
+          "allocated_bytes_per_request": 561149.27,
+          "payload_capacity_allocations_per_request": 5.103,
+          "object_get_attempts_per_request": 0.103,
+          "successful_object_gets_per_request": 0.0,
+          "object_get_range_bytes_per_request": 0.0,
+          "product_payload_bridges_per_request": 0.0,
+          "product_bridge_copies_per_request": 0.0,
+          "product_bridge_copy_bytes_per_request": 0.0
+        }
+      ]
+    },
+    "current": {
+      "revision": "89884ab114b22929aa93707361e9e8d52c762bc2",
+      "quantile_method": "nearest-rank on pooled request samples; cold n=5 reports individual/min/median/max, no tail percentiles",
+      "workloads": [
+        {
+          "kind": "append",
+          "name": "local-perf-product-1024",
+          "runs": 5,
+          "requests": 640,
+          "payload_bytes_per_request": 1024,
+          "p50_us": 6482,
+          "p95_us": 7410,
+          "p99_us": 8001,
+          "mean_us": 6454.584,
+          "run_p50_us": [
+            6464,
+            6524,
+            6479,
+            6397,
+            6491
+          ],
+          "allocation_calls": 486450,
+          "allocated_bytes": 197535604,
+          "payload_capacity_allocations": 17884,
+          "object_get_attempts": 940,
+          "successful_object_gets": 0,
+          "object_get_range_bytes": 0,
+          "product_payload_bridges": 640,
+          "product_bridge_copies": 0,
+          "product_bridge_copy_bytes": 0,
+          "allocation_calls_per_request": 760.078,
+          "allocated_bytes_per_request": 308649.381,
+          "payload_capacity_allocations_per_request": 27.944,
+          "object_get_attempts_per_request": 1.469,
+          "successful_object_gets_per_request": 0.0,
+          "object_get_range_bytes_per_request": 0.0,
+          "product_payload_bridges_per_request": 1.0,
+          "product_bridge_copies_per_request": 0.0,
+          "product_bridge_copy_bytes_per_request": 0.0
+        },
+        {
+          "kind": "append",
+          "name": "local-perf-product-65536",
+          "runs": 5,
+          "requests": 640,
+          "payload_bytes_per_request": 65536,
+          "p50_us": 6426,
+          "p95_us": 7447,
+          "p99_us": 8048,
+          "mean_us": 6521.542,
+          "run_p50_us": [
+            6339,
+            6384,
+            6506,
+            6452,
+            6503
+          ],
+          "allocation_calls": 348533,
+          "allocated_bytes": 690047348,
+          "payload_capacity_allocations": 6728,
+          "object_get_attempts": 410,
+          "successful_object_gets": 48,
+          "object_get_range_bytes": 56003,
+          "product_payload_bridges": 640,
+          "product_bridge_copies": 0,
+          "product_bridge_copy_bytes": 0,
+          "allocation_calls_per_request": 544.583,
+          "allocated_bytes_per_request": 1078198.981,
+          "payload_capacity_allocations_per_request": 10.512,
+          "object_get_attempts_per_request": 0.641,
+          "successful_object_gets_per_request": 0.075,
+          "object_get_range_bytes_per_request": 87.505,
+          "product_payload_bridges_per_request": 1.0,
+          "product_bridge_copies_per_request": 0.0,
+          "product_bridge_copy_bytes_per_request": 0.0
+        },
+        {
+          "kind": "append",
+          "name": "local-perf-raw-1024",
+          "runs": 5,
+          "requests": 640,
+          "payload_bytes_per_request": 1024,
+          "p50_us": 6479,
+          "p95_us": 7318,
+          "p99_us": 7716,
+          "mean_us": 6447.077,
+          "run_p50_us": [
+            6491,
+            6469,
+            6572,
+            6459,
+            6432
+          ],
+          "allocation_calls": 429826,
+          "allocated_bytes": 174253738,
+          "payload_capacity_allocations": 15484,
+          "object_get_attempts": 775,
+          "successful_object_gets": 0,
+          "object_get_range_bytes": 0,
+          "product_payload_bridges": 0,
+          "product_bridge_copies": 0,
+          "product_bridge_copy_bytes": 0,
+          "allocation_calls_per_request": 671.603,
+          "allocated_bytes_per_request": 272271.466,
+          "payload_capacity_allocations_per_request": 24.194,
+          "object_get_attempts_per_request": 1.211,
+          "successful_object_gets_per_request": 0.0,
+          "object_get_range_bytes_per_request": 0.0,
+          "product_payload_bridges_per_request": 0.0,
+          "product_bridge_copies_per_request": 0.0,
+          "product_bridge_copy_bytes_per_request": 0.0
+        },
+        {
+          "kind": "append",
+          "name": "local-perf-raw-65536",
+          "runs": 5,
+          "requests": 640,
+          "payload_bytes_per_request": 65536,
+          "p50_us": 6476,
+          "p95_us": 7330,
+          "p99_us": 7849,
+          "mean_us": 6517.211,
+          "run_p50_us": [
+            6510,
+            6422,
+            6614,
+            6433,
+            6421
+          ],
+          "allocation_calls": 365999,
+          "allocated_bytes": 781680922,
+          "payload_capacity_allocations": 7767,
+          "object_get_attempts": 587,
+          "successful_object_gets": 24,
+          "object_get_range_bytes": 28760,
+          "product_payload_bridges": 0,
+          "product_bridge_copies": 0,
+          "product_bridge_copy_bytes": 0,
+          "allocation_calls_per_request": 571.873,
+          "allocated_bytes_per_request": 1221376.441,
+          "payload_capacity_allocations_per_request": 12.136,
+          "object_get_attempts_per_request": 0.917,
+          "successful_object_gets_per_request": 0.037,
+          "object_get_range_bytes_per_request": 44.938,
+          "product_payload_bridges_per_request": 0.0,
+          "product_bridge_copies_per_request": 0.0,
+          "product_bridge_copy_bytes_per_request": 0.0
+        },
+        {
+          "kind": "history-read",
+          "name": "postings-hot",
+          "runs": 5,
+          "requests": 640,
+          "payload_bytes_per_request": 16384,
+          "records_per_request": 16,
+          "p50_us": 461,
+          "p95_us": 1358,
+          "p99_us": 3430,
+          "mean_us": 634.82,
+          "run_p50_us": [
+            434,
+            443,
+            685,
+            448,
+            453
+          ],
+          "allocation_calls": 1784307,
+          "allocated_bytes": 374146129,
+          "payload_capacity_allocations": 116104,
+          "object_get_attempts": 92,
+          "successful_object_gets": 2,
+          "object_get_range_bytes": 884,
+          "product_payload_bridges": 0,
+          "product_bridge_copies": 0,
+          "product_bridge_copy_bytes": 0,
+          "index_loads": 0,
+          "postings_cache_hits": 1280,
+          "canonical_pages": 1280,
+          "allocation_calls_per_request": 2787.98,
+          "allocated_bytes_per_request": 584603.327,
+          "payload_capacity_allocations_per_request": 181.412,
+          "object_get_attempts_per_request": 0.144,
+          "successful_object_gets_per_request": 0.003,
+          "object_get_range_bytes_per_request": 1.381,
+          "product_payload_bridges_per_request": 0.0,
+          "product_bridge_copies_per_request": 0.0,
+          "product_bridge_copy_bytes_per_request": 0.0,
+          "index_loads_per_request": 0.0,
+          "postings_cache_hits_per_request": 2.0,
+          "canonical_pages_per_request": 2.0
+        },
+        {
+          "kind": "history-read",
+          "name": "process-cold",
+          "runs": 5,
+          "requests": 5,
+          "payload_bytes_per_request": 16384,
+          "records_per_request": 16,
+          "p50_us": 9703,
+          "p95_us": null,
+          "p99_us": null,
+          "mean_us": 9608.8,
+          "run_p50_us": [
+            4175,
+            9703,
+            15452,
+            5044,
+            13670
+          ],
+          "individual_cold_us": [
+            4175,
+            5044,
+            9703,
+            13670,
+            15452
+          ],
+          "min_us": 4175,
+          "max_us": 15452,
+          "allocation_calls": 78282,
+          "allocated_bytes": 33936601,
+          "payload_capacity_allocations": 2081,
+          "object_get_attempts": 447,
+          "successful_object_gets": 127,
+          "object_get_range_bytes": 390781,
+          "product_payload_bridges": 0,
+          "product_bridge_copies": 0,
+          "product_bridge_copy_bytes": 0,
+          "index_loads": 5,
+          "postings_cache_hits": 10,
+          "canonical_pages": 10,
+          "allocation_calls_per_request": 15656.4,
+          "allocated_bytes_per_request": 6787320.2,
+          "payload_capacity_allocations_per_request": 416.2,
+          "object_get_attempts_per_request": 89.4,
+          "successful_object_gets_per_request": 25.4,
+          "object_get_range_bytes_per_request": 78156.2,
+          "product_payload_bridges_per_request": 0.0,
+          "product_bridge_copies_per_request": 0.0,
+          "product_bridge_copy_bytes_per_request": 0.0,
+          "index_loads_per_request": 1.0,
+          "postings_cache_hits_per_request": 2.0,
+          "canonical_pages_per_request": 2.0
+        },
+        {
+          "kind": "product-replay",
+          "name": "local-perf-product-1024",
+          "runs": 5,
+          "requests": 640,
+          "payload_bytes_per_request": 65536,
+          "record_payload_bytes": 1024,
+          "p50_us": 1508,
+          "p95_us": 2707,
+          "p99_us": 6030,
+          "mean_us": 1800.416,
+          "run_p50_us": [
+            1261,
+            1414,
+            1608,
+            1377,
+            1978
+          ],
+          "allocation_calls": 1769508,
+          "allocated_bytes": 818003172,
+          "payload_capacity_allocations": 2664,
+          "object_get_attempts": 146,
+          "successful_object_gets": 24,
+          "object_get_range_bytes": 24148,
+          "product_payload_bridges": 0,
+          "product_bridge_copies": 0,
+          "product_bridge_copy_bytes": 0,
+          "allocation_calls_per_request": 2764.856,
+          "allocated_bytes_per_request": 1278129.956,
+          "payload_capacity_allocations_per_request": 4.162,
+          "object_get_attempts_per_request": 0.228,
+          "successful_object_gets_per_request": 0.037,
+          "object_get_range_bytes_per_request": 37.731,
+          "product_payload_bridges_per_request": 0.0,
+          "product_bridge_copies_per_request": 0.0,
+          "product_bridge_copy_bytes_per_request": 0.0
+        },
+        {
+          "kind": "product-replay",
+          "name": "local-perf-product-65536",
+          "runs": 5,
+          "requests": 640,
+          "payload_bytes_per_request": 65536,
+          "record_payload_bytes": 65536,
+          "p50_us": 967,
+          "p95_us": 2411,
+          "p99_us": 2686,
+          "mean_us": 1209.605,
+          "run_p50_us": [
+            815,
+            750,
+            942,
+            1070,
+            2181
+          ],
+          "allocation_calls": 267786,
+          "allocated_bytes": 357366728,
+          "payload_capacity_allocations": 3264,
+          "object_get_attempts": 64,
+          "successful_object_gets": 0,
+          "object_get_range_bytes": 0,
+          "product_payload_bridges": 0,
+          "product_bridge_copies": 0,
+          "product_bridge_copy_bytes": 0,
+          "allocation_calls_per_request": 418.416,
+          "allocated_bytes_per_request": 558385.512,
+          "payload_capacity_allocations_per_request": 5.1,
+          "object_get_attempts_per_request": 0.1,
+          "successful_object_gets_per_request": 0.0,
+          "object_get_range_bytes_per_request": 0.0,
+          "product_payload_bridges_per_request": 0.0,
+          "product_bridge_copies_per_request": 0.0,
+          "product_bridge_copy_bytes_per_request": 0.0
+        }
+      ]
+    }
+  },
+  "remote_head": "89884ab114b22929aa93707361e9e8d52c762bc2",
+  "ci": {
+    "head_sha": "89884ab114b22929aa93707361e9e8d52c762bc2",
+    "run_id": 34050181550,
+    "run_attempt": 1,
+    "url": "https://github.com/prisma/streams/actions/runs/34050181550",
+    "status": "completed",
+    "conclusion": "success",
+    "updated_at": "2026-09-06T18:14:23Z",
+    "workflow_lint": {
+      "id": 34050181553,
+      "url": "https://github.com/prisma/streams/actions/runs/34050181553",
+      "conclusion": "success"
+    },
+    "jobs": [
+      {
+        "id": 101532263389,
+        "name": "rust",
+        "url": "https://github.com/prisma/streams/actions/runs/34050181550/job/101532263389",
+        "conclusion": "success",
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run dtolnay/rust-toolchain@stable",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run Swatinem/rust-cache@v2",
+            "conclusion": "success"
+          },
+          {
+            "name": "Check",
+            "conclusion": "success"
+          },
+          {
+            "name": "Legacy-engine symbols stay deleted (round 11.8)",
+            "conclusion": "success"
+          },
+          {
+            "name": "Multitenancy audit (bare, never piped)",
+            "conclusion": "success"
+          },
+          {
+            "name": "Multitenancy identity lint (exemption inventory)",
+            "conclusion": "success"
+          },
+          {
+            "name": "Test (product conformance + dual-surface + DST + cost budgets)",
+            "conclusion": "success"
+          },
+          {
+            "name": "Capacity mechanism gate (owns the runner)",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run Swatinem/rust-cache@v2",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "id": 101532263566,
+        "name": "sdk-package",
+        "url": "https://github.com/prisma/streams/actions/runs/34050181550/job/101532263566",
+        "conclusion": "success",
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run dtolnay/rust-toolchain@stable",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run Swatinem/rust-cache@v2",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Typecheck + build + pack",
+            "conclusion": "success"
+          },
+          {
+            "name": "Install the tarball into a clean project",
+            "conclusion": "success"
+          },
+          {
+            "name": "Build server",
+            "conclusion": "success"
+          },
+          {
+            "name": "Smoke through the package (current Node)",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Credential-wait cancellation (Node 18)",
+            "conclusion": "success"
+          },
+          {
+            "name": "Smoke through the package (Node 18, the engines floor)",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run oven-sh/setup-bun@v2",
+            "conclusion": "success"
+          },
+          {
+            "name": "Credential-wait cancellation (Bun)",
+            "conclusion": "success"
+          },
+          {
+            "name": "Smoke through the package (Bun)",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run denoland/setup-deno@v2",
+            "conclusion": "success"
+          },
+          {
+            "name": "Credential-wait cancellation (Deno)",
+            "conclusion": "success"
+          },
+          {
+            "name": "Smoke through the package (Deno)",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run denoland/setup-deno@v2",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run oven-sh/setup-bun@v2",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run Swatinem/rust-cache@v2",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "id": 101532263598,
+        "name": "durable-streams-server-conformance",
+        "url": "https://github.com/prisma/streams/actions/runs/34050181550/job/101532263598",
+        "conclusion": "success",
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run dtolnay/rust-toolchain@stable",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run Swatinem/rust-cache@v2",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Build server",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run pinned suite (fresh namespace)",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run Swatinem/rust-cache@v2",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "id": 101532263606,
+        "name": "platform-e2e",
+        "url": "https://github.com/prisma/streams/actions/runs/34050181550/job/101532263606",
+        "conclusion": "success",
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run dtolnay/rust-toolchain@stable",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run Swatinem/rust-cache@v2",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Build SDK dist",
+            "conclusion": "success"
+          },
+          {
+            "name": "Platform end-to-end battery",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run Swatinem/rust-cache@v2",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "id": 101532263607,
+        "name": "architecture-report",
+        "url": "https://github.com/prisma/streams/actions/runs/34050181550/job/101532263607",
+        "conclusion": "success",
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Scanner self-test",
+            "conclusion": "success"
+          },
+          {
+            "name": "Architecture budgets and owner boundaries (hard gate)",
+            "conclusion": "success"
+          },
+          {
+            "name": "Scenario-map validation (hard gate, PR 3.2)",
+            "conclusion": "success"
+          },
+          {
+            "name": "DST obligation inventory",
+            "conclusion": "success"
+          },
+          {
+            "name": "Mechanism claims and unresolved scenario dispositions",
+            "conclusion": "success"
+          },
+          {
+            "name": "Evidence provenance from fresh full and shallow checkouts",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "id": 101532263613,
+        "name": "mt-cert-1000",
+        "url": "https://github.com/prisma/streams/actions/runs/34050181550/job/101532263613",
+        "conclusion": "success",
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run dtolnay/rust-toolchain@stable",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run Swatinem/rust-cache@v2",
+            "conclusion": "success"
+          },
+          {
+            "name": "Certification smoke at 1,000 projects",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run Swatinem/rust-cache@v2",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "id": 101532263644,
+        "name": "livefeed-fleet-cert",
+        "url": "https://github.com/prisma/streams/actions/runs/34050181550/job/101532263644",
+        "conclusion": "success",
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run dtolnay/rust-toolchain@stable",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run Swatinem/rust-cache@v2",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Fleet certification battery",
+            "conclusion": "success"
+          },
+          {
+            "name": "Manifest",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run Swatinem/rust-cache@v2",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "id": 101532263687,
+        "name": "product-field-gate",
+        "url": "https://github.com/prisma/streams/actions/runs/34050181550/job/101532263687",
+        "conclusion": "success",
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run dtolnay/rust-toolchain@stable",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run Swatinem/rust-cache@v2",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Build server",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run the field gate (auth enabled, deterministic split)",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/setup-node@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run Swatinem/rust-cache@v2",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "id": 101532264022,
+        "name": "livefeed",
+        "url": "https://github.com/prisma/streams/actions/runs/34050181550/job/101532264022",
+        "conclusion": "success",
+        "steps": [
+          {
+            "name": "Set up job",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run dtolnay/rust-toolchain@stable",
+            "conclusion": "success"
+          },
+          {
+            "name": "Run Swatinem/rust-cache@v2",
+            "conclusion": "success"
+          },
+          {
+            "name": "LiveFeed unit legs (feed + registry lifecycle/budget)",
+            "conclusion": "success"
+          },
+          {
+            "name": "LiveFeed HTTP legs (wire equivalence, fanout, framing)",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run Swatinem/rust-cache@v2",
+            "conclusion": "success"
+          },
+          {
+            "name": "Post Run actions/checkout@v4",
+            "conclusion": "success"
+          },
+          {
+            "name": "Complete job",
+            "conclusion": "success"
+          }
+        ]
+      },
+      {
+        "id": 101532264210,
+        "name": "noisy-campaign",
+        "url": "https://github.com/prisma/streams/actions/runs/34050181550/job/101532264210",
+        "conclusion": "skipped",
+        "steps": []
+      }
+    ]
+  }
+}

@@ -1,0 +1,111 @@
+78c5940a5125468be90623b745fe4bab6193de43 R12 Reject corrupt persisted tails and fixed-width cursors
+6a79dfb39eab55828d195fe2d723db88db2b7832 fix(sdk): share expired-token refresh by generation (R19)
+7f8bcf983f395b7a550a71dc808e3f6116ca4aed fix(R17): fail serving readiness when a critical runtime task exits
+d985f0002363dfb642d58f076f3857618d0be46e fix(R13): fail accounting groups on unavailable or corrupt billing state
+29daf4490c08dd7691579a4215e48b407eb6b11e fix(sdk): serialize all producer state mutations (R20)
+2d23065db999a08d28266afee5fe3309c8202570 R15 authenticate or discard bodyless requests before buffering
+6573da9cf71326f087ca59ab351871d108337bfd fix(sdk): settle consumer decisions on iterator cleanup (R21)
+025fadb51d5e5a52fb8798309fef6fbf1c9a9775 R16 authorize watch capabilities before existence-dependent diagnostics
+814d3a5961b3329bc505c60d2fc6f38806fda9f9 R14 Propagate financial read failures before rollup progress
+6f3782b82e40d94eefd5d236c37f0c0ab0889d8e R08 require conditional registry tokens and classify CAS retries
+544deee506dd7d4183ae23179dfc4c811f386f58 fix(sdk): classify routing failures before request retry (R22)
+cc270e701888a9615fadf05c21ebdfddaf6a54fb fix(R18): bound incarnation cooldowns and aggregate scaler hot keys deterministically
+320478d97fd48be27d3b954aeb2422a04e2551dc R23 Seek month-close chunks from exclusive persisted cursors
+031ae5b09596ee629f87e20e019e545d3b5868ca R01 Use segment-scoped GCM-SIV frames with stored random nonces
+ba71066bce71e0c57edded2c04654084696dc37a test(R17): exercise critical task exits through both readiness endpoints
+120b6d379e06ec1bb22ad01a1e305daecda77e02 R04 validate persisted descriptors into immutable serving state
+fd1706ef6d4beb2ed1964a640d1645821ba8cd78 R03 Separate append close and fence commands with durable effect plans
+b612fbff5925ace3741b5d5b6fe7414c8ac88ce8 refactor(R10): own shared budgets caches scaler time and readiness per runtime
+2f7e9ec0119d0e4cde3435164f9418f3d2e95ae4 R06 establish canonical read plans query ownership and consumed progress
+01ef5d0c14d7f44361604761c2547a65739b1fcd R09 Bound billing and history discovery with fair continuation
+012ba73deb0429932b1a3b902231a2ad7398cc3e R15 prove valid and expired signed watch bodies remain unpolled
+e17ee57323245a8b50173bb0de05d5a436a5df3c fix(R09): bound catalog fleet and auth controller passes
+e9b488d40b096b8c2032bd256d12333565616935 refactor(R05): give resumable topology transitions an explicit owner
+eba6a0fee9edc2272e06bcffc44347fc18e4b9fd refactor(tests): assign DST obligations to explicit owners (R11)
+e8b4257097290ebdb435b51f2df5192e613b4a05 R08 Classify absorber fencing through typed storage errors
+1850b0a47d64cddd58cc151cfdea86d6aad76f2e refactor(R05): centralize fenced seal claims and final-record recovery
+fe2100ce532a1d5b05fc33ffec41217c892db421 R05 Centralize creation fork and deletion transitions behind typed service
+c2e1b7e8ed54f80db47a9a2489671792f3087ea3 test(R05): align wire fixture lease clocks with their credential feeds
+59f0508ad3468cda8f3b05223f7a7e8b227d1db3 R03 Barrier queue refusals and model generation and billing decisions
+bfa61e94c926eabc7e67427970718d8634e648b9 R04 allocate valid claim generations in seal fixtures
+f2f1d690d271880de4eb727cd2d83caaafcd8a1f refactor(R07): centralize watch proof observation and single-charge admission
+c0c39f7e19913c826762901b4f576690127facb1 fix(R07): retain one watch service constructor
+bfa038b41b17a9c58184f4e9a10a697d24d7b912 R02 share typed append outcomes across protocol and lifecycle callers
+c5f8ca040d7df0a0cb0057ee924e91b4bcbee686 refactor(R07): own consumer incarnation workflows and durable DLQ handoff
+8c8f717697ae2ce860201e9a71e422079a4e0300 refactor(R05): separate seal claim planning closure and publication phases
+59e1484f6200c9c669ec4990d9a76ab55951891b R08 consolidate production registry mutations behind typed conditional writes
+886d45af9adcfd25a892f463027de2dc9c97aa8b refactor(lifecycle): centralize raw close completion and debt policy (R05)
+8b44407bb509ed985c93c8d3ddf5f88579cb376c R08 reject malformed persisted queue and spool state at canonical codecs
+fc19b61f185e8583bd417fe8e178d92b30964e17 R05 separate creation phases and retain references when verification fails
+ff8d22205d05530178e6bff1d113dbbd74bdefd8 refactor(append): separate validation claim admission and commit phases (R02)
+e3b8f825e58ee0e7980e31e12cadb2b40a41655e R09 keep spool health reads independent of backlog size
+5b08946f1bd4bb5c37679d9159e5ef8474ac129f R07 separate consumer coverage and generation-fenced sweep phases
+79186e3428efdd96afd3b7205d36afbf3002985d fix(runtime): size history reservations from owned body limits (R10)
+df5ccbbc87436b525329405ae6d048d1db3f5adc chore(auth): expose outcomes of bounded feed refresh passes (R09)
+eb13f9975dc404c147808ceea0fb44e5ded0c9b5 refactor(watch): keep test helpers outside the serving build (R07)
+17eefd406d701e1e3e1d784df686226b52ffd141 refactor(topology): remove unused transport transition entry points (R05)
+f40803c39797419fb035e2c421517713590e09aa refactor(read): keep peer encoding before its test module (R06)
+5f78a467193ea254c24c56ed87af199cf33dc2fb R08 remove unused legacy incarnation adapter and production retry helper
+225ad310eb3c25b4e17bf35c5998053daa15a3e5 R04 keep lifecycle classification focused on consumed domain state
+4a9f121435babb6bdd4458507e9a92617b545a41 R05 simplify phase borrowing and use lifecycle decisions in creation
+ab4801af217bb211293912849887bef19e579675 R01 document explicit nonce inputs at the cryptographic codec boundary
+83a92da76df92928222f063bf0a8d45002d21a23 R03 name reply and ring publication effects explicitly
+08411305dc7f24936fdddf2e7ba77e290f1aefa0 R08 make persisted keyspace tag sets explicit byte strings
+e2d2f632d070c6e8f468d346a4070740add1a0fb R09 remove obsolete full resident backlog scan
+b792a6c4f33bc112b50bac3f8c5726aa0f1f8560 R14 clarify checked rollup read and fault-injection types
+e017d96ff4320bc91f09bc3f04c47a28b0da8272 R23 name exclusive month-close scan bounds and test instrumentation
+9c38c9ae886d27a588b5255d3c26e2a8008bd83a R07 clarify pinned consumer phase inputs and foreign cursor probes
+35c5a06c87428bc3db0942a3d0e292ea2aa46c0e refactor(append): encode compact mutually exclusive conflict details (R02)
+77f1012ad216edd73c00e8c767767f8c563db28e R06 own replay long-poll and scan semantics in typed read services
+aaaff725bd9e510814f1b891b5c9e09d12ef1f10 R04 remove obsolete golden descriptor fixture import
+aff4ec3691ee9d066e86320ee6746ac6dd2ec60d refactor(consumer): keep error context off the successful result path (R07)
+4722c114115c105734132b84e41f4e3f22aeeda3 style(readiness): normalize critical task regression formatting (R17)
+a733d668d922e4e9a5ae529583e9f27336bdb8d1 test(read): identify cursor fixture hashes as routing keys (R06)
+5cc0e86e5d57b513d475010743cdb68a369bf627 R24 enforce fixed architecture and mechanism evidence ratchets
+d7a7549938951abbdcd75014d15af0779d338497 docs(review): record finding-by-finding remediation and evidence
+3d9dc2f26e5bc5065f371abbb74c5d6e171e984d docs(review): distinguish source evidence from external execution receipts
+9e24fc83878b95d07726923f29e98d361b46d294 R24 prove cancellation before releasing SDK backoff timer
+d25afa49fc4cfdbf10d37d96123e9dc47b65e028 refactor(auth): distinguish feed labels from stream identities (R09)
+f2a9d1d4162a92b3208323dd4b4cdb3fd665ee9a docs(runtime): identify physical shard keys in readiness state (R10)
+e25d6424695e122e554fef07b9dab34e5fb81c0c docs(watch): state the authority boundary of capability lookup hints (R07)
+de5e119714b97b7694502bd4a45f3755a86f00b9 R06 bind peer read paths to validated target descriptors
+2c58c81210dd44664236e3f1935072a9b95b9946 R04 document identity-neutral descriptor diagnostics
+59f20511207e24788f91ff64c87c91a645697dea R09 preserve current dirty markers in bounded recovery discovery
+4023250687f6ee2768b78db0d15db9c4fbdfe090 R12 preserve tail byte compatibility behind validated storage reads
+ce44f45ee9fe809e63337dc36b099b4b61561ec9 R05 preserve qualified stream identity across creation and fork claims
+cc85f81a359cdca1ed49df655ba81a574640cfbe R07 retain authorized stream references through consumer cleanup and relay
+b19ed96a2b1989feec74b94276db47d444eaa9e0 R05 format the typed product creation adapter
+b1864fffaca3f753a34129f95b8f5734cccd0a4a R24 preserve module authority in recursive lint and pin final regressions
+4411fca442f1b8edd3d5e2629dad7d9593389153 fix(scaler): keep steady appends independent of sketch population (R18)
+9c998c5f6688eaa019e7492cde1717707db2ea13 fix(runtime): close database results abandoned during handoff (R09)
+fe7dd7bacad4d26800d167977f646a518b929ed6 R09 cancel active billing passes without abandoning owned debt
+f8c14134f9d492341f0d2cf4d0678938664710d9 R09 preserve event batches and durable outboxes across cancellation
+d1131213250624de7dabf79ee3e0b9abce171b23 R24 pin active cancellation and bounded-work regression evidence
+96fed7ccd120c9738b25dc17b916251d9a50ac54 fix(R10): own remaining runtime policies and journals explicitly
+a5ffbe5186204a91c98ff387600f496216df4030 R09 Cancel active rollup phases with durable replay custody
+bdf4951806265cfd8c1fee87c2059d71265e886f R09 bound journal batches by configured encoded byte limit
+dab94e7a4b022f3fcfcadd2fe1ea96cb4baddcb0 fix(R09): cancel and join active shard absorbers with replayable debt
+d230ac242a1da2305161baf3b0c6c6bc189aab11 docs: record completed controller and runtime ownership remediation
+b4f004ffeddcb1f5e2576a0f883eacef2671f39e fix(R09): bound active scaler and fleet work with durable retry
+e273b3a94f6de769b361f8eeef3433b308c6eb07 test(R24): pin final runtime ownership and active-controller mechanisms
+2cd009aaf5953166ed32fcf600b4f5ccb77d2fdb fix(R09): keep fleet publications within their read contract
+ae1fcb24f95c8aa495f272bb3d4dcccd2270a695 test(R24): pin fleet publication boundary and entered fault evidence
+43813b12b3d13025ba32435a4c8b761ab752b486 fix(R24): distinguish background task labels from stream identities
+d48f59705e716b8684f4168a7bbb9536425a890b fix(R21-A): cancel request credential waits without cancelling shared refresh
+31d499c73b164bfccc2398d037e223cf57d71666 fix(R24-A): verify anchored evidence with full CI history and fresh checkouts
+08165bd2fd9533aa8e82b6b33b40b9a1fc88608c fix(R08-A): validate stored record identity and frame before scan progress
+93f77ecfdb053850773bb698b3512e3777ce3354 fix(R06-A): bound decoded pages and preserve withheld-record progress
+e6d2bac5beb6274298fc5fdea4393c68d76a7499 test(R06-A): register page-budget regressions in the fixed test inventory
+24cfdac0dfcf6618fd1ac51eae0ef70d458e29d1 fix(R17-A): retain engine shutdown authority and fence required worker failures
+a1c104d7ce7a73ca336aa1eca7094ae5b89900e6 fix(runtime): bound and own request maintenance jobs (R09-A)
+73be7805d22a2547984d79573a9d8525ef17cf4e refactor(shard): own provisional commit state and phase transitions (R03-A)
+7731c3f6a0c52a204f5a6873b2354c6052849276 test(shard): observe mixed-group touch publication through waits (R03-A)
+86001663333d4d5396c6bd1113f69eba30db9b27 chore(runtime): finish request maintenance lint validation (R09-A)
+62a898d87dff139ed224fea004cc9aa0a4e06d12 refactor(storage): remove redundant frame result boundary (R08-A)
+1bbe41d2ef1638099828c5d90027b8c08f18dc94 refactor(runtime): prune superseded lifecycle accessors (R17-A)
+643ca8346bab461997b18f9646ddbfcb4f3d600d perf(read): reuse bounded page-local cipher schedules (E03)
+4ec14f4917f0d6d45d48b128b6e36ca2c3655b85 docs(review): record follow-up changes and external acceptance boundaries
+61353f08dbd258eae34b83c7ff2d5eb6d0526f06 test(read): hold the owned absorber pause in the compressed tail fixture (R06-A)
+30084164c121285d040532cbd39a0eef1fd24996 docs(read): explain the tenant-bound routing-key cache to identity lint (E03)
+599fcd3eca942cd07bb5901aa172c37e0e95bf77 test(read): register the corrected fixture and use typed routing-key identity (R06-A)
+89884ab114b22929aa93707361e9e8d52c762bc2 fix(runtime): complete joined retirement after an expected ownership fence (R17-A)

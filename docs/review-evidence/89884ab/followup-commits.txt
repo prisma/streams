@@ -1,0 +1,18 @@
+d48f59705e716b8684f4168a7bbb9536425a890b fix(R21-A): cancel request credential waits without cancelling shared refresh
+31d499c73b164bfccc2398d037e223cf57d71666 fix(R24-A): verify anchored evidence with full CI history and fresh checkouts
+08165bd2fd9533aa8e82b6b33b40b9a1fc88608c fix(R08-A): validate stored record identity and frame before scan progress
+93f77ecfdb053850773bb698b3512e3777ce3354 fix(R06-A): bound decoded pages and preserve withheld-record progress
+e6d2bac5beb6274298fc5fdea4393c68d76a7499 test(R06-A): register page-budget regressions in the fixed test inventory
+24cfdac0dfcf6618fd1ac51eae0ef70d458e29d1 fix(R17-A): retain engine shutdown authority and fence required worker failures
+a1c104d7ce7a73ca336aa1eca7094ae5b89900e6 fix(runtime): bound and own request maintenance jobs (R09-A)
+73be7805d22a2547984d79573a9d8525ef17cf4e refactor(shard): own provisional commit state and phase transitions (R03-A)
+7731c3f6a0c52a204f5a6873b2354c6052849276 test(shard): observe mixed-group touch publication through waits (R03-A)
+86001663333d4d5396c6bd1113f69eba30db9b27 chore(runtime): finish request maintenance lint validation (R09-A)
+62a898d87dff139ed224fea004cc9aa0a4e06d12 refactor(storage): remove redundant frame result boundary (R08-A)
+1bbe41d2ef1638099828c5d90027b8c08f18dc94 refactor(runtime): prune superseded lifecycle accessors (R17-A)
+643ca8346bab461997b18f9646ddbfcb4f3d600d perf(read): reuse bounded page-local cipher schedules (E03)
+4ec14f4917f0d6d45d48b128b6e36ca2c3655b85 docs(review): record follow-up changes and external acceptance boundaries
+61353f08dbd258eae34b83c7ff2d5eb6d0526f06 test(read): hold the owned absorber pause in the compressed tail fixture (R06-A)
+30084164c121285d040532cbd39a0eef1fd24996 docs(read): explain the tenant-bound routing-key cache to identity lint (E03)
+599fcd3eca942cd07bb5901aa172c37e0e95bf77 test(read): register the corrected fixture and use typed routing-key identity (R06-A)
+89884ab114b22929aa93707361e9e8d52c762bc2 fix(runtime): complete joined retirement after an expected ownership fence (R17-A)

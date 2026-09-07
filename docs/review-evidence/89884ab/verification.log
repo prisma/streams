@@ -1,0 +1,2 @@
+PORTABLE_BUNDLE_OK: 346 hashes, exact source tree dc26e246b25fb6275374d3d56088c165901d19c9, 4 clean-source execution receipts at 89884ab114b22929aa93707361e9e8d52c762bc2
+PORTABLE_VERIFIER_SELFTEST_OK: synthetic positive fixture and 10 negative controls: raw log hash, receipt log binding, unexpected payload, commit object identity, archive reconstructed tree, source tree binding, receipt source binding, minimum test coverage, clean source requirement, configuration binding. This is not final-bundle verification.

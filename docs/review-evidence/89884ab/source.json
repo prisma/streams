@@ -1,0 +1,10 @@
+{
+  "head": "89884ab114b22929aa93707361e9e8d52c762bc2",
+  "tree": "dc26e246b25fb6275374d3d56088c165901d19c9",
+  "branch": "slate",
+  "followup_baseline": "43813b12b3d13025ba32435a4c8b761ab752b486",
+  "original_baseline": "a7e2070f3b4346b3e54d552069ff91c56e900130",
+  "followup_commit_count": 18,
+  "full_commit_count": 111,
+  "clean": true
+}
