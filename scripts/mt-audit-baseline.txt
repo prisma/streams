@@ -20,6 +20,7 @@ stream-hash	src/dst/tests/fixture_storage.rs key_hash: crate::crypto::stream_has
 stream-hash	src/dst/tests/history_absorption.rs key_hash: crate::crypto::stream_hash("k"),	
 stream-hash	src/dst/tests/livefeed_history.rs key_hash: crate::crypto::stream_hash(""),	
 stream-hash	src/dst/tests/livefeed_swap.rs key_hash: crate::crypto::stream_hash(""),	
+stream-hash	src/dst/tests/persistence_faults.rs &crate::crypto::stream_hash(""),	
 stream-hash	src/dst/tests/producer_protocol.rs key_hash: crate::crypto::stream_hash("pk"),	
 stream-hash	src/dst/tests/producer_protocol.rs key_hash: crate::crypto::stream_hash("sk"),	
 stream-hash	src/dst/tests/producer_protocol.rs key_hash: crate::crypto::stream_hash(&rk),	
