@@ -20,7 +20,7 @@ use sha2::{Digest, Sha256};
 
 pub const FRAME_VER: u8 = 4;
 const LEGACY_FRAME_VER: u8 = 2;
-const LEGACY_FRAME_VER_Z: u8 = 3;
+pub(crate) const LEGACY_FRAME_VER_Z: u8 = 3;
 /// Frame whose plaintext is zstd-compressed (compress-then-encrypt).
 pub const FRAME_VER_Z: u8 = 5;
 pub const KEY_LEN: usize = 32;

@@ -105,6 +105,7 @@ struct WireScanPage {
 pub(super) fn scan_page(bytes: &[u8], max_bytes: usize) -> Result<ReadPage, RemoteSpanError> {
     let page: WireScanPage = serde_json::from_slice(bytes).map_err(|e| invalid(&e.to_string()))?;
     Ok(ReadPage {
+        contiguous: None,
         watermarks: Watermarks {
             durable: page.end,
             applied: page.end,

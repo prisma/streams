@@ -43,6 +43,7 @@ pub(crate) enum ReadResultKind {
 pub(crate) struct ReadOutcome {
     pub descriptor: StreamDesc,
     pub records: Vec<super::PlainRec>,
+    pub contiguous: Option<bytes::Bytes>,
     pub next: ReadPosition,
     pub durable: Option<ReadPosition>,
     pub pending_from: Option<usize>,
@@ -97,6 +98,7 @@ impl ReadOutcome {
             .is_some_and(|map| map.segments.len() > 1 || map.pending.is_some());
         Self {
             descriptor: command.descriptor.clone(),
+            contiguous: None,
             records: vec![],
             next: position,
             durable: (command.visibility == Deliver::Applied).then_some(ReadPosition {
@@ -420,6 +422,7 @@ impl ReadService {
         let closed = handle.state.lock().unwrap().durable.closed;
         Ok(ReadOutcome {
             descriptor: desc.clone(),
+            contiguous: page.contiguous,
             records: page.recs,
             next,
             durable: None,
@@ -538,6 +541,7 @@ impl ResolvedRead<'_> {
         let complete = drained && last;
         Ok(ReadOutcome {
             descriptor: desc.clone(),
+            contiguous: page.contiguous,
             records: page.recs,
             next,
             durable: (command.visibility == Deliver::Applied).then_some(durable_resume),

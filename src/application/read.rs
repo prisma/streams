@@ -100,6 +100,8 @@ pub(crate) struct PlainRec {
 pub(crate) struct ReadPage {
     pub(crate) watermarks: Watermarks,
     pub(crate) recs: Vec<PlainRec>,
+    /// Optional complete batch owner; adapters verify exact contiguous coverage.
+    pub(crate) contiguous: Option<Bytes>,
     pub(crate) last: Option<u64>,
     pub(crate) end: u64,
     pub(crate) completed: bool,
@@ -116,32 +118,74 @@ fn decode_frames_into(
     out: &mut ReadPage,
     budget: &mut PageBudget,
 ) -> Result<bool, String> {
+    // Reserve only the prefix the current admission policy can actually accept.
+    // Uncompressed lengths are exact; compressed records use the bounded fallback.
+    let mut planned = budget.clone();
+    let mut capacity = 0;
     for raw in frames {
         let frame = raw.view();
-        let offset = frame.header.offset;
-        if !budget.metadata_fits(frame.header.routing_key) {
-            out.last = offset.checked_sub(1);
-            return Ok(false);
+        if matches!(
+            frame.ver,
+            crate::crypto::FRAME_VER_Z | crate::crypto::LEGACY_FRAME_VER_Z
+        ) {
+            break;
         }
-        let Some(pt) = keys.decrypt(&frame, raw, budget.decode_limit())? else {
-            if out.recs.is_empty() {
-                return Err("decoded record exceeds 32 MiB".into());
-            }
-            out.last = offset.checked_sub(1);
-            return Ok(false);
-        };
-        if !budget.admit(pt.len(), frame.header.routing_key) {
-            out.last = offset.checked_sub(1);
-            return Ok(false);
+        let len = frame.ciphertext.len().saturating_sub(16);
+        if !planned.admit(len, frame.header.routing_key) {
+            break;
         }
-        out.recs.push(PlainRec {
-            off: offset,
-            payload: Bytes::from(pt),
-            rkey: frame.header.routing_key.to_owned(),
-        });
-        out.last = Some(offset);
+        capacity += len;
     }
-    Ok(true)
+    let mut plaintext = Vec::with_capacity(capacity);
+    let mut auth = Vec::new();
+    let mut pending = Vec::new();
+    let result = (|| {
+        for raw in frames {
+            let frame = raw.view();
+            let offset = frame.header.offset;
+            if !budget.metadata_fits(frame.header.routing_key) {
+                out.last = offset.checked_sub(1);
+                return Ok(false);
+            }
+            let Some(range) = keys.decrypt_append(
+                &frame,
+                raw,
+                budget.decode_limit(),
+                &mut plaintext,
+                &mut auth,
+            )?
+            else {
+                if out.recs.is_empty() && pending.is_empty() {
+                    return Err("decoded record exceeds 32 MiB".into());
+                }
+                out.last = offset.checked_sub(1);
+                return Ok(false);
+            };
+            if !budget.admit(range.len(), frame.header.routing_key) {
+                plaintext.truncate(range.start);
+                out.last = offset.checked_sub(1);
+                return Ok(false);
+            }
+            pending.push((offset, range, frame.header.routing_key.to_owned()));
+            out.last = Some(offset);
+        }
+        Ok(true)
+    })();
+    // On authentication failure the whole failed call is discarded. On a
+    // bounded partial, publish only previously authenticated/admitted records.
+    if result.is_ok() && !pending.is_empty() {
+        let owner = Bytes::from(plaintext);
+        if out.recs.is_empty() {
+            out.contiguous = Some(owner.clone());
+        }
+        out.recs
+            .extend(pending.into_iter().map(|(off, range, rkey)| PlainRec {
+                off,
+                payload: owner.slice(range),
+                rkey,
+            }));
+    }
+    result
 }
 
 /// The merge itself, free of `AppState` so the simulation harness can call
@@ -192,6 +236,7 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
         )
     };
     let mut out = ReadPage {
+        contiguous: None,
         watermarks,
         recs: Vec::new(),
         last: None,
@@ -490,6 +535,7 @@ pub(crate) async fn read_stitched(
     let (own_engine, own_handle) = state.handle_of(&chain[0].0).await?;
     let own_end = own_handle.state.lock().unwrap().durable.next;
     let mut out = ReadPage {
+        contiguous: None,
         watermarks: crate::application::read::Watermarks {
             durable: own_end,
             applied: own_end,
@@ -686,6 +732,7 @@ mod read_contract_tests {
     #[test]
     fn r06_empty_filtered_page_has_consumed_progress() {
         let page = ReadPage {
+            contiguous: None,
             watermarks: Watermarks {
                 durable: 40,
                 applied: 40,
@@ -701,6 +748,7 @@ mod read_contract_tests {
     #[test]
     fn r06_applied_resume_is_clamped_after_rollback() {
         let page = ReadPage {
+            contiguous: None,
             watermarks: Watermarks {
                 durable: 5,
                 applied: 9,
@@ -713,6 +761,7 @@ mod read_contract_tests {
         assert_eq!(page.scanned_through(0), 9);
         assert_eq!(page.durable_resume(0), 5);
         let retried = ReadPage {
+            contiguous: None,
             watermarks: Watermarks {
                 durable: 5,
                 applied: 5,
@@ -858,4 +907,79 @@ async fn absorption_race(
             .map_err(|e| e.to_string())?;
         (durable > cursor).then_some((durable, remote_v2))
     })
+}
+
+#[cfg(test)]
+mod o2_tests {
+    use super::*;
+    #[test]
+    fn o2_batch_publishes_one_owner_only_after_authentication_and_admission() {
+        let key = crate::crypto::StreamKey([7; 32]);
+        let epoch = [8; 16];
+        let hash = [9; 16];
+        let subkey = crate::crypto::derive_subkey(&key, &epoch, "", 0);
+        let cipher = crate::crypto::FrameCipher::new(
+            &subkey,
+            &hash,
+            crate::crypto::FrameCompression::Disabled,
+        );
+        let frames: Vec<_> = (0..64)
+            .map(|off| {
+                let raw =
+                    Bytes::from(cipher.encrypt(&hash, off, 123, 0, "", &vec![off as u8; 1024]));
+                crate::shard::record::CheckedFrame::from_ring(&raw, off, None)
+                    .unwrap()
+                    .unwrap()
+            })
+            .collect();
+        let page = || ReadPage {
+            watermarks: Watermarks {
+                durable: 64,
+                applied: 64,
+            },
+            recs: vec![],
+            contiguous: None,
+            last: None,
+            end: 64,
+            completed: true,
+        };
+        let mut out = page();
+        assert!(
+            decode_frames_into(
+                &frames,
+                &mut ReadKeys::new(&key, &epoch, hash),
+                &mut out,
+                &mut PageBudget::new(65536)
+            )
+            .unwrap()
+        );
+        let owner = out.contiguous.as_ref().unwrap();
+        assert_eq!(owner.len(), 65536);
+        assert_eq!(out.last, Some(63));
+        assert_eq!(out.recs.len(), 64);
+        for (i, record) in out.recs.iter().enumerate() {
+            assert_eq!(
+                record.payload.as_ptr(),
+                owner.as_ptr().wrapping_add(i * 1024)
+            );
+            assert!(record.payload.iter().all(|b| *b == i as u8));
+        }
+        let mut partial = page();
+        assert!(
+            !decode_frames_into(
+                &frames,
+                &mut ReadKeys::new(&key, &epoch, hash),
+                &mut partial,
+                &mut PageBudget::new(1536)
+            )
+            .unwrap()
+        );
+        assert_eq!(partial.recs.len(), 1);
+        assert_eq!(partial.last, Some(0));
+        assert_eq!(partial.contiguous.as_ref().unwrap().len(), 1024);
+        // A slow reader retaining the old immutable owner sees unchanged bytes
+        // while another page is built and dropped.
+        assert_eq!(owner.len(), 65536);
+        assert!(out.recs[63].payload.iter().all(|b| *b == 63));
+    }
 }

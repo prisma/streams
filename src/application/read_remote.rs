@@ -282,6 +282,7 @@ impl WireReadPage {
         }
         let records = read_wire::decode_records(self.records, command.max_bytes)?;
         Ok(super::read::ReadOutcome {
+            contiguous: None,
             descriptor: command.descriptor.clone(),
             records,
             next: self.next,

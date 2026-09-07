@@ -1,7 +1,5 @@
 //! Page-local key material; retain at most 64 expanded cipher schedules.
-use crate::crypto::{
-    DecodedFrame, FrameDecryptor, StreamKey, decrypt_frame_limited, derive_subkey,
-};
+use crate::crypto::{DecodedFrame, FrameDecryptor, StreamKey, derive_subkey};
 use std::collections::HashMap;
 const MAX_CIPHERS: usize = 64;
 struct KeyEntry {
@@ -27,12 +25,25 @@ impl<'a> ReadKeys<'a> {
             cached: 0,
         }
     }
+    #[cfg(test)]
     pub fn decrypt(
         &mut self,
         frame: &DecodedFrame<'_>,
         raw: &[u8],
         limit: usize,
     ) -> Result<Option<Vec<u8>>, String> {
+        let mut plaintext = Vec::new();
+        self.decrypt_append(frame, raw, limit, &mut plaintext, &mut Vec::new())
+            .map(|range| range.map(|_| plaintext))
+    }
+    pub fn decrypt_append(
+        &mut self,
+        frame: &DecodedFrame<'_>,
+        raw: &[u8],
+        limit: usize,
+        plaintext: &mut Vec<u8>,
+        auth: &mut Vec<u8>,
+    ) -> Result<Option<std::ops::Range<usize>>, String> {
         let lanes = self.entries.entry(frame.header.key_version).or_default();
         let entry = if let Some(entry) = lanes.get(frame.header.routing_key) {
             entry
@@ -54,8 +65,9 @@ impl<'a> ReadKeys<'a> {
                 .or_insert(KeyEntry { subkey, cipher })
         };
         match &entry.cipher {
-            Some(cipher) => cipher.decrypt(frame, raw, limit),
-            None => decrypt_frame_limited(&entry.subkey, &self.segment, frame, raw, limit),
+            Some(cipher) => cipher.decrypt_append(frame, raw, limit, plaintext, auth),
+            None => FrameDecryptor::new(&entry.subkey, &self.segment)
+                .decrypt_append(frame, raw, limit, plaintext, auth),
         }
     }
 }

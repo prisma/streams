@@ -16,6 +16,82 @@ impl FrameDecryptor {
             current: Default::default(),
         }
     }
+    /// Append authenticated plaintext to caller-owned bounded page storage.
+    /// No slice is published until AEAD and page admission both succeed.
+    pub(crate) fn decrypt_append(
+        &self,
+        frame: &DecodedFrame<'_>,
+        raw: &[u8],
+        limit: usize,
+        plaintext: &mut Vec<u8>,
+        auth: &mut Vec<u8>,
+    ) -> Result<Option<std::ops::Range<usize>>, String> {
+        use aes_gcm::aead::AeadInPlace;
+        if raw.len() > MAX_ENCODED_FRAME || frame.ciphertext.len() > MAX_RECORD_PLAINTEXT + 16 {
+            return Err("encoded record exceeds the record bound".into());
+        }
+        let len = frame
+            .ciphertext
+            .len()
+            .checked_sub(16)
+            .ok_or_else(|| "invalid frame tag".to_string())?;
+        // Keep the existing bounded decompressor and authenticate an oversized
+        // candidate before withholding it. Neither path can grow the page past
+        // its admission limit or publish tentative output.
+        if matches!(frame.ver, FRAME_VER_Z | LEGACY_FRAME_VER_Z)
+            || len > limit.min(MAX_RECORD_PLAINTEXT)
+        {
+            return self.decrypt(frame, raw, limit).map(|candidate| {
+                candidate.map(|pt| {
+                    let start = plaintext.len();
+                    plaintext.reserve_exact(pt.len());
+                    plaintext.extend_from_slice(&pt);
+                    start..plaintext.len()
+                })
+            });
+        }
+        auth.clear();
+        auth.extend_from_slice(&self.segment);
+        auth.extend_from_slice(&raw[..frame.header_len]);
+        let start = plaintext.len();
+        plaintext.reserve_exact(len);
+        plaintext.extend_from_slice(&frame.ciphertext[..len]);
+        let tag = aes_gcm::Tag::from_slice(&frame.ciphertext[len..]);
+        let result = match frame.ver {
+            LEGACY_FRAME_VER => {
+                let cipher = self
+                    .legacy
+                    .get_or_init(|| Aes256Gcm::new((&self.subkey).into()));
+                cipher.decrypt_in_place_detached(
+                    Nonce::from_slice(&nonce_for_offset(frame.header.offset)),
+                    auth,
+                    &mut plaintext[start..],
+                    tag,
+                )
+            }
+            FRAME_VER => {
+                let cipher = self.current.get_or_init(|| {
+                    Aes256GcmSiv::new((&segment_frame_key(&self.subkey, &self.segment)).into())
+                });
+                cipher.decrypt_in_place_detached(
+                    Nonce::from_slice(&raw[frame.header_len - 12..frame.header_len]),
+                    auth,
+                    &mut plaintext[start..],
+                    tag,
+                )
+            }
+            _ => {
+                plaintext.truncate(start);
+                return Err("unsupported frame version".into());
+            }
+        };
+        if result.is_err() {
+            plaintext.truncate(start);
+            return Err("decryption failed (wrong key or tampered record)".into());
+        }
+        Ok(Some(start..plaintext.len()))
+    }
+
     pub(crate) fn decrypt(
         &self,
         frame: &DecodedFrame<'_>,
