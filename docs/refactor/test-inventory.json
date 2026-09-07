@@ -3180,6 +3180,17 @@
     ]
   },
   {
+    "name": "o3_retained_ring_coverage_skips_only_the_redundant_marker",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "420d9aec8d18027057da31ef91143637568ea912181c69d5911b672e94061d0c",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/reads_ring.rs",
+    "scenarios": []
+  },
+  {
     "name": "object_classes_match_production_telemetry",
     "attributes": [
       "#[test]"
