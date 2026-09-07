@@ -226,7 +226,21 @@ impl LeaseWatch {
 
     /// True = terminate the subscription NOW.
     pub(crate) fn revoked(&mut self, state: &AppState) -> bool {
-        let now = crate::shard::now_ms() / 1000;
+        self.revoked_at(state, crate::shard::now_ms() / 1000)
+    }
+
+    /// Exercise the same production predicate with an owned clock. The socket
+    /// fixtures retain real time; short-window semantics never depend on sleep.
+    #[cfg(test)]
+    pub(crate) fn revoked_with_clock(
+        &mut self,
+        state: &AppState,
+        clock: &dyn crate::runtime::Clock,
+    ) -> bool {
+        self.revoked_at(state, clock.now().ms() / 1000)
+    }
+
+    fn revoked_at(&mut self, state: &AppState, now: i64) -> bool {
         let g = state.auth.auth_generation();
         if g == self.last_gen && now < self.next_deadline {
             return false;

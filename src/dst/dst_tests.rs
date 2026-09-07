@@ -246,3 +246,6 @@ mod runtime_request_work;
 
 #[path = "tests/request_topology_debt.rs"]
 mod request_topology_debt;
+
+#[path = "tests/security_freshness.rs"]
+mod security_freshness;

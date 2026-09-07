@@ -802,6 +802,40 @@
           "sha256": "25394435670d087a8bf5b9d1ce3eab184bb8950a307e3bfbcee90b09bbb63c73"
         }
       ]
+    },
+    {
+      "id": "owned-freshness-boundary-and-socket-delivery",
+      "obligations": [
+        "V01"
+      ],
+      "owner": "LeaseWatch freshness predicate and DST security fixtures",
+      "mechanism": "ManualClock drives the same predicate called in production; separate real TCP subscriber receives a unique record after each paired publication",
+      "entered_proof": "Explicit now < prior deadline before both publications, generation advances twice, updated deadline observed, prior deadline reached, actual upToDate and data delivered",
+      "oracle": "Same watcher survives all valid refreshes; age == window remains valid and age > window rejects each independently stale feed with its exact reason, including unchanged generation; socket delivers each marker exactly once",
+      "configuration": {
+        "staleness_seconds": 3,
+        "clock": "owned ManualClock for predicate; ordinary default freshness window for TCP smoke",
+        "refresh_rounds": 4
+      },
+      "limitations": "Controlled process pauses establish the old fixture precondition failure, not the unrecorded cause of the two historical failures; those raw logs remain preserved.",
+      "execution": "requires_final_head_receipt",
+      "tests": [
+        {
+          "file": "src/dst/tests/security_freshness.rs",
+          "name": "v01_owned_time_refreshes_survive_every_preceding_deadline",
+          "sha256": "fd9817d1373ea7569b80715744cfc9141e880d2c17de02243f7efc88620be950"
+        },
+        {
+          "file": "src/dst/tests/security_freshness.rs",
+          "name": "v01_owned_time_staleness_refuses_each_unrefreshed_feed_at_the_boundary",
+          "sha256": "9417073d8a46266dda6160b3e3127d7417ca7e487ea8bf62194932f2e82b627c"
+        },
+        {
+          "file": "src/dst/tests/security_revocation.rs",
+          "name": "subscription_survives_when_both_feeds_refresh_before_the_deadline",
+          "sha256": "0dd149a0e7f3f7f6db1e69c4f01d97256a78507f0e8e06cd45b257e6d9f4917a"
+        }
+      ]
     }
   ],
   "external_legs": [
@@ -956,6 +990,15 @@
       "after_sha256": "bf37a0aae5e06ba86fba41c4bca669e8f5ba2f0508dc6eb36cf6d92452c85eb7",
       "finding": "R17-B",
       "reason": "Inspect the same groups through CommitHandoff.pending() instead of a bare vector. Every exact row/reply/accounting/publication assertion is unchanged."
+    },
+    {
+      "file": "src/dst/tests/security_revocation.rs",
+      "name": "subscription_survives_when_both_feeds_refresh_before_the_deadline",
+      "before_commit": "89884ab114b22929aa93707361e9e8d52c762bc2",
+      "before_sha256": "9a082639f18a6130d4173f2733b39186b747af77671dce5cfc4eef6da4cab1b8",
+      "after_sha256": "0dd149a0e7f3f7f6db1e69c4f01d97256a78507f0e8e06cd45b257e6d9f4917a",
+      "finding": "V01",
+      "reason": "Replace an unverified sleep-based three-second freshness precondition and final silence assertion with real TCP per-publication delivery. New owned-clock tests prove refresh before each old deadline and both exact stale boundaries using the unchanged production predicate. Original stale-feed, revocation and expiry controls remain unchanged; historical failures are not relabeled."
     }
   ]
 }

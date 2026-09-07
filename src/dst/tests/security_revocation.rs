@@ -44,17 +44,16 @@ async fn subscription_terminates_when_only_the_grant_feed_goes_stale() {
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
 async fn subscription_survives_when_both_feeds_refresh_before_the_deadline() {
-    let (svc, _state, addr) = auth_rig("proj-st3", "ws_st", &["c1"], Some(3)).await;
+    // Real TCP delivery/publication smoke. The owned-clock V01 tests separately
+    // prove refresh-before-deadline and age == / > window without scheduler races.
+    let (svc, _state, addr) = auth_rig("proj-st3", "ws_st", &["c1"], None).await;
     let tok = mint_token("c1", "proj-st3", "ws_st", 1, 1, "s3", 600);
     rig_create(addr, "st3", &tok).await;
     let mut sub = rig_sse(addr, "st3", &tok, "", None).await;
-    let (b, _) = hub_sse_collect(&mut sub, 8, |t| t.contains("upToDate")).await;
-    assert!(b.contains("upToDate"), "parks:\n{b}");
-    // Identical-content republication every 1.5 s moves the freshness
-    // deadline forward: the subscription must stay open well past the
-    // original 3 s window.
+    let (b, eof) = hub_sse_collect(&mut sub, 8, |t| t.contains("upToDate")).await;
+    assert!(!eof && b.contains("upToDate"), "parks:\n{b}");
     for fv in 2..6 {
-        tokio::time::sleep(std::time::Duration::from_millis(1500)).await;
+        let generation = svc.auth_generation();
         rig_publish_policy(&svc, rig_policy("proj-st3", "ws_st", 1, 1), fv).unwrap();
         rig_publish_grants(
             &svc,
@@ -63,9 +62,20 @@ async fn subscription_survives_when_both_feeds_refresh_before_the_deadline() {
             fv,
         )
         .unwrap();
+        assert_eq!(svc.auth_generation(), generation + 2);
+        let marker = format!("REFRESH_{fv}");
+        rig_append_retry(addr, "st3", &tok, &format!(r#"{{"marker":"{marker}"}}"#)).await;
+        let (received, eof) = hub_sse_collect(&mut sub, 8, |t| t.contains(&marker)).await;
+        assert!(
+            !eof && received.contains(&marker),
+            "same subscription delivers after refresh:\n{received}"
+        );
+        assert_eq!(
+            data_frames(&received),
+            1,
+            "each published record delivered exactly once"
+        );
     }
-    let (_, eof) = hub_sse_collect(&mut sub, 2, |_| false).await;
-    assert!(!eof, "refreshed feeds must keep the subscription open");
 }
 
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
