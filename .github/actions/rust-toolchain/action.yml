@@ -1,0 +1,11 @@
+name: Repository Rust toolchain
+description: Install the exact root release and components; no floating stable.
+runs:
+  using: composite
+  steps:
+    - shell: bash
+      run: |
+        set -euo pipefail
+        version=$(python3 -c 'import tomllib; print(tomllib.load(open("rust-toolchain.toml", "rb"))["toolchain"]["channel"])')
+        rustup toolchain install "$version" --profile minimal --component clippy --component rustfmt
+        rustup override set "$version"

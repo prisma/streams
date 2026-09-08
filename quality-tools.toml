@@ -1,0 +1,14 @@
+# Review version/toolchain migrations explicitly. No floating latest in CI.
+rust = "1.98.1"
+nightly = "nightly-2026-09-01"
+actionlint = "1.7.12"
+
+[tools]
+cargo-machete = "0.9.2"
+cargo-deny = "0.20.2"
+cargo-fuzz = "0.13.2"
+cargo-mutants = "27.1.0"
+
+[slatedb]
+git = "https://github.com/slatedb/slatedb.git"
+rev = "0717cc1e4e9bad10a4773760f66bac4264ecf05e"

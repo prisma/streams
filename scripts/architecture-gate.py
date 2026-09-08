@@ -183,6 +183,12 @@ def main() -> int:
         print('architecture-gate: baseline content hash mismatch'); return 1
     sources = current_sources()
     problems = violations(sources, baseline, policy)
+    # The historical numeric/transport anchors stay intact. The parsed-source
+    # adoption and merge-base ratchets additionally include tests and tooling.
+    import sys
+    sys.path.insert(0, str(ROOT / 'scripts/quality'))
+    import source_gate
+    problems.extend(source_gate.check())
     if args.json:
         print(json.dumps({'baseline_commit': BASE_COMMIT, 'failures': problems,
                           'metrics': {p: metric_source(p, s) for p, s in sources.items()}}, indent=2))

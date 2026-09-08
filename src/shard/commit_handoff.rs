@@ -1,3 +1,4 @@
+#![warn(clippy::wildcard_enum_match_arm)]
 //! Terminal ownership of transaction completion, guarded by `in_flight`.
 //!
 //! Retirement, applied publication/registration, no-write attachment and
@@ -66,3 +67,6 @@ impl CommitHandoff {
         Some(std::mem::take(&mut self.pending))
     }
 }
+
+#[cfg(test)]
+mod loom_tests;

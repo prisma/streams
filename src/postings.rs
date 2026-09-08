@@ -1,3 +1,4 @@
+#![warn(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 //! Compact per-routing-key postings for the shared history partition
 //! (docs/ROUTING-V3.md §3, replacing the full-frame covering index).
 //!
@@ -29,6 +30,7 @@
 
 use crate::crypto::{RouteHash, RoutingKeyHash, SegmentHash};
 
+#[path = "postings/validated.rs"]
 mod validated;
 pub use validated::{RunWindow, ValidatedRuns};
 

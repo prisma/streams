@@ -1,8 +1,9 @@
 use super::*;
 use crate::application::read_retention_probe::Probe;
+use futures_util::FutureExt;
 
-#[tokio::test]
-async fn o2a_subset_selection_compacts_owner_and_full_transfer_keeps_identity() {
+#[test]
+fn o2a_subset_selection_compacts_owner_and_full_transfer_keeps_identity() {
     let probe = Probe::default();
     probe
         .scope(async {
@@ -54,11 +55,12 @@ async fn o2a_subset_selection_compacts_owner_and_full_transfer_keeps_identity() 
             drop(body);
             assert_eq!(probe.live(), 0);
         })
-        .await;
+        .now_or_never()
+        .expect("pure ownership scope does not suspend");
 }
 
-#[tokio::test]
-async fn o2a_outer_budget_withholding_drops_the_unselected_owner() {
+#[test]
+fn o2a_outer_budget_withholding_drops_the_unselected_owner() {
     let probe = Probe::default();
     probe
         .scope(async {
@@ -77,5 +79,37 @@ async fn o2a_outer_budget_withholding_drops_the_unselected_owner() {
             drop(output);
             assert_eq!(probe.live(), 0);
         })
-        .await;
+        .now_or_never()
+        .expect("pure ownership scope does not suspend");
+}
+
+use proptest::prelude::*;
+proptest! {
+    #![proptest_config(ProptestConfig { cases: 1024, .. ProptestConfig::default() })]
+    #[test]
+    fn quality_generated_selection_charges_only_owned_capacity(sizes in prop::collection::vec(1usize..128, 1..32), requested in 1usize..2048) {
+        let probe = Probe::default();
+        probe.scope(async {
+            let mut source = PlainBatch::default();
+            let mut source_budget = PageBudget::new(8 << 20);
+            for (offset, size) in sizes.iter().enumerate() {
+                assert!(source.admit_owned(u64::try_from(offset).unwrap(), vec![0; *size], "k".to_owned(), &mut source_budget));
+            }
+            let mut expected = 0usize;
+            let mut count = 0usize;
+            for size in sizes {
+                let next = expected.saturating_add(size);
+                if count > 0 && next > requested { break; }
+                expected = next;
+                count = count.saturating_add(1);
+            }
+            let mut result = PlainBatch::default();
+            result.append_selected(source, 0..u64::MAX, None, &mut PageBudget::new(requested), 0);
+            assert_eq!(result.len(), count);
+            assert_eq!(result.retained_capacity(), expected);
+            assert_eq!(probe.live(), expected);
+            drop(result);
+            assert_eq!(probe.live(), 0);
+        }).now_or_never().unwrap();
+    }
 }

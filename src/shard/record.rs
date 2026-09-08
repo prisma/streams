@@ -1,3 +1,4 @@
+#![warn(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 //! Checked stored-record admission, shared by shard and history readers.
 //! Invalid cache entries force a canonical storage read; corrupt stored rows
 //! fail before either matching or match-free progress can be published.

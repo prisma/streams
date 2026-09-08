@@ -1,0 +1,5241 @@
+{
+  "occurrences": [
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::request",
+      "path": "src/application/read.rs",
+      "syntax": "path = \"read_request.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/application/read_batch.rs",
+      "syntax": "path = \"read_batch/tests.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/application/read_decode.rs",
+      "syntax": "path = \"read_decode/tests.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/application/read_wire.rs",
+      "syntax": "path = \"read_wire_tests.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::batch_tests",
+      "path": "src/audit.rs",
+      "syntax": "path = \"audit/batch_tests.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::crypto",
+      "path": "src/bin/cryptobench.rs",
+      "syntax": "path = \"../crypto.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tenant",
+      "path": "src/bin/cryptobench.rs",
+      "syntax": "path = \"../tenant.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::crypto",
+      "path": "src/bin/keys.rs",
+      "syntax": "path = \"../crypto.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tenant",
+      "path": "src/bin/keys.rs",
+      "syntax": "path = \"../tenant.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::crypto",
+      "path": "src/bin/livebench.rs",
+      "syntax": "path = \"../crypto.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tenant",
+      "path": "src/bin/livebench.rs",
+      "syntax": "path = \"../tenant.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::touch_keys",
+      "path": "src/bin/livebench.rs",
+      "syntax": "path = \"../touch_keys.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::validation_tests",
+      "path": "src/config/validation.rs",
+      "syntax": "path = \"validation_tests.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::decrypt",
+      "path": "src/crypto.rs",
+      "syntax": "path = \"crypto/decrypt.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/crypto/decrypt.rs",
+      "syntax": "path = \"decrypt/tests.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::admission_maintenance",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/admission_maintenance.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::admission_memory",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/admission_memory.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::append_application",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/append_application.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::billing_attribution",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/billing_attribution.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::billing_controller",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/billing_controller.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::billing_maintenance",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/billing_maintenance.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::billing_usage",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/billing_usage.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::consumer_atomicity",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/consumer_atomicity.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::consumer_delete",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/consumer_delete.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::consumer_dlq",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/consumer_dlq.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::consumer_generations",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/consumer_generations.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::consumer_product",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/consumer_product.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::consumer_saga",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/consumer_saga.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::durability_failures",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/durability_failures.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::durability_fences",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/durability_fences.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fixture_auth",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/fixture_auth.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fixture_failpoints",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/fixture_failpoints.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fixture_http",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/fixture_http.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fixture_livefeed",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/fixture_livefeed.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fixture_requests",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/fixture_requests.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fixture_runtime",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/fixture_runtime.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fixture_storage",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/fixture_storage.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fleet_controller",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/fleet_controller.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fork_cleanup",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/fork_cleanup.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::fork_lifecycle",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/fork_lifecycle.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::history_absorption",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/history_absorption.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::history_gather",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/history_gather.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::history_recovery",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/history_recovery.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::lifecycle_creation",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/lifecycle_creation.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::lifecycle_incarnation",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/lifecycle_incarnation.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::livefeed_basics",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/livefeed_basics.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::livefeed_history",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/livefeed_history.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::livefeed_ownership",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/livefeed_ownership.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::livefeed_swap",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/livefeed_swap.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::livefeed_tail",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/livefeed_tail.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::persistence_faults",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/persistence_faults.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::producer_handoff",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/producer_handoff.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::producer_protocol",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/producer_protocol.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::product_lifecycle",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/product_lifecycle.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::quota_enforcement",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/quota_enforcement.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::read_application",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/read_application.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::read_page_assembly",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/read_page_assembly.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::read_page_limits",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/read_page_limits.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::read_span_cache",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/read_span_cache.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::read_subset_retention",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/read_subset_retention.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::reads_applied",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/reads_applied.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::reads_history",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/reads_history.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::reads_product",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/reads_product.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::reads_raw",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/reads_raw.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::reads_ring",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/reads_ring.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::request_topology_debt",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/request_topology_debt.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::review_readiness",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"review_readiness.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::review_security",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"review_security.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::runtime_engine_lifecycle",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/runtime_engine_lifecycle.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::runtime_isolation",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/runtime_isolation.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::runtime_journals",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/runtime_journals.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::runtime_open_gate",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/runtime_open_gate.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::runtime_request_work",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/runtime_request_work.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::runtime_retirement",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/runtime_retirement.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::runtime_sweep",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/runtime_sweep.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::runtime_usage",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/runtime_usage.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::scaler_controller",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/scaler_controller.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::seal_cancellation",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/seal_cancellation.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::seal_convergence",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/seal_convergence.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::seal_coordination",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/seal_coordination.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::seal_fencing",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/seal_fencing.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::seal_incarnation",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/seal_incarnation.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::seal_recovery",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/seal_recovery.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::security_audit",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/security_audit.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::security_freshness",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/security_freshness.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::security_isolation",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/security_isolation.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::security_lineage",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/security_lineage.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::security_modes",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/security_modes.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::security_noninterference",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/security_noninterference.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::security_policy",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/security_policy.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::security_revocation",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/security_revocation.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::security_routes",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/security_routes.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::security_subscription",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/security_subscription.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::security_workload",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/security_workload.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::sse_delivery",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/sse_delivery.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::topology_lifecycle",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/topology_lifecycle.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::topology_scaling",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/topology_scaling.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::watch_admission",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/watch_admission.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::watch_observation",
+      "path": "src/dst/dst_tests.rs",
+      "syntax": "path = \"tests/watch_observation.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/dst/fault_store.rs",
+      "syntax": "path = \"tests/fault_substrate.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/dst/runtime.rs",
+      "syntax": "path = \"tests/oracle_model.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::trace_store_tests",
+      "path": "src/dst/trace_store.rs",
+      "syntax": "path = \"trace_store_tests/mod.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::document_tests",
+      "path": "src/fleet/repository.rs",
+      "syntax": "path = \"repository/document_tests.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::read_adapter",
+      "path": "src/http.rs",
+      "syntax": "path = \"http/read.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::batch_tests",
+      "path": "src/ops.rs",
+      "syntax": "path = \"ops/batch_tests.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::durability_frontier_tests",
+      "path": "src/shard.rs",
+      "syntax": "path = \"shard/durability_frontier_tests.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/sse/source.rs",
+      "syntax": "path = \"source/tests.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::runtime_tests",
+      "path": "src/usage.rs",
+      "syntax": "path = \"usage/runtime_tests.rs\""
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::Client::send",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 6,
+      "owner": "crate::main",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 4,
+      "owner": "crate::main",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 5,
+      "owner": "crate::run_cert",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 5,
+      "owner": "crate::run_cert",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::run_load",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 5,
+      "owner": "crate::run_wide",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::run_wide",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::stats_server",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::stats_server",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tail_cursor_tests::a_failed_body_retries_from_the_committed_cursor",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "std::thread::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tail_cursor_tests::a_failed_body_retries_from_the_committed_cursor",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::wide_env",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::main",
+      "path": "bench/probe/examples/pgtest.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::burst_loop",
+      "path": "bench/probe/src/main.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::diag",
+      "path": "bench/probe/src/main.rs",
+      "syntax": "tokio::task::spawn_blocking"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::env",
+      "path": "bench/probe/src/main.rs",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 3,
+      "owner": "crate::main",
+      "path": "bench/probe/src/main.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::pg_connect",
+      "path": "bench/probe/src/main.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::main",
+      "path": "build.rs",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::main",
+      "path": "examples/readertest.rs",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::local_perf_transport",
+      "path": "scripts/read-experiments/followup/transport.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::r06a_actual_receiver_refuses_declared_wire_overflow_before_reading_body",
+      "path": "src/application/read_wire_tests.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::drain_ownership_tests::r09_cancelled_optional_read_drain_requeues_owned_batches",
+      "path": "src/billing_service.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::bench_append",
+      "path": "src/bin/bench.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::bench_read",
+      "path": "src/bin/bench.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 3,
+      "owner": "crate::main",
+      "path": "src/bin/livebench.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::RotatingClient::new",
+      "path": "src/bin/pilot.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 3,
+      "owner": "crate::bench",
+      "path": "src/bin/pilot.rs",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::bench",
+      "path": "src/bin/pilot.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::env",
+      "path": "src/bin/pilot.rs",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 4,
+      "owner": "crate::generator",
+      "path": "src/bin/pilot.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 4,
+      "owner": "crate::lb",
+      "path": "src/bin/pilot.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tests::abandoned_open_closes_its_late_database_and_live_handoff_stays_open",
+      "path": "src/bootstrap/runtime_handoff.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::<ProcessEnvironment as Environment>::get",
+      "path": "src/config/environment.rs",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::cli_fixture_drift_helper",
+      "path": "src/config/tests.rs",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::process_environment_smoke_helper",
+      "path": "src/config/tests.rs",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::drain_observed",
+      "path": "src/dst/runtime.rs",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::first_request_waits_for_restoration_then_sees_the_restored_ledger",
+      "path": "src/dst/tests/admission_maintenance.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::balanced_append_absorb_group_still_writes_progress",
+      "path": "src/dst/tests/billing_maintenance.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::mixed_append_absorb_group_refreshes_the_progress_clock",
+      "path": "src/dst/tests/billing_maintenance.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::over_retirement_fails_the_group_and_preserves_the_boundary",
+      "path": "src/dst/tests/billing_maintenance.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_receive_after_delete_in_the_same_group_is_refused",
+      "path": "src/dst/tests/consumer_atomicity.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::receive_then_delete_in_one_group_leaves_no_stale_lease",
+      "path": "src/dst/tests/consumer_atomicity.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::settle_then_delete_in_one_group_leaves_no_stale_rows",
+      "path": "src/dst/tests/consumer_atomicity.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_parked_pull_cannot_lease_after_its_generation_was_deleted",
+      "path": "src/dst/tests/consumer_delete.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::same_group_config_puts_see_each_other",
+      "path": "src/dst/tests/consumer_delete.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_parked_saga_never_touches_a_recreated_stream",
+      "path": "src/dst/tests/consumer_generations.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_saga_refresh_failure_is_retryable_not_stable",
+      "path": "src/dst/tests/consumer_saga.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_saga_vanished_collection_is_idempotent_success",
+      "path": "src/dst/tests/consumer_saga.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_busy_next_generation_skips_the_gather_window",
+      "path": "src/dst/tests/durability_failures.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_failed_group_fails_the_close_and_its_retry_together",
+      "path": "src/dst/tests/durability_failures.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_failed_group_write_fails_its_duplicate_too",
+      "path": "src/dst/tests/durability_failures.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_fence_in_a_failed_group_reports_failure_not_closed",
+      "path": "src/dst/tests/durability_failures.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_reuse_verdict_dies_with_its_failed_group",
+      "path": "src/dst/tests/durability_failures.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_stream_seq_verdict_is_grounded_in_durable_state",
+      "path": "src/dst/tests/durability_failures.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::commits_during_a_flush_do_not_extend_its_barrier",
+      "path": "src/dst/tests/durability_failures.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::the_gather_window_waits_for_ack_dispatch",
+      "path": "src/dst/tests/durability_failures.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_fence_waits_for_durability_before_reporting_closed",
+      "path": "src/dst/tests/durability_fences.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 4,
+      "owner": "crate::idempotent_successes_wait_for_durability",
+      "path": "src/dst/tests/durability_fences.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::state_dependent_conflicts_wait_for_durability",
+      "path": "src/dst/tests/durability_fences.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::rig_in_seal_gap",
+      "path": "src/dst/tests/fixture_http.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_crashed_creators_late_reference_is_repaired_by_delete_retry",
+      "path": "src/dst/tests/fork_cleanup.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::fork_creation_and_source_deletion_serialize",
+      "path": "src/dst/tests/fork_lifecycle.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::r05_unknown_child_state_preserves_its_source_reference",
+      "path": "src/dst/tests/fork_lifecycle.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::sparse_absorption_wave_bounds_append_latency",
+      "path": "src/dst/tests/history_gather.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::create_replay_never_loses_the_initial_body",
+      "path": "src/dst/tests/lifecycle_creation.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::create_replay_recovers_from_a_failed_initial_write",
+      "path": "src/dst/tests/lifecycle_creation.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_parked_create_never_publishes_readiness_for_a_later_incarnation",
+      "path": "src/dst/tests/lifecycle_incarnation.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_parked_delete_never_removes_a_later_incarnation",
+      "path": "src/dst/tests/lifecycle_incarnation.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_release_parked_across_recreation_cannot_touch_the_replacement",
+      "path": "src/dst/tests/lifecycle_incarnation.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::creation_does_not_report_success_after_a_concurrent_delete",
+      "path": "src/dst/tests/lifecycle_incarnation.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::livefeed_blackholed_peer_never_suppresses_heartbeats",
+      "path": "src/dst/tests/livefeed_ownership.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::livefeed_pending_transition_connect_drives_resume",
+      "path": "src/dst/tests/livefeed_ownership.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::livefeed_split_held_publication_handoff_is_prompt",
+      "path": "src/dst/tests/livefeed_swap.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_handoff_with_an_append_in_flight_resolves_safely",
+      "path": "src/dst/tests/persistence_faults.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::cut_resume_never_skips_a_durable_record",
+      "path": "src/dst/tests/persistence_faults.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::max_streams_is_enforced_at_create",
+      "path": "src/dst/tests/quota_enforcement.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::watch_waits_occupy_the_subscription_pool",
+      "path": "src/dst/tests/quota_enforcement.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 3,
+      "owner": "crate::a_applied_read_and_long_poll_serve_the_tail_before_durability",
+      "path": "src/dst/tests/reads_applied.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_lost_applied_suffix_rewinds_to_the_durable_frontier",
+      "path": "src/dst/tests/reads_applied.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_stale_applied_cursor_is_refused_after_crash_restart",
+      "path": "src/dst/tests/reads_applied.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::product_long_poll_times_out_and_wakes",
+      "path": "src/dst/tests/reads_product.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::seal_gap_long_poll_wakes_without_closure",
+      "path": "src/dst/tests/reads_raw.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::seal_gap_stale_descriptor_redispatches",
+      "path": "src/dst/tests/reads_raw.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::ring_ordering_paging_and_duplicates_at_offset_level",
+      "path": "src/dst/tests/reads_ring.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::closing_an_engine_answers_queued_appends_and_ends_every_task",
+      "path": "src/dst/tests/runtime_isolation.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::naive_get_or_open",
+      "path": "src/dst/tests/runtime_open_gate.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::retirement_and_opening_take_the_gate_locks_in_one_order",
+      "path": "src/dst/tests/runtime_retirement.rs",
+      "syntax": "std::thread::sleep"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::retirement_and_opening_take_the_gate_locks_in_one_order",
+      "path": "src/dst/tests/runtime_retirement.rs",
+      "syntax": "std::thread::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::cancelled_final_preserves_claim_and_only_definitive_retry_releases_it",
+      "path": "src/dst/tests/seal_cancellation.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_parked_split_cannot_publish_under_a_sealed_collection",
+      "path": "src/dst/tests/seal_coordination.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_resumed_mark_never_seals_a_later_incarnation",
+      "path": "src/dst/tests/seal_fencing.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_superseded_close_cannot_write_or_close",
+      "path": "src/dst/tests/seal_fencing.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_wrong_content_type_close_cannot_join_the_valid_intent",
+      "path": "src/dst/tests/seal_fencing.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_product_final_never_writes_into_a_recreated_incarnation",
+      "path": "src/dst/tests/seal_incarnation.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_product_seal_never_binds_to_a_recreated_incarnation",
+      "path": "src/dst/tests/seal_incarnation.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_seal_never_installs_over_a_pending_transition",
+      "path": "src/dst/tests/seal_recovery.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_transient_producer_gap_does_not_lose_the_promised_record",
+      "path": "src/dst/tests/seal_recovery.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::shared_cell_certification_smoke",
+      "path": "src/dst/tests/security_audit.rs",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::noisy_neighbor_cannot_degrade_a_compliant_project",
+      "path": "src/dst/tests/security_isolation.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_child_deleted_before_the_source_ref_cannot_pin_the_source",
+      "path": "src/dst/tests/topology_lifecycle.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::concurrent_finals_with_different_coordination_do_not_share_a_claim",
+      "path": "src/dst/tests/topology_lifecycle.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::merge_phase_b_declines_under_sealing",
+      "path": "src/dst/tests/topology_lifecycle.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::blast_keys",
+      "path": "src/dst/tests/topology_scaling.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::product_watch_wakes_on_matching_append",
+      "path": "src/dst/tests/watch_observation.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::touch_close_shard_matches_route_hash_not_storage_hash",
+      "path": "src/dst/tests/watch_observation.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::watch_capability_waits_occupy_project_admission",
+      "path": "src/dst/tests/watch_observation.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::concurrent_begins_with_reverse_finishes_resolve_every_event_exactly_once",
+      "path": "src/dst/trace_store_tests/concurrency.rs",
+      "syntax": "std::thread::scope"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::reset_racing_with_begin_cannot_orphan_an_operation",
+      "path": "src/dst/trace_store_tests/concurrency.rs",
+      "syntax": "std::thread::scope"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::reset_racing_with_begin_cannot_orphan_an_operation",
+      "path": "src/dst/trace_store_tests/concurrency.rs",
+      "syntax": "std::thread::yield_now"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::reset_refuses_while_in_flight",
+      "path": "src/dst/trace_store_tests/streams.rs",
+      "syntax": "std::mem::forget"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::Absorber::absorb_gather_v2_with",
+      "path": "src/history.rs",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::Absorber::start",
+      "path": "src/history.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tests::cancelled_reservation_releases_its_gather_slot",
+      "path": "src/history.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tests::commit_blocked_detects_real_flush_stall",
+      "path": "src/history.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tests::worst_frame_floor_serializes_oversized_gathers_without_starvation",
+      "path": "src/history.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::Absorber::classify_due",
+      "path": "src/history/worker.rs",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::router",
+      "path": "src/http.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::main",
+      "path": "src/main.rs",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::main",
+      "path": "src/main.rs",
+      "syntax": "std::thread::available_parallelism"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::PostingsCache::spawn_load",
+      "path": "src/postings_cache.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::HistoryPartition::open",
+      "path": "src/shard/history_partition.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::r08a_database_record_corruption_refuses_progress_without_mutation",
+      "path": "src/shard/record_scan_tests.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::r17a_cancelled_history_opener_stays_owned_until_late_store_close",
+      "path": "src/shard/task_lifecycle_tests.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::CommitTransaction < '_ >::absorbed",
+      "path": "src/shard/transaction/maintenance.rs",
+      "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::GatePark::wait_arrived",
+      "path": "src/sharddir.rs",
+      "syntax": "std::thread::sleep"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::OpenGate::get_or_open",
+      "path": "src/sharddir.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::<GatedSseBody as futures_util::Stream>::poll_next",
+      "path": "src/sse/auth.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::LiveFeed::schedule_transition_retry",
+      "path": "src/sse/feed.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tests::aborted_drive_releases_the_permit",
+      "path": "src/sse/feed.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tests::concurrent_retention_never_exceeds_cap",
+      "path": "src/sse/feed.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::tests::driver_permit_releases_exactly_once",
+      "path": "src/sse/feed.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tests::reconcile_and_driver_install_bump_generation_once",
+      "path": "src/sse/feed.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::serve",
+      "path": "src/sse/session.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::spawn_sentinels",
+      "path": "src/store_timing.rs",
+      "syntax": "std::thread::Builder::new"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::spawn_sentinels",
+      "path": "src/store_timing.rs",
+      "syntax": "std::thread::sleep"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::spawn_sentinels",
+      "path": "src/store_timing.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tests::bulk_gate_bounds_concurrent_bytes",
+      "path": "src/store_timing.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tests::bulk_gate_waiter_proceeds_when_holder_releases",
+      "path": "src/store_timing.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::TaskSupervisor::spawn",
+      "path": "src/tasks.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::tests::concurrent_shutdowns_share_one_run_and_one_report",
+      "path": "src/tasks.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::tests::registration_cannot_race_shutdown",
+      "path": "src/tasks.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::TaskSupervisor::launch_shutdown",
+      "path": "src/tasks/shutdown.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::TouchJournal::start",
+      "path": "src/touch.rs",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::run_cert",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "allow (unreachable_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::dlq_and_settle",
+      "path": "src/application/consumer/delivery.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::install_reserved_claim",
+      "path": "src/application/lifecycle.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::take_over_abandoned",
+      "path": "src/application/lifecycle.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::ReadPlan < 'a >::segment",
+      "path": "src/application/read.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::TEST_ASSERT_KEYED_DENSE",
+      "path": "src/application/read.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::read_merged",
+      "path": "src/application/read.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::read_stitched",
+      "path": "src/application/read.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/auth.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::tenant",
+      "path": "src/bin/cryptobench.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::crypto",
+      "path": "src/bin/keys.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::tenant",
+      "path": "src/bin/keys.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::crypto",
+      "path": "src/bin/livebench.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::tenant",
+      "path": "src/bin/livebench.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::dispatch",
+      "path": "src/bin/s3lite.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::FrameCipher::encrypt_with_nonce",
+      "path": "src/crypto.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::RouteHash::for_child",
+      "path": "src/crypto.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::RouteHash::for_stream",
+      "path": "src/crypto.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::SegmentHash::for_segment",
+      "path": "src/crypto.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::SegmentHash::for_stream",
+      "path": "src/crypto.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::WATCH_CAP_MAX_LIFETIME_SECS",
+      "path": "src/crypto.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::WATCH_CAP_SKEW_SECS",
+      "path": "src/crypto.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::decrypt_frame",
+      "path": "src/crypto.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::secret_eq",
+      "path": "src/crypto.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::verify_watch_capability",
+      "path": "src/crypto.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::verify_watch_capability",
+      "path": "src/crypto.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::watch_capability_project",
+      "path": "src/crypto.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::watch_capability_sig",
+      "path": "src/crypto.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::watch_capability_sig",
+      "path": "src/crypto.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::Workload::append_to",
+      "path": "src/dst/runtime.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::Workload::attempt",
+      "path": "src/dst/runtime.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::Workload::attempt_with_deadline",
+      "path": "src/dst/runtime.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::Workload::run",
+      "path": "src/dst/runtime.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::WALK_CLOSE_SUBMITS_SNAPSHOT",
+      "path": "src/dst/tests/runtime_sweep.rs",
+      "syntax": "allow (non_snake_case)"
+    },
+    {
+      "category": "exception",
+      "count": 2,
+      "owner": "crate::shared_cell_certification_smoke",
+      "path": "src/dst/tests/security_audit.rs",
+      "syntax": "allow (non_snake_case)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::TraceState::event",
+      "path": "src/dst/trace_store.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/dst/trace_store_tests/basic.rs",
+      "syntax": "allow (unused_imports)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/dst/trace_store_tests/cancellation.rs",
+      "syntax": "allow (unused_imports)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/dst/trace_store_tests/concurrency.rs",
+      "syntax": "allow (unused_imports)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/dst/trace_store_tests/delete_accounting.rs",
+      "syntax": "allow (unused_imports)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/dst/trace_store_tests/streams.rs",
+      "syntax": "allow (unused_imports)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::read_history2_keyed_cached",
+      "path": "src/history.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::read_history2_keyed_scoped",
+      "path": "src/history.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::read",
+      "path": "src/history/canonical_span.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::SpanCache::scope",
+      "path": "src/history/span_cache.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::AppState::engine_for",
+      "path": "src/http.rs",
+      "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::AppState::engine_for_quiet",
+      "path": "src/http.rs",
+      "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::ReadParams::sig",
+      "path": "src/http.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::raise_nofile",
+      "path": "src/http.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::sse_response",
+      "path": "src/http.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::PostingsCache::maybe_prefetch",
+      "path": "src/postings_cache.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 2,
+      "owner": "crate::PostingsCache::spawn_load",
+      "path": "src/postings_cache.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::canonical_name",
+      "path": "src/product.rs",
+      "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::canonical_stream_name",
+      "path": "src/product.rs",
+      "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::canonical_stream_name",
+      "path": "src/product.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::classify_route",
+      "path": "src/product.rs",
+      "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::consumer_key",
+      "path": "src/product.rs",
+      "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::enforce_customer",
+      "path": "src/product.rs",
+      "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::install_reserved_claim",
+      "path": "src/product.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::internal_sref",
+      "path": "src/product.rs",
+      "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::parse_create_doc",
+      "path": "src/product.rs",
+      "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::product_append_inner",
+      "path": "src/product.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::product_auth_gate",
+      "path": "src/product.rs",
+      "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::product_consumer_pull",
+      "path": "src/product.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::product_watch_wait",
+      "path": "src/product.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::project_admission",
+      "path": "src/product.rs",
+      "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::q_num",
+      "path": "src/product.rs",
+      "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::render_product_append",
+      "path": "src/product.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::strict_query",
+      "path": "src/product.rs",
+      "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::submit_product_append",
+      "path": "src/product.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::verify_internal_target",
+      "path": "src/product.rs",
+      "syntax": "allow (clippy :: result_large_err , reason = \"transport boundary returns Axum wire response directly; application errors stay compact\")"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/project_policy.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::Registry::update",
+      "path": "src/registry.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::read_frames_until",
+      "path": "src/shard/record.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::serve",
+      "path": "src/sse/session.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::LineageSource::sealed_span_page",
+      "path": "src/sse/source.rs",
+      "syntax": "allow (clippy :: too_many_arguments)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::LineageSpan::identity",
+      "path": "src/sse/source.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::CanonicalPrefix",
+      "path": "src/tenant.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::CanonicalStreamName",
+      "path": "src/tenant.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::HashDomain",
+      "path": "src/tenant.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 2,
+      "owner": "crate::ProjectId",
+      "path": "src/tenant.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::Scope",
+      "path": "src/tenant.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::ScopeSet",
+      "path": "src/tenant.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::TenantStreamRef",
+      "path": "src/tenant.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::WorkspaceId",
+      "path": "src/tenant.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::normalize_prefix_set",
+      "path": "src/tenant.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::prefix_set_matches",
+      "path": "src/tenant.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "exception",
+      "count": 1,
+      "owner": "crate::validate_cell_id",
+      "path": "src/tenant.rs",
+      "syntax": "allow (dead_code)"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::target::T",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "std :: sync :: OnceLock < std :: sync :: RwLock < String > >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::variant::V",
+      "path": "bench/probe/src/main.rs",
+      "syntax": "std :: sync :: OnceLock < & 'static str >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::ALLOCATOR",
+      "path": "scripts/read-experiments/followup/allocation/allocation_meter.rs",
+      "syntax": "Meter"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::ACTIVE",
+      "path": "scripts/read-experiments/followup/meter.rs",
+      "syntax": "AtomicBool"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::ALLOCATOR",
+      "path": "scripts/read-experiments/followup/meter.rs",
+      "syntax": "CountedSystem"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::BRIDGES",
+      "path": "scripts/read-experiments/followup/meter.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::BRIDGE_COPIES",
+      "path": "scripts/read-experiments/followup/meter.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::BRIDGE_COPY_BYTES",
+      "path": "scripts/read-experiments/followup/meter.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::BRIDGE_POINTER",
+      "path": "scripts/read-experiments/followup/meter.rs",
+      "syntax": "AtomicUsize"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::BYTES",
+      "path": "scripts/read-experiments/followup/meter.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::CALLS",
+      "path": "scripts/read-experiments/followup/meter.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::GETS",
+      "path": "scripts/read-experiments/followup/meter.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::GET_ATTEMPTS",
+      "path": "scripts/read-experiments/followup/meter.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::GET_BYTES",
+      "path": "scripts/read-experiments/followup/meter.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::PAYLOAD_ALLOCS",
+      "path": "scripts/read-experiments/followup/meter.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::PAYLOAD_BYTES",
+      "path": "scripts/read-experiments/followup/meter.rs",
+      "syntax": "AtomicUsize"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::TEST_ASSERT_KEYED_DENSE",
+      "path": "src/application/read.rs",
+      "syntax": "std :: sync :: atomic :: AtomicBool"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::ADOPTION_SEQ",
+      "path": "src/billing.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::ARTIFACT_MISMATCHES",
+      "path": "src/billing.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::BILLING_CLOCK_OVERRIDE",
+      "path": "src/billing.rs",
+      "syntax": "std :: sync :: atomic :: AtomicI64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::SEGMENT_IDENTITY_DRIFT",
+      "path": "src/billing.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::UNOWNED_METER_EVENTS",
+      "path": "src/billing.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::WALK_CLOSE_SUBMITS",
+      "path": "src/billing.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::WALK_DEFERRED",
+      "path": "src/billing.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::billing_clock_lock::L",
+      "path": "src/billing.rs",
+      "syntax": "std :: sync :: OnceLock < tokio :: sync :: RwLock < () > >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::tracing_warn_once::LAST",
+      "path": "src/bin/pilot.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::run::RUN_WAS_INVOKED",
+      "path": "src/bootstrap.rs",
+      "syntax": "std :: sync :: atomic :: AtomicBool"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::EXECUTOR",
+      "path": "src/bootstrap/process_executor.rs",
+      "syntax": "OnceLock < StorageExecutor >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::gap_lock::L",
+      "path": "src/dst/tests/fixture_failpoints.rs",
+      "syntax": "std :: sync :: OnceLock < tokio :: sync :: Mutex < () > >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sweep_lock::L",
+      "path": "src/dst/tests/fixture_failpoints.rs",
+      "syntax": "std :: sync :: OnceLock < tokio :: sync :: Mutex < () > >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::gate_lock::L",
+      "path": "src/dst/tests/runtime_open_gate.rs",
+      "syntax": "std :: sync :: OnceLock < tokio :: sync :: Mutex < () > >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::ACTIVE",
+      "path": "src/failpoints.rs",
+      "syntax": "[std :: sync :: atomic :: AtomicUsize ; Fp :: ALL . len ()]"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::gate::N",
+      "path": "src/failpoints.rs",
+      "syntax": "std :: sync :: OnceLock < tokio :: sync :: Notify >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::reg::M",
+      "path": "src/failpoints.rs",
+      "syntax": "std :: sync :: OnceLock < Mutex < HashMap < (Fp , String) , FpState > > >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::ABSORB_BYTES_TOTAL",
+      "path": "src/history.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::ABSORB_ZERO_ROUTE_DROPPED",
+      "path": "src/history.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::CANONICAL_BYTES_WRITTEN",
+      "path": "src/history.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::GATHER_LAST_ACTUAL",
+      "path": "src/history.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::GATHER_LAST_FLUSH_MS",
+      "path": "src/history.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::GATHER_LAST_PACE_MS",
+      "path": "src/history.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::GATHER_LAST_READ_MS",
+      "path": "src/history.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::GATHER_LAST_RESERVED",
+      "path": "src/history.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::GATHER_LAST_WRITE_MS",
+      "path": "src/history.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::HISTORY_FLUSH_STALL_MS",
+      "path": "src/history.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::HISTORY_FLUSH_WAIT_MS_MAX",
+      "path": "src/history.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::INGEST_BYTES_TOTAL",
+      "path": "src/history.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::POSTINGS_BYTES_WRITTEN",
+      "path": "src/history.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::POSTINGS_CORRUPT",
+      "path": "src/history.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::POSTINGS_PAGES_WRITTEN",
+      "path": "src/history.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::POSTINGS_RUNS_WRITTEN",
+      "path": "src/history.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::READ_FRAMES_MATCHED",
+      "path": "src/history.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::READ_FRAMES_SCANNED",
+      "path": "src/history.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::READ_SPANS_MAX",
+      "path": "src/history.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::NOFILE_HARD",
+      "path": "src/http.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::NOFILE_SOFT",
+      "path": "src/http.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::RUNTIME_LAST_TICK_MS",
+      "path": "src/http.rs",
+      "syntax": "std :: sync :: atomic :: AtomicI64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::RUNTIME_MAX_GAP_MS",
+      "path": "src/http.rs",
+      "syntax": "std :: sync :: atomic :: AtomicI64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::GLOBAL",
+      "path": "src/main.rs",
+      "syntax": "mimalloc :: MiMalloc"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::RSS_PEAK_MB",
+      "path": "src/ops.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::client::C",
+      "path": "src/peer.rs",
+      "syntax": "std :: sync :: OnceLock < reqwest :: Client >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::read_faults::FAULTS",
+      "path": "src/rollup.rs",
+      "syntax": "std :: sync :: OnceLock < ReadFaults >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::INEFFECTIVE_SPLIT_AVOIDED",
+      "path": "src/scaler3.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::SEGMENT_MAP_REFRESHES",
+      "path": "src/scaler3.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::SEGMENT_MERGES",
+      "path": "src/scaler3.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::SEGMENT_SPLITS",
+      "path": "src/scaler3.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::SKETCH_EVICTIONS",
+      "path": "src/scaler3.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::UNTRACKED_APPENDS",
+      "path": "src/scaler3.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::ABSORBED_FRAME_BYTES_TOTAL",
+      "path": "src/shard.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::INGEST_FRAME_BYTES_TOTAL",
+      "path": "src/shard.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::billing_read_faults::FAULTS",
+      "path": "src/shard.rs",
+      "syntax": "std :: sync :: OnceLock < Mutex < HashMap < String , () > > >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::dirty_scan_faults::M",
+      "path": "src/shard.rs",
+      "syntax": "std :: sync :: OnceLock < Mutex < HashMap < String , u32 > > >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::OPENS_COALESCED",
+      "path": "src/sharddir.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::OPENS_COMPLETED",
+      "path": "src/sharddir.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::OPENS_DEADLINED",
+      "path": "src/sharddir.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::OPENS_FAILED",
+      "path": "src/sharddir.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::OPENS_IN_FLIGHT",
+      "path": "src/sharddir.rs",
+      "syntax": "AtomicI64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::OPENS_REAPED",
+      "path": "src/sharddir.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::OPENS_STARTED",
+      "path": "src/sharddir.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::LEASE_TERMINATIONS",
+      "path": "src/sse/auth.rs",
+      "syntax": "[std :: sync :: atomic :: AtomicU64 ; 10]"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::BELOW_FLOOR_CATCHUPS",
+      "path": "src/sse/auth.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::DELIVERED_RECORDS",
+      "path": "src/sse/auth.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::DISCONNECT_CLIENT_CLOSED",
+      "path": "src/sse/auth.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::DISCONNECT_SEND_TIMEOUT",
+      "path": "src/sse/auth.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::FEED_CAPACITY_REJECTED",
+      "path": "src/sse/auth.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::FEED_CATCHUP_RETRIES",
+      "path": "src/sse/auth.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::FEED_CUTOFF_FLEET_AUTH",
+      "path": "src/sse/auth.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::FEED_CUTOFF_INCARNATION",
+      "path": "src/sse/auth.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::FEED_CUTOFF_INCOMPATIBLE",
+      "path": "src/sse/auth.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::FEED_CUTOFF_REDIRECT_LOOP",
+      "path": "src/sse/auth.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::FEED_CUTOFF_TARGET_MISMATCH",
+      "path": "src/sse/auth.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::FEED_CUTOFF_WRONG_OWNER",
+      "path": "src/sse/auth.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::FEED_LAG_DISCONNECTS",
+      "path": "src/sse/auth.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::FEED_NO_PROGRESS",
+      "path": "src/sse/auth.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::FEED_OVERSIZE_DROPPED",
+      "path": "src/sse/auth.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::FEED_PROJECT_CAP_UNCACHED",
+      "path": "src/sse/auth.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::FEED_SOURCE_FAILED",
+      "path": "src/sse/auth.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::FEED_TOPOLOGY_DISCONNECTS",
+      "path": "src/sse/auth.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::FEED_UNCACHED_PUBLISH",
+      "path": "src/sse/auth.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::sse_stats::FEED_VERSION_BUMPS",
+      "path": "src/sse/auth.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::GET_BYTES",
+      "path": "src/store_timing.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::GET_COUNT",
+      "path": "src/store_timing.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::drift::D",
+      "path": "src/store_timing.rs",
+      "syntax": "OnceLock < DriftRings >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::http_stats::H",
+      "path": "src/store_timing.rs",
+      "syntax": "OnceLock < HttpStats >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::stats::S",
+      "path": "src/store_timing.rs",
+      "syntax": "OnceLock < StoreStats >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::Counters::fresh::NEXT_GEN",
+      "path": "src/usage.rs",
+      "syntax": "AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::LIMIT_REFUSALS_BYTES",
+      "path": "src/usage.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::LIMIT_REFUSALS_RECORDS",
+      "path": "src/usage.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::LIMIT_REFUSALS_REQUESTS",
+      "path": "src/usage.rs",
+      "syntax": "std :: sync :: atomic :: AtomicU64"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::test_usage::OWNER",
+      "path": "src/usage.rs",
+      "syntax": "std :: sync :: OnceLock < UsageService >"
+    },
+    {
+      "category": "global-macro",
+      "count": 1,
+      "owner": "crate::macro(thread_local)",
+      "path": "scripts/read-experiments/followup/allocation/allocation_meter.rs",
+      "syntax": "thread_local"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Client::send",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::prisma_tail_loop",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 8,
+      "owner": "crate::run_cert",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::run_load",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 4,
+      "owner": "crate::run_wide",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::stats_server",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::wide_batch",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::data",
+      "path": "bench/probe/src/main.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 16,
+      "owner": "crate::diag",
+      "path": "bench/probe/src/main.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 4,
+      "owner": "crate::dns_identity",
+      "path": "bench/probe/src/main.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::tls_probe_sync",
+      "path": "bench/probe/src/main.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::writer_loop",
+      "path": "bench/probe/src/main.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::finish",
+      "path": "scripts/read-experiments/followup/meter.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(tokio::task_local)",
+      "path": "scripts/read-experiments/followup/stages.rs",
+      "syntax": "tokio::task_local"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Wire::read",
+      "path": "scripts/read-experiments/followup/transport.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::local_perf_transport",
+      "path": "scripts/read-experiments/followup/transport.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::config_value",
+      "path": "src/application/consumer.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::dlq_and_settle",
+      "path": "src/application/consumer/delivery.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::relay_sweep_segment",
+      "path": "src/application/consumer_remote.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::wait_tail",
+      "path": "src/application/read_request.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(tokio::task_local)",
+      "path": "src/application/read_retention_probe.rs",
+      "syntax": "tokio::task_local"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::body",
+      "path": "src/application/read_wire.rs",
+      "syntax": "futures_util::pin_mut"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 4,
+      "owner": "crate::r06a_wire_metadata_record_and_required_progress_limits",
+      "path": "src/application/read_wire_tests.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::RequestWork::run",
+      "path": "src/application/request_work.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::cancellation_tests::cancelled_audit_append_restores_batch_order_and_retry_ids",
+      "path": "src/audit.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::byte_bounded_audit_batches_preserve_unselected_and_cancelled_order",
+      "path": "src/audit/batch_tests.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::AuthService::feed_json",
+      "path": "src/auth.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::AuthService::shadow_json",
+      "path": "src/auth.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::refresh_once",
+      "path": "src/auth_feed.rs",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::spawn_refresher",
+      "path": "src/auth_feed.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::tests::grants_parse_strictly",
+      "path": "src/auth_feed.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::keys_json",
+      "path": "src/auth_feed.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::keys_parse_and_reject",
+      "path": "src/auth_feed.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::policies_parse_strictly",
+      "path": "src/auth_feed.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::tests::refresh_once_publishes_from_files_and_survives_a_broken_one",
+      "path": "src/auth_feed.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::slow_keys_do_not_delay_other_publications_and_pass_is_bounded",
+      "path": "src/auth_feed.rs",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::slow_keys_do_not_delay_other_publications_and_pass_is_bounded",
+      "path": "src/auth_feed.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::GlobalLatch::stats_json",
+      "path": "src/backpressure.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::spawn_rollup",
+      "path": "src/billing.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 5,
+      "owner": "crate::spawn_telemetry",
+      "path": "src/billing.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::bench_append",
+      "path": "src/bin/bench.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::bench_read",
+      "path": "src/bin/bench.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::handle",
+      "path": "src/bin/edgesim.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 4,
+      "owner": "crate::main",
+      "path": "src/bin/livebench.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::bench",
+      "path": "src/bin/pilot.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::generator",
+      "path": "src/bin/pilot.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::generator::gen_drain",
+      "path": "src/bin/pilot.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::generator::gen_stats_json",
+      "path": "src/bin/pilot.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 8,
+      "owner": "crate::lb",
+      "path": "src/bin/pilot.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::proxy",
+      "path": "src/bin/pilot.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::handle",
+      "path": "src/bin/s3lite.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::cas",
+      "path": "src/bin/verify.rs",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::run",
+      "path": "src/bootstrap.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::run",
+      "path": "src/bootstrap.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::certified_memprofile_errors",
+      "path": "src/config/profile.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::compactor_profile_json",
+      "path": "src/config/profile.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::ServerConfig::redacted_summary",
+      "path": "src/config/summary.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Workload::attempt",
+      "path": "src/dst/runtime.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::debug_load_reports_typed_limiter_and_frame_totals",
+      "path": "src/dst/tests/admission_maintenance.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::a_failed_settle_leaves_no_phantom_acks",
+      "path": "src/dst/tests/consumer_atomicity.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::r07_failed_dlq_commit_retains_source_lease_and_exact_retry_settles_once",
+      "path": "src/dst/tests/consumer_dlq.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_bounded_cleanup_drains_residue_without_touching_the_live_generation",
+      "path": "src/dst/tests/consumer_generations.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::a_stale_cleanup_replay_never_touches_a_recreated_generation",
+      "path": "src/dst/tests/consumer_generations.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::product_consumer_drains_lineage_across_split",
+      "path": "src/dst/tests/consumer_product.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::rig_in_seal_gap",
+      "path": "src/dst/tests/fixture_http.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::seal_gap_long_poll_wakes_without_closure",
+      "path": "src/dst/tests/reads_raw.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::seal_gap_stale_descriptor_redispatches",
+      "path": "src/dst/tests/reads_raw.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::o3_retained_ring_coverage_skips_only_the_redundant_marker",
+      "path": "src/dst/tests/reads_ring.rs",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::o3_retained_ring_coverage_skips_only_the_redundant_marker",
+      "path": "src/dst/tests/reads_ring.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::concurrent_plain_seals_serialize_into_one_terminal_transition",
+      "path": "src/dst/tests/seal_convergence.rs",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::a_plain_seal_cannot_finish_someone_elses_final",
+      "path": "src/dst/tests/seal_coordination.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 5,
+      "owner": "crate::seal_requests_are_identified_and_validated_exactly",
+      "path": "src/dst/tests/seal_coordination.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::a_takeover_completes_an_old_close_that_won",
+      "path": "src/dst/tests/seal_fencing.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::noisy_neighbor_cannot_degrade_a_compliant_project",
+      "path": "src/dst/tests/security_isolation.rs",
+      "syntax": "tokio::join"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 9,
+      "owner": "crate::start",
+      "path": "src/fleet.rs",
+      "syntax": "fleet_io"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::start",
+      "path": "src/fleet.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::start",
+      "path": "src/fleet.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::start::macro(fleet_io)",
+      "path": "src/fleet.rs",
+      "syntax": "macro_rules"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::cancelled_fleet_append_keeps_durable_outbox_and_same_retry_id",
+      "path": "src/fleet/outbox.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::cancelled_fleet_clear_follows_append_and_retains_retry_source",
+      "path": "src/fleet/outbox.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::r09_fleet_population_budget_includes_its_coordination_documents",
+      "path": "src/fleet/repository/document_tests.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::absorb_budget_blocks_waiters_and_recovers_after_release",
+      "path": "src/history.rs",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::gather_concurrency_cap_holds",
+      "path": "src/history.rs",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::reservation_grow_accounts_clamps_and_waits",
+      "path": "src/history.rs",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::reservation_grow_cancel_leaves_grant_intact",
+      "path": "src/history.rs",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Absorber::run",
+      "path": "src/history/worker.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::billing_readiness_axum",
+      "path": "src/http.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::debug_auth",
+      "path": "src/http.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::debug_load",
+      "path": "src/http.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::debug_ops_events",
+      "path": "src/http.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::debug_timings",
+      "path": "src/http.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::debug_usage",
+      "path": "src/http.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::debug_usage_reconcile",
+      "path": "src/http.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::err_resp",
+      "path": "src/http.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::get_segments",
+      "path": "src/http.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::internal_segment_close",
+      "path": "src/http.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::maintenance_shards_json",
+      "path": "src/http.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 7,
+      "owner": "crate::router",
+      "path": "src/http.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::serve_h1",
+      "path": "src/http.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::spawn_runtime_watchdog",
+      "path": "src/http.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::data",
+      "path": "src/operator.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::cancellation_tests::cancelled_ops_append_restores_batch_order_and_retry_ids",
+      "path": "src/ops.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::cancellation_tests::cancelled_ops_batch_overflow_preserves_full_gap_magnitude",
+      "path": "src/ops.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::drain_ops_once",
+      "path": "src/ops.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::evaluate_alerts",
+      "path": "src/ops.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::byte_bounded_ops_batches_preserve_unselected_and_cancelled_order",
+      "path": "src/ops/batch_tests.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::event",
+      "path": "src/ops/batch_tests.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::gap",
+      "path": "src/ops/batch_tests.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::PostingsCache::stats",
+      "path": "src/postings_cache.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::internal_segment_scan",
+      "path": "src/product.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 4,
+      "owner": "crate::metadata_response",
+      "path": "src/product.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::perr",
+      "path": "src/product.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::product_consumer_pull",
+      "path": "src/product.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::product_list",
+      "path": "src/product.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::product_seal",
+      "path": "src/product.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::product_seal_only",
+      "path": "src/product.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::product_usage",
+      "path": "src/product.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::product_watch_wait",
+      "path": "src/product.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::product_watches_list",
+      "path": "src/product.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::project_usage",
+      "path": "src/product.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::render_product_append",
+      "path": "src/product.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::render_product_append_error",
+      "path": "src/product.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::watch_def_json",
+      "path": "src/product.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::ProjectAdmission::memory_gate",
+      "path": "src/quota.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::QuotaRegistry::memory_pressure_json",
+      "path": "src/quota.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::pressure_model_json",
+      "path": "src/quota.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::layout_gate_refuses_foreign_namespaces",
+      "path": "src/registry.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::MonthRow::effective",
+      "path": "src/rollup.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::UsageRollup::mark_artifact_published",
+      "path": "src/rollup.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::UsageRollup::mark_correction_published",
+      "path": "src/rollup.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Scaler::stats_json",
+      "path": "src/scaler3.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::start",
+      "path": "src/scaler3.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Controller::execute",
+      "path": "src/scaler3/controller.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Controller::merge",
+      "path": "src/scaler3/controller.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::Controller::pass",
+      "path": "src/scaler3/controller.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::ShardEngine::acker_loop",
+      "path": "src/shard.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::ShardEngine::committer_loop",
+      "path": "src/shard.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::ShardEngine::start",
+      "path": "src/shard.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(tokio::task_local)",
+      "path": "src/shard/record.rs",
+      "syntax": "tokio::task_local"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::spawn_unready_watchdog",
+      "path": "src/sharddir.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::stats_json",
+      "path": "src/sharddir.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::CancelFlag::cancelled",
+      "path": "src/sse/feed.rs",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::LiveFeed::read_and_publish",
+      "path": "src/sse/feed.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::LiveFeed::schedule_transition_retry",
+      "path": "src/sse/feed.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::aborted_drive_releases_the_permit",
+      "path": "src/sse/feed.rs",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::driver_permit_releases_exactly_once",
+      "path": "src/sse/feed.rs",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::reconcile_and_driver_install_bump_generation_once",
+      "path": "src/sse/feed.rs",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 2,
+      "owner": "crate::fake_source_release_cannot_race_started_signal",
+      "path": "src/sse/feed/tests/fixture.rs",
+      "syntax": "std::pin::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::hold_until_release",
+      "path": "src/sse/feed/tests/fixture.rs",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::serve",
+      "path": "src/sse/session.rs",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::serve",
+      "path": "src/sse/session.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::drift_stats",
+      "path": "src/store_timing.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 7,
+      "owner": "crate::snapshot",
+      "path": "src/store_timing.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::BulkGate::stats_json",
+      "path": "src/store_timing/resources.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::StoreResources::bulk_stats",
+      "path": "src/store_timing/resources.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::shutdown_is_ordered_bounded_and_joins_everything",
+      "path": "src/tasks.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::TaskSupervisor::observe_shutdown",
+      "path": "src/tasks/shutdown.rs",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::TaskSupervisor::workers_terminated",
+      "path": "src/tasks/shutdown.rs",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::TerminationSource::recv",
+      "path": "src/tasks/signal.rs",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::TouchJournal::meta",
+      "path": "src/touch.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::limit_refusals_json",
+      "path": "src/usage.rs",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tail_cursor_tests",
+      "path": "bench/awsbench/src/main.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/admission.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::AppendFailure::from_commit",
+      "path": "src/application/append/contract.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::boundary_tests",
+      "path": "src/application/append/contract.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/application/creation/anchor.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/application/creation/claim.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/application/creation/deletion.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/application/creation/fork.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/application/creation/initialization.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/application/creation/product.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/application/creation/raw.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::final_err_disposition",
+      "path": "src/application/lifecycle/claims.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::o2_tests",
+      "path": "src/application/read.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::read_contract_tests",
+      "path": "src/application/read.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/application/read_batch/tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/application/read_decode/tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/application/read_keys.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/application/read_wire_tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/application/watch.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::cancellation_tests",
+      "path": "src/audit.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/audit/batch_tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/auth.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/auth_feed.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/backpressure.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/billing.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::drain_fairness_tests",
+      "path": "src/billing_service.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::drain_ownership_tests",
+      "path": "src/billing_service.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/billing_service.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/bootstrap/process_executor.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/bootstrap/runtime_handoff.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/config/notice.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/config/tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/config/validation_tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::config_validation_tests",
+      "path": "src/config/validation_tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::compress_tests",
+      "path": "src/crypto.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::invocation_tests",
+      "path": "src/crypto.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/crypto.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/crypto/decrypt.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/crypto/decrypt/tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/deployment.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/deployment_bearer.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/dst/trace_store_tests/basic.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/dst/trace_store_tests/cancellation.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/dst/trace_store_tests/concurrency.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/dst/trace_store_tests/delete_accounting.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/dst/trace_store_tests/streams.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/fleet.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/fleet/outbox.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::population_tests",
+      "path": "src/fleet/repository.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/fleet/repository/document_tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::billing",
+      "path": "src/golden_tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::history_postings",
+      "path": "src/golden_tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::queue_keys",
+      "path": "src/golden_tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 2,
+      "owner": "crate::shard_keys",
+      "path": "src/golden_tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tail_codec",
+      "path": "src/golden_tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::bounded_discovery_tests",
+      "path": "src/history.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/history.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/history/canonical_span.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/history/controller_tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/history/postings_validation_tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/history/span_cache/capture.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/history/span_cache/tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/http.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/http/read.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/offsets.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::cancellation_tests",
+      "path": "src/ops.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/ops.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/ops/batch_tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/ownership.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/peer.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/postings.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/postings/validated/tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::admission_tests",
+      "path": "src/postings_cache.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::straddle_tests",
+      "path": "src/postings_cache.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/postings_cache.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/product.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/product_cursor.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::pressure_counting_tests",
+      "path": "src/quota.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::pressure_tests",
+      "path": "src/quota.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/quota.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/registry.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/retained_bytes.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::accounting_failure_tests",
+      "path": "src/rollup.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::close_seek_tests",
+      "path": "src/rollup.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/rollup.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/runtime.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/runtime/telemetry.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/scaler3.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::persist_tests",
+      "path": "src/segmap.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/segmap.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::billing_read_tests",
+      "path": "src/shard.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::bounded_outbox_tests",
+      "path": "src/shard.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::commit_command_tests",
+      "path": "src/shard.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::maintenance_tests",
+      "path": "src/shard.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::queue_publication_tests",
+      "path": "src/shard.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::storage_decode_tests",
+      "path": "src/shard.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/commit_plan.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/shard/commit_plan.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/queue_codec_tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/shard/record/checked.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/retirement_tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction/append.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction/finalize.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction/maintenance.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction/mod.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction/overlay.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction/prepare.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction/publish.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction/queue/cleanup.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction/queue/config.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction/queue/load.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 2,
+      "owner": "crate",
+      "path": "src/shard/transaction/queue/mod.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction/queue/receive.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction/queue/settle.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/transaction_tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::directory_tests",
+      "path": "src/shard_directory.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::health_ownership_tests",
+      "path": "src/sharddir.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::path_tests",
+      "path": "src/sharddir.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::watchdog_policy_tests",
+      "path": "src/sharddir.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/sketch.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/sse/feed.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/sse/feed/tests/fixture.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/sse/registry.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/sse/service.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/sse/session.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/sse/source/tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/store_timing.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/store_timing/resources.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/tasks.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/tasks/shutdown.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/telemetry_batch.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/tenant.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/touch_keys.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::shard_lag_tests",
+      "path": "src/usage.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/usage.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/usage/runtime_tests.rs",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    }
+  ],
+  "schema": 1
+}

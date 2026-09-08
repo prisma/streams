@@ -1,3 +1,4 @@
+#![warn(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 //! One returned-page contract for local execution, stitched scans and peers.
 //! Payload is charged in plaintext bytes. A first record may exceed the
 //! requested page size (so small requests cannot wedge a cursor), up to the

@@ -1,0 +1,34 @@
+too-many-lines-threshold = 100
+too-many-arguments-threshold = 5
+excessive-nesting-threshold = 4
+max-fn-params-bools = 1
+max-struct-bools = 3
+type-complexity-threshold = 200
+avoid-breaking-exported-api = false
+allow-unwrap-in-tests = true
+allow-expect-in-tests = true
+allow-panic-in-tests = true
+
+await-holding-invalid-types = [
+  { path = "streams_slate::postings::RunWindow", reason = "Planning-only owner; release before asynchronous scans." },
+]
+
+disallowed-methods = [
+  { path = "tokio::spawn", reason = "Use the owned task supervisor; primitive spawning is owner-only." },
+  { path = "tokio::task::spawn_blocking", reason = "Blocking work needs bounded admission and an owned join." },
+  { path = "tokio::task::spawn_local", reason = "Local tasks still require lifecycle ownership." },
+  { path = "tokio::runtime::Handle::spawn", reason = "Do not bypass the owned task supervisor." },
+  { path = "tokio::runtime::Handle::spawn_blocking", reason = "Do not bypass bounded blocking-work ownership." },
+  { path = "std::thread::spawn", reason = "Threads need an explicit owner and shutdown join." },
+  { path = "std::mem::forget", reason = "Do not silently bypass resource destruction." },
+  { path = "tokio::task::JoinSet::spawn", reason = "Explicit task or environment owner required by docs/RUST-QUALITY.md." },
+  { path = "tokio::task::JoinSet::spawn_blocking", reason = "Explicit task or environment owner required by docs/RUST-QUALITY.md." },
+  { path = "tokio::task::JoinSet::spawn_local", reason = "Explicit task or environment owner required by docs/RUST-QUALITY.md." },
+  { path = "tokio::runtime::Runtime::spawn", reason = "Explicit task or environment owner required by docs/RUST-QUALITY.md." },
+  { path = "tokio::runtime::Runtime::spawn_blocking", reason = "Explicit task or environment owner required by docs/RUST-QUALITY.md." },
+  { path = "std::thread::Builder::spawn", reason = "Explicit task or environment owner required by docs/RUST-QUALITY.md." },
+  { path = "std::env::var", reason = "Explicit task or environment owner required by docs/RUST-QUALITY.md." },
+  { path = "std::env::var_os", reason = "Explicit task or environment owner required by docs/RUST-QUALITY.md." },
+  { path = "std::env::vars", reason = "Explicit task or environment owner required by docs/RUST-QUALITY.md." },
+  { path = "std::env::vars_os", reason = "Explicit task or environment owner required by docs/RUST-QUALITY.md." },
+]

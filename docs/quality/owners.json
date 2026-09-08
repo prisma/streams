@@ -1,0 +1,124 @@
+{
+  "occurrences": [
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::crypto",
+      "path": "fuzz/fuzz_targets/postings.rs",
+      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
+      "syntax": "path = \"../../src/crypto.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::postings",
+      "path": "fuzz/fuzz_targets/postings.rs",
+      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
+      "syntax": "path = \"../../src/postings.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tenant",
+      "path": "fuzz/fuzz_targets/postings.rs",
+      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
+      "syntax": "path = \"../../src/tenant.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::validated",
+      "path": "src/postings.rs",
+      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
+      "syntax": "path = \"postings/validated.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::properties",
+      "path": "src/postings/validated.rs",
+      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
+      "syntax": "path = \"validated/properties.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::tests",
+      "path": "src/postings/validated.rs",
+      "reason": "One canonical production module is compiled by the service and the private fuzz harness; these explicit module paths preserve child resolution. Compiler fixtures and workspace builds cover it.",
+      "syntax": "path = \"validated/tests.rs\""
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::run",
+      "path": "src/bootstrap/rss.rs",
+      "reason": "Canonical supervised RSS sampler; one joined finite pointer-free purge; failure returns TaskResult::Failed.",
+      "syntax": "tokio::task::spawn_blocking"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(libfuzzer_sys::fuzz_target)",
+      "path": "fuzz/fuzz_targets/postings.rs",
+      "reason": "Test-only property or fuzz harness; pinned macro implementation is compiled and its generated cases execute the production owner. Syntax tokens remain explicitly inventoried.",
+      "syntax": "libfuzzer_sys::fuzz_target"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(proptest)",
+      "path": "src/application/read_batch/tests.rs",
+      "reason": "Test-only property or fuzz harness; pinned macro implementation is compiled and its generated cases execute the production owner. Syntax tokens remain explicitly inventoried.",
+      "syntax": "proptest"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::run",
+      "path": "src/bootstrap/rss.rs",
+      "reason": "Expression selection between supervised cancellation and timer; compiler checks expansion.",
+      "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(proptest)",
+      "path": "src/postings/validated/properties.rs",
+      "reason": "Test-only property or fuzz harness; pinned macro implementation is compiled and its generated cases execute the production owner. Syntax tokens remain explicitly inventoried.",
+      "syntax": "proptest"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::requires_test",
+      "path": "tools/quality-syntax/src/facts.rs",
+      "reason": "Pinned syn type macro for parsing comma-separated cfg syntax; compiled tool tests cover aliases and mixed cfg.",
+      "syntax": "syn::Token"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/application/read_batch/tests.rs",
+      "reason": "Test module imports its enclosing production owner and the pinned proptest prelude; compiler checks names. This is an explicit unresolved syntax inventory, not a claim of syntax-level resolution.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 2,
+      "owner": "crate",
+      "path": "src/postings/validated/properties.rs",
+      "reason": "Test module imports its enclosing production owner and the pinned proptest prelude; compiler checks names. This is an explicit unresolved syntax inventory, not a claim of syntax-level resolution.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/shard/commit_handoff/loom_tests.rs",
+      "reason": "Test module imports its enclosing production owner and the pinned proptest prelude; compiler checks names. This is an explicit unresolved syntax inventory, not a claim of syntax-level resolution.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
+    }
+  ]
+}

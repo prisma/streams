@@ -1,3 +1,4 @@
+#![warn(clippy::wildcard_enum_match_arm)]
 //! LiveFeed — the one per-stream subscription engine (LIVE-FEED).
 //! Replaces the direct reader and the LiveHub pump with a single
 //! implementation whose variables are retention and WHO reads:

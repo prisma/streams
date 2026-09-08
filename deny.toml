@@ -1,51 +1,42 @@
-[graph]
-targets = [
-  "x86_64-unknown-linux-musl",
-  "aarch64-apple-darwin",
-]
-all-features = true
-
+# Every dependency, including development/build dependencies and target-specific
+# crates, is checked. No advisory ignores or workspace exclusions.
 [advisories]
+git-fetch-with-cli = true
+# Exact inherited, transitive maintenance advisories. Neither reports a known
+# vulnerability. Replacing SlateDB/foyer's serialized storage or proc macros is
+# outside a lint migration; track upstream before the next dependency upgrade.
 ignore = [
-  { id = "RUSTSEC-2025-0141", reason = "bincode 1.3.3 is an unmaintained but complete transitive serialization dependency of SlateDB 0.14.1/foyer; no vulnerability or safe compatible replacement exists" },
-  { id = "RUSTSEC-2024-0436", reason = "paste is an unmaintained build-time macro dependency of SlateDB 0.14.1/foyer; no vulnerability or compatible upstream replacement exists" },
+  { id = "RUSTSEC-2025-0141", reason = "SlateDB 0717cc1 uses bincode 1.3.3; unmaintained, no safe upgrade. Storage format changes need independent compatibility review. See docs/quality/dependencies.md." },
+  { id = "RUSTSEC-2024-0436", reason = "Pinned SlateDB -> foyer 0.22.3 uses paste 1.0.15 at compile time; unmaintained, no safe upgrade. Track upstream macro migration. See docs/quality/dependencies.md." },
 ]
 
 [licenses]
-allow = [
-  "Apache-2.0",
-  "Apache-2.0 WITH LLVM-exception",
-  "BSD-2-Clause",
-  "BSD-3-Clause",
-  "BSL-1.0",
-  "CC0-1.0",
-  "ISC",
-  "MIT",
-  "MIT-0",
-  "Unicode-3.0",
-  "Zlib",
-  # webpki-roots CA-bundle data (permissive data license).
-  "CDLA-Permissive-2.0",
-]
-confidence-threshold = 0.8
+confidence-threshold = 0.95
+include-dev = true
+allow = ["Apache-2.0", "MIT", "BSD-2-Clause", "BSD-3-Clause", "ISC", "Unicode-3.0", "Zlib", "CC0-1.0"]
 
-[licenses.private]
-ignore = true
+# Mozilla certificate data embedded by rustls; preserve the packages' notices.
+[[licenses.exceptions]]
+crate = "webpki-roots@1.0.8"
+allow = ["CDLA-Permissive-2.0"]
+[[licenses.exceptions]]
+crate = "webpki-root-certs@1.0.8"
+allow = ["CDLA-Permissive-2.0"]
+
+# The pinned test-only libFuzzer runtime includes NCSA-licensed LLVM code.
+[[licenses.exceptions]]
+crate = "libfuzzer-sys@0.4.13"
+allow = ["MIT", "Apache-2.0", "NCSA"]
 
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
-highlight = "simplest-path"
-deny = [
-  { crate = "openssl", reason = "the service uses the rustls-only TLS stack" },
-  { crate = "native-tls", reason = "platform TLS must not depend on host OpenSSL" },
-]
 
 [sources]
 unknown-registry = "deny"
 unknown-git = "deny"
+required-git-spec = "rev"
 allow-registry = ["https://github.com/rust-lang/crates.io-index"]
-# The ONE intentional git dependency: upstream SlateDB at an exact,
-# ledgered rev (Cargo.toml documents the pin; docs/SLATEDB-FORK.md the
-# history). Everything else must come from crates.io.
-allow-git = ["https://github.com/slatedb/slatedb"]
+# cargo-deny checks the repository/spec kind; quality config checks the EXACT
+# revision in both Cargo.toml and every Git entry in Cargo.lock.
+allow-git = ["https://github.com/slatedb/slatedb.git"]

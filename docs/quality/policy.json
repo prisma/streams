@@ -1,0 +1,24 @@
+{
+  "adoption_line_additions": {
+    "src/fleet.rs": {
+      "extra_lines": 4,
+      "owner": "src/fleet.rs",
+      "reason": "Bounded adoption addition: explicit safety comments or owner-specific lint scope; no executable growth."
+    },
+    "src/http.rs": {
+      "extra_lines": 2,
+      "owner": "src/http.rs",
+      "reason": "Bounded adoption addition: explicit safety comments or owner-specific lint scope; no executable growth."
+    },
+    "src/sse/feed.rs": {
+      "extra_lines": 1,
+      "owner": "src/sse/feed.rs",
+      "reason": "Bounded adoption addition: explicit safety comments or owner-specific lint scope; no executable growth."
+    }
+  },
+  "immutable_sha256": {
+    "docs/quality/legacy-diagnostics.json": "133f6e92d8f7e562f4f38fd71f89025336abdb603056873155ba43b4651e9897",
+    "docs/quality/legacy-source.json": "7beae7490dea8722b90447a29e820601e1946d793053eb2db7dc9cabd0155725",
+    "docs/quality/syntax-fragments.json": "054dca3ebbd65d4aaf495417597c082ba2fd88282d19bda4ae66a0578c654ade"
+  }
+}

@@ -103,4 +103,9 @@ impl RunWindow {
 }
 
 #[cfg(test)]
+#[path = "validated/tests.rs"]
 mod tests;
+
+#[cfg(test)]
+#[path = "validated/properties.rs"]
+mod properties;

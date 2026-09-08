@@ -1,3 +1,4 @@
+#![warn(clippy::indexing_slicing, clippy::arithmetic_side_effects)]
 //! Admitted plaintext ownership. A record is a range, not an independently
 //! transferable byte owner. Selection compacts incomplete blocks; complete
 //! blocks move unchanged. Every published owner has capacity exactly equal to

@@ -136,6 +136,13 @@
       "finding": "R10",
       "rationale": "Original fixed-baseline owner retained under a narrow safety wiring cap. Thread the same runtime-local body ceiling and usage counter capability through transport collection and metering.",
       "source_obligation": "Original scenario obligations retained; runtime isolation and active-controller cancellation regressions"
+    },
+    "function:src/ops.rs::collect_snapshot": {
+      "limit": 206,
+      "owner": "ops::collect_snapshot",
+      "finding": "Rust quality adoption",
+      "rationale": "Bounded two-line SAFETY explanation for the existing mi_process_info call; executable behavior is unchanged.",
+      "source_obligation": "Pinned Clippy denies undocumented unsafe blocks; keep the historical function ceiling at exactly 206 physical lines."
     }
   },
   "transport_rationales": {
