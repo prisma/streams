@@ -37,37 +37,21 @@ pub(crate) struct PlainRec {
     pub(crate) rkey: String,
 }
 struct Block {
-    first_record: usize,
     owner: Bytes,
-    records: Vec<PlainRec>,
+    records: Range<usize>,
 }
 #[derive(Default)]
 pub(crate) struct PlainBatch {
     blocks: Vec<Block>,
-    count: usize,
+    records: Vec<PlainRec>,
 }
 pub(crate) struct Admission {
     pub(crate) withheld: Option<u64>,
     pub(crate) last: Option<u64>,
 }
-pub(crate) struct PlainIter<'a> {
-    blocks: std::slice::Iter<'a, Block>,
-    records: std::slice::Iter<'a, PlainRec>,
-}
-impl<'a> Iterator for PlainIter<'a> {
-    type Item = &'a PlainRec;
-    fn next(&mut self) -> Option<Self::Item> {
-        loop {
-            if let Some(record) = self.records.next() {
-                return Some(record);
-            }
-            self.records = self.blocks.next()?.records.iter();
-        }
-    }
-}
 impl<'a> IntoIterator for &'a PlainBatch {
     type Item = &'a PlainRec;
-    type IntoIter = PlainIter<'a>;
+    type IntoIter = std::slice::Iter<'a, PlainRec>;
     fn into_iter(self) -> Self::IntoIter {
         self.iter()
     }
@@ -75,77 +59,65 @@ impl<'a> IntoIterator for &'a PlainBatch {
 impl Index<usize> for PlainBatch {
     type Output = PlainRec;
     fn index(&self, index: usize) -> &PlainRec {
-        assert!(index < self.count, "record index");
-        let block = &self.blocks[self
-            .blocks
-            .partition_point(|block| block.first_record <= index)
-            - 1];
-        &block.records[index - block.first_record]
+        &self.records[index]
     }
 }
 impl PlainBatch {
     pub(crate) fn len(&self) -> usize {
-        self.count
+        self.records.len()
     }
     pub(crate) fn is_empty(&self) -> bool {
-        self.count == 0
+        self.records.is_empty()
     }
-    pub(crate) fn iter(&self) -> PlainIter<'_> {
-        PlainIter {
-            blocks: self.blocks.iter(),
-            records: [].iter(),
-        }
+    pub(crate) fn iter(&self) -> std::slice::Iter<'_, PlainRec> {
+        self.records.iter()
     }
-    /// Exactly one complete owner can be shared with a binary response. The
-    /// Bytes owner carries storage/charge until the last body or slice drops.
+    /// Only a complete single owner may escape to a binary response. Its
+    /// storage and charge survive until the last body or byte owner drops.
     pub(crate) fn contiguous(&self) -> Option<Bytes> {
         (self.blocks.len() == 1).then(|| self.blocks[0].owner.clone())
     }
     pub(crate) fn retained_capacity(&self) -> usize {
         self.blocks.iter().map(|block| block.owner.len()).sum()
     }
-    /// The decoder has authenticated/admitted every range before publication.
-    /// This is the only constructor for a shared plaintext block.
+    /// One constructor for authenticated/admitted ranges. The iterator also
+    /// accepts one independently decoded record without a temporary vector.
     pub(super) fn push_decoded(
         &mut self,
         bytes: Vec<u8>,
-        ranges: Vec<(u64, Range<usize>, String)>,
+        ranges: impl IntoIterator<Item = (u64, Range<usize>, String)>,
     ) {
-        if ranges.is_empty() {
+        let mut ranges = ranges.into_iter().peekable();
+        if ranges.peek().is_none() {
             return;
         }
-        let mut end = 0;
-        for (_, range, _) in &ranges {
-            assert_eq!(
-                range.start, end,
-                "admitted ranges must exactly cover their owner"
-            );
-            end = range.end;
-        }
-        assert_eq!(end, bytes.len());
-        // Shrink a partial prefix or independently decoded fallback once, then
-        // transfer ownership. A complete pre-sized batch retains its allocation.
         let exact = bytes.into_boxed_slice();
         #[cfg(test)]
         let owner = super::read_retention_probe::track(exact.into_vec());
         #[cfg(not(test))]
         let owner = Bytes::from_owner(exact);
-        let first_record = self.count;
-        self.count += ranges.len();
+        let first = self.records.len();
+        self.records.reserve(ranges.size_hint().0);
+        let mut end = 0;
+        for (off, range, rkey) in ranges {
+            assert_eq!(
+                range.start, end,
+                "admitted ranges must exactly cover their owner"
+            );
+            end = range.end;
+            self.records.push(PlainRec {
+                off,
+                payload: PlainPayload {
+                    owner: owner.clone(),
+                    range,
+                },
+                rkey,
+            });
+        }
+        assert_eq!(end, owner.len());
         self.blocks.push(Block {
-            first_record,
-            records: ranges
-                .into_iter()
-                .map(|(off, range, rkey)| PlainRec {
-                    off,
-                    payload: PlainPayload {
-                        owner: owner.clone(),
-                        range,
-                    },
-                    rkey,
-                })
-                .collect(),
             owner,
+            records: first..self.records.len(),
         });
     }
     pub(crate) fn admit_owned(
@@ -159,15 +131,14 @@ impl PlainBatch {
             return false;
         }
         let len = bytes.len();
-        self.push_decoded(bytes, vec![(off, 0..len, key)]);
+        self.push_decoded(bytes, std::iter::once((off, 0..len, key)));
         true
     }
-    /// One selection/admission boundary for scans, fork ancestors and SSE
-    /// lineage. A partial block is compacted before its old owner is released;
-    /// no consumer can move individual shared records out of this abstraction.
+    /// Scans, forks and SSE use this one selection/admission boundary.
+    /// Complete owners transfer unchanged; partial owners are compacted.
     pub(crate) fn append_selected(
         &mut self,
-        source: Self,
+        mut source: Self,
         range: Range<u64>,
         selector: Option<&str>,
         budget: &mut PageBudget,
@@ -177,30 +148,52 @@ impl PlainBatch {
             withheld: None,
             last: None,
         };
+        let eligible = |record: &PlainRec| {
+            range.contains(&record.off) && selector.is_none_or(|key| record.rkey == key)
+        };
+        let remap = |record: &mut PlainRec| {
+            record.off = record
+                .off
+                .checked_add(offset_shift)
+                .expect("validated lineage offset");
+        };
+        // The usual bounded physical page transfers its entire metadata vectors
+        // as well as its storage owners. No per-record allocation or copy.
+        let mut planned = budget.clone();
+        if source
+            .records
+            .iter()
+            .all(|record| eligible(record) && planned.admit(record.payload.len(), &record.rkey))
+        {
+            result.last = source.records.last().map(|record| record.off);
+            source.records.iter_mut().for_each(remap);
+            *budget = planned;
+            self.append_admitted(source);
+            return result;
+        }
+        let mut records = source.records.into_iter();
         for mut block in source.blocks {
+            let count = block.records.len();
             let mut planned = budget.clone();
-            if block.records.iter().all(|record| {
-                range.contains(&record.off)
-                    && selector.is_none_or(|key| record.rkey == key)
-                    && planned.admit(record.payload.len(), &record.rkey)
-            }) {
-                result.last = block.records.last().map(|record| record.off);
-                for record in &mut block.records {
-                    record.off = record
-                        .off
-                        .checked_add(offset_shift)
-                        .expect("validated lineage offset");
-                }
-                *budget = planned;
-                block.first_record = self.count;
-                self.count += block.records.len();
+            if records.as_slice()[..count]
+                .iter()
+                .all(|record| eligible(record) && planned.admit(record.payload.len(), &record.rkey))
+            {
+                result.last = Some(records.as_slice()[count - 1].off);
+                let first = self.records.len();
+                self.records
+                    .extend(records.by_ref().take(count).map(|mut record| {
+                        remap(&mut record);
+                        record
+                    }));
+                block.records = first..self.records.len();
                 self.blocks.push(block);
+                *budget = planned;
                 continue;
             }
-            let full_count = block.records.len();
             let mut selected = Vec::new();
-            for mut record in block.records {
-                if !range.contains(&record.off) || selector.is_some_and(|key| record.rkey != key) {
+            for mut record in records.by_ref().take(count) {
+                if !eligible(&record) {
                     continue;
                 }
                 if !budget.admit(record.payload.len(), &record.rkey) {
@@ -208,21 +201,10 @@ impl PlainBatch {
                     break;
                 }
                 result.last = Some(record.off);
-                record.off = record
-                    .off
-                    .checked_add(offset_shift)
-                    .expect("validated lineage offset");
+                remap(&mut record);
                 selected.push(record);
             }
-            if selected.len() == full_count {
-                let first_record = self.count;
-                self.count += full_count;
-                self.blocks.push(Block {
-                    first_record,
-                    owner: block.owner,
-                    records: selected,
-                });
-            } else if !selected.is_empty() {
+            if !selected.is_empty() {
                 let len = selected.iter().map(|record| record.payload.len()).sum();
                 let mut bytes = Vec::with_capacity(len);
                 let mut ranges = Vec::with_capacity(selected.len());
@@ -240,10 +222,16 @@ impl PlainBatch {
         result
     }
     pub(super) fn append_admitted(&mut self, mut source: Self) {
-        for block in &mut source.blocks {
-            block.first_record += self.count;
+        if self.is_empty() {
+            *self = source;
+            return;
         }
-        self.count += source.count;
+        let first = self.records.len();
+        for block in &mut source.blocks {
+            block.records.start += first;
+            block.records.end += first;
+        }
+        self.records.append(&mut source.records);
         self.blocks.append(&mut source.blocks);
     }
 }

@@ -74,7 +74,7 @@ pub(super) fn decode_frames_into(
                         .push_decoded(std::mem::take(&mut plaintext), std::mem::take(&mut pending));
                     batch.push_decoded(
                         bytes,
-                        vec![(offset, 0..len, frame.header.routing_key.to_owned())],
+                        std::iter::once((offset, 0..len, frame.header.routing_key.to_owned())),
                     );
                 }
             }
