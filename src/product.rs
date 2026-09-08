@@ -3693,6 +3693,7 @@ pub(crate) async fn internal_segment_scan(
         max_bytes,
         crate::shard::Deliver::Durable,
     )
+    .for_descriptor(&desc)
     .execute()
     .await
     {

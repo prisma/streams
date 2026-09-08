@@ -1851,6 +1851,7 @@ impl ShardEngine {
             self.closed.store(true, Ordering::SeqCst);
             stranded
         };
+        self.history_resources.spans.retire(self);
         let first = stranded.is_some();
         if first {
             let _ = self.close_tx.send(true);

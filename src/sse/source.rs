@@ -454,6 +454,7 @@ impl LineageSource {
                     budget,
                     crate::shard::Deliver::Durable,
                 )
+                .for_descriptor(&self.desc)
                 .execute()
                 .await
                 .map_err(|e| anyhow::anyhow!(e));
@@ -595,6 +596,7 @@ impl FeedSourceRead for LineageSource {
                         budget.remaining(),
                         crate::shard::Deliver::Durable,
                     )
+                    .for_descriptor(&self.desc)
                     .execute()
                     .await
                     .map_err(|e| anyhow::anyhow!(e))?

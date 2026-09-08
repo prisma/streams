@@ -93,9 +93,10 @@ impl PlainBatch {
         }
         let exact = bytes.into_boxed_slice();
         #[cfg(test)]
-        let owner = super::read_retention_probe::track(exact.into_vec());
+        let charge = super::read_retention_probe::charge(exact.len());
         #[cfg(not(test))]
-        let owner = Bytes::from_owner(exact);
+        let charge = ();
+        let owner = crate::retained_bytes::with_charge(exact, charge);
         let first = self.records.len();
         self.records.reserve(ranges.size_hint().0);
         let mut end = 0;

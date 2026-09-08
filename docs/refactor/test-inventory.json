@@ -3218,6 +3218,17 @@
     "scenarios": []
   },
   {
+    "name": "o5_http_history_cache_keeps_key_checks_and_delete_recreate_isolation",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e84ac7b65f1380ad1b79fd56f6e7a8b6edc6e3a642e51bec406bb750236219d5",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_span_cache.rs",
+    "scenarios": []
+  },
+  {
     "name": "object_classes_match_production_telemetry",
     "attributes": [
       "#[test]"

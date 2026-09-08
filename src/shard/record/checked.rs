@@ -66,6 +66,14 @@ impl CheckedFrame {
             version,
         }
     }
+    /// Rebind validated metadata to an exact compact copy of the same bytes.
+    pub(crate) fn with_compact_owner(&self, raw: Bytes) -> Self {
+        assert_eq!(self.raw.as_ref(), raw.as_ref());
+        Self {
+            raw,
+            ..self.clone()
+        }
+    }
     pub(crate) fn view(&self) -> DecodedFrame<'_> {
         DecodedFrame {
             header: ReadFrameHeader {

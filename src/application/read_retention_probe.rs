@@ -14,26 +14,21 @@ impl Probe {
         CURRENT.scope(self.clone(), future).await
     }
 }
-struct Owner {
-    bytes: Vec<u8>,
+pub(crate) struct Charge {
+    capacity: usize,
     probe: Option<Probe>,
 }
-impl AsRef<[u8]> for Owner {
-    fn as_ref(&self) -> &[u8] {
-        &self.bytes
-    }
-}
-impl Drop for Owner {
+impl Drop for Charge {
     fn drop(&mut self) {
-        if let Some(p) = &self.probe {
-            p.0.fetch_sub(self.bytes.capacity(), Ordering::SeqCst);
+        if let Some(probe) = &self.probe {
+            probe.0.fetch_sub(self.capacity, Ordering::SeqCst);
         }
     }
 }
-pub(crate) fn track(bytes: Vec<u8>) -> bytes::Bytes {
+pub(crate) fn charge(capacity: usize) -> Charge {
     let probe = CURRENT.try_with(Clone::clone).ok();
-    if let Some(p) = &probe {
-        p.0.fetch_add(bytes.capacity(), Ordering::SeqCst);
+    if let Some(probe) = &probe {
+        probe.0.fetch_add(capacity, Ordering::SeqCst);
     }
-    bytes::Bytes::from_owner(Owner { bytes, probe })
+    Charge { capacity, probe }
 }

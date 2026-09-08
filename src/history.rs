@@ -9,6 +9,8 @@
 //! History record value: [ver u8=1][ts i64 LE][key_version u32 LE]
 //!                       [rk_len u16 LE][rk][payload]
 
+mod canonical_span;
+pub(crate) mod span_cache;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -207,6 +209,7 @@ pub fn worst_frame_transient_for(body_limit: usize) -> usize {
 pub struct HistoryResources {
     pub budget: AbsorbBudget,
     pub cache: Arc<slatedb::db_cache::foyer::FoyerCache>,
+    pub(crate) spans: span_cache::SpanCache,
     pub paused: std::sync::atomic::AtomicBool,
     pub packing_bytes: usize,
     pub worst_frame_transient: usize,
@@ -234,14 +237,18 @@ impl HistoryResources {
             .absorb_global_budget_bytes
             .max(worst_frame_transient)
             .min(u32::MAX as usize);
+        let spans = span_cache::SpanCache::new(
+            cfg.canonical_span_cache && cfg.cache_bytes >= span_cache::CAPACITY,
+        );
         Self {
             budget: AbsorbBudget::new(capacity, cfg.absorb_global_gathers),
             cache: Arc::new(slatedb::db_cache::foyer::FoyerCache::new_with_opts(
                 slatedb::db_cache::foyer::FoyerCacheOptions {
-                    max_capacity: cfg.cache_bytes as u64,
+                    max_capacity: cfg.cache_bytes.saturating_sub(spans.capacity()) as u64,
                     ..Default::default()
                 },
             )),
+            spans,
             paused: std::sync::atomic::AtomicBool::new(cfg.absorb_pause_initial),
             packing_bytes: packing_bytes.min(capacity / ABSORB_BUILD_MULTIPLIER),
             worst_frame_transient,
@@ -1461,6 +1468,9 @@ async fn read_history2_keyed(
 /// `provable_to < upto` (a load window that could not reach the whole
 /// range) yields an honest partial at the proven boundary.
 #[allow(clippy::too_many_arguments)]
+// Public unscoped library compatibility entry; the server's descriptor-bound
+// path calls read_history2_keyed_scoped. Canonical regression tests use both.
+#[cfg_attr(not(test), allow(dead_code))]
 pub async fn read_history2_keyed_cached(
     cache: &Arc<crate::postings_cache::PostingsCache>,
     part: &Arc<Db>,
@@ -1471,6 +1481,25 @@ pub async fn read_history2_keyed_cached(
     upto: u64,
     absorbed: u64,
     max_bytes: usize,
+) -> anyhow::Result<(Vec<crate::shard::record::CheckedFrame>, Option<u64>, bool)> {
+    read_history2_keyed_scoped(
+        cache, part, route, inc, rk, from, upto, absorbed, max_bytes, None,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) async fn read_history2_keyed_scoped(
+    cache: &Arc<crate::postings_cache::PostingsCache>,
+    part: &Arc<Db>,
+    route: RouteHash,
+    inc: SegmentHash,
+    rk: &str,
+    from: u64,
+    upto: u64,
+    absorbed: u64,
+    max_bytes: usize,
+    scope: Option<Arc<span_cache::Scope>>,
 ) -> anyhow::Result<(Vec<crate::shard::record::CheckedFrame>, Option<u64>, bool)> {
     use std::sync::atomic::Ordering::Relaxed;
     if from >= upto {
@@ -1486,7 +1515,19 @@ pub async fn read_history2_keyed_cached(
             read_history2_keyed_envelope(part, route, inc, rk, from, upto, max_bytes).await
         }
         crate::postings_cache::CacheRuns::Runs { runs, provable_to } => {
-            execute_postings_plan(part, route, inc, rk, runs, provable_to, upto, max_bytes).await
+            execute_postings_plan_scoped(
+                part,
+                route,
+                inc,
+                rk,
+                runs,
+                provable_to,
+                upto,
+                max_bytes,
+                scope,
+                absorbed,
+            )
+            .await
         }
     }
 }
@@ -1504,6 +1545,34 @@ async fn execute_postings_plan(
     provable_to: u64,
     upto: u64,
     max_bytes: usize,
+) -> anyhow::Result<(Vec<crate::shard::record::CheckedFrame>, Option<u64>, bool)> {
+    execute_postings_plan_scoped(
+        part,
+        route,
+        inc,
+        rk,
+        window,
+        provable_to,
+        upto,
+        max_bytes,
+        None,
+        0,
+    )
+    .await
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn execute_postings_plan_scoped(
+    part: &Arc<Db>,
+    route: RouteHash,
+    inc: SegmentHash,
+    rk: &str,
+    window: crate::postings::RunWindow,
+    provable_to: u64,
+    upto: u64,
+    max_bytes: usize,
+    scope: Option<Arc<span_cache::Scope>>,
+    absorbed: u64,
 ) -> anyhow::Result<(Vec<crate::shard::record::CheckedFrame>, Option<u64>, bool)> {
     use std::sync::atomic::Ordering::Relaxed;
     // 3. Plan bounded spans.
@@ -1530,51 +1599,20 @@ async fn execute_postings_plan(
         use futures_util::StreamExt;
         let mut results = futures_util::stream::iter(plan.spans.iter().copied().map(|span| {
             let part = part.clone();
-            let rk = rk.to_string();
+            let scope = scope.clone();
             async move {
-                let prefix = hist2_record_key(route, inc, 0);
-                let range = hist2_record_key(route, inc, span.start)
-                    ..hist2_record_key(route, inc, span.end);
-                // Read-ahead sized from the plan's own scan estimate: a
-                // blanket 2 MiB per span floods the shared history block
-                // cache (32 MiB default) — ~16 keyed reads evict every
-                // index/filter/data block, so warm reads re-fetch the
-                // world (measured: warm == cold, ~20 GETs per read on a
-                // multi-SST partition). Spans are planner-bounded and
-                // typically tiny; fetch what the span needs plus slack.
-                let opts = slatedb::config::ScanOptions {
-                    read_ahead_bytes: (span.scan_bytes.saturating_mul(3) / 2)
-                        .clamp(64 * 1024, 2 * 1024 * 1024)
-                        as usize,
-                    max_fetch_tasks: 2,
-                    cache_blocks: true,
-                    ..Default::default()
-                };
-                let mut iter = part.scan_with_options(range, &opts).await?;
-                let mut hits: Vec<(u64, crate::shard::record::CheckedFrame)> = Vec::new();
-                let mut span_bytes = 0usize;
-                let mut span_trunc = false;
-                let mut span_last = None;
-                while let Some(kv) = iter.next().await? {
-                    READ_FRAMES_SCANNED.fetch_add(1, Relaxed);
-                    let f = crate::shard::record::CheckedFrame::from_row(
-                        &kv.key,
-                        &prefix[..33],
-                        kv.value,
-                    )?;
-                    if span_last.is_some() && span_bytes + f.len() > max_bytes {
-                        span_trunc = true;
-                        break;
-                    }
-                    span_bytes += f.len();
-                    span_last = Some(f.view().header.offset);
-                    if f.view().header.routing_key != rk {
-                        continue;
-                    }
-                    READ_FRAMES_MATCHED.fetch_add(1, Relaxed);
-                    hits.push((f.view().header.offset, f));
-                }
-                anyhow::Ok((span, hits, span_trunc, span_last))
+                let result = canonical_span::read(
+                    &part,
+                    route,
+                    inc,
+                    rk,
+                    span,
+                    max_bytes,
+                    scope.as_ref(),
+                    absorbed,
+                )
+                .await?;
+                anyhow::Ok((span, result.hits, result.truncated, result.last))
             }
         }))
         .buffered(4);

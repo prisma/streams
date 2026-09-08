@@ -38,6 +38,7 @@ impl ServerConfig {
                 "absorb_global_budget_bytes": self.history.absorb_global_budget_bytes,
                 "absorb_global_gathers": self.history.absorb_global_gathers,
                 "cache_bytes": self.history.cache_bytes,
+                "canonical_span_cache": self.history.canonical_span_cache,
                 "compactor_off": self.history.compactor_off,
                 "gc_interval_ms": self.history.gc_interval.map(|d| d.as_millis() as u64),
             },
