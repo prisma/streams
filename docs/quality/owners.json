@@ -215,6 +215,22 @@
       "path": "src/dst/dst_tests.rs",
       "reason": "Retained real HTTP history authentication and delete/recreate regression after removal of the experimental span cache; compiler and full DST suite exercise the module.",
       "syntax": "path = \"tests/read_history_lifecycle.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::read_peer_compatibility",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Scan wire regression module; real old-header requests and current sender against the legacy omission contract; compiled and executed with DST.",
+      "syntax": "path = \"tests/read_peer_compatibility.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::o2c_old_scan_headers_preserve_records_progress_and_physical_frontier",
+      "path": "src/dst/tests/read_peer_compatibility.rs",
+      "reason": "Exact wire-page JSON oracles for absent, finite and empty bounds; serde macro output is compiled and asserted by the protocol regression.",
+      "syntax": "serde_json::json"
     }
   ]
 }

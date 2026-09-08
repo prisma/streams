@@ -254,3 +254,6 @@ mod security_freshness;
 mod read_history_lifecycle;
 #[path = "tests/read_subset_retention.rs"]
 mod read_subset_retention;
+
+#[path = "tests/read_peer_compatibility.rs"]
+mod read_peer_compatibility;

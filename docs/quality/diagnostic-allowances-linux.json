@@ -11008,7 +11008,7 @@
       "fingerprint": "f5378450433727efbfa596667bc8253f5e57d6939262c2597982ccacc508068b",
       "item": "crate::internal_segment_scan",
       "lint": "clippy::too_many_lines",
-      "metric": 115,
+      "metric": 112,
       "path": "src/product.rs"
     },
     {

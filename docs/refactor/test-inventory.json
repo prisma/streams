@@ -3218,6 +3218,43 @@
     "scenarios": []
   },
   {
+    "name": "o2c_new_sender_clips_legacy_pages_across_owner_upgrade_and_rollback",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "2df3ab0a4a3372305e88ea9967bc3bab1336384e0bf20d0e935347dd135528a8",
+    "mechanisms": [],
+    "configuration": [
+      "let desc = seed(&owner).await;"
+    ],
+    "file": "src/dst/tests/read_peer_compatibility.rs",
+    "scenarios": []
+  },
+  {
+    "name": "o2c_old_scan_headers_preserve_records_progress_and_physical_frontier",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "34f736c020200a96fb43a0ed031a775032b2e276c9e4fd077d87662224289172",
+    "mechanisms": [],
+    "configuration": [
+      "let desc = seed(&rig).await;"
+    ],
+    "file": "src/dst/tests/read_peer_compatibility.rs",
+    "scenarios": []
+  },
+  {
+    "name": "o2c_unauthorized_scan_does_not_wait_for_request_body",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "8bc0162c1bb181fd39ee99f02c043bde64b1b59cb4466b372016374f6bc438ae",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/read_peer_compatibility.rs",
+    "scenarios": []
+  },
+  {
     "name": "o3_retained_ring_coverage_skips_only_the_redundant_marker",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
