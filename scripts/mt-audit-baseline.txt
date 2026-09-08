@@ -4,7 +4,7 @@ internal-target	src/product.rs "streams-internal-seg",
 internal-target	src/product.rs .get("streams-internal-project")	
 internal-target	src/product.rs h("streams-internal-epoch"),	
 internal-target	src/product.rs h("streams-internal-seg").and_then(|v| v.parse::<u32>().ok()),	
-internal-target	src/product.rs if let Some(want_id) = h("streams-internal-identity") {	
+internal-target	src/product.rs let matches = h("streams-internal-identity")	
 stream-hash	src/bin/keys.rs let hash = crypto::stream_hash(&stream);	
 stream-hash	src/crypto.rs /// Shard-routing identity: `stream_hash(name)`. Keys the usage counters	
 stream-hash	src/crypto.rs RoutingKeyHash(stream_hash(rk))	
