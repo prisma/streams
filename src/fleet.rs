@@ -240,6 +240,8 @@ pub fn rss_bytes() -> u64 {
         0
     }
     #[cfg(target_os = "macos")]
+    // SAFETY: the C-layout prefix is zero-initialized and count limits writes
+    // to its allocation; task_info is synchronous and retains neither pointer.
     unsafe {
         // Prefix of task_vm_info through phys_footprint; task_info fills
         // only the count we pass, so the truncated layout is safe.
@@ -293,6 +295,8 @@ pub fn rss_bytes() -> u64 {
 /// Process CPU time (user+sys) in seconds via getrusage — portable across
 /// the macOS dev box and the musl cloud build.
 fn cpu_time_secs() -> f64 {
+    // SAFETY: zero is valid for rusage's integer fields; getrusage writes into
+    // a correctly aligned live value and we inspect it only after success.
     unsafe {
         let mut ru: libc::rusage = std::mem::zeroed();
         if libc::getrusage(libc::RUSAGE_SELF, &mut ru) != 0 {

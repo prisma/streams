@@ -3002,6 +3002,8 @@ pub(crate) enum SseSurface {
 pub(crate) fn raise_nofile() -> crate::config::validation::DescriptorLimits {
     use crate::config::validation::DescriptorLimits;
     #[cfg(unix)]
+    // SAFETY: libc receives correctly aligned, initialized rlimit values;
+    // calls are synchronous and neither retains the stack pointers.
     unsafe {
         let mut lim = libc::rlimit {
             rlim_cur: 0,

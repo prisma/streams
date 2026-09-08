@@ -4,7 +4,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "6cec5aaabaa01ce43b1e07855dae986262fd27e68f6d46b4462ea45c89384326",
+    "function_sha256": "5acafac07c1c3d4a6613c71f8edde83c3d7ca8acdaa2b80e24f3e4617c867ece",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/reads_applied.rs",
@@ -424,7 +424,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "3eb8be3396db7426e350dbda909e9696bf6aed7319f7c970850403a0c5d89d1b",
+    "function_sha256": "7495cff20d401f28f05e13fe8994c5c6b0e394896865607aa442fbb578b11fbd",
     "mechanisms": [],
     "configuration": [
       "let cov = FaultStore::uniform(mem(), 1, FaultPlan::new(0, 0, 0)).coverage();",

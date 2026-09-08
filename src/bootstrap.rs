@@ -3,6 +3,8 @@
 //! owned [`crate::config::ServerConfig`]). The binary calls exactly one
 //! entry point: [`run`].
 
+mod rss;
+
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -761,7 +763,7 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
         // purge_decommits defaults on) and re-measures, so retained-idle
         // memory can't masquerade as live pressure. Rate-limited; the
         // instance is already shedding writes when this runs.
-        let st = state.clone();
+        let (admission, shards) = (state.admission.clone(), state.shards.clone());
         let shed_line_mb = config.cli.admit_rss_shed_mb;
         let bp_limits = crate::backpressure::Limits::from_config(&config.admission);
         tracing::info!(
@@ -771,45 +773,13 @@ pub async fn run(validated: ValidatedServerConfig) -> anyhow::Result<()> {
             release_pct = bp_limits.release_pct,
             "maintenance backpressure bounds",
         );
-        let _ = tasks.spawn(
-            "rss-sampler",
-            crate::tasks::Policy::Critical,
-            move |cancel| async move {
-                let mut last_purge: Option<std::time::Instant> = None;
-                let mut ticks: u64 = 0;
-                loop {
-                    let mut mb = crate::fleet::rss_bytes() / 1048576;
-                    let purge_due = shed_line_mb > 0
-                        && mb > shed_line_mb
-                        && last_purge.is_none_or(|t| t.elapsed() >= Duration::from_secs(10));
-                    if purge_due {
-                        let _ = tokio::task::spawn_blocking(|| unsafe {
-                            libmimalloc_sys::mi_collect(true);
-                        })
-                        .await;
-                        last_purge = Some(std::time::Instant::now());
-                        mb = crate::fleet::rss_bytes() / 1048576;
-                    }
-                    st.admission.record_rss_mb(mb);
-                    // Peak-since-scrape for the ops snapshot (OOM review I4):
-                    // 250 ms sampling, max-held until the scrape drains it.
-                    crate::ops::RSS_PEAK_MB.fetch_max(mb, std::sync::atomic::Ordering::Relaxed);
-                    // Maintenance backpressure re-evaluates on the same tick
-                    // (R23-1). Doing it here keeps the request path to a
-                    // single atomic read — walking the lag map per append
-                    // would put the overload on the hot path.
-                    if ticks.is_multiple_of(8) {
-                        let snap = crate::backpressure::snapshot(&st.shards);
-                        st.admission.apply_maintenance(&snap, &bp_limits);
-                    }
-                    ticks = ticks.wrapping_add(1);
-                    tokio::select! {
-                        _ = cancel.cancelled() => return crate::tasks::TaskResult::Done,
-                        _ = tokio::time::sleep(Duration::from_millis(250)) => {}
-                    }
-                }
-            },
-        );
+        tasks
+            .spawn(
+                "rss-sampler",
+                crate::tasks::Policy::Critical,
+                move |cancel| rss::run(admission, shards, shed_line_mb, bp_limits, cancel),
+            )
+            .map_err(|error| anyhow::anyhow!("registering RSS sampler: {error:?}"))?;
     }
     // PR 6.1.2-B: the loop takes its authority from `state.fleet` — the
     // same value the drainer and the operator surface read through — and
