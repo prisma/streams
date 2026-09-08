@@ -1,4 +1,5 @@
 {
+  "compiler_fixture_canonical_inputs_match_current": true,
   "compiler_fixtures": [
     {
       "exit_code": 0,
@@ -65,6 +66,34 @@
     "failed": 0,
     "saved_seed_files": 6,
     "scope": "Production postings decoder/admission; no service performance claim."
+  },
+  "gate_tooling_sha256": {
+    "scripts/quality/capture_legacy.py": "954cca54d52d39b998217811eb8cfd58dc06e390e9cb3c2ea0f327fe2340b49f",
+    "scripts/quality/common.py": "bffefffc07327539ab662e5c0cf6fe1ebcbff7326063c854f96604afba9ebb0f",
+    "scripts/quality/compiler_fixtures.py": "50a3f0954cc073df30d658b74ca62291bb487482e504c845454ff1bd7ff9cde8",
+    "scripts/quality/config.py": "cbd92985b8f6fdfa1c7e9bf9dc72ee51d1c2c464aedf7dc2eb42b5e02e16360d",
+    "scripts/quality/diagnostic_report.py": "ea99a2358126a56f0c8459cbf3785cb98b5f70a578993d369359918eef1b3fdc",
+    "scripts/quality/diagnostics.py": "f44283b10af6d2a5ee934bde7a286f19754ec89fd42c7f49001ec79732282d90",
+    "scripts/quality/gate.py": "12aebd8401ee6b404831735fe2f235fae92cf24925a046c33dca6274198380b4",
+    "scripts/quality/lint_contract.py": "494e34ea07d2ba7758ae32389c8fc6ae29c6f28067865560894781c8ad54f3d2",
+    "scripts/quality/source_gate.py": "87e0c554c19ae82c8df110c315665a1d7b6a0d3179d2199496816908314a9c27",
+    "scripts/quality/source_rules.py": "7dfb9ed8e786108b117efce610263e8bd4ae9b1d9d8923cef8f80e2c7961142c",
+    "scripts/quality/test_config.py": "35bf60874f3e4159b8576029f543a74060eccc0d09b248dda18ee68040f5df1e",
+    "scripts/quality/test_diagnostics.py": "911633aee891dc439b27a74f177f75d1f87d2e37d7645c2e020e5c5ad784e144",
+    "scripts/quality/test_lint_contract.py": "b19718024e507e15917c2f5f6ecb260cdbf3b3d9eed14146446a7000e8f4ad60",
+    "scripts/quality/test_source_rules.py": "1c9b37a607db800b09fb022fb25da61c9c447696c9a0f040c9188d9c914d58fb",
+    "scripts/quality/test_verification_plan.py": "24471ba3e266f2280fd993e426a35c98d64aca2fe141407463e2173b2b8ee6fc",
+    "scripts/quality/verification_plan.py": "5d43f54ee6b0a47537dbc19a4b43760b89710fe1458355c72e45c1513016b529"
+  },
+  "local_gate": {
+    "failed": 0,
+    "followup_gate_controls": 14,
+    "followup_source_and_diagnostic_ratchets": "passed",
+    "full_suite_passed": 938,
+    "ignored": 0,
+    "isolated_capacity_passed": 1,
+    "result": "GATEDONE",
+    "source_revision": "a1d9dabf6ac3933f0115380f0c4c6d0f3294e802"
   },
   "loom": {
     "failed": 0,
@@ -447,7 +476,7 @@
   },
   "raw_evidence": "Local only in /private/tmp/streams-quality-policy; no raw compiler logs, binary evidence or generated fuzz corpus uploaded.",
   "schema": 1,
-  "scope_note": "Source inventory at report generation, not a claim that every file executes in each scoped check. Compiler-fixture input was an earlier copy before the final test-only trait removal; final-source rerun is pending.",
+  "scope_note": "The source inventory records canonical Rust inputs. Each check executes its stated scope; repeated owner tests in the isolated harness are not additional server tests. No whole-server Miri or performance-equivalence claim.",
   "sdk": {
     "authentication_vector": "passed",
     "build": "passed",
@@ -756,5 +785,6 @@
     "tools/quality-syntax/src/scan/attributes.rs": "dc08ec85d8e255c905591adf0a33b2aaee33402b2d3ab6464763c636e7793d5a",
     "tools/quality-syntax/src/scan/macro_attributes.rs": "90418576b7beb4e5f14d9f89bb6a547f2419580eab03cea840a39c232b46d1de",
     "tools/quality-syntax/src/scan/tests.rs": "7cb7240a1b931f2b52dac40f83604a9d8fa14fcfa265bc7f773e2217fa6e397e"
-  }
+  },
+  "syntax_scanner_tests": 8
 }

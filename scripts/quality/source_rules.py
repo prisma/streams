@@ -2,6 +2,7 @@
 from collections import Counter
 import re
 from common import digest
+from lint_contract import from_compiler
 
 PROOFS = {
     'src/shard/record/checked.rs': ('crate::CheckedFrame::',),
@@ -90,6 +91,7 @@ def from_entries(rows):
 
 def violations(sources, facts, before_lines, prior_lines, allowed, architecture):
     failures = []
+    groups, denied = from_compiler()
     for path, source in sources.items():
         now = len(source.splitlines())
         # Adoption is the first applicable ceiling on this existing long PR;
@@ -102,6 +104,13 @@ def violations(sources, facts, before_lines, prior_lines, allowed, architecture)
         hard = path.startswith('src/application/') or path in architecture['sse_core_files']
         for fact in facts[path]['facts']:
             value = fact['value']
+            if fact['kind'] in ('attribute', 'macro-attribute') and re.match(r'(allow|expect|warn)\s*\(', value):
+                head = value.split('reason', 1)[0]
+                names = set(re.findall(r'(?:clippy::)?[a-z][a-z0-9_]*', re.sub(r'\s+', '', head)))
+                if names & groups:
+                    failures.append(f'blanket lint-group override: {path}: {value}')
+                if names & denied:
+                    failures.append(f'denied lint cannot be suppressed or downgraded: {path}: {value}')
             if fact['kind'] == 'field-visibility' and value:
                 if fact['qualified'].startswith(PROOFS.get(path, ())):
                     failures.append(f'proof field visibility: {path}: {fact["qualified"]}: {value}')
@@ -111,8 +120,6 @@ def violations(sources, facts, before_lines, prior_lines, allowed, architecture)
                     failures.append(f'owner transport dependency: {path}: {resolved}')
             if fact['kind'] in ('attribute', 'macro-attribute') and re.match(r'(allow|expect)\s*\(', value):
                 head = value.split('reason', 1)[0]
-                if re.search(r'\b(warnings|all|pedantic|restriction|nursery)\b', head):
-                    failures.append(f'blanket lint suppression: {path}: {value}')
                 identity = ('exception', path, fact['qualified'], value)
                 if identity not in allowed and 'disallowed_methods' in head:
                     is_function = any(i['kind'] == 'function' and i['qualified'] == fact['qualified']

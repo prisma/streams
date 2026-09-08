@@ -40,6 +40,11 @@ class Rules(unittest.TestCase):
         self.assertTrue(self.check(facts=[fact('attribute', 'expect (clippy :: too_many_lines)')]))
         self.assertFalse(self.check(facts=[fact('attribute', 'expect (clippy :: too_many_lines, reason = "owner; invariant; alternative")')]))
 
+    def test_groups_and_denied_lints_cannot_be_suppressed_even_with_a_reason(self):
+        for lint in ('unused', 'clippy :: correctness', 'unused_must_use', 'clippy :: eq_op'):
+            for level in ('allow', 'expect', 'warn'):
+                self.assertTrue(self.check(facts=[fact('attribute', f'{level} ({lint}, reason = "owner; invariant; alternative")')]))
+
 
 if __name__ == '__main__':
     unittest.main()
