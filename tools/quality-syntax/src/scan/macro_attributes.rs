@@ -23,7 +23,7 @@ pub(super) fn visit(scan: &mut Scan, stream: TokenStream) {
 
 fn record(scan: &mut Scan, group: &proc_macro2::Group) {
     match syn::parse2::<syn::Meta>(group.stream()) {
-        Ok(meta) => scan.fact("macro-attribute", super::tokens(&meta), group.span()),
+        Ok(meta) => super::attributes::record(scan, "macro-attribute", &meta),
         Err(_) => scan.fact(
             "unparsed-macro-attribute",
             group.stream().to_string(),

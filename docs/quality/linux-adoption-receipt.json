@@ -1,0 +1,13 @@
+{
+  "current_occurrences": 3538,
+  "legacy_commit": "5bdaf9684197ff84bd544fd0fcd69520001ea196",
+  "legacy_occurrences": 3549,
+  "legacy_tree": "a6fa8251aadcd6555d114da34258d7121961455b",
+  "new_occurrences": 0,
+  "pr_head": "404bc1f3033577198d32f063194dd5fd5c0d1455",
+  "target": "x86_64-unknown-linux-gnu",
+  "tested_merge": "6bb4788d8b6ca90b5790984cde4e91440dd675fa",
+  "unallowable_diagnostics": [],
+  "uploaded_scope": "Diagnostic identities/counts and capture provenance only; no raw compiler logs or binary evidence.",
+  "workflow_run": "https://github.com/prisma/streams/actions/runs/34259397131"
+}

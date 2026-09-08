@@ -17,6 +17,7 @@
     }
   },
   "immutable_sha256": {
+    "docs/quality/legacy-diagnostics-linux.json": "a7a8dab44d734f351c8aae8abd8bb16f6e2c21bb36e714a02d307dc1bc0d1618",
     "docs/quality/legacy-diagnostics.json": "133f6e92d8f7e562f4f38fd71f89025336abdb603056873155ba43b4651e9897",
     "docs/quality/legacy-source.json": "7beae7490dea8722b90447a29e820601e1946d793053eb2db7dc9cabd0155725",
     "docs/quality/syntax-fragments.json": "054dca3ebbd65d4aaf495417597c082ba2fd88282d19bda4ae66a0578c654ade"

@@ -8,6 +8,7 @@ use syn::{
     visit::{self, Visit},
 };
 
+mod attributes;
 mod macro_attributes;
 
 struct Scan {
@@ -220,7 +221,7 @@ impl<'ast> Visit<'ast> for Scan {
     }
 
     fn visit_attribute(&mut self, node: &'ast syn::Attribute) {
-        self.fact("attribute", tokens(&node.meta), node.span());
+        attributes::record(self, "attribute", &node.meta);
         visit::visit_attribute(self, node);
     }
 

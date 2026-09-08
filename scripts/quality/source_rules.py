@@ -52,8 +52,8 @@ def classify(path, fact):
             return 'global-macro'
         if value.split('::')[-1] not in EXPRESSION_MACROS and not value.startswith(('tracing::', 'anyhow::')):
             return 'macro-dsl'
-    if kind == 'unparsed-macro-attribute':
-        return 'unparsed-macro-attribute'
+    if kind in ('unparsed-macro-attribute', 'unparsed-attribute'):
+        return kind
     if kind in ('attribute', 'macro-attribute'):
         if re.match(r'(allow|expect)\s*\(', value):
             return 'exception'

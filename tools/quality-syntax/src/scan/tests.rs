@@ -122,3 +122,19 @@ fn macro_attributes_cannot_hide_blanket_suppressions_in_dsl_tokens() {
     assert_eq!(attrs.len(), 1);
     assert!(attrs[0].value.contains("clippy :: all"));
 }
+
+#[test]
+fn conditional_attributes_are_inspected_on_every_branch() {
+    let code = r##"
+        #[cfg_attr(not(test), cfg_attr(unix, allow(clippy::all)))] fn bad() {}
+        #[cfg_attr(test, allow(dead_code, reason = "test owner; cfg varies; narrow exception"))] fn ok() {}
+        make! { #[cfg_attr(test, allow(warnings))] fn hidden() {} }
+    "##;
+    assert!(values(code, "attribute").contains(&"allow (clippy :: all)".to_owned()));
+    assert!(values(code, "macro-attribute").contains(&"allow (warnings)".to_owned()));
+    assert!(values(code, "unparsed-attribute").is_empty());
+    assert_eq!(
+        values("#[cfg_attr(test)] fn malformed() {}", "unparsed-attribute").len(),
+        1
+    );
+}
