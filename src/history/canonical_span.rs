@@ -45,14 +45,14 @@ pub(super) async fn read(
         bytes: 0,
     };
     let mut access = scope.map_or(Access::Bypass, |s| {
-        s.acquire(span.start, span.end, absorbed)
+        s.acquire(span.start, span.end, absorbed, span.scan_bytes)
     });
     if let Access::Wait(waiter) = access {
         waiter.wait().await;
         // One coalesced wait; a cancelled/invalidated producer never forces an
         // unbounded retry loop. A second pending producer is a canonical bypass.
         access = scope.map_or(Access::Bypass, |s| {
-            s.acquire(span.start, span.end, absorbed)
+            s.acquire(span.start, span.end, absorbed, span.scan_bytes)
         });
     }
     let mut capture = match access {

@@ -66,9 +66,10 @@ impl CheckedFrame {
             version,
         }
     }
-    /// Rebind validated metadata to an exact compact copy of the same bytes.
-    pub(crate) fn with_compact_owner(&self, raw: Bytes) -> Self {
-        assert_eq!(self.raw.as_ref(), raw.as_ref());
+    /// Copy internally so metadata is preserved by construction: callers cannot
+    /// rebind checked metadata to unrelated bytes. No second full-byte comparison.
+    pub(crate) fn compact_with_charge<C: Send + 'static>(&self, charge: C) -> Self {
+        let raw = crate::retained_bytes::with_charge(self.raw.to_vec().into_boxed_slice(), charge);
         Self {
             raw,
             ..self.clone()

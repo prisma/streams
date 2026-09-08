@@ -164,13 +164,13 @@ impl Rig {
     }
 }
 fn fill(scope: &Arc<Scope>, from: u64, to: u64) -> Capture {
-    match scope.acquire(from, to, to) {
+    match scope.acquire(from, to, to, FILL as u64) {
         Access::Fill(f) => f,
         _ => panic!("expected new fill"),
     }
 }
 fn hit(scope: &Arc<Scope>, from: u64, to: u64) -> Arc<CipherSpan> {
-    match scope.acquire(from, to, to) {
+    match scope.acquire(from, to, to, FILL as u64) {
         Access::Hit(f) => f,
         _ => panic!("expected complete proof"),
     }
@@ -212,11 +212,11 @@ async fn o5_complete_scan_reuses_misses_and_negative_space_but_authenticates_eac
     assert!(!empty.truncated);
     assert!(hit(&scope, 8, 9).frames().is_empty());
     assert!(
-        matches!(scope.acquire(0, 5, 4), Access::Bypass),
+        matches!(scope.acquire(0, 5, 4, FILL as u64), Access::Bypass),
         "applied-only boundary cannot be cached"
     );
     assert!(
-        matches!(scope.acquire(0, 4, 5), Access::Fill(_)),
+        matches!(scope.acquire(0, 4, 5, FILL as u64), Access::Fill(_)),
         "exact interval is required"
     );
     rig.close().await;
@@ -230,10 +230,16 @@ async fn o5_partial_oversized_and_corrupt_scans_never_install_complete_proof() {
     let page = rig.read(&scope, 0, 2, "wanted", 200).await;
     assert!(page.truncated);
     assert_eq!(page.last, Some(0));
-    assert!(matches!(scope.acquire(0, 2, 2), Access::Fill(_)));
+    assert!(matches!(
+        scope.acquire(0, 2, 2, FILL as u64),
+        Access::Fill(_)
+    ));
     rig.store(&rig.frame(3, FILL, "wanted")).await;
     assert!(!rig.read(&scope, 3, 4, "wanted", FILL * 2).await.truncated);
-    assert!(matches!(scope.acquire(3, 4, 4), Access::Fill(_)));
+    assert!(matches!(
+        scope.acquire(3, 4, 4, FILL as u64),
+        Access::Fill(_)
+    ));
     let key = hist2_record_key(RouteHash(scope.route), SegmentHash(scope.inc), 5);
     let durable = rig.part.put(key, b"bad frame").await.unwrap();
     rig.part.flush().await.unwrap();
@@ -255,7 +261,10 @@ async fn o5_partial_oversized_and_corrupt_scans_never_install_complete_proof() {
     )
     .await;
     assert!(bad.is_err());
-    assert!(matches!(scope.acquire(5, 6, 6), Access::Fill(_)));
+    assert!(matches!(
+        scope.acquire(5, 6, 6, FILL as u64),
+        Access::Fill(_)
+    ));
     let warm = rig.read(&scope, 0, 2, "wanted", 4096).await;
     assert!(!warm.truncated);
     let restricted = rig.read(&scope, 0, 2, "wanted", 200).await;
@@ -269,7 +278,7 @@ async fn o5_fill_cancellation_and_invalidation_wake_waiters_and_fence_late_publi
     let scope = rig.scope();
     let baseline = rig.cache.reserved();
     let pending = fill(&scope, 0, 2);
-    let Access::Wait(waiter) = scope.acquire(0, 2, 2) else {
+    let Access::Wait(waiter) = scope.acquire(0, 2, 2, FILL as u64) else {
         panic!("identical fill must coalesce")
     };
     assert!(rig.cache.reserved() > baseline);
@@ -280,7 +289,7 @@ async fn o5_fill_cancellation_and_invalidation_wake_waiters_and_fence_late_publi
     assert_eq!(rig.cache.reserved(), baseline);
     let mut pending = fill(&scope, 0, 2);
     assert!(pending.push(&rig.frame(1, 32, "wanted")));
-    let Access::Wait(waiter) = scope.acquire(0, 2, 2) else {
+    let Access::Wait(waiter) = scope.acquire(0, 2, 2, FILL as u64) else {
         panic!()
     };
     rig.cache.invalidate_project(&rig.desc.project_id);
@@ -288,9 +297,15 @@ async fn o5_fill_cancellation_and_invalidation_wake_waiters_and_fence_late_publi
         .await
         .unwrap();
     pending.complete();
-    assert!(matches!(scope.acquire(0, 2, 2), Access::Bypass));
+    assert!(matches!(
+        scope.acquire(0, 2, 2, FILL as u64),
+        Access::Bypass
+    ));
     let fresh = rig.scope();
-    assert!(matches!(fresh.acquire(0, 2, 2), Access::Fill(_)));
+    assert!(matches!(
+        fresh.acquire(0, 2, 2, FILL as u64),
+        Access::Fill(_)
+    ));
     drop(fresh);
     assert_eq!(rig.cache.reserved(), baseline);
     rig.close().await;
@@ -321,14 +336,20 @@ async fn o5_eviction_charge_follows_last_ciphertext_slice_and_project_quota() {
     let scope = rig.scope();
     let mut pending = Vec::new();
     for n in 0..10 {
-        if let Access::Fill(f) = scope.acquire(n, n + 1, n + 1) {
+        if let Access::Fill(f) = scope.acquire(n, n + 1, n + 1, FILL as u64) {
             pending.push(f)
         }
     }
     assert_eq!(pending.len(), 3);
-    assert!(matches!(scope.acquire(20, 21, 21), Access::Bypass));
+    assert!(matches!(
+        scope.acquire(20, 21, 21, FILL as u64),
+        Access::Bypass
+    ));
     let other = rig.scope_for(&descriptor("project-b"));
-    assert!(matches!(other.acquire(0, 1, 1), Access::Fill(_)));
+    assert!(matches!(
+        other.acquire(0, 1, 1, FILL as u64),
+        Access::Fill(_)
+    ));
     drop(pending);
     rig.close().await;
 }
@@ -337,7 +358,7 @@ async fn o5_retirement_and_db_close_reject_pending_and_ready_admission() {
     let rig = Rig::new().await;
     let scope = rig.scope();
     let pending = fill(&scope, 0, 1);
-    let Access::Wait(waiter) = scope.acquire(0, 1, 1) else {
+    let Access::Wait(waiter) = scope.acquire(0, 1, 1, FILL as u64) else {
         panic!()
     };
     rig.engine.begin_close();
@@ -345,14 +366,20 @@ async fn o5_retirement_and_db_close_reject_pending_and_ready_admission() {
     tokio::time::timeout(Duration::from_millis(100), waiter.wait())
         .await
         .unwrap();
-    assert!(matches!(scope.acquire(0, 1, 1), Access::Bypass));
+    assert!(matches!(
+        scope.acquire(0, 1, 1, FILL as u64),
+        Access::Bypass
+    ));
     rig.close().await;
     let rig = Rig::new().await;
     let scope = rig.scope();
     let pending = fill(&scope, 0, 1);
     rig.part.close().await.unwrap();
     pending.complete();
-    assert!(matches!(scope.acquire(0, 1, 1), Access::Bypass));
+    assert!(matches!(
+        scope.acquire(0, 1, 1, FILL as u64),
+        Access::Bypass
+    ));
     rig.close().await;
 }
 #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
@@ -450,7 +477,7 @@ async fn o5_global_fill_pressure_and_retained_project_quota_remain_bounded() {
             desc.storage_hash(),
         ) {
             for n in 0..3 {
-                if let Access::Fill(f) = scope.acquire(n, n + 1, n + 1) {
+                if let Access::Fill(f) = scope.acquire(n, n + 1, n + 1, FILL as u64) {
                     pending.push(f)
                 }
             }
@@ -518,12 +545,90 @@ async fn o5_executor_cannot_install_a_foreign_scan_under_a_valid_scope() {
         assert!(result.hits.is_empty());
         assert!(!result.truncated);
         assert!(
-            matches!(scope.acquire(0, 2, 2), Access::Fill(_)),
+            matches!(scope.acquire(0, 2, 2, FILL as u64), Access::Fill(_)),
             "foreign empty scan cannot become a negative-space proof for this scope"
         );
     }
     let actual = rig.read(&scope, 0, 2, "wanted", 4096).await;
     assert_eq!(actual.hits.len(), 1);
     assert_eq!(hit(&scope, 0, 2).frames().len(), 1);
+    rig.close().await;
+}
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn o5_four_concurrent_spans_preserve_a_reusable_hot_set() {
+    use futures_util::{StreamExt, stream};
+    let rig = Rig::new().await;
+    let scope = rig.scope();
+    for n in 0..16 {
+        rig.store(&rig.frame(n, 1024, "wanted")).await;
+    }
+    for _ in 0..3 {
+        let pages = stream::iter((0..16).map(|n| rig.read(&scope, n, n + 1, "wanted", 4096)))
+            .buffered(4)
+            .collect::<Vec<_>>()
+            .await;
+        for (n, page) in pages.iter().enumerate() {
+            assert_eq!(page.hits.len(), 1);
+            assert_eq!(page.hits[0].0, n as u64);
+            assert!(!page.truncated);
+        }
+        for n in 0..16 {
+            assert_eq!(
+                hit(&scope, n, n + 1).frames().len(),
+                1,
+                "maximum fill credits must not churn a small admitted working set"
+            );
+        }
+    }
+    assert!(rig.cache.reserved() < METADATA + PROJECT_CAP);
+    rig.close().await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn o5_an_underestimated_fill_abandons_caching_before_retaining_excess_bytes() {
+    let rig = Rig::new().await;
+    let scope = rig.scope();
+    let frame = rig.frame(0, 8192, "wanted");
+    rig.store(&frame).await;
+    let baseline = rig.cache.reserved();
+    let Access::Fill(mut fill) = scope.acquire(0, 1, 1, 1) else {
+        panic!()
+    };
+    assert!(rig.cache.reserved() - baseline < 8192);
+    assert!(!fill.push(&frame));
+    drop(fill);
+    assert_eq!(rig.cache.reserved(), baseline);
+    let page = canonical_span::read(
+        &rig.part,
+        RouteHash(scope.route),
+        SegmentHash(scope.inc),
+        "wanted",
+        crate::postings::Span {
+            start: 0,
+            end: 1,
+            scan_bytes: 1,
+            matching_bytes: 1,
+        },
+        16384,
+        Some(&scope),
+        1,
+    )
+    .await
+    .unwrap();
+    assert_eq!(page.hits[0].1, frame);
+    assert!(!page.truncated);
+    assert!(matches!(scope.acquire(0, 1, 1, 1), Access::Fill(_)));
+    rig.close().await;
+}
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn o5_a_closed_db_cannot_serve_an_already_ready_interval() {
+    let rig = Rig::new().await;
+    let scope = rig.scope();
+    let mut fill = fill(&scope, 0, 1);
+    assert!(fill.push(&rig.frame(0, 32, "wanted")));
+    fill.complete();
+    assert_eq!(hit(&scope, 0, 1).frames().len(), 1);
+    rig.part.close().await.unwrap();
+    assert!(matches!(scope.acquire(0, 1, 1, 4096), Access::Bypass));
     rig.close().await;
 }

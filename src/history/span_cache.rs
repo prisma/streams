@@ -58,6 +58,25 @@ impl Lease {
             permits: Mutex::new((global, tenant)),
         }))
     }
+    fn capacity(&self) -> usize {
+        self.permits
+            .lock()
+            .unwrap_or_else(|e| e.into_inner())
+            .0
+            .num_permits()
+    }
+    fn split(&self, bytes: usize) -> Arc<Self> {
+        let mut permits = self.permits.lock().unwrap_or_else(|e| e.into_inner());
+        let global = permits.0.split(bytes).expect("reserved control capacity");
+        let tenant = permits
+            .1
+            .split(bytes)
+            .expect("reserved project control capacity");
+        Arc::new(Self {
+            _project: self._project.clone(),
+            permits: Mutex::new((global, tenant)),
+        })
+    }
     fn shrink(&self, bytes: usize) {
         let mut permits = self.permits.lock().unwrap_or_else(|e| e.into_inner());
         let excess = permits
@@ -103,7 +122,13 @@ impl Scope {
             && self.route == other.route
             && self.inc == other.inc
     }
-    pub(crate) fn acquire(self: &Arc<Self>, from: u64, to: u64, absorbed: u64) -> Access {
+    pub(crate) fn acquire(
+        self: &Arc<Self>,
+        from: u64,
+        to: u64,
+        absorbed: u64,
+        scan_bytes: u64,
+    ) -> Access {
         let Some(inner) = self.inner.upgrade() else {
             return Access::Bypass;
         };
@@ -114,13 +139,6 @@ impl Scope {
         if !self.live() {
             return Access::Bypass;
         }
-        // Closing an underlying DB also fences admission, even if retirement
-        // did not originate in the engine. Reclaim its bounded stale slots.
-        state.entries.iter_mut().for_each(|slot| {
-            if slot.as_ref().is_some_and(|e| !e.scope.live()) {
-                *slot = None;
-            }
-        });
         state.clock = state.clock.wrapping_add(1);
         let clock = state.clock;
         if let Some(entry) = state
@@ -135,13 +153,41 @@ impl Scope {
                 Value::Pending(signal) => Access::Wait(Waiter(signal.clone())),
             };
         }
+        // A hit's matching scope has already passed the physical owner and
+        // generation check. Reap unrelated closed scopes only on admission.
+        // Closing an underlying DB also fences admission, even if retirement
+        // did not originate in the engine. Reclaim its bounded stale slots.
+        state.entries.iter_mut().for_each(|slot| {
+            if slot.as_ref().is_some_and(|e| !e.scope.live()) {
+                *slot = None;
+            }
+        });
         // Evict only this project's ready entries for a tenant limit. Global
         // pressure can evict other ready entries; held aliases retain permits.
+        // The estimate sizes a credit, never authorizes unchecked retention.
+        // Capture checks actual bytes/metadata before each allocation and
+        // abandons an underestimated or oversized span. Keep the fixed 64 KiB
+        // total cap while avoiding four maximum fills evicting a tiny hot set.
+        let per_row = 256 + std::mem::size_of::<crate::shard::record::CheckedFrame>() * 4;
+        let data_bytes = scan_bytes
+            .saturating_mul(2)
+            .saturating_add(to.saturating_sub(from).saturating_mul(per_row as u64))
+            .saturating_add(CONTROL as u64)
+            .min((FILL - CONTROL) as u64) as usize;
+        let reservation = data_bytes + CONTROL;
         let data = loop {
-            if let Some(lease) = Lease::reserve(&inner, &self.project, FILL - CONTROL) {
+            if let Some(lease) = Lease::reserve(&inner, &self.project, reservation) {
                 break lease;
             }
-            let tenant_full = self.project.bytes.available_permits() < FILL;
+            let tenant_full = self.project.bytes.available_permits() < reservation;
+            // Temporary fill pressure is not a reason to discard useful ready
+            // entries. A canonical bypass can still complete this request.
+            if state.entries.iter().flatten().any(|entry| {
+                matches!(entry.value, Value::Pending(_))
+                    && (!tenant_full || Arc::ptr_eq(&entry.scope.project, &self.project))
+            }) {
+                return Access::Bypass;
+            }
             if !state.evict(if tenant_full {
                 Some(&self.project)
             } else {
@@ -150,9 +196,9 @@ impl Scope {
                 return Access::Bypass;
             }
         };
-        let Some(control) = Lease::reserve(&inner, &self.project, CONTROL) else {
-            return Access::Bypass;
-        };
+        // Reserve data and control atomically before evicting/allocating;
+        // splitting cannot fail after data has consumed the last permits.
+        let control = data.split(CONTROL);
         if state.entries.iter().all(Option::is_some) {
             state.evict(None);
         }
@@ -331,8 +377,9 @@ impl SpanCache {
         });
         scope.live().then_some(scope)
     }
-    /// Current deletion/policy callers invalidate all physical proofs of the
-    /// project. Future canonical retention must call this BEFORE removing rows.
+    /// Invalidate physical proofs for project deletion or a storage transition.
+    /// Future canonical retention must call this BEFORE removing rows. Current
+    /// authorization remains independent of this physical cache generation.
     pub(crate) fn invalidate_project(&self, id: &ProjectId) {
         let Some(inner) = &self.0 else { return };
         let mut state = inner.state.lock().unwrap_or_else(|e| e.into_inner());

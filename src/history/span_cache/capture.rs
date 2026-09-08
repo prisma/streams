@@ -22,6 +22,7 @@ pub(crate) struct Capture {
     charge: Arc<Lease>,
     frames: Vec<CheckedFrame>,
     storage: usize,
+    budget: usize,
     last: Option<u64>,
 }
 impl Capture {
@@ -39,6 +40,7 @@ impl Capture {
             signal,
             from,
             to,
+            budget: charge.capacity(),
             charge,
             frames: Vec::new(),
             storage: 0,
@@ -58,15 +60,12 @@ impl Capture {
         };
         let count = self.frames.len() + 1;
         if storage.saturating_mul(2) + count * std::mem::size_of::<CheckedFrame>() * 4 + CONTROL
-            > FILL - CONTROL
+            > self.budget
         {
             return false;
         }
-        let bytes = crate::retained_bytes::with_charge(
-            frame.as_ref().to_vec().into_boxed_slice(),
-            self.charge.clone(),
-        );
-        self.frames.push(frame.with_compact_owner(bytes));
+        self.frames
+            .push(frame.compact_with_charge(self.charge.clone()));
         self.storage = storage;
         self.last = Some(off);
         true
