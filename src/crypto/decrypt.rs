@@ -25,7 +25,7 @@ impl FrameDecryptor {
         limit: usize,
         plaintext: &mut Vec<u8>,
         auth: &mut Vec<u8>,
-    ) -> Result<Option<std::ops::Range<usize>>, String> {
+    ) -> Result<Option<Decrypted>, String> {
         use aes_gcm::aead::AeadInPlace;
         if raw.len() > MAX_ENCODED_FRAME || frame.ciphertext.len() > MAX_RECORD_PLAINTEXT + 16 {
             return Err("encoded record exceeds the record bound".into());
@@ -41,20 +41,15 @@ impl FrameDecryptor {
         if matches!(frame.ver, FRAME_VER_Z | LEGACY_FRAME_VER_Z)
             || len > limit.min(MAX_RECORD_PLAINTEXT)
         {
-            return self.decrypt(frame, raw, limit).map(|candidate| {
-                candidate.map(|pt| {
-                    let start = plaintext.len();
-                    plaintext.reserve_exact(pt.len());
-                    plaintext.extend_from_slice(&pt);
-                    start..plaintext.len()
-                })
-            });
+            return self
+                .decrypt(frame, raw, limit)
+                .map(|candidate| candidate.map(Decrypted::Owned));
         }
         auth.clear();
         auth.extend_from_slice(&self.segment);
         auth.extend_from_slice(&raw[..frame.header_len]);
         let start = plaintext.len();
-        plaintext.reserve_exact(len);
+        plaintext.reserve(len);
         plaintext.extend_from_slice(&frame.ciphertext[..len]);
         let tag = aes_gcm::Tag::from_slice(&frame.ciphertext[len..]);
         let result = match frame.ver {
@@ -89,7 +84,7 @@ impl FrameDecryptor {
             plaintext.truncate(start);
             return Err("decryption failed (wrong key or tampered record)".into());
         }
-        Ok(Some(start..plaintext.len()))
+        Ok(Some(Decrypted::Appended(start..plaintext.len())))
     }
 
     pub(crate) fn decrypt(

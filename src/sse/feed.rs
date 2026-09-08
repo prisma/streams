@@ -79,7 +79,7 @@ pub(crate) struct PreparedBatch {
 pub(crate) struct SourceBatch {
     pub(crate) scan_from: u64,
     pub(crate) scan_to: u64,
-    pub(crate) records: Vec<crate::application::read::PlainRec>,
+    pub(crate) records: crate::application::read::PlainBatch,
     pub(crate) completed: bool,
 }
 
@@ -1476,21 +1476,18 @@ pub(crate) mod tests {
                 return Ok(SourceBatch {
                     scan_from: from,
                     scan_to: from,
-                    records: Vec::new(),
+                    records: crate::application::read::PlainBatch::default(),
                     completed: false,
                 });
             }
             let frontier = self.frontier.load(Ordering::Relaxed);
-            let mut records = Vec::new();
-            let mut used = 0usize;
+            let mut records = crate::application::read::PlainBatch::default();
+            let mut budget = crate::application::read_budget::PageBudget::new(max_bytes);
             let mut off = from;
-            while off < frontier && used + self.payload <= max_bytes {
-                records.push(crate::application::read::PlainRec {
-                    off,
-                    payload: Bytes::from(vec![b'x'; self.payload]),
-                    rkey: String::new(),
-                });
-                used += self.payload;
+            while off < frontier {
+                if !records.admit_owned(off, vec![b'x'; self.payload], String::new(), &mut budget) {
+                    break;
+                }
                 off += 1;
             }
             Ok(SourceBatch {

@@ -1,6 +1,6 @@
 //! Durable collection scan snapshots and bounded page progress. The caller
 //! verifies/signs the cursor; this owner freezes and executes its segment plan.
-use super::read::{PlainRec, ReadFailure, ReadPlan, ReadService};
+use super::read::{PlainBatch, ReadFailure, ReadPlan, ReadRange, ReadService};
 use crate::crypto::StreamKey;
 use crate::product_cursor::ScanCursor;
 use crate::registry::StreamDesc;
@@ -15,7 +15,7 @@ pub(crate) struct ScanCommand {
     pub lifetime_ms: i64,
 }
 pub(crate) struct ScanOutcome {
-    pub records: Vec<PlainRec>,
+    pub records: PlainBatch,
     pub continuation: Option<ScanCursor>,
 }
 impl ReadService {
@@ -42,7 +42,7 @@ impl ReadService {
             }
         };
         let mut budget = super::read_budget::PageBudget::new(command.max_bytes);
-        let mut records = Vec::new();
+        let mut records = PlainBatch::default();
         'segments: while (cursor.current_index as usize) < cursor.segments.len() && !budget.full() {
             let (segment, end) = cursor.segments[cursor.current_index as usize];
             if cursor.current_offset >= end {
@@ -55,7 +55,7 @@ impl ReadService {
                     desc,
                     &command.key,
                     segment,
-                    cursor.current_offset,
+                    ReadRange::bounded(cursor.current_offset, end),
                     budget.remaining(),
                 )
                 .await?;
@@ -66,15 +66,10 @@ impl ReadService {
                 ));
             }
             let before = cursor.current_offset;
-            for record in page.recs {
-                if record.off >= end {
-                    break;
-                }
-                if !budget.admit(record.payload.len(), &record.rkey) {
-                    cursor.current_offset = record.off;
-                    break 'segments;
-                }
-                records.push(record);
+            let admission = records.append_selected(page.recs, before..end, None, &mut budget, 0);
+            if let Some(withheld) = admission.withheld {
+                cursor.current_offset = withheld;
+                break 'segments;
             }
             cursor.current_offset = if page.completed { end } else { consumed };
             if cursor.current_offset == before && !page.completed {
@@ -126,9 +121,16 @@ impl ReadService {
                         local.max(shared)
                     }
                     Err(ResolveError::NotOwner { owner, .. }) => {
-                        self.remote_scan_span(desc, key, span.seg_id, u64::MAX, 4096, &owner)
-                            .await?
-                            .end
+                        self.remote_scan_span(
+                            desc,
+                            key,
+                            span.seg_id,
+                            ReadRange::open(u64::MAX),
+                            4096,
+                            &owner,
+                        )
+                        .await?
+                        .end
                     }
                     Err(error) => return Err(ReadFailure::Resolve(error)),
                 },
@@ -151,7 +153,7 @@ impl ReadService {
         desc: &StreamDesc,
         key: &StreamKey,
         segment: u32,
-        from: u64,
+        range: ReadRange,
         budget: usize,
     ) -> Result<super::read::ReadPage, ReadFailure> {
         let route = desc
@@ -161,7 +163,7 @@ impl ReadService {
             Ok(engine) => engine,
             Err(ResolveError::NotOwner { owner, .. }) => {
                 return self
-                    .remote_scan_span(desc, key, segment, from, budget, &owner)
+                    .remote_scan_span(desc, key, segment, range, budget, &owner)
                     .await;
             }
             Err(error) => return Err(ReadFailure::Resolve(error)),
@@ -177,7 +179,7 @@ impl ReadService {
             &desc.epoch(),
             &handle,
             &engine,
-            from,
+            range,
             None,
             budget,
             crate::shard::Deliver::Durable,
@@ -191,7 +193,7 @@ impl ReadService {
         desc: &StreamDesc,
         key: &StreamKey,
         segment: u32,
-        from: u64,
+        range: ReadRange,
         budget: usize,
         owner: &str,
     ) -> Result<super::read::ReadPage, ReadFailure> {
@@ -203,7 +205,7 @@ impl ReadService {
             owner,
             desc,
             &target,
-            from,
+            range,
             budget,
             &base64::engine::general_purpose::STANDARD.encode(key.0),
         )

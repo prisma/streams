@@ -3620,8 +3620,9 @@ pub(crate) async fn internal_segment_scan(
             .and_then(|v| v.to_str().ok())
             .map(str::to_string)
     };
-    let (Some(from), Some(max_bytes), Some(key_b64)) = (
+    let (Some(from), Some(end), Some(max_bytes), Some(key_b64)) = (
         q("streams-internal-from").and_then(|v| v.parse::<u64>().ok()),
+        q("streams-internal-end").and_then(|v| v.parse::<u64>().ok()),
         q("streams-internal-max-bytes")
             .and_then(|v| v.parse::<usize>().ok())
             // Clamped to the public scan ceiling: an internal budget
@@ -3633,7 +3634,7 @@ pub(crate) async fn internal_segment_scan(
         return perr(
             StatusCode::BAD_REQUEST,
             "invalid_body",
-            "from/max-bytes/key headers required",
+            "from/end/max-bytes/key headers required",
             None,
             false,
         );
@@ -3682,16 +3683,17 @@ pub(crate) async fn internal_segment_scan(
         }
     };
     state.keys.put(identity, skey.clone(), epoch);
-    let out = match crate::application::read::read_merged(
+    let out = match crate::application::read::ReadPlan::segment(
         &skey,
         &epoch,
         &handle,
         &engine,
-        from,
+        crate::application::read::ReadRange::bounded(from, end),
         None,
         max_bytes,
         crate::shard::Deliver::Durable,
     )
+    .execute()
     .await
     {
         Ok(o) => o,

@@ -114,7 +114,7 @@ async fn r06a_compressed_local_and_peer_pages_have_identical_complete_sequences(
         "r06a-owner",
         &desc,
         &InternalTarget::of(&desc, 0).unwrap(),
-        1600,
+        crate::application::read::ReadRange::open(1600),
         64 << 10,
         PRISMA_KEY,
     )

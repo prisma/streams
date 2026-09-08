@@ -54,7 +54,12 @@ impl FeedSourceRead for SingleSource {
         // space every other lane uses.
         let out = if self.desc.forked_from.is_some() {
             self.state
-                .read_stitched(&self.desc, &self.key, from, max_bytes)
+                .read_stitched(
+                    &self.desc,
+                    &self.key,
+                    crate::application::read::ReadRange::open(from),
+                    max_bytes,
+                )
                 .await
                 .map_err(|e| anyhow::anyhow!(e))?
         } else {
@@ -436,16 +441,20 @@ impl LineageSource {
                 }
             }
             if let Some((engine, handle)) = cached.as_ref() {
-                return crate::application::read::read_merged(
+                return crate::application::read::ReadPlan::segment(
                     &self.key,
                     &self.epoch,
                     handle,
                     engine,
-                    local_from,
+                    crate::application::read::ReadRange::bounded(
+                        local_from,
+                        span.cap.unwrap_or(u64::MAX),
+                    ),
                     self.rk_filter.as_deref(),
                     budget,
                     crate::shard::Deliver::Durable,
                 )
+                .execute()
                 .await
                 .map_err(|e| anyhow::anyhow!(e));
             }
@@ -479,7 +488,7 @@ impl LineageSource {
             &owner,
             &self.desc,
             target,
-            local_from,
+            crate::application::read::ReadRange::bounded(local_from, span.cap.unwrap_or(u64::MAX)),
             budget,
             &self.key_b64,
         )
@@ -489,7 +498,15 @@ impl LineageSource {
                 *owner_hint.write().unwrap() = Some(page.owner);
                 let mut out = page.out;
                 if let Some(k) = self.rk_filter.as_deref() {
-                    out.recs.retain(|r| r.rkey == k);
+                    let mut selected = crate::application::read::PlainBatch::default();
+                    selected.append_selected(
+                        out.recs,
+                        local_from..span.cap.unwrap_or(u64::MAX),
+                        Some(k),
+                        &mut crate::application::read_budget::PageBudget::new(budget),
+                        0,
+                    );
+                    out.recs = selected;
                 }
                 Ok(out)
             }
@@ -540,8 +557,8 @@ impl LineageSource {
 impl FeedSourceRead for LineageSource {
     async fn read_batch(&self, from: u64, max_bytes: usize) -> anyhow::Result<SourceBatch> {
         let mut cursor = from;
-        let mut recs: Vec<crate::application::read::PlainRec> = Vec::new();
-        let mut budget = max_bytes;
+        let mut recs = crate::application::read::PlainBatch::default();
+        let mut budget = crate::application::read_budget::PageBudget::new(max_bytes);
         let mut completed = false;
         for (i, span) in self.spans.iter().enumerate() {
             let span_end = span.logical_end();
@@ -565,16 +582,20 @@ impl FeedSourceRead for LineageSource {
                             super::feed::SourceCutoff::WrongOwner,
                         )));
                     }
-                    crate::application::read::read_merged(
+                    crate::application::read::ReadPlan::segment(
                         &self.key,
                         &self.epoch,
                         handle,
                         engine,
-                        local_from,
+                        crate::application::read::ReadRange::bounded(
+                            local_from,
+                            span.cap.unwrap_or(u64::MAX),
+                        ),
                         self.rk_filter.as_deref(),
-                        budget,
+                        budget.remaining(),
                         crate::shard::Deliver::Durable,
                     )
+                    .execute()
                     .await
                     .map_err(|e| anyhow::anyhow!(e))?
                 }
@@ -585,7 +606,13 @@ impl FeedSourceRead for LineageSource {
                     local,
                 } => {
                     self.sealed_span_page(
-                        span, route, target, owner_hint, local, local_from, budget,
+                        span,
+                        route,
+                        target,
+                        owner_hint,
+                        local,
+                        local_from,
+                        budget.remaining(),
                     )
                     .await?
                 }
@@ -598,16 +625,16 @@ impl FeedSourceRead for LineageSource {
                 Some(c) => scanned_after.min(c),
                 None => scanned_after,
             };
-            for r in part.recs {
-                if span.cap.is_some_and(|c| r.off >= c) {
-                    break;
-                }
-                budget = budget.saturating_sub(r.payload.len());
-                recs.push(crate::application::read::PlainRec {
-                    off: span.logical_start + r.off,
-                    payload: r.payload,
-                    rkey: r.rkey,
-                });
+            let admitted = recs.append_selected(
+                part.recs,
+                local_from..span.cap.unwrap_or(u64::MAX),
+                None,
+                &mut budget,
+                span.logical_start,
+            );
+            if let Some(withheld) = admitted.withheld {
+                cursor = span.logical_start + withheld;
+                break;
             }
             let before = cursor;
             cursor = cursor.max(span.logical_start + consumed_local);
@@ -628,7 +655,7 @@ impl FeedSourceRead for LineageSource {
                 break;
             }
             // Span drained: hop to the next owner.
-            if budget == 0 {
+            if budget.full() {
                 break;
             }
         }
@@ -954,47 +981,5 @@ fn locate_in_spans(spans: &[(u32, u64, Option<u64>)], logical_after: u64) -> Wir
 }
 
 #[cfg(test)]
-mod tests {
-    use super::*;
-
-    /// The linearization rule maps linearized offsets back to
-    /// (seg_id, segment-local), with sealed-cap boundaries owned by
-    /// the NEXT span.
-    #[test]
-    fn linearized_cursor_space_roundtrips() {
-        let spans = [(0u32, 0u64, Some(5)), (1, 5, Some(3)), (2, 8, None)];
-        // Inside the first span.
-        let wp = |seg, local| WirePosition {
-            seg_id: seg,
-            local_after: local,
-        };
-        assert_eq!(locate_in_spans(&spans, 0), wp(0, 0));
-        assert_eq!(locate_in_spans(&spans, 4), wp(0, 4));
-        // The cap boundary belongs to the next span at local 0.
-        assert_eq!(locate_in_spans(&spans, 5), wp(1, 0));
-        assert_eq!(locate_in_spans(&spans, 7), wp(1, 2));
-        assert_eq!(locate_in_spans(&spans, 8), wp(2, 0));
-        // The live tail is open-ended.
-        assert_eq!(locate_in_spans(&spans, 100), wp(2, 92));
-    }
-
-    #[test]
-    fn sig_compatibility_rules() {
-        // A live span may gain its sealed cap; spans may be appended.
-        let old = [(0u32, 0u64, None)];
-        let new = [(0u32, 0u64, Some(5)), (1, 5, None)];
-        assert!(sig_compatible(&old, &new));
-        // A different segment id is never a continuation.
-        let bad_seg = [(1u32, 0u64, Some(5)), (2, 5, None)];
-        assert!(!sig_compatible(&old, &bad_seg));
-        // A span may not vanish.
-        let old2 = [(0u32, 0u64, Some(5)), (1, 5, None)];
-        let shrunk = [(0u32, 0u64, Some(5))];
-        assert!(!sig_compatible(&old2, &shrunk));
-        // A sealed cap may not change.
-        let changed = [(0u32, 0u64, Some(6)), (1, 6, None)];
-        assert!(!sig_compatible(&old2, &changed));
-        // Identity.
-        assert!(sig_compatible(&old2, &old2));
-    }
-}
+#[path = "source/tests.rs"]
+mod tests;

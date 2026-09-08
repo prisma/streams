@@ -249,3 +249,6 @@ mod request_topology_debt;
 
 #[path = "tests/security_freshness.rs"]
 mod security_freshness;
+
+#[path = "tests/read_subset_retention.rs"]
+mod read_subset_retention;

@@ -586,6 +586,12 @@ pub fn decrypt_frame_limited(
 
 #[path = "crypto/decrypt.rs"]
 mod decrypt;
+/// An authenticated result can reuse caller storage or transfer independently
+/// decoded storage. Consumers adopt ownership before publishing a record.
+pub(crate) enum Decrypted {
+    Appended(std::ops::Range<usize>),
+    Owned(Vec<u8>),
+}
 pub(crate) use decrypt::FrameDecryptor;
 
 #[cfg(test)]

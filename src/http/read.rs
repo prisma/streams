@@ -243,21 +243,12 @@ pub(crate) fn read_payload(
     selector: Option<&str>,
     compress: bool,
 ) -> Bytes {
-    if !frames && !out.descriptor.is_json() && !out.segmented {
-        if out.records.len() == 1 {
-            return out.records[0].payload.clone();
-        }
-        if let Some(owner) = &out.contiguous {
-            let mut offset = 0;
-            let covered = out.records.iter().all(|record| {
-                let matches = record.payload.as_ptr() == owner.as_ptr().wrapping_add(offset);
-                offset += record.payload.len();
-                matches
-            });
-            if covered && offset == owner.len() {
-                return owner.clone();
-            }
-        }
+    if !frames
+        && !out.descriptor.is_json()
+        && !out.segmented
+        && let Some(owner) = out.records.contiguous()
+    {
+        return owner;
     }
     let payload_len: usize = out.records.iter().map(|r| r.payload.len()).sum();
     let capacity = if frames {

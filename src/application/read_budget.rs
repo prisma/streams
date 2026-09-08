@@ -27,6 +27,9 @@ impl PageBudget {
             records: 0,
         }
     }
+    pub(super) fn admitted_bytes(&self) -> usize {
+        self.plaintext
+    }
     pub(crate) fn remaining(&self) -> usize {
         self.requested.saturating_sub(self.plaintext)
     }

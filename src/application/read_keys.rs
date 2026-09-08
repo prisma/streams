@@ -34,7 +34,12 @@ impl<'a> ReadKeys<'a> {
     ) -> Result<Option<Vec<u8>>, String> {
         let mut plaintext = Vec::new();
         self.decrypt_append(frame, raw, limit, &mut plaintext, &mut Vec::new())
-            .map(|range| range.map(|_| plaintext))
+            .map(|decoded| {
+                decoded.map(|value| match value {
+                    crate::crypto::Decrypted::Appended(_) => plaintext,
+                    crate::crypto::Decrypted::Owned(bytes) => bytes,
+                })
+            })
     }
     pub fn decrypt_append(
         &mut self,
@@ -43,7 +48,7 @@ impl<'a> ReadKeys<'a> {
         limit: usize,
         plaintext: &mut Vec<u8>,
         auth: &mut Vec<u8>,
-    ) -> Result<Option<std::ops::Range<usize>>, String> {
+    ) -> Result<Option<crate::crypto::Decrypted>, String> {
         let lanes = self.entries.entry(frame.header.key_version).or_default();
         let entry = if let Some(entry) = lanes.get(frame.header.routing_key) {
             entry

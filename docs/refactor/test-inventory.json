@@ -3180,6 +3180,33 @@
     ]
   },
   {
+    "name": "o2a_clipped_fork_body_holds_only_selected_storage_until_cancel",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "a7328a8f76c6b9163e60a502aaa0984f11b148d402332ce8829758693240c887",
+    "mechanisms": [],
+    "configuration": [
+      "seed(state, &parent, 0, &vec![b'y'; 512 << 10], 14).await;"
+    ],
+    "file": "src/dst/tests/read_subset_retention.rs",
+    "scenarios": []
+  },
+  {
+    "name": "o2a_frozen_scan_compacts_retained_owners_across_segments_and_reads",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
+    ],
+    "function_sha256": "e955d36f04fa8074319083eaefc8e37406f51813216213595f71c6f93c184447",
+    "mechanisms": [],
+    "configuration": [
+      "seed(state, &desc, seg, b\"x\", 1).await;",
+      "seed(state, &desc, seg, &vec![b'y'; 512 << 10], 14).await;"
+    ],
+    "file": "src/dst/tests/read_subset_retention.rs",
+    "scenarios": []
+  },
+  {
     "name": "o3_retained_ring_coverage_skips_only_the_redundant_marker",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -4103,7 +4130,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
     ],
-    "function_sha256": "167af4322d289fde98abaf4fcaf003c476b1f8de1653e9ff1a8454eae5e91bf6",
+    "function_sha256": "8c7b1565dc7a3e3eb4fb8b09825889f71a25cb43d5e482682fcdb0babc4d67fc",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_application.rs",
@@ -4136,7 +4163,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "23c223d7ff00c6ccf7f9b3fc82b01d50e2972295ea43d9adbc792a5f118b7f35",
+    "function_sha256": "fc2016ef37163598472e39e1bd8f0a5cc9b4c456ddaf2a8da13692fa02ff6d53",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/read_page_limits.rs",

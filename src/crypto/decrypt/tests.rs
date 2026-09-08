@@ -77,6 +77,9 @@ fn o2_in_place_append_reuses_storage_and_rolls_back_failed_authentication() {
             .decrypt_append(&frame, &raw, 1024, &mut plaintext, &mut auth)
             .unwrap()
             .unwrap();
+        let Decrypted::Appended(range) = range else {
+            panic!("uncompressed should share the planned owner")
+        };
         assert_eq!(range, offset as usize * 1024..(offset as usize + 1) * 1024);
         assert_eq!(&plaintext[range], payload);
         assert_eq!(plaintext.as_ptr(), payload_ptr);

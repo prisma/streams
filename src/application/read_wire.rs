@@ -1,5 +1,5 @@
 //! Bounded wire decoding shared by replay and physical-span scan peers.
-use super::read::{PlainRec, ReadPage, Watermarks};
+use super::read::{PlainBatch, ReadPage, Watermarks};
 use super::read_budget::{MAX_PAGE_RECORDS, PageBudget, max_wire_bytes};
 use super::read_remote::RemoteSpanError;
 use base64::Engine;
@@ -49,9 +49,9 @@ pub(super) fn records<'de, D: Deserializer<'de>>(
 pub(super) fn decode_records(
     records: Vec<WireRecord>,
     max_bytes: usize,
-) -> Result<Vec<PlainRec>, RemoteSpanError> {
+) -> Result<PlainBatch, RemoteSpanError> {
     let mut budget = PageBudget::new(max_bytes);
-    let mut decoded = Vec::with_capacity(records.len());
+    let mut decoded = PlainBatch::default();
     for record in records {
         if !budget.metadata_fits(&record.key)
             || record.payload.len() > budget.decode_limit().div_ceil(3) * 4
@@ -61,14 +61,9 @@ pub(super) fn decode_records(
         let payload = base64::engine::general_purpose::STANDARD
             .decode(record.payload)
             .map_err(|e| invalid(&e.to_string()))?;
-        if !budget.admit(payload.len(), &record.key) {
+        if !decoded.admit_owned(record.off, payload, record.key, &mut budget) {
             return Err(invalid("peer page exceeds its plaintext budget"));
         }
-        decoded.push(PlainRec {
-            off: record.off,
-            rkey: record.key,
-            payload: Bytes::from(payload),
-        });
     }
     Ok(decoded)
 }
@@ -105,7 +100,6 @@ struct WireScanPage {
 pub(super) fn scan_page(bytes: &[u8], max_bytes: usize) -> Result<ReadPage, RemoteSpanError> {
     let page: WireScanPage = serde_json::from_slice(bytes).map_err(|e| invalid(&e.to_string()))?;
     Ok(ReadPage {
-        contiguous: None,
         watermarks: Watermarks {
             durable: page.end,
             applied: page.end,

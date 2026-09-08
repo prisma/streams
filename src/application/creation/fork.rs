@@ -241,15 +241,20 @@ async fn validate_boundary(
             // fork — read through its chain).
             let rec = match state
                 .reads
-                .read_stitched(src, &src_key, base, 64 << 20)
+                .read_stitched(
+                    src,
+                    &src_key,
+                    crate::application::read::ReadRange::bounded(base, base.saturating_add(1)),
+                    64 << 20,
+                )
                 .await
             {
-                Ok(out) => out.recs.into_iter().find(|r| r.off == base),
+                Ok(out) => out,
                 Err(m) => {
                     return Err(CreationError::new(CreationFailure::Storage, "internal", &m));
                 }
             };
-            let Some(rec) = rec else {
+            let Some(rec) = rec.recs.iter().find(|r| r.off == base) else {
                 return Err(CreationError::new(
                     CreationFailure::Storage,
                     "internal",
@@ -268,7 +273,7 @@ async fn validate_boundary(
                 boundary = base + 1; // whole record inherited
             } else {
                 boundary = base; // partial materializes at `base`
-                let m = rec.payload.slice(..sub as usize);
+                let m = bytes::Bytes::copy_from_slice(&rec.payload[..sub as usize]);
                 // Round-10e review: the materialized partial is a
                 // CUSTOMER record this child will persist — it
                 // must satisfy the per-record ceiling HERE, before

@@ -102,7 +102,14 @@ fn main() {
                 .decrypt_append(&decoded, &frame, size, &mut plaintext, &mut auth)
                 .expect("authenticate")
                 .expect("fits");
-            std::hint::black_box(&plaintext[range]);
+            match range {
+                crypto::Decrypted::Appended(range) => {
+                    std::hint::black_box(&plaintext[range]);
+                }
+                crypto::Decrypted::Owned(bytes) => {
+                    std::hint::black_box(&bytes);
+                }
+            }
         }
         let dt = t0.elapsed().as_secs_f64();
         println!(

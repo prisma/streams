@@ -284,7 +284,7 @@ async fn r06_peer_target_is_bound_before_peer_resolution() {
                 "no-such-peer",
                 &desc,
                 &target,
-                0,
+                crate::application::read::ReadRange::open(0),
                 4096,
                 PRISMA_KEY
             )
@@ -299,7 +299,7 @@ async fn r06_peer_target_is_bound_before_peer_resolution() {
             "no-such-peer",
             &desc,
             &target,
-            0,
+            crate::application::read::ReadRange::open(0),
             4096,
             PRISMA_KEY
         )
