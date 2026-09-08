@@ -104,8 +104,6 @@ impl ServerConfig {
         if let Some(v) = env_parse(env, "HISTORY_CACHE_BYTES") {
             self.history.cache_bytes = v;
         }
-        self.history.canonical_span_cache =
-            env.get("EXPERIMENTAL_CANONICAL_SPAN_CACHE").as_deref() == Some("1");
         if env
             .get("HISTORY_COMPACTOR")
             .map(|v| v == "off")

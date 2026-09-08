@@ -522,7 +522,6 @@ impl ResolvedRead<'_> {
             },
             command.visibility,
         )
-        .for_descriptor(desc)
         .execute()
         .await
         .map_err(ReadFailure::Storage)?;

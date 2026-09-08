@@ -139,8 +139,6 @@ pub struct HistoryConfig {
     pub absorb_global_gathers: usize,
     /// HISTORY_CACHE_BYTES, default 32 MiB.
     pub cache_bytes: usize,
-    /// Experimental complete canonical span cache, default disabled; carved from cache_bytes.
-    pub canonical_span_cache: bool,
     /// HISTORY_COMPACTOR == "off", default false.
     pub compactor_off: bool,
     /// HISTORY_GC_INTERVAL_SECS (legacy alias
@@ -389,7 +387,6 @@ impl Default for HistoryConfig {
             },
             absorb_global_gathers: if cfg!(test) { 64 } else { 2 },
             cache_bytes: 32 * 1024 * 1024,
-            canonical_span_cache: false,
             compactor_off: false,
             gc_interval: Some(Duration::from_secs(600)),
         }

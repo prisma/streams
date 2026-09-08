@@ -17,12 +17,11 @@ PREFIX = '#![allow(dead_code, reason = "compiler fixture; compile both positive 
 IMPORTS = '''use crate::postings::{ValidatedRuns as Runs, RunWindow as Window};
 use crate::shard::record::CheckedFrame as Frame;
 use crate::application::read_batch::{PlainBatch as Batch, PlainPayload as Payload};
-use crate::history::span_cache::CipherSpan as Span;
 '''
 POSITIVE = '''
-fn controls(frame: &Frame, batch: &Batch, payload: &Payload, span: &Span) {
+fn controls(frame: &Frame, batch: &Batch, payload: &Payload) {
     let _view = frame.view(); let _records = batch.iter();
-    let _bytes = payload.as_ref(); let _frames = span.frames();
+    let _bytes = payload.as_ref();
     let owner = Runs::new(Vec::new()).unwrap();
     let window = Window::new(owner, 0, 0); assert_eq!(window.iter().count(), 0);
 }
@@ -39,8 +38,6 @@ CASES = [
  ('batch_mutate', 'E0616', 'fn batch_mutate(x: &mut Batch) { x.records.clear(); }'),
  ('payload_construct', 'E0451', 'fn payload_construct() { let _x = Payload { owner:bytes::Bytes::new(), range:0..0 }; }'),
  ('payload_mutate', 'E0616', 'fn payload_mutate(x: &mut Payload) { x.range = 0..0; }'),
- ('span_construct', 'E0451', 'fn span_construct(x: Span) { let _x = Span { frames:Vec::new().into_boxed_slice(), ..x }; }'),
- ('span_mutate', 'E0616', 'fn span_mutate(x: &mut Span) { x.frames = Vec::new().into_boxed_slice(); }'),
 ]
 TYPED = [
  ('hold_window', 'clippy::await_holding_invalid_type', 'async fn hold_window(window: Window) { tokio::task::yield_now().await; drop(window); }'),

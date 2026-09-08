@@ -651,11 +651,7 @@ impl crate::config::ServerConfig {
     /// preflight through [`resolve_effective_capacity`].
     pub fn validate(self) -> Result<ValidatedServerConfig, ConfigError> {
         let mut f = Findings::default();
-        if self.history.canonical_span_cache
-            && self.history.cache_bytes < crate::history::span_cache::CAPACITY
-        {
-            f.err("EXPERIMENTAL_CANONICAL_SPAN_CACHE requires HISTORY_CACHE_BYTES >= 2097152; its budget is carved from that total");
-        }
+
         self.validate_engine_and_profile(&mut f);
         let (tenant, cell_id) = self.validate_identity(&mut f);
         let initial_shards = self.validate_topology_and_ceilings(&mut f);

@@ -1,5 +1,7 @@
 # O5 source candidate: complete encrypted canonical intervals
 
+> Historical source contract. O5 was removed after its failed performance/resource screen. See the [final disposition](../final-disposition.md); this document describes the pinned experiment revision only.
+
 Status: disabled experimental candidate. Source and performance acceptance remain open. `EXPERIMENTAL_CANONICAL_SPAN_CACHE=1` selects it explicitly. The validated configuration requires at least 2 MiB of `HISTORY_CACHE_BYTES`; enabling it deducts exactly 2 MiB from the existing Foyer block-cache capacity. The default remains disabled. Foyer retains its block role; it does not provide this exact-interval proof or tenant/lifetime accounting.
 
 A ready entry proves that one canonical scan reached EOS over the exact `[from,to)` below the captured remote-durable absorbed frontier. It contains every structurally checked encrypted row, including filtered misses, and therefore proves negative space between those rows. Cache hits run the same scan-byte admission and exact-key selection policy as misses. Presented-key authentication, decompression, plaintext admission, current authorization and descriptor resolution remain request work. The cache stores neither plaintext nor an authorization result. Structurally valid ciphertext with an invalid AEAD tag still fails authentication on every response.

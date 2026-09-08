@@ -184,7 +184,6 @@ impl ReadService {
             budget,
             crate::shard::Deliver::Durable,
         )
-        .for_descriptor(desc)
         .execute()
         .await
         .map_err(ReadFailure::Storage)

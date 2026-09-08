@@ -1,5 +1,7 @@
 # Read follow-up report — 8 September 2026
 
+> Historical experiment report. The current implementation decision is [permanent read paths and cache removal](../final-disposition.md). The O5 runtime and switch described below have been removed; measurements remain tied to their original revisions.
+
 **Decision: keep PR #19 in draft and retain the performance hold.** The two source blockers are corrected in separate commits, compressed storage no longer incurs the extra aggregate plaintext copy, the ring walk is consolidated, and a reviewable O5 implementation is present behind a default-disabled flag. The matched screen establishes a substantial hot-history gain. It does **not** establish overall parity: tenant-pressure medians, resource guardrails and full HTTP replay remain unacceptable or inconclusive. The larger ten-block × 10,000-read acceptance campaign was not advanced.
 
 These are author implementation and measurement results. They do not grant independent source acceptance, cryptographic approval, workload-specific tolerance for regressions, merge approval or deployment approval. The prior R17-B and V01 scoped dispositions remain unchanged.

@@ -1,24 +1,20 @@
-//! O5 through the actual product reader and delete lifecycle.
+//! Repeated history reads retain key checks and delete/recreate isolation.
 use super::fixture_http::{HttpRigOptions, engine_shutdown, http_rig_build};
 use super::fixture_requests::{PRISMA_KEY, preq};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_storage::{mem, wait_all_absorbed};
-use std::{sync::Arc, time::Duration};
+use std::time::Duration;
+#[expect(
+    clippy::too_many_lines,
+    reason = "history lifecycle regression; one stream is read, deleted and recreated to prove the incarnation transition; splitting the scenario would disconnect its before/after assertions"
+)]
 #[tokio::test(flavor = "multi_thread", worker_threads = 4)]
-async fn o5_http_history_cache_keeps_key_checks_and_delete_recreate_isolation() {
-    let history = Arc::new(crate::history::HistoryResources::new(
-        &crate::config::HistoryConfig {
-            canonical_span_cache: true,
-            ..Default::default()
-        },
-        1 << 16,
-    ));
+async fn history_reads_keep_key_checks_and_delete_recreate_isolation() {
     let rig = http_rig_build(
         mem(),
         RigRuntime::first(),
         HttpRigOptions {
             shard: crate::shard::ShardConfig {
-                shared_history: Some(history.clone()),
                 tail_ring_bytes: 0,
                 ..Default::default()
             },
@@ -33,8 +29,8 @@ async fn o5_http_history_cache_keeps_key_checks_and_delete_recreate_isolation() 
     )
     .await;
     let headers = [("prisma-encryption-key", PRISMA_KEY)];
-    let create = "/v1/streams/cache-lifecycle";
-    let records = "/v1/streams/cache-lifecycle/records?routingKey=hot";
+    let create = "/v1/streams/history-lifecycle";
+    let records = "/v1/streams/history-lifecycle/records?routingKey=hot";
     assert_eq!(
         preq(
             rig.addr,
@@ -51,7 +47,7 @@ async fn o5_http_history_cache_keeps_key_checks_and_delete_recreate_isolation() 
         preq(
             rig.addr,
             "POST",
-            "/v1/streams/cache-lifecycle/records",
+            "/v1/streams/history-lifecycle/records",
             &[
                 ("prisma-encryption-key", PRISMA_KEY),
                 ("prisma-routing-key", "hot")
@@ -65,7 +61,7 @@ async fn o5_http_history_cache_keeps_key_checks_and_delete_recreate_isolation() 
     let desc = rig
         .state
         .registry
-        .get(&rig.state.deployment.raw_adapter_sref("cache-lifecycle"))
+        .get(&rig.state.deployment.raw_adapter_sref("history-lifecycle"))
         .await
         .unwrap()
         .unwrap();
@@ -81,10 +77,6 @@ async fn o5_http_history_cache_keeps_key_checks_and_delete_recreate_isolation() 
         assert_eq!(body, b"old payload");
         assert_eq!(h.get("prisma-up-to-date").map(String::as_str), Some("true"));
     }
-    assert!(
-        history.spans.reserved() > 65536,
-        "actual descriptor-bound product reads must populate cache"
-    );
     let wrong = preq(
         rig.addr,
         "GET",
@@ -102,11 +94,6 @@ async fn o5_http_history_cache_keeps_key_checks_and_delete_recreate_isolation() 
         preq(rig.addr, "DELETE", create, &headers, b"").await.0,
         200 | 204
     ));
-    assert_eq!(
-        history.spans.reserved(),
-        65536,
-        "delete must invalidate populated project proofs"
-    );
     assert_ne!(preq(rig.addr, "GET", records, &headers, b"").await.0, 200);
     assert_eq!(
         preq(
@@ -124,7 +111,7 @@ async fn o5_http_history_cache_keeps_key_checks_and_delete_recreate_isolation() 
         preq(
             rig.addr,
             "POST",
-            "/v1/streams/cache-lifecycle/records",
+            "/v1/streams/history-lifecycle/records",
             &[
                 ("prisma-encryption-key", PRISMA_KEY),
                 ("prisma-routing-key", "hot")

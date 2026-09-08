@@ -26,7 +26,6 @@ pub(crate) struct ReadPlan<'a> {
     selector: Option<&'a str>,
     max_bytes: usize,
     visibility: Deliver,
-    descriptor: Option<&'a crate::registry::StreamDesc>,
 }
 
 impl<'a> ReadPlan<'a> {
@@ -50,12 +49,7 @@ impl<'a> ReadPlan<'a> {
             selector,
             max_bytes,
             visibility,
-            descriptor: None,
         }
-    }
-    pub(crate) fn for_descriptor(mut self, descriptor: &'a crate::registry::StreamDesc) -> Self {
-        self.descriptor = Some(descriptor);
-        self
     }
     pub(crate) async fn execute(self) -> Result<ReadPage, String> {
         execute_segment(self).await
@@ -135,7 +129,6 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
         selector: key_filter,
         max_bytes,
         visibility: deliver,
-        descriptor,
     } = plan;
     let scan_from = range.from;
     // The sub-stream identity (AAD + history-DB path): for total-order
@@ -197,12 +190,9 @@ async fn execute_segment(plan: ReadPlan<'_>) -> Result<ReadPage, String> {
                 return Err("unsupported_storage_layout: v1 history".into());
             }
             let completed = decode_history_range(
-                &ReadPlan {
-                    descriptor,
-                    ..ReadPlan::segment(
-                        key, epoch, handle, engine, range, key_filter, max_bytes, deliver,
-                    )
-                },
+                &ReadPlan::segment(
+                    key, epoch, handle, engine, range, key_filter, max_bytes, deliver,
+                ),
                 HistoryRange {
                     route,
                     identity: hash,
@@ -518,7 +508,6 @@ pub(crate) async fn read_stitched(
             budget.remaining(),
             crate::shard::Deliver::Durable,
         )
-        .for_descriptor(d)
         .execute()
         .await?;
         // CONSUMED progress (finding 6): read_merged's `last` advances
@@ -742,7 +731,7 @@ async fn decode_history_range(
         .await
         .map_err(|e| e.to_string())?;
     let (frames, scan_last, completed) = match plan.selector {
-        Some(rk) => crate::history::read_history2_keyed_scoped(
+        Some(rk) => crate::history::read_history2_keyed_cached(
             &plan.engine.postings_cache,
             &part,
             crate::crypto::RouteHash(range.route),
@@ -752,16 +741,6 @@ async fn decode_history_range(
             upto,
             range.absorbed,
             budget.remaining().min(MAX_SCAN_BATCH_BYTES),
-            plan.descriptor.and_then(|d| {
-                plan.engine.history_resources.spans.scope(
-                    d,
-                    plan.engine,
-                    &part,
-                    plan.epoch,
-                    range.route,
-                    range.identity,
-                )
-            }),
         )
         .await
         .map_err(|e| e.to_string())?,

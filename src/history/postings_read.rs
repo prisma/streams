@@ -1,14 +1,14 @@
 //! Synchronous postings planning followed by an owner-free scan future.
-use super::{Db, READ_SPANS_MAX, RouteHash, SegmentHash, canonical_span, span_cache};
+use super::{Db, READ_SPANS_MAX, RouteHash, SegmentHash, canonical_span};
 use std::sync::Arc;
 
-/// Shared span planner + executor (spec §8): plans against
-/// [.., provable_to), executes each span as ONE canonical range scan
-/// with exact-key verification, and reports completion relative to the
-/// FULL requested `upto` (provable_to < upto is always a partial).
 #[expect(
     clippy::too_many_arguments,
-    reason = "history planner; explicit physical and cursor bounds; an options bag would hide their distinct contracts"
+    reason = "history planner; explicit physical coordinates and separate request/proof bounds; an options bag would hide their distinct contracts"
+)]
+#[expect(
+    clippy::excessive_nesting,
+    reason = "postings executor; synchronous planning must end before constructing the scan future; separating scan locals into context helpers would obscure ordered early termination"
 )]
 pub(super) fn execute_postings_plan<'a>(
     part: &'a Arc<Db>,
@@ -19,42 +19,6 @@ pub(super) fn execute_postings_plan<'a>(
     provable_to: u64,
     upto: u64,
     max_bytes: usize,
-) -> impl std::future::Future<
-    Output = anyhow::Result<(Vec<crate::shard::record::CheckedFrame>, Option<u64>, bool)>,
-> + 'a {
-    execute_postings_plan_scoped(
-        part,
-        route,
-        inc,
-        rk,
-        window,
-        provable_to,
-        upto,
-        max_bytes,
-        None,
-        0,
-    )
-}
-
-#[expect(
-    clippy::too_many_arguments,
-    reason = "history planner; explicit physical coordinates and separate request/proof bounds; an options bag would hide their distinct contracts"
-)]
-#[expect(
-    clippy::excessive_nesting,
-    reason = "postings executor; synchronous planning must end before constructing the scan future; separating scan locals into context helpers would obscure ordered early termination"
-)]
-pub(super) fn execute_postings_plan_scoped<'a>(
-    part: &'a Arc<Db>,
-    route: RouteHash,
-    inc: SegmentHash,
-    rk: &'a str,
-    window: crate::postings::RunWindow,
-    provable_to: u64,
-    upto: u64,
-    max_bytes: usize,
-    scope: Option<Arc<span_cache::Scope>>,
-    absorbed: u64,
 ) -> impl std::future::Future<
     Output = anyhow::Result<(Vec<crate::shard::record::CheckedFrame>, Option<u64>, bool)>,
 > + 'a {
@@ -84,19 +48,9 @@ pub(super) fn execute_postings_plan_scoped<'a>(
             use futures_util::StreamExt;
             let mut results = futures_util::stream::iter(plan.spans.iter().copied().map(|span| {
                 let part = part.clone();
-                let scope = scope.clone();
                 async move {
-                    let result = canonical_span::read(
-                        &part,
-                        route,
-                        inc,
-                        rk,
-                        span,
-                        max_bytes,
-                        scope.as_ref(),
-                        absorbed,
-                    )
-                    .await?;
+                    let result =
+                        canonical_span::read(&part, route, inc, rk, span, max_bytes).await?;
                     anyhow::Ok((span, result.hits, result.truncated, result.last))
                 }
             }))

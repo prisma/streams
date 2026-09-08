@@ -207,6 +207,14 @@
       "path": "tools/quality-invariants/src/lib.rs",
       "reason": "Invariant harness; compiles the canonical private production owner and its existing tests directly; no copied implementation or public verification API.",
       "syntax": "path = \"../../../src/tenant.rs\""
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::read_history_lifecycle",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Retained real HTTP history authentication and delete/recreate regression after removal of the experimental span cache; compiler and full DST suite exercise the module.",
+      "syntax": "path = \"tests/read_history_lifecycle.rs\""
     }
   ]
 }

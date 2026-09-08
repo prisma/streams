@@ -409,13 +409,6 @@
     {
       "category": "by-path-module",
       "count": 1,
-      "owner": "crate::read_span_cache",
-      "path": "src/dst/dst_tests.rs",
-      "syntax": "path = \"tests/read_span_cache.rs\""
-    },
-    {
-      "category": "by-path-module",
-      "count": 1,
       "owner": "crate::read_subset_retention",
       "path": "src/dst/dst_tests.rs",
       "syntax": "path = \"tests/read_subset_retention.rs\""
@@ -2068,22 +2061,8 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate::read_history2_keyed_scoped",
-      "path": "src/history.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::read",
       "path": "src/history/canonical_span.rs",
-      "syntax": "allow (clippy :: too_many_arguments)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
-      "owner": "crate::SpanCache::scope",
-      "path": "src/history/span_cache.rs",
       "syntax": "allow (clippy :: too_many_arguments)"
     },
     {
@@ -4702,20 +4681,6 @@
       "count": 1,
       "owner": "crate",
       "path": "src/history/postings_validation_tests.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate",
-      "path": "src/history/span_cache/capture.rs",
-      "syntax": "compiler-resolved import; syntax cannot infer exports"
-    },
-    {
-      "category": "unresolved-glob",
-      "count": 1,
-      "owner": "crate",
-      "path": "src/history/span_cache/tests.rs",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {

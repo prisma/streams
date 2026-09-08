@@ -8,7 +8,6 @@ PROOFS = {
     'src/shard/record/checked.rs': ('crate::CheckedFrame::',),
     'src/postings/validated.rs': ('crate::ValidatedRuns::', 'crate::RunWindow::'),
     'src/application/read_batch.rs': ('crate::PlainPayload::', 'crate::PlainBatch::'),
-    'src/history/span_cache/capture.rs': ('crate::CipherSpan::',),
 }
 # Known expression DSLs do not define service owners. Still counted/reported;
 # typed Clippy sees their expansions. Every other macro needs an explicit entry.

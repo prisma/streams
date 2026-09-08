@@ -197,11 +197,6 @@ pub(super) fn release_fork_ref(
             state.quotas.release_stream(src_ref.project_id());
         }
 
-        state
-            .runtime
-            .history
-            .spans
-            .invalidate_project(src_ref.project_id());
         state.registry.invalidate(&src_ref);
         #[cfg(test)]
         if tombstoned && crate::failpoints::should_stop_after_tombstone(src_ref.name().as_str()) {
@@ -367,11 +362,6 @@ fn delete_lifecycle(
             outcome,
             MutationResult::Applied(DeleteTransition::Tombstoned)
         );
-        state
-            .runtime
-            .history
-            .spans
-            .invalidate_project(sref.project_id());
         state.registry.invalidate(&sref);
         if !hard_deleted {
             return Ok(());

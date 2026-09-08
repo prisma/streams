@@ -21,6 +21,8 @@ def function(s,name):
   end+=1
  return s[start:end]
 modern=(a.destination/'src/application/read_batch.rs').exists()
+if modern and not (a.destination/'src/history/span_cache.rs').exists():
+ raise SystemExit('Historical O5 harness only: use the recorded runtime eb5ab8ad7a1459b6c679b72bf342a3af73e0bede; current production has no experimental cache or switch.')
 imports='''use super::fixture_http::{engine_shutdown,http_rig_build,HttpRigOptions};
 use super::fixture_runtime::RigRuntime;
 use super::fixture_requests::{PRISMA_KEY,preq};

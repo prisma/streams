@@ -11,8 +11,7 @@
 
 mod canonical_span;
 mod postings_read;
-use postings_read::{execute_postings_plan, execute_postings_plan_scoped};
-pub(crate) mod span_cache;
+use postings_read::execute_postings_plan;
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::{Duration, Instant};
@@ -211,7 +210,6 @@ pub fn worst_frame_transient_for(body_limit: usize) -> usize {
 pub struct HistoryResources {
     pub budget: AbsorbBudget,
     pub cache: Arc<slatedb::db_cache::foyer::FoyerCache>,
-    pub(crate) spans: span_cache::SpanCache,
     pub paused: std::sync::atomic::AtomicBool,
     pub packing_bytes: usize,
     pub worst_frame_transient: usize,
@@ -239,18 +237,14 @@ impl HistoryResources {
             .absorb_global_budget_bytes
             .max(worst_frame_transient)
             .min(u32::MAX as usize);
-        let spans = span_cache::SpanCache::new(
-            cfg.canonical_span_cache && cfg.cache_bytes >= span_cache::CAPACITY,
-        );
         Self {
             budget: AbsorbBudget::new(capacity, cfg.absorb_global_gathers),
             cache: Arc::new(slatedb::db_cache::foyer::FoyerCache::new_with_opts(
                 slatedb::db_cache::foyer::FoyerCacheOptions {
-                    max_capacity: cfg.cache_bytes.saturating_sub(spans.capacity()) as u64,
+                    max_capacity: cfg.cache_bytes as u64,
                     ..Default::default()
                 },
             )),
-            spans,
             paused: std::sync::atomic::AtomicBool::new(cfg.absorb_pause_initial),
             packing_bytes: packing_bytes.min(capacity / ABSORB_BUILD_MULTIPLIER),
             worst_frame_transient,
@@ -1470,9 +1464,6 @@ async fn read_history2_keyed(
 /// `provable_to < upto` (a load window that could not reach the whole
 /// range) yields an honest partial at the proven boundary.
 #[allow(clippy::too_many_arguments)]
-// Public unscoped library compatibility entry; the server's descriptor-bound
-// path calls read_history2_keyed_scoped. Canonical regression tests use both.
-#[cfg_attr(not(test), allow(dead_code))]
 pub async fn read_history2_keyed_cached(
     cache: &Arc<crate::postings_cache::PostingsCache>,
     part: &Arc<Db>,
@@ -1483,25 +1474,6 @@ pub async fn read_history2_keyed_cached(
     upto: u64,
     absorbed: u64,
     max_bytes: usize,
-) -> anyhow::Result<(Vec<crate::shard::record::CheckedFrame>, Option<u64>, bool)> {
-    read_history2_keyed_scoped(
-        cache, part, route, inc, rk, from, upto, absorbed, max_bytes, None,
-    )
-    .await
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) async fn read_history2_keyed_scoped(
-    cache: &Arc<crate::postings_cache::PostingsCache>,
-    part: &Arc<Db>,
-    route: RouteHash,
-    inc: SegmentHash,
-    rk: &str,
-    from: u64,
-    upto: u64,
-    absorbed: u64,
-    max_bytes: usize,
-    scope: Option<Arc<span_cache::Scope>>,
 ) -> anyhow::Result<(Vec<crate::shard::record::CheckedFrame>, Option<u64>, bool)> {
     use std::sync::atomic::Ordering::Relaxed;
     if from >= upto {
@@ -1517,19 +1489,7 @@ pub(crate) async fn read_history2_keyed_scoped(
             read_history2_keyed_envelope(part, route, inc, rk, from, upto, max_bytes).await
         }
         crate::postings_cache::CacheRuns::Runs { runs, provable_to } => {
-            execute_postings_plan_scoped(
-                part,
-                route,
-                inc,
-                rk,
-                runs,
-                provable_to,
-                upto,
-                max_bytes,
-                scope,
-                absorbed,
-            )
-            .await
+            execute_postings_plan(part, route, inc, rk, runs, provable_to, upto, max_bytes).await
         }
     }
 }
