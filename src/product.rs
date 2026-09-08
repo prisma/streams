@@ -3404,13 +3404,12 @@ pub(crate) fn verify_internal_target(
         return Err(stale("segment"));
     }
     let identity = desc.dynamic_segment_identity(seg_id);
-    if let Some(want_id) = h("streams-internal-identity") {
-        let matches = crate::crypto::unhex(&want_id)
-            .and_then(|v| <[u8; 16]>::try_from(v).ok())
-            .is_some_and(|w| w == identity);
-        if !matches {
-            return Err(stale("identity"));
-        }
+    let matches = h("streams-internal-identity")
+        .and_then(|value| crate::crypto::unhex(&value))
+        .and_then(|value| <[u8; 16]>::try_from(value).ok())
+        .is_some_and(|value| value == identity);
+    if !matches {
+        return Err(stale("identity"));
     }
     Ok((seg_id, identity))
 }
