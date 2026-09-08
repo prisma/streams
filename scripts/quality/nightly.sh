@@ -6,8 +6,8 @@ HOST=$(rustc "+$NIGHTLY" -vV | sed -n 's/^host: //p')
 [[ -n "$HOST" ]]
 case "${1:?expected miri, corpus, or fuzz}" in
   miri)
-    cargo "+$NIGHTLY" miri test --locked --lib retained_bytes::tests
-    cargo "+$NIGHTLY" miri test --locked --lib application::read_batch::tests::o2a_
+    cargo "+$NIGHTLY" miri test --locked -p streams-quality-invariants --lib retained_bytes::tests
+    cargo "+$NIGHTLY" miri test --locked -p streams-quality-invariants --lib application::read_batch::tests::o2a_
     ;;
   corpus)
     cargo "+$NIGHTLY" fuzz run postings --target "$HOST" fuzz/corpus/postings -- -runs=0

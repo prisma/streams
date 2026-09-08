@@ -42,3 +42,8 @@ runtime; this exact package has a named license exception. The fuzz package's
 machete exclusions name only dependencies imported by the actual production
 `crypto`/`tenant` source files outside its package directory. Compiler checks
 prove those imports are required; the exclusions do not apply to service code.
+
+The private-owner invariant harness has the same narrow machete treatment for
+dependencies imported by its `#[path]` production modules and their real tests.
+It excludes SlateDB/server startup dependencies so compatible Miri assertions
+run on Linux; it does not replace those dependencies in the shipped server.

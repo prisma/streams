@@ -8,35 +8,6 @@ on:
 permissions:
   contents: read
 jobs:
-  adoption-platform-inventory:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-        with:
-          fetch-depth: 0
-      - uses: ./.github/actions/rust-toolchain
-      - uses: Swatinem/rust-cache@v2
-      - name: Capture missing Linux adoption inventory from the immutable old commit
-        id: capture
-        run: |
-          set -euo pipefail
-          if [[ ! -f docs/quality/legacy-diagnostics-linux.json ]]; then
-            cargo build --locked -p streams-quality-syntax
-            python3 scripts/quality/capture_legacy.py --out target/adoption-platform/legacy-diagnostics-linux.json
-            cargo clippy --locked --workspace --all-targets --message-format=json > target/adoption-platform/current.jsonl
-            python3 scripts/quality/diagnostic_report.py --clippy target/adoption-platform/current.jsonl --out target/adoption-platform/current-diagnostic-identities.json
-            echo "created=true" >> "$GITHUB_OUTPUT"
-          fi
-      # Diagnostic identities/counts only. Raw compiler logs and binaries stay
-      # local to the runner and are not uploaded under the existing evidence hold.
-      - uses: actions/upload-artifact@v4
-        if: steps.capture.outputs.created == 'true'
-        with:
-          name: adoption-linux-diagnostic-identities
-          path: |
-            target/adoption-platform/legacy-diagnostics-linux.json
-            target/adoption-platform/current-diagnostic-identities.json
-          retention-days: 3
   quality:
     runs-on: ubuntu-latest
     steps:

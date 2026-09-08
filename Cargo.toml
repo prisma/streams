@@ -158,7 +158,7 @@ disallowed_methods = "warn"
 allow_attributes_without_reason = "warn"
 
 [workspace]
-members = ["tools/quality-syntax", "fuzz"]
+members = ["tools/quality-syntax", "tools/quality-invariants", "fuzz"]
 resolver = "3"
 
 [lints]

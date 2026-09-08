@@ -3036,6 +3036,24 @@ dependencies = [
 ]
 
 [[package]]
+name = "streams-quality-invariants"
+version = "0.1.0"
+dependencies = [
+ "aes-gcm",
+ "aes-gcm-siv",
+ "base64 0.22.1",
+ "bytes",
+ "futures-util",
+ "hkdf",
+ "hmac",
+ "proptest",
+ "serde",
+ "sha2",
+ "tokio",
+ "zstd",
+]
+
+[[package]]
 name = "streams-quality-syntax"
 version = "0.1.0"
 dependencies = [

@@ -44,6 +44,7 @@ CASES = [
 ]
 TYPED = [
  ('hold_window', 'clippy::await_holding_invalid_type', 'async fn hold_window(window: Window) { tokio::task::yield_now().await; drop(window); }'),
+ ('hold_refcell', 'clippy::await_holding_refcell_ref', 'async fn hold_refcell(cell: &std::cell::RefCell<()>) { let guard=cell.borrow(); tokio::task::yield_now().await; drop(guard); }'),
  ('hold_lock', 'clippy::await_holding_lock', 'async fn hold_lock(lock: &std::sync::Mutex<()>) { let guard=lock.lock().unwrap(); tokio::task::yield_now().await; drop(guard); }'),
  ('spawn_alias', 'clippy::disallowed_methods', 'fn spawn_alias() { use tokio::spawn as launch; let _task = launch(async {}); }'),
  ('blocking_alias', 'clippy::disallowed_methods', 'fn blocking_alias() { use tokio::task::{spawn_blocking as launch}; let _task = launch(|| ()); }'),
@@ -65,10 +66,12 @@ def copy_source(destination):
         root.write('\nmod quality_boundary_fixture;\n')
 
 
-def run(copy, out, name, content, mode, cases=()):
+def run(copy, out, name, content, mode, cases=(), tests=False):
     fixture = copy / 'src/quality_boundary_fixture.rs'
     fixture.write_text(content)
     command = ['cargo', mode, '--locked', '--lib', '--message-format=json']
+    if tests:
+        command.append('--tests')
     with (out / f'{name}.jsonl').open('w') as stdout, (out / f'{name}.stderr').open('w') as stderr:
         result = subprocess.run(command, cwd=copy, stdout=stdout, stderr=stderr)
     diagnostics = [entry['message'] for entry in map(json.loads, (out / f'{name}.jsonl').read_text().splitlines())
@@ -113,10 +116,14 @@ def main():
         results.append(run(copy, out, phase, PREFIX + IMPORTS + '\n'.join(c[2] for c in cases), 'check', cases))
     typed = PREFIX + '#![deny(clippy::disallowed_methods)]\n' + IMPORTS
     results.append(run(copy, out, 'typed-effects', typed + '\n'.join(c[2] for c in TYPED), 'clippy', TYPED))
+    test_cases = [('test_spawn_alias', 'clippy::disallowed_methods',
+                   '#[cfg(test)] fn test_spawn_alias() { use tokio::spawn as launch; let _task = launch(async {}); }')]
+    results.append(run(copy, out, 'test-cfg-effect', typed + test_cases[0][2], 'clippy', test_cases, tests=True))
+    results.append(run(copy, out, 'test-cfg-positive', PREFIX + IMPORTS + '#[cfg(test)]\n' + POSITIVE, 'clippy', tests=True))
     # Positive control after negatives: catches a stale/cached failing artifact.
     results.append(run(copy, out, 'positive-after', PREFIX + IMPORTS + POSITIVE, 'clippy'))
     write_json(out / 'summary.json', results)
-    print(f'compiler fixtures: OK ({len(CASES)} privacy + {len(TYPED)} typed violations; two legitimate controls)')
+    print(f'compiler fixtures: OK ({len(CASES)} privacy + {len(TYPED) + 1} typed violations; three legitimate controls)')
 
 
 if __name__ == '__main__':
