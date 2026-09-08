@@ -26,7 +26,7 @@ use std::time::{Duration, Instant};
 use slatedb::Db;
 
 use crate::crypto::{RouteHash, RoutingKeyHash, SegmentHash};
-use crate::postings::{AbsRun, BUCKET_OFFSETS, RunWindow};
+use crate::postings::{AbsRun, BUCKET_OFFSETS, RunWindow, ValidatedRuns};
 
 /// Default PROCESS-WIDE decoded-byte budget (spec §7.1; review finding
 /// 7: one budget for the whole process — engines share one cache in
@@ -63,7 +63,7 @@ pub struct PostingsSlice {
     /// The index provably covers [covered_from, indexed_to_offset):
     /// runs at or past this offset may exist but were not loaded.
     pub indexed_to_offset: u64,
-    pub runs: Arc<[AbsRun]>,
+    pub runs: ValidatedRuns,
     pub decoded_bytes: usize,
 }
 
@@ -192,6 +192,36 @@ impl PostingsCache {
         if chunk_to <= chunk_from {
             return;
         }
+        // Validate the entire install before publishing its absence/coverage
+        // frontier. Rejected source data cannot strengthen any warm proof.
+        let mut seen = std::collections::HashSet::new();
+        let admitted: Option<Vec<_>> = per_key
+            .into_iter()
+            .map(|(key, runs)| {
+                if !seen.insert(key) {
+                    return None;
+                }
+                let runs = ValidatedRuns::new(runs)?;
+                if runs
+                    .last()
+                    .is_some_and(|r| r.start + r.count as u64 > chunk_to)
+                {
+                    return None;
+                }
+                Some((key, runs))
+            })
+            .collect();
+        let Some(per_key) = admitted else {
+            let mut g = self.inner.lock().unwrap();
+            g.warm.remove(&inc.0);
+            let victims: Vec<_> = g.slices.keys().filter(|k| k.0 == inc.0).copied().collect();
+            for key in victims {
+                if let Some(entry) = g.slices.remove(&key) {
+                    g.total_bytes -= entry.slice.decoded_bytes;
+                }
+            }
+            return;
+        };
         let now = Instant::now();
         let mut installs = 0u64;
         let mut extends = 0u64;
@@ -271,41 +301,13 @@ impl PostingsCache {
                     if !bridgeable {
                         continue;
                     }
-                    let mut merged: Vec<AbsRun> = s.runs.to_vec();
-                    let cut = s.indexed_to_offset;
-                    // Round-13 CODE-RED: a run STRADDLING the cut must be
-                    // SPLIT, never dropped — filtering on r.start >= cut
-                    // discarded the [cut, end) tail of a straddler while
-                    // the slice still claimed indexed_to = chunk_to, so
-                    // every key whose match run crossed a prior
-                    // extension boundary lost that tail from the proof
-                    // FOREVER (the keyed history read then served a
-                    // provably-covered gap: 11 durable records lost in
-                    // field leg A1v2; cut_resume_never_skips_a_durable_
-                    // record reproduces in ~70 s).
-                    let fresh: Vec<AbsRun> = runs
-                        .into_iter()
-                        .filter_map(|r| {
-                            let end = r.start + r.count as u64;
-                            if end <= cut {
-                                None
-                            } else if r.start >= cut {
-                                Some(r)
-                            } else {
-                                Some(AbsRun {
-                                    start: cut,
-                                    count: (end - cut) as u32,
-                                    // The tail keeps the whole run's
-                                    // byte weight (a safe OVER-estimate
-                                    // for the scan planner) and an
-                                    // unmeasured seam before it.
-                                    matching_bytes: r.matching_bytes,
-                                    gap_bytes_before: crate::postings::GAP_UNKNOWN,
-                                })
-                            }
-                        })
-                        .collect();
-                    crate::postings::append_page_runs(&mut merged, fresh);
+                    let Some(merged) = s.runs.extend_after(&runs, s.indexed_to_offset) else {
+                        // A failed seam does not install a stronger frontier.
+                        if let Some(w) = g.warm.get_mut(&inc.0) {
+                            w.clean = false;
+                        }
+                        continue;
+                    };
                     let decoded =
                         merged.len() * std::mem::size_of::<AbsRun>() + ENTRY_OVERHEAD_BYTES;
                     let slice = Arc::new(PostingsSlice {
@@ -313,7 +315,7 @@ impl PostingsCache {
                         last_bucket_exclusive: chunk_to.div_ceil(BUCKET_OFFSETS),
                         covered_from: s.covered_from,
                         indexed_to_offset: chunk_to,
-                        runs: merged.into(),
+                        runs: merged,
                         decoded_bytes: decoded,
                     });
                     g.total_bytes = g.total_bytes + decoded - s.decoded_bytes;
@@ -336,7 +338,7 @@ impl PostingsCache {
                         last_bucket_exclusive: chunk_to.div_ceil(BUCKET_OFFSETS),
                         covered_from: fresh_from,
                         indexed_to_offset: chunk_to,
-                        runs: runs.into(),
+                        runs,
                         decoded_bytes: decoded,
                     });
                     g.total_bytes += decoded;
@@ -481,7 +483,7 @@ impl PostingsCache {
                     }
                     let pt = provable_to.min(upto);
                     return Ok(CacheRuns::Runs {
-                        runs: RunWindow::new(runs.into(), from, pt),
+                        runs: RunWindow::new(runs, from, pt),
                         provable_to: pt,
                     });
                 }
@@ -558,7 +560,7 @@ impl PostingsCache {
                 }
                 let pt = provable_to.min(upto);
                 return Ok(CacheRuns::Runs {
-                    runs: RunWindow::new(runs.into(), from, pt),
+                    runs: RunWindow::new(runs, from, pt),
                     provable_to: pt,
                 });
             }
@@ -572,7 +574,7 @@ impl PostingsCache {
         }
         let pt = provable_to.min(upto);
         Ok(CacheRuns::Runs {
-            runs: RunWindow::new(runs.into(), from, pt),
+            runs: RunWindow::new(runs, from, pt),
             provable_to: pt,
         })
     }
@@ -608,73 +610,63 @@ impl PostingsCache {
             if let Ok((new_runs, _enc, provable_to, corrupt)) = res
                 && !corrupt
             {
-                let (runs, first_bucket, covered_from, decoded) = match &existing {
-                    Some(s) if s.first_bucket <= want_bucket => {
-                        // Forward extension: append past indexed_to.
-                        let mut merged: Vec<AbsRun> = s.runs.to_vec();
-                        let cut = s.indexed_to_offset;
-                        let fresh: Vec<AbsRun> = new_runs
-                            .iter()
-                            .copied()
-                            .filter(|r| r.start >= cut)
-                            .collect();
-                        crate::postings::append_page_runs(&mut merged, fresh);
-                        let bytes =
-                            merged.len() * std::mem::size_of::<AbsRun>() + ENTRY_OVERHEAD_BYTES;
-                        (merged, s.first_bucket, s.covered_from, bytes)
-                    }
-                    _ => {
-                        let bytes =
-                            new_runs.len() * std::mem::size_of::<AbsRun>() + ENTRY_OVERHEAD_BYTES;
-                        // Store loads prove coverage at bucket
-                        // granularity: every bucket from start_bucket
-                        // was scanned in full.
-                        (new_runs, start_bucket, start_bucket * BUCKET_OFFSETS, bytes)
-                    }
+                let admitted = match &existing {
+                    Some(s) if s.first_bucket <= want_bucket => s
+                        .runs
+                        .extend_after(&new_runs, s.indexed_to_offset)
+                        .map(|runs| (runs, s.first_bucket, s.covered_from)),
+                    _ => Some((
+                        new_runs,
+                        start_bucket,
+                        start_bucket.saturating_mul(BUCKET_OFFSETS),
+                    )),
                 };
-                let old_bytes = g
-                    .slices
-                    .get(&key)
-                    .map(|e| e.slice.decoded_bytes)
-                    .unwrap_or(0);
-                let slice = Arc::new(PostingsSlice {
-                    first_bucket,
-                    last_bucket_exclusive: provable_to.div_ceil(BUCKET_OFFSETS),
-                    covered_from,
-                    indexed_to_offset: provable_to,
-                    runs: runs.into(),
-                    decoded_bytes: decoded,
-                });
-                g.total_bytes = g.total_bytes + decoded - old_bytes;
-                g.slices.insert(
-                    key,
-                    Entry {
-                        slice,
-                        last_used: Instant::now(),
-                    },
-                );
-                // Weight eviction: drop least-recent entries (never
-                // the one just inserted) until the budget holds.
-                // Every victim poisons its segment's warm absence
-                // proof (see install_chunk).
-                while g.total_bytes > cache.max_bytes && g.slices.len() > 1 {
-                    let victim = g
+                if let Some((runs, first_bucket, covered_from)) = admitted {
+                    let decoded = runs.len() * std::mem::size_of::<AbsRun>() + ENTRY_OVERHEAD_BYTES;
+                    let old_bytes = g
                         .slices
-                        .iter()
-                        .filter(|(k, _)| **k != key)
-                        .min_by_key(|(_, e)| e.last_used)
-                        .map(|(k, _)| *k);
-                    match victim {
-                        Some(v) => {
-                            if let Some(e) = g.slices.remove(&v) {
-                                g.total_bytes -= e.slice.decoded_bytes;
-                                cache.evictions.fetch_add(1, Ordering::Relaxed);
+                        .get(&key)
+                        .map(|e| e.slice.decoded_bytes)
+                        .unwrap_or(0);
+                    let slice = Arc::new(PostingsSlice {
+                        first_bucket,
+                        last_bucket_exclusive: provable_to.div_ceil(BUCKET_OFFSETS),
+                        covered_from,
+                        indexed_to_offset: provable_to,
+                        runs,
+                        decoded_bytes: decoded,
+                    });
+                    g.total_bytes = g.total_bytes + decoded - old_bytes;
+                    g.slices.insert(
+                        key,
+                        Entry {
+                            slice,
+                            last_used: Instant::now(),
+                        },
+                    );
+                    // Weight eviction: drop least-recent entries (never
+                    // the one just inserted) until the budget holds.
+                    // Every victim poisons its segment's warm absence
+                    // proof (see install_chunk).
+                    while g.total_bytes > cache.max_bytes && g.slices.len() > 1 {
+                        let victim = g
+                            .slices
+                            .iter()
+                            .filter(|(k, _)| **k != key)
+                            .min_by_key(|(_, e)| e.last_used)
+                            .map(|(k, _)| *k);
+                        match victim {
+                            Some(v) => {
+                                if let Some(e) = g.slices.remove(&v) {
+                                    g.total_bytes -= e.slice.decoded_bytes;
+                                    cache.evictions.fetch_add(1, Ordering::Relaxed);
+                                }
+                                if let Some(w) = g.warm.get_mut(&v.0) {
+                                    w.clean = false;
+                                }
                             }
-                            if let Some(w) = g.warm.get_mut(&v.0) {
-                                w.clean = false;
-                            }
+                            None => break,
                         }
-                        None => break,
                     }
                 }
             }
@@ -793,7 +785,7 @@ async fn load_runs(
     kh: RoutingKeyHash,
     start_bucket: u64,
     target_offset: u64,
-) -> anyhow::Result<(Vec<AbsRun>, u64, u64, bool)> {
+) -> anyhow::Result<(ValidatedRuns, u64, u64, bool)> {
     cache.index_loads.fetch_add(1, Ordering::Relaxed);
     let end_bucket = (target_offset.div_ceil(BUCKET_OFFSETS))
         .min(start_bucket + LOAD_MAX_BUCKETS)
@@ -808,22 +800,15 @@ async fn load_runs(
         .await?;
     while let Some(kv) = iter.next().await? {
         encoded += kv.value.len() as u64;
-        let bucket = u64::from_be_bytes(
-            kv.key[kv.key.len() - 16..kv.key.len() - 8]
-                .try_into()
-                .expect("postings bucket"),
-        );
-        let first = u64::from_be_bytes(
-            kv.key[kv.key.len() - 8..]
-                .try_into()
-                .expect("postings first"),
-        );
-        match crate::postings::decode_page_abs(first, &kv.value) {
-            Some(abs) => crate::postings::append_page_runs(&mut runs, abs),
-            None => {
-                cache.index_bytes_read.fetch_add(encoded, Ordering::Relaxed);
-                return Ok((Vec::new(), encoded, 0, true));
-            }
+        let Some(page) = crate::postings::decode_stored_page(route, inc, &kh, &kv.key, &kv.value)
+        else {
+            cache.index_bytes_read.fetch_add(encoded, Ordering::Relaxed);
+            return Ok((ValidatedRuns::empty(), encoded, 0, true));
+        };
+        let bucket = crate::postings::bucket_of(page[0].start);
+        if crate::postings::append_page_runs(&mut runs, page).is_none() {
+            cache.index_bytes_read.fetch_add(encoded, Ordering::Relaxed);
+            return Ok((ValidatedRuns::empty(), encoded, 0, true));
         }
         last_full_bucket = bucket;
         if encoded >= LOAD_MAX_ENCODED_BYTES {
@@ -837,11 +822,14 @@ async fn load_runs(
     let provable_to = if encoded >= LOAD_MAX_ENCODED_BYTES {
         runs.last()
             .map(|r| r.start + r.count as u64)
-            .unwrap_or((last_full_bucket + 1) * BUCKET_OFFSETS)
+            .unwrap_or((last_full_bucket + 1).saturating_mul(BUCKET_OFFSETS))
     } else {
-        end_bucket * BUCKET_OFFSETS
+        end_bucket.saturating_mul(BUCKET_OFFSETS)
     };
-    Ok((runs, encoded, provable_to, false))
+    match ValidatedRuns::new(runs) {
+        Some(runs) => Ok((runs, encoded, provable_to, false)),
+        None => Ok((ValidatedRuns::empty(), encoded, 0, true)),
+    }
 }
 
 #[cfg(test)]
@@ -1152,5 +1140,28 @@ mod straddle_tests {
                 "offset {q} lost by the straddle drop: {covered:?}"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod admission_tests {
+    use super::*;
+    #[test]
+    fn o4a_invalid_install_cannot_publish_a_warm_absence_proof() {
+        let cache = PostingsCache::new(1 << 20);
+        let inc = SegmentHash([87; 16]);
+        let kh = crate::postings::rk_hash("wanted");
+        let run = |start, count| AbsRun {
+            start,
+            count,
+            matching_bytes: 100,
+            gap_bytes_before: 0,
+        };
+        cache.install_chunk(inc, 0, 10, vec![(kh.0, vec![run(0, 1)])]);
+        cache.install_chunk(inc, 10, 100, vec![(kh.0, vec![run(10, 90), run(20, 1)])]);
+        let inner = cache.inner.lock().unwrap();
+        assert!(!inner.warm.contains_key(&inc.0));
+        assert!(inner.slices.is_empty());
+        assert_eq!(inner.total_bytes, 0);
     }
 }

@@ -78,7 +78,11 @@ async fn r08a_history_scan_envelope_and_postings_reject_corrupt_rows() {
                 route,
                 inc,
                 "wanted",
-                crate::postings::RunWindow::new(runs.into(), 0, 512),
+                crate::postings::RunWindow::new(
+                    crate::postings::ValidatedRuns::new(runs).unwrap(),
+                    0,
+                    512
+                ),
                 512,
                 512,
                 1024

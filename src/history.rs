@@ -1223,7 +1223,8 @@ impl Absorber {
                             crate::postings::append_page_runs(
                                 chunk_runs.entry(kh.0).or_default(),
                                 abs,
-                            );
+                            )
+                            .ok_or_else(|| anyhow::anyhow!("overlapping postings during gather"))?;
                         }
                         None => anyhow::bail!("postings page failed self-decode during gather"),
                     }
@@ -1434,25 +1435,23 @@ async fn read_history2_keyed(
             .scan_with_options(lo..hi, &postings_scan_opts())
             .await?;
         while let Some(kv) = iter.next().await? {
-            let first = u64::from_be_bytes(
-                kv.key[kv.key.len() - 8..]
-                    .try_into()
-                    .expect("postings key tail"),
-            );
-            match crate::postings::decode_page_abs(first, &kv.value) {
-                Some(abs) => crate::postings::append_page_runs(&mut runs, abs),
-                None => {
-                    corrupt = true;
-                    break;
-                }
+            if crate::postings::decode_stored_page(route, inc, &kh, &kv.key, &kv.value)
+                .and_then(|page| crate::postings::append_page_runs(&mut runs, page))
+                .is_none()
+            {
+                corrupt = true;
+                break;
             }
         }
     }
-    if corrupt {
+    let admitted = (!corrupt)
+        .then(|| crate::postings::ValidatedRuns::new(runs))
+        .flatten();
+    let Some(runs) = admitted else {
         POSTINGS_CORRUPT.fetch_add(1, Relaxed);
         return read_history2_keyed_envelope(part, route, inc, rk, from, upto, max_bytes).await;
-    }
-    let window = crate::postings::RunWindow::new(runs.into(), from, upto);
+    };
+    let window = crate::postings::RunWindow::new(runs, from, upto);
     execute_postings_plan(part, route, inc, rk, window, upto, upto, max_bytes).await
 }
 
@@ -2376,3 +2375,6 @@ mod bounded_discovery_tests {
 mod record_validation_tests;
 
 mod worker;
+
+#[cfg(test)]
+mod postings_validation_tests;

@@ -29,6 +29,9 @@
 
 use crate::crypto::{RouteHash, RoutingKeyHash, SegmentHash};
 
+mod validated;
+pub use validated::{RunWindow, ValidatedRuns};
+
 /// Segment-local offsets per postings bucket. Fixed so that
 /// `bucket = offset / BUCKET_OFFSETS` is directly calculable.
 /// A format constant, not an operator mode (spec §6.4).
@@ -108,6 +111,9 @@ fn get_varint(v: &[u8], at: &mut usize) -> Option<u64> {
     loop {
         let b = *v.get(*at)?;
         *at += 1;
+        if shift == 63 && b & 0x7f > 1 {
+            return None;
+        }
         out |= ((b & 0x7f) as u64) << shift;
         if b & 0x80 == 0 {
             return Some(out);
@@ -163,14 +169,14 @@ pub fn encode_page(first_offset: u64, runs: &[PostingRun]) -> Vec<u8> {
 }
 
 pub fn decode_page(v: &[u8]) -> Option<Page> {
-    if v.len() < 30 || v[0] != 1 || v[1] != 0 {
+    if v.len() < 30 || v.len() > PAGE_MAX_ENCODED_BYTES || v[0] != 1 || v[1] != 0 {
         return None;
     }
     let first_offset = u64::from_le_bytes(v[2..10].try_into().ok()?);
     let last_offset_exclusive = u64::from_le_bytes(v[10..18].try_into().ok()?);
     let n = u32::from_le_bytes(v[18..22].try_into().ok()?) as usize;
     let matching_frame_bytes = u64::from_le_bytes(v[22..30].try_into().ok()?);
-    if n > BUCKET_OFFSETS as usize {
+    if n == 0 || n > BUCKET_OFFSETS as usize || n > (v.len() - 30) / 4 {
         return None;
     }
     let mut at = 30usize;
@@ -178,7 +184,7 @@ pub fn decode_page(v: &[u8]) -> Option<Page> {
     for _ in 0..n {
         runs.push(PostingRun {
             gap_offsets: get_varint(v, &mut at)?,
-            record_count: get_varint(v, &mut at)? as u32,
+            record_count: u32::try_from(get_varint(v, &mut at)?).ok()?,
             matching_frame_bytes: get_varint(v, &mut at)?,
             gap_frame_bytes_before: get_varint(v, &mut at)?,
         });
@@ -188,10 +194,19 @@ pub fn decode_page(v: &[u8]) -> Option<Page> {
     let mut off = first_offset;
     let mut total = 0u64;
     for r in &runs {
-        off += r.gap_offsets + r.record_count as u64;
-        total += r.matching_frame_bytes;
+        if r.record_count == 0 || r.matching_frame_bytes == 0 {
+            return None;
+        }
+        off = off
+            .checked_add(r.gap_offsets)?
+            .checked_add(u64::from(r.record_count))?;
+        total = total.checked_add(r.matching_frame_bytes)?;
     }
-    if off != last_offset_exclusive || total != matching_frame_bytes {
+    if at != v.len()
+        || runs[0].gap_offsets != 0
+        || off != last_offset_exclusive
+        || total != matching_frame_bytes
+    {
         return None;
     }
     Some(Page {
@@ -226,14 +241,25 @@ pub const GAP_UNKNOWN: u64 = u64::MAX;
 /// carries gap_bytes_before=0 and the planner coalesces arbitrarily
 /// distant pages into one giant span (measured: a 40k-offset stream
 /// scanned WHOLE for a 2-record key — 10,000x amplification).
-pub fn append_page_runs(all: &mut Vec<AbsRun>, page: Vec<AbsRun>) {
-    let prev_end = all.last().map(|r| r.start + r.count as u64);
+pub fn append_page_runs(all: &mut Vec<AbsRun>, page: Vec<AbsRun>) -> Option<()> {
+    validated::validate(&page)?;
+    let prev_end = match all.last() {
+        Some(r) => Some(r.start.checked_add(u64::from(r.count))?),
+        None => None,
+    };
+    if prev_end
+        .zip(page.first())
+        .is_some_and(|(end, first)| end > first.start)
+    {
+        return None;
+    }
     for (i, mut r) in page.into_iter().enumerate() {
         if i == 0 && prev_end != Some(r.start) {
             r.gap_bytes_before = GAP_UNKNOWN;
         }
         all.push(r);
     }
+    Some(())
 }
 
 /// Decode a page into absolute runs. `page_first` (from the KEY) must
@@ -247,16 +273,44 @@ pub fn decode_page_abs(page_first: u64, v: &[u8]) -> Option<Vec<AbsRun>> {
     let mut out = Vec::with_capacity(runs.len());
     let mut off = page_first;
     for r in runs {
-        off += r.gap_offsets;
+        off = off.checked_add(r.gap_offsets)?;
         out.push(AbsRun {
             start: off,
             count: r.record_count,
             matching_bytes: r.matching_frame_bytes,
             gap_bytes_before: r.gap_frame_bytes_before,
         });
-        off += r.record_count as u64;
+        off = off.checked_add(u64::from(r.record_count))?;
     }
+    validated::validate(&out)?;
     Some(out)
+}
+
+/// Admit the entire stored key and its bucket/range, before publishing coverage.
+pub(crate) fn decode_stored_page(
+    route: RouteHash,
+    inc: SegmentHash,
+    kh: &RoutingKeyHash,
+    key: &[u8],
+    value: &[u8],
+) -> Option<Vec<AbsRun>> {
+    if key.len() != 65
+        || key[..16] != route.0
+        || key[16..32] != inc.0
+        || key[32] != b'p'
+        || key[33..49] != kh.0
+    {
+        return None;
+    }
+    let bucket = u64::from_be_bytes(key[49..57].try_into().ok()?);
+    let first = u64::from_be_bytes(key[57..65].try_into().ok()?);
+    let runs = decode_page_abs(first, value)?;
+    let last = runs.last()?;
+    let end = last.start.checked_add(u64::from(last.count))?;
+    if bucket_of(first) != bucket || bucket_of(end.checked_sub(1)?) != bucket {
+        return None;
+    }
+    Some(runs)
 }
 
 // ---- gather-side page builder ----------------------------------------
@@ -431,42 +485,6 @@ pub struct Plan {
     pub consumed_to: u64,
     /// Every run in the requested range was planned.
     pub complete: bool,
-}
-
-/// Immutable admitted postings with a bounded view into the requested range.
-/// Boundary estimates retain the whole run's bytes, just like canonical clipping.
-pub struct RunWindow {
-    owner: std::sync::Arc<[AbsRun]>,
-    indices: std::ops::Range<usize>,
-    from: u64,
-    upto: u64,
-}
-impl RunWindow {
-    pub(crate) fn new(owner: std::sync::Arc<[AbsRun]>, from: u64, upto: u64) -> Self {
-        let start = owner.partition_point(|r| r.start + r.count as u64 <= from);
-        let end = if from >= upto {
-            start
-        } else {
-            start + owner[start..].partition_point(|r| r.start < upto)
-        };
-        Self {
-            owner,
-            indices: start..end,
-            from,
-            upto,
-        }
-    }
-    pub(crate) fn iter(&self) -> impl Iterator<Item = AbsRun> + '_ {
-        self.owner[self.indices.clone()].iter().map(|r| {
-            let start = r.start.max(self.from);
-            let end = (r.start + r.count as u64).min(self.upto);
-            AbsRun {
-                start,
-                count: (end - start) as u32,
-                ..*r
-            }
-        })
-    }
 }
 
 /// Plan bounded canonical spans over absolute runs (ascending, within
@@ -850,101 +868,6 @@ mod tests {
             plan.consumed_to,
             7 * 1_000_000 + 1,
             "cursor resumes at the first unplanned run"
-        );
-    }
-}
-
-#[cfg(test)]
-mod o4_tests {
-    use super::*;
-    use std::sync::Arc;
-
-    fn old_clip(runs: &[AbsRun], from: u64, upto: u64) -> Vec<AbsRun> {
-        runs.iter()
-            .filter_map(|r| {
-                let start = r.start.max(from);
-                let end = (r.start + r.count as u64).min(upto);
-                (start < end).then(|| AbsRun {
-                    start,
-                    count: (end - start) as u32,
-                    ..*r
-                })
-            })
-            .collect()
-    }
-
-    #[test]
-    fn o4_window_matches_double_clipping_and_every_plan_field() {
-        let mut seed = 0x04a7e2070u64;
-        let mut next = || {
-            seed = seed.wrapping_mul(6364136223846793005).wrapping_add(1);
-            seed
-        };
-        for case in 0..2048 {
-            let mut runs = Vec::new();
-            let mut offset = 0u64;
-            for _ in 0..case % 129 {
-                offset += next() % 32;
-                let count = (next() % 64 + 1) as u32;
-                runs.push(AbsRun {
-                    start: offset,
-                    count,
-                    matching_bytes: (next() % 65536 + 1) * count as u64,
-                    gap_bytes_before: if next() % 7 == 0 {
-                        GAP_UNKNOWN
-                    } else {
-                        next() % 131072
-                    },
-                });
-                offset += count as u64;
-            }
-            let runs: Arc<[AbsRun]> = runs.into();
-            for _ in 0..20 {
-                let from = next() % (offset + 2);
-                let upto = from + next() % (offset + 2);
-                let provable_to = from + next() % (upto - from + 1);
-                let cfg = PlanCfg {
-                    max_spans: (next() % 9) as usize,
-                    max_scan_bytes: next() % (8 * 1024 * 1024),
-                    max_gap_bytes: next() % 131072,
-                    ..Default::default()
-                };
-                let old = old_clip(&old_clip(&runs, from, provable_to), from, provable_to);
-                let window = RunWindow::new(runs.clone(), from, provable_to);
-                assert!(Arc::ptr_eq(&runs, &window.owner));
-                assert_eq!(window.iter().collect::<Vec<_>>(), old);
-                assert_eq!(
-                    plan_spans_iter(window.iter(), provable_to, &cfg),
-                    plan_spans(&old, provable_to, &cfg),
-                    "case {case}: {from}..{provable_to}/{upto}"
-                );
-            }
-        }
-    }
-
-    #[test]
-    fn o4_late_window_seeks_and_retains_whole_run_estimates() {
-        let owner: Arc<[AbsRun]> = (0..100_000)
-            .map(|i| AbsRun {
-                start: i * 16,
-                count: 8,
-                matching_bytes: 8192,
-                gap_bytes_before: 4096,
-            })
-            .collect::<Vec<_>>()
-            .into();
-        let window = RunWindow::new(owner.clone(), 99_990 * 16 + 3, 99_992 * 16 + 1);
-        assert!(Arc::ptr_eq(&window.owner, &owner));
-        assert_eq!(window.indices, 99_990..99_993);
-        let selected = window.iter().collect::<Vec<_>>();
-        assert_eq!(
-            selected.iter().map(|r| r.count).collect::<Vec<_>>(),
-            vec![5, 8, 1]
-        );
-        assert!(
-            selected
-                .iter()
-                .all(|r| r.matching_bytes == 8192 && r.gap_bytes_before == 4096)
         );
     }
 }
