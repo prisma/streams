@@ -143,6 +143,8 @@ pin, DST scenario count).
 
 ## Documentation map
 
+- [Rust quality policy](docs/RUST-QUALITY.md) — adopted coding standard, pinned tools, local/CI gates and invariant verification.
+
 | document | what it answers |
 |---|---|
 | [sdk/README.md](./sdk/README.md) | **getting started** with the product API |
