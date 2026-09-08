@@ -1,5 +1,5 @@
 {
-  "compiler_fixture_canonical_inputs_match_current": true,
+  "compiler_fixture_canonical_inputs_match_recorded_revision": true,
   "compiler_fixtures": [
     {
       "exit_code": 0,
@@ -475,8 +475,9 @@
     "properties": 7
   },
   "raw_evidence": "Local only in /private/tmp/streams-quality-policy; no raw compiler logs, binary evidence or generated fuzz corpus uploaded.",
+  "recorded_revision": "74e1faae44d8ddebed4ccdacc918ae17e75402b2",
   "schema": 1,
-  "scope_note": "The source inventory records canonical Rust inputs. Each check executes its stated scope; repeated owner tests in the isolated harness are not additional server tests. No whole-server Miri or performance-equivalence claim.",
+  "scope_note": "Historical adoption receipt at recorded_revision; not a current-HEAD attestation. The source inventory records canonical Rust inputs. Each check executes its stated scope; repeated owner tests in the isolated harness are not additional server tests. No whole-server Miri or performance-equivalence claim.",
   "sdk": {
     "authentication_vector": "passed",
     "build": "passed",

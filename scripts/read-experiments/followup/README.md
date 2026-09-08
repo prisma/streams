@@ -1,5 +1,7 @@
 # Follow-up read experiments
 
+> Historical reproduction only. The O5 implementation and production switch have been removed. This harness requires the recorded old revisions below; it does not define an alternate current read path. See [the final disposition](../../../docs/read-experiments/final-disposition.md).
+
 This is the permitted minimal source harness. It does not contain raw latency/stage samples, native binaries, or the complete evidence archive. Those remain under the separate upload hold. Published block summaries identify their original log hashes without implying that reviewers possess or independently verified those raw logs.
 
 The harness produces explicitly instrumented Git archives. `SCREEN-SOURCE.json` records the exact base revision/tree, archive hash and every source modification's before/after hashes. Each build verifies those inputs and copies a native binary with its own receipt/hash. These are engineering screen binaries, not clean-source acceptance binaries. The source gate and CI validate the uninstrumented production candidate separately.

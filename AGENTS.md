@@ -19,3 +19,7 @@ for structural reviews; `.cursor/skills` points at the same canonical file.
 Retain PR #19's draft status and its existing performance, cryptographic,
 merge/deployment and raw-evidence upload holds until their separate acceptance
 requirements are met. Local quality results do not lift those holds.
+
+Read optimisations have one permanent production path. Keep experiments in
+isolated source revisions rather than adding runtime on/off switches. The
+current decisions are in [docs/read-experiments/final-disposition.md](docs/read-experiments/final-disposition.md).

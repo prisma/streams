@@ -1,5 +1,7 @@
 # Rust quality policy adoption
 
+> This is the adoption receipt at `74e1faae44d8ddebed4ccdacc918ae17e75402b2`. Subsequent cache removal and peer compatibility work is recorded in the [read disposition report](../read-experiments/final-disposition.md). The original counts and invariant evidence below retain their recorded source scope.
+
 The repository owner adopted [the normative policy](../RUST-QUALITY.md) on
 8 September 2026. The proposal's structural standards, focused lint profile,
 non-growing legacy migration, and invariant-specific verification are retained.

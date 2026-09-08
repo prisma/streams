@@ -7,7 +7,7 @@ The subsequent independent source review of `5bdaf968` accepts O2-A/O4-A, closes
 | Item | Current disposition |
 | --- | --- |
 | O1–O4 | Permanent unconditional implementation; scoped review acceptance retained, including exact ownership, corruption and retirement regressions. |
-| O2-C | Compatibility repair and regression verification tracked in the final disposition report. |
+| O2-C | Compatible scan-end omission and mandatory matching physical identity implemented. The final disposition report distinguishes contract regressions from the still-required exact-release-binary deployment matrix. |
 | O5 | Removed after failing the complete screen. The recommendation to keep it default-disabled is superseded by the owner's no-switch instruction. |
 | Pairing | The independent reviewer reproduced the prior 120 and current 762 triplets; the disclosed-block arithmetic uncertainty is closed. Held raw samples and binaries are still a separate unverified boundary. |
 | Performance / E03 | HOLD. O5 removal does not close the independent replay, allocator/RSS or workload acceptance obligations. |
