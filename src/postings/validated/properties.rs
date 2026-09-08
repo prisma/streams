@@ -4,6 +4,35 @@ use super::*;
 use crate::postings::{PostingRun, decode_page, decode_page_abs, encode_page};
 use proptest::prelude::*;
 
+#[test]
+fn quality_minimized_nonzero_prefix_extension() {
+    // Minimized from both extension-boundary mutation failures:
+    // start = 1, count = 1, extra = 1.
+    let old = ValidatedRuns::new(vec![AbsRun {
+        start: 1,
+        count: 1,
+        matching_bytes: 1,
+        gap_bytes_before: 0,
+    }])
+    .unwrap();
+    let fresh = ValidatedRuns::new(vec![AbsRun {
+        start: 1,
+        count: 2,
+        matching_bytes: 2,
+        gap_bytes_before: 0,
+    }])
+    .unwrap();
+    let extended = old.extend_after(&fresh, 2).unwrap();
+    assert_eq!(
+        extended
+            .iter()
+            .map(|r| (r.start, r.count))
+            .collect::<Vec<_>>(),
+        [(1, 1), (2, 1)]
+    );
+    assert_eq!(&*old.extend_after(&old, 2).unwrap(), &*old);
+}
+
 proptest! {
     #![proptest_config(ProptestConfig { cases: 1024, .. ProptestConfig::default() })]
 

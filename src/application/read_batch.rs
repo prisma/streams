@@ -22,16 +22,6 @@ impl Deref for PlainPayload {
         self.as_ref()
     }
 }
-impl std::fmt::Debug for PlainPayload {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        self.as_ref().fmt(f)
-    }
-}
-impl PartialEq for PlainPayload {
-    fn eq(&self, other: &Self) -> bool {
-        self.as_ref() == other.as_ref()
-    }
-}
 pub(crate) struct PlainRec {
     pub(crate) off: u64,
     pub(crate) payload: PlainPayload,

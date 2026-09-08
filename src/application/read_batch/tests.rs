@@ -3,6 +3,69 @@ use crate::application::read_retention_probe::Probe;
 use futures_util::FutureExt;
 
 #[test]
+fn o2a_full_append_then_selection_preserves_block_ranges() {
+    let probe = Probe::default();
+    probe
+        .scope(async {
+            let mut assembled = PlainBatch::default();
+            assert!(assembled.is_empty());
+            assert!(assembled.contiguous().is_none());
+            assembled.push_decoded(
+                b"ab".to_vec(),
+                [(0, 0..1, "keep".into()), (1, 1..2, "keep".into())],
+            );
+            assert!(!assembled.is_empty());
+            let mut incoming = PlainBatch::default();
+            incoming.push_decoded(
+                b"cde".to_vec(),
+                [
+                    (2, 0..1, "keep".into()),
+                    (3, 1..2, "keep".into()),
+                    (4, 2..3, "keep".into()),
+                ],
+            );
+            incoming.push_decoded(b"z".to_vec(), [(5, 0..1, "drop".into())]);
+            let admission =
+                assembled.append_selected(incoming, 2..6, None, &mut PageBudget::new(100), 10);
+            assert_eq!(admission.last, Some(5));
+            assert!(admission.withheld.is_none());
+            assert_eq!(assembled.len(), 6);
+            assert_eq!(assembled.retained_capacity(), 6);
+            assert_eq!(probe.live(), 6);
+            // Partial selection after concatenation exercises the transferred
+            // block coordinates, including a complete three-record middle block.
+            let mut selected = PlainBatch::default();
+            let admission = selected.append_selected(
+                assembled,
+                1..15,
+                Some("keep"),
+                &mut PageBudget::new(100),
+                0,
+            );
+            assert_eq!(admission.last, Some(14));
+            assert!(admission.withheld.is_none());
+            assert_eq!(
+                (&selected).into_iter().map(|r| r.off).collect::<Vec<_>>(),
+                [1, 12, 13, 14]
+            );
+            assert_eq!(
+                (&selected)
+                    .into_iter()
+                    .flat_map(|r| r.payload.iter().copied())
+                    .collect::<Vec<_>>(),
+                b"bcde"
+            );
+            assert_eq!(selected.retained_capacity(), 4);
+            assert_eq!(probe.live(), 4);
+            assert!(selected.contiguous().is_none());
+            drop(selected);
+            assert_eq!(probe.live(), 0);
+        })
+        .now_or_never()
+        .expect("pure ownership scope does not suspend");
+}
+
+#[test]
 fn o2a_subset_selection_compacts_owner_and_full_transfer_keeps_identity() {
     let probe = Probe::default();
     probe
