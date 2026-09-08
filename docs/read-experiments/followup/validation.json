@@ -1,0 +1,116 @@
+{
+  "runtime_revision": "eb5ab8ad7a1459b6c679b72bf342a3af73e0bede",
+  "runtime_tree": "39fa624f614c408f02980edebd17bb1e71dfb133",
+  "ci": {
+    "run_id": 34249267069,
+    "url": "https://github.com/prisma/streams/actions/runs/34249267069",
+    "status": "completed",
+    "conclusion": "success",
+    "jobs": [
+      {
+        "name": "sdk-package",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/prisma/streams/actions/runs/34249267069/job/102139188522"
+      },
+      {
+        "name": "livefeed",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/prisma/streams/actions/runs/34249267069/job/102139188801"
+      },
+      {
+        "name": "architecture-report",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/prisma/streams/actions/runs/34249267069/job/102139188803"
+      },
+      {
+        "name": "product-field-gate",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/prisma/streams/actions/runs/34249267069/job/102139188865"
+      },
+      {
+        "name": "rust",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/prisma/streams/actions/runs/34249267069/job/102139188914"
+      },
+      {
+        "name": "mt-cert-1000",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/prisma/streams/actions/runs/34249267069/job/102139188919"
+      },
+      {
+        "name": "durable-streams-server-conformance",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/prisma/streams/actions/runs/34249267069/job/102139188940"
+      },
+      {
+        "name": "livefeed-fleet-cert",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/prisma/streams/actions/runs/34249267069/job/102139189098"
+      },
+      {
+        "name": "platform-e2e",
+        "status": "completed",
+        "conclusion": "success",
+        "url": "https://github.com/prisma/streams/actions/runs/34249267069/job/102139189126"
+      },
+      {
+        "name": "noisy-campaign",
+        "status": "completed",
+        "conclusion": "skipped",
+        "url": "https://github.com/prisma/streams/actions/runs/34249267069/job/102139190960"
+      }
+    ]
+  },
+  "workflow_lint": {
+    "run_id": 34249267023,
+    "url": "https://github.com/prisma/streams/actions/runs/34249267023",
+    "conclusion": "success"
+  },
+  "local_gate": {
+    "status": "GATEDONE",
+    "ordinary_library_tests": 926,
+    "isolated_capacity_tests": 1,
+    "total_library_tests": 927,
+    "o5_tests": 12,
+    "clippy_new_fingerprints": 0,
+    "dst_inventory": 447,
+    "architecture_rust_files": 272,
+    "source_scope": "Gate on final runtime working tree immediately before its source commit; separate CI verifies that exact commit.",
+    "log_sha256": {
+      "o5-fill-source-gate.txt": "72f425625467215964191cddb6cdb4ed8a870624a876fefb6ed054485e5d2210",
+      "o5-fill-full-suite.log": "633b7c9b44d4f2ac93b5439e2558a12f03167bf6e1ae53a2fce77ae2571d989f",
+      "o5-fill-capacity.log": "25976e63adfd0a59f50fb74d87b785833b280ae210cea75e07a21e95048e7f9e",
+      "o5-fill-clippy.log": "25379d395da73f9fa8e3533369ffb4c9b07e050a8f83bba651e98a00c5c6cbe9"
+    }
+  },
+  "sdk": {
+    "unit_tests": 33,
+    "auth_behavior": "pass",
+    "watch_capability_vector": "pass",
+    "typecheck": "pass",
+    "build": "pass",
+    "scope": "Executed on unchanged SDK source before final cache-only Rust refinement; final runtime CI also passes sdk-package.",
+    "log_sha256": {
+      "final-sdk-typecheck.log": "d682b81d2514264291f4fd07a133e15b312e9678000e2454b69f2443ada7740f",
+      "final-sdk-tests.log": "dc592a54f4e5c4494964140a4d1a59fba84e915729d66bf39174b06c97235a27",
+      "final-sdk-build.log": "93b8c867848680796a7853ce0c4b200cfc485bfcc6a90cfd3ff3e600058abe28"
+    }
+  },
+  "runtime_environment": {
+    "cpu": "Apple M2, 8 cores",
+    "binaries": "native arm64 Mach-O",
+    "rustc": "1.98.1 (48a229cea 2026-09-01), aarch64-apple-darwin",
+    "cargo": "1.98.1",
+    "node": "24.8.0",
+    "npm": "11.6.0"
+  },
+  "limits": "Author execution and exact-source CI; not independent source, cryptographic, performance, merge, or deployment approval."
+}

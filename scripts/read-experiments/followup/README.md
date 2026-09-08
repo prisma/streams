@@ -38,7 +38,7 @@ The original serial append and complete connection-close HTTP replay workload re
 
 Request-correlated diagnostics record client wake/admission/connect/write/headers/body/close milestones and optional server application/page/decode durations. The server durations are nested and not additive. Diagnostic logging can perturb those timings. The summarizer joins request IDs and computes within-request client deltas and slowest-one-percent cohorts; it never subtracts overlapping stage percentiles. These results do not replace the primary full-completion timings or diagnose a transport/backend defect by themselves.
 
-The reviewer-accessible arithmetic check is `python3 scripts/read-experiments/followup/verify_published.py docs/read-experiments/followup`. It reconstructs every reported ratio and interval from identified block pairs and checks their source/binary mapping. It does not claim verification of the held raw samples.
+The reviewer-accessible arithmetic check is `python3 scripts/read-experiments/followup/verify_published.py docs/read-experiments/followup`. It reconstructs every reported ratio and interval from identified block pairs and checks their source/binary mapping. It does not claim verification of the held raw samples. `evaluate_screen.py` takes the same directory and applies the published guardrails; the reported result is HOLD. The summarizer's additional within-request stage deltas and wake/queue fractions are aggregate diagnostics, with no raw events in the published output.
 
 ## Allocation diagnostic
 

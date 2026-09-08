@@ -35,13 +35,18 @@ for line in run_receipts:
    row['nested_page_auth_decode_us']=sum(t for name,t in server[request_id]['nested_stages'] if name=='page_auth_decode')
    assert row['completion_us']>=row['body_complete_us']>=row['headers_received_us']>=row['request_flushed_us']
    row['after_body_us']=row['completion_us']-row['body_complete_us']
+   row['flushed_to_headers_us']=row['headers_received_us']-row['request_flushed_us']
+   row['headers_to_body_us']=row['body_complete_us']-row['headers_received_us']
    row['connect_duration_us']=row['connected_us']-row.get('admitted_us',0)
-   if 'admitted_us' in row:row['semaphore_queue_us']=row['admitted_us']-row['wake_us']
+   if 'admitted_us' in row:
+    row['semaphore_queue_us']=row['admitted_us']-row['wake_us']
+    row['wake_fraction']=row['wake_us']/row['completion_us']
+    row['semaphore_queue_fraction']=row['semaphore_queue_us']/row['completion_us']
    groups.setdefault(request_id.rsplit('-',1)[0],[]).append(row)
   for name,rows in groups.items():
    slow=sorted(rows,key=lambda r:r['completion_us'])[-max(1,math.ceil(len(rows)*.01)):]
    metrics={}
-   for k in ['completion_us','wake_us','admitted_us','semaphore_queue_us','connect_duration_us','headers_received_us','body_complete_us','after_body_us','application_response_us','nested_physical_page_us','nested_page_auth_decode_us']:
+   for k in ['completion_us','wake_us','admitted_us','semaphore_queue_us','connect_duration_us','headers_received_us','body_complete_us','after_body_us','flushed_to_headers_us','headers_to_body_us','wake_fraction','semaphore_queue_fraction','application_response_us','nested_physical_page_us','nested_page_auth_decode_us']:
     if k in rows[0]:metrics[k]={'median':statistics.median([r[k] for r in rows]),'p99':pct([r[k] for r in rows],.99),'max':max(r[k] for r in rows),'slowest_1pct_requests_median':statistics.median([r[k] for r in slow])}
    stages.append({k:receipt[k] for k in ['pair_id','allocator','version','cache_on','base_revision','binary_sha256']}|{'case':name,'joined_requests':len(rows),'unmatched_clients':0,'metrics':metrics,'interpretation':'Client deltas computed within each request; server durations nested and nonadditive. Diagnostic instrumentation can perturb these runs.'})
 def comparison(control,candidate,metric):

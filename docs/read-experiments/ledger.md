@@ -1,5 +1,7 @@
 # Read experiment ledger — 7 September 2026
 
+Historical ledger. The [8 September follow-up ledger](followup/ledger.md) and [report](followup/report.md) supersede its O2/O4 source and O5 experiment dispositions. The original measurements below remain preserved; the performance hold continues.
+
 Engineering owner: Codex experiment task. Decisions below are author dispositions, not independent reviewer or product-owner acceptance. Final runtime source: `13a43c8662b632be1dadb4110363f88a7f1cf8c1`; [results and limitations](results.md), [machine-readable results](performance.json), [draft PR #19](https://github.com/prisma/streams/pull/19).
 
 | Experiment | Immediate source control → implementation | Mechanism / verification | Performance disposition |

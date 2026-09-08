@@ -24,6 +24,10 @@ def verify(folder):
         assert row["requests"] > 0
         assert "latencies_us" not in row
         assert row.get("errors", 0) == row.get("producer_errors", 0) == 0
+        if row["kind"] == "append" and "product" in row["name"]:
+            assert row["product_payload_bridges"] == row["requests"]
+            if row["version"] == "candidate":
+                assert row["product_bridge_copies"] == 0
         assert (row["allocator"], row["base_revision"], row["base_tree"], row["binary_sha256"]) in identities
         assert len(row["log_sha256"]) == 64
         if row["name"] == "process-cold":

@@ -1,5 +1,7 @@
 # Read optimisation experiments — results
 
+The [8 September follow-up report](followup/report.md) contains the corrected O2/O4 source, production-oriented O5 prototype, and latest matched screens. The historical campaign below is preserved; overall parity remains unaccepted.
+
 **Outcome: parity with the original implementation is not established. Keep the performance hold and the draft PR.** The first four changes remove measurable work, but their combined hot-query median remains slower than the original in both matched allocator comparisons. The encrypted-history cache prototype makes repeated hot queries substantially faster; it is a feasibility result with incomplete production lifecycle and admission integration.
 
 The experimental source is pushed in [draft PR #19](https://github.com/prisma/streams/pull/19). No merge or deployment is part of this result. [Updated experiment ledger](ledger.md) records each scoped decision. The earlier [external acceptance ledger](../review-followup/2026-09-07-ledger.md) retains its independent-review, cryptographic and deployment requirements.
