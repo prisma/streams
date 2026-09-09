@@ -74,6 +74,13 @@ impl Scan {
 }
 
 impl<'ast> Visit<'ast> for Scan {
+    fn visit_visibility(&mut self, node: &'ast syn::Visibility) {
+        if !matches!(node, syn::Visibility::Inherited) {
+            self.fact("visibility", tokens(node), node.span());
+        }
+        visit::visit_visibility(self, node);
+    }
+
     fn visit_item_macro(&mut self, node: &'ast syn::ItemMacro) {
         let name = node.ident.as_ref().map_or_else(
             || format!("macro({})", self.imports.path(&node.mac.path)),
