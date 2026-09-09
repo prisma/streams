@@ -15,12 +15,13 @@ PREFIX=tools/quality-invariants/src/../../../
 BASE=$(python3 -c 'import json,sys; print(json.load(open(sys.argv[1]))["merge_base"])' "$QUALITY_MUTANTS_OUT/plan.json")
 git diff --no-ext-diff --binary --src-prefix="a/$PREFIX" --dst-prefix="b/$PREFIX" "$BASE" -- > "$QUALITY_MUTANTS_OUT/harness-pr.diff"
 TOTAL=0
-for owner in postings batch retained tasks; do
+for owner in postings batch retained tasks touch; do
   case "$owner" in
     postings) file=src/postings/validated.rs; filter=postings:: ;;
     batch) file=src/application/read_batch.rs; filter=application::read_batch:: ;;
     retained) file=src/retained_bytes.rs; filter=retained_bytes:: ;;
     tasks) file=src/tasks.rs; filter=tasks:: ;;
+    touch) file=src/touch.rs; filter=touch:: ;;
   esac
   output="$QUALITY_MUTANTS_OUT/$owner"
   mkdir -p "$output"
@@ -29,9 +30,9 @@ for owner in postings batch retained tasks; do
   package=streams-quality-invariants
   mutation_file="$PREFIX$file"
   mutation_diff="$QUALITY_MUTANTS_OUT/harness-pr.diff"
-  if [[ "$owner" == tasks ]]; then
-    # Supervisor fixtures use actual Tokio task handles and process signals.
-    # Run them in the service crate, rather than rewriting a stand-in model.
+  if [[ "$owner" == tasks || "$owner" == touch ]]; then
+    # These fixtures use the service's actual Tokio tasks and runtime entropy.
+    # Keep their source and tests in that crate instead of building a model.
     package=streams-slate
     mutation_file="$file"
     mutation_diff="$QUALITY_MUTANTS_OUT/pr.diff"
