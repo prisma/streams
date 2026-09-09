@@ -53,6 +53,16 @@ Splitting a transaction into context-heavy helpers, hiding flags in options bags
 
 ## Verification selected by the changed invariant
 
+The planner records files whose only changes narrow parsed `pub` visibility to
+`pub(crate)`, `pub(super)` or `pub(self)`. Compiler, source, dependency and the
+ordinary test jobs remain mandatory. These declaration-only changes do not
+select runtime mutation/Miri/property/Loom checks by themselves. The comparison
+masks only actual Rust visibility nodes and requires every other character to
+match; expression, signature, attribute, comment, literal and opaque macro-token
+changes retain the existing invariant triggers. This is a reported selection
+decision, not a passing zero-mutation experiment. Other critical changes still
+require a registered executable mutation scope.
+
 | Trigger | Required verification and acceptance |
 | --- | --- |
 | Every PR | Run pinned `cargo machete` and `cargo deny check`. Fail unexplained unused dependencies, unapproved advisories, sources and licenses. Unknown Git/registry sources are denied; the existing exact-revision SlateDB source is explicitly allowed. Duplicate versions are reviewed signals, not a blanket ban. False positives require a rationale rather than automatic dependency deletion. |
