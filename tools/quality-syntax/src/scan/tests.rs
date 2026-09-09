@@ -1,5 +1,15 @@
 use super::source;
 
+#[test]
+fn visibility_facts_exclude_literals_comments_and_opaque_macro_tokens() {
+    let code = r#"pub struct A { pub(crate) field: u8 }
+        // pub fn ignored() {}
+        fn text() { let _ = "pub fn ignored() {}"; }
+        declare! { pub fn opaque() {} }
+    "#;
+    assert_eq!(values(code, "visibility"), ["pub", "pub (crate)"]);
+}
+
 fn values(code: &str, kind: &str) -> Vec<String> {
     source("src/example.rs", code)
         .unwrap()
