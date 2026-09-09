@@ -12687,48 +12687,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "96cd8d108893acc5f7f5de7336e638f0df54bd7cf0eed74296350b1cafeb11ff",
-      "item": "crate::OwnershipService::effective_owner",
-      "lint": "clippy::unwrap_used",
-      "path": "src/ownership.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "26884b8ab251869022e826590a4598792cfa6ae490dd0bbbc51c811469041802",
-      "item": "crate::OwnershipService::overrides",
-      "lint": "clippy::unwrap_used",
-      "path": "src/ownership.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "5c78f1ee6471a03da7aa7d1b15077b056de327a7d25c21b45644b477e96e76b2",
-      "item": "crate::OwnershipService::ring_active",
-      "lint": "clippy::unwrap_used",
-      "path": "src/ownership.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "248a6e907c7cdd7741d018263d3c627f18f2d7d3bb39dee05d440eebc4fe528d",
-      "item": "crate::OwnershipService::set_override",
-      "lint": "clippy::unwrap_used",
-      "path": "src/ownership.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "cdc6ef8d1f77e66505e488efa294cc7d8cdb8306fb7222e38dcd611f5bc6bf61",
-      "item": "crate::OwnershipService::set_view",
-      "lint": "clippy::unwrap_used",
-      "path": "src/ownership.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a5ddb375f9b0a380ac36bd42e862b8ebf4948b4d638c03cd97bf510ab1c3f84d",
-      "item": "crate::OwnershipService::view",
-      "lint": "clippy::unwrap_used",
-      "path": "src/ownership.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "4e32735b399eabe7633073706017f91e767dcf518837a48fff019891d2aa422e",
       "item": "crate::PeerClient::has_peer",
       "lint": "clippy::unwrap_used",
