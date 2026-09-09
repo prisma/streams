@@ -520,6 +520,39 @@ mod tests {
         }
         journal.close();
     }
+    #[tokio::test]
+    async fn overlapping_waiters_keep_distinct_delivery_and_retirement_ownership() {
+        let journal = std::sync::Arc::new(TouchJournal {
+            epoch: "distinct-waiters".into(),
+            inner: std::sync::Mutex::new(super::Inner::default()),
+        });
+        let mut first = Box::pin(journal.wait("now", vec![7], Duration::from_secs(1)));
+        let mut second = Box::pin(journal.wait("now", vec![11], Duration::from_secs(1)));
+        let mut both = Box::pin(journal.wait("now", vec![7, 11], Duration::from_secs(1)));
+        assert!(futures_util::poll!(first.as_mut()).is_pending());
+        assert!(futures_util::poll!(second.as_mut()).is_pending());
+        assert!(futures_util::poll!(both.as_mut()).is_pending());
+        assert_eq!(journal.inner.lock().unwrap().waiters.len(), 3);
+        journal.ingest(&[7], 17);
+        journal.flush_bucket(false);
+        for outcome in [first.await, both.await] {
+            assert!(matches!(
+                outcome,
+                WaitOutcome::Touched {
+                    end_offset: 17,
+                    proven: true,
+                    ..
+                }
+            ));
+        }
+        assert!(futures_util::poll!(second.as_mut()).is_pending());
+        assert_eq!(journal.inner.lock().unwrap().waiters.len(), 1);
+        journal.close();
+        assert!(matches!(second.await, WaitOutcome::Stale { .. }));
+        let inner = journal.inner.lock().unwrap();
+        assert!(inner.waiters.is_empty());
+        assert!(inner.key_index.is_empty());
+    }
 }
 
 #[cfg(test)]
