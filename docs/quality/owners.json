@@ -239,6 +239,78 @@
       "path": "build.rs",
       "reason": "Build-time identity owns the explicit release commit and SOURCE_DATE_EPOCH inputs. They are embedded at compilation, never read or overridden by the running service.",
       "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::the_gather_window_waits_for_ack_dispatch",
+      "path": "src/dst/tests/durability_gather.rs",
+      "reason": "ack-dispatch regression; the concurrent request is joined after the held dispatcher releases; sequential execution could not observe its blocked acknowledgement",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::commits_during_a_flush_do_not_extend_its_barrier",
+      "path": "src/dst/tests/durability_gather.rs",
+      "reason": "flush-generation regression; every staggered request is joined under its deadline; concurrency is the input needed to cross in-flight durability groups",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::busy_generation_case",
+      "path": "src/dst/tests/durability_gather.rs",
+      "reason": "gather-threshold fixture; all twelve held requests are joined after dispatch release; concurrent queue occupancy is required to distinguish the two thresholds",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_failed_group_write_fails_its_duplicate_too",
+      "path": "src/dst/tests/durability_failures.rs",
+      "reason": "failed duplicate regression; both requests are joined after the entered-counter proof and group failure; serial requests would not share the failed group",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_reuse_verdict_dies_with_its_failed_group",
+      "path": "src/dst/tests/durability_failures.rs",
+      "reason": "failed reuse regression; both competing bodies are joined after the entered-counter proof; concurrent staging is the invariant under test",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_failed_group_fails_the_close_and_its_retry_together",
+      "path": "src/dst/tests/durability_failures.rs",
+      "reason": "failed close regression; both closes are joined under the existing watchdog after group release; serialization would discard the shared-group retry case",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::a_fence_in_a_failed_group_reports_failure_not_closed",
+      "path": "src/dst/tests/durability_failures.rs",
+      "reason": "failed close and fence regression; both tasks are joined after the forced shared group; the race between the durable intent and fence is the input",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::a_stream_seq_verdict_is_grounded_in_durable_state",
+      "path": "src/dst/tests/durability_failures.rs",
+      "reason": "stream-sequence regression; the first competing request is joined before the durable conflict probe; concurrent staging is required to test the verdict boundary",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::durability_gather",
+      "path": "src/dst/dst_tests.rs",
+      "reason": "Existing gather and dispatch regression tests have one focused fixture module; the inventory preserves all four test identities and the release test filter executes them.",
+      "syntax": "path = \"tests/durability_gather.rs\""
     }
   ]
 }

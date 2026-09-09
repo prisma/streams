@@ -2467,90 +2467,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "6a678143816b7c625c981f19eb070f6db2255bfdce82ce120ecb72abf412fa92",
-      "item": "crate::a_busy_next_generation_skips_the_gather_window",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/durability_failures.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8357761b563fa5c11a1702d8ad6ef427494c73dbbb45c58339136ac56d07600a",
-      "item": "crate::a_failed_group_fails_the_close_and_its_retry_together",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/durability_failures.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "cfafcc03fe3370e3ab6fb9229013ef21c54b5514fea307e9f00a91d88b5af669",
-      "item": "crate::a_failed_group_fails_the_close_and_its_retry_together",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/durability_failures.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "02f2ec9260b11616a5e32d067c9928bcd15eccb9aca0f9320e8eb0d97bba2eac",
-      "item": "crate::a_failed_group_write_fails_its_duplicate_too",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/durability_failures.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "6902bf50fcff31bb5b0e65a322c7c091d9f0416a3b1f4f8a09496108d7313d3b",
-      "item": "crate::a_failed_group_write_fails_its_duplicate_too",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/durability_failures.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "31e5aef345bab325c7364e099d34b9677c2a188409bb90085348bee94322ca0f",
-      "item": "crate::a_fence_in_a_failed_group_reports_failure_not_closed",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/durability_failures.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ccc3e3b88a0e937881272b9e5627b6aca787270e87185993894e1630e16e49f4",
-      "item": "crate::a_fence_in_a_failed_group_reports_failure_not_closed",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/durability_failures.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "015b1d6811d4c534c2e9e7580f9ba5cd1bc4173c201da1003cd6d2ec8cc459b2",
-      "item": "crate::a_reuse_verdict_dies_with_its_failed_group",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/durability_failures.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "cbacbba357039003ec6af6c4953182d31ba24a4b79d130d88f8f2ac2f3ab610c",
-      "item": "crate::a_reuse_verdict_dies_with_its_failed_group",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/durability_failures.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "26170e7327006d01410b9e1f6d2c162d56ec93bf0bf2bf62ae1e2f4d6e50ff21",
-      "item": "crate::a_stream_seq_verdict_is_grounded_in_durable_state",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/durability_failures.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "60445c93daf31c22078940806bbfda1fcb324f280ab77797abcf73114d202c4e",
-      "item": "crate::commits_during_a_flush_do_not_extend_its_barrier",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/durability_failures.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "54c95c9e9dd4bc4cb52261e1144d6e18920eaa5e53558a7da283eaccfc2f0a41",
-      "item": "crate::the_gather_window_waits_for_ack_dispatch",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/durability_failures.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "b10fab090ee0b0315a76f67b867d46895b15f9e920442373bd8ebaebfe989991",
       "item": "crate::a_fence_waits_for_durability_before_reporting_closed",
       "lint": "clippy::disallowed_methods",
@@ -4193,20 +4109,6 @@
       "item": "crate::product_consumer_drains_lineage_across_split",
       "lint": "clippy::excessive_nesting",
       "path": "src/dst/tests/consumer_product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "96ecaac10758d2d5da0e77c8e7fd1428b04c5acdcfc73d9f61363ef8baa7f0af",
-      "item": "crate::a_busy_next_generation_skips_the_gather_window",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/durability_failures.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "eeda02a562c93eee864e843482da3648125d211c6be9a24b6c8c7b380900d3d9",
-      "item": "crate::a_busy_next_generation_skips_the_gather_window",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/durability_failures.rs"
     },
     {
       "count": 1,
@@ -9243,13 +9145,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "760cebf8ec1f9abaaaac119627cf7a8b7598b511a065e2997620d2caf542ddb1",
-      "item": "crate::a_fence_in_a_failed_group_reports_failure_not_closed",
-      "lint": "clippy::single_match",
-      "path": "src/dst/tests/durability_failures.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "c108b945981e7ee496452f1da8dfe5dd38c721b89fc7349030362617d3c8ef08",
       "item": "crate::ReadOutcome",
       "lint": "clippy::struct_excessive_bools",
@@ -10244,30 +10139,6 @@
       "lint": "clippy::too_many_lines",
       "metric": 110,
       "path": "src/dst/tests/consumer_saga.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "35b234f12a406017606169b0cbbb798d4e7bf7e6e286e05c4c61320a99c1fbb0",
-      "item": "crate::a_failed_group_fails_the_close_and_its_retry_together",
-      "lint": "clippy::too_many_lines",
-      "metric": 114,
-      "path": "src/dst/tests/durability_failures.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9ff76900e54265db6cd94ff5650e80f9892d662fc9383843e8adc5a700c8ec9a",
-      "item": "crate::a_fence_in_a_failed_group_reports_failure_not_closed",
-      "lint": "clippy::too_many_lines",
-      "metric": 148,
-      "path": "src/dst/tests/durability_failures.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4e8deb36c1e697f6dcb3ae557ce2abc87e3d4fddc66e010fc6d5e8ca8afc2106",
-      "item": "crate::a_reuse_verdict_dies_with_its_failed_group",
-      "lint": "clippy::too_many_lines",
-      "metric": 105,
-      "path": "src/dst/tests/durability_failures.rs"
     },
     {
       "count": 1,
