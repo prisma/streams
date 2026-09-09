@@ -117,6 +117,13 @@ impl<'ast> Visit<'ast> for Scan {
         self.imports = imports;
     }
 
+    fn visit_signature(&mut self, node: &'ast syn::Signature) {
+        if let Some(syn::punctuated::Pair::Punctuated(_, comma)) = node.inputs.pairs().next_back() {
+            self.fact("parameter-trailing-comma", ",".to_owned(), comma.span());
+        }
+        visit::visit_signature(self, node);
+    }
+
     fn visit_item_fn(&mut self, node: &'ast syn::ItemFn) {
         let previous = self.enter(node.sig.ident.to_string(), &node.attrs);
         self.item("function", tokens(&node.sig), node.span());
