@@ -1081,55 +1081,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "481e30f0ded273c6f5de927976f0db5768becefa05d37fcdb4a052fd0963750e",
-      "item": "crate::ServerConfig::overlay_scaler",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/config/load.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8eec3f489def6a02995d4b59c50630dcb0d7c9a1caed8c88c35a40420d287d9f",
-      "item": "crate::ServerConfig::overlay_scaler",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/config/load.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8fc3907ba183482877d686f6143afab4e2e7ad7c9d4731c9e2fafe36fea7d640",
-      "item": "crate::ServerConfig::overlay_scaler",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/config/load.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ce5bc4a2bf70cd74dd2c3573b287a59003b2d4e25ba253de484a8718bb3e985b",
-      "item": "crate::ServerConfig::overlay_scaler",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/config/load.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f500fa2c293063e42fea7ca5424921fc36be40a783a1e237549e7c28b364979c",
-      "item": "crate::ServerConfig::overlay_scaler",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/config/load.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "84a8812ace8bf8404eb1d5966eeea9c746debfcb05e43be379428f31d016a5d5",
-      "item": "crate::ServerConfig::redacted_summary",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/config/summary.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c4d6e41cff4af016a4deb1d9c9504a8c76c3a5d22ecf788ec5753159600c12a7",
-      "item": "crate::ServerConfig::redacted_summary",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/config/summary.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "3beee2fe09ec5d8bb55823a573620cdb6451c77139fd35d2fb67e6eeba65d0ef",
       "item": "crate::FrameCipher::encrypt_with_nonce",
       "lint": "clippy::cast_possible_truncation",
@@ -1862,34 +1813,6 @@
       "item": "crate::utc_year_month",
       "lint": "clippy::cast_sign_loss",
       "path": "src/billing.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "08aaa3bd8bca6815815e6190fc7b01c4f27fed081239be8bb12c7521146b5a97",
-      "item": "crate::ServerConfig::overlay_scaler",
-      "lint": "clippy::cast_sign_loss",
-      "path": "src/config/load.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4156e7416d5cd197dcd437a33b5be3761ee640342e06c4adac41ada5c45cb950",
-      "item": "crate::ServerConfig::overlay_scaler",
-      "lint": "clippy::cast_sign_loss",
-      "path": "src/config/load.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "698cd160f8a75768b23666504217baf4d41118b19ad1c87241bab63cdb093ae7",
-      "item": "crate::ServerConfig::overlay_scaler",
-      "lint": "clippy::cast_sign_loss",
-      "path": "src/config/load.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "6bdefe57ac3fbd8024f844297b13378da916bd49d42b08cd954bae44d1872c72",
-      "item": "crate::ServerConfig::overlay_scaler",
-      "lint": "clippy::cast_sign_loss",
-      "path": "src/config/load.rs"
     },
     {
       "count": 1,

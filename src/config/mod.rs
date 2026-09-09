@@ -39,3 +39,6 @@ pub(crate) use model::{
     AdmissionConfig, BillingConfig, EngineConfig, FleetConfig, HistoryConfig, HttpConfig,
     ScaleConfig, ShardRuntimeConfig, SseConfig, StorageConfig,
 };
+
+#[cfg(test)]
+mod numeric_tests;
