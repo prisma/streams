@@ -4,8 +4,7 @@
 //! ever handling template ids or HMAC keys (spec Stage 2 §3.3/§3.5).
 //! So the layouts below are normative, and the hash is SHA-256 —
 //! available to every client runtime through WebCrypto, and the same
-//! same construction the routing keyspace already uses
-//! (`segmap::key_point`). The digest's first 8 bytes, big-endian, are
+//! construction used for routing-key hashes. The digest's first 8 bytes, big-endian, are
 //! the 64-bit key.
 //!
 //!   h64(b)                        = be_u64(SHA256(b)[..8])
