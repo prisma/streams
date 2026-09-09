@@ -17,7 +17,7 @@ use super::{Coverage, ObjClass, StoreOp, mech};
 
 /// What may happen to one operation.
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum Toxic {
+pub(super) enum Toxic {
     None,
     /// Delay, then perform. Milliseconds are *simulated*: scenarios run
     /// with paused time, so a realistic 185 ms costs no wall clock.
@@ -39,7 +39,7 @@ pub enum Toxic {
 /// Fault probabilities for one (op, class). Checked against a single roll
 /// in the order error → lost-response → latency.
 #[derive(Debug, Clone, Copy)]
-pub struct FaultPlan {
+pub(crate) struct FaultPlan {
     pub error_pct: u8,
     pub lost_response_pct: u8,
     pub latency_pct: u8,
@@ -48,7 +48,7 @@ pub struct FaultPlan {
 }
 
 impl FaultPlan {
-    pub const CLEAN: FaultPlan = FaultPlan {
+    pub(crate) const CLEAN: FaultPlan = FaultPlan {
         error_pct: 0,
         lost_response_pct: 0,
         latency_pct: 0,
@@ -58,9 +58,9 @@ impl FaultPlan {
     /// What we measured against Tigris: 8–185 ms per operation across
     /// regions, iad1 at the top of that range (docs/SOAK-REGIONS.md).
     /// Affordable only because scenarios run with time paused.
-    pub const TIGRIS_LATENCY: (u64, u64) = (8, 185);
+    pub(crate) const TIGRIS_LATENCY: (u64, u64) = (8, 185);
 
-    pub const fn new(error_pct: u8, lost_response_pct: u8, latency_pct: u8) -> Self {
+    pub(crate) const fn new(error_pct: u8, lost_response_pct: u8, latency_pct: u8) -> Self {
         FaultPlan {
             error_pct,
             lost_response_pct,
@@ -73,14 +73,14 @@ impl FaultPlan {
 /// Which operations get which plan, so a scenario can hammer the WAL
 /// without disturbing manifest CAS.
 #[derive(Debug, Clone)]
-pub struct FaultProfile {
+pub(crate) struct FaultProfile {
     default: FaultPlan,
     by_class: HashMap<ObjClass, FaultPlan>,
     by_op_class: HashMap<(StoreOp, ObjClass), FaultPlan>,
 }
 
 impl FaultProfile {
-    pub fn uniform(plan: FaultPlan) -> Self {
+    pub(crate) fn uniform(plan: FaultPlan) -> Self {
         FaultProfile {
             default: plan,
             by_class: HashMap::new(),
@@ -88,16 +88,16 @@ impl FaultProfile {
         }
     }
 
-    pub fn clean() -> Self {
+    pub(crate) fn clean() -> Self {
         Self::uniform(FaultPlan::CLEAN)
     }
 
-    pub fn with_class(mut self, class: ObjClass, plan: FaultPlan) -> Self {
+    pub(crate) fn with_class(mut self, class: ObjClass, plan: FaultPlan) -> Self {
         self.by_class.insert(class, plan);
         self
     }
 
-    pub fn with_op_class(mut self, op: StoreOp, class: ObjClass, plan: FaultPlan) -> Self {
+    pub(crate) fn with_op_class(mut self, op: StoreOp, class: ObjClass, plan: FaultPlan) -> Self {
         self.by_op_class.insert((op, class), plan);
         self
     }
@@ -283,7 +283,7 @@ fn lost_response_error() -> object_store::Error {
 
 /// Deterministic fault-injecting `ObjectStore` decorator.
 #[derive(Debug)]
-pub struct FaultStore {
+pub(crate) struct FaultStore {
     inner: Arc<dyn ObjectStore>,
     st: Arc<FaultState>,
 }
@@ -295,7 +295,7 @@ impl std::fmt::Display for FaultStore {
 }
 
 impl FaultStore {
-    pub fn new(inner: Arc<dyn ObjectStore>, seed: u64, profile: FaultProfile) -> Arc<Self> {
+    pub(crate) fn new(inner: Arc<dyn ObjectStore>, seed: u64, profile: FaultProfile) -> Arc<Self> {
         Arc::new(Self {
             inner,
             st: Arc::new(FaultState {
@@ -313,29 +313,29 @@ impl FaultStore {
         })
     }
 
-    pub fn uniform(inner: Arc<dyn ObjectStore>, seed: u64, plan: FaultPlan) -> Arc<Self> {
+    pub(crate) fn uniform(inner: Arc<dyn ObjectStore>, seed: u64, plan: FaultPlan) -> Arc<Self> {
         Self::new(inner, seed, FaultProfile::uniform(plan))
     }
 
-    pub fn coverage(&self) -> Arc<Coverage> {
+    pub(crate) fn coverage(&self) -> Arc<Coverage> {
         self.st.coverage.clone()
     }
 
-    pub fn injected_latency(&self) -> u64 {
+    pub(crate) fn injected_latency(&self) -> u64 {
         self.st.injected_latency.load(Ordering::Relaxed)
     }
-    pub fn injected_errors(&self) -> u64 {
+    pub(crate) fn injected_errors(&self) -> u64 {
         self.st.injected_errors.load(Ordering::Relaxed)
     }
-    pub fn injected_lost(&self) -> u64 {
+    pub(crate) fn injected_lost(&self) -> u64 {
         self.st.injected_lost.load(Ordering::Relaxed)
     }
-    pub fn ops(&self) -> u64 {
+    pub(crate) fn ops(&self) -> u64 {
         self.st.ops.load(Ordering::Relaxed)
     }
 
     /// Operations of one (verb, class) so far — the protocol-cost ledger.
-    pub fn count(&self, op: StoreOp, class: ObjClass) -> u64 {
+    pub(crate) fn count(&self, op: StoreOp, class: ObjClass) -> u64 {
         self.st
             .op_counts
             .lock()
@@ -366,7 +366,7 @@ impl FaultStore {
         engaged
     }
 
-    pub fn release_hold(&self) {
+    pub(crate) fn release_hold(&self) {
         if let Some(h) = self.st.hold.lock().unwrap().take() {
             h.gate.close();
         }
