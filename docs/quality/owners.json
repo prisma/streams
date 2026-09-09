@@ -239,6 +239,14 @@
       "path": "build.rs",
       "reason": "Build-time identity owns the explicit release commit and SOURCE_DATE_EPOCH inputs. They are embedded at compilation, never read or overridden by the running service.",
       "syntax": "std::env::var"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(proptest::proptest)",
+      "path": "src/billing/read_accumulator/tests.rs",
+      "reason": "Read accumulator conservation properties generate bounded observations and drain/requeue schedules against the actual service owner; property cases do not substitute for durable spool integration tests.",
+      "syntax": "proptest::proptest"
     }
   ]
 }

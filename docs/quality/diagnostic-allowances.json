@@ -11721,62 +11721,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "f08115b642dd89d37a997de296a1672db38b1c76a439c9d05b8b5de88510686e",
-      "item": "crate::ReadUsageAccumulator::drain_sealed",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c1518f73e6760c2c519584bd6205be99d81edeb735f19a59d75847e5d7b2a1ce",
-      "item": "crate::ReadUsageAccumulator::meter",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "41ef6144d44ad81f077aec00dacf394a0907f85c7be89a8b5edd5e068e8ceeee",
-      "item": "crate::ReadUsageAccumulator::requeue",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d5674f0713a131e8282dd940c488c258443afceba6eb5a555bfea0eba71532a1",
-      "item": "crate::ReadUsageAccumulator::seal_if_aged",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "60aa0d085ecb24c7f2a108dc3e519227b2149628397d579db16686c30a3a8cdb",
-      "item": "crate::ReadUsageAccumulator::seal_locked",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3adcf785847736ab34146878eb072b4e6ab899f8325cfed99b685592993d7827",
-      "item": "crate::ReadUsageAccumulator::snapshot_active",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "21e6aa05a8ffa8355fa76784064ac570996a9779a3f26df29650dfde79b8aacc",
-      "item": "crate::ReadUsageAccumulator::unflushed",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b12b1e08bb400e0eeebfd4552da86c3e27c8fcf67f31ffd857c2db9212f2665e",
-      "item": "crate::ReadUsageAccumulator::unflushed",
-      "lint": "clippy::unwrap_used",
-      "path": "src/billing.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "cb1fe5123739f1acb4dd03ee6e61efee46bda94b8e0b74b342b11b257598f93f",
       "item": "crate::spawn_rollup",
       "lint": "clippy::unwrap_used",
@@ -14437,13 +14381,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "6bd42fc4b7d56ca9def804cda1d980bc9b168b606778479d88a5bda8260b3f20",
-      "item": "crate::ReadUsageAccumulator::snapshot_active",
-      "lint": "dead_code",
-      "path": "src/billing.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "dd468d04d2b95e5f6d4b08588474d3d20d4304ba05eb052a145d705a15560a23",
       "item": "crate::FrameCompression::from_enabled",
       "lint": "dead_code",
@@ -15447,13 +15384,6 @@
       "count": 1,
       "fingerprint": "1c741e0a0b6e1ec1096c33b0c538e5e2b2f9f192faf4b7825e981dcfbf6209ce",
       "item": "crate::ReadSpool::persist",
-      "lint": "unreachable_pub",
-      "path": "src/billing.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "50a709a16b8325ce1983abe59bec9abcdbeff946d8bca2594c7eb2574d0cc04d",
-      "item": "crate::ReadUsageAccumulator::snapshot_active",
       "lint": "unreachable_pub",
       "path": "src/billing.rs"
     },
