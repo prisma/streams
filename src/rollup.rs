@@ -24,7 +24,7 @@ use std::sync::Arc;
 // v2: every key carries the ACCOUNT (round-21 multi-tenant identity —
 // project ids are not assumed globally unique). Fresh namespace; the
 // preview's v1 rollup data is disposable pre-launch.
-pub const ROLLUP_PATH: &str = "telemetry/usage-rollup/v2/p0";
+pub(crate) const ROLLUP_PATH: &str = "telemetry/usage-rollup/v2/p0";
 
 // ---------------------------------------------------------------------
 // Keyspace (§9.2)
@@ -65,7 +65,7 @@ const K_CURSOR: &[u8] = b"meta/usage-cursor";
 /// Latest absolute state per segment: the dedupe floor for snapshots
 /// and the source of storage extrapolation for provisional months.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct SegmentState {
+pub(crate) struct SegmentState {
     #[serde(default)]
     pub usage_version: u64,
     #[serde(default)]
@@ -82,7 +82,7 @@ pub struct SegmentState {
 /// per-(segment, month) values last applied, so an updated snapshot
 /// applies as a delta and a replayed one applies as zero.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct SegMonth {
+pub(crate) struct SegMonth {
     #[serde(default)]
     pub usage_version: u64,
     #[serde(default)]
@@ -103,7 +103,7 @@ pub struct SegMonth {
 
 /// One (month, project, stream incarnation): the invoice row.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct MonthRow {
+pub(crate) struct MonthRow {
     #[serde(default)]
     pub account_id: String,
     #[serde(default)]
@@ -143,7 +143,7 @@ pub struct MonthRow {
 /// corrections list. Kept on month rows AND on name/project
 /// aggregates so aggregate answers stay invoice-consistent.
 #[derive(Clone, Debug, Default, Serialize, Deserialize, PartialEq)]
-pub struct CorrTotals {
+pub(crate) struct CorrTotals {
     #[serde(default)]
     pub ingest_payload_bytes_delta: i64,
     #[serde(default)]
@@ -166,7 +166,7 @@ pub struct CorrTotals {
 }
 
 impl CorrTotals {
-    pub fn absorb(&mut self, c: &UsageCorrection) {
+    pub(crate) fn absorb(&mut self, c: &UsageCorrection) {
         self.ingest_payload_bytes_delta += c.ingest_payload_bytes_delta;
         self.ingest_records_delta += c.ingest_records_delta;
         self.read_payload_bytes_delta += c.read_payload_bytes_delta;
@@ -182,7 +182,7 @@ impl CorrTotals {
 }
 
 /// base + signed delta, floored at zero (a correction can subtract).
-pub fn eff_u64(base: u64, delta: i64) -> u64 {
+pub(crate) fn eff_u64(base: u64, delta: i64) -> u64 {
     if delta >= 0 {
         base.saturating_add(delta as u64)
     } else {
@@ -190,7 +190,7 @@ pub fn eff_u64(base: u64, delta: i64) -> u64 {
     }
 }
 
-pub fn eff_u128(base: u128, delta_str: &str) -> u128 {
+pub(crate) fn eff_u128(base: u128, delta_str: &str) -> u128 {
     let d: i128 = delta_str.parse().unwrap_or(0);
     if d >= 0 {
         base.saturating_add(d as u128)
@@ -200,7 +200,7 @@ pub fn eff_u128(base: u128, delta_str: &str) -> u128 {
 }
 
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct FrozenTotals {
+pub(crate) struct FrozenTotals {
     #[serde(default)]
     pub ingest_bytes: u64,
     #[serde(default)]
@@ -220,13 +220,13 @@ pub struct FrozenTotals {
 }
 
 impl MonthRow {
-    pub fn ingest_bytes(&self) -> u64 {
+    pub(crate) fn ingest_bytes(&self) -> u64 {
         self.segments.values().map(|s| s.ingest_bytes).sum()
     }
-    pub fn ingest_records(&self) -> u64 {
+    pub(crate) fn ingest_records(&self) -> u64 {
         self.segments.values().map(|s| s.ingest_records).sum()
     }
-    pub fn storage_byte_ms(&self) -> u128 {
+    pub(crate) fn storage_byte_ms(&self) -> u128 {
         self.segments
             .values()
             .map(|s| s.storage_byte_ms.parse::<u128>().unwrap_or(0))
@@ -235,7 +235,7 @@ impl MonthRow {
     /// Provisional storage byte-time: the recorded integral plus each
     /// non-final segment gauge extrapolated to `now`, clamped to the
     /// month's end (§9.4).
-    pub fn storage_byte_ms_provisional(&self, month: &str, now_ms: i64) -> u128 {
+    pub(crate) fn storage_byte_ms_provisional(&self, month: &str, now_ms: i64) -> u128 {
         let end = parse_month(month)
             .map(|(y, m)| {
                 let (ny, nm) = next_month(y, m);
@@ -255,12 +255,12 @@ impl MonthRow {
             })
             .sum()
     }
-    pub fn owned_bytes_now(&self) -> u64 {
+    pub(crate) fn owned_bytes_now(&self) -> u64 {
         self.segments.values().map(|s| s.gauge_bytes).sum()
     }
     /// Effective (invoice) totals: the frozen base when finalized,
     /// live accumulators otherwise, plus materialized corrections.
-    pub fn effective(&self) -> serde_json::Value {
+    pub(crate) fn effective(&self) -> serde_json::Value {
         let (ib, irec, sbm, rpb, rrec, rop, qop, areq) = match &self.frozen {
             Some(f) => (
                 f.ingest_bytes,
@@ -300,7 +300,7 @@ impl MonthRow {
 /// Aggregate across a project's streams for one month (also the shape
 /// of the per-name aggregate, which additionally lists incarnations).
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct AggRow {
+pub(crate) struct AggRow {
     #[serde(default)]
     pub ingest_bytes: u64,
     #[serde(default)]
@@ -354,7 +354,7 @@ fn month_spans(from_ms: i64, to_ms: i64) -> Vec<(String, i64)> {
 /// The invoice-reconciliation verdict for one month (Stage 7): counts
 /// walked and every disagreement, empty = the books balance.
 #[derive(Clone, Debug, Default, Serialize)]
-pub struct ReconcileReport {
+pub(crate) struct ReconcileReport {
     pub month: String,
     pub stream_rows: usize,
     pub projects: usize,
@@ -372,14 +372,14 @@ pub struct ReconcileReport {
 /// the honest owner is a named install-once slot, not a getter on a
 /// "billing service" that would then own nothing about it.
 #[derive(Clone, Default)]
-pub struct RollupSlot {
+pub(crate) struct RollupSlot {
     inner: std::sync::Arc<std::sync::OnceLock<std::sync::Arc<UsageRollup>>>,
 }
 
 impl RollupSlot {
     /// Install the database. `Err` means another install won: this
     /// instance already has one.
-    pub fn install(
+    pub(crate) fn install(
         &self,
         rollup: std::sync::Arc<UsageRollup>,
     ) -> Result<(), std::sync::Arc<UsageRollup>> {
@@ -387,17 +387,17 @@ impl RollupSlot {
     }
 
     /// The database, if this instance is a rollup consumer.
-    pub fn get(&self) -> Option<&std::sync::Arc<UsageRollup>> {
+    pub(crate) fn get(&self) -> Option<&std::sync::Arc<UsageRollup>> {
         self.inner.get()
     }
 
     /// Whether this instance runs the rollup consumer.
-    pub fn installed(&self) -> bool {
+    pub(crate) fn installed(&self) -> bool {
         self.inner.get().is_some()
     }
 }
 
-pub struct UsageRollup {
+pub(crate) struct UsageRollup {
     pub db: Arc<Db>,
     close_rows_visited: std::sync::atomic::AtomicU64,
 }
@@ -491,7 +491,7 @@ fn read_faults() -> &'static ReadFaults {
 impl UsageRollup {
     /// Test-only convenience: independent tests construct independent caches.
     #[cfg(test)]
-    pub async fn open(
+    pub(crate) async fn open(
         store: Arc<dyn object_store::ObjectStore>,
         prefix: &str,
         cfg: &crate::config::ServerConfig,
@@ -506,7 +506,7 @@ impl UsageRollup {
     }
 
     /// The runtime shares one telemetry cache across spool and rollup DBs.
-    pub async fn open_with_cache(
+    pub(crate) async fn open_with_cache(
         store: Arc<dyn object_store::ObjectStore>,
         prefix: &str,
         cfg: &crate::config::ServerConfig,
@@ -533,7 +533,7 @@ impl UsageRollup {
         })
     }
 
-    pub async fn cursor(&self) -> anyhow::Result<Option<String>> {
+    pub(crate) async fn cursor(&self) -> anyhow::Result<Option<String>> {
         read_bytes(&self.db, K_CURSOR)
             .await?
             .map(|v| String::from_utf8(v.to_vec()).map_err(Into::into))
@@ -543,7 +543,7 @@ impl UsageRollup {
     /// Apply one ledger page transactionally (§9.3). `next_cursor` is
     /// stored in the SAME batch; the whole page is durable before the
     /// consumer advances. Idempotent under replay.
-    pub async fn apply_page(
+    pub(crate) async fn apply_page(
         &self,
         envelopes: &[UsageEnvelope],
         next_cursor: &str,
@@ -1045,13 +1045,13 @@ impl UsageRollup {
 
     /// L0 posture of the rollup DB (same in-memory manifest probe as
     /// the history partitions and the read spool).
-    pub fn l0_stats(&self) -> (u64, u64, u64, u64) {
+    pub(crate) fn l0_stats(&self) -> (u64, u64, u64, u64) {
         crate::history::history_l0_stats(&self.db)
     }
 
     // ---- point reads (the customer API) ------------------------------
 
-    pub async fn month_row(
+    pub(crate) async fn month_row(
         &self,
         month: &str,
         account: &str,
@@ -1062,7 +1062,7 @@ impl UsageRollup {
     }
 
     // mt-lint: allow(name-param-shared-core): rollup lookup; project is an explicit sibling parameter
-    pub async fn name_row(
+    pub(crate) async fn name_row(
         &self,
         month: &str,
         account: &str,
@@ -1072,7 +1072,7 @@ impl UsageRollup {
         read_json(&self.db, &k_name(month, account, project, name)).await
     }
 
-    pub async fn project_row(
+    pub(crate) async fn project_row(
         &self,
         month: &str,
         account: &str,
@@ -1206,7 +1206,7 @@ impl UsageRollup {
     /// All persistent segment states for one stream (bounded by its
     /// segment count) — the current-month fallback when no month row
     /// exists yet (round-21 blocker 2).
-    pub async fn stream_segment_states(
+    pub(crate) async fn stream_segment_states(
         &self,
         account: &str,
         project: &str,
@@ -1223,7 +1223,7 @@ impl UsageRollup {
 
     /// Pending monthly artifacts (blocker 7): (pending key, month,
     /// project, stream-id, row).
-    pub async fn pending_artifacts(
+    pub(crate) async fn pending_artifacts(
         &self,
         max: usize,
     ) -> anyhow::Result<Vec<(Vec<u8>, String, String, String, MonthRow)>> {
@@ -1252,7 +1252,7 @@ impl UsageRollup {
 
     /// Phase 2 of publication: the object is verifiably in the store —
     /// retire the pending row and record the done marker.
-    pub async fn mark_artifact_published(
+    pub(crate) async fn mark_artifact_published(
         &self,
         pending_key: &[u8],
         object_path: &str,
@@ -1277,7 +1277,7 @@ impl UsageRollup {
 
     /// Pending correction artifacts (round-22 item 8): (pending key,
     /// month, "account/project", stream-id, correction id, body).
-    pub async fn pending_correction_artifacts(
+    pub(crate) async fn pending_correction_artifacts(
         &self,
         max: usize,
     ) -> anyhow::Result<Vec<(Vec<u8>, String, String, String, String, Vec<u8>)>> {
@@ -1306,7 +1306,7 @@ impl UsageRollup {
         Ok(out)
     }
 
-    pub async fn mark_correction_published(
+    pub(crate) async fn mark_correction_published(
         &self,
         pending_key: &[u8],
         object_path: &str,
@@ -1405,7 +1405,7 @@ impl UsageRollup {
     /// guarded by per-segment `final_seen`/boundary checks, so a replay
     /// applies zero).
     #[cfg(test)]
-    pub fn close_rows_visited(&self) -> u64 {
+    pub(crate) fn close_rows_visited(&self) -> u64 {
         self.close_rows_visited
             .load(std::sync::atomic::Ordering::Relaxed)
     }
@@ -2466,7 +2466,7 @@ mod tests {
 // ---------------------------------------------------------------------
 
 const K_OPS_CURSOR: &[u8] = b"meta/ops-cursor";
-pub const OPS_RAW_RETENTION_MS: i64 = 7 * 86_400_000;
+pub(crate) const OPS_RAW_RETENTION_MS: i64 = 7 * 86_400_000;
 
 fn k_ops_raw(instance: &str, ts_ms: i64) -> Vec<u8> {
     format!("ops/raw/{instance}/{ts_ms:020}").into_bytes()
@@ -2477,7 +2477,7 @@ fn k_ops_m1(instance: &str, minute_ms: i64) -> Vec<u8> {
 
 /// One-minute aggregate: last cumulative counters + max gauges seen.
 #[derive(Clone, Debug, Default, Serialize, Deserialize)]
-pub struct OpsM1 {
+pub(crate) struct OpsM1 {
     #[serde(default)]
     // mt-lint: allow(name-keyed-map): metric name, not stream identity
     pub counters: std::collections::BTreeMap<String, u64>,
@@ -2489,7 +2489,7 @@ pub struct OpsM1 {
 }
 
 impl UsageRollup {
-    pub async fn ops_cursor(&self) -> Option<String> {
+    pub(crate) async fn ops_cursor(&self) -> Option<String> {
         self.db
             .get(K_OPS_CURSOR)
             .await
@@ -2500,7 +2500,7 @@ impl UsageRollup {
 
     /// Ingest one `_ops_metrics` page: raw point + m1 merge + cursor in
     /// one WriteBatch (same §9.3 discipline as usage pages).
-    pub async fn apply_ops_page(
+    pub(crate) async fn apply_ops_page(
         &self,
         snaps: &[crate::ops::OpsSnapshot],
         next_cursor: &str,

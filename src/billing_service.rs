@@ -9,7 +9,7 @@ use std::sync::{Arc, OnceLock};
 use crate::billing::{ReadBatch, ReadSpool, ReadUsageAccumulator, SweepSched};
 
 #[derive(Clone)]
-pub struct BillingService {
+pub(crate) struct BillingService {
     inner: Arc<Inner>,
 }
 
@@ -45,7 +45,7 @@ impl<'a> ReadDrain<'a> {
         }
     }
 
-    pub fn accepted(&mut self) {
+    pub(crate) fn accepted(&mut self) {
         self.batches.clear();
     }
 }
@@ -57,7 +57,7 @@ impl Drop for ReadDrain<'_> {
 }
 
 /// What the operator surfaces show about the durable read spool.
-pub struct ReadSpoolStats {
+pub(crate) struct ReadSpoolStats {
     pub quarantined: u64,
     pub pending_rows: u64,
     pub pending_bytes: u64,
@@ -66,7 +66,7 @@ pub struct ReadSpoolStats {
 }
 
 impl BillingService {
-    pub fn new(usage_key: Option<String>, reads: Arc<ReadUsageAccumulator>) -> Self {
+    pub(crate) fn new(usage_key: Option<String>, reads: Arc<ReadUsageAccumulator>) -> Self {
         Self {
             inner: Arc::new(Inner {
                 usage_key,
@@ -79,14 +79,14 @@ impl BillingService {
     }
 
     /// The usage ledger's stream key — `None` means billing is off.
-    pub fn usage_key(&self) -> Option<String> {
+    pub(crate) fn usage_key(&self) -> Option<String> {
         self.inner.usage_key.clone()
     }
 
     // -- read metering ------------------------------------------------
 
     /// Meter one read against a billing identity.
-    pub fn meter_read(
+    pub(crate) fn meter_read(
         &self,
         id: &crate::billing::BillingIdentity,
         delta: crate::billing::RowDelta,
@@ -95,7 +95,7 @@ impl BillingService {
     }
 
     /// Meter one delivered live chunk (§4.2: what actually left the body).
-    pub fn meter_read_chunk(
+    pub(crate) fn meter_read_chunk(
         &self,
         id: &crate::billing::BillingIdentity,
         payload_bytes: u64,
@@ -105,7 +105,7 @@ impl BillingService {
     }
 
     /// Seal the open read window once it is older than `max_age_ms`.
-    pub fn seal_aged_reads(&self, max_age_ms: i64) {
+    pub(crate) fn seal_aged_reads(&self, max_age_ms: i64) {
         self.inner.reads.seal_if_aged(max_age_ms);
     }
 
@@ -158,23 +158,23 @@ impl BillingService {
 
     /// Tests only: inspect/remove sealed batches without a guarded handoff.
     #[cfg(test)]
-    pub fn drain_sealed_reads(&self, max: usize) -> Vec<ReadBatch> {
+    pub(crate) fn drain_sealed_reads(&self, max: usize) -> Vec<ReadBatch> {
         self.inner.reads.drain_sealed(max)
     }
 
     /// Tests only: install a batch at the accumulator head.
     #[cfg(test)]
-    pub fn requeue_reads(&self, batches: Vec<ReadBatch>) {
+    pub(crate) fn requeue_reads(&self, batches: Vec<ReadBatch>) {
         self.inner.reads.requeue(batches);
     }
 
     /// (rows, estimated bytes, sealed batches) not yet in the ledger.
-    pub fn unflushed_reads(&self) -> (usize, usize, usize) {
+    pub(crate) fn unflushed_reads(&self) -> (usize, usize, usize) {
         self.inner.reads.unflushed()
     }
 
     /// How often sealing was deferred under memory pressure.
-    pub fn read_seal_deferrals(&self) -> u64 {
+    pub(crate) fn read_seal_deferrals(&self) -> u64 {
         self.inner
             .reads
             .seal_deferrals
@@ -184,30 +184,30 @@ impl BillingService {
     /// Tests only: the raw accumulator, for scenarios that drive the
     /// metering window directly (seal-now, snapshot, drain).
     #[cfg(test)]
-    pub fn reads(&self) -> &Arc<ReadUsageAccumulator> {
+    pub(crate) fn reads(&self) -> &Arc<ReadUsageAccumulator> {
         &self.inner.reads
     }
 
     /// Tests only: the raw spool.
     #[cfg(test)]
-    pub fn read_spool(&self) -> Option<&Arc<ReadSpool>> {
+    pub(crate) fn read_spool(&self) -> Option<&Arc<ReadSpool>> {
         self.inner.read_spool.get()
     }
 
     // -- the durable read spool ---------------------------------------
 
     /// Install the spool. `Err` means one was already installed.
-    pub fn install_read_spool(&self, spool: Arc<ReadSpool>) -> Result<(), Arc<ReadSpool>> {
+    pub(crate) fn install_read_spool(&self, spool: Arc<ReadSpool>) -> Result<(), Arc<ReadSpool>> {
         self.inner.read_spool.set(spool)
     }
 
     /// Whether the durable spool is open (required mode demands it).
-    pub fn read_spool_open(&self) -> bool {
+    pub(crate) fn read_spool_open(&self) -> bool {
         self.inner.read_spool.get().is_some()
     }
 
     /// Persist sealed read batches into the spool before the ledger.
-    pub async fn spool_sealed_reads(&self, max: usize) -> Result<(), String> {
+    pub(crate) async fn spool_sealed_reads(&self, max: usize) -> Result<(), String> {
         match self.inner.read_spool.get() {
             Some(spool) => crate::billing::spool_sealed(&self.inner.reads, spool, max).await,
             None => Ok(()),
@@ -223,7 +223,7 @@ impl BillingService {
     }
 
     /// Release spooled batches — ONLY after the ledger acknowledged.
-    pub async fn remove_spooled(&self, keys: &[Vec<u8>]) -> Result<(), String> {
+    pub(crate) async fn remove_spooled(&self, keys: &[Vec<u8>]) -> Result<(), String> {
         match self.inner.read_spool.get() {
             Some(spool) => spool.remove(keys).await.map_err(|e| e.to_string()),
             None => Ok(()),
@@ -231,7 +231,7 @@ impl BillingService {
     }
 
     /// The operator view of the spool, if it is open.
-    pub fn read_spool_stats(&self) -> Option<ReadSpoolStats> {
+    pub(crate) fn read_spool_stats(&self) -> Option<ReadSpoolStats> {
         let spool = self.inner.read_spool.get()?;
         let (pending_rows, pending_bytes) = spool.resident();
         Some(ReadSpoolStats {
@@ -243,7 +243,7 @@ impl BillingService {
     }
 
     /// (open, quarantined, depth) for the readiness/telemetry surface.
-    pub async fn read_spool_health(&self) -> (bool, u64, u64) {
+    pub(crate) async fn read_spool_health(&self) -> (bool, u64, u64) {
         match self.inner.read_spool.get() {
             Some(sp) => (true, sp.quarantined_count(), sp.depth().await as u64),
             None => (false, 0, 0),
@@ -254,7 +254,7 @@ impl BillingService {
 
     /// Record that the sweep scheduler holds `prefix` under custody
     /// value `seq`, and refresh the peak gauge.
-    pub fn claim_sweep_custody(&self, prefix: &str, seq: u64, held_now: usize) {
+    pub(crate) fn claim_sweep_custody(&self, prefix: &str, seq: u64, held_now: usize) {
         self.inner
             .sweep
             .opened
@@ -268,13 +268,13 @@ impl BillingService {
     }
 
     /// Drop `prefix` from custody and forget its quantum accounting.
-    pub fn release_sweep_custody(&self, prefix: &str) {
+    pub(crate) fn release_sweep_custody(&self, prefix: &str) {
         self.inner.sweep.opened.lock().unwrap().remove(prefix);
         self.inner.sweep.cycles.lock().unwrap().remove(prefix);
     }
 
     /// Count one residency cycle for `prefix`; returns the new count.
-    pub fn note_sweep_cycle(&self, prefix: &str) -> usize {
+    pub(crate) fn note_sweep_cycle(&self, prefix: &str) -> usize {
         let mut c = self.inner.sweep.cycles.lock().unwrap();
         let e = c.entry(prefix.to_string()).or_insert(0);
         *e += 1;
@@ -282,18 +282,18 @@ impl BillingService {
     }
 
     /// How many engines exist only because debt discovery opened them.
-    pub fn sweep_resident_engines(&self) -> usize {
+    pub(crate) fn sweep_resident_engines(&self) -> usize {
         self.inner.sweep.opened.lock().unwrap().len()
     }
 
     /// The custody value the scheduler installed for `prefix`, if it
     /// holds it.
-    pub fn sweep_custody_seq(&self, prefix: &str) -> Option<u64> {
+    pub(crate) fn sweep_custody_seq(&self, prefix: &str) -> Option<u64> {
         self.inner.sweep.opened.lock().unwrap().get(prefix).copied()
     }
 
     /// Peak concurrently scheduler-held engines (DST bound gate).
-    pub fn sweep_peak(&self) -> usize {
+    pub(crate) fn sweep_peak(&self) -> usize {
         self.inner
             .sweep
             .peak
@@ -302,7 +302,7 @@ impl BillingService {
 
     /// Tests only: reset the peak gauge between scenarios.
     #[cfg(test)]
-    pub fn reset_sweep_peak(&self) {
+    pub(crate) fn reset_sweep_peak(&self) {
         self.inner
             .sweep
             .peak
@@ -310,7 +310,7 @@ impl BillingService {
     }
 
     /// Advance the sweep's rotation cycle; returns the previous value.
-    pub fn next_sweep_cycle(&self) -> usize {
+    pub(crate) fn next_sweep_cycle(&self) -> usize {
         self.inner
             .sweep
             .cycle
@@ -318,7 +318,7 @@ impl BillingService {
     }
 
     /// The prefixes the scheduler currently holds under custody.
-    pub fn sweep_custody_prefixes(&self) -> Vec<String> {
+    pub(crate) fn sweep_custody_prefixes(&self) -> Vec<String> {
         self.inner
             .sweep
             .opened
@@ -330,12 +330,12 @@ impl BillingService {
     }
 
     /// The tombstone walk's resume point.
-    pub fn sweep_walk_cursor(&self) -> Option<String> {
+    pub(crate) fn sweep_walk_cursor(&self) -> Option<String> {
         self.inner.sweep.walk_cursor.lock().unwrap().clone()
     }
 
     /// Set (or clear, on a full circle) the walk's resume point.
-    pub fn set_sweep_walk_cursor(&self, after: Option<String>) {
+    pub(crate) fn set_sweep_walk_cursor(&self, after: Option<String>) {
         *self.inner.sweep.walk_cursor.lock().unwrap() = after;
     }
 }
