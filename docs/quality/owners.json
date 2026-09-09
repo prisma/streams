@@ -239,6 +239,14 @@
       "path": "src/postings.rs",
       "reason": "Canonical postings decoder regressions; compile the same private decoder and allocation admission in the server and invariant harness; no copied parser or public test API.",
       "syntax": "path = \"postings/codec_tests.rs\""
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::main",
+      "path": "build.rs",
+      "reason": "Build-time identity owns the explicit release commit and SOURCE_DATE_EPOCH inputs. They are embedded at compilation, never read or overridden by the running service.",
+      "syntax": "std::env::var"
     }
   ]
 }

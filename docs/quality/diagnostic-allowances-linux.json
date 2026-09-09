@@ -2166,20 +2166,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "2b3f8f93524c90db6157cb5ea29b6c54996333a6c317c1f8510db203bf1ccda4",
-      "item": "crate::main",
-      "lint": "clippy::disallowed_methods",
-      "path": "build.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "7ed9c689ea4fadb4ef47dc05e174ad3dbc4dc32f1a7c450b4c9c5883321b0e56",
-      "item": "crate::main",
-      "lint": "clippy::disallowed_methods",
-      "path": "build.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "c48305dc11c4c702f762355e7557be8dee55ad7f3e3ae3ea7db9c90e13236811",
       "item": "crate::main",
       "lint": "clippy::disallowed_methods",
