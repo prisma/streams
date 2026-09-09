@@ -149,7 +149,6 @@ pub mod mech {
     pub const APPEND_RETRIED: &str = "append_retried";
     pub const PRODUCER_DUPLICATE: &str = "producer_duplicate_suppressed";
     pub const OLD_OWNER_FENCED: &str = "old_owner_fenced";
-    pub const AFTER_DURABLE_BEFORE_ACK: &str = "after_durable_before_ack";
     pub const CLIENT_DEADLINE_EXPIRED: &str = "client_deadline_expired";
     pub const IN_FLIGHT_AT_FENCE: &str = "append_in_flight_at_fence";
     pub const READ_FROM_HISTORY: &str = "read_served_from_history";
