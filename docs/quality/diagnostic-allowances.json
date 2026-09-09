@@ -3167,27 +3167,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "4e4cff4c440baea75c699ddfb32ba087955f35b262717e2577479e2fd420a769",
-      "item": "crate::tests::concurrent_shutdowns_share_one_run_and_one_report",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/tasks.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "afbb0fb5e9453317c075a7d99a85b9bf545b9361d1e61ac56c73de3ff3a7d19e",
-      "item": "crate::tests::concurrent_shutdowns_share_one_run_and_one_report",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/tasks.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9928c6113e271886b21fee08dad78cdab779270006b94b9b6b6b0b73bad05294",
-      "item": "crate::tests::registration_cannot_race_shutdown",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/tasks.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "077dcb0658838b0eae07fae1248464feb53eb4915ab8e665afe5540f99f3be58",
       "item": "crate::TaskSupervisor::launch_shutdown",
       "lint": "clippy::disallowed_methods",
@@ -6601,90 +6580,6 @@
       "item": "crate::tests::runtime_store_concurrency_is_shared_locally_and_independent_of_first_access",
       "lint": "clippy::excessive_nesting",
       "path": "src/store_timing/resources.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "22d0bd86fae49aa646d4129798efff824c7c1b5d32614d54a91cb3b8867200b9",
-      "item": "crate::tests::aborted_tasks_are_destroyed_before_shutdown_returns",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/tasks.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "38ab6e967a956b64eff0881cae40d5ad458f8e86cf96e1cb1d4a8801c2944c42",
-      "item": "crate::tests::aborted_tasks_are_destroyed_before_shutdown_returns::<Probe as Drop>::drop",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/tasks.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9130c1a9d6577376fbb21584d2bb25594f0d4027d3ac5ae486bf094f3d4601a8",
-      "item": "crate::tests::concurrent_shutdowns_share_one_run_and_one_report",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/tasks.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d8bb1af64690c422c254c9a3e4d3ef37028086eb39ec5b1f70c6e8d7430fb5e3",
-      "item": "crate::tests::dropping_a_waiting_shutdown_cannot_detach_the_tasks",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/tasks.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "84f4ce4d9accadd7469845009a4b41dffef872e43294f1ad7602eafa51ea7959",
-      "item": "crate::tests::dropping_a_waiting_shutdown_cannot_detach_the_tasks::<Probe as Drop>::drop",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/tasks.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "81d10117157cb2f06f3921e9daf02f2437a88502762d6e18ba2621e79adb1ee0",
-      "item": "crate::tests::outcomes_are_reported_in_registration_order",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/tasks.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a81c568e8c9b1f50cb0f8495723f38ed39d036f8c6181c46b646b6b6d550e10d",
-      "item": "crate::tests::readiness_changes_after_each_kind_of_critical_exit",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/tasks.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ff1b4c784defbba442efd3ab73368d35d6a1843e1c61a95fa273e0d8e9cb0408",
-      "item": "crate::tests::readiness_changes_after_each_kind_of_critical_exit",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/tasks.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1a29b08a24ff1ae59e0023c90cd0d31b0d9534f85644dd7b014d79d2e62f21e7",
-      "item": "crate::tests::registration_cannot_race_shutdown",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/tasks.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "582f30739b9581685a90f8585c6a8f29910b57511a87bc73328514aad97578bb",
-      "item": "crate::tests::registration_cannot_race_shutdown",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/tasks.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9157762b96edb3ac9d10e2dd4017fa562c07fba3272ef3a93e27c5e62a0fdc49",
-      "item": "crate::tests::shutdown_is_ordered_bounded_and_joins_everything",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/tasks.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "eb56e760aaa09101986b8117191249172a9e9902dab5f42394ea0838a332fcc8",
-      "item": "crate::tests::shutdown_is_ordered_bounded_and_joins_everything",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/tasks.rs"
     },
     {
       "count": 1,
