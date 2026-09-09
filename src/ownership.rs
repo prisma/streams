@@ -9,7 +9,7 @@ use std::sync::{Arc, RwLock};
 
 /// Rendezvous pick: FNV-1a over `"<shard> <instance>"`, highest wins.
 /// Every instance computes the same answer from the same active set.
-pub fn ring_pick(shard: &str, instances: &[String]) -> usize {
+pub(crate) fn ring_pick(shard: &str, instances: &[String]) -> usize {
     let mut best = 0usize;
     let mut best_score = 0u32;
     for (i, name) in instances.iter().enumerate() {
@@ -30,7 +30,7 @@ pub fn ring_pick(shard: &str, instances: &[String]) -> usize {
 /// The ownership view a parked session compares against (Round-11.4:
 /// when it changes, every parked SSE session re-checks its source).
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct OwnershipView {
+pub(crate) struct OwnershipView {
     pub active: Vec<String>,
     // mt-lint: allow(name-keyed-map): shard prefix -> owning instance (an ordered snapshot of the override map)
     pub overrides: BTreeMap<String, String>,
@@ -39,7 +39,7 @@ pub struct OwnershipView {
 /// Who serves which shard prefix: the fleet-published active set, the
 /// rebalancer's overrides, and this instance's own name.
 #[derive(Clone, Debug)]
-pub struct OwnershipService {
+pub(crate) struct OwnershipService {
     inner: Arc<Inner>,
 }
 
@@ -53,7 +53,7 @@ struct Inner {
 }
 
 impl OwnershipService {
-    pub fn new(instance: impl Into<String>) -> Self {
+    pub(crate) fn new(instance: impl Into<String>) -> Self {
         Self {
             inner: Arc::new(Inner {
                 instance: instance.into(),
@@ -62,14 +62,14 @@ impl OwnershipService {
         }
     }
 
-    pub fn instance(&self) -> &str {
+    pub(crate) fn instance(&self) -> &str {
         &self.inner.instance
     }
 
     /// Ring ownership for a shard prefix: the rebalancer override if its
     /// target is active, else the rendezvous pick. None when no ring is
     /// configured (single instance) — then everyone may serve everything.
-    pub fn effective_owner(&self, prefix: &str) -> Option<String> {
+    pub(crate) fn effective_owner(&self, prefix: &str) -> Option<String> {
         let view = self.inner.view.read().unwrap();
         let active = &view.active;
         if active.is_empty() || self.inner.instance.is_empty() {
@@ -85,25 +85,25 @@ impl OwnershipService {
 
     /// `Some(owner)` iff the ring assigns `prefix` to ANOTHER instance —
     /// the redirect target. None = serve it here (ours, or no ring).
-    pub fn foreign_owner(&self, prefix: &str) -> Option<String> {
+    pub(crate) fn foreign_owner(&self, prefix: &str) -> Option<String> {
         self.effective_owner(prefix)
             .filter(|o| *o != self.inner.instance)
     }
 
-    pub fn is_mine(&self, prefix: &str) -> bool {
+    pub(crate) fn is_mine(&self, prefix: &str) -> bool {
         self.foreign_owner(prefix).is_none()
     }
 
-    pub fn ring_active(&self) -> Vec<String> {
+    pub(crate) fn ring_active(&self) -> Vec<String> {
         self.inner.view.read().unwrap().active.clone()
     }
 
     #[cfg(test)]
-    pub fn set_ring_active(&self, active: Vec<String>) {
+    pub(crate) fn set_ring_active(&self, active: Vec<String>) {
         self.inner.view.write().unwrap().active = active;
     }
 
-    pub fn overrides(&self) -> HashMap<String, String> {
+    pub(crate) fn overrides(&self) -> HashMap<String, String> {
         self.inner
             .view
             .read()
@@ -117,13 +117,13 @@ impl OwnershipService {
     /// Replace the whole override map (the fleet loop mirrors
     /// fleet/overrides.json on every tick).
     #[cfg(test)]
-    pub fn set_overrides(&self, map: HashMap<String, String>) {
+    pub(crate) fn set_overrides(&self, map: HashMap<String, String>) {
         self.inner.view.write().unwrap().overrides = map.into_iter().collect();
     }
 
     /// One override, as the rebalancer installs it the moment its CAS
     /// wins (the mirror catches up next tick).
-    pub fn set_override(&self, prefix: &str, to: &str) {
+    pub(crate) fn set_override(&self, prefix: &str, to: &str) {
         self.inner
             .view
             .write()
@@ -133,14 +133,14 @@ impl OwnershipService {
     }
 
     /// Publish a complete fleet observation with no mixed ring/override window.
-    pub fn set_view(&self, active: Vec<String>, overrides: HashMap<String, String>) {
+    pub(crate) fn set_view(&self, active: Vec<String>, overrides: HashMap<String, String>) {
         *self.inner.view.write().unwrap() = OwnershipView {
             active,
             overrides: overrides.into_iter().collect(),
         };
     }
 
-    pub fn view(&self) -> OwnershipView {
+    pub(crate) fn view(&self) -> OwnershipView {
         self.inner.view.read().unwrap().clone()
     }
 }

@@ -15,7 +15,8 @@ def plan(paths, visibility_only=(), production_unchanged=()):
                   or p in ('Cargo.toml', 'Cargo.lock', 'rust-toolchain.toml', 'quality-tools.toml',
                            '.github/workflows/rust-quality.yml') for p in paths)
     codec = any(p.startswith(('src/crypto', 'src/postings', 'src/application/read_', 'src/shard/record')) for p in implementation)
-    lifecycle = any(p.startswith(('src/shard', 'src/tasks', 'src/runtime', 'src/bootstrap', 'src/sse')) for p in implementation)
+    lifecycle = any(p.startswith(('src/shard', 'src/tasks', 'src/runtime', 'src/bootstrap', 'src/sse', 'src/touch.rs',
+                                                'src/billing/read_accumulator', 'src/billing/read_spool')) for p in implementation)
     buffers = any(p.startswith(('src/retained_bytes', 'src/application/read_', 'src/crypto', 'src/bootstrap', 'src/fleet', 'src/http', 'src/ops')) for p in implementation)
     return {'compiler': bool(source) or tooling, 'properties_fuzz': codec or tooling,
             'loom': lifecycle or tooling, 'miri': buffers or tooling,

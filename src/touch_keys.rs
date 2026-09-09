@@ -37,7 +37,7 @@ pub fn table_key(entity: &str) -> u64 {
 }
 
 /// `fields` must be sorted by name before calling (canonical form).
-pub fn template_id(entity: &str, sorted_fields: &[String]) -> u64 {
+pub(crate) fn template_id(entity: &str, sorted_fields: &[String]) -> u64 {
     let mut buf = Vec::with_capacity(5 + entity.len() + 16 * sorted_fields.len());
     buf.extend_from_slice(b"tpl\0");
     buf.extend_from_slice(entity.as_bytes());
@@ -52,7 +52,7 @@ pub fn template_id(entity: &str, sorted_fields: &[String]) -> u64 {
 }
 
 /// Args must be encoded in sorted-field order.
-pub fn watch_key(template_id: u64, args: &[String]) -> u64 {
+pub(crate) fn watch_key(template_id: u64, args: &[String]) -> u64 {
     let mut buf = Vec::with_capacity(13 + 24 * args.len());
     buf.extend_from_slice(b"key\0");
     buf.extend_from_slice(&template_id.to_be_bytes());
