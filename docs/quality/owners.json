@@ -98,10 +98,10 @@
     },
     {
       "category": "unresolved-glob",
-      "count": 1,
+      "count": 2,
       "owner": "crate",
       "path": "src/application/read_batch/tests.rs",
-      "reason": "Test module imports its enclosing production owner and the pinned proptest prelude; compiler checks names. This is an explicit unresolved syntax inventory, not a claim of syntax-level resolution.",
+      "reason": "Read-batch test owner; two existing imports (super::* and proptest::prelude::*) are compiler checked and explicitly counted as unresolved syntax. This total replaces the accidental sum of one legacy and one owner registration; it permits no additional import.",
       "syntax": "compiler-resolved import; syntax cannot infer exports"
     },
     {
