@@ -38,7 +38,7 @@ pub const MAX_TEMPLATES_PER_STREAM: usize = 256;
 pub const MAX_TEMPLATES_PER_ENTITY: usize = 64;
 
 /// Lock-free derivation view: entity -> [(templateId, sortedFields)].
-pub type TemplateSnapshot = Arc<HashMap<String, Vec<(u64, Vec<String>)>>>;
+pub(crate) type TemplateSnapshot = Arc<HashMap<String, Vec<(u64, Vec<String>)>>>;
 
 struct ClosedBucket {
     generation: u64,
@@ -81,12 +81,12 @@ struct Inner {
     reaped: u64,
 }
 
-pub struct TouchJournal {
+pub(crate) struct TouchJournal {
     pub epoch: String,
     inner: Mutex<Inner>,
 }
 
-pub enum WaitOutcome {
+pub(crate) enum WaitOutcome {
     Touched {
         cursor: String,
         end_offset: u64,
@@ -108,7 +108,7 @@ pub enum WaitOutcome {
 
 impl TouchJournal {
     /// `pinned` = (entity, fields) template list from the stream descriptor.
-    pub fn start(
+    pub(crate) fn start(
         entropy: &dyn crate::runtime::Entropy,
         pinned: &[(String, Vec<String>)],
     ) -> Arc<TouchJournal> {
@@ -171,7 +171,7 @@ impl TouchJournal {
     }
 
     /// Record touched key IDs (shard acker, post-durability).
-    pub fn ingest(&self, key_ids: &[u32], next_offset: u64) {
+    pub(crate) fn ingest(&self, key_ids: &[u32], next_offset: u64) {
         let mut inner = self.inner.lock().unwrap();
         if inner.closed {
             return;
@@ -268,7 +268,7 @@ impl TouchJournal {
     }
 
     /// Fence/move: wake everyone with stale-inducing Closed and stop.
-    pub fn close(&self) {
+    pub(crate) fn close(&self) {
         let mut inner = self.inner.lock().unwrap();
         inner.closed = true;
         inner.key_index.clear();
@@ -317,7 +317,7 @@ impl TouchJournal {
 
     /// Single-key wait for the collapsible GET path. Cursor semantics:
     /// "now", or "<epoch>:<generation>"; foreign epoch => stale.
-    pub async fn wait(
+    pub(crate) async fn wait(
         self: &Arc<Self>,
         cursor: &str,
         key_ids: Vec<u32>,
@@ -486,7 +486,7 @@ fn remove_waiter(inner: &mut Inner, id: u64) -> Option<Waiter> {
 /// matching) alongside its journal.
 type JournalSlot = (crate::crypto::RouteHash, Arc<TouchJournal>);
 
-pub struct TouchRegistry {
+pub(crate) struct TouchRegistry {
     map: Mutex<HashMap<[u8; 16], JournalSlot>>,
     /// WP-15/PR 4: template-id discriminators draw from the runtime's
     /// entropy capability, not the ambient process RNG.
@@ -494,14 +494,14 @@ pub struct TouchRegistry {
 }
 
 impl TouchRegistry {
-    pub fn with_entropy(entropy: Arc<dyn crate::runtime::Entropy>) -> Self {
+    pub(crate) fn with_entropy(entropy: Arc<dyn crate::runtime::Entropy>) -> Self {
         Self {
             map: Mutex::new(HashMap::new()),
             entropy,
         }
     }
 
-    pub fn journal(
+    pub(crate) fn journal(
         &self,
         hash: [u8; 16],
         route: crate::crypto::RouteHash,
@@ -517,7 +517,7 @@ impl TouchRegistry {
     /// Fence/move of a shard: close + drop every journal whose stream's
     /// shard ROUTE hash falls in the shard's bit-prefix, waking all
     /// their waiters with stale.
-    pub fn close_shard(&self, prefix: &str) {
+    pub(crate) fn close_shard(&self, prefix: &str) {
         let mut map = self.map.lock().unwrap();
         let closing: Vec<[u8; 16]> = map
             .iter()

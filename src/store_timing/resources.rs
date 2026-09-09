@@ -3,14 +3,14 @@ use std::sync::atomic::{AtomicI64, Ordering};
 use std::time::Instant;
 
 #[derive(Debug)]
-pub struct StoreResources {
+pub(crate) struct StoreResources {
     concurrent: Option<tokio::sync::Semaphore>,
     bulk: Option<BulkGate>,
     nominal_get_bytes: u64,
 }
 
 impl StoreResources {
-    pub fn new(config: &crate::config::StorageConfig) -> Self {
+    pub(crate) fn new(config: &crate::config::StorageConfig) -> Self {
         Self {
             concurrent: (config.store_max_concurrent != 0)
                 .then(|| tokio::sync::Semaphore::new(config.store_max_concurrent)),
@@ -44,7 +44,7 @@ impl StoreResources {
         self.nominal_get_bytes
     }
 
-    pub fn bulk_stats(&self) -> serde_json::Value {
+    pub(crate) fn bulk_stats(&self) -> serde_json::Value {
         match &self.bulk {
             Some(gate) => gate.stats_json(),
             None => serde_json::json!({"cap_bytes": 0}),
@@ -81,7 +81,7 @@ impl StoreResources {
 /// and cluster liveness); only sst-class ops are gated. An op larger
 /// than the cap clamps to the whole cap (serializes, never starves).
 #[derive(Debug)]
-pub struct BulkGate {
+pub(super) struct BulkGate {
     sem: tokio::sync::Semaphore,
     cap: u32,
     pub inflight_bytes: AtomicI64,
@@ -94,7 +94,7 @@ pub struct BulkGate {
 }
 
 impl BulkGate {
-    pub fn new(cap_bytes: u32) -> Self {
+    pub(super) fn new(cap_bytes: u32) -> Self {
         BulkGate {
             sem: tokio::sync::Semaphore::new(cap_bytes as usize),
             cap: cap_bytes,
@@ -110,7 +110,7 @@ impl BulkGate {
     /// wait only when the fast path fails, so steady-state overhead is
     /// one try_acquire. The returned hold decrements the inflight gauge
     /// and returns capacity on drop.
-    pub async fn acquire(&self, bytes: u64) -> BulkHold<'_> {
+    pub(super) async fn acquire(&self, bytes: u64) -> BulkHold<'_> {
         if bytes > self.cap as u64 {
             self.oversized.fetch_add(1, Ordering::Relaxed);
         }
@@ -136,7 +136,7 @@ impl BulkGate {
         }
     }
 
-    pub fn stats_json(&self) -> serde_json::Value {
+    pub(super) fn stats_json(&self) -> serde_json::Value {
         serde_json::json!({
             "cap_bytes": self.cap,
             "inflight_bytes": self.inflight_bytes.load(Ordering::Relaxed),
@@ -154,7 +154,7 @@ impl BulkGate {
 
 /// RAII hold on gate capacity: semaphore permits + inflight gauge,
 /// both returned on drop.
-pub struct BulkHold<'a> {
+pub(super) struct BulkHold<'a> {
     _p: tokio::sync::SemaphorePermit<'a>,
     gate: &'a BulkGate,
     w: i64,

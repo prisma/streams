@@ -21,15 +21,15 @@ mod planning;
 /// PR 6.1.1-C: the coordination store lives in its own module — this
 /// file is already the fleet loop's home and must not also be the
 /// storage layer.
-pub mod repository;
-pub use repository::{FleetDocument, FleetRepository};
+pub(crate) mod repository;
+pub(crate) use repository::{FleetDocument, FleetRepository};
 use std::time::{Duration, Instant};
 
 use crate::http::AppState;
 use crate::shard::now_ms;
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Heartbeat {
+pub(crate) struct Heartbeat {
     pub instance: String,
     pub ts_ms: i64,
     pub rps: f64,
@@ -98,7 +98,7 @@ pub struct Heartbeat {
 /// fleet/overrides.json: rebalancer shard moves, CAS-updated by the
 /// initiating (laggard) instance, read by everyone each fleet tick.
 #[derive(serde::Serialize, serde::Deserialize, Default, Clone)]
-pub struct Overrides {
+pub(crate) struct Overrides {
     #[serde(default)]
     // mt-lint: allow(name-keyed-map): shard prefix -> owner override
     pub entries: std::collections::HashMap<String, OverrideEntry>,
@@ -108,7 +108,7 @@ pub struct Overrides {
 }
 
 #[derive(serde::Serialize, serde::Deserialize, Clone)]
-pub struct OverrideEntry {
+pub(crate) struct OverrideEntry {
     pub to: String,
     pub ms: i64,
 }
@@ -118,7 +118,7 @@ pub struct OverrideEntry {
 /// unguarded moves just hand the backlog around (ladder pass 3: 7 moves
 /// in 10 minutes of ping-pong). `peers` maps instance -> (cpu_pct,
 /// effective_lag_secs) and must exclude nobody; self is filtered here.
-pub fn pick_move_target(
+pub(crate) fn pick_move_target(
     peers: &std::collections::HashMap<String, (f64, u64)>,
     me: &str,
     lag_threshold_secs: u64,
@@ -140,13 +140,13 @@ pub fn pick_move_target(
 /// is mandatory unless FLEET_ALLOW_HTTP_PEERS=1 (local rigs and DST
 /// use plain http against 127.0.0.1). When FLEET_PEER_DOMAINS is set,
 /// the host must equal or be a subdomain of one of its entries.
-pub fn valid_peer_url(url: &str, cfg: &crate::config::FleetConfig) -> bool {
+pub(crate) fn valid_peer_url(url: &str, cfg: &crate::config::FleetConfig) -> bool {
     valid_peer_url_with(url, cfg.allow_http_peers, cfg.peer_domains_raw.as_deref())
 }
 
 /// Pure validation core: the env-derived inputs are parameters so tests
 /// can drive every combination without mutating process env (WP-01).
-pub fn valid_peer_url_with(url: &str, allow_http: bool, peer_domains: Option<&str>) -> bool {
+pub(crate) fn valid_peer_url_with(url: &str, allow_http: bool, peer_domains: Option<&str>) -> bool {
     let rest = match url.strip_prefix("https://") {
         Some(r) => r,
         None => match url.strip_prefix("http://") {
@@ -205,7 +205,7 @@ pub fn return_home_allowed(owned: usize, gain: usize, total: usize, active_n: us
 /// are keyed by storage_hash while the shard is chosen by
 /// stream_hash(name); the two are unrelated, so the derived prefix
 /// almost never matched and no move ever fired — ladder pass 6b D3).
-pub fn pick_victim_shard(shard_lags: &[(String, u64)], served: &[String]) -> Option<String> {
+pub(crate) fn pick_victim_shard(shard_lags: &[(String, u64)], served: &[String]) -> Option<String> {
     shard_lags
         .iter()
         .filter(|(p, _)| served.iter().any(|s| s == p))
@@ -225,7 +225,7 @@ pub fn pick_victim_shard(shard_lags: &[(String, u64)], served: &[String]) -> Opt
 /// keeps those OS-reclaimable pages in resident_size (measured on the
 /// wedge repro: resident 120 MB vs phys_footprint 2 MB after drain).
 /// phys_footprint is the metric Darwin's own memory limits use.
-pub fn rss_bytes() -> u64 {
+pub(crate) fn rss_bytes() -> u64 {
     #[cfg(target_os = "linux")]
     {
         if let Ok(statm) = std::fs::read_to_string("/proc/self/statm") {
@@ -310,7 +310,7 @@ fn cpu_time_secs() -> f64 {
 }
 
 #[derive(Serialize, Deserialize, Clone, Debug)]
-pub struct Desired {
+pub(crate) struct Desired {
     pub count: u64,
     pub reason: String,
     pub epoch: u64,
@@ -323,7 +323,7 @@ pub struct Desired {
     pub pending_events: Vec<crate::ops::OpsEvent>,
 }
 
-pub struct FleetCfg {
+pub(crate) struct FleetCfg {
     pub instance: String,
     /// Legacy assumed-capacity dimension (req/s per instance). 0 disables
     /// it — measured CPU replaced it as the primary signal.
@@ -373,7 +373,7 @@ pub struct FleetCfg {
 /// production actually uses diverges from it (PR 6.1.2-B).
 ///
 /// A runtime without fleet coordination starts nothing.
-pub fn start_configured(
+pub(crate) fn start_configured(
     state: Arc<AppState>,
     config: &crate::config::ServerConfig,
     tasks: &crate::tasks::TaskSupervisor,
@@ -1092,7 +1092,7 @@ pub fn start(state: Arc<AppState>, cfg: FleetCfg, tasks: &crate::tasks::TaskSupe
 }
 
 /// Drain the durable fleet CAS outboxes through append-before-clear ownership.
-pub async fn drain_fleet_events(
+pub(crate) async fn drain_fleet_events(
     state: &std::sync::Arc<crate::http::AppState>,
 ) -> Result<usize, String> {
     let Some(key) = state.billing.usage_key() else {

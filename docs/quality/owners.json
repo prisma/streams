@@ -247,6 +247,30 @@
       "path": "src/billing/read_accumulator/tests.rs",
       "reason": "Read accumulator conservation properties generate bounded observations and drain/requeue schedules against the actual service owner; property cases do not substitute for durable spool integration tests.",
       "syntax": "proptest::proptest"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::registration_cannot_race_shutdown",
+      "path": "src/tasks/tests.rs",
+      "reason": "Registration-race fixture; all eight spawners are joined after supervisor refusal; primitive tasks must remain outside the supervisor being tested.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::concurrent_shutdowns_share_one_run_and_one_report",
+      "path": "src/tasks/tests.rs",
+      "reason": "Concurrent-shutdown fixture; both request tasks are joined and their terminal reports compared; their cancellation cannot own the shutdown driver.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::shutdown_is_ordered_bounded_and_joins_everything",
+      "path": "src/tasks/tests.rs",
+      "reason": "Supervisor cancellation fixture; the pinned select macro races cooperative cancellation with observed ticks; compiled tests verify that the task exits during shutdown.",
+      "syntax": "tokio::select"
     }
   ]
 }

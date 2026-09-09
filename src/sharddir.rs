@@ -72,7 +72,7 @@ static OPENS_DEADLINED: AtomicU64 = AtomicU64::new(0);
 static OPENS_REAPED: AtomicU64 = AtomicU64::new(0);
 
 mod health;
-pub use health::ShardHealth;
+pub(crate) use health::ShardHealth;
 
 /// How long a never-ready instance may stay unready before it exits.
 ///
@@ -83,7 +83,7 @@ pub use health::ShardHealth;
 /// startup canary re-runs against the healed store, and a genuinely
 /// broken deployment crash-loops visibly instead of idling in an
 /// ambiguous state. 0 disables.
-pub fn unready_exit_after(cfg: &crate::config::ShardRuntimeConfig) -> Duration {
+pub(crate) fn unready_exit_after(cfg: &crate::config::ShardRuntimeConfig) -> Duration {
     Duration::from_secs(cfg.unready_exit_after_secs)
 }
 
@@ -139,7 +139,7 @@ impl UnreadyWindow {
 /// cadence, feeds the pure policy monotonic readings, and — until WP-15
 /// task supervision gives critical tasks a result policy — keeps the
 /// survival `process::exit` when the policy says Expired.
-pub fn spawn_unready_watchdog(
+pub(crate) fn spawn_unready_watchdog(
     cfg: &crate::config::ShardRuntimeConfig,
     clock: std::sync::Arc<dyn crate::runtime::Clock>,
     tasks: &crate::tasks::TaskSupervisor,
@@ -259,7 +259,7 @@ mod watchdog_policy_tests {
     }
 }
 
-pub fn stats_json() -> serde_json::Value {
+pub(crate) fn stats_json() -> serde_json::Value {
     serde_json::json!({
         "started": OPENS_STARTED.load(Ordering::Relaxed),
         "completed": OPENS_COMPLETED.load(Ordering::Relaxed),
@@ -279,12 +279,12 @@ type OpenResult = Result<Arc<ShardEngine>, String>;
 /// `begin_close` already notified once) cannot remove the replacement
 /// that opened after the holdoff.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
-pub struct EngineIncarnation(u64);
+pub(crate) struct EngineIncarnation(u64);
 
 /// A resident of the serving map: the engine and the incarnation the
 /// gate minted for the open that produced it.
 #[derive(Clone)]
-pub struct Resident {
+pub(crate) struct Resident {
     pub engine: Arc<ShardEngine>,
     pub incarnation: EngineIncarnation,
 }
@@ -467,7 +467,7 @@ pub(crate) enum Retirement {
 
 /// What a caller gets back. `Wait` is always retryable and never means the
 /// open was abandoned — the open (if any) continues in its own task.
-pub enum OpenOutcome {
+pub(crate) enum OpenOutcome {
     Ready(Arc<ShardEngine>),
     /// Try again in `retry_after_secs`; `code` distinguishes "recently
     /// fenced away" from "open in progress, slower than your patience".
@@ -479,12 +479,12 @@ pub enum OpenOutcome {
 }
 
 #[derive(Clone)]
-pub struct OpenGate {
+pub(crate) struct OpenGate {
     inner: Arc<GateInner>,
 }
 
 impl OpenGate {
-    pub fn unready_reason(&self) -> Option<String> {
+    pub(crate) fn unready_reason(&self) -> Option<String> {
         self.inner.health.unready_reason().or_else(|| {
             self.inner
                 .st
@@ -751,7 +751,7 @@ impl OpenGate {
     /// replaced changes nothing — and arms the holdoff, escalating if the
     /// engine died young, because rapid open→die cycles are exactly the
     /// storm this module exists to prevent. Returns whether it evicted.
-    pub fn notify_closed(&self, prefix: &str, incarnation: EngineIncarnation) -> bool {
+    pub(crate) fn notify_closed(&self, prefix: &str, incarnation: EngineIncarnation) -> bool {
         // PR 6.1.2-A: gate state FIRST, serving map second — the one
         // permitted order (see `ServingMap`). Holding both also makes
         // the eviction and its holdoff one step, exactly as `retire`.
@@ -834,7 +834,7 @@ impl OpenGate {
 
     /// The incarnation of the engine currently serving `prefix`.
     #[cfg(test)]
-    pub fn resident_incarnation(&self, prefix: &str) -> Option<EngineIncarnation> {
+    pub(crate) fn resident_incarnation(&self, prefix: &str) -> Option<EngineIncarnation> {
         self.inner
             .shards
             .read()
@@ -846,7 +846,7 @@ impl OpenGate {
     /// Tests only: forget the anti-flap holdoff so a replacement can open
     /// at once (the holdoff itself is proven by the flap test).
     #[cfg(test)]
-    pub fn clear_holdoff(&self, prefix: &str) {
+    pub(crate) fn clear_holdoff(&self, prefix: &str) {
         if let Some(g) = self.inner.st.lock().unwrap().get_mut(prefix) {
             g.holdoff_until = None;
             g.strikes = 0;
@@ -854,7 +854,7 @@ impl OpenGate {
     }
 
     #[cfg(test)]
-    pub fn reset_counters_for_tests() {
+    pub(crate) fn reset_counters_for_tests() {
         OPENS_STARTED.store(0, Ordering::Relaxed);
         OPENS_COMPLETED.store(0, Ordering::Relaxed);
         OPENS_FAILED.store(0, Ordering::Relaxed);
@@ -864,7 +864,7 @@ impl OpenGate {
 
     /// This gate's OWN counters — immune to other tests' engine opens.
     #[cfg(test)]
-    pub fn instance_counters(&self) -> (u64, u64, u64, u64) {
+    pub(crate) fn instance_counters(&self) -> (u64, u64, u64, u64) {
         (
             self.inner.c_started.load(Ordering::Relaxed),
             self.inner.c_completed.load(Ordering::Relaxed),
@@ -878,7 +878,7 @@ impl OpenGate {
 /// static audit found history2 derived its path independently and
 /// landed BESIDE the shards/ tree ("01/history2", or "/history2" for a
 /// one-shard root) instead of inside the shard it belongs to.
-pub fn shard_db_path(prefix: &str) -> String {
+pub(crate) fn shard_db_path(prefix: &str) -> String {
     if prefix.is_empty() {
         "shards/root".to_string()
     } else if prefix.contains('/') {
@@ -891,7 +891,7 @@ pub fn shard_db_path(prefix: &str) -> String {
 
 /// The shard's shared history-v2 partition, ALWAYS under the shard DB's
 /// own path so ownership (clone/split/move) travels with the shard.
-pub fn history2_path(prefix: &str) -> String {
+pub(crate) fn history2_path(prefix: &str) -> String {
     format!("{}/history2", shard_db_path(prefix))
 }
 
