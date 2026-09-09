@@ -279,6 +279,14 @@
       "path": "src/tasks/tests.rs",
       "reason": "Supervisor cancellation fixture; the pinned select macro races cooperative cancellation with observed ticks; compiled tests verify that the task exits during shutdown.",
       "syntax": "tokio::select"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::billing_terminal_shutdown_waits_for_a_late_open",
+      "path": "src/dst/tests/billing_controller.rs",
+      "reason": "Terminal billing fixture; pin the actual shutdown observer for one deterministic poll while its real open is held; no substitute lifecycle model or timer is used.",
+      "syntax": "std::pin::pin"
     }
   ]
 }

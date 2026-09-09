@@ -83,6 +83,29 @@ pub(super) struct HttpRig {
 }
 
 impl HttpRig {
+    /// Terminal process teardown: join its server/workers, then fence and drain
+    /// shard opens and engine close owners through the production protocol.
+    pub(super) async fn shutdown(&self) {
+        let report = self.tasks.shutdown(std::time::Duration::from_secs(5)).await;
+        assert!(
+            report.aborted.is_empty(),
+            "rig needed task aborts: {report:?}"
+        );
+        assert!(
+            report
+                .outcomes
+                .iter()
+                .all(|(_, outcome)| *outcome == crate::tasks::TaskOutcome::Finished),
+            "rig worker failed: {report:?}"
+        );
+        self.state
+            .shards
+            .shutdown(std::time::Duration::from_secs(10))
+            .await
+            .unwrap();
+        assert_eq!(self.state.shards.open_count(), 0);
+    }
+
     pub(super) fn parts(self) -> (Arc<crate::http::AppState>, std::net::SocketAddr) {
         (self.state, self.addr)
     }

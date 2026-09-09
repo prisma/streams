@@ -1252,6 +1252,17 @@
     "scenarios": []
   },
   {
+    "name": "billing_terminal_shutdown_waits_for_a_late_open",
+    "attributes": [
+      "#[tokio::test(flavor = \"multi_thread\", worker_threads = 2)]"
+    ],
+    "function_sha256": "5cfcf4d541c82ec2d4edebbdfdc860dc236b212467ebdda3c223565186f96627",
+    "mechanisms": [],
+    "configuration": [],
+    "file": "src/dst/tests/billing_controller.rs",
+    "scenarios": []
+  },
+  {
     "name": "budget_deferred_streams_absorb_on_the_next_tick",
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
@@ -4272,7 +4283,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "0a20fdf3b9c2013b97674a46b6e34da7b236eef0a116d6d31884bb5d4cad1108",
+    "function_sha256": "b9e0d05db2ce05ec784e4545d30570ead52057ad6493d2022496bf0869392ad9",
     "mechanisms": [],
     "configuration": [
       "..FaultPlan::CLEAN",
