@@ -263,6 +263,14 @@
       "path": "src/tasks/tests.rs",
       "reason": "Supervisor cancellation fixture; the pinned select macro races cooperative cancellation with observed ticks; compiled tests verify that the task exits during shutdown.",
       "syntax": "tokio::select"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::TaskSupervisor::spawn",
+      "path": "src/tasks.rs",
+      "reason": "The supervisor retains each worker handle under the registration/phase lock; its unique shutdown driver aborts when required and joins every retained handle before reporting completion. Registration/shutdown race tests exercise this ownership.",
+      "syntax": "tokio::spawn"
     }
   ]
 }

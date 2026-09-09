@@ -3160,13 +3160,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "2513858a8c8adb10989c8927c818f219ca4a54a6b43b97c0fbf026cd62104e6f",
-      "item": "crate::TaskSupervisor::spawn",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/tasks.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "077dcb0658838b0eae07fae1248464feb53eb4915ab8e665afe5540f99f3be58",
       "item": "crate::TaskSupervisor::launch_shutdown",
       "lint": "clippy::disallowed_methods",
@@ -14091,34 +14084,6 @@
       "item": "crate::wal_read_storm",
       "lint": "clippy::unwrap_used",
       "path": "src/store_timing.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "6e64144305f555935246cb1bff56eedca1db4cb02b353e8af91bf82a61261ab9",
-      "item": "crate::Inner::phase",
-      "lint": "clippy::unwrap_used",
-      "path": "src/tasks.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "885d474389fb67171238e4865912f3fa9c99429e6e52477ab10cf9c15a33b6ef",
-      "item": "crate::Inner::snapshot",
-      "lint": "clippy::unwrap_used",
-      "path": "src/tasks.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c1924b5c21981568e0b2b4daeef02a037bc6f7e240f51a6f86c27151d9def0b5",
-      "item": "crate::TaskMonitor::unready_reason",
-      "lint": "clippy::unwrap_used",
-      "path": "src/tasks.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "68c6070e66fa2fa372e953726257484c2a1a3fb501096d219ca0d2a014b40a7e",
-      "item": "crate::TaskSupervisor::spawn",
-      "lint": "clippy::unwrap_used",
-      "path": "src/tasks.rs"
     },
     {
       "count": 1,

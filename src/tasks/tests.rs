@@ -424,3 +424,49 @@ fn cancellation_refuses_poisoned_registration_state() {
     );
     assert!(!supervisor.cancellation().is_cancelled());
 }
+
+#[tokio::test]
+async fn a_panicking_builder_poison_prevents_health_claims_and_later_spawns() {
+    let supervisor = TaskSupervisor::new();
+    let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        supervisor.spawn(
+            "broken-builder",
+            Policy::Critical,
+            |_| -> std::future::Ready<TaskResult> {
+                panic!("builder failed after the registration ID was assigned");
+            },
+        )
+    }));
+    assert!(rejected.is_err());
+    assert!(supervisor.inner.state.is_poisoned());
+    let observations: [fn(&TaskSupervisor); 4] = [
+        |s| {
+            let _snapshot = s.monitor().snapshot();
+        },
+        |s| {
+            let _phase = s.monitor().phase();
+        },
+        |s| {
+            let _ready = s.monitor().unready_reason();
+        },
+        |s| {
+            let _failure = s.monitor().critical_failure();
+        },
+    ];
+    for observe in observations {
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| observe(&supervisor)))
+                .is_err()
+        );
+    }
+    let built = std::cell::Cell::new(false);
+    let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+        supervisor.spawn("after-poison", Policy::Critical, |_| {
+            built.set(true);
+            std::future::ready(TaskResult::Done)
+        })
+    }));
+    assert!(rejected.is_err());
+    assert!(!built.get(), "the later future must not be constructed");
+    assert!(!supervisor.cancellation().is_cancelled());
+}
