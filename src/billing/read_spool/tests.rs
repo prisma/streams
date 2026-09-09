@@ -137,3 +137,45 @@ fn quality_loom_replacement_and_removal_publish_consistent_totals() {
         assert!(matches!((state.sizes.len(), state.bytes), (0, 0) | (1, 19)));
     });
 }
+
+#[tokio::test]
+async fn cancelled_open_guard_closes_and_releases_its_database() {
+    let config = crate::config::ServerConfig::load(
+        crate::config::CliArgs::deterministic(),
+        &crate::config::MapEnvironment::empty(),
+    );
+    let spool = ReadSpool::open(
+        Arc::new(object_store::memory::InMemory::new()),
+        "",
+        "cancel-open-guard",
+        &config,
+    )
+    .await
+    .unwrap();
+    let db = spool.db.clone();
+    let weak = Arc::downgrade(&db);
+    let mut status = db.subscribe();
+    drop(spool);
+    let mut opening = Box::pin(async move {
+        let _guard = super::SpoolOpenGuard(Some(db));
+        std::future::pending::<()>().await;
+    });
+    assert!(futures_util::poll!(opening.as_mut()).is_pending());
+    drop(opening);
+    tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        let reason = status
+            .wait_for(|state| state.close_reason.is_some())
+            .await
+            .unwrap()
+            .close_reason
+            .clone();
+        assert!(matches!(reason, Some(slatedb::CloseReason::Clean)));
+        // A close marker precedes joining the DB workers. The last outer Arc
+        // belongs to the guard's close future until that operation completes.
+        while weak.upgrade().is_some() {
+            tokio::task::yield_now().await;
+        }
+    })
+    .await
+    .unwrap();
+}
