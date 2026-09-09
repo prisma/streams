@@ -53,6 +53,28 @@ Splitting a transaction into context-heavy helpers, hiding flags in options bags
 
 ## Verification selected by the changed invariant
 
+The planner records `visibility_only_files` when the only changes narrow parsed
+`pub` visibility to `pub(crate)`, `pub(super)` or `pub(self)` and every other
+source character matches. It separately records `production_unchanged_files`
+when parsed production tokens match after removing direct lint `allow`/`expect`
+annotations and items with their own explicit `#[cfg(test)]` attribute. Entire
+files require an actual `#![cfg(test)]`; filenames and enclosing function names
+are not proof. Visibility may only narrow as above. Compiler, source, dependency
+and ordinary test jobs remain mandatory for both classifications.
+
+The second comparison preserves signatures, expressions, literal spellings,
+documentation attributes, configuration and macro tokens. Opaque item macros,
+custom attributes/derives and source-introspection macros retain checks. Mixed
+or indirect configuration is not erased. Parsed statement attributes cannot
+mark their containing function as test-only. Unknown syntax or a failed Git or
+parser read cannot establish unchanged production source. Executable positive
+and negative controls cover these boundaries in the planner test suite.
+
+These reported changes do not select runtime mutation/Miri/property/Loom checks
+by themselves. Tooling changes still exercise the verification harness. This is
+a selection decision, not a passing zero-mutation experiment; other critical
+changes still require a registered executable mutation scope.
+
 | Trigger | Required verification and acceptance |
 | --- | --- |
 | Every PR | Run pinned `cargo machete` and `cargo deny check`. Fail unexplained unused dependencies, unapproved advisories, sources and licenses. Unknown Git/registry sources are denied; the existing exact-revision SlateDB source is explicitly allowed. Duplicate versions are reviewed signals, not a blanket ban. False positives require a rationale rather than automatic dependency deletion. |
