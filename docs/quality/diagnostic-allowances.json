@@ -1816,34 +1816,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "26a1980938219d3335f165977034cc0ec1622aa636aa63bd16cf23ef3846d3e1",
-      "item": "crate::key_id_of",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/touch_keys.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3f4fca183229cb4abcd33874bd2f873d9314e93e9672baad398037f54170f7ae",
-      "item": "crate::key_id_of",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/touch_keys.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "142704a763460e442e235b07e7c5f3ccebb5e53cf0e04545378221fa63a90a51",
-      "item": "crate::key_id_of_u64",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/touch_keys.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4e241b00fe94979f214e34b5da232447cdc26a3c90a5b005e5ea4421f686b45a",
-      "item": "crate::tests::stable_and_distinct",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/touch_keys.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "912be1366450323234041c0fe91d96de9c51b285bd823debd6866b8993c3d1a7",
       "item": "crate::admit_on",
       "lint": "clippy::cast_possible_truncation",
@@ -7462,13 +7434,6 @@
       "item": "crate::system_project",
       "lint": "clippy::expect_used",
       "path": "src/tenant.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "fb263a8ac2c05978256c678cbb93a08e49d5a1025625d9ae34410257eaa0534d",
-      "item": "crate::h64",
-      "lint": "clippy::expect_used",
-      "path": "src/touch_keys.rs"
     },
     {
       "count": 1,
