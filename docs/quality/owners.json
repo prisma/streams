@@ -239,6 +239,14 @@
       "path": "build.rs",
       "reason": "Build-time identity owns the explicit release commit and SOURCE_DATE_EPOCH inputs. They are embedded at compilation, never read or overridden by the running service.",
       "syntax": "std::env::var"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::macro(proptest::proptest)",
+      "path": "src/sketch.rs",
+      "reason": "Sketch arithmetic property owner; the pinned macro generates 1,024 actual-source clock and range cases per property; it produces test cases rather than service state.",
+      "syntax": "proptest::proptest"
     }
   ]
 }
