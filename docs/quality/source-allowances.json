@@ -1816,13 +1816,6 @@
     {
       "category": "exception",
       "count": 1,
-      "owner": "crate",
-      "path": "src/auth.rs",
-      "syntax": "allow (dead_code)"
-    },
-    {
-      "category": "exception",
-      "count": 1,
       "owner": "crate::tenant",
       "path": "src/bin/cryptobench.rs",
       "syntax": "allow (dead_code)"

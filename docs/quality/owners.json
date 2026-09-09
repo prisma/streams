@@ -239,6 +239,14 @@
       "path": "build.rs",
       "reason": "Build-time identity owns the explicit release commit and SOURCE_DATE_EPOCH inputs. They are embedded at compilation, never read or overridden by the running service.",
       "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::contend",
+      "path": "src/auth/publication/tests.rs",
+      "reason": "Publication regression owns scoped threads; every worker joins before the test returns even on panic; real parallel calls exercise the shared production publisher.",
+      "syntax": "std::thread::scope"
     }
   ]
 }
