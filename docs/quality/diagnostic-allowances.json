@@ -9075,13 +9075,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "3df0d8e81cda161f9ecfb668f357bb93901a9a55b9c76c30690b5c3fdebc9df5",
-      "item": "crate::AdmissionController::new",
-      "lint": "clippy::needless_pass_by_value",
-      "path": "src/admission.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "f59ccdfbec270a6aa037979049d7b83004be4e8d9687dd7b8ff41e531a055e13",
       "item": "crate::delivery_messages",
       "lint": "clippy::needless_pass_by_value",
@@ -11564,27 +11557,6 @@
       "item": "crate::streams_slate_key",
       "lint": "clippy::unwrap_used",
       "path": "examples/readertest.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "91e31801f6d29b78d7566a4356111aba39ee28b5dcf06a28552265839486be3b",
-      "item": "crate::<StreamSlot as Drop>::drop",
-      "lint": "clippy::unwrap_used",
-      "path": "src/admission.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "de944458d797e760226c0bec1f3dd409e413036facda9d13e7e9635167f9986b",
-      "item": "crate::AdmissionController::snapshot",
-      "lint": "clippy::unwrap_used",
-      "path": "src/admission.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0363d6895cc727c3079807ee0b0d8dcee1376a2740dccd53d3982edb81be90d8",
-      "item": "crate::AdmissionController::stream_slot",
-      "lint": "clippy::unwrap_used",
-      "path": "src/admission.rs"
     },
     {
       "count": 1,
@@ -14896,13 +14868,6 @@
       "item": "crate::admit_append_in",
       "lint": "private_interfaces",
       "path": "src/usage.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "5a357250c5d84b8d7e7b2e73276e31fd49e75b04b53151c592dc6506b787f39d",
-      "item": "crate::AdmissionController::new",
-      "lint": "unreachable_pub",
-      "path": "src/admission.rs"
     },
     {
       "count": 1,

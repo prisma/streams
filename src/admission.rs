@@ -34,7 +34,7 @@ pub(crate) struct SubscriptionCapacity {
 /// What a controller is built from. Bootstrap takes these from the
 /// proven configuration and the capacity preflight; a rig passes its
 /// own — never a configuration graph, never another owner.
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub(crate) struct AdmissionKnobs {
     /// Ordinary in-flight cap for writes (0 = off).
     pub max_inflight: i64,
@@ -158,6 +158,10 @@ pub(crate) struct StreamSlot {
 }
 
 impl Drop for StreamSlot {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "StreamSlot::drop; a poisoned per-stream count map may have been partially updated; recovering and decrementing that state could grant capacity that remains occupied"
+    )]
     fn drop(&mut self) {
         let mut m = self.ctl.inner.streams.lock().unwrap();
         if let Some(v) = m.get_mut(&self.hash) {
@@ -185,7 +189,7 @@ impl Drop for SubscriptionTicket {
 }
 
 impl AdmissionController {
-    pub fn new(knobs: AdmissionKnobs) -> Self {
+    pub(crate) fn new(knobs: AdmissionKnobs) -> Self {
         Self {
             inner: Arc::new(Inner {
                 inflight: AtomicI64::new(0),
@@ -291,6 +295,10 @@ impl AdmissionController {
     /// Acquire a per-stream slot: `None` when the limiter is off or the
     /// map is at its bound (admit untracked, never leak); `Err` at the
     /// stream's cap (counted).
+    #[expect(
+        clippy::unwrap_used,
+        reason = "AdmissionController::stream_slot; a poisoned per-stream count map cannot prove current occupancy; treating its partial counts as available capacity would violate admission limits"
+    )]
     pub(crate) fn stream_slot(&self, hash: [u8; 16]) -> Result<Option<StreamSlot>, StreamRefusal> {
         let cap = self.inner.per_stream_cap;
         if cap <= 0 {
@@ -435,6 +443,10 @@ impl AdmissionController {
         self.inner.record_ceiling.store(bytes, Ordering::Relaxed);
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "AdmissionController::snapshot; poisoned count state does not define a trustworthy occupancy snapshot; reporting recovered partial counters would conceal a broken admission invariant"
+    )]
     pub(crate) fn snapshot(&self) -> AdmissionSnapshot {
         let i = &self.inner;
         let ord = Ordering::Relaxed;
@@ -617,5 +629,31 @@ mod tests {
         c.set_record_ceiling(0);
         assert_eq!(c.record_ceiling(), 0);
         assert_eq!(c.maintenance_engaged(), None);
+    }
+    #[test]
+    fn poisoned_stream_counts_cannot_admit_release_or_report_capacity() {
+        use std::panic::{AssertUnwindSafe, catch_unwind};
+
+        let controller = ctl(0, 2, 0, 0);
+        let hash = [7; 16];
+        let slot = controller.stream_slot(hash).unwrap().unwrap();
+        assert!(
+            catch_unwind(AssertUnwindSafe(|| {
+                let mut counts = controller.inner.streams.lock().unwrap();
+                counts.clear();
+                panic!("interrupted occupancy update");
+            }))
+            .is_err()
+        );
+        assert!(catch_unwind(AssertUnwindSafe(|| controller.stream_slot(hash))).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| controller.snapshot())).is_err());
+        assert!(catch_unwind(AssertUnwindSafe(|| drop(slot))).is_err());
+
+        let healthy = ctl(0, 1, 0, 0);
+        let slot = healthy.stream_slot(hash).unwrap().unwrap();
+        assert!(healthy.stream_slot(hash).is_err());
+        drop(slot);
+        assert_eq!(healthy.snapshot().streams_tracked, 0);
+        assert!(healthy.stream_slot(hash).unwrap().is_some());
     }
 }
