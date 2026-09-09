@@ -147,3 +147,70 @@ proptest::proptest! {
         prop_assert_eq!(sequences, (0..u64::try_from(delivered.len()).unwrap()).collect::<Vec<_>>());
     }
 }
+
+/// The actual sealing transition runs with a Loom-protected production state.
+/// Two concurrent sealers and one observer, preemption bound 2, 1,000 branches
+/// per execution, no duration/permutation cutoff. Clock reads and metrics are
+/// outside this model; public drain/requeue behavior has service/property tests.
+#[test]
+fn quality_loom_sealing_transfers_rows_and_sequence_as_one_operation() {
+    use super::{ActiveMap, ReadUsageState};
+    use loom::sync::{Arc, Mutex};
+    use std::collections::{HashMap, VecDeque};
+
+    let mut model = loom::model::Builder::new();
+    model.max_threads = 4;
+    model.max_branches = 1000;
+    model.preemption_bound = Some(2);
+    model.max_permutations = None;
+    model.max_duration = None;
+    model.check(|| {
+        let owner = Arc::new(accumulator());
+        let state = Arc::new(Mutex::new(ReadUsageState {
+            active: ActiveMap {
+                rows: HashMap::from([(
+                    identity(0),
+                    RowDelta {
+                        read_operations: 1,
+                        ..Default::default()
+                    },
+                )]),
+                opened_ms: 1,
+                est_bytes: 8,
+            },
+            sealed: VecDeque::new(),
+            seq: 0,
+        }));
+        let mut sealers = Vec::new();
+        for _ in 0..2 {
+            let owner = owner.clone();
+            let state = state.clone();
+            sealers.push(loom::thread::spawn(move || {
+                owner.seal_locked(&mut state.lock().unwrap())
+            }));
+        }
+        let observed = state.clone();
+        let observer = loom::thread::spawn(move || {
+            let state = observed.lock().unwrap();
+            let active: u64 = state.active.rows.values().map(|r| r.read_operations).sum();
+            let sealed: u64 = state
+                .sealed
+                .iter()
+                .flat_map(|b| &b.rows)
+                .map(|r| r.read_operations)
+                .sum();
+            assert_eq!(active + sealed, 1);
+            assert_eq!(state.seq, u64::try_from(state.sealed.len()).unwrap());
+        });
+        for sealer in sealers {
+            sealer.join().unwrap();
+        }
+        observer.join().unwrap();
+        let state = state.lock().unwrap();
+        assert!(state.active.rows.is_empty());
+        assert_eq!(state.active.est_bytes, 0);
+        assert_eq!(state.seq, 1);
+        assert_eq!(state.sealed.len(), 1);
+        assert_eq!(state.sealed.front().unwrap().seq, 0);
+    });
+}
