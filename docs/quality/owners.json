@@ -239,6 +239,70 @@
       "path": "build.rs",
       "reason": "Build-time identity owns the explicit release commit and SOURCE_DATE_EPOCH inputs. They are embedded at compilation, never read or overridden by the running service.",
       "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::aborted_drive_releases_the_permit",
+      "path": "src/sse/feed/tests.rs",
+      "reason": "abort fixture owns the driver; cancellation is observed through its joined handle; supervised service tasks cannot exercise direct task abort",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::concurrent_retention_never_exceeds_cap",
+      "path": "src/sse/feed/tests.rs",
+      "reason": "retention fixture owns all 32 drivers; all handles are joined before assertions; sequential futures cannot exercise simultaneous reservation pressure",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 2,
+      "owner": "crate::driver_permit_releases_exactly_once",
+      "path": "src/sse/feed/tests.rs",
+      "reason": "permit fixture owns both drivers; both handles are joined after the controlled interleaving; serial drives cannot exercise permit theft",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::reconcile_and_driver_install_bump_generation_once",
+      "path": "src/sse/feed/tests.rs",
+      "reason": "reconciliation fixture owns the parked driver; its handle is joined after releasing the source; serial execution cannot exercise competing installation",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::aborted_drive_releases_the_permit",
+      "path": "src/sse/feed/tests.rs",
+      "reason": "abort fixture owns the driver; cancellation is observed through its joined handle; supervised service tasks cannot exercise direct task abort",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::driver_permit_releases_exactly_once",
+      "path": "src/sse/feed/tests.rs",
+      "reason": "permit fixture owns both drivers; both handles are joined after the controlled interleaving; serial drives cannot exercise permit theft",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::reconcile_and_driver_install_bump_generation_once",
+      "path": "src/sse/feed/tests.rs",
+      "reason": "reconciliation fixture owns the parked driver; its handle is joined after releasing the source; serial execution cannot exercise competing installation",
+      "syntax": "tokio::pin"
+    },
+    {
+      "category": "unresolved-glob",
+      "count": 1,
+      "owner": "crate",
+      "path": "src/sse/feed/tests.rs",
+      "reason": "Test-only feed fixtures; compiler resolves the parent exports and pinned Tokio macros; production transitions remain in the canonical LiveFeed owner.",
+      "syntax": "compiler-resolved import; syntax cannot infer exports"
     }
   ]
 }
