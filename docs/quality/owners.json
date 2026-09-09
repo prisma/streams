@@ -239,6 +239,14 @@
       "path": "build.rs",
       "reason": "Build-time identity owns the explicit release commit and SOURCE_DATE_EPOCH inputs. They are embedded at compilation, never read or overridden by the running service.",
       "syntax": "std::env::var"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::<ProcessEnvironment as Environment>::get",
+      "path": "src/config/environment.rs",
+      "reason": "ProcessEnvironment composition input; this explicit adapter reads immutable process configuration and subprocess markers; tests install their environment before starting the subprocess.",
+      "syntax": "std::env::var"
     }
   ]
 }

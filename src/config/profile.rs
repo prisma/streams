@@ -35,7 +35,7 @@ pub(crate) fn resolved_compactor_options(
 /// fail loudly at boot, not OOM at +28 minutes.
 pub(crate) fn compactor_profile_json(cfg: &crate::config::ServerConfig) -> serde_json::Value {
     let co = cfg.engine.compactor_options();
-    let w = co.worker.clone().unwrap_or_default();
+    let w = co.worker.unwrap_or_default();
     serde_json::json!({
         "max_concurrent_compactions": co.max_concurrent_compactions,
         "worker_max_concurrent_compactions": w.max_concurrent_compactions,
@@ -87,18 +87,32 @@ pub(crate) fn certified_memprofile_errors(
         return Vec::new();
     }
     let mut errors = Vec::new();
-    let p = compactor_profile_json(cfg);
-    let expect = serde_json::json!({
-        "max_concurrent_compactions": 1,
-        "worker_max_concurrent_compactions": 1,
-        "max_subcompactions": 1,
-        "max_fetch_tasks": 1,
-        "bytes_to_fetch": 1048576,
-        "max_sst_size": 33554432,
-        "store_bulk_inflight_max_bytes": 33554432u64,
-    });
-    for (k, want) in expect.as_object().unwrap() {
-        let got = &p[k];
+    let options = cfg.engine.compactor_options();
+    let cert = options.worker.unwrap_or_default();
+    // Compare the actual numeric configuration. JSON is only the diagnostic
+    // projection; certification must not decode its own presentation format.
+    let measurements = [
+        ("bytes_to_fetch", cert.bytes_to_fetch as u128, 1_048_576),
+        (
+            "max_concurrent_compactions",
+            options.max_concurrent_compactions as u128,
+            1,
+        ),
+        ("max_fetch_tasks", cert.max_fetch_tasks as u128, 1),
+        ("max_sst_size", cert.max_sst_size as u128, 33_554_432),
+        ("max_subcompactions", cert.max_subcompactions as u128, 1),
+        (
+            "store_bulk_inflight_max_bytes",
+            u128::from(cfg.storage.bulk_inflight_max_bytes),
+            33_554_432,
+        ),
+        (
+            "worker_max_concurrent_compactions",
+            cert.max_concurrent_compactions as u128,
+            1,
+        ),
+    ];
+    for (k, got, want) in measurements {
         if got != want {
             errors.push(format!(
                 "MEMPROFILE_CERT=compute-1g but {k}={got} (certified {want}) — \
@@ -109,12 +123,6 @@ pub(crate) fn certified_memprofile_errors(
     // The env helper matching the certificate is necessary but not
     // sufficient: every DB family's ACTUAL settings must carry the
     // same worker profile.
-    let cert = cfg
-        .engine
-        .compactor_options()
-        .worker
-        .clone()
-        .unwrap_or_default();
     for (family, co) in production_settings_families(cfg) {
         let Some(co) = co else {
             errors.push(format!(
@@ -122,7 +130,7 @@ pub(crate) fn certified_memprofile_errors(
             ));
             continue;
         };
-        let w = co.worker.clone().unwrap_or_default();
+        let w = co.worker.unwrap_or_default();
         if w.max_subcompactions != cert.max_subcompactions
             || w.max_fetch_tasks != cert.max_fetch_tasks
             || w.bytes_to_fetch != cert.bytes_to_fetch
@@ -137,7 +145,7 @@ pub(crate) fn certified_memprofile_errors(
     }
     if errors.is_empty() {
         notices.push(ConfigNotice::MemoryProfileCertified {
-            profile: p.to_string(),
+            profile: compactor_profile_json(cfg).to_string(),
         });
     }
     errors

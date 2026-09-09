@@ -2306,27 +2306,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "0e2ac464d6a10b851a1542fa5e3e28e8dbc538b552c87f197aaabed131ba5474",
-      "item": "crate::<ProcessEnvironment as Environment>::get",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/config/environment.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "fe2ab0f954db26a0dd0c8fa3da50c6cf0a5acc131abcb6653dace6083ff8293f",
-      "item": "crate::cli_fixture_drift_helper",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/config/tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "efcaa6eef5fb47a8860a189808ed5f1039c19c3e3d1ebb4be5678ecaa9aab4f2",
-      "item": "crate::process_environment_smoke_helper",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/config/tests.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "94bb2bddea1c5d3ee17f652b597cf794b9598bcceb10add418a30cc96bfd0bc0",
       "item": "crate::drain_observed",
       "lint": "clippy::disallowed_methods",
@@ -3178,34 +3157,6 @@
       "item": "crate::TouchJournal::start",
       "lint": "clippy::disallowed_methods",
       "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "418d257aa41cf5eef9ddececb1669622de9e9eb4d0a8ce5b2611ec2a0556e41d",
-      "item": "crate::CliArgs::scale_edge_slots",
-      "lint": "clippy::doc_lazy_continuation",
-      "path": "src/config/cli.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "41951741dd19b35a674baa5b4190fd3c8f83f49e00393e210a3e6dc9de1572ff",
-      "item": "crate::CliArgs::scale_edge_slots",
-      "lint": "clippy::doc_lazy_continuation",
-      "path": "src/config/cli.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4b3a7f7604bdabf2fb541ddfc10d49ef0b78eb97834c876d068f11d9ac9fa1e8",
-      "item": "crate::CliArgs::scale_edge_slots",
-      "lint": "clippy::doc_lazy_continuation",
-      "path": "src/config/cli.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "feed49fc9f5cf1d8ffbd7e7e6e364060cef4a48db8c98d45cbd5af8bdb3e80f2",
-      "item": "crate::CliArgs::scale_edge_slots",
-      "lint": "clippy::doc_lazy_continuation",
-      "path": "src/config/cli.rs"
     },
     {
       "count": 1,
@@ -9110,20 +9061,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "e40a1f520ed0c889ee48022587a80f737ab7f3fa446cc69f96a9faeeeb938d27",
-      "item": "crate::certified_memprofile_errors",
-      "lint": "clippy::redundant_clone",
-      "path": "src/config/profile.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b0dd1e6e778dc28b597a61b6f9a671e8db9ed042a77d779b24b76a97bddde205",
-      "item": "crate::memprofile_tests::every_db_family_carries_the_resolved_compactor_profile",
-      "lint": "clippy::redundant_clone",
-      "path": "src/config/validation_tests.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "8eb62d2091dd6ce48aab28fd62026b2f7fcf61649e1d5bea838c13d0fb0f56ff",
       "item": "crate::adaptive_gather_estimate_seeds_decays_and_jumps",
       "lint": "clippy::redundant_clone",
@@ -10005,14 +9942,6 @@
       "lint": "clippy::too_many_lines",
       "metric": 610,
       "path": "src/bootstrap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "75e08f5d7800918c9d8c281fe3827d689c455aa1af898f399762b4f40b0e1a90",
-      "item": "crate::cli_surface_is_pinned",
-      "lint": "clippy::too_many_lines",
-      "metric": 149,
-      "path": "src/config/tests.rs"
     },
     {
       "count": 1,
@@ -12376,13 +12305,6 @@
       "item": "crate::run",
       "lint": "clippy::unwrap_used",
       "path": "src/bootstrap.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "cd060efd3f38c846b61eb4d26883e58b9407a30d823a9e9477bd5a466fac887c",
-      "item": "crate::certified_memprofile_errors",
-      "lint": "clippy::unwrap_used",
-      "path": "src/config/profile.rs"
     },
     {
       "count": 1,

@@ -21,6 +21,10 @@ pub trait Environment: Send + Sync {
 pub struct ProcessEnvironment;
 
 impl Environment for ProcessEnvironment {
+    #[expect(
+        clippy::disallowed_methods,
+        reason = "ProcessEnvironment composition input; this explicit adapter reads the process environment at configuration construction; substituting a test map would ignore the deployed configuration"
+    )]
     fn get(&self, key: &str) -> Option<String> {
         std::env::var(key).ok()
     }
