@@ -239,6 +239,94 @@
       "path": "build.rs",
       "reason": "Build-time identity owns the explicit release commit and SOURCE_DATE_EPOCH inputs. They are embedded at compilation, never read or overridden by the running service.",
       "syntax": "std::env::var"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::stats::S",
+      "path": "src/store_timing/observations.rs",
+      "reason": "Process instrumentation owner; preserves the existing process-wide measurement lifetime and retains no runtime service state; per-runtime copies would misreport physical egress or scheduler drift.",
+      "syntax": "OnceLock < StoreStats >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::http_stats::H",
+      "path": "src/store_timing/observations.rs",
+      "reason": "Process instrumentation owner; preserves the existing process-wide measurement lifetime and retains no runtime service state; per-runtime copies would misreport physical egress or scheduler drift.",
+      "syntax": "OnceLock < HttpStats >"
+    },
+    {
+      "category": "global",
+      "count": 1,
+      "owner": "crate::drift::D",
+      "path": "src/store_timing/sentinels.rs",
+      "reason": "Process instrumentation owner; preserves the existing process-wide measurement lifetime and retains no runtime service state; per-runtime copies would misreport physical egress or scheduler drift.",
+      "syntax": "OnceLock < DriftRings >"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::spawn_sentinels",
+      "path": "src/store_timing/sentinels.rs",
+      "reason": "Process scheduler instrumentation owner; preserves the existing detached OS-thread and Tokio sentinels, with no service state; their lifetime intentionally measures the process rather than one runtime.",
+      "syntax": "std::thread::Builder::new"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::spawn_sentinels",
+      "path": "src/store_timing/sentinels.rs",
+      "reason": "Process scheduler instrumentation owner; preserves the existing detached OS-thread and Tokio sentinels, with no service state; their lifetime intentionally measures the process rather than one runtime.",
+      "syntax": "std::thread::sleep"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::spawn_sentinels",
+      "path": "src/store_timing/sentinels.rs",
+      "reason": "Process scheduler instrumentation owner; preserves the existing detached OS-thread and Tokio sentinels, with no service state; their lifetime intentionally measures the process rather than one runtime.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::bulk_gate_bounds_concurrent_bytes",
+      "path": "src/store_timing/tests.rs",
+      "reason": "Bulk-capacity concurrency test owner; all child handles are awaited before the fixture completes; independent contenders exercise occupied semaphore capacity.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "effect",
+      "count": 1,
+      "owner": "crate::bulk_gate_waiter_proceeds_when_holder_releases",
+      "path": "src/store_timing/tests.rs",
+      "reason": "Bulk-capacity concurrency test owner; all child handles are awaited before the fixture completes; independent contenders exercise occupied semaphore capacity.",
+      "syntax": "tokio::spawn"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 9,
+      "owner": "crate::CellSamples::into_json",
+      "path": "src/store_timing/observations.rs",
+      "reason": "Diagnostic JSON serialization owner; the pinned serde_json macro encodes the reviewed measurement expressions; it does not establish domain identity or introduce an unowned effect.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 3,
+      "owner": "crate::snapshot",
+      "path": "src/store_timing/observations.rs",
+      "reason": "Diagnostic JSON serialization owner; the pinned serde_json macro encodes the reviewed measurement expressions; it does not establish domain identity or introduce an unowned effect.",
+      "syntax": "serde_json::json"
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::drift_stats",
+      "path": "src/store_timing/sentinels.rs",
+      "reason": "Diagnostic JSON serialization owner; the pinned serde_json macro encodes the reviewed measurement expressions; it does not establish domain identity or introduce an unowned effect.",
+      "syntax": "serde_json::json"
     }
   ]
 }
