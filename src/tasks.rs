@@ -16,7 +16,7 @@
 
 mod shutdown;
 /// The runtime's termination input, prepared before any task starts.
-pub mod signal;
+pub(crate) mod signal;
 
 use std::collections::BTreeMap;
 use std::sync::{Arc, Mutex, Weak};
@@ -27,7 +27,7 @@ use tokio::task::JoinHandle;
 
 /// What losing the loop means for the runtime.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Policy {
+pub(crate) enum Policy {
     /// The runtime is not healthy without it (fleet loop, telemetry
     /// drain, the watchdogs): an unexpected exit is a critical failure
     /// (surfaced to readiness by WP-15's remaining slice).
@@ -39,16 +39,16 @@ pub enum Policy {
 /// A cooperative cancellation handle: a loop awaits `cancelled()` at
 /// every iteration boundary; clones observe the same signal.
 #[derive(Clone)]
-pub struct Cancellation {
+pub(crate) struct Cancellation {
     rx: tokio::sync::watch::Receiver<bool>,
 }
 
 impl Cancellation {
-    pub fn is_cancelled(&self) -> bool {
+    pub(crate) fn is_cancelled(&self) -> bool {
         *self.rx.borrow()
     }
 
-    pub async fn cancelled(&self) {
+    pub(crate) async fn cancelled(&self) {
         let mut rx = self.rx.clone();
         loop {
             if *rx.borrow() {
@@ -63,7 +63,7 @@ impl Cancellation {
 
 /// How a supervised loop ended on its own terms.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TaskResult {
+pub(crate) enum TaskResult {
     /// Stopped cleanly (cancelled, or its work is complete).
     Done,
     /// Stopped because it could not continue.
@@ -72,10 +72,10 @@ pub enum TaskResult {
 
 /// Identity of one supervised task, in registration order.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct TaskId(u64);
+pub(crate) struct TaskId(u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum Phase {
+pub(crate) enum Phase {
     Running,
     ShuttingDown,
     Stopped,
@@ -83,13 +83,13 @@ pub enum Phase {
 
 /// Why a spawn was refused: the runtime is stopping or stopped.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum SpawnRejected {
+pub(crate) enum SpawnRejected {
     ShuttingDown,
     Stopped,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TaskState {
+pub(crate) enum TaskState {
     Running,
     /// Exited on its own while the supervisor was NOT shutting down.
     /// For a critical loop that is the failure the policy exists for.
@@ -97,7 +97,7 @@ pub enum TaskState {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub struct TaskStatus {
+pub(crate) struct TaskStatus {
     pub name: &'static str,
     pub policy: Policy,
     pub state: TaskState,
@@ -105,7 +105,7 @@ pub struct TaskStatus {
 
 /// How each task ended, as observed by joining its handle.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub enum TaskOutcome {
+pub(crate) enum TaskOutcome {
     Finished,
     Failed(String),
     /// Aborted at the deadline and joined: it is gone.
@@ -120,7 +120,7 @@ pub enum TaskOutcome {
 /// running when the report exists, and every caller of `shutdown`
 /// receives this same report.
 #[derive(Debug, Default, Clone, PartialEq, Eq)]
-pub struct ShutdownReport {
+pub(crate) struct ShutdownReport {
     pub outcomes: Vec<(&'static str, TaskOutcome)>,
     /// The subset that ignored cancellation past the grace and was
     /// aborted (then joined).
@@ -128,7 +128,7 @@ pub struct ShutdownReport {
 }
 
 impl ShutdownReport {
-    pub fn names(&self, want: fn(&TaskOutcome) -> bool) -> Vec<&'static str> {
+    pub(crate) fn names(&self, want: fn(&TaskOutcome) -> bool) -> Vec<&'static str> {
         self.outcomes
             .iter()
             .filter(|(_, o)| want(o))
@@ -136,16 +136,16 @@ impl ShutdownReport {
             .collect()
     }
 
-    pub fn finished(&self) -> Vec<&'static str> {
+    pub(crate) fn finished(&self) -> Vec<&'static str> {
         self.names(|o| matches!(o, TaskOutcome::Finished))
     }
 
-    pub fn panicked(&self) -> Vec<&'static str> {
+    pub(crate) fn panicked(&self) -> Vec<&'static str> {
         self.names(|o| matches!(o, TaskOutcome::Panicked(_)))
     }
 
     #[cfg(test)]
-    pub fn terminated(&self, name: &str) -> bool {
+    pub(crate) fn terminated(&self, name: &str) -> bool {
         self.outcomes.iter().any(|(n, _)| *n == name)
     }
 }
@@ -218,19 +218,19 @@ impl Inner {
 
 /// The owner of a runtime's long-lived loops.
 #[derive(Clone)]
-pub struct TaskSupervisor {
+pub(crate) struct TaskSupervisor {
     inner: Arc<Inner>,
 }
 
 /// A weak handle that can only REQUEST the ordered shutdown — what a
 /// signal handler needs. It keeps nothing alive.
 #[derive(Clone)]
-pub struct ShutdownRequest {
+pub(crate) struct ShutdownRequest {
     inner: Weak<Inner>,
 }
 
 impl ShutdownRequest {
-    pub fn request(&self) {
+    pub(crate) fn request(&self) {
         if let Some(inner) = self.inner.upgrade() {
             TaskSupervisor { inner }.cancel();
         }
@@ -240,7 +240,7 @@ impl ShutdownRequest {
 /// A read-only view for health and debug surfaces. It holds no strong
 /// reference: a runtime whose supervisor is gone reports nothing.
 #[derive(Clone)]
-pub struct TaskMonitor {
+pub(crate) struct TaskMonitor {
     inner: Weak<Inner>,
 }
 
@@ -248,7 +248,7 @@ impl TaskMonitor {
     /// Serving requires a live supervisor in its running phase and all
     /// required loops still running. Recoverable errors inside a loop do
     /// not change this verdict; permanent task exit does.
-    pub fn unready_reason(&self) -> Option<String> {
+    pub(crate) fn unready_reason(&self) -> Option<String> {
         let Some(inner) = self.inner.upgrade() else {
             return Some("runtime supervisor unavailable".into());
         };
@@ -263,18 +263,18 @@ impl TaskMonitor {
         }
     }
 
-    pub fn snapshot(&self) -> Vec<TaskStatus> {
+    pub(crate) fn snapshot(&self) -> Vec<TaskStatus> {
         self.inner
             .upgrade()
             .map(|i| i.snapshot())
             .unwrap_or_default()
     }
 
-    pub fn critical_failure(&self) -> Option<&'static str> {
+    pub(crate) fn critical_failure(&self) -> Option<&'static str> {
         self.inner.upgrade().and_then(|i| i.critical_failure())
     }
 
-    pub fn phase(&self) -> Option<Phase> {
+    pub(crate) fn phase(&self) -> Option<Phase> {
         self.inner.upgrade().map(|i| i.phase())
     }
 }
@@ -286,7 +286,7 @@ impl Default for TaskSupervisor {
 }
 
 impl TaskSupervisor {
-    pub fn new() -> Self {
+    pub(crate) fn new() -> Self {
         let (cancel_tx, rx) = tokio::sync::watch::channel(false);
         Self {
             inner: Arc::new(Inner {
@@ -307,24 +307,24 @@ impl TaskSupervisor {
 
     /// The handle a loop selects on to stop cooperatively (every
     /// supervised loop also receives it from `spawn`).
-    pub fn cancellation(&self) -> Cancellation {
+    pub(crate) fn cancellation(&self) -> Cancellation {
         self.inner.cancel.clone()
     }
 
-    pub fn monitor(&self) -> TaskMonitor {
+    pub(crate) fn monitor(&self) -> TaskMonitor {
         TaskMonitor {
             inner: Arc::downgrade(&self.inner),
         }
     }
 
-    pub fn shutdown_request(&self) -> ShutdownRequest {
+    pub(crate) fn shutdown_request(&self) -> ShutdownRequest {
         ShutdownRequest {
             inner: Arc::downgrade(&self.inner),
         }
     }
 
     #[cfg(test)]
-    pub fn phase(&self) -> Phase {
+    pub(crate) fn phase(&self) -> Phase {
         self.inner.phase()
     }
 
@@ -333,7 +333,7 @@ impl TaskSupervisor {
     /// loop can be written without one. Registration and the phase
     /// check are one atomic step: once shutdown has begun, nothing is
     /// spawned — a stopped runtime stays stopped.
-    pub fn spawn<F, Fut>(
+    pub(crate) fn spawn<F, Fut>(
         &self,
         label: &'static str,
         policy: Policy,
@@ -366,7 +366,7 @@ impl TaskSupervisor {
     /// Request the ordered shutdown without waiting for it: the phase
     /// moves to `ShuttingDown` (no further spawns) and every loop sees
     /// cancellation. A signal handler's move; `shutdown` completes it.
-    pub fn cancel(&self) {
+    pub(crate) fn cancel(&self) {
         {
             let mut st = self.inner.state.lock().unwrap();
             if st.phase == Phase::Running {

@@ -5,14 +5,14 @@
 
 /// Exponentially weighted moving average over wall-clock seconds.
 #[derive(Debug, Clone, Copy)]
-pub struct Ewma {
+pub(crate) struct Ewma {
     pub rate: f64,
     last_ms: i64,
     window_secs: f64,
 }
 
 impl Ewma {
-    pub fn new(window_secs: f64) -> Ewma {
+    pub(crate) fn new(window_secs: f64) -> Ewma {
         Ewma {
             rate: 0.0,
             last_ms: 0,
@@ -20,7 +20,7 @@ impl Ewma {
         }
     }
 
-    pub fn add(&mut self, now_ms: i64, amount: f64) {
+    pub(crate) fn add(&mut self, now_ms: i64, amount: f64) {
         if self.last_ms == 0 {
             // First feed: clamp to 1 so t=0 cannot alias the
             // "never fed" sentinel.
@@ -38,7 +38,7 @@ impl Ewma {
     }
 
     /// Rate decayed to `now` without adding anything.
-    pub fn value(&self, now_ms: i64) -> f64 {
+    pub(crate) fn value(&self, now_ms: i64) -> f64 {
         if self.last_ms == 0 {
             return 0.0;
         }
@@ -51,7 +51,7 @@ impl Ewma {
 /// overestimate-bounded counts — enough to answer "does ONE key
 /// dominate this segment" (spec §5.2's unsplittable-hot-key check).
 #[derive(Debug, Default, Clone)]
-pub struct SpaceSaving8 {
+pub(crate) struct SpaceSaving8 {
     slots: Vec<([u8; 16], u64, u64)>, // (key hash, count, error)
     pub total: u64,
 }
@@ -61,7 +61,7 @@ impl SpaceSaving8 {
     /// counts of both; totals add). Used for the (current, previous)
     /// generational view — dominance decisions must see recent load,
     /// not all history (review finding 8).
-    pub fn merged(&self, other: &SpaceSaving8) -> SpaceSaving8 {
+    pub(crate) fn merged(&self, other: &SpaceSaving8) -> SpaceSaving8 {
         let mut out = SpaceSaving8::default();
         for src in [self, other] {
             for (k, c, e) in &src.slots {
@@ -72,7 +72,7 @@ impl SpaceSaving8 {
         out
     }
 
-    pub fn add(&mut self, key: [u8; 16], amount: u64) {
+    pub(crate) fn add(&mut self, key: [u8; 16], amount: u64) {
         self.total += amount;
         if let Some(s) = self.slots.iter_mut().find(|s| s.0 == key) {
             s.1 += amount;
@@ -88,7 +88,7 @@ impl SpaceSaving8 {
     }
 
     /// The heaviest key and its guaranteed-minimum share of the total.
-    pub fn top_share(&self) -> Option<([u8; 16], f64)> {
+    pub(crate) fn top_share(&self) -> Option<([u8; 16], f64)> {
         if self.total == 0 {
             return None;
         }
@@ -100,7 +100,7 @@ impl SpaceSaving8 {
 
     /// Distinct keys with load above `frac` of the total (guaranteed
     /// counts) — "at least two keys with meaningful load".
-    pub fn keys_above(&self, frac: f64) -> usize {
+    pub(crate) fn keys_above(&self, frac: f64) -> usize {
         if self.total == 0 {
             return 0;
         }
@@ -115,7 +115,7 @@ impl SpaceSaving8 {
 /// 64-register HyperLogLog: distinct routing keys, ±~16% — plenty for
 /// "is this segment one key or many".
 #[derive(Debug, Clone)]
-pub struct Hll64 {
+pub(crate) struct Hll64 {
     regs: [u8; 64],
 }
 
@@ -127,7 +127,7 @@ impl Default for Hll64 {
 
 impl Hll64 {
     /// Register-max merge of two windows.
-    pub fn merged(&self, other: &Hll64) -> Hll64 {
+    pub(crate) fn merged(&self, other: &Hll64) -> Hll64 {
         let mut out = Hll64::default();
         for i in 0..64 {
             out.regs[i] = self.regs[i].max(other.regs[i]);
@@ -135,7 +135,7 @@ impl Hll64 {
         out
     }
 
-    pub fn add(&mut self, key_hash: &[u8; 16]) {
+    pub(crate) fn add(&mut self, key_hash: &[u8; 16]) {
         let h = u64::from_le_bytes(key_hash[8..16].try_into().expect("hll half"));
         let idx = (h & 0x3f) as usize;
         let rest = h >> 6;
@@ -145,7 +145,7 @@ impl Hll64 {
         }
     }
 
-    pub fn estimate(&self) -> f64 {
+    pub(crate) fn estimate(&self) -> f64 {
         let m = 64.0f64;
         let sum: f64 = self.regs.iter().map(|&r| 2f64.powi(-(r as i32))).sum();
         let raw = 0.709 * m * m / sum;
@@ -160,7 +160,7 @@ impl Hll64 {
 }
 
 /// Per-segment routing-key distribution (spec §5.1).
-pub struct KeyDistribution {
+pub(crate) struct KeyDistribution {
     /// Load by key-point subrange of THIS segment's [lo, hi): 64 equal
     /// bins, EWMA'd so the split point reflects RECENT load.
     pub bins: Vec<Ewma>,
@@ -183,7 +183,7 @@ pub struct KeyDistribution {
 }
 
 impl KeyDistribution {
-    pub fn new(lo: u64, hi: u64, window_secs: f64) -> KeyDistribution {
+    pub(crate) fn new(lo: u64, hi: u64, window_secs: f64) -> KeyDistribution {
         KeyDistribution {
             bins: vec![Ewma::new(window_secs); 64],
             top_keys: SpaceSaving8::default(),
@@ -214,16 +214,16 @@ impl KeyDistribution {
     }
 
     /// Heavy-hitter view over the current + previous window.
-    pub fn top_keys_windowed(&self) -> SpaceSaving8 {
+    pub(crate) fn top_keys_windowed(&self) -> SpaceSaving8 {
         self.top_keys.merged(&self.prev_top_keys)
     }
 
     /// Distinct estimate over the current + previous window.
-    pub fn distinct_windowed(&self) -> f64 {
+    pub(crate) fn distinct_windowed(&self) -> f64 {
         self.distinct.merged(&self.prev_distinct).estimate()
     }
 
-    pub fn bin_of(&self, point: u64) -> usize {
+    pub(crate) fn bin_of(&self, point: u64) -> usize {
         let span = self.hi.saturating_sub(self.lo).max(1);
         let rel = point.saturating_sub(self.lo).min(span - 1);
         ((rel as u128 * 64u128) / span as u128) as usize
@@ -244,7 +244,7 @@ impl KeyDistribution {
     /// the bin boundary where cumulative recent load crosses half —
     /// never the segment's own bounds. Returns (split_point,
     /// left_fraction) or None when no interior boundary divides load.
-    pub fn weighted_median(&self, now_ms: i64) -> Option<(u64, f64)> {
+    pub(crate) fn weighted_median(&self, now_ms: i64) -> Option<(u64, f64)> {
         let loads: Vec<f64> = self.bins.iter().map(|e| e.value(now_ms)).collect();
         let total: f64 = loads.iter().sum();
         if total <= 0.0 {

@@ -6,7 +6,7 @@ use std::sync::{
     atomic::{AtomicI64, AtomicU64, Ordering},
 };
 
-pub struct TelemetryResources {
+pub(crate) struct TelemetryResources {
     /// The spool and rollup both pass this same handle to SlateDB.
     pub cache: Arc<FoyerCache>,
     capacity_bytes: u64,
@@ -16,14 +16,14 @@ pub struct TelemetryResources {
 }
 
 #[derive(Debug, Default, PartialEq, Eq)]
-pub struct TelemetryProgress {
+pub(crate) struct TelemetryProgress {
     pub last_drain_ok_ms: i64,
     pub last_rollup_apply_ms: i64,
     pub rollup_apply_duration_ms: u64,
 }
 
 impl TelemetryResources {
-    pub fn new(capacity_bytes: usize) -> Self {
+    pub(crate) fn new(capacity_bytes: usize) -> Self {
         Self {
             cache: Arc::new(FoyerCache::new_with_opts(FoyerCacheOptions {
                 max_capacity: capacity_bytes as u64,
@@ -37,21 +37,21 @@ impl TelemetryResources {
     }
 
     /// Configured bound, observable before either telemetry DB opens.
-    pub fn capacity_bytes(&self) -> u64 {
+    pub(crate) fn capacity_bytes(&self) -> u64 {
         self.capacity_bytes
     }
 
-    pub fn drain_succeeded(&self, at: super::TrustedNow) {
+    pub(crate) fn drain_succeeded(&self, at: super::TrustedNow) {
         self.last_drain_ok_ms.store(at.ms(), Ordering::Relaxed);
     }
 
-    pub fn rollup_applied(&self, at: super::TrustedNow, elapsed_ms: u64) {
+    pub(crate) fn rollup_applied(&self, at: super::TrustedNow, elapsed_ms: u64) {
         self.last_rollup_apply_ms.store(at.ms(), Ordering::Relaxed);
         self.rollup_apply_duration_ms
             .store(elapsed_ms, Ordering::Relaxed);
     }
 
-    pub fn progress(&self) -> TelemetryProgress {
+    pub(crate) fn progress(&self) -> TelemetryProgress {
         TelemetryProgress {
             last_drain_ok_ms: self.last_drain_ok_ms.load(Ordering::Relaxed),
             last_rollup_apply_ms: self.last_rollup_apply_ms.load(Ordering::Relaxed),
