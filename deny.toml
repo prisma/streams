@@ -1,5 +1,6 @@
 # Every dependency, including development/build dependencies and target-specific
-# crates, is checked. No advisory ignores or workspace exclusions.
+# crates, is checked. Only the two named maintenance advisories below are
+# excepted; there are no workspace exclusions.
 [advisories]
 git-fetch-with-cli = true
 # Exact inherited, transitive maintenance advisories. Neither reports a known
@@ -31,6 +32,10 @@ allow = ["MIT", "Apache-2.0", "NCSA"]
 [bans]
 multiple-versions = "warn"
 wildcards = "deny"
+deny = [
+  { crate = "openssl", reason = "the service uses the rustls-only TLS stack" },
+  { crate = "native-tls", reason = "platform TLS must not depend on host OpenSSL" },
+]
 
 [sources]
 unknown-registry = "deny"

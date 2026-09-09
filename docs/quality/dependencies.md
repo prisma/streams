@@ -4,6 +4,13 @@ The full graph, including target-specific, development and build dependencies,
 is checked by pinned `cargo-deny`. Root package metadata now identifies the
 existing Apache-2.0 repository license; no license text was changed.
 
+The TLS stack is rustls-only. `openssl` and `native-tls` are explicitly banned
+across the graph, and the configuration regression rejects removal of either
+ban. On 9 September 2026, cargo-deny 0.20.2 accepted the locked workspace and
+a temporary rustls 0.23 graph, and rejected separate temporary openssl 0.10
+and native-tls 0.2 graphs with the `banned` diagnostic naming each package.
+The workspace lock contained neither banned package nor `openssl-sys`.
+
 - Removed the unused direct `tokio-stream` dependency. `rg` found no source use;
   `cargo-machete` independently identified it. Transitive dependencies may still
   use this package.

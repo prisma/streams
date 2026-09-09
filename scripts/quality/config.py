@@ -19,6 +19,11 @@ def check(tools=True):
     if toolchain['channel'] != pins['rust'] or set(toolchain['components']) != {'clippy', 'rustfmt'}:
         problems.append('root Rust/component pin differs from quality-tools.toml')
     workspace = read_toml('Cargo.toml')
+    banned = read_toml('deny.toml').get('bans', {}).get('deny', [])
+    for crate in ('openssl', 'native-tls'):
+        if not any(entry.get('crate') == crate and entry.get('reason')
+                   and not entry.get('wrappers') for entry in banned):
+            problems.append(f'rustls-only TLS policy requires an unconditional package ban: {crate}')
     genesis = json.loads((ROOT / 'docs/quality/legacy-diagnostics.json').read_text())
     if workspace['workspace']['lints'] != genesis['lint_profile']:
         problems.append('lint profile changed; explicit toolchain/profile migration required')
