@@ -11,7 +11,8 @@ The subsequent independent source review of `5bdaf968` accepts O2-A/O4-A, closes
 | O5 | Removed after failing the complete screen. The recommendation to keep it default-disabled is superseded by the owner's no-switch instruction. |
 | Pairing | The independent reviewer reproduced the prior 120 and current 762 triplets; the disclosed-block arithmetic uncertainty is closed. Held raw samples and binaries are still a separate unverified boundary. |
 | Performance / E03 | HOLD. O5 removal does not close the independent replay, allocator/RSS or workload acceptance obligations. |
-| Crypto / deployed fleet / raw evidence / merge | Existing holds remain. PR #19 stays draft. |
+| Source integration / merge | Owner authorized PR #19 integration on 9 September 2026 after Q01/Q02 and final checks. See the [merge review record](../../quality/pr19-merge-review.md). |
+| Crypto / deployed fleet / raw evidence | Existing holds remain independently of source integration. |
 
 ## Historical experiment evidence
 

@@ -1,5 +1,11 @@
 # Permanent read paths and removal of the span-cache experiment
 
+Update, 9 September 2026: the final source review accepted these permanent
+dispositions and requested two tooling corrections. The owner then explicitly
+authorized merging PR #19 after those corrections. See the
+[merge review record](../quality/pr19-merge-review.md); the earlier draft status
+below is historical. Performance and release acceptance remain open.
+
 The repository owner's 8 September 2026 instruction requires every read optimisation to be permanently enabled or removed. O1–O4 remain the single production implementation. O5 is removed. There is no runtime, environment or Cargo feature switch between experimental read paths.
 
 This decision incorporates the follow-up source review of report `5bdaf9684197ff84bd544fd0fcd69520001ea196` and runtime `eb5ab8ad7a1459b6c679b72bf342a3af73e0bede`. Its recommendation to retain O5 default-disabled is superseded by the owner's explicit instruction to eliminate optional experiments. The review's scoped acceptance of the corrected owners is retained.

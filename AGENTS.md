@@ -16,9 +16,11 @@ The repository-local `thermo-nuclear-code-quality-review` skill is pinned at
 `.agents/skills/thermo-nuclear-code-quality-review/SKILL.md`. Invoke it explicitly
 for structural reviews; `.cursor/skills` points at the same canonical file.
 
-Retain PR #19's draft status and its existing performance, cryptographic,
-merge/deployment and raw-evidence upload holds until their separate acceptance
-requirements are met. Local quality results do not lift those holds.
+The repository owner authorized source-only integration of PR #19 on
+9 September 2026 after Q01/Q02 and final validation. Preserve its ancestry with
+a normal merge. Performance, cryptographic, deployment and raw-evidence upload
+holds remain independent; source integration and local quality results do not
+lift those holds. See docs/quality/pr19-merge-review.md.
 
 Read optimisations have one permanent production path. Keep experiments in
 isolated source revisions rather than adding runtime on/off switches. The
