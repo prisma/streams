@@ -9,10 +9,10 @@
 
 use serde::{Deserialize, Serialize};
 
-pub const KEYSPACE_END: u64 = u64::MAX; // ranges are [lo, hi) over u64
+pub(crate) const KEYSPACE_END: u64 = u64::MAX; // ranges are [lo, hi) over u64
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct SegmentDesc {
+pub(crate) struct SegmentDesc {
     pub seg_id: u32,
     /// Inclusive lower bound of the hashed-key range.
     pub lo: u64,
@@ -45,16 +45,16 @@ pub struct SegmentDesc {
 }
 
 impl SegmentDesc {
-    pub fn contains(&self, k: u64) -> bool {
+    pub(crate) fn contains(&self, k: u64) -> bool {
         k >= self.lo && (k < self.hi || (self.hi == KEYSPACE_END && k == KEYSPACE_END))
     }
-    pub fn is_live(&self) -> bool {
+    pub(crate) fn is_live(&self) -> bool {
         self.sealed_ms.is_none()
     }
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct SegmentMap {
+pub(crate) struct SegmentMap {
     /// Monotonic map version; CAS target.
     pub version: u64,
     /// Next seg_id to allocate.
@@ -72,7 +72,7 @@ pub struct SegmentMap {
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq)]
-pub struct PendingTransition {
+pub(crate) struct PendingTransition {
     /// "split" | "merge"
     pub kind: String,
     /// Parent segment ids (1 for split, 2 for merge).
@@ -91,7 +91,7 @@ pub struct PendingTransition {
 }
 
 #[derive(Debug, PartialEq)]
-pub enum MapError {
+pub(crate) enum MapError {
     NotFound(u32),
     AlreadySealed(u32),
     NotAdjacent(u32, u32),
@@ -103,7 +103,7 @@ pub enum MapError {
 
 impl SegmentMap {
     /// A fresh single-segment map covering the whole keyspace.
-    pub fn initial(shard_prefix: &str, now_ms: i64) -> SegmentMap {
+    pub(crate) fn initial(shard_prefix: &str, now_ms: i64) -> SegmentMap {
         SegmentMap {
             version: 1,
             next_seg_id: 1,
@@ -123,7 +123,7 @@ impl SegmentMap {
         }
     }
 
-    pub fn live(&self) -> impl Iterator<Item = &SegmentDesc> {
+    pub(crate) fn live(&self) -> impl Iterator<Item = &SegmentDesc> {
         self.segments.iter().filter(|s| s.is_live())
     }
 
@@ -133,7 +133,7 @@ impl SegmentMap {
         self.live().find(|s| s.contains(k))
     }
 
-    pub fn get(&self, seg_id: u32) -> Option<&SegmentDesc> {
+    pub(crate) fn get(&self, seg_id: u32) -> Option<&SegmentDesc> {
         self.segments.iter().find(|s| s.seg_id == seg_id)
     }
 
@@ -279,7 +279,7 @@ impl SegmentMap {
     }
 
     /// Partition invariant: live segments exactly tile [0, KEYSPACE_END).
-    pub fn check_partition(&self) -> bool {
+    pub(crate) fn check_partition(&self) -> bool {
         let mut ranges: Vec<(u64, u64)> = self.live().map(|s| (s.lo, s.hi)).collect();
         ranges.sort_unstable();
         if ranges.is_empty() {
