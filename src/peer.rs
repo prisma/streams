@@ -23,33 +23,57 @@ struct Inner {
     /// Empty in standalone mode or when SELF_URL isn't deployed.
     // mt-lint: allow(name-keyed-map): instance name -> base URL
     peer_urls: RwLock<HashMap<String, String>>,
-    /// The static bridge token (legacy posture) — absent in workload
-    /// mode whatever the environment carried.
-    static_token: Option<String>,
-    token_source: Option<FleetTokenSource>,
+    credentials: PeerCredentials,
+}
+
+/// Workload identity takes precedence at construction. The static bridge
+/// secret is never retained alongside a workload source.
+enum PeerCredentials {
+    Workload(FleetTokenSource),
+    Static(String),
+    Absent,
 }
 
 impl PeerClient {
-    pub fn new(static_token: Option<String>, token_source: Option<FleetTokenSource>) -> Self {
+    pub(crate) fn new(
+        static_token: Option<String>,
+        token_source: Option<FleetTokenSource>,
+    ) -> Self {
+        let credentials = match (token_source, static_token) {
+            (Some(source), _) => PeerCredentials::Workload(source),
+            (None, Some(token)) => PeerCredentials::Static(token),
+            (None, None) => PeerCredentials::Absent,
+        };
         Self {
             inner: Arc::new(Inner {
                 peer_urls: RwLock::new(HashMap::new()),
-                static_token,
-                token_source,
+                credentials,
             }),
         }
     }
 
     /// The trusted base URL of a peer, if the fleet published one.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "PeerClient trusted table; a poisoned replacement may be partial; recovery could route through an invalid peer snapshot"
+    )]
     pub(crate) fn url_for(&self, instance: &str) -> Option<String> {
         self.inner.peer_urls.read().unwrap().get(instance).cloned()
     }
 
+    #[expect(
+        clippy::unwrap_used,
+        reason = "PeerClient trusted table; a poisoned replacement may be partial; recovery could route through an invalid peer snapshot"
+    )]
     pub(crate) fn has_peer(&self, instance: &str) -> bool {
         self.inner.peer_urls.read().unwrap().contains_key(instance)
     }
 
     /// Replace the trusted peer table (the fleet loop, every tick).
+    #[expect(
+        clippy::unwrap_used,
+        reason = "PeerClient trusted table; a poisoned replacement may be partial; recovery could route through an invalid peer snapshot"
+    )]
     pub(crate) fn set_peers(&self, peers: HashMap<String, String>) {
         *self.inner.peer_urls.write().unwrap() = peers;
     }
@@ -65,16 +89,17 @@ impl PeerClient {
     }
 
     pub(crate) fn has_workload_source(&self) -> bool {
-        self.inner.token_source.is_some()
+        matches!(self.inner.credentials, PeerCredentials::Workload(_))
     }
 
     /// The bearer this instance presents to peers: workload identity
     /// when a source is configured, else the static bridge token.
     pub(crate) fn outbound_bearer(&self, force_refresh: bool) -> Option<String> {
-        if let Some(src) = &self.inner.token_source {
-            return src(force_refresh);
+        match &self.inner.credentials {
+            PeerCredentials::Workload(source) => source(force_refresh),
+            PeerCredentials::Static(token) => Some(token.clone()),
+            PeerCredentials::Absent => None,
         }
-        self.inner.static_token.clone()
     }
 
     /// Does a presented bearer match the static bridge token? SR3-1:
@@ -83,12 +108,11 @@ impl PeerClient {
     /// the environment (startup refuses that coexistence under the
     /// release posture; this is the defense-in-depth layer beneath it).
     pub(crate) fn inbound_static_ok(&self, presented: Option<&str>) -> bool {
-        match (&self.inner.token_source, &self.inner.static_token) {
-            (Some(_), _) => false,
-            (None, Some(t)) => presented
-                .map(|v| crate::crypto::secret_eq(v, t))
-                .unwrap_or(false),
-            (None, None) => false,
+        match &self.inner.credentials {
+            PeerCredentials::Static(token) => {
+                presented.is_some_and(|value| crate::crypto::secret_eq(value, token))
+            }
+            PeerCredentials::Workload(_) | PeerCredentials::Absent => false,
         }
     }
 
@@ -140,6 +164,10 @@ pub(crate) fn encode_stream_name_path(name: &str) -> String {
 /// Shared client for fleet-internal peer calls (segment fan-out). One
 /// pool, HTTP/1.1, idle timeout under the platform's ~5 s VM-suspend
 /// socket kill (same rule as the store client and the pilot LB).
+#[expect(
+    clippy::expect_used,
+    reason = "process peer HTTP pool; unusable transport initialization must fail before a request is sent; a fallback client would change the pinned transport policy"
+)]
 pub(crate) fn client() -> &'static reqwest::Client {
     static C: std::sync::OnceLock<reqwest::Client> = std::sync::OnceLock::new();
     C.get_or_init(|| {
@@ -207,5 +235,55 @@ mod tests {
         let none = PeerClient::new(None, None);
         assert_eq!(none.outbound_bearer(false), None);
         assert!(!none.inbound_static_ok(Some("anything")));
+    }
+
+    #[test]
+    fn unavailable_workload_identity_never_falls_back_to_a_static_secret() {
+        let peer = PeerClient::new(Some("discarded-static".into()), Some(Arc::new(|_| None)));
+        assert!(peer.has_workload_source());
+        assert!(peer.outbound_bearer(false).is_none());
+        assert!(peer.outbound_bearer(true).is_none());
+        assert!(!peer.inbound_static_ok(Some("discarded-static")));
+        assert!(!peer.inbound_static_ok(None));
+        assert!(matches!(
+            peer.inner.credentials,
+            PeerCredentials::Workload(_)
+        ));
+    }
+
+    #[test]
+    fn partial_peer_table_poison_refuses_reads_and_replacement() {
+        let peers = PeerClient::new(None, None);
+        peers.set_peer("before", "http://before:1");
+        let interrupted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let mut table = peers.inner.peer_urls.write().unwrap();
+            table.clear();
+            table.insert("partial".into(), "http://partial:1".into());
+            panic!("interrupted trusted-table publication");
+        }));
+        assert!(interrupted.is_err());
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                peers.url_for("partial")
+            }))
+            .is_err()
+        );
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                peers.has_peer("partial")
+            }))
+            .is_err()
+        );
+        assert!(
+            std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                peers.set_peers(HashMap::new());
+            }))
+            .is_err()
+        );
+    }
+
+    #[test]
+    fn process_peer_transport_reuses_one_initialized_pool() {
+        assert!(std::ptr::eq(client(), client()));
     }
 }
