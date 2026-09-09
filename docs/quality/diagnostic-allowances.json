@@ -1249,55 +1249,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "8673f149f6cb765e3bbd90108879eef85f396c64d48e379caae7be070777872b",
-      "item": "crate::gather_pacing_preserves_outcomes_and_opens_windows",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/dst/tests/history_gather.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8f00f9846507137dad93a0c3ca70c97cb9d4000f42c70a3a71d48796455b3339",
-      "item": "crate::gather_pacing_preserves_outcomes_and_opens_windows",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/dst/tests/history_gather.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "62472965575c2176de8bf3dffa56ba965aa45609399e0ba2f0002d816864c63f",
-      "item": "crate::gather_parallel_reads_preserve_outcomes_across_reopen",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/dst/tests/history_gather.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d5bc29cacea6a070f92e105ae55b174a6bae39858cbd04f5bf626344c281b711",
-      "item": "crate::gather_parallel_reads_preserve_outcomes_across_reopen",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/dst/tests/history_gather.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2d5049d38eb98aef045c40d0fa17ea6d94e8507a4ba051824d2d0d4658c4d64a",
-      "item": "crate::sparse_absorption_wave_bounds_append_latency",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/dst/tests/history_gather.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3f399bf117f202d8b9b0fa439c62e9e496519766b39d21d3ca5abd7149fd34eb",
-      "item": "crate::sparse_absorption_wave_bounds_append_latency",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/dst/tests/history_gather.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "65c1138b087fbe4dde40635e84b73183a5a11f803f70c4cce82c16d4598fbb72",
-      "item": "crate::sparse_absorption_wave_bounds_append_latency",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/dst/tests/history_gather.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "dccdf9f3440838ed6a1b531764c80bbfeb31c0897b87aaa46bef061d858430d1",
       "item": "crate::a_second_absorption_wave_trims_under_a_global_budget",
       "lint": "clippy::cast_possible_truncation",
@@ -1918,13 +1869,6 @@
       "item": "crate::ServerConfig::overlay_scaler",
       "lint": "clippy::cast_sign_loss",
       "path": "src/config/load.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "02eca47d0b8dee93c0d1e9ff38f4eff8c5ff97bab630bcb39e57aa99d12ca8f8",
-      "item": "crate::sparse_absorption_wave_bounds_append_latency",
-      "lint": "clippy::cast_sign_loss",
-      "path": "src/dst/tests/history_gather.rs"
     },
     {
       "count": 1,
@@ -2646,13 +2590,6 @@
       "item": "crate::r05_unknown_child_state_preserves_its_source_reference",
       "lint": "clippy::disallowed_methods",
       "path": "src/dst/tests/fork_lifecycle.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "de71fb1a20b97c7f6e0bf61b660fa42bb2b95c6e35023e4f02b4584a1d11401c",
-      "item": "crate::sparse_absorption_wave_bounds_append_latency",
-      "lint": "clippy::disallowed_methods",
-      "path": "src/dst/tests/history_gather.rs"
     },
     {
       "count": 2,
@@ -4305,27 +4242,6 @@
       "item": "crate::v2_history_survives_engine_handoff",
       "lint": "clippy::excessive_nesting",
       "path": "src/dst/tests/history_absorption.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ac453fe792942716732d684e3110350353fff07d68afb480cf1956b5421b2dba",
-      "item": "crate::gather_pacing_preserves_outcomes_and_opens_windows",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/history_gather.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "6cde305dbcf0cadc641e48e7427190014d4304d040713bd930bd4b74046edb38",
-      "item": "crate::gather_parallel_reads_preserve_outcomes_across_reopen",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/history_gather.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f4d498123f9e93becd4bef662272b5ce323116fbabb1d7ed5749595538aece89",
-      "item": "crate::sparse_absorption_wave_bounds_append_latency",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/history_gather.rs"
     },
     {
       "count": 1,
@@ -8130,20 +8046,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "71d3b0a8939037061209ae2b001726892778ffd307f97d4dc07dd06e151ef179",
-      "item": "crate::sparse_absorption_wave_bounds_append_latency",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/history_gather.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a071705f132111ee92b8c7c3907b0be56090fa9053f5fb4962a131366450ab68",
-      "item": "crate::sparse_absorption_wave_bounds_append_latency",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/dst/tests/history_gather.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "6f272b0a7a85107705678acd158e2460538248a5d0b9403a3632c736c7672bb9",
       "item": "crate::livefeed_blackholed_peer_never_suppresses_heartbeats",
       "lint": "clippy::let_underscore_must_use",
@@ -9086,13 +8988,6 @@
       "item": "crate::memprofile_tests::every_db_family_carries_the_resolved_compactor_profile",
       "lint": "clippy::redundant_clone",
       "path": "src/config/validation_tests.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8eb62d2091dd6ce48aab28fd62026b2f7fcf61649e1d5bea838c13d0fb0f56ff",
-      "item": "crate::adaptive_gather_estimate_seeds_decays_and_jumps",
-      "lint": "clippy::redundant_clone",
-      "path": "src/dst/tests/history_gather.rs"
     },
     {
       "count": 1,
@@ -10242,14 +10137,6 @@
       "lint": "clippy::too_many_lines",
       "metric": 104,
       "path": "src/dst/tests/history_absorption.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "791a685d7d5e82cc3eab310d5d6336ec15cf1c66911726a52f351e9689958acd",
-      "item": "crate::gather_parallel_reads_preserve_outcomes_across_reopen",
-      "lint": "clippy::too_many_lines",
-      "metric": 109,
-      "path": "src/dst/tests/history_gather.rs"
     },
     {
       "count": 1,
