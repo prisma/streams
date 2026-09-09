@@ -10333,22 +10333,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "242f86f43291e2dae9a6b477441b51d2f897da612429c01923f46d026fa8d09a",
-      "item": "crate::product_append_and_append_many",
-      "lint": "clippy::too_many_lines",
-      "metric": 136,
-      "path": "src/dst/tests/producer_protocol.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "fee6bfb63c42d2753702d5df1988f44fb7436d575f83ab4658daf61e7b0dd34c",
-      "item": "crate::product_producer_hash_discipline",
-      "lint": "clippy::too_many_lines",
-      "metric": 164,
-      "path": "src/dst/tests/producer_protocol.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "7517d29c7952b06cc9c5f717fe4df9704bf150f54dbdddc0e5d3e735ea01c18b",
       "item": "crate::dual_surface_equivalence_corpus",
       "lint": "clippy::too_many_lines",

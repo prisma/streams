@@ -416,69 +416,8 @@ async fn product_append_and_append_many() {
     .expect("cursor decodes");
     assert_eq!(c.offset, 1, "cursor after the first single append");
 
-    // Validation: empty batch, invalid JSON, oversized routing key.
-    let (st, _, b) = preq(
-        addr,
-        "POST",
-        "/v1/streams/orders/records:batch",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"[]",
-    )
-    .await;
-    assert_eq!(st, 400);
-    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
-    assert_eq!(v["error"]["code"], "empty_batch");
-    let (st, _, _) = preq(
-        addr,
-        "POST",
-        "/v1/streams/orders/records",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"{not json",
-    )
-    .await;
-    assert_eq!(st, 400);
-    let long_key = "k".repeat(1025);
-    let (st, _, _) = preq(
-        addr,
-        "POST",
-        "/v1/streams/orders/records",
-        &[
-            ("prisma-encryption-key", PRISMA_KEY),
-            ("prisma-routing-key", &long_key),
-        ],
-        b"1",
-    )
-    .await;
-    assert_eq!(st, 400);
-
-    // Bytes stream: batch is 405; single stores the body as one record.
-    let (st, _, _) = preq(
-        addr,
-        "PUT",
-        "/v1/streams/blobs",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        br#"{"format":{"kind":"bytes"}}"#,
-    )
-    .await;
-    assert_eq!(st, 201);
-    let (st, _, b) = preq(
-        addr,
-        "POST",
-        "/v1/streams/blobs/records:batch",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"xx",
-    )
-    .await;
-    assert_eq!(st, 405, "{}", String::from_utf8_lossy(&b));
-    let (st, _, _) = preq(
-        addr,
-        "POST",
-        "/v1/streams/blobs/records",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"raw-bytes-here",
-    )
-    .await;
-    assert_eq!(st, 200);
+    assert_invalid_json_appends_are_rejected(addr).await;
+    assert_bytes_stream_operation_contract(addr).await;
     engine_shutdown(&state).await;
 }
 
@@ -559,20 +498,12 @@ async fn product_producer_hash_discipline() {
     )
     .await;
     assert_eq!(st, 201);
-    let hdr = |seq: &'static str| {
-        vec![
-            ("prisma-encryption-key", PRISMA_KEY),
-            ("prisma-routing-key", "g"),
-            ("producer-id", "checkout"),
-            ("producer-epoch", "1"),
-            ("producer-seq", seq),
-        ]
-    };
+
     let (st, _, b) = preq(
         addr,
         "POST",
         "/v1/streams/ph/records",
-        &hdr("0"),
+        &producer_headers("0"),
         b"{\"n\":1}",
     )
     .await;
@@ -583,7 +514,7 @@ async fn product_producer_hash_discipline() {
         addr,
         "POST",
         "/v1/streams/ph/records",
-        &hdr("1"),
+        &producer_headers("1"),
         b"{\"n\":2}",
     )
     .await;
@@ -604,7 +535,7 @@ async fn product_producer_hash_discipline() {
         addr,
         "POST",
         "/v1/streams/ph/records",
-        &hdr("1"),
+        &producer_headers("1"),
         b"{\"n\":2}",
     )
     .await;
@@ -641,94 +572,8 @@ async fn product_producer_hash_discipline() {
     .unwrap();
     assert_eq!(kc0.offset, 1, "first append's cursor");
 
-    // Older-seq retry: still a duplicate (no reuse conflict).
-    let (st, _, b) = preq(
-        addr,
-        "POST",
-        "/v1/streams/ph/records",
-        &hdr("0"),
-        b"{\"n\":1}",
-    )
-    .await;
-    assert_eq!(st, 200);
-    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
-    assert_eq!(v["duplicate"], true);
-
-    // Same tuple, different body: 409 producer_sequence_reused, nothing
-    // stored.
-    let (st, _, b) = preq(
-        addr,
-        "POST",
-        "/v1/streams/ph/records",
-        &hdr("1"),
-        b"{\"n\":99}",
-    )
-    .await;
-    assert_eq!(st, 409, "{}", String::from_utf8_lossy(&b));
-    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
-    assert_eq!(v["error"]["code"], "producer_sequence_reused");
-    let (st, _, b) = preq(
-        addr,
-        "GET",
-        "/v1/streams/ph/records?routingKey=g",
-        &[("prisma-encryption-key", PRISMA_KEY)],
-        b"",
-    )
-    .await;
-    assert_eq!(st, 200);
-    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
-    assert_eq!(recs.len(), 3, "the reused sequence stored nothing");
-
-    // Gap: 409 producer_gap with expected/received details.
-    let (st, _, b) = preq(
-        addr,
-        "POST",
-        "/v1/streams/ph/records",
-        &hdr("5"),
-        b"{\"n\":5}",
-    )
-    .await;
-    assert_eq!(st, 409);
-    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
-    assert_eq!(v["error"]["code"], "producer_gap");
-    assert_eq!(v["error"]["details"]["expected"], 2);
-    assert_eq!(v["error"]["details"]["received"], 5);
-
-    // Stale epoch: 403 stale_producer_epoch with the current epoch.
-    let stale = vec![
-        ("prisma-encryption-key", PRISMA_KEY),
-        ("prisma-routing-key", "g"),
-        ("producer-id", "checkout"),
-        ("producer-epoch", "0"),
-        ("producer-seq", "0"),
-    ];
-    let (st, _, b) = preq(addr, "POST", "/v1/streams/ph/records", &stale, b"{\"n\":0}").await;
-    assert_eq!(st, 403);
-    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
-    assert_eq!(v["error"]["code"], "stale_producer_epoch");
-    assert_eq!(v["error"]["details"]["currentEpoch"], 1);
-
-    // Raw standards route: the pinned protocol's duplicate contract
-    // does NOT compare bodies — same tuple, different body, still 204.
-    let (st, _, _) = hreq(
-        addr,
-        "PUT",
-        "/v1/stream/rawdup",
-        &[("content-type", "application/json")],
-        b"",
-    )
-    .await;
-    assert!(st == 200 || st == 201);
-    let rawh = [
-        ("content-type", "application/json"),
-        ("producer-id", "p"),
-        ("producer-epoch", "1"),
-        ("producer-seq", "0"),
-    ];
-    let (st, _, _) = hreq(addr, "POST", "/v1/stream/rawdup", &rawh, b"[1]").await;
-    assert!(st == 200 || st == 204);
-    let (st, _, _) = hreq(addr, "POST", "/v1/stream/rawdup", &rawh, b"[2]").await;
-    assert_eq!(st, 204, "raw duplicate never compares bodies");
+    assert_producer_conflict_taxonomy(addr).await;
+    assert_raw_duplicates_ignore_body(addr).await;
     engine_shutdown(&state).await;
 }
 
@@ -779,4 +624,176 @@ async fn product_producer_hash_survives_split() {
     let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
     assert_eq!(v["error"]["code"], "producer_sequence_reused");
     engine_shutdown(&state).await;
+}
+
+// Assertion phases retain the calling scenario's server and previously committed records.
+fn producer_headers(seq: &str) -> [(&str, &str); 5] {
+    [
+        ("prisma-encryption-key", PRISMA_KEY),
+        ("prisma-routing-key", "g"),
+        ("producer-id", "checkout"),
+        ("producer-epoch", "1"),
+        ("producer-seq", seq),
+    ]
+}
+
+async fn assert_invalid_json_appends_are_rejected(addr: std::net::SocketAddr) {
+    // Validation: empty batch, invalid JSON, oversized routing key.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/orders/records:batch",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"[]",
+    )
+    .await;
+    assert_eq!(st, 400);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "empty_batch");
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/orders/records",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"{not json",
+    )
+    .await;
+    assert_eq!(st, 400);
+    let long_key = "k".repeat(1025);
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/orders/records",
+        &[
+            ("prisma-encryption-key", PRISMA_KEY),
+            ("prisma-routing-key", &long_key),
+        ],
+        b"1",
+    )
+    .await;
+    assert_eq!(st, 400);
+}
+
+async fn assert_bytes_stream_operation_contract(addr: std::net::SocketAddr) {
+    // Bytes stream: batch is 405; single stores the body as one record.
+    let (st, _, _) = preq(
+        addr,
+        "PUT",
+        "/v1/streams/blobs",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        br#"{"format":{"kind":"bytes"}}"#,
+    )
+    .await;
+    assert_eq!(st, 201);
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/blobs/records:batch",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"xx",
+    )
+    .await;
+    assert_eq!(st, 405, "{}", String::from_utf8_lossy(&b));
+    let (st, _, _) = preq(
+        addr,
+        "POST",
+        "/v1/streams/blobs/records",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"raw-bytes-here",
+    )
+    .await;
+    assert_eq!(st, 200);
+}
+
+async fn assert_producer_conflict_taxonomy(addr: std::net::SocketAddr) {
+    // Older-seq retry: still a duplicate (no reuse conflict).
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/ph/records",
+        &producer_headers("0"),
+        b"{\"n\":1}",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["duplicate"], true);
+
+    // Same tuple, different body: 409 producer_sequence_reused, nothing
+    // stored.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/ph/records",
+        &producer_headers("1"),
+        b"{\"n\":99}",
+    )
+    .await;
+    assert_eq!(st, 409, "{}", String::from_utf8_lossy(&b));
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "producer_sequence_reused");
+    let (st, _, b) = preq(
+        addr,
+        "GET",
+        "/v1/streams/ph/records?routingKey=g",
+        &[("prisma-encryption-key", PRISMA_KEY)],
+        b"",
+    )
+    .await;
+    assert_eq!(st, 200);
+    let recs: Vec<serde_json::Value> = serde_json::from_slice(&b).unwrap();
+    assert_eq!(recs.len(), 3, "the reused sequence stored nothing");
+
+    // Gap: 409 producer_gap with expected/received details.
+    let (st, _, b) = preq(
+        addr,
+        "POST",
+        "/v1/streams/ph/records",
+        &producer_headers("5"),
+        b"{\"n\":5}",
+    )
+    .await;
+    assert_eq!(st, 409);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "producer_gap");
+    assert_eq!(v["error"]["details"]["expected"], 2);
+    assert_eq!(v["error"]["details"]["received"], 5);
+
+    // Stale epoch: 403 stale_producer_epoch with the current epoch.
+    let stale = vec![
+        ("prisma-encryption-key", PRISMA_KEY),
+        ("prisma-routing-key", "g"),
+        ("producer-id", "checkout"),
+        ("producer-epoch", "0"),
+        ("producer-seq", "0"),
+    ];
+    let (st, _, b) = preq(addr, "POST", "/v1/streams/ph/records", &stale, b"{\"n\":0}").await;
+    assert_eq!(st, 403);
+    let v: serde_json::Value = serde_json::from_slice(&b).unwrap();
+    assert_eq!(v["error"]["code"], "stale_producer_epoch");
+    assert_eq!(v["error"]["details"]["currentEpoch"], 1);
+}
+
+async fn assert_raw_duplicates_ignore_body(addr: std::net::SocketAddr) {
+    // Raw standards route: the pinned protocol's duplicate contract
+    // does NOT compare bodies — same tuple, different body, still 204.
+    let (st, _, _) = hreq(
+        addr,
+        "PUT",
+        "/v1/stream/rawdup",
+        &[("content-type", "application/json")],
+        b"",
+    )
+    .await;
+    assert!(st == 200 || st == 201);
+    let rawh = [
+        ("content-type", "application/json"),
+        ("producer-id", "p"),
+        ("producer-epoch", "1"),
+        ("producer-seq", "0"),
+    ];
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/rawdup", &rawh, b"[1]").await;
+    assert!(st == 200 || st == 204);
+    let (st, _, _) = hreq(addr, "POST", "/v1/stream/rawdup", &rawh, b"[2]").await;
+    assert_eq!(st, 204, "raw duplicate never compares bodies");
 }
