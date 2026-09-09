@@ -1567,17 +1567,11 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "7041b8ce9cfd7d792ef28ffe8be8c52f7d783d8f29f92268b6a51813e464a974",
+    "function_sha256": "cb0c2879dccd9c613142b363756587031d63c979f7318a114d81da46fe802980",
     "mechanisms": [],
     "configuration": [
       "for seed in [3u64, 17, 29] {",
-      "let tag = format!(\"ni{seed}\");",
-      "assert_eq!(st, 201, \"create seed {seed}\");",
-      "let mut rng = rand::rngs::StdRng::seed_from_u64(seed);",
-      "let tag2 = format!(\"ni{seed}x\");",
-      "assert_eq!(st, 201, \"world-2 create seed {seed}\");",
-      "\"observable counts, seed {seed}\"",
-      "\"seed {seed} observable {k} diverged: interleaved {:?} vs solo {:?}\","
+      "dab_noninterference_for_seed(seed).await;"
     ],
     "file": "src/dst/tests/security_noninterference.rs",
     "scenarios": []
@@ -1602,7 +1596,7 @@
     "attributes": [
       "#[tokio::test(flavor = \"multi_thread\", worker_threads = 4)]"
     ],
-    "function_sha256": "19c3a90355b893013a0451c37b7d268af9059a5cc9234c5c81d23a93aed3c49e",
+    "function_sha256": "82fbcca790dc694c94e6451b73485b856714f555e593734f3def930dad4a4be6",
     "mechanisms": [],
     "configuration": [],
     "file": "src/dst/tests/security_noninterference.rs",

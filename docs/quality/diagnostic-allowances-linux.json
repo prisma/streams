@@ -4679,76 +4679,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "10893de3800bd225848b81fe6c8c62699998258ad4e030173ef7a51661095a96",
-      "item": "crate::dab_noninterference_property",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/security_noninterference.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "204ec737d2968072b57e9c280fca4231955a43e4704a81f505402deed2b4f133",
-      "item": "crate::dab_noninterference_property",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/security_noninterference.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "51ff12cb57ac923389ab9d6bdeae6b8ca72fb9ec385f759d0d62a6d70d4518d9",
-      "item": "crate::dab_noninterference_property",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/security_noninterference.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "58d1921ba30f94fbef9fe9d3a6856f7d11a9e07457d9765f6e621f32b9b52cf8",
-      "item": "crate::dab_noninterference_property",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/security_noninterference.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "5a58ae0f4e44eed7b1ba558fdff87c8909af17dbf4c8f419975aa852b4254881",
-      "item": "crate::dab_noninterference_property",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/security_noninterference.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "6936705267399b5af1f74c9a436642e549381bbd06cffcdb8722cedcc904990b",
-      "item": "crate::dab_noninterference_property",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/security_noninterference.rs"
-    },
-    {
-      "count": 2,
-      "fingerprint": "871f4d3a98597d17cb51f6d9eca0ae77d7e012dd8039e50edff3af95bbe23a3e",
-      "item": "crate::dab_noninterference_property",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/security_noninterference.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9d5ec7575b3f14fa3525d1ff9b73aa672b042c44c275ab6c588b2ef35dcaa242",
-      "item": "crate::dab_noninterference_property",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/security_noninterference.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ed21d26470d035e0627b0995396e1539a3aaaf3083dc8f9d584b4d28f7b3148b",
-      "item": "crate::dab_noninterference_property",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/security_noninterference.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f613ded3ed0f4e31e9b34759bfd3c56423836493f2c14b878da6d9a305dfcd51",
-      "item": "crate::dab_noninterference_property",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/dst/tests/security_noninterference.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "cceace2aa58346ed40165ffab88a9c66f603b7d13e76d5932d8d63e151b1ccec",
       "item": "crate::product_sse_controls_carry_signed_cursors",
       "lint": "clippy::excessive_nesting",
@@ -7511,13 +7441,6 @@
       "item": "crate::LeaseRig::publish",
       "lint": "clippy::fn_params_excessive_bools",
       "path": "src/dst/tests/security_freshness.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c62fc807d2d69dd2549b7a5e8cd046492bdbc096c1980d2a7a6680e3f8c3a5a7",
-      "item": "crate::dab_policies",
-      "lint": "clippy::fn_params_excessive_bools",
-      "path": "src/dst/tests/security_noninterference.rs"
     },
     {
       "count": 1,
@@ -10754,22 +10677,6 @@
       "lint": "clippy::too_many_lines",
       "metric": 170,
       "path": "src/dst/tests/security_modes.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9586153747453e272f231b54557757e0adc25ce450075b5bb6d43c4729866180",
-      "item": "crate::dab_noninterference_property",
-      "lint": "clippy::too_many_lines",
-      "metric": 127,
-      "path": "src/dst/tests/security_noninterference.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2c614a3f7aab1cca3c7124031b3f7b616b4aa54eb3fe9f3a8e60ec17ac8e2936",
-      "item": "crate::dab_transitions_matrix_leaves_foreign_streams_byte_identical",
-      "lint": "clippy::too_many_lines",
-      "metric": 108,
-      "path": "src/dst/tests/security_noninterference.rs"
     },
     {
       "count": 1,
