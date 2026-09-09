@@ -22,7 +22,7 @@ use crate::config::notice::ConfigNotice;
 /// rolls) beside the bounded shard DBs. WP-01 PR 3: the knobs live in
 /// `config::EngineConfig`, parsed once at startup; clap args mirror the
 /// same env vars for --help discoverability.
-pub fn resolved_compactor_options(
+pub(crate) fn resolved_compactor_options(
     engine: &crate::config::EngineConfig,
 ) -> slatedb::config::CompactorOptions {
     engine.compactor_options()
@@ -33,7 +33,7 @@ pub fn resolved_compactor_options(
 /// REFUSES to start unless the live resolved configuration matches the
 /// certified survival profile — a deploy that drops one env var must
 /// fail loudly at boot, not OOM at +28 minutes.
-pub fn compactor_profile_json(cfg: &crate::config::ServerConfig) -> serde_json::Value {
+pub(crate) fn compactor_profile_json(cfg: &crate::config::ServerConfig) -> serde_json::Value {
     let co = cfg.engine.compactor_options();
     let w = co.worker.clone().unwrap_or_default();
     serde_json::json!({
@@ -53,7 +53,7 @@ pub fn compactor_profile_json(cfg: &crate::config::ServerConfig) -> serde_json::
 /// UPSTREAM defaults to every history partition — the process logged
 /// "certified" with the exact unsafe profile running. Certification
 /// (and the structural test) now inspects what the builders receive.
-pub fn production_settings_families(
+pub(crate) fn production_settings_families(
     cfg: &crate::config::ServerConfig,
 ) -> Vec<(&'static str, Option<slatedb::config::CompactorOptions>)> {
     vec![

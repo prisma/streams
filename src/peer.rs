@@ -11,10 +11,10 @@ use std::sync::{Arc, RwLock};
 
 /// An expiry-aware workload-token source: `force_refresh` re-reads the
 /// rotated credential (peer 401) instead of serving the cache.
-pub type FleetTokenSource = Arc<dyn Fn(bool) -> Option<String> + Send + Sync>;
+pub(crate) type FleetTokenSource = Arc<dyn Fn(bool) -> Option<String> + Send + Sync>;
 
 #[derive(Clone)]
-pub struct PeerClient {
+pub(crate) struct PeerClient {
     inner: Arc<Inner>,
 }
 
@@ -41,22 +41,22 @@ impl PeerClient {
     }
 
     /// The trusted base URL of a peer, if the fleet published one.
-    pub fn url_for(&self, instance: &str) -> Option<String> {
+    pub(crate) fn url_for(&self, instance: &str) -> Option<String> {
         self.inner.peer_urls.read().unwrap().get(instance).cloned()
     }
 
-    pub fn has_peer(&self, instance: &str) -> bool {
+    pub(crate) fn has_peer(&self, instance: &str) -> bool {
         self.inner.peer_urls.read().unwrap().contains_key(instance)
     }
 
     /// Replace the trusted peer table (the fleet loop, every tick).
-    pub fn set_peers(&self, peers: HashMap<String, String>) {
+    pub(crate) fn set_peers(&self, peers: HashMap<String, String>) {
         *self.inner.peer_urls.write().unwrap() = peers;
     }
 
     /// One peer, as a rig wires two instances together.
     #[cfg(test)]
-    pub fn set_peer(&self, instance: &str, url: &str) {
+    pub(crate) fn set_peer(&self, instance: &str, url: &str) {
         self.inner
             .peer_urls
             .write()
@@ -64,13 +64,13 @@ impl PeerClient {
             .insert(instance.to_string(), url.to_string());
     }
 
-    pub fn has_workload_source(&self) -> bool {
+    pub(crate) fn has_workload_source(&self) -> bool {
         self.inner.token_source.is_some()
     }
 
     /// The bearer this instance presents to peers: workload identity
     /// when a source is configured, else the static bridge token.
-    pub fn outbound_bearer(&self, force_refresh: bool) -> Option<String> {
+    pub(crate) fn outbound_bearer(&self, force_refresh: bool) -> Option<String> {
         if let Some(src) = &self.inner.token_source {
             return src(force_refresh);
         }
@@ -82,7 +82,7 @@ impl PeerClient {
     /// the static credential is DEAD even if a legacy token leaked into
     /// the environment (startup refuses that coexistence under the
     /// release posture; this is the defense-in-depth layer beneath it).
-    pub fn inbound_static_ok(&self, presented: Option<&str>) -> bool {
+    pub(crate) fn inbound_static_ok(&self, presented: Option<&str>) -> bool {
         match (&self.inner.token_source, &self.inner.static_token) {
             (Some(_), _) => false,
             (None, Some(t)) => presented
@@ -97,7 +97,7 @@ impl PeerClient {
     /// configured, the token is force-refreshed and the request retried
     /// ONCE — the rotated-credential path (§14.1). Any other outcome
     /// returns as-is.
-    pub async fn send(
+    pub(crate) async fn send(
         &self,
         mk: impl Fn(Option<&str>) -> reqwest::RequestBuilder,
     ) -> Result<reqwest::Response, reqwest::Error> {
