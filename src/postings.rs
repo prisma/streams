@@ -107,24 +107,20 @@ fn put_varint(v: &mut Vec<u8>, mut x: u64) {
     }
 }
 
-fn get_varint(v: &[u8], at: &mut usize) -> Option<u64> {
-    let mut out: u64 = 0;
-    let mut shift = 0u32;
-    loop {
-        let b = *v.get(*at)?;
-        *at += 1;
-        if shift == 63 && b & 0x7f > 1 {
+fn get_varint(input: &mut &[u8]) -> Option<u64> {
+    let mut out = 0u64;
+    for shift in (0..=63).step_by(7) {
+        let (&byte, rest) = input.split_first()?;
+        *input = rest;
+        if shift == 63 && byte & 0x7f > 1 {
             return None;
         }
-        out |= ((b & 0x7f) as u64) << shift;
-        if b & 0x80 == 0 {
+        out |= u64::from(byte & 0x7f) << shift;
+        if byte & 0x80 == 0 {
             return Some(out);
         }
-        shift += 7;
-        if shift >= 64 {
-            return None;
-        }
     }
+    None
 }
 
 /// PostingsPageV1 (spec §6.4). Self-describing header + varint runs:
@@ -170,25 +166,36 @@ pub(crate) fn encode_page(first_offset: u64, runs: &[PostingRun]) -> Vec<u8> {
     v
 }
 
+/// Admit the untrusted allocation count before reserving decoded runs.
+/// Each run needs at least four one-byte varints in the capped page body.
+fn admitted_run_count(raw: &[u8; 4], encoded_bytes: usize) -> Option<usize> {
+    let count = usize::try_from(u32::from_le_bytes(*raw)).ok()?;
+    (count > 0 && count <= encoded_bytes / 4).then_some(count)
+}
+
 pub(crate) fn decode_page(v: &[u8]) -> Option<Page> {
-    if v.len() < 30 || v.len() > PAGE_MAX_ENCODED_BYTES || v[0] != 1 || v[1] != 0 {
+    if v.len() > PAGE_MAX_ENCODED_BYTES {
         return None;
     }
-    let first_offset = u64::from_le_bytes(v[2..10].try_into().ok()?);
-    let last_offset_exclusive = u64::from_le_bytes(v[10..18].try_into().ok()?);
-    let n = u32::from_le_bytes(v[18..22].try_into().ok()?) as usize;
-    let matching_frame_bytes = u64::from_le_bytes(v[22..30].try_into().ok()?);
-    if n == 0 || n > BUCKET_OFFSETS as usize || n > (v.len() - 30) / 4 {
+    let ([version, codec], input) = v.split_first_chunk::<2>()?;
+    if *version != 1 || *codec != 0 {
         return None;
     }
-    let mut at = 30usize;
+    let (first, input) = input.split_first_chunk::<8>()?;
+    let (last, input) = input.split_first_chunk::<8>()?;
+    let (count, input) = input.split_first_chunk::<4>()?;
+    let (matching, mut input) = input.split_first_chunk::<8>()?;
+    let first_offset = u64::from_le_bytes(*first);
+    let last_offset_exclusive = u64::from_le_bytes(*last);
+    let n = admitted_run_count(count, input.len())?;
+    let matching_frame_bytes = u64::from_le_bytes(*matching);
     let mut runs = Vec::with_capacity(n);
     for _ in 0..n {
         runs.push(PostingRun {
-            gap_offsets: get_varint(v, &mut at)?,
-            record_count: u32::try_from(get_varint(v, &mut at)?).ok()?,
-            matching_frame_bytes: get_varint(v, &mut at)?,
-            gap_frame_bytes_before: get_varint(v, &mut at)?,
+            gap_offsets: get_varint(&mut input)?,
+            record_count: u32::try_from(get_varint(&mut input)?).ok()?,
+            matching_frame_bytes: get_varint(&mut input)?,
+            gap_frame_bytes_before: get_varint(&mut input)?,
         });
     }
     // Posting monotonicity (spec §13.3): the header must agree with
@@ -204,8 +211,8 @@ pub(crate) fn decode_page(v: &[u8]) -> Option<Page> {
             .checked_add(u64::from(r.record_count))?;
         total = total.checked_add(r.matching_frame_bytes)?;
     }
-    if at != v.len()
-        || runs[0].gap_offsets != 0
+    if !input.is_empty()
+        || runs.first()?.gap_offsets != 0
         || off != last_offset_exclusive
         || total != matching_frame_bytes
     {
@@ -296,16 +303,22 @@ pub(crate) fn decode_stored_page(
     key: &[u8],
     value: &[u8],
 ) -> Option<Vec<AbsRun>> {
-    if key.len() != 65
-        || key[..16] != route.0
-        || key[16..32] != inc.0
-        || key[32] != b'p'
-        || key[33..49] != kh.0
+    let (stored_route, input) = key.split_first_chunk::<16>()?;
+    let (stored_inc, input) = input.split_first_chunk::<16>()?;
+    let (kind, input) = input.split_first()?;
+    let (stored_hash, input) = input.split_first_chunk::<16>()?;
+    let (bucket, input) = input.split_first_chunk::<8>()?;
+    let (first, rest) = input.split_first_chunk::<8>()?;
+    if !rest.is_empty()
+        || stored_route != &route.0
+        || stored_inc != &inc.0
+        || *kind != b'p'
+        || stored_hash != &kh.0
     {
         return None;
     }
-    let bucket = u64::from_be_bytes(key[49..57].try_into().ok()?);
-    let first = u64::from_be_bytes(key[57..65].try_into().ok()?);
+    let bucket = u64::from_be_bytes(*bucket);
+    let first = u64::from_be_bytes(*first);
     let runs = decode_page_abs(first, value)?;
     let last = runs.last()?;
     let end = last.start.checked_add(u64::from(last.count))?;
@@ -726,9 +739,9 @@ mod tests {
         for x in [0u64, 1, 127, 128, 300, u32::MAX as u64, u64::MAX] {
             let mut v = Vec::new();
             put_varint(&mut v, x);
-            let mut at = 0;
-            assert_eq!(get_varint(&v, &mut at), Some(x));
-            assert_eq!(at, v.len());
+            let mut input = v.as_slice();
+            assert_eq!(get_varint(&mut input), Some(x));
+            assert!(input.is_empty());
         }
     }
 
@@ -873,3 +886,7 @@ mod tests {
         );
     }
 }
+
+#[cfg(test)]
+#[path = "postings/codec_tests.rs"]
+mod codec_tests;
