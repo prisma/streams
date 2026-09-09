@@ -16,6 +16,8 @@
 use crate::billing::{UsageCorrection, UsageEnvelope, month_start_ms, next_month, parse_month};
 mod allocation;
 mod page;
+mod reconciliation;
+mod totals;
 
 use serde::{Deserialize, Serialize};
 use slatedb::{Db, WriteBatch};
@@ -184,7 +186,7 @@ impl CorrTotals {
 /// base + signed delta, floored at zero (a correction can subtract).
 pub(crate) fn eff_u64(base: u64, delta: i64) -> u64 {
     if delta >= 0 {
-        base.saturating_add(delta as u64)
+        base.saturating_add(delta.unsigned_abs())
     } else {
         base.saturating_sub(delta.unsigned_abs())
     }
@@ -193,7 +195,7 @@ pub(crate) fn eff_u64(base: u64, delta: i64) -> u64 {
 pub(crate) fn eff_u128(base: u128, delta_str: &str) -> u128 {
     let d: i128 = delta_str.parse().unwrap_or(0);
     if d >= 0 {
-        base.saturating_add(d as u128)
+        base.saturating_add(d.unsigned_abs())
     } else {
         base.saturating_sub(d.unsigned_abs())
     }
@@ -257,43 +259,6 @@ impl MonthRow {
     }
     pub(crate) fn owned_bytes_now(&self) -> u64 {
         self.segments.values().map(|s| s.gauge_bytes).sum()
-    }
-    /// Effective (invoice) totals: the frozen base when finalized,
-    /// live accumulators otherwise, plus materialized corrections.
-    pub(crate) fn effective(&self) -> serde_json::Value {
-        let (ib, irec, sbm, rpb, rrec, rop, qop, areq) = match &self.frozen {
-            Some(f) => (
-                f.ingest_bytes,
-                f.ingest_records,
-                f.storage_byte_ms.parse::<u128>().unwrap_or(0),
-                f.read_payload_bytes,
-                f.read_records,
-                f.read_operations,
-                f.queue_operations,
-                f.append_requests,
-            ),
-            None => (
-                self.ingest_bytes(),
-                self.ingest_records(),
-                self.storage_byte_ms(),
-                self.read_payload_bytes,
-                self.read_records,
-                self.read_operations,
-                self.queue_operations,
-                self.append_requests,
-            ),
-        };
-        serde_json::json!({
-            "ingestPayloadBytes": eff_u64(ib, self.corr.ingest_payload_bytes_delta),
-            "ingestRecords": eff_u64(irec, self.corr.ingest_records_delta),
-            "readPayloadBytes": eff_u64(rpb, self.corr.read_payload_bytes_delta),
-            "readRecords": eff_u64(rrec, self.corr.read_records_delta),
-            "readOperations": eff_u64(rop, self.corr.read_operations_delta),
-            "queueOperations": eff_u64(qop, self.corr.queue_operations_delta),
-            "appendRequests": eff_u64(areq, self.corr.append_requests_delta),
-            "storageByteSeconds": (eff_u128(sbm, &self.corr.storage_byte_ms_delta) / 1000).to_string(),
-            "correctionCount": self.corr.count,
-        })
     }
 }
 
@@ -585,128 +550,6 @@ impl UsageRollup {
         project: &str,
     ) -> anyhow::Result<Option<AggRow>> {
         read_json(&self.db, &k_project(month, account, project)).await
-    }
-
-    /// Invoice reconciliation (MULTITENANCY Stage 7): recompute every
-    /// (account, project) total for one month from the STREAM month
-    /// rows and compare against the served project aggregates. A
-    /// mid-month ownership transfer legitimately splits a project
-    /// across two accounts (workspace-at-event), so the invariant is
-    /// per-(account, project) agreement — never one-account-per-
-    /// project. Storage byte-time is excluded: month rows extrapolate
-    /// provisionally while aggregates accumulate applied integrals, so
-    /// they only agree at month close.
-    pub async fn reconcile_month(&self, month: &str) -> anyhow::Result<ReconcileReport> {
-        #[derive(Default, Clone, PartialEq, Debug)]
-        struct Tot {
-            ingest_bytes: u64,
-            ingest_records: u64,
-            read_payload_bytes: u64,
-            read_records: u64,
-            read_operations: u64,
-            queue_operations: u64,
-            append_requests: u64,
-        }
-        let mut report = ReconcileReport {
-            month: month.to_string(),
-            ..Default::default()
-        };
-        // 1. Recompute per-(account, project) effective totals from the
-        //    stream month rows (base + materialized corrections).
-        let mut computed: std::collections::BTreeMap<(String, String), Tot> =
-            std::collections::BTreeMap::new();
-        let pfx = k_month_prefix(month);
-        let mut iter = self.db.scan_prefix(&pfx[..], ..).await?;
-        while let Some(kv) = iter.next().await? {
-            let k = std::str::from_utf8(&kv.key).unwrap_or("");
-            // month/{month}/{account}/{project}/{stream_id}
-            let parts: Vec<&str> = k.splitn(5, '/').collect();
-            if parts.len() != 5 {
-                report
-                    .mismatches
-                    .push(format!("unparseable month key: {k}"));
-                continue;
-            }
-            let (account, project) = (parts[2], parts[3]);
-            let Ok(row) = serde_json::from_slice::<MonthRow>(&kv.value) else {
-                report
-                    .mismatches
-                    .push(format!("undecodable month row: {k}"));
-                continue;
-            };
-            report.stream_rows += 1;
-            if !row.account_id.is_empty() && row.account_id != account {
-                report.mismatches.push(format!(
-                    "row account drift at {k}: key={account} row={}",
-                    row.account_id
-                ));
-            }
-            let t = computed
-                .entry((account.to_string(), project.to_string()))
-                .or_default();
-            t.ingest_bytes += eff_u64(row.ingest_bytes(), row.corr.ingest_payload_bytes_delta);
-            t.ingest_records += eff_u64(row.ingest_records(), row.corr.ingest_records_delta);
-            t.read_payload_bytes +=
-                eff_u64(row.read_payload_bytes, row.corr.read_payload_bytes_delta);
-            t.read_records += eff_u64(row.read_records, row.corr.read_records_delta);
-            t.read_operations += eff_u64(row.read_operations, row.corr.read_operations_delta);
-            t.queue_operations += eff_u64(row.queue_operations, row.corr.queue_operations_delta);
-            t.append_requests += eff_u64(row.append_requests, row.corr.append_requests_delta);
-        }
-        // 2. Walk the served project aggregates and compare.
-        let apfx = format!("project/{month}/").into_bytes();
-        let mut seen: std::collections::BTreeSet<(String, String)> = Default::default();
-        let mut iter = self.db.scan_prefix(&apfx[..], ..).await?;
-        while let Some(kv) = iter.next().await? {
-            let k = std::str::from_utf8(&kv.key).unwrap_or("");
-            // project/{month}/{account}/{project}
-            let parts: Vec<&str> = k.splitn(4, '/').collect();
-            if parts.len() != 4 {
-                report
-                    .mismatches
-                    .push(format!("unparseable project key: {k}"));
-                continue;
-            }
-            let (account, project) = (parts[2].to_string(), parts[3].to_string());
-            let Ok(agg) = serde_json::from_slice::<AggRow>(&kv.value) else {
-                report
-                    .mismatches
-                    .push(format!("undecodable project aggregate: {k}"));
-                continue;
-            };
-            report.projects += 1;
-            let served = Tot {
-                ingest_bytes: eff_u64(agg.ingest_bytes, agg.corr.ingest_payload_bytes_delta),
-                ingest_records: eff_u64(agg.ingest_records, agg.corr.ingest_records_delta),
-                read_payload_bytes: eff_u64(
-                    agg.read_payload_bytes,
-                    agg.corr.read_payload_bytes_delta,
-                ),
-                read_records: eff_u64(agg.read_records, agg.corr.read_records_delta),
-                read_operations: eff_u64(agg.read_operations, agg.corr.read_operations_delta),
-                queue_operations: eff_u64(agg.queue_operations, agg.corr.queue_operations_delta),
-                append_requests: eff_u64(agg.append_requests, agg.corr.append_requests_delta),
-            };
-            match computed.get(&(account.clone(), project.clone())) {
-                None => report.mismatches.push(format!(
-                    "aggregate without stream rows: {account}/{project}"
-                )),
-                Some(c) if *c != served => report.mismatches.push(format!(
-                    "totals disagree for {account}/{project}: streams={c:?} aggregate={served:?}"
-                )),
-                Some(_) => {}
-            }
-            seen.insert((account, project));
-        }
-        for (account, project) in computed.keys() {
-            if !seen.contains(&(account.clone(), project.clone())) {
-                report.mismatches.push(format!(
-                    "stream rows without an aggregate: {account}/{project}"
-                ));
-            }
-        }
-        report.ok = report.mismatches.is_empty();
-        Ok(report)
     }
 
     /// All persistent segment states for one stream (bounded by its

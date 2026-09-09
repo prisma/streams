@@ -255,6 +255,14 @@
       "path": "tools/quality-invariants/src/lib.rs",
       "reason": "Month-allocation invariant harness; includes the canonical production implementation and properties directly; no model, source rewrite or public service API.",
       "syntax": "path = \"../../../src/rollup/allocation.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::MonthRow::effective",
+      "path": "src/rollup/totals.rs",
+      "reason": "Invoice response owner; this existing JSON presentation consumes the shared typed meter calculation; it makes no domain decisions from JSON and preserves every response field.",
+      "syntax": "serde_json::json"
     }
   ]
 }
