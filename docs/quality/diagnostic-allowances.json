@@ -59,13 +59,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "ce15662a05f21b1e241a4a02b1aae232fc715824c763e30d4684c7b474106b39",
-      "item": "crate::tenant",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/bin/cryptobench.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "bb867b15ca545a687e7b8334db95bed71004a3df5971318b5e82a43306504095",
       "item": "crate::crypto",
       "lint": "clippy::allow_attributes_without_reason",
@@ -77,20 +70,6 @@
       "item": "crate::tenant",
       "lint": "clippy::allow_attributes_without_reason",
       "path": "src/bin/keys.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "bb867b15ca545a687e7b8334db95bed71004a3df5971318b5e82a43306504095",
-      "item": "crate::crypto",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/bin/livebench.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ce15662a05f21b1e241a4a02b1aae232fc715824c763e30d4684c7b474106b39",
-      "item": "crate::tenant",
-      "lint": "clippy::allow_attributes_without_reason",
-      "path": "src/bin/livebench.rs"
     },
     {
       "count": 1,
@@ -14521,69 +14500,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "dd468d04d2b95e5f6d4b08588474d3d20d4304ba05eb052a145d705a15560a23",
-      "item": "crate::FrameCompression::from_enabled",
-      "lint": "dead_code",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "818a15570b280ce39970e83dc29d01ab977d67c15391f743bc38898b4067667d",
-      "item": "crate::RoutingKeyHash",
-      "lint": "dead_code",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "90010b52bf1a6c85805e6da9175251300f9dfb77e882719849914410b67064cb",
-      "item": "crate::RoutingKeyHash::of",
-      "lint": "dead_code",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3c535e8a00f51ee9836d54da7e75c513155fdf7482f02ff1625cf6f6d4ecf1a2",
-      "item": "crate::StreamKey::to_b64",
-      "lint": "dead_code",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4004c9d6a7a945cace520e59a5f608e6806d090fe7d671eb0403ddccd549ffc4",
-      "item": "crate::StreamKey::to_b64",
-      "lint": "dead_code",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0c31a17357cef0bf03767a3ae436fa09dcce3961ecfebccf4f62851398902d4d",
-      "item": "crate::stream_hash",
-      "lint": "dead_code",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "6765d2638d8e40dec66670dc416766e36803db28bd2198781f86d302b6c0fc5f",
-      "item": "crate::touch_token",
-      "lint": "dead_code",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "619da6e5c5ffef2e02c576944a26647517b8fe17e9666312f55c04979efa7662",
-      "item": "crate::unhex",
-      "lint": "dead_code",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "624654ba0d29321a9a4d89239ee98c1707d98a3be1ae6462160aa286284a43e6",
-      "item": "crate::wait_sig_key",
-      "lint": "dead_code",
-      "path": "src/crypto.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "6516b3c8b711c23a8af66361c4bf63557d1317cf0f421889a46a68d99495af43",
       "item": "crate::mech::AFTER_DURABLE_BEFORE_ACK",
       "lint": "dead_code",
@@ -14803,34 +14719,6 @@
       "count": 1,
       "fingerprint": "3dd2c159320a68c76f8a092cae4785b41b68da4b05f0254cb4123280a76bb00b",
       "item": "crate::arg_string",
-      "lint": "dead_code",
-      "path": "src/touch_keys.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "818b8871f27623300c34b68b42d326260e1ed554205631438a85d2104cc201fc",
-      "item": "crate::key_hex",
-      "lint": "dead_code",
-      "path": "src/touch_keys.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "03568462eb90d1e2b63e63d31d9c6ffe8759d056a53d638efb565c9229a2c28b",
-      "item": "crate::key_id_of",
-      "lint": "dead_code",
-      "path": "src/touch_keys.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f9d3cb8537ff34808c34a499c4ef6be1a1ae31e8e1866528ccaf889598de856c",
-      "item": "crate::key_id_of_u64",
-      "lint": "dead_code",
-      "path": "src/touch_keys.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2cfe925359387a5fea7794a59701eea5ae80a9861b8647ca7021e5572b072057",
-      "item": "crate::table_key",
       "lint": "dead_code",
       "path": "src/touch_keys.rs"
     },
@@ -23798,34 +23686,6 @@
       "count": 1,
       "fingerprint": "0f411a329293a08f682a7420fb0ab51a65161fb736f7c1135cd839a3f5142a94",
       "item": "crate::arg_string",
-      "lint": "unreachable_pub",
-      "path": "src/touch_keys.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "5dafdd62e9bebb61efbbb0ba9058b3730ab0eccfa606b990378d6764149c9ec9",
-      "item": "crate::key_hex",
-      "lint": "unreachable_pub",
-      "path": "src/touch_keys.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "c2e1b897c591ceb5af440ed045b05156a4cec94c0b415d348db536c9c1b17cc3",
-      "item": "crate::key_id_of",
-      "lint": "unreachable_pub",
-      "path": "src/touch_keys.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "af46d9f659fe7c386daeaa9355297b509dec9ec7e9e41f17dabde7138e2b9bfc",
-      "item": "crate::key_id_of_u64",
-      "lint": "unreachable_pub",
-      "path": "src/touch_keys.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f6cb6a9dee5f841283294752e843b3bd64039fc2e0251e96ed7d4d47172aea6b",
-      "item": "crate::table_key",
       "lint": "unreachable_pub",
       "path": "src/touch_keys.rs"
     },
