@@ -22,8 +22,8 @@ for owner in postings batch retained tasks touch read_accumulator read_spool; do
     retained) file=src/retained_bytes.rs; filter=retained_bytes:: ;;
     tasks) file=src/tasks.rs; filter=tasks:: ;;
     touch) file=src/touch.rs; filter=touch:: ;;
-    read_accumulator) file=src/billing/read_accumulator.rs; filter=billing::read_accumulator:: ;;
-    read_spool) file=src/billing/read_spool.rs; filter=billing::read_spool:: ;;
+    read_accumulator) file=src/billing/read_accumulator.rs; filter=billing ;;
+    read_spool) file=src/billing/read_spool.rs; filter=billing ;;
   esac
   output="$QUALITY_MUTANTS_OUT/$owner"
   mkdir -p "$output"
