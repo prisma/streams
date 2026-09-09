@@ -1522,13 +1522,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "3e831d64806f5ba8e2fb965272c07eb9033fd0dfba8efe372734530457b0111b",
-      "item": "crate::close_seek_tests::r23_close_visits_scale_linearly_across_chunk_restart",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/rollup.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "9e489bf9c63f903996f5b53ecd6642d31bd17e94bd37af89ecb868015d63a846",
       "item": "crate::<SystemClock as Clock>::now",
       "lint": "clippy::cast_possible_truncation",
@@ -2033,13 +2026,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "9063844893c711d4e7a184bce646d5e7b13f6939a04fc5b08afdc999c0d1a379",
-      "item": "crate::close_seek_tests::r23_close_visits_scale_linearly_across_chunk_restart",
-      "lint": "clippy::cast_sign_loss",
-      "path": "src/rollup.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "2182a9cbc3daf538df9c78f96578ce3181d84eb36d803eabba5ea1352d636dea",
       "item": "crate::eff_u128",
       "lint": "clippy::cast_sign_loss",
@@ -2049,13 +2035,6 @@
       "count": 1,
       "fingerprint": "925b00047cd6ce28d0051c3a9f255ad309c7403d4fc0b2bb3f717b270d361228",
       "item": "crate::eff_u64",
-      "lint": "clippy::cast_sign_loss",
-      "path": "src/rollup.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "424fb42474b99492da012713236be3ee9cdb3ebb6be518a25c861dc23856407c",
-      "item": "crate::tests::rollup_applies_deltas_and_closes_months",
       "lint": "clippy::cast_sign_loss",
       "path": "src/rollup.rs"
     },
@@ -5498,50 +5477,8 @@
     },
     {
       "count": 1,
-      "fingerprint": "7ed72a21e73b6d9de60b88b977d831b5efdede29956b0088cacbe94726fe79e1",
-      "item": "crate::close_seek_tests::r23_close_visits_scale_linearly_across_chunk_restart",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/rollup.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "43c7b2e15afcb32cb06c341e3ae4e51b6a4d1678807f0658dc1d38b09dabd5bc",
       "item": "crate::decode_json::validate",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/rollup.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0f5f8164e14e0c84cd71e706ac1b68f046a243d366e304384a2829f9da69011b",
-      "item": "crate::tests::idle_retained_months_accrue_storage::<Reset as Drop>::drop",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/rollup.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "03a95610471548d8e7e1dce867d0266aea0786270195476d18f5184492517ee0",
-      "item": "crate::tests::missed_months_catch_up_in_order::<Reset as Drop>::drop",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/rollup.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1309ba0885e818291b5ea0daae03407223269628b94bec3ad691c5ca87f4e482",
-      "item": "crate::tests::multi_segment_idle_carry_sums_all_segments::<Reset as Drop>::drop",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/rollup.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0f5d82503d77f1c9017e5f845237ae12a5c0711757ea2525efa78c182f2e95dc",
-      "item": "crate::tests::read_batch_month_split_is_exact",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/rollup.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0bd52f46287a4cc772e3f17d158648c5b9a56d0109616ed66495ca3f27a2cf80",
-      "item": "crate::tests::same_version_live_snapshot_advances_segment_state::<Reset as Drop>::drop",
       "lint": "clippy::excessive_nesting",
       "path": "src/rollup.rs"
     },
@@ -9138,13 +9075,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "21e058a9d838192fddbe8260f17cf25a1e83979f951953337ce819a4a82d1035",
-      "item": "crate::tests::idle_retained_months_accrue_storage",
-      "lint": "clippy::redundant_clone",
-      "path": "src/rollup.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "2bfdd3220a1d2319c8563ea8ad1f975f6162e2916b844573f2bf27a4f8b35cad",
       "item": "crate::tests::two_runtimes_share_no_identity_or_timing_state",
       "lint": "clippy::redundant_clone",
@@ -9614,14 +9544,6 @@
       "lint": "clippy::too_many_arguments",
       "metric": 6,
       "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3003ea4fd74e6ec888b6701dd9d9f9180dc6481040ed9e788b44c3ecb5042cef",
-      "item": "crate::tests::snap",
-      "lint": "clippy::too_many_arguments",
-      "metric": 6,
-      "path": "src/rollup.rs"
     },
     {
       "count": 1,
@@ -10977,14 +10899,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "fb3cff7a55e235ec74e8203b86f4497e51f5d03f00fae0ddf91dcb3817a128ef",
-      "item": "crate::tests::rollup_applies_deltas_and_closes_months",
-      "lint": "clippy::too_many_lines",
-      "metric": 284,
-      "path": "src/rollup.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "f501996838b97f404389469109e0b4f168269154abd9fba251ea2807933938d3",
       "item": "crate::evaluate_state",
       "lint": "clippy::too_many_lines",
@@ -11209,13 +11123,6 @@
       "item": "crate::PageBuilder::finish",
       "lint": "clippy::type_complexity",
       "path": "src/postings.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "f04a5b549f22f67860751100185bcca69938558c8327a2ead7ffbcefc1a88500",
-      "item": "crate::tests::idle_retained_months_accrue_storage",
-      "lint": "clippy::type_complexity",
-      "path": "src/rollup.rs"
     },
     {
       "count": 1,
