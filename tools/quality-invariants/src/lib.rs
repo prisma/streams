@@ -38,3 +38,11 @@ mod tenant;
     reason = "invariant harness; compile actual batch budget and ownership tests together; unused service accessors remain private"
 )]
 mod application;
+
+#[allow(
+    dead_code,
+    unreachable_pub,
+    reason = "invariant harness; compiles the actual product cursor codecs and their tests; unrelated service APIs remain internal"
+)]
+#[path = "../../../src/product_cursor.rs"]
+mod product_cursor;

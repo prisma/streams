@@ -231,6 +231,38 @@
       "path": "src/dst/tests/read_peer_compatibility.rs",
       "reason": "Exact wire-page JSON oracles for absent, finite and empty bounds; serde macro output is compiled and asserted by the protocol regression.",
       "syntax": "serde_json::json"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::decode",
+      "path": "src/product_cursor.rs",
+      "syntax": "path = \"product_cursor/decode.rs\"",
+      "reason": "Product cursor codec; the service and private invariant harness compile the same checked decoder; explicit path preserves canonical child resolution."
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::product_cursor",
+      "path": "tools/quality-invariants/src/lib.rs",
+      "syntax": "path = \"../../../src/product_cursor.rs\"",
+      "reason": "Invariant harness; actual cursor codecs and tests execute without server startup; no copied implementation or stand-in identity types."
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::regressions",
+      "path": "src/product_cursor.rs",
+      "syntax": "path = \"product_cursor/regressions.rs\"",
+      "reason": "Product cursor verification; the service and private harness compile the same wire and authentication controls; explicit path preserves child resolution."
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::macro(proptest::proptest)",
+      "path": "src/product_cursor/regressions.rs",
+      "syntax": "proptest::proptest",
+      "reason": "Product cursor properties; pinned generator spans full-width numeric fields and project binding; cases execute the actual encoder and checked decoder."
     }
   ]
 }
