@@ -167,8 +167,7 @@ async fn cancelled_open_guard_closes_and_releases_its_database() {
             .wait_for(|state| state.close_reason.is_some())
             .await
             .unwrap()
-            .close_reason
-            .clone();
+            .close_reason;
         assert!(matches!(reason, Some(slatedb::CloseReason::Clean)));
         // A close marker precedes joining the DB workers. The last outer Arc
         // belongs to the guard's close future until that operation completes.
