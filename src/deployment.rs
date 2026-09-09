@@ -10,7 +10,7 @@ use std::sync::Arc;
 use crate::tenant::{CanonicalStreamName, CellId, ProjectId, TenantStreamRef};
 
 #[derive(Clone, Debug)]
-pub struct DeploymentIdentity {
+pub(crate) struct DeploymentIdentity {
     inner: Arc<Inner>,
 }
 
@@ -46,7 +46,7 @@ impl DeploymentIdentity {
     /// the checked construction keeps unvalidated bytes out of registry
     /// paths and identity hashes.
     // mt-lint: allow(name-param-shared-core): the raw adapters' ONE identity source — a canonical name becomes deployment-tenant identity here and nowhere else (SR-6)
-    pub fn raw_adapter_sref(&self, canonical_name: &str) -> TenantStreamRef {
+    pub(crate) fn raw_adapter_sref(&self, canonical_name: &str) -> TenantStreamRef {
         TenantStreamRef::new(
             self.inner.tenant.clone(),
             CanonicalStreamName::new(canonical_name)
@@ -58,20 +58,20 @@ impl DeploymentIdentity {
     /// `state-tenant-read` applies to every call of this accessor exactly
     /// as it applied to the field it replaced — each caller carries a
     /// reviewed marker naming its posture.
-    pub fn deployment_tenant(&self) -> &ProjectId {
+    pub(crate) fn deployment_tenant(&self) -> &ProjectId {
         // mt-lint: allow(state-tenant-read): the identity owner's own accessor — every caller is linted at its call site
         &self.inner.tenant
     }
 
-    pub fn account_id(&self) -> &str {
+    pub(crate) fn account_id(&self) -> &str {
         &self.inner.account_id
     }
 
-    pub fn cell_id(&self) -> &CellId {
+    pub(crate) fn cell_id(&self) -> &CellId {
         &self.inner.cell_id
     }
 
-    pub fn region(&self) -> &str {
+    pub(crate) fn region(&self) -> &str {
         &self.inner.region
     }
 }

@@ -26,7 +26,7 @@ use crate::tenant::{ProjectId, ScopeSet, StreamGrant, WorkspaceId};
 /// must not act.
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum ProjectStatus {
+pub(crate) enum ProjectStatus {
     Active,
     Suspended,
     TransferPending,
@@ -38,7 +38,7 @@ pub enum ProjectStatus {
 /// Stage 6 enforces them. `0` means "no limit configured" at this
 /// level (cell safety limits still apply).
 #[derive(Clone, Debug, Default, serde::Deserialize)]
-pub struct ProjectQuotas {
+pub(crate) struct ProjectQuotas {
     #[serde(default)]
     pub requests_per_sec: u64,
     #[serde(default)]
@@ -61,7 +61,7 @@ pub struct ProjectQuotas {
 }
 
 #[derive(Clone, Debug)]
-pub struct ProjectPolicy {
+pub(crate) struct ProjectPolicy {
     pub project_id: ProjectId,
     pub workspace_id: WorkspaceId,
     pub cell_id: Arc<str>,
@@ -73,7 +73,7 @@ pub struct ProjectPolicy {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq, serde::Deserialize)]
 #[serde(rename_all = "snake_case")]
-pub enum CredentialStatus {
+pub(crate) enum CredentialStatus {
     Active,
     Disabled,
     Revoked,
@@ -84,7 +84,7 @@ pub enum CredentialStatus {
 /// workspace ownership from credential metadata — ownership comes from
 /// the current `ProjectPolicy` only.
 #[derive(Clone, Debug)]
-pub struct CredentialGrant {
+pub(crate) struct CredentialGrant {
     pub credential_id: Arc<str>,
     pub project_id: ProjectId,
     pub grant_version: u64,
@@ -99,14 +99,14 @@ pub struct CredentialGrant {
 /// producer's `project_policy_version` high-water mark, for
 /// observability and delta ordering.
 #[derive(Clone, Debug)]
-pub struct PolicySnapshot {
+pub(crate) struct PolicySnapshot {
     pub projects: HashMap<ProjectId, ProjectPolicy>,
     pub fetched_at_unix: i64,
     pub feed_version: u64,
 }
 
 impl PolicySnapshot {
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             projects: HashMap::new(),
             fetched_at_unix: 0,
@@ -116,7 +116,7 @@ impl PolicySnapshot {
 }
 
 #[derive(Clone, Debug)]
-pub struct GrantSnapshot {
+pub(crate) struct GrantSnapshot {
     // mt-lint: allow(name-keyed-map): credential id -> grant (the feed snapshot itself)
     pub credentials: HashMap<Arc<str>, CredentialGrant>,
     pub fetched_at_unix: i64,
@@ -124,7 +124,7 @@ pub struct GrantSnapshot {
 }
 
 impl GrantSnapshot {
-    pub fn empty() -> Self {
+    pub(crate) fn empty() -> Self {
         Self {
             credentials: HashMap::new(),
             fetched_at_unix: 0,
@@ -139,17 +139,17 @@ impl GrantSnapshot {
 /// task — not the request path — calls `fetch`, then publishes the
 /// result into the `AuthService`'s arc-swap slots.
 #[async_trait::async_trait]
-pub trait PolicySource: Send + Sync {
+pub(crate) trait PolicySource: Send + Sync {
     async fn fetch(&self) -> anyhow::Result<PolicySnapshot>;
 }
 
 #[async_trait::async_trait]
-pub trait GrantSource: Send + Sync {
+pub(crate) trait GrantSource: Send + Sync {
     async fn fetch(&self) -> anyhow::Result<GrantSnapshot>;
 }
 
 /// In-memory source for tests and local rigs.
-pub struct StaticPolicySource(pub std::sync::Mutex<PolicySnapshot>);
+pub(crate) struct StaticPolicySource(pub std::sync::Mutex<PolicySnapshot>);
 
 #[async_trait::async_trait]
 impl PolicySource for StaticPolicySource {
@@ -158,7 +158,7 @@ impl PolicySource for StaticPolicySource {
     }
 }
 
-pub struct StaticGrantSource(pub std::sync::Mutex<GrantSnapshot>);
+pub(crate) struct StaticGrantSource(pub std::sync::Mutex<GrantSnapshot>);
 
 #[async_trait::async_trait]
 impl GrantSource for StaticGrantSource {

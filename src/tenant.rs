@@ -23,15 +23,15 @@ use std::sync::Arc;
 /// Identifier length bounds from the contract (§2): 1–128 bytes for
 /// workspace, project, and cell ids. Stream names keep their existing
 /// canonical rules (`product::canonical_name`, 1–512 bytes).
-pub const ID_MAX_BYTES: usize = 128;
+pub(crate) const ID_MAX_BYTES: usize = 128;
 
 /// Prefix-grant normalization limits (§6.2). These bound credential
 /// documents and token size, not stream names.
-pub const PREFIX_MAX_BYTES: usize = 256;
-pub const PREFIX_MAX_COUNT: usize = 64;
+pub(crate) const PREFIX_MAX_BYTES: usize = 256;
+pub(crate) const PREFIX_MAX_COUNT: usize = 64;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum IdentityError {
+pub(crate) enum IdentityError {
     Empty,
     TooLong {
         max: usize,
@@ -91,15 +91,15 @@ fn validate_id(raw: &str, max: usize) -> Result<(), IdentityError> {
 /// Mutable commercial/authorization identity (§1.1). Never an input to
 /// a storage identity; deliberately NOT a field of [`TenantStreamRef`].
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct WorkspaceId(Arc<str>);
+pub(crate) struct WorkspaceId(Arc<str>);
 
 #[allow(dead_code)] // consumed from MT Stage 2b (auth.rs principal)
 impl WorkspaceId {
-    pub fn new(raw: &str) -> Result<Self, IdentityError> {
+    pub(crate) fn new(raw: &str) -> Result<Self, IdentityError> {
         validate_id(raw, ID_MAX_BYTES)?;
         Ok(Self(Arc::from(raw)))
     }
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -114,18 +114,18 @@ impl fmt::Display for WorkspaceId {
 /// hashes, storage hashes, segment identities, cursors, consumer
 /// state, usage rows, and internal RPC targets.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct ProjectId(Arc<str>);
+pub(crate) struct ProjectId(Arc<str>);
 
 #[allow(dead_code)] // fully consumed at MT Stage 2b/3 (principal + registry)
 impl ProjectId {
-    pub fn new(raw: &str) -> Result<Self, IdentityError> {
+    pub(crate) fn new(raw: &str) -> Result<Self, IdentityError> {
         validate_id(raw, ID_MAX_BYTES)?;
         Ok(Self(Arc::from(raw)))
     }
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
-    pub fn as_bytes(&self) -> &[u8] {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
         self.0.as_bytes()
     }
 }
@@ -164,7 +164,7 @@ impl ProjectId {
     /// the verified principal's project selects the tenant-qualified
     /// storage identity; the deployment tenant no longer addresses
     /// customer data on principal-carrying paths.
-    pub fn stream_ref(&self, canonical_name: &str) -> TenantStreamRef {
+    pub(crate) fn stream_ref(&self, canonical_name: &str) -> TenantStreamRef {
         TenantStreamRef::new(
             self.clone(),
             CanonicalStreamName::new(canonical_name)
@@ -178,22 +178,22 @@ impl ProjectId {
 /// Registry paths for it live under `system/v1/cells/<cell-id>/`,
 /// OUTSIDE every customer project root; auth refuses it in customer
 /// token claims, and startup refuses it as the deployment project.
-pub const SYSTEM_PROJECT: &str = "system";
+pub(crate) const SYSTEM_PROJECT: &str = "system";
 
 /// The typed identity of the reserved system project (Stage 7): the
 /// ONLY way internal code should address system streams — customer
 /// paths can never construct it through a verified principal (auth
 /// refuses the claim) or the deployment tenant (startup refuses it).
-pub fn system_project() -> ProjectId {
+pub(crate) fn system_project() -> ProjectId {
     ProjectId::new(SYSTEM_PROJECT).expect("the reserved id satisfies the grammar")
 }
 
 #[allow(dead_code)] // consumed at MT Stage 4/7 (system-stream relocation)
 impl ProjectId {
-    pub fn system() -> Self {
+    pub(crate) fn system() -> Self {
         ProjectId(Arc::from(SYSTEM_PROJECT))
     }
-    pub fn is_system(&self) -> bool {
+    pub(crate) fn is_system(&self) -> bool {
         self.as_str() == SYSTEM_PROJECT
     }
 }
@@ -201,7 +201,7 @@ impl ProjectId {
 /// Validate a cell id (§2). Cells stay `Arc<str>` in principals; this
 /// is the shared bound check for config and token claims.
 #[allow(dead_code)] // consumed from MT Stage 2b (auth.rs principal)
-pub fn validate_cell_id(raw: &str) -> Result<(), IdentityError> {
+pub(crate) fn validate_cell_id(raw: &str) -> Result<(), IdentityError> {
     validate_id(raw, ID_MAX_BYTES)
 }
 
@@ -210,15 +210,15 @@ pub fn validate_cell_id(raw: &str) -> Result<(), IdentityError> {
 /// the evidence. `config::validation` mints one for the deployment;
 /// tests mint their own.
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub struct CellId(String);
+pub(crate) struct CellId(String);
 
 impl CellId {
-    pub fn new(raw: &str) -> Result<Self, IdentityError> {
+    pub(crate) fn new(raw: &str) -> Result<Self, IdentityError> {
         validate_cell_id(raw)?;
         Ok(Self(raw.to_string()))
     }
 
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 }
@@ -230,13 +230,13 @@ impl fmt::Display for CellId {
 }
 
 /// Stream-name length bound (matches `product::canonical_name`).
-pub const NAME_MAX_BYTES: usize = 512;
+pub(crate) const NAME_MAX_BYTES: usize = 512;
 /// The reserved system namespace root. Owned here (identity layer);
 /// `product.rs` re-exports it for the HTTP surface.
-pub const RESERVED_ROOT: &str = "__ds";
+pub(crate) const RESERVED_ROOT: &str = "__ds";
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum NameError {
+pub(crate) enum NameError {
     Empty,
     TooLong { max: usize, got: usize },
     ControlChar { at: usize },
@@ -289,11 +289,11 @@ fn valid_component(c: &str) -> Result<(), NameError> {
 /// pins the two validators together: everything `canonical_name`
 /// accepts, this constructor accepts.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct CanonicalStreamName(Arc<str>);
+pub(crate) struct CanonicalStreamName(Arc<str>);
 
 #[allow(dead_code)] // fully consumed at MT Stage 3/4 (registry + handlers)
 impl CanonicalStreamName {
-    pub fn new(raw: &str) -> Result<Self, NameError> {
+    pub(crate) fn new(raw: &str) -> Result<Self, NameError> {
         if raw.is_empty() {
             return Err(NameError::Empty);
         }
@@ -325,10 +325,10 @@ impl CanonicalStreamName {
         Ok(Self(Arc::from(raw)))
     }
 
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
-    pub fn as_bytes(&self) -> &[u8] {
+    pub(crate) fn as_bytes(&self) -> &[u8] {
         self.0.as_bytes()
     }
 }
@@ -345,22 +345,22 @@ impl fmt::Display for CanonicalStreamName {
 /// unvalidated name here would flow into registry paths and every
 /// layout-4 hash.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct TenantStreamRef {
+pub(crate) struct TenantStreamRef {
     project_id: ProjectId,
     name: CanonicalStreamName,
 }
 
 #[allow(dead_code)] // fully consumed at MT Stage 3/4 (registry + handlers)
 impl TenantStreamRef {
-    pub fn new(project_id: ProjectId, name: CanonicalStreamName) -> Self {
+    pub(crate) fn new(project_id: ProjectId, name: CanonicalStreamName) -> Self {
         Self { project_id, name }
     }
 
-    pub fn project_id(&self) -> &ProjectId {
+    pub(crate) fn project_id(&self) -> &ProjectId {
         &self.project_id
     }
 
-    pub fn name(&self) -> &CanonicalStreamName {
+    pub(crate) fn name(&self) -> &CanonicalStreamName {
         &self.name
     }
 }
@@ -384,7 +384,7 @@ impl fmt::Display for TenantStreamRef {
 /// re-key existing data).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[allow(dead_code)] // CatalogCursorV1/WatchCapabilityV1 consumed at MT Stage 3/4
-pub enum HashDomain {
+pub(crate) enum HashDomain {
     RouteV1,
     /// Contract r1: scaler-minted placement of a split-child segment.
     RouteChildV1,
@@ -395,7 +395,7 @@ pub enum HashDomain {
 }
 
 impl HashDomain {
-    pub const fn tag(self) -> &'static [u8] {
+    pub(crate) const fn tag(self) -> &'static [u8] {
         match self {
             HashDomain::RouteV1 => b"route-v1",
             HashDomain::RouteChildV1 => b"route-child-v1",
@@ -409,7 +409,7 @@ impl HashDomain {
 
 /// Length-prefixed component append (§2.1, verbatim from the
 /// contract). Never concatenate identities with delimiters.
-pub fn append_component(out: &mut Vec<u8>, value: &[u8]) {
+pub(crate) fn append_component(out: &mut Vec<u8>, value: &[u8]) {
     out.extend_from_slice(&(value.len() as u32).to_be_bytes());
     out.extend_from_slice(value);
 }
@@ -417,7 +417,7 @@ pub fn append_component(out: &mut Vec<u8>, value: &[u8]) {
 /// Build the canonical, unambiguous hash input for `domain` over
 /// `components`. The domain tag is itself a length-prefixed component,
 /// so no tag can collide with a component sequence of another domain.
-pub fn encode_hash_input(domain: HashDomain, components: &[&[u8]]) -> Vec<u8> {
+pub(crate) fn encode_hash_input(domain: HashDomain, components: &[&[u8]]) -> Vec<u8> {
     let mut out = Vec::with_capacity(
         4 + domain.tag().len() + components.iter().map(|c| 4 + c.len()).sum::<usize>(),
     );
@@ -429,7 +429,7 @@ pub fn encode_hash_input(domain: HashDomain, components: &[&[u8]]) -> Vec<u8> {
 }
 
 /// route hash input: route-v1 + project_id + stream_name
-pub fn route_hash_input(sref: &TenantStreamRef) -> Vec<u8> {
+pub(crate) fn route_hash_input(sref: &TenantStreamRef) -> Vec<u8> {
     encode_hash_input(
         HashDomain::RouteV1,
         &[sref.project_id().as_bytes(), sref.name().as_bytes()],
@@ -437,7 +437,7 @@ pub fn route_hash_input(sref: &TenantStreamRef) -> Vec<u8> {
 }
 
 /// storage hash input: storage-v1 + project_id + stream_name + stream_epoch
-pub fn storage_hash_input(sref: &TenantStreamRef, stream_epoch: &str) -> Vec<u8> {
+pub(crate) fn storage_hash_input(sref: &TenantStreamRef, stream_epoch: &str) -> Vec<u8> {
     encode_hash_input(
         HashDomain::StorageV1,
         &[
@@ -450,7 +450,7 @@ pub fn storage_hash_input(sref: &TenantStreamRef, stream_epoch: &str) -> Vec<u8>
 
 /// segment identity input:
 /// segment-v1 + project_id + stream_name + stream_epoch + segment_id
-pub fn segment_identity_input(
+pub(crate) fn segment_identity_input(
     sref: &TenantStreamRef,
     stream_epoch: &str,
     segment_id: u32,
@@ -468,7 +468,7 @@ pub fn segment_identity_input(
 
 /// split-child route hash input (contract r1):
 /// route-child-v1 + project_id + stream_name + child_segment_id + salt
-pub fn route_child_hash_input(
+pub(crate) fn route_child_hash_input(
     sref: &TenantStreamRef,
     child_segment_id: u32,
     salt: &[u8],
@@ -492,7 +492,7 @@ pub fn route_child_hash_input(
 /// STREAM_MANAGE are deliberately absent.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 #[repr(u64)]
-pub enum Scope {
+pub(crate) enum Scope {
     MetadataRead = 1 << 0,
     RecordsRead = 1 << 1,
     RecordsAppend = 1 << 2,
@@ -510,7 +510,7 @@ pub enum Scope {
 
 #[allow(dead_code)] // consumed from MT Stage 2b (auth.rs authorization)
 impl Scope {
-    pub const ALL: [Scope; 13] = [
+    pub(crate) const ALL: [Scope; 13] = [
         Scope::MetadataRead,
         Scope::RecordsRead,
         Scope::RecordsAppend,
@@ -526,7 +526,7 @@ impl Scope {
         Scope::UsageRead,
     ];
 
-    pub const fn as_str(self) -> &'static str {
+    pub(crate) const fn as_str(self) -> &'static str {
         match self {
             Scope::MetadataRead => "streams.metadata.read",
             Scope::RecordsRead => "streams.records.read",
@@ -544,18 +544,18 @@ impl Scope {
         }
     }
 
-    pub fn parse(s: &str) -> Option<Scope> {
+    pub(crate) fn parse(s: &str) -> Option<Scope> {
         Scope::ALL.iter().copied().find(|sc| sc.as_str() == s)
     }
 }
 
 /// Compact scope set parsed from the OAuth `scope` claim.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-pub struct ScopeSet(u64);
+pub(crate) struct ScopeSet(u64);
 
 #[allow(dead_code)] // consumed from MT Stage 2b (auth.rs authorization)
 impl ScopeSet {
-    pub const EMPTY: ScopeSet = ScopeSet(0);
+    pub(crate) const EMPTY: ScopeSet = ScopeSet(0);
 
     /// Parse a space-separated OAuth scope string. Unknown scopes are
     /// counted but NEVER granted: the issuer already intersected the
@@ -563,7 +563,7 @@ impl ScopeSet {
     /// either a newer scope this binary predates (must not authorize
     /// anything here) or garbage (must not authorize anything, and the
     /// count is an audit signal).
-    pub fn parse(scope_claim: &str) -> (ScopeSet, usize) {
+    pub(crate) fn parse(scope_claim: &str) -> (ScopeSet, usize) {
         let mut set = ScopeSet::EMPTY;
         let mut unknown = 0usize;
         for word in scope_claim.split_ascii_whitespace() {
@@ -575,25 +575,25 @@ impl ScopeSet {
         (set, unknown)
     }
 
-    pub fn has(self, scope: Scope) -> bool {
+    pub(crate) fn has(self, scope: Scope) -> bool {
         self.0 & scope as u64 != 0
     }
 
-    pub fn with(mut self, scope: Scope) -> Self {
+    pub(crate) fn with(mut self, scope: Scope) -> Self {
         self.0 |= scope as u64;
         self
     }
 
     /// Effective-authority intersection (auth.rs: token ∩ credential).
-    pub fn intersect(self, other: ScopeSet) -> ScopeSet {
+    pub(crate) fn intersect(self, other: ScopeSet) -> ScopeSet {
         ScopeSet(self.0 & other.0)
     }
 
-    pub fn is_empty(self) -> bool {
+    pub(crate) fn is_empty(self) -> bool {
         self.0 == 0
     }
 
-    pub fn iter(self) -> impl Iterator<Item = Scope> {
+    pub(crate) fn iter(self) -> impl Iterator<Item = Scope> {
         Scope::ALL.into_iter().filter(move |s| self.has(*s))
     }
 }
@@ -617,7 +617,7 @@ impl fmt::Display for ScopeSet {
 // ---------------------------------------------------------------------------
 
 #[derive(Debug, Clone, PartialEq, Eq)]
-pub enum PrefixError {
+pub(crate) enum PrefixError {
     Empty,
     TooLong {
         max: usize,
@@ -679,11 +679,11 @@ impl fmt::Display for PrefixError {
 /// `customers/acme` matches `customers/acme` and
 /// `customers/acme/orders` but NOT `customers/acme-other`.
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
-pub struct CanonicalPrefix(Arc<str>);
+pub(crate) struct CanonicalPrefix(Arc<str>);
 
 #[allow(dead_code)] // consumed from MT Stage 2b (auth.rs prefix checks)
 impl CanonicalPrefix {
-    pub fn normalize(raw: &str) -> Result<Self, PrefixError> {
+    pub(crate) fn normalize(raw: &str) -> Result<Self, PrefixError> {
         if raw.is_empty() {
             return Err(PrefixError::Empty);
         }
@@ -724,12 +724,12 @@ impl CanonicalPrefix {
         Ok(Self(Arc::from(raw)))
     }
 
-    pub fn as_str(&self) -> &str {
+    pub(crate) fn as_str(&self) -> &str {
         &self.0
     }
 
     /// Component-aware match against a canonical stream name.
-    pub fn matches(&self, stream_name: &str) -> bool {
+    pub(crate) fn matches(&self, stream_name: &str) -> bool {
         let p = self.0.as_ref();
         match stream_name.strip_prefix(p) {
             Some("") => true,
@@ -752,7 +752,7 @@ impl CanonicalPrefix {
 /// semantics at the policy layer (the contract's token carries the
 /// set verbatim — this module does not invent "match everything").
 #[allow(dead_code)] // consumed from MT Stage 2b (credential-grant cache)
-pub fn normalize_prefix_set(raw: &[&str]) -> Result<Vec<CanonicalPrefix>, PrefixError> {
+pub(crate) fn normalize_prefix_set(raw: &[&str]) -> Result<Vec<CanonicalPrefix>, PrefixError> {
     if raw.len() > PREFIX_MAX_COUNT {
         return Err(PrefixError::TooMany {
             max: PREFIX_MAX_COUNT,
@@ -782,7 +782,7 @@ pub fn normalize_prefix_set(raw: &[&str]) -> Result<Vec<CanonicalPrefix>, Prefix
 
 /// True when any grant in the (normalized, non-empty) set matches.
 #[allow(dead_code)] // consumed from MT Stage 2b (auth.rs prefix checks)
-pub fn prefix_set_matches(grants: &[CanonicalPrefix], stream_name: &str) -> bool {
+pub(crate) fn prefix_set_matches(grants: &[CanonicalPrefix], stream_name: &str) -> bool {
     grants.iter().any(|g| g.matches(stream_name))
 }
 
@@ -793,13 +793,13 @@ pub fn prefix_set_matches(grants: &[CanonicalPrefix], stream_name: &str) -> bool
 /// the credential, and an empty array is far more likely an issuer
 /// bug than an intent.
 #[derive(Clone, Debug)]
-pub enum StreamGrant {
+pub(crate) enum StreamGrant {
     All,
     Prefixes(Arc<[CanonicalPrefix]>),
 }
 
 impl StreamGrant {
-    pub fn permits(&self, stream_name: &str) -> bool {
+    pub(crate) fn permits(&self, stream_name: &str) -> bool {
         match self {
             StreamGrant::All => true,
             StreamGrant::Prefixes(p) => prefix_set_matches(p, stream_name),

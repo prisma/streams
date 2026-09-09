@@ -24,7 +24,7 @@ use crate::registry::{StreamDesc, WatchDefinition};
 
 /// Reserved protocol control namespace (appendix §2.6): never a
 /// customer stream name, on either surface.
-pub use crate::tenant::RESERVED_ROOT;
+pub(crate) use crate::tenant::RESERVED_ROOT;
 
 /// Stable product error shape (spec Stage 8 §11).
 pub fn perr(
