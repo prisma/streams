@@ -64,7 +64,110 @@ struct Stats {
     /// public-Tigris-shaped billing rules (PUT/LIST/multipart billable
     /// Class A on 2xx; GET/HEAD billable Class B on 2xx; 304/404/412,
     /// deletes, and errors free).
-    detailed: Mutex<HashMap<(&'static str, &'static str, &'static str), [u64; 6]>>,
+    detailed: Mutex<HashMap<RequestClass, [u64; 6]>>,
+}
+
+/// Stable identity of a physical request in the emulator's cost ledger.
+#[derive(Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Hash)]
+struct RequestClass {
+    tier: &'static str,
+    kind: &'static str,
+    op: &'static str,
+}
+
+impl Stats {
+    fn snapshot(&self, objects: usize) -> serde_json::Value {
+        serde_json::json!({
+            "put": self.put.load(Ordering::Relaxed),
+            "get": self.get.load(Ordering::Relaxed),
+            "head": self.head.load(Ordering::Relaxed),
+            "delete": self.delete.load(Ordering::Relaxed),
+            "list": self.list.load(Ordering::Relaxed),
+            "multipart": self.multipart.load(Ordering::Relaxed),
+            "put_bytes": self.put_bytes.load(Ordering::Relaxed),
+            "get_bytes": self.get_bytes.load(Ordering::Relaxed),
+            "objects": objects,
+        })
+    }
+
+    #[expect(
+        clippy::unwrap_used,
+        reason = "S3 emulator request ledger; poisoned counts cannot support cost measurements; recovering a partial ledger would silently certify false totals"
+    )]
+    fn detailed_snapshot(&self) -> serde_json::Value {
+        let detailed = self.detailed.lock().unwrap();
+        let mut cells = serde_json::Map::new();
+        let (mut class_a, mut class_b, mut free) = (0u64, 0u64, 0u64);
+        let mut rollup: HashMap<&'static str, [u64; 3]> = HashMap::new();
+        let mut keys: Vec<_> = detailed.keys().collect();
+        keys.sort();
+        for k in keys {
+            let RequestClass { tier, kind, op } = *k;
+            let counts = &detailed[k];
+            let cell: serde_json::Map<String, serde_json::Value> = STATUS_BUCKETS
+                .iter()
+                .zip(counts)
+                .filter(|(_, count)| **count > 0)
+                .map(|(bucket, count)| ((*bucket).into(), (*count).into()))
+                .collect();
+            let [
+                success,
+                not_modified,
+                missing,
+                conditional,
+                client_error,
+                server_error,
+            ] = *counts;
+            let failures = not_modified + missing + conditional + client_error + server_error;
+            let classified = match billing(op, 0) {
+                'A' => [success, 0, failures],
+                'B' => [0, success, failures],
+                _ => [0, 0, failures + success],
+            };
+            let [a, b, f] = classified;
+            class_a += a;
+            class_b += b;
+            free += f;
+            let tier_counts = rollup.entry(tier).or_default();
+            for (target, value) in tier_counts.iter_mut().zip(classified) {
+                *target += value;
+            }
+            cells.insert(format!("{tier}/{kind}/{op}"), cell.into());
+        }
+        let by_tier: serde_json::Map<String, serde_json::Value> = rollup
+            .into_iter()
+            .map(|(t, [a, b, f])| {
+                (
+                    t.to_string(),
+                    serde_json::json!({"class_a": a, "class_b": b, "free": f}),
+                )
+            })
+            .collect();
+        serde_json::json!({
+            "cells": cells,
+            "by_tier": by_tier,
+            "total": {"class_a": class_a, "class_b": class_b, "free": free},
+        })
+    }
+
+    #[expect(
+        clippy::unwrap_used,
+        reason = "S3 emulator request ledger; poisoned counts cannot support cost measurements; recovering a partial ledger would silently certify false totals"
+    )]
+    fn record(
+        &self,
+        method: &Method,
+        key: &str,
+        query: &HashMap<String, String>,
+        status: StatusCode,
+    ) {
+        let class = RequestClass {
+            tier: tier_class(method, key, query),
+            kind: kind_class(key),
+            op: op_name(method, key.is_empty(), query),
+        };
+        self.detailed.lock().unwrap().entry(class).or_default()[status_index(status)] += 1;
+    }
 }
 
 const STATUS_BUCKETS: [&str; 6] = ["2xx", "304", "404", "412", "4xx", "5xx"];
@@ -132,7 +235,6 @@ fn kind_class(key: &str) -> &'static str {
 fn op_name(method: &Method, key_empty: bool, query: &HashMap<String, String>) -> &'static str {
     match (method.clone(), key_empty) {
         (Method::GET, true) => "list",
-        (Method::POST, true) => "delete", // batch delete
         (Method::POST, false) | (Method::PUT, false)
             if query.contains_key("uploads") || query.contains_key("uploadId") =>
         {
@@ -141,7 +243,7 @@ fn op_name(method: &Method, key_empty: bool, query: &HashMap<String, String>) ->
         (Method::PUT, _) => "put",
         (Method::GET, false) => "get",
         (Method::HEAD, _) => "head",
-        (Method::DELETE, _) => "delete",
+        (Method::POST, true) | (Method::DELETE, _) => "delete", // batch or single delete
         _ => "other",
     }
 }
@@ -172,6 +274,33 @@ struct AppState {
 }
 
 impl AppState {
+    #[expect(
+        clippy::unwrap_used,
+        reason = "S3 emulator live-object census; a poisoned object map cannot support retention measurements; recovering partial contents would hide failed storage operations"
+    )]
+    fn live_objects(&self) -> serde_json::Value {
+        // Live-object census: what the bucket holds RIGHT NOW, by
+        // tier/kind — the direct gauge for GC retention (request cells
+        // alone can't show what was never deleted).
+        let mut live: HashMap<(&'static str, &'static str), u64> = HashMap::new();
+        {
+            let objects = self.objects.lock().unwrap();
+            let no_query = HashMap::new();
+            for key in objects.keys() {
+                let k = key.split_once('/').map(|x| x.1).unwrap_or(key);
+                let tier = tier_class(&Method::PUT, k, &no_query);
+                *live.entry((tier, kind_class(k))).or_default() += 1;
+            }
+        }
+        let mut live_map = serde_json::Map::new();
+        let mut live_keys: Vec<_> = live.keys().copied().collect();
+        live_keys.sort();
+        for (tier, kind) in live_keys {
+            live_map.insert(format!("{tier}/{kind}"), live[&(tier, kind)].into());
+        }
+        live_map.into()
+    }
+
     fn next_etag(&self) -> String {
         format!(
             "\"e{:016x}\"",
@@ -259,96 +388,17 @@ async fn handle(
 
     // Stats endpoints bypass latency injection.
     if path == "/_s3lite/stats" {
-        let s = &state.stats;
-        let body = serde_json::json!({
-            "put": s.put.load(Ordering::Relaxed),
-            "get": s.get.load(Ordering::Relaxed),
-            "head": s.head.load(Ordering::Relaxed),
-            "delete": s.delete.load(Ordering::Relaxed),
-            "list": s.list.load(Ordering::Relaxed),
-            "multipart": s.multipart.load(Ordering::Relaxed),
-            "put_bytes": s.put_bytes.load(Ordering::Relaxed),
-            "get_bytes": s.get_bytes.load(Ordering::Relaxed),
-            "objects": state.objects.lock().unwrap().len(),
-        });
-        return (
-            [(header::CONTENT_TYPE, "application/json")],
-            body.to_string(),
-        )
-            .into_response();
+        #[expect(
+            clippy::unwrap_used,
+            reason = "S3 emulator object census; a poisoned object map cannot report a trustworthy count; silently recovering it would hide failed storage operations"
+        )]
+        let objects = state.objects.lock().unwrap().len();
+        return axum::Json(state.stats.snapshot(objects)).into_response();
     }
     if path == "/_s3lite/stats2" {
-        let detailed = state.stats.detailed.lock().unwrap();
-        let mut cells = serde_json::Map::new();
-        let (mut class_a, mut class_b, mut free) = (0u64, 0u64, 0u64);
-        let mut rollup: HashMap<&'static str, [u64; 3]> = HashMap::new();
-        let mut keys: Vec<_> = detailed.keys().collect();
-        keys.sort();
-        for k in keys {
-            let (tier, kind, op) = *k;
-            let counts = &detailed[k];
-            let mut cell = serde_json::Map::new();
-            for (i, bucket) in STATUS_BUCKETS.iter().enumerate() {
-                if counts[i] > 0 {
-                    cell.insert((*bucket).into(), counts[i].into());
-                }
-                let r = rollup.entry(tier).or_default();
-                match billing(op, i) {
-                    'A' => {
-                        class_a += counts[i];
-                        r[0] += counts[i];
-                    }
-                    'B' => {
-                        class_b += counts[i];
-                        r[1] += counts[i];
-                    }
-                    _ => {
-                        free += counts[i];
-                        r[2] += counts[i];
-                    }
-                }
-            }
-            cells.insert(format!("{tier}/{kind}/{op}"), cell.into());
-        }
-        let by_tier: serde_json::Map<String, serde_json::Value> = rollup
-            .into_iter()
-            .map(|(t, [a, b, f])| {
-                (
-                    t.to_string(),
-                    serde_json::json!({"class_a": a, "class_b": b, "free": f}),
-                )
-            })
-            .collect();
-        // Live-object census: what the bucket holds RIGHT NOW, by
-        // tier/kind — the direct gauge for GC retention (request cells
-        // alone can't show what was never deleted).
-        let mut live: HashMap<(&'static str, &'static str), u64> = HashMap::new();
-        {
-            let objects = state.objects.lock().unwrap();
-            let no_query = HashMap::new();
-            for key in objects.keys() {
-                let k = key.split_once('/').map(|x| x.1).unwrap_or(key);
-                let tier = tier_class(&Method::PUT, k, &no_query);
-                *live.entry((tier, kind_class(k))).or_default() += 1;
-            }
-        }
-        let mut live_map = serde_json::Map::new();
-        let mut live_keys: Vec<_> = live.keys().copied().collect();
-        live_keys.sort();
-        for (tier, kind) in live_keys {
-            live_map.insert(format!("{tier}/{kind}"), live[&(tier, kind)].into());
-        }
-        let body = serde_json::json!({
-            "cells": cells,
-            "by_tier": by_tier,
-            "total": {"class_a": class_a, "class_b": class_b, "free": free},
-            "live_objects": live_map,
-        });
-        return (
-            [(header::CONTENT_TYPE, "application/json")],
-            body.to_string(),
-        )
-            .into_response();
+        let mut body = state.stats.detailed_snapshot();
+        body["live_objects"] = state.live_objects();
+        return axum::Json(body).into_response();
     }
 
     tokio::time::sleep(state.latency).await;
@@ -365,17 +415,18 @@ async fn handle(
     }
     let full_key = format!("{bucket}/{key}");
 
-    let tier = tier_class(&method, &key, &query);
-    let kind = kind_class(&key);
-    let op = op_name(&method, key.is_empty(), &query);
     let resp = dispatch(
-        &state, method, &bucket, &key, &full_key, &query, headers, body,
+        &state,
+        method.clone(),
+        &bucket,
+        &key,
+        &full_key,
+        &query,
+        headers,
+        body,
     )
     .await;
-    {
-        let mut detailed = state.stats.detailed.lock().unwrap();
-        detailed.entry((tier, kind, op)).or_default()[status_index(resp.status())] += 1;
-    }
+    state.stats.record(&method, &key, &query, resp.status());
     resp
 }
 
@@ -835,3 +886,7 @@ async fn complete_multipart(
     );
     ([(header::CONTENT_TYPE, "application/xml")], xml).into_response()
 }
+
+#[cfg(test)]
+#[path = "s3lite/tests.rs"]
+mod tests;
