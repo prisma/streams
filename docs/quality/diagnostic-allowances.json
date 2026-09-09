@@ -6604,20 +6604,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "2b619ef8706e72e61d5f5298bdeb36eb4119071803e4e055ddd16e0a3e42b51b",
-      "item": "crate::TouchJournal::wait",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a34e284ec6be23bbeb2af54a20b98b7545b521fa489e1c61eb876f1b1a6b528d",
-      "item": "crate::TouchJournal::wait",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "5bc58ea2e4fe1c31598ea0b077c8560699d84e34866abd00895b0c38708de443",
       "item": "crate::main",
       "lint": "clippy::expect_used",
@@ -8832,13 +8818,6 @@
       "count": 1,
       "fingerprint": "a4a7491636479db5325c2c671af19d7cf39ff14acacd51e66493c3660c49e28a",
       "item": "crate::TouchJournal::close",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "dbd98cbef5b7dd2ad3e24a478a2d84c668af55ef774caee2166628c7065e2b10",
-      "item": "crate::TouchJournal::flush_bucket",
       "lint": "clippy::let_underscore_must_use",
       "path": "src/touch.rs"
     },
@@ -14138,27 +14117,6 @@
       "count": 1,
       "fingerprint": "a7fae912a54e5fc1a2fd6fe904321b47d2a27fc4b93605dc0fd42722faea1edb",
       "item": "crate::TouchJournal::ingest",
-      "lint": "clippy::unwrap_used",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 2,
-      "fingerprint": "2e68f7977d0b94a5a73a24ca53f04d935ff6bf19d6251bfdf9092376fef78fd7",
-      "item": "crate::TouchJournal::wait",
-      "lint": "clippy::unwrap_used",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "7684bdd658e60d04a331e57a28c76c1af339cce7b2020c962c20601d987b7055",
-      "item": "crate::TouchJournal::wait",
-      "lint": "clippy::unwrap_used",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "9f31875979899210048434b75b40620f5794208fc206203679331a2ef99fc9af",
-      "item": "crate::TouchJournal::wait",
       "lint": "clippy::unwrap_used",
       "path": "src/touch.rs"
     },

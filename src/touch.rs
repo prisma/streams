@@ -23,7 +23,11 @@ struct ClosedBucket {
 
 #[derive(Debug, Clone, Copy)]
 enum WakeReason {
-    Touched { generation: u64, end_offset: u64 },
+    Touched {
+        generation: u64,
+        end_offset: u64,
+        proven: bool,
+    },
     Closed,
 }
 
@@ -174,9 +178,14 @@ impl TouchJournal {
         };
         for id in candidates {
             if let Some(w) = remove_waiter(&mut inner, id) {
+                #[expect(
+                    clippy::let_underscore_must_use,
+                    reason = "Touch journal wake delivery; cancellation may drop a registered receiver before this flush; the waiter is already removed and there is no recipient to retry"
+                )]
                 let _ = w.tx.send(WakeReason::Touched {
                     generation,
                     end_offset,
+                    proven: !overflow,
                 });
             }
         }
@@ -212,45 +221,34 @@ impl TouchJournal {
 
     /// Single-key wait for the collapsible GET path. Cursor semantics:
     /// "now", or "<epoch>:<generation>"; foreign epoch => stale.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "Touch journal registration and observation; poisoned history may have a partially published generation; recovering it could claim an invalid touch or cursor"
+    )]
     pub(crate) async fn wait(
         self: &Arc<Self>,
         cursor: &str,
         key_ids: Vec<u32>,
         timeout: Duration,
     ) -> WaitOutcome {
-        let from_gen = {
-            let inner = self.inner.lock().unwrap();
-            if inner.closed {
-                return WaitOutcome::Stale {
-                    cursor: self.cursor(inner.generation),
-                };
-            }
-            if cursor == "now" {
-                inner.generation
-            } else {
-                match cursor.split_once(':') {
-                    Some((epoch, generation)) if epoch == self.epoch => {
-                        match generation.parse::<u64>() {
-                            Ok(g) => g,
-                            Err(_) => {
-                                return WaitOutcome::Stale {
-                                    cursor: self.cursor(inner.generation),
-                                };
-                            }
-                        }
-                    }
-                    _ => {
-                        return WaitOutcome::Stale {
-                            cursor: self.cursor(inner.generation),
-                        };
-                    }
-                }
-            }
-        };
-
         let rx = {
+            // Retirement, cursor validation and registration share one lock.
+            // A close cannot drain the journal between admission and insertion.
             let mut inner = self.inner.lock().unwrap();
             let generation = inner.generation;
+            let from_gen = if cursor == "now" {
+                Some(generation)
+            } else {
+                cursor
+                    .split_once(':')
+                    .filter(|(epoch, _)| *epoch == self.epoch)
+                    .and_then(|(_, generation)| generation.parse::<u64>().ok())
+            };
+            let Some(from_gen) = from_gen.filter(|_| !inner.closed) else {
+                return WaitOutcome::Stale {
+                    cursor: self.cursor(generation),
+                };
+            };
             if let Some(proven) = inner.catch_up(from_gen, &key_ids) {
                 // Behind-head clients catch up in one response.
                 return WaitOutcome::Touched {
@@ -274,10 +272,11 @@ impl TouchJournal {
             Ok(Ok(WakeReason::Touched {
                 generation,
                 end_offset,
+                proven,
             })) => WaitOutcome::Touched {
                 cursor: self.cursor(generation),
                 end_offset,
-                proven: true,
+                proven,
             },
             Ok(Ok(WakeReason::Closed)) => {
                 let g = self.inner.lock().unwrap().generation;
@@ -336,7 +335,7 @@ fn remove_waiter(inner: &mut Inner, id: u64) -> Option<Waiter> {
 ///
 /// Map KEY is the collection's STORAGE identity (delete/recreate
 /// isolation: a recreated stream must not inherit the old
-/// incarnation's journal, pinned templates, or cursor validity). The
+/// incarnation's journal or cursor validity). The
 /// stored value carries the stream's shard ROUTE hash, because shard
 /// bit-prefixes partition the ROUTE space — matching them against
 /// storage hashes is the same hash-domain trap that broke the D3
@@ -349,7 +348,7 @@ type JournalSlot = (crate::crypto::RouteHash, Arc<TouchJournal>);
 
 pub(crate) struct TouchRegistry {
     map: Mutex<HashMap<[u8; 16], JournalSlot>>,
-    /// WP-15/PR 4: template-id discriminators draw from the runtime's
+    /// Journal epoch discriminators draw from the runtime's
     /// entropy capability, not the ambient process RNG.
     entropy: Arc<dyn crate::runtime::Entropy>,
 }
@@ -394,7 +393,75 @@ impl TouchRegistry {
 
 #[cfg(test)]
 mod tests {
-    use super::{BUCKET_KEY_CAP, HISTORY_BUCKETS, TouchJournal};
+    use super::{BUCKET_KEY_CAP, HISTORY_BUCKETS, TouchJournal, WaitOutcome};
+    use std::time::Duration;
+
+    #[tokio::test]
+    async fn live_overflow_does_not_claim_a_matching_key() {
+        let journal = TouchJournal::start(&crate::runtime::OsEntropy);
+        let mut wait = Box::pin(journal.wait("now", vec![u32::MAX], Duration::from_secs(1)));
+        assert!(futures_util::poll!(wait.as_mut()).is_pending());
+        let overflow: Vec<u32> = (0..u32::try_from(BUCKET_KEY_CAP).unwrap()).collect();
+        journal.ingest(&overflow, 1);
+        journal.flush_bucket(false);
+        assert!(matches!(
+            wait.await,
+            WaitOutcome::Touched { proven: false, .. }
+        ));
+        journal.close();
+    }
+
+    #[tokio::test]
+    async fn live_matching_key_is_proven() {
+        let journal = TouchJournal::start(&crate::runtime::OsEntropy);
+        let mut wait = Box::pin(journal.wait("now", vec![7], Duration::from_secs(1)));
+        assert!(futures_util::poll!(wait.as_mut()).is_pending());
+        journal.ingest(&[7], 9);
+        journal.flush_bucket(false);
+        assert!(matches!(
+            wait.await,
+            WaitOutcome::Touched {
+                proven: true,
+                end_offset: 9,
+                ..
+            }
+        ));
+        journal.close();
+    }
+
+    #[tokio::test]
+    async fn closing_drains_registered_waiters_and_refuses_later_ones() {
+        let journal = TouchJournal::start(&crate::runtime::OsEntropy);
+        let mut wait = Box::pin(journal.wait("now", vec![7], Duration::from_secs(1)));
+        assert!(futures_util::poll!(wait.as_mut()).is_pending());
+        journal.close();
+        assert!(matches!(wait.await, WaitOutcome::Stale { .. }));
+        assert!(matches!(
+            journal.wait("now", vec![7], Duration::ZERO).await,
+            WaitOutcome::Stale { .. }
+        ));
+        let inner = journal.inner.lock().unwrap();
+        assert!(inner.waiters.is_empty());
+        assert!(inner.key_index.is_empty());
+    }
+
+    #[tokio::test]
+    async fn malformed_and_foreign_cursors_never_register() {
+        let journal = TouchJournal::start(&crate::runtime::OsEntropy);
+        for cursor in [
+            String::new(),
+            "foreign:0".into(),
+            format!("{}:invalid", journal.epoch),
+            format!("{}:18446744073709551616", journal.epoch),
+        ] {
+            assert!(matches!(
+                journal.wait(&cursor, vec![7], Duration::ZERO).await,
+                WaitOutcome::Stale { .. }
+            ));
+        }
+        assert!(journal.inner.lock().unwrap().waiters.is_empty());
+        journal.close();
+    }
 
     #[tokio::test]
     async fn catch_up_uses_the_first_relevant_bucket() {
