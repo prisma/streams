@@ -15,6 +15,7 @@ struct Scan {
     output: Source,
     owners: Vec<String>,
     test_only: bool,
+    explicit_test_cfg: bool,
     imports: Imports,
 }
 
@@ -23,12 +24,15 @@ pub(super) fn source(path: &str, source: &str) -> syn::Result<Source> {
     let mut scan = Scan {
         output: Source {
             path: path.to_owned(),
+            tokens: tokens(&file),
+            test_only_file: facts::explicit_test_cfg(&file.attrs),
             ..Source::default()
         },
         owners: vec!["crate".to_owned()],
         test_only: path.starts_with("src/dst/")
             || path.contains("/tests/")
             || path.ends_with("_tests.rs"),
+        explicit_test_cfg: false,
         imports: Imports::default().with_items(&file.items),
     };
     scan.visit_file(&file);
@@ -56,20 +60,22 @@ impl Scan {
             kind,
             signature,
             test_only: self.test_only,
+            explicit_test_cfg: self.explicit_test_cfg,
             location: span.into(),
         });
     }
 
-    fn enter(&mut self, name: String, attrs: &[syn::Attribute]) -> bool {
-        let previous = self.test_only;
+    fn enter(&mut self, name: String, attrs: &[syn::Attribute]) -> (bool, bool) {
+        let previous = (self.test_only, self.explicit_test_cfg);
         self.owners.push(name);
         self.test_only |= facts::test_only(attrs);
+        self.explicit_test_cfg = facts::explicit_test_cfg(attrs);
         previous
     }
 
-    fn leave(&mut self, previous: bool) {
+    fn leave(&mut self, previous: (bool, bool)) {
         drop(self.owners.pop());
-        self.test_only = previous;
+        (self.test_only, self.explicit_test_cfg) = previous;
     }
 }
 
