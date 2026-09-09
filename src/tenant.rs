@@ -14,9 +14,6 @@
 //! separated) so no call site can concatenate identities with
 //! delimiters and accidentally alias `("ab","c")` with `("a","bc")`.
 
-// Narrow dead-code allowances only (review round): each unconsumed
-// item carries its own `#[allow(dead_code)]` with the stage that
-// consumes it, and the allowance is REMOVED in that stage's commits.
 use std::fmt;
 use std::sync::Arc;
 
@@ -93,7 +90,6 @@ fn validate_id(raw: &str, max: usize) -> Result<(), IdentityError> {
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub(crate) struct WorkspaceId(Arc<str>);
 
-#[allow(dead_code)] // consumed from MT Stage 2b (auth.rs principal)
 impl WorkspaceId {
     pub(crate) fn new(raw: &str) -> Result<Self, IdentityError> {
         validate_id(raw, ID_MAX_BYTES)?;
@@ -116,7 +112,6 @@ impl fmt::Display for WorkspaceId {
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub(crate) struct ProjectId(Arc<str>);
 
-#[allow(dead_code)] // fully consumed at MT Stage 2b/3 (principal + registry)
 impl ProjectId {
     pub(crate) fn new(raw: &str) -> Result<Self, IdentityError> {
         validate_id(raw, ID_MAX_BYTES)?;
@@ -188,11 +183,7 @@ pub(crate) fn system_project() -> ProjectId {
     ProjectId::new(SYSTEM_PROJECT).expect("the reserved id satisfies the grammar")
 }
 
-#[allow(dead_code)] // consumed at MT Stage 4/7 (system-stream relocation)
 impl ProjectId {
-    pub(crate) fn system() -> Self {
-        ProjectId(Arc::from(SYSTEM_PROJECT))
-    }
     pub(crate) fn is_system(&self) -> bool {
         self.as_str() == SYSTEM_PROJECT
     }
@@ -200,7 +191,6 @@ impl ProjectId {
 
 /// Validate a cell id (§2). Cells stay `Arc<str>` in principals; this
 /// is the shared bound check for config and token claims.
-#[allow(dead_code)] // consumed from MT Stage 2b (auth.rs principal)
 pub(crate) fn validate_cell_id(raw: &str) -> Result<(), IdentityError> {
     validate_id(raw, ID_MAX_BYTES)
 }
@@ -291,7 +281,6 @@ fn valid_component(c: &str) -> Result<(), NameError> {
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub(crate) struct CanonicalStreamName(Arc<str>);
 
-#[allow(dead_code)] // fully consumed at MT Stage 3/4 (registry + handlers)
 impl CanonicalStreamName {
     pub(crate) fn new(raw: &str) -> Result<Self, NameError> {
         if raw.is_empty() {
@@ -350,7 +339,6 @@ pub(crate) struct TenantStreamRef {
     name: CanonicalStreamName,
 }
 
-#[allow(dead_code)] // fully consumed at MT Stage 3/4 (registry + handlers)
 impl TenantStreamRef {
     pub(crate) fn new(project_id: ProjectId, name: CanonicalStreamName) -> Self {
         Self { project_id, name }
@@ -383,14 +371,12 @@ impl fmt::Display for TenantStreamRef {
 /// a contract change; renaming one is forbidden (it would silently
 /// re-key existing data).
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
-#[allow(dead_code)] // CatalogCursorV1/WatchCapabilityV1 consumed at MT Stage 3/4
 pub(crate) enum HashDomain {
     RouteV1,
     /// Contract r1: scaler-minted placement of a split-child segment.
     RouteChildV1,
     StorageV1,
     SegmentV1,
-    CatalogCursorV1,
     WatchCapabilityV1,
 }
 
@@ -401,7 +387,6 @@ impl HashDomain {
             HashDomain::RouteChildV1 => b"route-child-v1",
             HashDomain::StorageV1 => b"storage-v1",
             HashDomain::SegmentV1 => b"segment-v1",
-            HashDomain::CatalogCursorV1 => b"catalog-cursor-v1",
             HashDomain::WatchCapabilityV1 => b"watch-capability-v1",
         }
     }
@@ -508,7 +493,6 @@ pub(crate) enum Scope {
     UsageRead = 1 << 12,
 }
 
-#[allow(dead_code)] // consumed from MT Stage 2b (auth.rs authorization)
 impl Scope {
     pub(crate) const ALL: [Scope; 13] = [
         Scope::MetadataRead,
@@ -553,7 +537,6 @@ impl Scope {
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(crate) struct ScopeSet(u64);
 
-#[allow(dead_code)] // consumed from MT Stage 2b (auth.rs authorization)
 impl ScopeSet {
     pub(crate) const EMPTY: ScopeSet = ScopeSet(0);
 
@@ -579,18 +562,9 @@ impl ScopeSet {
         self.0 & scope as u64 != 0
     }
 
-    pub(crate) fn with(mut self, scope: Scope) -> Self {
-        self.0 |= scope as u64;
-        self
-    }
-
     /// Effective-authority intersection (auth.rs: token ∩ credential).
     pub(crate) fn intersect(self, other: ScopeSet) -> ScopeSet {
         ScopeSet(self.0 & other.0)
-    }
-
-    pub(crate) fn is_empty(self) -> bool {
-        self.0 == 0
     }
 
     pub(crate) fn iter(self) -> impl Iterator<Item = Scope> {
@@ -681,7 +655,6 @@ impl fmt::Display for PrefixError {
 #[derive(Clone, Debug, Eq, PartialEq, Hash)]
 pub(crate) struct CanonicalPrefix(Arc<str>);
 
-#[allow(dead_code)] // consumed from MT Stage 2b (auth.rs prefix checks)
 impl CanonicalPrefix {
     pub(crate) fn normalize(raw: &str) -> Result<Self, PrefixError> {
         if raw.is_empty() {
@@ -751,7 +724,6 @@ impl CanonicalPrefix {
 /// is only produced by an empty input; callers must define empty-set
 /// semantics at the policy layer (the contract's token carries the
 /// set verbatim — this module does not invent "match everything").
-#[allow(dead_code)] // consumed from MT Stage 2b (credential-grant cache)
 pub(crate) fn normalize_prefix_set(raw: &[&str]) -> Result<Vec<CanonicalPrefix>, PrefixError> {
     if raw.len() > PREFIX_MAX_COUNT {
         return Err(PrefixError::TooMany {
@@ -781,7 +753,6 @@ pub(crate) fn normalize_prefix_set(raw: &[&str]) -> Result<Vec<CanonicalPrefix>,
 }
 
 /// True when any grant in the (normalized, non-empty) set matches.
-#[allow(dead_code)] // consumed from MT Stage 2b (auth.rs prefix checks)
 pub(crate) fn prefix_set_matches(grants: &[CanonicalPrefix], stream_name: &str) -> bool {
     grants.iter().any(|g| g.matches(stream_name))
 }
