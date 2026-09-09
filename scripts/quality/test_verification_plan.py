@@ -53,6 +53,12 @@ class Triggers(unittest.TestCase):
         self.assertTrue(plan(['src/bootstrap/rss.rs'])['mutants'])
         self.assertTrue(plan(['src/new_owner.rs'])['compiler'])
 
+    def test_quota_arithmetic_selects_its_registered_mutation_owner(self):
+        for path in ['src/quota.rs', 'src/quota/bucket.rs']:
+            self.assertTrue(plan([path])['mutants'])
+            self.assertTrue(plan([path])['properties_fuzz'])
+            self.assertFalse(plan([path], [path])['mutants'])
+
 
 if __name__ == '__main__':
     unittest.main()

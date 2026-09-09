@@ -1494,27 +1494,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "c283cedf9eba88c46476c5d2349a9872a76b7f6e5cd1085dc0edb1e26c734e3f",
-      "item": "crate::Bucket::take",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d3a5b0131f9c223620c8ef054e325319166752699049a088916f0549cf6745ce",
-      "item": "crate::QuotaRegistry::admit_append",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "8a52278ae223f47a7903606543b15d8b304470bbdf2d41cfac5d31c11ed4035a",
-      "item": "crate::QuotaRegistry::check_read",
-      "lint": "clippy::cast_possible_truncation",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "a2b9a18d18b6ccd3e1b5e20712a504f8f17e0fdd0767eef179ed8c2f5b9cd7c0",
       "item": "crate::load_or_init_topology",
       "lint": "clippy::cast_possible_truncation",
@@ -1988,27 +1967,6 @@
       "item": "crate::product_usage",
       "lint": "clippy::cast_sign_loss",
       "path": "src/product.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "5ff3a5fe2155a0a20eea56bc2bdef4b0c10d7c9e9ed51342c8af9424d8fdf5e4",
-      "item": "crate::Bucket::take",
-      "lint": "clippy::cast_sign_loss",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "cd7639ee1142bf3a4b61963bec1f1aae746808bd410dcb921f1f431505e469a2",
-      "item": "crate::QuotaRegistry::admit_append",
-      "lint": "clippy::cast_sign_loss",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b80590feb25a6df5be74f6aabad58bfc91d858306182ecb6dd920bec98aa0e5a",
-      "item": "crate::QuotaRegistry::check_read",
-      "lint": "clippy::cast_sign_loss",
-      "path": "src/quota.rs"
     },
     {
       "count": 1,
@@ -8547,27 +8505,6 @@
       "item": "crate::PostingsCache::spawn_load",
       "lint": "clippy::let_underscore_must_use",
       "path": "src/postings_cache.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "878bbb581ef6432b94837d76c17f54eb03c57f6f4d3dbf98b9ae3b6347e18a7c",
-      "item": "crate::QuotaRegistry::admit_append",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "810b2fa849f1d1690560d97dc059a2041051bc7285ac13d7817f41594cd61184",
-      "item": "crate::QuotaRegistry::check_read",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "dc2b12a29e40bb1df22295b947daef5eac9cd98d786634f64f57228d3c443ba9",
-      "item": "crate::QuotaRegistry::debit_read",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/quota.rs"
     },
     {
       "count": 1,
@@ -18814,13 +18751,6 @@
       "count": 1,
       "fingerprint": "6487b3fbddd2c3343d03313756888a3276394c4cfb7c47863403ff72fd1df099",
       "item": "crate::QuotaRegistry::admit_append",
-      "lint": "unreachable_pub",
-      "path": "src/quota.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "512f0519a55d116f39c0e83970a343f189661947835c3d0acb8ceef80d46c16c",
-      "item": "crate::QuotaRegistry::debit_read",
       "lint": "unreachable_pub",
       "path": "src/quota.rs"
     },
