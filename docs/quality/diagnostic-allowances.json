@@ -9493,14 +9493,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "1dd6e2e218712d78b5e8bfe4c8c78f530beb3ada522333f47ad81ded03f42163",
-      "item": "crate::mint_token",
-      "lint": "clippy::too_many_arguments",
-      "metric": 7,
-      "path": "src/dst/tests/fixture_auth.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "ce371c8a7f3ddb11e926091c9f2cc881492b5e945391e7dd663d82f58ae84aad",
       "item": "crate::rig_opener",
       "lint": "clippy::too_many_arguments",
@@ -10309,14 +10301,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "27584925d3512a00f5d250b0830689e8821cad3c3103a3b81522a7a1f306da0d",
-      "item": "crate::sr_rig",
-      "lint": "clippy::too_many_lines",
-      "metric": 107,
-      "path": "src/dst/tests/fixture_auth.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "889e1d2a055667775c467c2b9d0380723ba288f78e6767ebc567fed96ba7c1ca",
       "item": "crate::http_rig_build",
       "lint": "clippy::too_many_lines",
@@ -10722,22 +10706,6 @@
       "lint": "clippy::too_many_lines",
       "metric": 187,
       "path": "src/dst/tests/security_isolation.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0cd170caf538c96ad844e05019da27d45c920f5abcdef8335e5c6066c795189e",
-      "item": "crate::delete_stays_inside_the_requesting_project",
-      "lint": "clippy::too_many_lines",
-      "metric": 153,
-      "path": "src/dst/tests/security_lineage.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "bc197d2614c7b8097d9b2403012c1473b646705dbe6d56c55d7b24ebe3a6cba4",
-      "item": "crate::stale_lineage_read_stays_inside_the_requesting_project",
-      "lint": "clippy::too_many_lines",
-      "metric": 124,
-      "path": "src/dst/tests/security_lineage.rs"
     },
     {
       "count": 1,
