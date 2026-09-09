@@ -8816,13 +8816,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "a4a7491636479db5325c2c671af19d7cf39ff14acacd51e66493c3660c49e28a",
-      "item": "crate::TouchJournal::close",
-      "lint": "clippy::let_underscore_must_use",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "2c081f6b7b6c7a95b3d5200429c04bb2ef3891bd456f08c3b91223c74591d9f3",
       "item": "crate::begin_sealing_for_close",
       "lint": "clippy::match_same_arms",
@@ -14098,13 +14091,6 @@
       "item": "crate::TaskSupervisor::observe_shutdown",
       "lint": "clippy::unwrap_used",
       "path": "src/tasks/shutdown.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ffa50d5aacfbe6dfcc70ced2d648b6ab3be4d201e9ba5d9f183ffc66daff3ae3",
-      "item": "crate::TouchJournal::close",
-      "lint": "clippy::unwrap_used",
-      "path": "src/touch.rs"
     },
     {
       "count": 1,

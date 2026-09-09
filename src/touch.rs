@@ -36,6 +36,7 @@ struct Waiter {
     tx: oneshot::Sender<WakeReason>,
 }
 
+#[derive(Default)]
 struct Inner {
     generation: u64,
     current: HashSet<u32>,
@@ -78,21 +79,7 @@ impl TouchJournal {
         entropy.fill(&mut e);
         let journal = Arc::new(TouchJournal {
             epoch: e.iter().map(|b| format!("{b:02x}")).collect(),
-            inner: Mutex::new(Inner {
-                generation: 0,
-                current: HashSet::new(),
-                current_overflow: false,
-                dirty: false,
-                end_offset: 0,
-                current_end_offset: 0,
-                history: VecDeque::new(),
-                history_floor: 0,
-                history_keys: 0,
-                waiters: HashMap::new(),
-                next_waiter_id: 0,
-                key_index: HashMap::new(),
-                closed: false,
-            }),
+            inner: Mutex::new(Inner::default()),
         });
         let flusher = journal.clone();
         tokio::spawn(async move {
@@ -210,13 +197,12 @@ impl TouchJournal {
     }
 
     /// Fence/move: wake everyone with stale-inducing Closed and stop.
+    #[expect(
+        clippy::unwrap_used,
+        reason = "Touch journal retirement; poisoned state may contain a partially admitted waiter; recovering it could leave that waiter outside the terminal drain"
+    )]
     pub(crate) fn close(&self) {
-        let mut inner = self.inner.lock().unwrap();
-        inner.closed = true;
-        inner.key_index.clear();
-        for (_, w) in inner.waiters.drain() {
-            let _ = w.tx.send(WakeReason::Closed);
-        }
+        self.inner.lock().unwrap().close();
     }
 
     /// Single-key wait for the collapsible GET path. Cursor semantics:
@@ -231,40 +217,14 @@ impl TouchJournal {
         key_ids: Vec<u32>,
         timeout: Duration,
     ) -> WaitOutcome {
-        let rx = {
-            // Retirement, cursor validation and registration share one lock.
-            // A close cannot drain the journal between admission and insertion.
-            let mut inner = self.inner.lock().unwrap();
-            let generation = inner.generation;
-            let from_gen = if cursor == "now" {
-                Some(generation)
-            } else {
-                cursor
-                    .split_once(':')
-                    .filter(|(epoch, _)| *epoch == self.epoch)
-                    .and_then(|(_, generation)| generation.parse::<u64>().ok())
-            };
-            let Some(from_gen) = from_gen.filter(|_| !inner.closed) else {
-                return WaitOutcome::Stale {
-                    cursor: self.cursor(generation),
-                };
-            };
-            if let Some(proven) = inner.catch_up(from_gen, &key_ids) {
-                // Behind-head clients catch up in one response.
-                return WaitOutcome::Touched {
-                    cursor: self.cursor(generation),
-                    end_offset: inner.end_offset,
-                    proven,
-                };
-            }
-            let id = inner.next_waiter_id;
-            inner.next_waiter_id += 1;
-            let (tx, rx) = oneshot::channel();
-            for k in &key_ids {
-                inner.key_index.entry(*k).or_default().push(id);
-            }
-            inner.waiters.insert(id, Waiter { keys: key_ids, tx });
-            rx
+        let registration = self
+            .inner
+            .lock()
+            .unwrap()
+            .register(&self.epoch, cursor, key_ids);
+        let rx = match registration {
+            WaitRegistration::Ready(outcome) => return outcome,
+            WaitRegistration::Pending(rx) => rx,
         };
 
         match tokio::time::timeout(timeout, rx).await {
@@ -295,7 +255,58 @@ impl TouchJournal {
     }
 }
 
+enum WaitRegistration {
+    Ready(WaitOutcome),
+    Pending(oneshot::Receiver<WakeReason>),
+}
+
 impl Inner {
+    /// The caller holds the journal lock through admission and insertion.
+    fn register(&mut self, epoch: &str, cursor: &str, key_ids: Vec<u32>) -> WaitRegistration {
+        let generation = self.generation;
+        let from_gen = if cursor == "now" {
+            Some(generation)
+        } else {
+            cursor
+                .split_once(':')
+                .filter(|(candidate, _)| *candidate == epoch)
+                .and_then(|(_, generation)| generation.parse::<u64>().ok())
+        };
+        let Some(from_gen) = from_gen.filter(|_| !self.closed) else {
+            return WaitRegistration::Ready(WaitOutcome::Stale {
+                cursor: format!("{epoch}:{generation}"),
+            });
+        };
+        if let Some(proven) = self.catch_up(from_gen, &key_ids) {
+            return WaitRegistration::Ready(WaitOutcome::Touched {
+                cursor: format!("{epoch}:{generation}"),
+                end_offset: self.end_offset,
+                proven,
+            });
+        }
+        let id = self.next_waiter_id;
+        self.next_waiter_id += 1;
+        let (tx, rx) = oneshot::channel();
+        for key in &key_ids {
+            self.key_index.entry(*key).or_default().push(id);
+        }
+        self.waiters.insert(id, Waiter { keys: key_ids, tx });
+        WaitRegistration::Pending(rx)
+    }
+
+    /// Retirement and registration mutate the same protected state.
+    fn close(&mut self) {
+        self.closed = true;
+        self.key_index.clear();
+        for (_, waiter) in self.waiters.drain() {
+            #[expect(
+                clippy::let_underscore_must_use,
+                reason = "Touch retirement notification; clients may cancel before the journal retires; a removed receiver has no remaining delivery obligation"
+            )]
+            let _ = waiter.tx.send(WakeReason::Closed);
+        }
+    }
+
     /// Whether retained history proves a relevant touch after this cursor.
     /// Missing history and an overflow bucket require an unproven catch-up.
     fn catch_up(&self, from: u64, keys: &[u32]) -> Option<bool> {
@@ -510,3 +521,6 @@ mod tests {
         journal.close();
     }
 }
+
+#[cfg(test)]
+mod loom_tests;
