@@ -30,7 +30,10 @@ pub struct DenialTag {
 }
 
 /// Attach the denial class to a refusal response.
-pub fn tag(mut resp: axum::response::Response, code: &'static str) -> axum::response::Response {
+pub(crate) fn tag(
+    mut resp: axum::response::Response,
+    code: &'static str,
+) -> axum::response::Response {
     resp.extensions_mut().insert(DenialTag {
         code,
         project: None,

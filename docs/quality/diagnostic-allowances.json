@@ -15284,13 +15284,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "75fe14e8b9797b1d4025449aed5380127d3b6d18271469f4d61a36e5b3d6b2bb",
-      "item": "crate::tag",
-      "lint": "unreachable_pub",
-      "path": "src/audit.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "44290c29f676137519719f6def157793dfa7865d77a6fe486f45266e33c8cdd9",
       "item": "crate::tag_project",
       "lint": "unreachable_pub",
@@ -17244,13 +17237,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "9836a2ebfe85e1e95e652a7dcb7f41b28f59858fa8050e23b242e6985312df91",
-      "item": "crate::DeploymentIdentity::new",
-      "lint": "unreachable_pub",
-      "path": "src/deployment.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "870274388e64ee6c1dbf512c29bc29ecb8c4b8e0d664bb88c5dd1d0679dfbd00",
       "item": "crate::DeploymentIdentity::raw_adapter_sref",
       "lint": "unreachable_pub",
@@ -17372,13 +17358,6 @@
       "count": 1,
       "fingerprint": "e8a9f40cdf30ef6802f4659e52c93cb9e7e8402e30d9952c352ef6e386e6628f",
       "item": "crate::FaultStore::coverage",
-      "lint": "unreachable_pub",
-      "path": "src/dst/fault_store.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "d6c9ef81528f2282600d10d253766ff019bd4262a3a79bcfba36115d911595ec",
-      "item": "crate::FaultStore::hold_class",
       "lint": "unreachable_pub",
       "path": "src/dst/fault_store.rs"
     },
@@ -18760,13 +18739,6 @@
       "item": "crate::parse_ep",
       "lint": "unreachable_pub",
       "path": "src/offsets.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "fe486daf8db3e64704500790bc41d3f7f0416ce1b7b3b600b0a7e0833e827b7f",
-      "item": "crate::data",
-      "lint": "unreachable_pub",
-      "path": "src/operator.rs"
     },
     {
       "count": 1,
@@ -21136,27 +21108,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "92ad8dda38c4ce96c5dcbf13cc7c96297324fb6bb5e7c4aeaa81718a745d0cc3",
-      "item": "crate::SEGMENT_MERGES",
-      "lint": "unreachable_pub",
-      "path": "src/scaler3.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "2f97b9b8a85ded9f015c5fa40ce3eb8a530e319e047debf74d36f6de1e5fe444",
-      "item": "crate::SEGMENT_SPLITS",
-      "lint": "unreachable_pub",
-      "path": "src/scaler3.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "e3cd3a22da22d2f736f0ca59c9605eb642ce4b917d9ea8cf518ece57956935ba",
-      "item": "crate::SKETCH_EVICTIONS",
-      "lint": "unreachable_pub",
-      "path": "src/scaler3.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "0eac4d190ef61f3c8601055278a8b8e8d2d6a775deedd0e54a5373e2d6b37a98",
       "item": "crate::Scaler",
       "lint": "unreachable_pub",
@@ -21192,13 +21143,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "f476b79e2b16d4c6903d823fa4f7b435a2a1485c7243d1b1c52c05508217e3d4",
-      "item": "crate::UNTRACKED_APPENDS",
-      "lint": "unreachable_pub",
-      "path": "src/scaler3.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "7a2a900d46a78246accb37fb765f70139b1a13e69e9e46d5798a3e19326452a3",
       "item": "crate::execute_merge",
       "lint": "unreachable_pub",
@@ -21222,13 +21166,6 @@
       "count": 1,
       "fingerprint": "92aa6915b07fbcce60aadeafc4d459e0adc5b229fa702dbee4345f5c876f729b",
       "item": "crate::resume",
-      "lint": "unreachable_pub",
-      "path": "src/scaler3.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1e31d8d4d14b887882a1a11d6f67ff7e66ba65d63c3cdc2833b2eebff743030a",
-      "item": "crate::start",
       "lint": "unreachable_pub",
       "path": "src/scaler3.rs"
     },

@@ -23,7 +23,12 @@ struct Inner {
 }
 
 impl DeploymentIdentity {
-    pub fn new(tenant: ProjectId, account_id: String, cell_id: CellId, region: String) -> Self {
+    pub(crate) fn new(
+        tenant: ProjectId,
+        account_id: String,
+        cell_id: CellId,
+        region: String,
+    ) -> Self {
         Self {
             inner: Arc::new(Inner {
                 tenant,

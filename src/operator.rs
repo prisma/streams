@@ -80,7 +80,10 @@ pub async fn runbook(
         .into_response()
 }
 
-pub async fn data(State(state): State<Arc<AppState>>, headers: axum::http::HeaderMap) -> Response {
+pub(crate) async fn data(
+    State(state): State<Arc<AppState>>,
+    headers: axum::http::HeaderMap,
+) -> Response {
     if let Some(r) = operator_gate(&state, &headers) {
         return r;
     }
