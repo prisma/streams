@@ -102,7 +102,7 @@ impl Fixture {
             store,
             signals,
             usage: Arc::new(Default::default()),
-            journal: crate::touch::TouchJournal::start(&crate::runtime::OsEntropy, &[]),
+            journal: crate::touch::TouchJournal::start(&crate::runtime::OsEntropy),
         }
     }
     fn append(&self) -> (AppendReq, Reply) {

@@ -3895,7 +3895,7 @@ async fn product_consumer_settle(
 
 #[cfg(test)]
 #[cfg(test)]
-pub(crate) use crate::application::watch::{watch_key_hex, watch_pinned};
+pub(crate) use crate::application::watch::watch_key_hex;
 
 fn watch_def_json(w: &crate::registry::WatchDefinition) -> serde_json::Value {
     json!({"name": w.name, "fields": w.fields})

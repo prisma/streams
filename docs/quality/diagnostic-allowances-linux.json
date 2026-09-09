@@ -6702,22 +6702,8 @@
     },
     {
       "count": 1,
-      "fingerprint": "ed5577c914d32e1aa853a3fde63061507ef1897763c5bf6087e300976cd1b087",
-      "item": "crate::TouchJournal::derive_key_ids",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "cf2d4b10046cb61f96849b301cecb817e73fd85fbbdb245672281abd219282aa",
       "item": "crate::TouchJournal::start",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "01fcb367e3962e016365bef71f09b36ba1e7cead5d73b1a71286491dc58733b5",
-      "item": "crate::TouchJournal::wait",
       "lint": "clippy::excessive_nesting",
       "path": "src/touch.rs"
     },
@@ -6730,21 +6716,7 @@
     },
     {
       "count": 1,
-      "fingerprint": "3d4fc97c4c37b24338ccdc83092e35cb2f873762a2be2c42c841806645831de9",
-      "item": "crate::TouchJournal::wait",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "a34e284ec6be23bbeb2af54a20b98b7545b521fa489e1c61eb876f1b1a6b528d",
-      "item": "crate::TouchJournal::wait",
-      "lint": "clippy::excessive_nesting",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "cf0f63b274f80e62d890378a733084d68bf1454c3f86d952223e78fcf5dbe5f9",
       "item": "crate::TouchJournal::wait",
       "lint": "clippy::excessive_nesting",
       "path": "src/touch.rs"
@@ -11378,13 +11350,6 @@
     },
     {
       "count": 1,
-      "fingerprint": "ee67e97cdc0fa72db15f1234955771a0847f972c99b51d05c766ff516c3e5d40",
-      "item": "crate::TouchJournal::start",
-      "lint": "clippy::type_complexity",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
       "fingerprint": "7058ba26ae4a48e0f3c0eedbbc2e736634df31d3934866dcc7c00b0ed1de7d80",
       "item": "crate::UsageService::snapshot",
       "lint": "clippy::type_complexity",
@@ -14296,27 +14261,6 @@
       "path": "src/touch.rs"
     },
     {
-      "count": 1,
-      "fingerprint": "f65124ea7c7d7a01cf11133e0b5100d3c39309d66d5f420377bea12c1c6fd78d",
-      "item": "crate::TouchJournal::meta",
-      "lint": "clippy::unwrap_used",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "91b24e90ddbc004c264d729f63aaf72b77c7ba123b045b92fb3d5e556c0e5519",
-      "item": "crate::TouchJournal::now_cursor",
-      "lint": "clippy::unwrap_used",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "1258672613554d1b96dbc7d2240fdb05be66258867fd648517e2a01665621c4a",
-      "item": "crate::TouchJournal::snapshot",
-      "lint": "clippy::unwrap_used",
-      "path": "src/touch.rs"
-    },
-    {
       "count": 2,
       "fingerprint": "2e68f7977d0b94a5a73a24ca53f04d935ff6bf19d6251bfdf9092376fef78fd7",
       "item": "crate::TouchJournal::wait",
@@ -14791,48 +14735,6 @@
       "item": "crate::decode_shard_maint",
       "lint": "dead_code",
       "path": "src/shard.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "32664c4bf1512a34281cff33c3cb8d9d888de2e08dcda3a5762730d117b87102",
-      "item": "crate::ClosedBucket::end_offset",
-      "lint": "dead_code",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "fc7576e201e963d4a10c9dd9dc34c7b28c184aeafa19b8751f001df0c52b448b",
-      "item": "crate::Inner::snapshot",
-      "lint": "dead_code",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "ef51248cad2234d1c70231fd663bb49dea61e2e35d3182638ac4aeb20565703a",
-      "item": "crate::MAX_TEMPLATES_PER_ENTITY",
-      "lint": "dead_code",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a84cf64b669354e2f71124db5ce1c1ebd1c7ea4ed7f69de8a516de6c9a4aec69",
-      "item": "crate::MAX_TEMPLATES_PER_STREAM",
-      "lint": "dead_code",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "0b020c896ade4f18c1dc91f2c10943f17ce1972658c9d8f8da5f9b4417bd9382",
-      "item": "crate::TouchJournal::snapshot",
-      "lint": "dead_code",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "3f903fb3b6f34f13907a689577e8d7310368d7d65609100cdfcb8d7da3a7d769",
-      "item": "crate::WaitOutcome::Touched::cacheable",
-      "lint": "dead_code",
-      "path": "src/touch.rs"
     },
     {
       "count": 1,
@@ -21819,48 +21721,6 @@
       "item": "crate::validate_cell_id",
       "lint": "unreachable_pub",
       "path": "src/tenant.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "05a2ad72784cda2642a8f6f4b03d19b4288b4e4233c1bc85aee38b04e114ab2e",
-      "item": "crate::MAX_TEMPLATES_PER_ENTITY",
-      "lint": "unreachable_pub",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "4c3c3393e295cb747db53fcd2124269607af4ea7b3f0e76d4ca43f1c1c3476e0",
-      "item": "crate::MAX_TEMPLATES_PER_STREAM",
-      "lint": "unreachable_pub",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "a1c98c84986b29b2d86f9fd62e034c1aef13456798e007a5a6b5bb24c4f7bb32",
-      "item": "crate::TouchJournal::derive_key_ids",
-      "lint": "unreachable_pub",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "b4b6ddde68711c8a139525226c237b9bce47ba6ebc154000b2edc7e91dc6eb07",
-      "item": "crate::TouchJournal::meta",
-      "lint": "unreachable_pub",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "647e330246d61f593734d67e4b41d48a8389042b92f8d6b3f8403afa95ec7e7a",
-      "item": "crate::TouchJournal::now_cursor",
-      "lint": "unreachable_pub",
-      "path": "src/touch.rs"
-    },
-    {
-      "count": 1,
-      "fingerprint": "563cfaf53eb33707a52e37e2458e1ef11ef0102492173b35a83f35a7625a022d",
-      "item": "crate::TouchJournal::snapshot",
-      "lint": "unreachable_pub",
-      "path": "src/touch.rs"
     },
     {
       "count": 1,

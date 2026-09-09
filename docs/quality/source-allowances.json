@@ -4245,13 +4245,6 @@
     {
       "category": "macro-dsl",
       "count": 1,
-      "owner": "crate::TouchJournal::meta",
-      "path": "src/touch.rs",
-      "syntax": "serde_json::json"
-    },
-    {
-      "category": "macro-dsl",
-      "count": 1,
       "owner": "crate::limit_refusals_json",
       "path": "src/usage.rs",
       "syntax": "serde_json::json"
