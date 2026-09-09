@@ -4,6 +4,11 @@ from verification_plan import is_visibility_only, plan
 
 
 class Triggers(unittest.TestCase):
+    def test_rollup_storage_requires_properties_and_mutations(self):
+        checks = plan(['src/rollup/storage.rs'])
+        self.assertTrue(checks['properties_fuzz'])
+        self.assertTrue(checks['mutants'])
+
     def test_rollup_allocation_requires_properties_and_mutations(self):
         checks = plan(['src/rollup/allocation.rs'])
         self.assertTrue(checks['properties_fuzz'])

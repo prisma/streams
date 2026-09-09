@@ -255,6 +255,22 @@
       "path": "tools/quality-invariants/src/lib.rs",
       "reason": "Month-allocation invariant harness; includes the canonical production implementation and properties directly; no model, source rewrite or public service API.",
       "syntax": "path = \"../../../src/rollup/allocation.rs\""
+    },
+    {
+      "category": "macro-dsl",
+      "count": 1,
+      "owner": "crate::tests::macro(proptest::proptest)",
+      "path": "src/rollup/storage.rs",
+      "reason": "Storage byte-time properties; the pinned macro exercises exact signed-clock intervals and conservation through the production function; generated test syntax remains inventoried.",
+      "syntax": "proptest::proptest"
+    },
+    {
+      "category": "by-path-module",
+      "count": 1,
+      "owner": "crate::rollup_storage",
+      "path": "tools/quality-invariants/src/lib.rs",
+      "reason": "Storage byte-time invariant harness; includes the unchanged production owner and its tests directly; no model, source rewrite or public service API.",
+      "syntax": "path = \"../../../src/rollup/storage.rs\""
     }
   ]
 }
